@@ -27,6 +27,7 @@ interface Job {
 }
 
 const API_BASE = "/api/turing";
+const SAVED_COMMANDS_KEY = "turing_saved_command_sets";
 
 export default function Turing() {
   const [gpuReport, setGpuReport] = useState<GPUReport | null>(null);
@@ -39,6 +40,10 @@ export default function Turing() {
   const [timeMins, setTimeMins] = useState("60");
   const [count, setCount] = useState("1");
   const [commands, setCommands] = useState<string[]>([""]);
+  const [savedCommandSets, setSavedCommandSets] = useState<
+    { name: string; commands: string[] }[]
+  >([]);
+  const [saveSetName, setSaveSetName] = useState("");
   const [allocating, setAllocating] = useState(false);
   const [allocateError, setAllocateError] = useState<string | null>(null);
   const [allocateSuccess, setAllocateSuccess] = useState<string | null>(null);
@@ -82,6 +87,19 @@ export default function Turing() {
     const interval = setInterval(fetchJobs, 30000);
     return () => clearInterval(interval);
   }, [fetchGpuReport, fetchJobs]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SAVED_COMMANDS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setSavedCommandSets(parsed);
+      }
+    } catch {
+      setSavedCommandSets([]);
+    }
+  }, []);
 
   const handleAllocate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -153,6 +171,34 @@ export default function Turing() {
     const updated = [...commands];
     updated[index] = value;
     setCommands(updated);
+  };
+
+  const persistCommandSets = (
+    sets: { name: string; commands: string[] }[]
+  ) => {
+    setSavedCommandSets(sets);
+    localStorage.setItem(SAVED_COMMANDS_KEY, JSON.stringify(sets));
+  };
+
+  const handleSaveCommandSet = () => {
+    const trimmedName = saveSetName.trim();
+    const cleanedCommands = commands.map((c) => c.trim()).filter(Boolean);
+    if (!trimmedName || cleanedCommands.length === 0) return;
+    const next = [
+      { name: trimmedName, commands: cleanedCommands },
+      ...savedCommandSets.filter((set) => set.name !== trimmedName),
+    ];
+    persistCommandSets(next);
+    setSaveSetName("");
+  };
+
+  const handleLoadCommandSet = (commandsToLoad: string[]) => {
+    setCommands(commandsToLoad.length > 0 ? commandsToLoad : [""]);
+  };
+
+  const handleDeleteCommandSet = (name: string) => {
+    const next = savedCommandSets.filter((set) => set.name !== name);
+    persistCommandSets(next);
   };
 
   return (
@@ -242,10 +288,14 @@ export default function Turing() {
                 <select
                   value={gpuType}
                   onChange={(e) => setGpuType(e.target.value)}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
+                  className="w-full px-3 py-2 bg-black/80 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 >
                   {gpuReport?.free.map((g) => (
-                    <option key={g.type} value={g.type}>
+                    <option
+                      key={g.type}
+                      value={g.type}
+                      className="bg-black text-white"
+                    >
                       {g.type} ({g.count} free)
                     </option>
                   ))}
@@ -281,6 +331,52 @@ export default function Turing() {
               <label className="block text-sm text-white/60 mb-2">
                 Commands <span className="text-white/30">(executed in order)</span>
               </label>
+              <div className="flex flex-col gap-2 mb-3">
+                <div className="flex flex-col md:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={saveSetName}
+                    onChange={(e) => setSaveSetName(e.target.value)}
+                    placeholder="Save as..."
+                    className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded text-white text-sm focus:outline-none focus:border-white/30"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveCommandSet}
+                    className="px-3 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors"
+                  >
+                    Save Set
+                  </button>
+                </div>
+                <p className="text-xs text-white/30">
+                  Saved locally in this browser.
+                </p>
+              </div>
+              {savedCommandSets.length > 0 && (
+                <div className="flex flex-col gap-2 mb-4">
+                  {savedCommandSets.map((set) => (
+                    <div
+                      key={set.name}
+                      className="flex flex-col md:flex-row md:items-center gap-2"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handleLoadCommandSet(set.commands)}
+                        className="flex-1 px-3 py-2 text-left text-sm bg-white/5 hover:bg-white/10 rounded transition-colors"
+                      >
+                        {set.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCommandSet(set.name)}
+                        className="px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="space-y-2">
                 {commands.map((cmd, i) => (
                   <div key={i} className="flex gap-2">

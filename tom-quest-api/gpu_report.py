@@ -51,8 +51,13 @@ def parse_gpu_report() -> GPUReport:
             report.unavailable[gpu_type].count += total_node_gpus
             report.unavailable[gpu_type].nodes.append(f"{node}({total_node_gpus})")
             continue
-        alloc_match = re.search(r'gres/gpu=(\d+)', node_info)
-        alloc_node_gpus = int(alloc_match.group(1)) if alloc_match else 0
+        alloc_node_gpus = 0
+        for line in node_info.split('\n'):
+            if 'AllocTRES=' in line:
+                alloc_match = re.search(r'gres/gpu=(\d+)', line)
+                if alloc_match:
+                    alloc_node_gpus = int(alloc_match.group(1))
+                break
         unused_node_gpus = total_node_gpus - alloc_node_gpus
         if gpu_type not in report.available:
             report.available[gpu_type] = GPUTypeInfo()

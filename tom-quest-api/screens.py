@@ -1,5 +1,5 @@
 import subprocess
-import time
+import threading
 
 def run_command(cmd: str) -> tuple[str, str, int]:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -23,17 +23,22 @@ def kill_screen(screen_name: str) -> bool:
     stdout, stderr, returncode = run_command(f"screen -S {screen_name} -X quit")
     return returncode == 0
 
-def setup_allocation_screen(job_id: str, commands: list[str]) -> str:
-    screen_name = f"tq_{job_id}"
+def _setup_screen_worker(screen_name: str, job_id: str, commands: list[str]):
+    import time
     create_screen(screen_name)
-    time.sleep(0.5)
+    time.sleep(0.2)
     srun_cmd = f"srun --pty --jobid={job_id} bash"
     send_to_screen(screen_name, srun_cmd)
-    time.sleep(2)
+    time.sleep(1)
     for cmd in commands:
         if cmd.strip():
             send_to_screen(screen_name, cmd)
-            time.sleep(0.3)
+            time.sleep(0.1)
+
+def setup_allocation_screen(job_id: str, commands: list[str]) -> str:
+    screen_name = f"tq_{job_id}"
+    thread = threading.Thread(target=_setup_screen_worker, args=(screen_name, job_id, commands))
+    thread.start()
     return screen_name
 
 def cleanup_screen(job_id: str) -> bool:

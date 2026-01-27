@@ -26,20 +26,31 @@ Personal website for Tom Heffernan, PhD student in AI at WPI.
 app/
 ├── page.tsx              # Welcome/home page
 ├── bio/page.tsx          # Tom's bio, education, research
-├── projects/page.tsx     # Placeholder - projects showcase
-├── turing/page.tsx       # Placeholder - GPU dashboard
-├── data-labeling/page.tsx # Placeholder - labeling tools
+├── projects/page.tsx     # Placeholder
+├── turing/page.tsx       # GPU allocation dashboard
+├── data-labeling/page.tsx # Placeholder
+├── api/turing/           # Proxy routes to Turing backend
 ├── components/
 │   └── Navigation.tsx    # Client component with usePathname
 ├── globals.css           # Theme + animations
 └── layout.tsx            # Root layout with nav
+tom-quest-api/            # FastAPI backend (runs on Turing HPC)
+├── main.py               # API endpoints
+├── gpu_report.py         # GPU availability (port of gpu_report.sh)
+├── slurm.py              # salloc/squeue/scancel wrappers
+└── screens.py            # GNU screen management
 ```
 
+## Turing Dashboard
+- Frontend calls `/api/turing/*` routes which proxy to FastAPI on Turing
+- Backend connects via Cloudflare Tunnel (quick tunnel or named)
+- Env vars: `TURING_API_URL`, `TURING_API_KEY` (Vercel); `API_KEY` (Turing .env)
+- Max 12 GPU allocations enforced in backend
+- GPU types: nvidia=H100, tesla=V100
+
 ## Placeholder Pages
-Turing, Data Labeling, and Projects are placeholders awaiting implementation.
-- Turing: will be GPU allocation/monitoring dashboard for WPI's Turing HPC
-- Data Labeling: will be annotation tools
-- Projects: will showcase Tom's work
+- Data Labeling: annotation tools
+- Projects: showcase Tom's work
 
 ## Conventions
 - Keep styling minimal and elegant

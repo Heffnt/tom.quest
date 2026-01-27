@@ -55,8 +55,11 @@ async def health():
 
 @app.get("/gpu-report")
 async def gpu_report(auth: bool = Depends(verify_api_key)):
-    report = parse_gpu_report()
-    return format_gpu_report(report)
+    try:
+        report = parse_gpu_report()
+        return format_gpu_report(report)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GPU report failed: {str(e)}")
 
 @app.get("/gpu-types")
 async def gpu_types(auth: bool = Depends(verify_api_key)):
@@ -80,13 +83,16 @@ async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_k
     screen_names = []
     errors = []
     for i in range(request.count):
-        job_id, error = allocate_gpu(request.gpu_type, request.time_mins)
-        if job_id:
-            job_ids.append(job_id)
-            screen_name = setup_allocation_screen(job_id, request.commands)
-            screen_names.append(screen_name)
-        else:
-            errors.append(error or f"Failed to allocate GPU {i+1}")
+        try:
+            job_id, error = allocate_gpu(request.gpu_type, request.time_mins)
+            if job_id:
+                job_ids.append(job_id)
+                screen_name = setup_allocation_screen(job_id, request.commands)
+                screen_names.append(screen_name)
+            else:
+                errors.append(error or f"Failed to allocate GPU {i+1}")
+        except Exception as e:
+            errors.append(f"GPU {i+1}: {str(e)}")
     return AllocationResponse(
         success=len(job_ids) > 0,
         job_ids=job_ids,
