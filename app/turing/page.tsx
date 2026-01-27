@@ -38,6 +38,7 @@ export default function Turing() {
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [gpuType, setGpuType] = useState("");
   const [timeMins, setTimeMins] = useState("60");
+  const [memoryMb, setMemoryMb] = useState("64000");
   const [count, setCount] = useState("1");
   const [commands, setCommands] = useState<string[]>([""]);
   const [savedCommandSets, setSavedCommandSets] = useState<
@@ -108,6 +109,7 @@ export default function Turing() {
     setAllocateSuccess(null);
     const countNum = parseInt(count, 10);
     const timeNum = parseInt(timeMins, 10);
+    const memoryNum = parseInt(memoryMb, 10);
     if (isNaN(countNum) || countNum < 1 || countNum > 12) {
       setAllocateError("Count must be between 1 and 12");
       setAllocating(false);
@@ -118,6 +120,11 @@ export default function Turing() {
       setAllocating(false);
       return;
     }
+    if (isNaN(memoryNum) || memoryNum < 1) {
+      setAllocateError("Memory must be at least 1 MB");
+      setAllocating(false);
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/allocate`, {
         method: "POST",
@@ -125,6 +132,7 @@ export default function Turing() {
         body: JSON.stringify({
           gpu_type: gpuType,
           time_mins: timeNum,
+          memory_mb: memoryNum,
           count: countNum,
           commands: commands.filter((c) => c.trim()),
         }),
@@ -280,7 +288,7 @@ export default function Turing() {
             onSubmit={handleAllocate}
             className="border border-white/10 rounded-lg p-6 space-y-4"
           >
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm text-white/60 mb-1">
                   GPU Type
@@ -303,6 +311,18 @@ export default function Turing() {
               </div>
               <div>
                 <label className="block text-sm text-white/60 mb-1">
+                  Count <span className="text-white/30">(max 12)</span>
+                </label>
+                <input
+                  type="text"
+                  value={count}
+                  onChange={(e) => setCount(e.target.value)}
+                  placeholder="1"
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-white/60 mb-1">
                   Time (minutes)
                 </label>
                 <input
@@ -315,13 +335,13 @@ export default function Turing() {
               </div>
               <div>
                 <label className="block text-sm text-white/60 mb-1">
-                  Count <span className="text-white/30">(max 12)</span>
+                  Memory (MB)
                 </label>
                 <input
                   type="text"
-                  value={count}
-                  onChange={(e) => setCount(e.target.value)}
-                  placeholder="1"
+                  value={memoryMb}
+                  onChange={(e) => setMemoryMb(e.target.value)}
+                  placeholder="64000"
                   className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 />
               </div>

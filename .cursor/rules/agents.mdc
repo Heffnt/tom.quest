@@ -47,6 +47,7 @@ tom-quest-api/            # FastAPI backend (runs on Turing HPC)
 - Env vars: `TURING_API_URL`, `TURING_API_KEY` (Vercel); `API_KEY` (Turing .env)
 - Max 12 GPU allocations enforced in backend
 - GPU types: nvidia=H100, tesla=V100
+- Allocation params: time (mins), memory (MB, default 64000), count (1-12)
 
 ## Placeholder Pages
 - Data Labeling: annotation tools

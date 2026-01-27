@@ -30,6 +30,7 @@ async def verify_api_key(x_api_key: str = Header(None)):
 class AllocationRequest(BaseModel):
     gpu_type: str
     time_mins: int
+    memory_mb: int = 64000
     commands: list[str] = []
     count: int = 1
 
@@ -84,7 +85,7 @@ async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_k
     errors = []
     for i in range(request.count):
         try:
-            job_id, error = allocate_gpu(request.gpu_type, request.time_mins)
+            job_id, error = allocate_gpu(request.gpu_type, request.time_mins, request.memory_mb)
             if job_id:
                 job_ids.append(job_id)
                 screen_name = setup_allocation_screen(job_id, request.commands)
