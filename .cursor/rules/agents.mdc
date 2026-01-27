@@ -1,0 +1,48 @@
+---
+description: Project context and conventions for TOM.quest personal website
+alwaysApply: true
+---
+
+# TOM.quest Project Context
+
+Personal website for Tom Heffernan, PhD student in AI at WPI.
+
+## Tech Stack
+- Next.js 16 with App Router
+- TypeScript
+- Tailwind CSS v4 (PostCSS-based, no tailwind.config)
+- Geist fonts (Sans + Mono)
+- Hosted on Vercel
+
+## Design System
+- Background: pure black (#000)
+- Text: white (#fff), reduced opacity for secondary (white/60, white/40)
+- Animations: fade-in with translateY, defined in globals.css
+- Navigation: fixed top bar, underline on active page
+- Layout: max-w-3xl centered container, generous whitespace
+
+## File Structure
+```
+app/
+├── page.tsx              # Welcome/home page
+├── bio/page.tsx          # Tom's bio, education, research
+├── projects/page.tsx     # Placeholder - projects showcase
+├── turing/page.tsx       # Placeholder - GPU dashboard
+├── data-labeling/page.tsx # Placeholder - labeling tools
+├── components/
+│   └── Navigation.tsx    # Client component with usePathname
+├── globals.css           # Theme + animations
+└── layout.tsx            # Root layout with nav
+```
+
+## Placeholder Pages
+Turing, Data Labeling, and Projects are placeholders awaiting implementation.
+- Turing: will be GPU allocation/monitoring dashboard for WPI's Turing HPC
+- Data Labeling: will be annotation tools
+- Projects: will showcase Tom's work
+
+## Conventions
+- Keep styling minimal and elegant
+- Use animate-fade-in / animate-fade-in-delay classes for page transitions
+- Navigation links use opacity transitions, underline for active state
+- All pages follow same structure: min-h-screen, max-w-3xl mx-auto, px-6 py-16
