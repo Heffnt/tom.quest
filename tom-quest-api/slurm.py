@@ -21,7 +21,7 @@ def run_command(cmd: str) -> tuple[str, str, int]:
     return result.stdout, result.stderr, result.returncode
 
 def allocate_gpu(gpu_type: str, time_mins: int, memory_mb: int = 64000) -> tuple[str | None, str | None]:
-    cmd = f"salloc --gres=gpu:{gpu_type}:1 --time={time_mins} --mem={memory_mb} --no-shell"
+    cmd = f"salloc --gres=gpu:{gpu_type}:1 --time={time_mins} --mem={memory_mb} --job-name=tom.quest"
     stdout, stderr, returncode = run_command(cmd)
     output = stdout + stderr
     job_match = re.search(r'job (\d+)', output, re.IGNORECASE)

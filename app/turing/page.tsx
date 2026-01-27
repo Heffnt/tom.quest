@@ -26,8 +26,18 @@ interface Job {
   end_time: string;
 }
 
+interface DirListing {
+  path: string;
+  dirs: string[];
+  error: string | null;
+}
+
+interface ProjectCommands {
+  [projectDir: string]: { name: string; commands: string[] }[];
+}
+
 const API_BASE = "/api/turing";
-const SAVED_COMMANDS_KEY = "turing_saved_command_sets";
+const SAVED_COMMANDS_KEY = "turing_project_commands";
 
 export default function Turing() {
   const [gpuReport, setGpuReport] = useState<GPUReport | null>(null);
@@ -41,13 +51,15 @@ export default function Turing() {
   const [memoryMb, setMemoryMb] = useState("64000");
   const [count, setCount] = useState("1");
   const [commands, setCommands] = useState<string[]>([""]);
-  const [savedCommandSets, setSavedCommandSets] = useState<
-    { name: string; commands: string[] }[]
-  >([]);
+  const [projectCommands, setProjectCommands] = useState<ProjectCommands>({});
   const [saveSetName, setSaveSetName] = useState("");
   const [allocating, setAllocating] = useState(false);
   const [allocateError, setAllocateError] = useState<string | null>(null);
   const [allocateSuccess, setAllocateSuccess] = useState<string | null>(null);
+  const [projectDir, setProjectDir] = useState("");
+  const [dirListing, setDirListing] = useState<DirListing | null>(null);
+  const [dirLoading, setDirLoading] = useState(false);
+  const [dirBrowserOpen, setDirBrowserOpen] = useState(false);
 
   const fetchGpuReport = useCallback(async () => {
     setGpuReportLoading(true);
@@ -82,6 +94,21 @@ export default function Turing() {
     }
   }, []);
 
+  const fetchDirs = useCallback(async (path: string = "") => {
+    setDirLoading(true);
+    try {
+      const url = path ? `${API_BASE}/dirs?path=${encodeURIComponent(path)}` : `${API_BASE}/dirs`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("Failed to list directory");
+      const data = await res.json();
+      setDirListing(data);
+    } catch (e) {
+      setDirListing({ path: path, dirs: [], error: e instanceof Error ? e.message : "Unknown error" });
+    } finally {
+      setDirLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchGpuReport();
     fetchJobs();
@@ -94,11 +121,11 @@ export default function Turing() {
       const raw = localStorage.getItem(SAVED_COMMANDS_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        setSavedCommandSets(parsed);
+      if (typeof parsed === "object" && !Array.isArray(parsed)) {
+        setProjectCommands(parsed);
       }
     } catch {
-      setSavedCommandSets([]);
+      setProjectCommands({});
     }
   }, []);
 
@@ -135,6 +162,7 @@ export default function Turing() {
           memory_mb: memoryNum,
           count: countNum,
           commands: commands.filter((c) => c.trim()),
+          project_dir: projectDir,
         }),
       });
       const data = await res.json();
@@ -181,22 +209,21 @@ export default function Turing() {
     setCommands(updated);
   };
 
-  const persistCommandSets = (
-    sets: { name: string; commands: string[] }[]
-  ) => {
-    setSavedCommandSets(sets);
-    localStorage.setItem(SAVED_COMMANDS_KEY, JSON.stringify(sets));
+  const persistProjectCommands = (cmds: ProjectCommands) => {
+    setProjectCommands(cmds);
+    localStorage.setItem(SAVED_COMMANDS_KEY, JSON.stringify(cmds));
   };
 
   const handleSaveCommandSet = () => {
     const trimmedName = saveSetName.trim();
     const cleanedCommands = commands.map((c) => c.trim()).filter(Boolean);
-    if (!trimmedName || cleanedCommands.length === 0) return;
-    const next = [
+    if (!trimmedName || cleanedCommands.length === 0 || !projectDir) return;
+    const projectSets = projectCommands[projectDir] || [];
+    const newSets = [
       { name: trimmedName, commands: cleanedCommands },
-      ...savedCommandSets.filter((set) => set.name !== trimmedName),
+      ...projectSets.filter((set) => set.name !== trimmedName),
     ];
-    persistCommandSets(next);
+    persistProjectCommands({ ...projectCommands, [projectDir]: newSets });
     setSaveSetName("");
   };
 
@@ -205,8 +232,37 @@ export default function Turing() {
   };
 
   const handleDeleteCommandSet = (name: string) => {
-    const next = savedCommandSets.filter((set) => set.name !== name);
-    persistCommandSets(next);
+    if (!projectDir) return;
+    const projectSets = projectCommands[projectDir] || [];
+    const newSets = projectSets.filter((set) => set.name !== name);
+    persistProjectCommands({ ...projectCommands, [projectDir]: newSets });
+  };
+
+  const currentProjectSets = projectDir ? (projectCommands[projectDir] || []) : [];
+
+  const openDirBrowser = () => {
+    setDirBrowserOpen(true);
+    fetchDirs(projectDir || "");
+  };
+
+  const navigateToDir = (dir: string) => {
+    const newPath = dirListing ? `${dirListing.path}/${dir}` : dir;
+    fetchDirs(newPath);
+  };
+
+  const navigateUp = () => {
+    if (!dirListing) return;
+    const parts = dirListing.path.split("/");
+    parts.pop();
+    const newPath = parts.join("/") || "/";
+    fetchDirs(newPath);
+  };
+
+  const selectCurrentDir = () => {
+    if (dirListing) {
+      setProjectDir(dirListing.path);
+    }
+    setDirBrowserOpen(false);
   };
 
   return (
@@ -288,6 +344,89 @@ export default function Turing() {
             onSubmit={handleAllocate}
             className="border border-white/10 rounded-lg p-6 space-y-4"
           >
+            {/* Project Directory */}
+            <div>
+              <label className="block text-sm text-white/60 mb-1">
+                Project Directory
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={projectDir}
+                  onChange={(e) => setProjectDir(e.target.value)}
+                  placeholder="Select a project directory..."
+                  className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded text-white font-mono text-sm focus:outline-none focus:border-white/30"
+                  readOnly
+                />
+                <button
+                  type="button"
+                  onClick={openDirBrowser}
+                  className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors"
+                >
+                  Browse
+                </button>
+              </div>
+            </div>
+
+            {/* Directory Browser Modal */}
+            {dirBrowserOpen && (
+              <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+                <div className="bg-black border border-white/20 rounded-lg p-6 w-full max-w-lg max-h-[80vh] flex flex-col">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold">Select Project Directory</h3>
+                    <button
+                      type="button"
+                      onClick={() => setDirBrowserOpen(false)}
+                      className="text-white/60 hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 mb-4">
+                    <button
+                      type="button"
+                      onClick={navigateUp}
+                      disabled={dirLoading}
+                      className="px-3 py-1 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+                    >
+                      ↑ Up
+                    </button>
+                    <span className="text-sm text-white/60 font-mono truncate flex-1">
+                      {dirListing?.path || "Loading..."}
+                    </span>
+                  </div>
+                  {dirListing?.error && (
+                    <p className="text-red-400 text-sm mb-2">{dirListing.error}</p>
+                  )}
+                  <div className="flex-1 overflow-y-auto border border-white/10 rounded mb-4">
+                    {dirLoading ? (
+                      <p className="p-4 text-white/40">Loading...</p>
+                    ) : dirListing?.dirs.length === 0 ? (
+                      <p className="p-4 text-white/40">No subdirectories</p>
+                    ) : (
+                      dirListing?.dirs.map((dir) => (
+                        <button
+                          key={dir}
+                          type="button"
+                          onClick={() => navigateToDir(dir)}
+                          className="w-full px-4 py-2 text-left text-sm hover:bg-white/10 border-b border-white/5 font-mono"
+                        >
+                          📁 {dir}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={selectCurrentDir}
+                    className="w-full py-2 bg-white text-black font-semibold rounded hover:bg-white/90 transition-colors"
+                  >
+                    Select This Directory
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm text-white/60 mb-1">
@@ -349,53 +488,62 @@ export default function Turing() {
 
             <div>
               <label className="block text-sm text-white/60 mb-2">
-                Commands <span className="text-white/30">(executed in order)</span>
+                Commands <span className="text-white/30">(executed in order after cd to project dir)</span>
               </label>
-              <div className="flex flex-col gap-2 mb-3">
-                <div className="flex flex-col md:flex-row gap-2">
-                  <input
-                    type="text"
-                    value={saveSetName}
-                    onChange={(e) => setSaveSetName(e.target.value)}
-                    placeholder="Save as..."
-                    className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded text-white text-sm focus:outline-none focus:border-white/30"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSaveCommandSet}
-                    className="px-3 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors"
-                  >
-                    Save Set
-                  </button>
-                </div>
-                <p className="text-xs text-white/30">
-                  Saved locally in this browser.
-                </p>
-              </div>
-              {savedCommandSets.length > 0 && (
-                <div className="flex flex-col gap-2 mb-4">
-                  {savedCommandSets.map((set) => (
-                    <div
-                      key={set.name}
-                      className="flex flex-col md:flex-row md:items-center gap-2"
-                    >
+              {projectDir && (
+                <>
+                  <div className="flex flex-col gap-2 mb-3">
+                    <div className="flex flex-col md:flex-row gap-2">
+                      <input
+                        type="text"
+                        value={saveSetName}
+                        onChange={(e) => setSaveSetName(e.target.value)}
+                        placeholder="Save as..."
+                        className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded text-white text-sm focus:outline-none focus:border-white/30"
+                      />
                       <button
                         type="button"
-                        onClick={() => handleLoadCommandSet(set.commands)}
-                        className="flex-1 px-3 py-2 text-left text-sm bg-white/5 hover:bg-white/10 rounded transition-colors"
+                        onClick={handleSaveCommandSet}
+                        className="px-3 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors"
                       >
-                        {set.name}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteCommandSet(set.name)}
-                        className="px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
-                      >
-                        Delete
+                        Save Set
                       </button>
                     </div>
-                  ))}
-                </div>
+                    <p className="text-xs text-white/30">
+                      Saved for this project in this browser.
+                    </p>
+                  </div>
+                  {currentProjectSets.length > 0 && (
+                    <div className="flex flex-col gap-2 mb-4">
+                      {currentProjectSets.map((set) => (
+                        <div
+                          key={set.name}
+                          className="flex flex-col md:flex-row md:items-center gap-2"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleLoadCommandSet(set.commands)}
+                            className="flex-1 px-3 py-2 text-left text-sm bg-white/5 hover:bg-white/10 rounded transition-colors"
+                          >
+                            {set.name}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCommandSet(set.name)}
+                            className="px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {!projectDir && (
+                <p className="text-xs text-white/40 mb-3">
+                  Select a project directory to save command sets.
+                </p>
               )}
               <div className="space-y-2">
                 {commands.map((cmd, i) => (

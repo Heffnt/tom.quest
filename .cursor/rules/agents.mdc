@@ -7,6 +7,8 @@ alwaysApply: true
 
 Personal website for Tom Heffernan, PhD student in AI at WPI.
 
+## IMPORTANT: Whenever you fix something add info about it here so the issue is not repeated. Whenever you change something update this doc so it stays up to date. 
+
 ## Tech Stack
 - Next.js 16 with App Router
 - TypeScript
@@ -38,7 +40,8 @@ tom-quest-api/            # FastAPI backend (runs on Turing HPC)
 ├── main.py               # API endpoints
 ├── gpu_report.py         # GPU availability (port of gpu_report.sh)
 ├── slurm.py              # salloc/squeue/scancel wrappers
-└── screens.py            # GNU screen management
+├── screens.py            # GNU screen management
+└── dirs.py               # Directory listing for project selection
 ```
 
 ## Turing Dashboard
@@ -47,7 +50,11 @@ tom-quest-api/            # FastAPI backend (runs on Turing HPC)
 - Env vars: `TURING_API_URL`, `TURING_API_KEY` (Vercel); `API_KEY` (Turing .env)
 - Max 12 GPU allocations enforced in backend
 - GPU types: nvidia=H100, tesla=V100
-- Allocation params: time (mins), memory (MB, default 64000), count (1-12)
+- Allocation params: time (mins), memory (MB, default 64000), count (1-12), project_dir
+- Job name: "tom.quest" (set via --job-name)
+- Project dir selection: browse Turing dirs, first command is `cd {project_dir}`
+- Saved commands: stored per-project in localStorage (`turing_project_commands`)
+- Screen naming: `tq_{project_name}_{index}` (reuses screens, not per-job)
 
 ## Placeholder Pages
 - Data Labeling: annotation tools

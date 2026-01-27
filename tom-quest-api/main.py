@@ -5,7 +5,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from gpu_report import parse_gpu_report, format_gpu_report, get_free_gpu_types
 from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
-from screens import setup_allocation_screen, cleanup_screen
+from screens import setup_allocation_screen, cleanup_screen, get_next_screen_name
+from dirs import list_directory, get_home_dir
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY", "")
@@ -33,6 +34,7 @@ class AllocationRequest(BaseModel):
     memory_mb: int = 64000
     commands: list[str] = []
     count: int = 1
+    project_dir: str = ""
 
 class AllocationResponse(BaseModel):
     success: bool
@@ -66,6 +68,12 @@ async def gpu_report(auth: bool = Depends(verify_api_key)):
 async def gpu_types(auth: bool = Depends(verify_api_key)):
     return {"types": get_free_gpu_types()}
 
+@app.get("/dirs")
+async def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)):
+    if not path:
+        path = get_home_dir()
+    return list_directory(path)
+
 @app.post("/allocate", response_model=AllocationResponse)
 async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)):
     if request.count < 1:
@@ -83,12 +91,15 @@ async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_k
     job_ids = []
     screen_names = []
     errors = []
+    commands = list(request.commands)
+    if request.project_dir:
+        commands.insert(0, f"cd {request.project_dir}")
     for i in range(request.count):
         try:
             job_id, error = allocate_gpu(request.gpu_type, request.time_mins, request.memory_mb)
             if job_id:
                 job_ids.append(job_id)
-                screen_name = setup_allocation_screen(job_id, request.commands)
+                screen_name = setup_allocation_screen(job_id, commands, request.project_dir)
                 screen_names.append(screen_name)
             else:
                 errors.append(error or f"Failed to allocate GPU {i+1}")
