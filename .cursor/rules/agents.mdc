@@ -1,67 +1,46 @@
 ---
-description: Project context and conventions for TOM.quest personal website
+description: Project context for TOM.quest - UPDATE THIS FILE after any changes or fixes
 alwaysApply: true
 ---
 
-# TOM.quest Project Context
+# TOM.quest
 
-Personal website for Tom Heffernan, PhD student in AI at WPI.
+**AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. This prevents repeated mistakes and keeps context accurate.**
 
-## IMPORTANT: Whenever you fix something add info about it here so the issue is not repeated. Whenever you change something update this doc so it stays up to date. 
+## Stack
+Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Geist fonts | Vercel
 
-## Tech Stack
-- Next.js 16 with App Router
-- TypeScript
-- Tailwind CSS v4 (PostCSS-based, no tailwind.config)
-- Geist fonts (Sans + Mono)
-- Hosted on Vercel
+## Design
+- Colors: black bg, white text (60%/40% opacity for secondary)
+- Layout: max-w-3xl mx-auto, px-6 py-16, min-h-screen
+- Animations: animate-fade-in, animate-fade-in-delay (globals.css)
 
-## Design System
-- Background: pure black (#000)
-- Text: white (#fff), reduced opacity for secondary (white/60, white/40)
-- Animations: fade-in with translateY, defined in globals.css
-- Navigation: fixed top bar, underline on active page
-- Layout: max-w-3xl centered container, generous whitespace
-
-## File Structure
+## Structure
 ```
-app/
-├── page.tsx              # Welcome/home page
-├── bio/page.tsx          # Tom's bio, education, research
-├── projects/page.tsx     # Placeholder
-├── turing/page.tsx       # GPU allocation dashboard
-├── data-labeling/page.tsx # Placeholder
-├── api/turing/           # Proxy routes to Turing backend
-├── components/
-│   └── Navigation.tsx    # Client component with usePathname
-├── globals.css           # Theme + animations
-└── layout.tsx            # Root layout with nav
-tom-quest-api/            # FastAPI backend (runs on Turing HPC)
-├── main.py               # API endpoints
-├── gpu_report.py         # GPU availability (port of gpu_report.sh)
-├── slurm.py              # salloc/squeue/scancel wrappers
-├── screens.py            # GNU screen management
-└── dirs.py               # Directory listing for project selection
+app/                      # Next.js frontend
+├── turing/page.tsx       # GPU dashboard (client component)
+├── api/turing/           # Proxy routes → Turing backend
+│   ├── gpu-report/       # GET gpu availability
+│   ├── allocate/         # POST allocation request
+│   ├── jobs/             # GET list, DELETE cancel
+│   └── dirs/             # GET directory listing
+└── components/Navigation.tsx
+
+tom-quest-api/            # FastAPI on Turing HPC
+├── main.py, gpu_report.py, slurm.py, screens.py, dirs.py
 ```
 
 ## Turing Dashboard
-- Frontend calls `/api/turing/*` routes which proxy to FastAPI on Turing
-- Backend connects via Cloudflare Tunnel (quick tunnel or named)
-- Env vars: `TURING_API_URL`, `TURING_API_KEY` (Vercel); `API_KEY` (Turing .env)
-- Max 12 GPU allocations enforced in backend
-- GPU types: nvidia=H100, tesla=V100
-- Allocation params: time (mins), memory (MB, default 64000), count (1-12), project_dir
-- Job name: "tom.quest" (set via --job-name)
-- Project dir selection: browse Turing dirs, first command is `cd {project_dir}`
-- Saved commands: stored per-project in localStorage (`turing_project_commands`)
-- Screen naming: `tq_{project_name}_{index}` (reuses screens, not per-job)
+- Proxy: frontend → /api/turing/* → TURING_API_URL (via Cloudflare tunnel)
+- Auth: X-API-Key header (TURING_API_KEY on Vercel, API_KEY on Turing)
+- GPUs: nvidia=H100, tesla=V100, max 12 allocations
+- Allocation: --job-name=tom.quest, project_dir → cd first, then commands
+- Screens: `tq_{project_name}_{index}` (reused, not per-job)
+- localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
 
-## Placeholder Pages
-- Data Labeling: annotation tools
-- Projects: showcase Tom's work
+## Fixes & Lessons
+<!-- Add entries: [date] issue → fix -->
 
-## Conventions
-- Keep styling minimal and elegant
-- Use animate-fade-in / animate-fade-in-delay classes for page transitions
-- Navigation links use opacity transitions, underline for active state
-- All pages follow same structure: min-h-screen, max-w-3xl mx-auto, px-6 py-16
+## Placeholders
+- /projects: showcase work
+- /data-labeling: annotation tools

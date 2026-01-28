@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface GPUTypeInfo {
   type: string;
@@ -36,6 +36,18 @@ interface ProjectCommands {
   [projectDir: string]: { name: string; commands: string[] }[];
 }
 
+interface DebugLogEntry {
+  id: number;
+  timestamp: Date;
+  type: "request" | "response" | "error" | "info";
+  method?: string;
+  url?: string;
+  status?: number;
+  data?: unknown;
+  message?: string;
+  duration?: number;
+}
+
 const API_BASE = "/api/turing";
 const SAVED_COMMANDS_KEY = "turing_project_commands";
 
@@ -60,12 +72,51 @@ export default function Turing() {
   const [dirListing, setDirListing] = useState<DirListing | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
   const [dirBrowserOpen, setDirBrowserOpen] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const debugLogIdRef = useRef(0);
+  const debugTerminalRef = useRef<HTMLDivElement>(null);
+
+  const addDebugLog = useCallback((entry: Omit<DebugLogEntry, "id" | "timestamp">) => {
+    setDebugLogs((prev) => {
+      const newEntry: DebugLogEntry = {
+        ...entry,
+        id: debugLogIdRef.current++,
+        timestamp: new Date(),
+      };
+      const updated = [...prev, newEntry];
+      return updated.slice(-100); // Keep last 100 entries
+    });
+  }, []);
+
+  const debugFetch = useCallback(async (url: string, options?: RequestInit) => {
+    const method = options?.method || "GET";
+    const startTime = Date.now();
+    addDebugLog({ type: "request", method, url, data: options?.body ? JSON.parse(options.body as string) : undefined });
+    try {
+      const res = await fetch(url, options);
+      const duration = Date.now() - startTime;
+      const data = await res.clone().json().catch(() => null);
+      addDebugLog({ type: "response", method, url, status: res.status, data, duration });
+      return res;
+    } catch (e) {
+      const duration = Date.now() - startTime;
+      addDebugLog({ type: "error", method, url, message: e instanceof Error ? e.message : "Unknown error", duration });
+      throw e;
+    }
+  }, [addDebugLog]);
+
+  useEffect(() => {
+    if (debugTerminalRef.current && debugOpen) {
+      debugTerminalRef.current.scrollTop = debugTerminalRef.current.scrollHeight;
+    }
+  }, [debugLogs, debugOpen]);
 
   const fetchGpuReport = useCallback(async () => {
     setGpuReportLoading(true);
     setGpuReportError(null);
     try {
-      const res = await fetch(`${API_BASE}/gpu-report`);
+      const res = await debugFetch(`${API_BASE}/gpu-report`);
       if (!res.ok) throw new Error("Failed to fetch GPU report");
       const data = await res.json();
       setGpuReport(data);
@@ -77,13 +128,13 @@ export default function Turing() {
     } finally {
       setGpuReportLoading(false);
     }
-  }, [gpuType]);
+  }, [gpuType, debugFetch]);
 
   const fetchJobs = useCallback(async () => {
     setJobsLoading(true);
     setJobsError(null);
     try {
-      const res = await fetch(`${API_BASE}/jobs`);
+      const res = await debugFetch(`${API_BASE}/jobs`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
       const data = await res.json();
       setJobs(data);
@@ -92,13 +143,13 @@ export default function Turing() {
     } finally {
       setJobsLoading(false);
     }
-  }, []);
+  }, [debugFetch]);
 
   const fetchDirs = useCallback(async (path: string = "") => {
     setDirLoading(true);
     try {
       const url = path ? `${API_BASE}/dirs?path=${encodeURIComponent(path)}` : `${API_BASE}/dirs`;
-      const res = await fetch(url);
+      const res = await debugFetch(url);
       if (!res.ok) throw new Error("Failed to list directory");
       const data = await res.json();
       setDirListing(data);
@@ -107,7 +158,7 @@ export default function Turing() {
     } finally {
       setDirLoading(false);
     }
-  }, []);
+  }, [debugFetch]);
 
   useEffect(() => {
     fetchGpuReport();
@@ -153,7 +204,7 @@ export default function Turing() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/allocate`, {
+      const res = await debugFetch(`${API_BASE}/allocate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -188,7 +239,7 @@ export default function Turing() {
 
   const handleCancel = async (jobId: string) => {
     try {
-      const res = await fetch(`${API_BASE}/jobs/${jobId}`, { method: "DELETE" });
+      const res = await debugFetch(`${API_BASE}/jobs/${jobId}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.detail || "Failed to cancel");
@@ -594,7 +645,7 @@ export default function Turing() {
         </section>
 
         {/* Active Jobs Table */}
-        <section className="mt-12 animate-fade-in-delay pb-16">
+        <section className="mt-12 animate-fade-in-delay pb-20">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">Active Jobs</h2>
             <button
@@ -680,6 +731,73 @@ export default function Turing() {
           )}
           <p className="mt-2 text-xs text-white/30">Auto-refreshes every 30s</p>
         </section>
+      </div>
+
+      {/* Debug Terminal */}
+      <div className="fixed bottom-0 left-0 right-0 z-40">
+        <button
+          onClick={() => setDebugOpen(!debugOpen)}
+          className="w-full px-4 py-2 bg-black border-t border-white/20 text-left text-sm font-mono flex items-center justify-between hover:bg-white/5 transition-colors"
+        >
+          <span className="text-white/60">
+            Debug Terminal {debugLogs.length > 0 && <span className="text-white/40">({debugLogs.length} entries)</span>}
+          </span>
+          <span className="text-white/40">{debugOpen ? "▼" : "▲"}</span>
+        </button>
+        {debugOpen && (
+          <div
+            ref={debugTerminalRef}
+            className="bg-black border-t border-white/10 h-64 overflow-y-auto font-mono text-xs"
+          >
+            <div className="sticky top-0 bg-black/95 border-b border-white/10 px-4 py-2 flex justify-between items-center">
+              <span className="text-white/40">API Request/Response Log</span>
+              <button
+                onClick={() => setDebugLogs([])}
+                className="text-white/40 hover:text-white/60 transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="p-4 space-y-2">
+              {debugLogs.length === 0 ? (
+                <p className="text-white/30">No requests logged yet</p>
+              ) : (
+                debugLogs.map((log) => (
+                  <div key={log.id} className="border-b border-white/5 pb-2">
+                    <div className="flex items-start gap-2">
+                      <span className="text-white/30 shrink-0">
+                        {log.timestamp.toLocaleTimeString()}
+                      </span>
+                      {log.type === "request" && (
+                        <span className="text-blue-400">
+                          → {log.method} {log.url}
+                        </span>
+                      )}
+                      {log.type === "response" && (
+                        <span className={log.status && log.status >= 400 ? "text-red-400" : "text-green-400"}>
+                          ← {log.status} {log.url} <span className="text-white/30">({log.duration}ms)</span>
+                        </span>
+                      )}
+                      {log.type === "error" && (
+                        <span className="text-red-400">
+                          ✕ ERROR: {log.message} <span className="text-white/30">({log.duration}ms)</span>
+                        </span>
+                      )}
+                      {log.type === "info" && (
+                        <span className="text-yellow-400">{log.message}</span>
+                      )}
+                    </div>
+                    {log.data && (
+                      <pre className="mt-1 ml-20 text-white/40 overflow-x-auto max-w-full">
+                        {JSON.stringify(log.data, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
