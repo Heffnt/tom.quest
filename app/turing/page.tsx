@@ -787,9 +787,9 @@ export default function Turing() {
                         <span className="text-yellow-400">{log.message}</span>
                       )}
                     </div>
-                    {log.data && (
+                    {log.data !== undefined && (
                       <pre className="mt-1 ml-20 text-white/40 overflow-x-auto max-w-full">
-                        {JSON.stringify(log.data, null, 2)}
+                        {JSON.stringify(log.data, null, 2) as string}
                       </pre>
                     )}
                   </div>
