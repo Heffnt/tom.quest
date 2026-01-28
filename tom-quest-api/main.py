@@ -1,17 +1,11 @@
 import os
-import asyncio
-import pty
-import select
-import struct
-import fcntl
-import termios
-from fastapi import FastAPI, HTTPException, Depends, Header, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from gpu_report import parse_gpu_report, format_gpu_report, get_free_gpu_types
 from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
-from screens import setup_allocation_screen, cleanup_screen, get_next_screen_name, send_to_screen, screen_exists, run_command
+from screens import setup_allocation_screen, cleanup_screen, get_next_screen_name
 from dirs import list_directory, get_home_dir
 
 load_dotenv()
@@ -61,13 +55,6 @@ class JobResponse(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-@app.get("/screens")
-async def list_screens_endpoint(auth: bool = Depends(verify_api_key)):
-    from screens import list_screens
-    screens = list_screens()
-    tq_screens = [s for s in screens if s.startswith("tq_")]
-    return {"screens": tq_screens}
 
 @app.get("/gpu-report")
 async def gpu_report(auth: bool = Depends(verify_api_key)):
@@ -149,123 +136,6 @@ async def delete_job(job_id: str, auth: bool = Depends(verify_api_key)):
         cleanup_screen(job_id)
         return {"success": True, "message": f"Job {job_id} cancelled"}
     raise HTTPException(status_code=400, detail=error or f"Failed to cancel job {job_id}")
-
-def verify_ws_api_key(api_key: str | None) -> bool:
-    if not API_KEY:
-        return True
-    return api_key == API_KEY
-
-@app.websocket("/ws/shell")
-async def websocket_shell(websocket: WebSocket, api_key: str = Query(None)):
-    if not verify_ws_api_key(api_key):
-        await websocket.close(code=4001, reason="Invalid API key")
-        return
-    await websocket.accept()
-    master_fd, slave_fd = pty.openpty()
-    pid = os.fork()
-    if pid == 0:
-        os.close(master_fd)
-        os.setsid()
-        os.dup2(slave_fd, 0)
-        os.dup2(slave_fd, 1)
-        os.dup2(slave_fd, 2)
-        os.close(slave_fd)
-        os.execvp("bash", ["bash"])
-    os.close(slave_fd)
-    os.set_blocking(master_fd, False)
-    try:
-        async def read_output():
-            while True:
-                await asyncio.sleep(0.01)
-                try:
-                    if select.select([master_fd], [], [], 0)[0]:
-                        data = os.read(master_fd, 4096)
-                        if data:
-                            await websocket.send_text(data.decode("utf-8", errors="replace"))
-                except OSError:
-                    break
-        async def write_input():
-            while True:
-                try:
-                    msg = await websocket.receive()
-                    if msg["type"] == "websocket.disconnect":
-                        break
-                    if "text" in msg:
-                        text = msg["text"]
-                        if text.startswith("\x1b[8;"):
-                            match = text[4:].split(";")
-                            if len(match) >= 2:
-                                rows = int(match[0])
-                                cols = int(match[1].rstrip("t"))
-                                winsize = struct.pack("HHHH", rows, cols, 0, 0)
-                                fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-                        else:
-                            os.write(master_fd, text.encode("utf-8"))
-                except WebSocketDisconnect:
-                    break
-                except Exception:
-                    break
-        await asyncio.gather(read_output(), write_input())
-    finally:
-        os.close(master_fd)
-        os.kill(pid, 9)
-        os.waitpid(pid, 0)
-
-def get_screen_output(screen_name: str) -> str | None:
-    if not screen_exists(screen_name):
-        return None
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as f:
-        tmp_path = f.name
-    run_command(f"screen -S {screen_name} -X hardcopy -h {tmp_path}")
-    try:
-        with open(tmp_path, 'r') as f:
-            content = f.read()
-        os.unlink(tmp_path)
-        lines = content.split('\n')
-        while lines and not lines[-1].strip():
-            lines.pop()
-        return '\n'.join(lines[-500:]) if len(lines) > 500 else '\n'.join(lines)
-    except:
-        return None
-
-@app.websocket("/ws/screens/{screen_name}")
-async def websocket_screen(websocket: WebSocket, screen_name: str, api_key: str = Query(None)):
-    if not verify_ws_api_key(api_key):
-        await websocket.close(code=4001, reason="Invalid API key")
-        return
-    if not screen_exists(screen_name):
-        await websocket.close(code=4004, reason="Screen not found")
-        return
-    await websocket.accept()
-    last_content = ""
-    try:
-        async def poll_output():
-            nonlocal last_content
-            while True:
-                await asyncio.sleep(0.5)
-                content = get_screen_output(screen_name)
-                if content is not None and content != last_content:
-                    last_content = content
-                    await websocket.send_text(content)
-                if not screen_exists(screen_name):
-                    await websocket.send_text("\n[Screen session ended]")
-                    break
-        async def receive_input():
-            while True:
-                try:
-                    msg = await websocket.receive()
-                    if msg["type"] == "websocket.disconnect":
-                        break
-                    if "text" in msg:
-                        send_to_screen(screen_name, msg["text"])
-                except WebSocketDisconnect:
-                    break
-                except Exception:
-                    break
-        await asyncio.gather(poll_output(), receive_input())
-    except WebSocketDisconnect:
-        pass
 
 if __name__ == "__main__":
     import uvicorn

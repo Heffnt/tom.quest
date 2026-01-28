@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useWebSocket } from "../hooks/useWebSocket";
-import { ScreenViewer } from "../components/ScreenViewer";
 
 interface GPUTypeInfo {
   type: string;
@@ -60,7 +58,6 @@ export default function Turing() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
-  const [autoRefreshJobs, setAutoRefreshJobs] = useState(true);
   const [gpuType, setGpuType] = useState("");
   const [timeMins, setTimeMins] = useState("60");
   const [memoryMb, setMemoryMb] = useState("64000");
@@ -77,14 +74,8 @@ export default function Turing() {
   const [dirBrowserOpen, setDirBrowserOpen] = useState(false);
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [debugOpen, setDebugOpen] = useState(false);
-  const [debugTab, setDebugTab] = useState<"api" | "shell">("api");
   const debugLogIdRef = useRef(0);
   const debugTerminalRef = useRef<HTMLDivElement>(null);
-  const shellTerminalRef = useRef<HTMLDivElement>(null);
-  const shellInputRef = useRef<HTMLInputElement>(null);
-  const [wsConfig, setWsConfig] = useState<{ ws_url: string; api_key: string } | null>(null);
-  const [shellOutput, setShellOutput] = useState<string>("");
-  const [shellInput, setShellInput] = useState<string>("");
 
   const addDebugLog = useCallback((entry: Omit<DebugLogEntry, "id" | "timestamp">) => {
     setDebugLogs((prev) => {
@@ -116,46 +107,10 @@ export default function Turing() {
   }, [addDebugLog]);
 
   useEffect(() => {
-    if (debugTerminalRef.current && debugOpen && debugTab === "api") {
+    if (debugTerminalRef.current && debugOpen) {
       debugTerminalRef.current.scrollTop = debugTerminalRef.current.scrollHeight;
     }
-  }, [debugLogs, debugOpen, debugTab]);
-
-  useEffect(() => {
-    fetch(`${API_BASE}/ws-url`)
-      .then((res) => res.json())
-      .then((data) => setWsConfig(data))
-      .catch(() => {});
-  }, []);
-
-  const shellWsUrl = wsConfig ? `${wsConfig.ws_url}/ws/shell?api_key=${encodeURIComponent(wsConfig.api_key)}` : null;
-
-  const handleShellMessage = useCallback((data: string) => {
-    setShellOutput((prev) => {
-      const updated = prev + data;
-      return updated.slice(-50000);
-    });
-  }, []);
-
-  const { status: shellStatus, send: shellSend, connect: shellConnect, disconnect: shellDisconnect } = useWebSocket(shellWsUrl, {
-    onMessage: handleShellMessage,
-    autoConnect: false,
-  });
-
-  useEffect(() => {
-    if (shellTerminalRef.current && debugOpen && debugTab === "shell") {
-      shellTerminalRef.current.scrollTop = shellTerminalRef.current.scrollHeight;
-    }
-  }, [shellOutput, debugOpen, debugTab]);
-
-  const handleShellKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      shellSend(shellInput + "\n");
-      setShellInput("");
-    } else if (e.key === "c" && e.ctrlKey) {
-      shellSend("\x03");
-    }
-  };
+  }, [debugLogs, debugOpen]);
 
   const fetchGpuReport = useCallback(async () => {
     setGpuReportLoading(true);
@@ -208,10 +163,9 @@ export default function Turing() {
   useEffect(() => {
     fetchGpuReport();
     fetchJobs();
-    if (!autoRefreshJobs) return;
     const interval = setInterval(fetchJobs, 30000);
     return () => clearInterval(interval);
-  }, [fetchGpuReport, fetchJobs, autoRefreshJobs]);
+  }, [fetchGpuReport, fetchJobs]);
 
   useEffect(() => {
     try {
@@ -694,35 +648,13 @@ export default function Turing() {
         <section className="mt-12 animate-fade-in-delay pb-20">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">Active Jobs</h2>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={fetchJobs}
-                disabled={jobsLoading}
-                className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
-              >
-                {jobsLoading ? "Loading..." : "Refresh"}
-              </button>
-              <label className="flex items-center gap-2 text-xs text-white/50 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoRefreshJobs}
-                  onChange={(e) => setAutoRefreshJobs(e.target.checked)}
-                  className="sr-only"
-                />
-                <span
-                  className={`w-9 h-5 rounded-full border transition-colors ${
-                    autoRefreshJobs ? "bg-white/80 border-white/60" : "bg-white/10 border-white/20"
-                  }`}
-                >
-                  <span
-                    className={`block w-4 h-4 bg-black rounded-full transition-transform ${
-                      autoRefreshJobs ? "translate-x-4" : "translate-x-0"
-                    }`}
-                  />
-                </span>
-                Auto-refresh
-              </label>
-            </div>
+            <button
+              onClick={fetchJobs}
+              disabled={jobsLoading}
+              className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+            >
+              {jobsLoading ? "Loading..." : "Refresh"}
+            </button>
           </div>
           {jobsError && <p className="text-red-400 mb-4">{jobsError}</p>}
           {jobs.length === 0 ? (
@@ -797,30 +729,8 @@ export default function Turing() {
               </div>
             </div>
           )}
-          <p className="mt-2 text-xs text-white/30">
-            {autoRefreshJobs ? "Auto-refresh on (30s)" : "Auto-refresh off"}
-          </p>
+          <p className="mt-2 text-xs text-white/30">Auto-refreshes every 30s</p>
         </section>
-
-        {/* Screen Sessions */}
-        {jobs.filter(j => j.screen_name).length > 0 && (
-          <section className="mt-12 animate-fade-in-delay pb-20">
-            <h2 className="text-2xl font-semibold mb-4">Screen Sessions</h2>
-            <div className="space-y-3">
-              {jobs.filter(j => j.screen_name).map((job) => (
-                <ScreenViewer
-                  key={job.screen_name}
-                  screenName={job.screen_name}
-                  wsBaseUrl={wsConfig?.ws_url || null}
-                  apiKey={wsConfig?.api_key || ""}
-                />
-              ))}
-            </div>
-            <p className="mt-4 text-xs text-white/30">
-              Click a screen to expand and connect. Send commands directly to running sessions.
-            </p>
-          </section>
-        )}
       </div>
 
       {/* Debug Terminal */}
@@ -835,129 +745,57 @@ export default function Turing() {
           <span className="text-white/40">{debugOpen ? "▼" : "▲"}</span>
         </button>
         {debugOpen && (
-          <div className="bg-black border-t border-white/10 h-72 flex flex-col font-mono text-xs">
-            <div className="flex items-center border-b border-white/10">
+          <div
+            ref={debugTerminalRef}
+            className="bg-black border-t border-white/10 h-64 overflow-y-auto font-mono text-xs"
+          >
+            <div className="sticky top-0 bg-black/95 border-b border-white/10 px-4 py-2 flex justify-between items-center">
+              <span className="text-white/40">API Request/Response Log</span>
               <button
-                onClick={() => setDebugTab("api")}
-                className={`px-4 py-2 transition-colors ${debugTab === "api" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/60"}`}
+                onClick={() => setDebugLogs([])}
+                className="text-white/40 hover:text-white/60 transition-colors"
               >
-                API Logs
+                Clear
               </button>
-              <button
-                onClick={() => setDebugTab("shell")}
-                className={`px-4 py-2 transition-colors ${debugTab === "shell" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/60"}`}
-              >
-                Turing Shell
-                <span className={`ml-2 inline-block w-2 h-2 rounded-full ${
-                  shellStatus === "connected" ? "bg-green-400" :
-                  shellStatus === "connecting" ? "bg-yellow-400" : "bg-red-400"
-                }`} />
-              </button>
-              <div className="flex-1" />
-              {debugTab === "api" && (
-                <button
-                  onClick={() => setDebugLogs([])}
-                  className="px-4 py-2 text-white/40 hover:text-white/60 transition-colors"
-                >
-                  Clear
-                </button>
-              )}
-              {debugTab === "shell" && shellStatus !== "disconnected" && (
-                <>
-                  <button
-                    onClick={() => setShellOutput("")}
-                    className="px-4 py-2 text-white/40 hover:text-white/60 transition-colors"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    onClick={shellDisconnect}
-                    className="px-4 py-2 text-red-400/60 hover:text-red-400 transition-colors"
-                  >
-                    Disconnect
-                  </button>
-                </>
-              )}
             </div>
-            {debugTab === "api" && (
-              <div ref={debugTerminalRef} className="flex-1 overflow-y-auto p-4 space-y-2">
-                {debugLogs.length === 0 ? (
-                  <p className="text-white/30">No requests logged yet</p>
-                ) : (
-                  debugLogs.map((log) => (
-                    <div key={log.id} className="border-b border-white/5 pb-2">
-                      <div className="flex items-start gap-2">
-                        <span className="text-white/30 shrink-0">
-                          {log.timestamp.toLocaleTimeString()}
+            <div className="p-4 space-y-2">
+              {debugLogs.length === 0 ? (
+                <p className="text-white/30">No requests logged yet</p>
+              ) : (
+                debugLogs.map((log) => (
+                  <div key={log.id} className="border-b border-white/5 pb-2">
+                    <div className="flex items-start gap-2">
+                      <span className="text-white/30 shrink-0">
+                        {log.timestamp.toLocaleTimeString()}
+                      </span>
+                      {log.type === "request" && (
+                        <span className="text-blue-400">
+                          → {log.method} {log.url}
                         </span>
-                        {log.type === "request" && (
-                          <span className="text-blue-400">
-                            → {log.method} {log.url}
-                          </span>
-                        )}
-                        {log.type === "response" && (
-                          <span className={log.status && log.status >= 400 ? "text-red-400" : "text-green-400"}>
-                            ← {log.status} {log.url} <span className="text-white/30">({log.duration}ms)</span>
-                          </span>
-                        )}
-                        {log.type === "error" && (
-                          <span className="text-red-400">
-                            ✕ ERROR: {log.message} <span className="text-white/30">({log.duration}ms)</span>
-                          </span>
-                        )}
-                        {log.type === "info" && (
-                          <span className="text-yellow-400">{log.message}</span>
-                        )}
-                      </div>
-                      {log.data !== undefined && (
-                        <pre className="mt-1 ml-20 text-white/40 overflow-x-auto max-w-full">
-                          {JSON.stringify(log.data, null, 2) as string}
-                        </pre>
+                      )}
+                      {log.type === "response" && (
+                        <span className={log.status && log.status >= 400 ? "text-red-400" : "text-green-400"}>
+                          ← {log.status} {log.url} <span className="text-white/30">({log.duration}ms)</span>
+                        </span>
+                      )}
+                      {log.type === "error" && (
+                        <span className="text-red-400">
+                          ✕ ERROR: {log.message} <span className="text-white/30">({log.duration}ms)</span>
+                        </span>
+                      )}
+                      {log.type === "info" && (
+                        <span className="text-yellow-400">{log.message}</span>
                       )}
                     </div>
-                  ))
-                )}
-              </div>
-            )}
-            {debugTab === "shell" && (
-              <div className="flex-1 flex flex-col">
-                {shellStatus === "disconnected" ? (
-                  <div className="flex-1 flex items-center justify-center flex-col gap-2">
-                    <button
-                      onClick={shellConnect}
-                      disabled={!wsConfig}
-                      className="px-6 py-3 bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
-                    >
-                      Connect to Turing Shell
-                    </button>
-                    {!wsConfig && <p className="text-white/40 text-xs">Loading WebSocket config...</p>}
+                    {log.data !== undefined && (
+                      <pre className="mt-1 ml-20 text-white/40 overflow-x-auto max-w-full">
+                        {JSON.stringify(log.data, null, 2) as string}
+                      </pre>
+                    )}
                   </div>
-                ) : (
-                  <>
-                    <div
-                      ref={shellTerminalRef}
-                      className="flex-1 overflow-y-auto p-4 whitespace-pre-wrap break-all"
-                    >
-                      {shellOutput || <span className="text-white/30">Connected. Type commands below.</span>}
-                    </div>
-                    <div className="border-t border-white/10 flex items-center">
-                      <span className="px-2 text-green-400">$</span>
-                      <input
-                        ref={shellInputRef}
-                        type="text"
-                        value={shellInput}
-                        onChange={(e) => setShellInput(e.target.value)}
-                        onKeyDown={handleShellKeyDown}
-                        placeholder="Enter command..."
-                        className="flex-1 px-2 py-2 bg-transparent text-white focus:outline-none"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+                ))
+              )}
+            </div>
           </div>
         )}
       </div>
