@@ -23,11 +23,17 @@ app/                      # Next.js frontend
 │   ├── gpu-report/       # GET gpu availability
 │   ├── allocate/         # POST allocation request
 │   ├── jobs/             # GET list, DELETE cancel
-│   └── dirs/             # GET directory listing
-└── components/Navigation.tsx
+│   ├── dirs/             # GET directory listing
+│   ├── screens/          # GET list screen sessions
+│   └── ws-url/           # GET WebSocket URL + API key
+├── components/
+│   ├── Navigation.tsx
+│   └── ScreenViewer.tsx  # WebSocket screen session viewer
+└── hooks/useWebSocket.ts # WebSocket connection hook
 
 tom-quest-api/            # FastAPI on Turing HPC
-├── main.py, gpu_report.py, slurm.py, screens.py, dirs.py
+├── main.py               # + WebSocket endpoints
+├── gpu_report.py, slurm.py, screens.py, dirs.py
 ```
 
 ## Turing Dashboard
@@ -37,6 +43,16 @@ tom-quest-api/            # FastAPI on Turing HPC
 - Allocation: --job-name=tom.quest, project_dir → cd first, then commands
 - Screens: `tq_{project_name}_{index}` (reused, not per-job)
 - localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
+- Active Jobs: manual refresh + auto-refresh toggle (30s)
+
+## Debug Terminal (bottom panel)
+- API Logs tab: logs all REST API requests/responses with timing
+- Turing Shell tab: WebSocket PTY bash on Turing HPC
+- Screen Sessions section: below Active Jobs, one viewer per screen
+- WebSocket endpoints (backend):
+  - `/ws/shell?api_key=...` - interactive PTY bash
+  - `/ws/screens/{name}?api_key=...` - screen session output + command input
+- Frontend gets WS URL via `/api/turing/ws-url` endpoint
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
