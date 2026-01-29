@@ -35,10 +35,17 @@ The Turing page requires a FastAPI backend running on the Turing HPC login node.
 
 ### On Turing
 
-1. Copy `tom-quest-api/` to Turing
-2. Install dependencies: `pip install -r requirements.txt`
-3. Create `.env` with `API_KEY=<your-secret-key>`
-4. Run the API: `python main.py`
+1. If you already copied a non-git `~/tom-quest-api`, move it aside: `mv ~/tom-quest-api ~/tom-quest-api.bak`
+2. Clone the repo: `git clone https://github.com/Heffnt/tom.quest.git ~/tom.quest`
+3. Go to the API folder: `cd ~/tom.quest/tom-quest-api`
+4. Install dependencies: `uv pip install -r requirements.txt`
+5. Create `.env` with `API_KEY=<your-secret-key>`
+6. Run the API: `python main.py`
+
+### Updating on Turing
+
+- Pull the latest changes: `cd ~/tom.quest && git pull`
+- Restart the API after pulling: `cd ~/tom.quest/tom-quest-api && python main.py`
 
 ### Cloudflare Tunnel (connects Vercel to Turing)
 

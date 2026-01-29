@@ -1,4 +1,7 @@
+import logging
 import os
+import shlex
+import subprocess
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,6 +13,38 @@ from dirs import list_directory, get_home_dir
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY", "")
+LOG_PATH = os.getenv("TOM_QUEST_LOG", "tom-quest-api.log")
+TUNNEL_LOG_PATH = os.getenv("TOM_QUEST_TUNNEL_LOG", "tom-quest-tunnel.log")
+AUTO_START_TUNNEL = os.getenv("TOM_QUEST_AUTO_TUNNEL", "1") == "1"
+TUNNEL_CMD = os.getenv(
+    "TOM_QUEST_TUNNEL_CMD",
+    "cloudflared tunnel run --url http://localhost:8000 tom-quest-api"
+)
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.FileHandler(LOG_PATH), logging.StreamHandler()],
+    )
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(name)
+        logger.handlers = []
+        logger.propagate = True
+
+def start_tunnel():
+    if not AUTO_START_TUNNEL:
+        return None
+    try:
+        log_file = open(TUNNEL_LOG_PATH, "a", buffering=1)
+        return subprocess.Popen(
+            shlex.split(TUNNEL_CMD),
+            stdout=log_file,
+            stderr=log_file,
+        )
+    except Exception:
+        logging.getLogger("tom.quest").exception("Tunnel start failed")
+        return None
 
 app = FastAPI(title="tom-quest-api", version="1.0.0")
 
@@ -139,4 +174,6 @@ async def delete_job(job_id: str, auth: bool = Depends(verify_api_key)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    setup_logging()
+    start_tunnel()
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=True, log_config=None)

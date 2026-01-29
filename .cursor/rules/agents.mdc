@@ -36,14 +36,17 @@ tom-quest-api/            # FastAPI on Turing HPC
 - GPUs: nvidia=H100, tesla=V100, max 12 allocations
 - Allocation: --job-name=tom.quest, project_dir → cd first, then commands
 - Screens: `tq_{project_name}_{index}` (reused, not per-job)
+- API logs: `tom-quest-api.log`; tunnel logs: `tom-quest-tunnel.log` (auto-start tunnel via `TOM_QUEST_AUTO_TUNNEL=1`)
 - localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
 - Active Jobs: auto-refresh toggle saved in `turing_auto_refresh_jobs`
 - Active Jobs: manual refresh + auto-refresh toggle (30s)
 - Dir browse: always sends path (default `~`), surfaces upstream error
+- Turing setup: clone repo to `~/tom.quest`, use `tom-quest-api/` subdir
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
+- [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API
 
 ## Placeholders
 - /projects: showcase work
