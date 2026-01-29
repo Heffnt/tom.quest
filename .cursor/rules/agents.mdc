@@ -38,14 +38,15 @@ tom-quest-api/            # FastAPI on Turing HPC
 - Turing .env: API_KEY, GITHUB_TOKEN (gist scope), GIST_ID
 - Vercel env: TURING_URL_GIST (raw gist url), TURING_API_KEY
 - GPUs: nvidia=H100, tesla=V100, max 12 allocations
-- GPU Report API: returns `{nodes: NodeInfo[], summary: {free, available, unavailable}, notes}`
-  - NodeInfo: `{name, gpu_type, total_gpus, allocated_gpus, state, memory_total_mb, memory_allocated_mb}`
+- GPU Report API: returns `{nodes: NodeInfo[], summary: {free, available, unavailable}}`
+  - NodeInfo: `{name, gpu_type, partition, total_gpus, allocated_gpus, state, memory_total_mb, memory_allocated_mb}`
   - state: "up" | "down" | "drain"
-- GPU Visual Grid: SVG boxes per GPU (green=free, gray=in use, red=down), memory bar per node
+- GPU Visual Grid: partition → GPU type hierarchy, collapsible partitions, SVG boxes per GPU (green=free, gray=in use, red=down), memory bar per node
+- GPU type labels: "nvidia (H100)", "tesla (V100)"
 - Allocation: --job-name=tom.quest, non-blocking salloc, default 1440 mins
 - Screens: `{project_name}_{index}` (1-indexed), no -dm flag, polls until RUNNING then creates screen + srun + commands
 - Screen mapping: `~/.tom-quest-screens.json` stores job_id → screen_name (jobs without mapping show "-")
-- localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`
+- localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`, `turing_collapsed_partitions`, `turing_gpu_only_filter`
 - Auto-refresh: unified at top for all panels, configurable interval (default 30s), each panel has own refresh button
 - Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
 - Dir browse: always sends path (default `~`), surfaces upstream error
@@ -58,10 +59,12 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-29] salloc timeout on resource wait → non-blocking Popen, capture job ID from early output, screen polls for RUNNING before commands
 - [2026-01-29] Active Jobs showed wrong screen name → added job_screens.py mapping file, simplified screen names to `{project}_{index}`, external jobs show "-"
 - [2026-01-29] 530 errors after API restart → transient: wait ~1-2min for new tunnel + gist update + Vercel cache (1min TTL) to refresh
+- [2026-01-29] Multi-GPU allocation got same screen name → get_next_screen_name now checks both screen processes AND job_screens mapping
 - [2026-01-29] srun failed on PENDING job → poll for RUNNING first, then create screen and send srun
 - [2026-01-29] Screen names 1-indexed, job status shows squeue reason, unified auto-refresh controls at top
 - [2026-01-29] Debug terminal: resizable (drag header), dynamic bottom padding, copy button, fixed hover transparency
 - [2026-01-29] GPU Availability: visual SVG grid with per-node GPU boxes + memory bars, API returns per-node data instead of aggregates
+- [2026-01-29] GPU grid: partition hierarchy, collapsible sections (localStorage), gpu-only filter toggle, removed notes (replaced by implemented features)
 
 ## Placeholders
 - /projects: showcase work

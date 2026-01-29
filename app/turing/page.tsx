@@ -11,6 +11,7 @@ interface GPUTypeInfo {
 interface NodeInfo {
   name: string;
   gpu_type: string;
+  partition: string;
   total_gpus: number;
   allocated_gpus: number;
   state: "up" | "down" | "drain";
@@ -25,7 +26,6 @@ interface GPUReport {
     unavailable: GPUTypeInfo[];
     free: GPUTypeInfo[];
   };
-  notes: string[];
 }
 
 interface Job {
@@ -65,6 +65,9 @@ const API_BASE = "/api/turing";
 const SAVED_COMMANDS_KEY = "turing_project_commands";
 const AUTO_REFRESH_KEY = "turing_auto_refresh";
 const REFRESH_INTERVAL_KEY = "turing_refresh_interval";
+const COLLAPSED_PARTITIONS_KEY = "turing_collapsed_partitions";
+const GPU_ONLY_FILTER_KEY = "turing_gpu_only_filter";
+const GPU_TYPE_LABELS: Record<string, string> = { nvidia: "H100", tesla: "V100" };
 
 export default function Turing() {
   const [gpuReport, setGpuReport] = useState<GPUReport | null>(null);
@@ -93,6 +96,8 @@ export default function Turing() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(256);
   const [isResizing, setIsResizing] = useState(false);
+  const [collapsedPartitions, setCollapsedPartitions] = useState<Set<string>>(new Set());
+  const [gpuOnlyFilter, setGpuOnlyFilter] = useState(true);
   const debugLogIdRef = useRef(0);
   const debugTerminalRef = useRef<HTMLDivElement>(null);
   const resizeStartY = useRef(0);
@@ -277,6 +282,34 @@ export default function Turing() {
   useEffect(() => {
     localStorage.setItem(REFRESH_INTERVAL_KEY, String(refreshInterval));
   }, [refreshInterval]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_PARTITIONS_KEY);
+      if (raw) setCollapsedPartitions(new Set(JSON.parse(raw)));
+      const gpuOnly = localStorage.getItem(GPU_ONLY_FILTER_KEY);
+      if (gpuOnly !== null) setGpuOnlyFilter(gpuOnly === "true");
+    } catch {
+      // Use defaults
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(COLLAPSED_PARTITIONS_KEY, JSON.stringify([...collapsedPartitions]));
+  }, [collapsedPartitions]);
+
+  useEffect(() => {
+    localStorage.setItem(GPU_ONLY_FILTER_KEY, String(gpuOnlyFilter));
+  }, [gpuOnlyFilter]);
+
+  const togglePartition = (partition: string) => {
+    setCollapsedPartitions(prev => {
+      const next = new Set(prev);
+      if (next.has(partition)) next.delete(partition);
+      else next.add(partition);
+      return next;
+    });
+  };
 
   const handleAllocate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -485,88 +518,123 @@ export default function Turing() {
           )}
           {gpuReport && (
             <div className="border border-white/10 rounded-lg p-6 space-y-6">
-              {/* Legend */}
-              <div className="flex flex-wrap items-center gap-6 text-sm">
-                <div className="flex items-center gap-2">
-                  <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#22c55e" /></svg>
-                  <span className="text-white/60">Free</span>
+              {/* Legend and Filter */}
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-6 text-sm">
+                  <div className="flex items-center gap-2">
+                    <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#22c55e" /></svg>
+                    <span className="text-white/60">Free</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#6b7280" /></svg>
+                    <span className="text-white/60">In Use</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#ef4444" /></svg>
+                    <span className="text-white/60">Down</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#6b7280" /></svg>
-                  <span className="text-white/60">In Use</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#ef4444" /></svg>
-                  <span className="text-white/60">Down</span>
-                </div>
+                <label className="flex items-center gap-2 text-sm text-white/60 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={gpuOnlyFilter}
+                    onChange={(e) => setGpuOnlyFilter(e.target.checked)}
+                    className="sr-only"
+                  />
+                  <span
+                    className={`w-9 h-5 rounded-full border transition-colors ${
+                      gpuOnlyFilter ? "bg-white/80 border-white/60" : "bg-white/10 border-white/20"
+                    }`}
+                  >
+                    <span
+                      className={`block w-4 h-4 bg-black rounded-full transition-transform ${
+                        gpuOnlyFilter ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </span>
+                  GPU nodes only
+                </label>
               </div>
-              {/* GPU Grid by Type */}
+              {/* GPU Grid by Partition → GPU Type */}
               {(() => {
-                const gpuTypes = [...new Set(gpuReport.nodes.map(n => n.gpu_type))];
-                const gpuTypeLabels: Record<string, string> = { nvidia: "H100", tesla: "V100" };
-                return gpuTypes.map(gpuType => {
-                  const nodesOfType = gpuReport.nodes.filter(n => n.gpu_type === gpuType);
-                  const label = gpuTypeLabels[gpuType] || gpuType;
+                const filteredNodes = gpuOnlyFilter
+                  ? gpuReport.nodes.filter(n => n.name.toLowerCase().includes('gpu'))
+                  : gpuReport.nodes;
+                const partitions = [...new Set(filteredNodes.map(n => n.partition))].sort();
+                return partitions.map(partition => {
+                  const partitionNodes = filteredNodes.filter(n => n.partition === partition);
+                  const gpuTypes = [...new Set(partitionNodes.map(n => n.gpu_type))].sort();
+                  const isCollapsed = collapsedPartitions.has(partition);
                   return (
-                    <div key={gpuType}>
-                      <h3 className="text-lg font-medium text-white/80 mb-3">{label}</h3>
-                      <div className="flex flex-wrap gap-4">
-                        {nodesOfType.map(node => {
-                          const freeGpus = node.state === "up" ? node.total_gpus - node.allocated_gpus : 0;
-                          const inUseGpus = node.state === "up" ? node.allocated_gpus : 0;
-                          const downGpus = node.state !== "up" ? node.total_gpus : 0;
-                          const gpuBoxes: Array<"free" | "in_use" | "down"> = [];
-                          for (let i = 0; i < freeGpus; i++) gpuBoxes.push("free");
-                          for (let i = 0; i < inUseGpus; i++) gpuBoxes.push("in_use");
-                          for (let i = 0; i < downGpus; i++) gpuBoxes.push("down");
-                          const boxSize = 14;
-                          const gap = 3;
-                          const cols = Math.min(node.total_gpus, 4);
-                          const rows = Math.ceil(node.total_gpus / cols);
-                          const svgWidth = cols * boxSize + (cols - 1) * gap;
-                          const svgHeight = rows * boxSize + (rows - 1) * gap;
-                          const memoryTotalGb = Math.round(node.memory_total_mb / 1024);
-                          const memoryAllocGb = Math.round(node.memory_allocated_mb / 1024);
-                          const memoryPct = memoryTotalGb > 0 ? (memoryAllocGb / memoryTotalGb) * 100 : 0;
-                          return (
-                            <div key={node.name} className="border border-white/10 rounded-lg p-3 bg-white/[0.02]">
-                              <div className="text-xs text-white/50 mb-2 font-mono">{node.name}</div>
-                              <svg width={svgWidth} height={svgHeight}>
-                                {gpuBoxes.map((status, i) => {
-                                  const col = i % cols;
-                                  const row = Math.floor(i / cols);
-                                  const x = col * (boxSize + gap);
-                                  const y = row * (boxSize + gap);
-                                  const fill = status === "free" ? "#22c55e" : status === "in_use" ? "#6b7280" : "#ef4444";
-                                  return <rect key={i} x={x} y={y} width={boxSize} height={boxSize} rx={2} fill={fill} />;
-                                })}
-                              </svg>
-                              {/* Memory Bar */}
-                              <div className="mt-3">
-                                <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-white/40 transition-all"
-                                    style={{ width: `${memoryPct}%` }}
-                                  />
-                                </div>
-                                <div className="text-[10px] text-white/40 mt-1 font-mono">
-                                  {memoryAllocGb}/{memoryTotalGb} GB
+                    <div key={partition} className="border border-white/10 rounded-lg overflow-hidden">
+                      <button
+                        onClick={() => togglePartition(partition)}
+                        className="w-full px-4 py-3 flex items-center justify-between bg-white/5 hover:bg-white/10 transition-colors"
+                      >
+                        <span className="font-medium text-white/80">{partition}</span>
+                        <span className="text-white/40 text-sm">{isCollapsed ? "+" : "-"}</span>
+                      </button>
+                      {!isCollapsed && (
+                        <div className="p-4 space-y-4">
+                          {gpuTypes.map(gpuType => {
+                            const nodesOfType = partitionNodes.filter(n => n.gpu_type === gpuType);
+                            const alias = GPU_TYPE_LABELS[gpuType];
+                            const label = alias ? `${gpuType} (${alias})` : gpuType;
+                            return (
+                              <div key={gpuType}>
+                                <h4 className="text-sm font-medium text-white/60 mb-2">{label}</h4>
+                                <div className="flex flex-wrap gap-3">
+                                  {nodesOfType.map(node => {
+                                    const freeGpus = node.state === "up" ? node.total_gpus - node.allocated_gpus : 0;
+                                    const inUseGpus = node.state === "up" ? node.allocated_gpus : 0;
+                                    const downGpus = node.state !== "up" ? node.total_gpus : 0;
+                                    const gpuBoxes: Array<"free" | "in_use" | "down"> = [];
+                                    for (let i = 0; i < freeGpus; i++) gpuBoxes.push("free");
+                                    for (let i = 0; i < inUseGpus; i++) gpuBoxes.push("in_use");
+                                    for (let i = 0; i < downGpus; i++) gpuBoxes.push("down");
+                                    const boxSize = 14;
+                                    const boxGap = 3;
+                                    const cols = Math.min(node.total_gpus, 4);
+                                    const rows = Math.ceil(node.total_gpus / cols);
+                                    const svgWidth = cols * boxSize + (cols - 1) * boxGap;
+                                    const svgHeight = rows * boxSize + (rows - 1) * boxGap;
+                                    const memoryTotalGb = Math.round(node.memory_total_mb / 1024);
+                                    const memoryAllocGb = Math.round(node.memory_allocated_mb / 1024);
+                                    const memoryPct = memoryTotalGb > 0 ? (memoryAllocGb / memoryTotalGb) * 100 : 0;
+                                    return (
+                                      <div key={node.name} className="border border-white/10 rounded-lg p-3 bg-white/[0.02]">
+                                        <div className="text-xs text-white/50 mb-2 font-mono">{node.name}</div>
+                                        <svg width={svgWidth} height={svgHeight}>
+                                          {gpuBoxes.map((status, i) => {
+                                            const col = i % cols;
+                                            const row = Math.floor(i / cols);
+                                            const x = col * (boxSize + boxGap);
+                                            const y = row * (boxSize + boxGap);
+                                            const fill = status === "free" ? "#22c55e" : status === "in_use" ? "#6b7280" : "#ef4444";
+                                            return <rect key={i} x={x} y={y} width={boxSize} height={boxSize} rx={2} fill={fill} />;
+                                          })}
+                                        </svg>
+                                        <div className="mt-3">
+                                          <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                                            <div className="h-full bg-white/40 transition-all" style={{ width: `${memoryPct}%` }} />
+                                          </div>
+                                          <div className="text-[10px] text-white/40 mt-1 font-mono">
+                                            {memoryAllocGb}/{memoryTotalGb} GB
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 });
               })()}
-              {/* Notes */}
-              <div className="text-white/30 text-xs pt-4 border-t border-white/10">
-                {gpuReport.notes.map((note, i) => (
-                  <p key={i}>{note}</p>
-                ))}
-              </div>
             </div>
           )}
         </section>

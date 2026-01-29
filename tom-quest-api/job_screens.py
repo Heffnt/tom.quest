@@ -28,3 +28,7 @@ def remove_screen_mapping(job_id: str):
     if job_id in mappings:
         del mappings[job_id]
         _save_mappings(mappings)
+
+def get_all_mapped_screens() -> list[str]:
+    mappings = _load_mappings()
+    return list(mappings.values())

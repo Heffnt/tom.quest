@@ -2,7 +2,7 @@ import subprocess
 import threading
 import re
 from pathlib import Path
-from job_screens import save_screen_mapping
+from job_screens import save_screen_mapping, get_all_mapped_screens
 
 def run_command(cmd: str) -> tuple[str, str, int]:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -46,14 +46,17 @@ def get_next_screen_name(project_dir: str) -> str:
     else:
         project_name = Path(project_dir).name
     project_name = re.sub(r'[^a-zA-Z0-9_-]', '_', project_name)
+    # Check both existing screen processes AND mapped screens (for pending allocations)
     existing = get_project_screens(project_name)
-    existing_indices = []
-    for s in existing:
+    mapped = [s for s in get_all_mapped_screens() if s.startswith(f"{project_name}_")]
+    all_screens = set(existing + mapped)
+    used_indices = set()
+    for s in all_screens:
         match = re.search(rf'{re.escape(project_name)}_(\d+)$', s)
         if match:
-            existing_indices.append(int(match.group(1)))
+            used_indices.add(int(match.group(1)))
     next_index = 1
-    while next_index in existing_indices:
+    while next_index in used_indices:
         next_index += 1
     return f"{project_name}_{next_index}"
 

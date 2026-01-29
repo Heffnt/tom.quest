@@ -11,6 +11,7 @@ class GPUTypeInfo:
 class NodeInfo:
     name: str
     gpu_type: str
+    partition: str
     total_gpus: int
     allocated_gpus: int
     state: str  # "up" | "down" | "drain"
@@ -21,12 +22,13 @@ def run_command(cmd: str) -> str:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return result.stdout
 
-def get_gpu_nodes() -> list[str]:
+def get_all_nodes() -> list[str]:
+    """Get all nodes from sinfo."""
     output = run_command("sinfo -N -o '%N'")
     nodes = []
     for line in output.strip().split('\n'):
         node = line.strip()
-        if 'gpu' in node.lower():
+        if node and node != 'NODELIST':
             nodes.append(node)
     return sorted(set(nodes))
 
@@ -49,13 +51,14 @@ def parse_memory(tres_str: str) -> int:
     return value  # Already in MB or no unit
 
 def parse_gpu_nodes() -> list[NodeInfo]:
-    """Parse all GPU nodes and return per-node info."""
+    """Parse all nodes with GPUs and return per-node info."""
     nodes = []
-    gpu_node_names = get_gpu_nodes()
-    for node_name in gpu_node_names:
+    all_node_names = get_all_nodes()
+    for node_name in all_node_names:
         node_info_str = get_node_info(node_name)
-        if 'Partitions=' in node_info_str and 'academic' in node_info_str:
-            continue
+        # Parse partition
+        partition_match = re.search(r'Partitions=(\S+)', node_info_str)
+        partition = partition_match.group(1) if partition_match else "unknown"
         # Determine node state
         state = "up"
         if re.search(r'State=\S*(DRAIN|RESERVED|DOWN|NOT_RESPONDING)', node_info_str):
@@ -66,7 +69,7 @@ def parse_gpu_nodes() -> list[NodeInfo]:
         # Parse GPU type and count
         gres_match = re.search(r'Gres=gpu:([^:]+):(\d+)', node_info_str)
         if not gres_match:
-            continue
+            continue  # Skip nodes without GPUs
         gpu_type = gres_match.group(1)
         total_gpus = int(gres_match.group(2))
         # Parse allocated GPUs
@@ -82,6 +85,7 @@ def parse_gpu_nodes() -> list[NodeInfo]:
         nodes.append(NodeInfo(
             name=node_name,
             gpu_type=gpu_type,
+            partition=partition,
             total_gpus=total_gpus,
             allocated_gpus=allocated_gpus,
             state=state,
@@ -90,12 +94,15 @@ def parse_gpu_nodes() -> list[NodeInfo]:
         ))
     return nodes
 
-def compute_summary(nodes: list[NodeInfo]) -> dict:
+def compute_summary(nodes: list[NodeInfo], gpu_filter: bool = True) -> dict:
     """Compute summary stats from node list for dropdown compatibility."""
     available: dict[str, GPUTypeInfo] = {}
     unavailable: dict[str, GPUTypeInfo] = {}
     free: dict[str, GPUTypeInfo] = {}
     for node in nodes:
+        # Apply gpu filter for summary (used by allocation dropdown)
+        if gpu_filter and 'gpu' not in node.name.lower():
+            continue
         gpu_type = node.gpu_type
         if node.state != "up":
             if gpu_type not in unavailable:
@@ -124,12 +131,13 @@ def compute_summary(nodes: list[NodeInfo]) -> dict:
 def format_gpu_report_v2() -> dict:
     """New format with per-node data and summary."""
     nodes = parse_gpu_nodes()
-    summary = compute_summary(nodes)
+    summary = compute_summary(nodes, gpu_filter=True)
     return {
         "nodes": [
             {
                 "name": n.name,
                 "gpu_type": n.gpu_type,
+                "partition": n.partition,
                 "total_gpus": n.total_gpus,
                 "allocated_gpus": n.allocated_gpus,
                 "state": n.state,
@@ -138,16 +146,10 @@ def format_gpu_report_v2() -> dict:
             }
             for n in nodes
         ],
-        "summary": summary,
-        "notes": [
-            "nvidia = H100",
-            "tesla = V100",
-            "academic partition nodes excluded",
-            "only nodes with 'gpu' in name included"
-        ]
+        "summary": summary
     }
 
 def get_free_gpu_types() -> list[str]:
     nodes = parse_gpu_nodes()
-    summary = compute_summary(nodes)
+    summary = compute_summary(nodes, gpu_filter=True)
     return [item["type"] for item in summary["free"]]
