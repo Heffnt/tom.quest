@@ -37,10 +37,13 @@ tom-quest-api/            # FastAPI on Turing HPC
 - Allocation: --job-name=tom.quest, project_dir → cd first, then commands
 - Screens: `tq_{project_name}_{index}` (reused, not per-job)
 - localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
+- Active Jobs: auto-refresh toggle saved in `turing_auto_refresh_jobs`
 - Active Jobs: manual refresh + auto-refresh toggle (30s)
+- Dir browse: always sends path (default `~`), surfaces upstream error
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 
 ## Placeholders
 - /projects: showcase work

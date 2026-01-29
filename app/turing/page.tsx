@@ -50,6 +50,7 @@ interface DebugLogEntry {
 
 const API_BASE = "/api/turing";
 const SAVED_COMMANDS_KEY = "turing_project_commands";
+const AUTO_REFRESH_JOBS_KEY = "turing_auto_refresh_jobs";
 
 export default function Turing() {
   const [gpuReport, setGpuReport] = useState<GPUReport | null>(null);
@@ -58,6 +59,7 @@ export default function Turing() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
+  const [autoRefreshJobs, setAutoRefreshJobs] = useState(true);
   const [gpuType, setGpuType] = useState("");
   const [timeMins, setTimeMins] = useState("60");
   const [memoryMb, setMemoryMb] = useState("64000");
@@ -150,8 +152,14 @@ export default function Turing() {
     try {
       const url = path ? `${API_BASE}/dirs?path=${encodeURIComponent(path)}` : `${API_BASE}/dirs`;
       const res = await debugFetch(url);
-      if (!res.ok) throw new Error("Failed to list directory");
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message = data && typeof data === "object" && ("error" in data || "detail" in data)
+          ? String((data as { error?: string; detail?: string }).error ?? (data as { detail?: string }).detail)
+          : "Failed to list directory";
+        throw new Error(message);
+      }
+      if (!data) throw new Error("Invalid directory response");
       setDirListing(data);
     } catch (e) {
       setDirListing({ path: path, dirs: [], error: e instanceof Error ? e.message : "Unknown error" });
@@ -163,9 +171,10 @@ export default function Turing() {
   useEffect(() => {
     fetchGpuReport();
     fetchJobs();
+    if (!autoRefreshJobs) return;
     const interval = setInterval(fetchJobs, 30000);
     return () => clearInterval(interval);
-  }, [fetchGpuReport, fetchJobs]);
+  }, [fetchGpuReport, fetchJobs, autoRefreshJobs]);
 
   useEffect(() => {
     try {
@@ -179,6 +188,20 @@ export default function Turing() {
       setProjectCommands({});
     }
   }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(AUTO_REFRESH_JOBS_KEY);
+      if (raw === null) return;
+      setAutoRefreshJobs(raw === "true");
+    } catch {
+      setAutoRefreshJobs(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(AUTO_REFRESH_JOBS_KEY, String(autoRefreshJobs));
+  }, [autoRefreshJobs]);
 
   const handleAllocate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -648,13 +671,35 @@ export default function Turing() {
         <section className="mt-12 animate-fade-in-delay pb-20">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">Active Jobs</h2>
-            <button
-              onClick={fetchJobs}
-              disabled={jobsLoading}
-              className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
-            >
-              {jobsLoading ? "Loading..." : "Refresh"}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={fetchJobs}
+                disabled={jobsLoading}
+                className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+              >
+                {jobsLoading ? "Loading..." : "Refresh"}
+              </button>
+              <label className="flex items-center gap-2 text-xs text-white/50 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoRefreshJobs}
+                  onChange={(e) => setAutoRefreshJobs(e.target.checked)}
+                  className="sr-only"
+                />
+                <span
+                  className={`w-9 h-5 rounded-full border transition-colors ${
+                    autoRefreshJobs ? "bg-white/80 border-white/60" : "bg-white/10 border-white/20"
+                  }`}
+                >
+                  <span
+                    className={`block w-4 h-4 bg-black rounded-full transition-transform ${
+                      autoRefreshJobs ? "translate-x-4" : "translate-x-0"
+                    }`}
+                  />
+                </span>
+                Auto-refresh
+              </label>
+            </div>
           </div>
           {jobsError && <p className="text-red-400 mb-4">{jobsError}</p>}
           {jobs.length === 0 ? (
@@ -729,7 +774,9 @@ export default function Turing() {
               </div>
             </div>
           )}
-          <p className="mt-2 text-xs text-white/30">Auto-refreshes every 30s</p>
+          <p className="mt-2 text-xs text-white/30">
+            {autoRefreshJobs ? "Auto-refresh on (30s)" : "Auto-refresh off"}
+          </p>
         </section>
       </div>
 
