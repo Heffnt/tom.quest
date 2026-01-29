@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-
-const TURING_API_URL = process.env.TURING_API_URL || "http://localhost:8000";
-const TURING_API_KEY = process.env.TURING_API_KEY || "";
+import { getTuringUrl, getHeaders } from "@/app/lib/turing";
 
 export async function GET() {
   try {
-    const res = await fetch(`${TURING_API_URL}/jobs`, {
-      headers: TURING_API_KEY ? { "X-API-Key": TURING_API_KEY } : {},
+    const baseUrl = await getTuringUrl();
+    const res = await fetch(`${baseUrl}/jobs`, {
+      headers: getHeaders(),
       cache: "no-store",
     });
     if (!res.ok) {

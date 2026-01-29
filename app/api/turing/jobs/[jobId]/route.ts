@@ -1,7 +1,5 @@
 import { NextResponse, NextRequest } from "next/server";
-
-const TURING_API_URL = process.env.TURING_API_URL || "http://localhost:8000";
-const TURING_API_KEY = process.env.TURING_API_KEY || "";
+import { getTuringUrl, getHeaders } from "@/app/lib/turing";
 
 export async function DELETE(
   request: NextRequest,
@@ -9,9 +7,10 @@ export async function DELETE(
 ) {
   const { jobId } = await params;
   try {
-    const res = await fetch(`${TURING_API_URL}/jobs/${jobId}`, {
+    const baseUrl = await getTuringUrl();
+    const res = await fetch(`${baseUrl}/jobs/${jobId}`, {
       method: "DELETE",
-      headers: TURING_API_KEY ? { "X-API-Key": TURING_API_KEY } : {},
+      headers: getHeaders(),
     });
     if (!res.ok) {
       const data = await res.json();

@@ -39,7 +39,12 @@ The Turing page requires a FastAPI backend running on the Turing HPC login node.
 2. Clone the repo: `git clone https://github.com/Heffnt/tom.quest.git ~/tom.quest`
 3. Go to the API folder: `cd ~/tom.quest/tom-quest-api`
 4. Install dependencies: `uv pip install -r requirements.txt`
-5. Create `.env` with `API_KEY=<your-secret-key>`
+5. Create `.env`:
+   ```
+   API_KEY=<your-secret-key>
+   GITHUB_TOKEN=<github-pat-with-gist-scope>
+   GIST_ID=<your-gist-id>
+   ```
 6. Run the API: `python main.py`
 
 ### Updating on Turing
@@ -47,19 +52,21 @@ The Turing page requires a FastAPI backend running on the Turing HPC login node.
 - Pull the latest changes: `cd ~/tom.quest && git pull`
 - Restart the API after pulling: `cd ~/tom.quest/tom-quest-api && python main.py`
 
-### Cloudflare Tunnel (connects Vercel to Turing)
+### Cloudflare Quick Tunnel
 
-```bash
-cloudflared tunnel login
-cloudflared tunnel create tom-quest-api
-cloudflared tunnel route dns tom-quest-api turing-api.tom.quest
-cloudflared tunnel run --url http://localhost:8000 tom-quest-api
-```
+The tunnel starts automatically with `python main.py` and updates the Gist with the URL. No manual Vercel updates needed.
+
+### One-time Gist Setup
+
+1. Create a secret Gist at https://gist.github.com with a file named `tunnel_url.txt`
+2. Copy the Gist ID from the URL (e.g. `gist.github.com/user/abc123` → `abc123`)
+3. Create a GitHub Personal Access Token with `gist` scope
+4. Get the raw Gist URL: `https://gist.githubusercontent.com/<user>/<gist-id>/raw/tunnel_url.txt`
 
 ### Vercel Environment Variables
 
 ```
-TURING_API_URL=https://turing-api.tom.quest
+TURING_URL_GIST=<raw-gist-url>
 TURING_API_KEY=<your-secret-key>
 ```
 

@@ -31,15 +31,16 @@ tom-quest-api/            # FastAPI on Turing HPC
 ```
 
 ## Turing Dashboard
-- Proxy: frontend → /api/turing/* → TURING_API_URL (via Cloudflare tunnel)
+- Proxy: frontend → /api/turing/* → Turing backend (via Cloudflare quick tunnel)
+- URL discovery: API auto-updates GitHub Gist → Vercel reads from `TURING_URL_GIST`
 - Auth: X-API-Key header (TURING_API_KEY on Vercel, API_KEY on Turing)
+- Turing .env: API_KEY, GITHUB_TOKEN (gist scope), GIST_ID
+- Vercel env: TURING_URL_GIST (raw gist url), TURING_API_KEY
 - GPUs: nvidia=H100, tesla=V100, max 12 allocations
 - Allocation: --job-name=tom.quest, project_dir → cd first, then commands
 - Screens: `tq_{project_name}_{index}` (reused, not per-job)
-- API logs: `tom-quest-api.log`; tunnel logs: `tom-quest-tunnel.log` (auto-start tunnel via `TOM_QUEST_AUTO_TUNNEL=1`)
 - localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
-- Active Jobs: auto-refresh toggle saved in `turing_auto_refresh_jobs`
-- Active Jobs: manual refresh + auto-refresh toggle (30s)
+- Active Jobs: manual refresh + auto-refresh toggle (30s), saved in `turing_auto_refresh_jobs`
 - Dir browse: always sends path (default `~`), surfaces upstream error
 - Turing setup: clone repo to `~/tom.quest`, use `tom-quest-api/` subdir
 

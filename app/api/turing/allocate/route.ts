@@ -1,16 +1,15 @@
 import { NextResponse, NextRequest } from "next/server";
-
-const TURING_API_URL = process.env.TURING_API_URL || "http://localhost:8000";
-const TURING_API_KEY = process.env.TURING_API_KEY || "";
+import { getTuringUrl, getHeaders } from "@/app/lib/turing";
 
 export async function POST(request: NextRequest) {
   try {
+    const baseUrl = await getTuringUrl();
     const body = await request.json();
-    const res = await fetch(`${TURING_API_URL}/allocate`, {
+    const res = await fetch(`${baseUrl}/allocate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(TURING_API_KEY ? { "X-API-Key": TURING_API_KEY } : {}),
+        ...getHeaders(),
       },
       body: JSON.stringify(body),
     });

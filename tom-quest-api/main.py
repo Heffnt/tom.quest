@@ -1,7 +1,10 @@
 import logging
 import os
-import shlex
+import re
 import subprocess
+import threading
+import time
+import requests
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,13 +16,10 @@ from dirs import list_directory, get_home_dir
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY", "")
-LOG_PATH = os.getenv("TOM_QUEST_LOG", "tom-quest-api.log")
-TUNNEL_LOG_PATH = os.getenv("TOM_QUEST_TUNNEL_LOG", "tom-quest-tunnel.log")
-AUTO_START_TUNNEL = os.getenv("TOM_QUEST_AUTO_TUNNEL", "1") == "1"
-TUNNEL_CMD = os.getenv(
-    "TOM_QUEST_TUNNEL_CMD",
-    "cloudflared tunnel run --url http://localhost:8000 tom-quest-api"
-)
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GIST_ID = os.getenv("GIST_ID", "")
+LOG_PATH = "tom-quest-api.log"
+TUNNEL_LOG_PATH = "tom-quest-tunnel.log"
 
 def setup_logging():
     logging.basicConfig(
@@ -32,16 +32,51 @@ def setup_logging():
         logger.handlers = []
         logger.propagate = True
 
-def start_tunnel():
-    if not AUTO_START_TUNNEL:
-        return None
+def update_gist(url: str):
+    if not GITHUB_TOKEN or not GIST_ID:
+        print("GITHUB_TOKEN or GIST_ID not set, skipping gist update")
+        return False
     try:
-        log_file = open(TUNNEL_LOG_PATH, "a", buffering=1)
-        return subprocess.Popen(
-            shlex.split(TUNNEL_CMD),
+        res = requests.patch(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={"Authorization": f"token {GITHUB_TOKEN}"},
+            json={"files": {"tunnel_url.txt": {"content": url}}},
+            timeout=10,
+        )
+        if res.ok:
+            print(f"Gist updated with URL: {url}")
+            return True
+        print(f"Gist update failed: {res.status_code}")
+    except Exception as e:
+        print(f"Gist update error: {e}")
+    return False
+
+def watch_tunnel_log():
+    url_pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+    for _ in range(30):
+        time.sleep(1)
+        try:
+            with open(TUNNEL_LOG_PATH) as f:
+                content = f.read()
+            match = url_pattern.search(content)
+            if match:
+                update_gist(match.group(0))
+                return
+        except FileNotFoundError:
+            pass
+    print("Tunnel URL not found in log after 30s")
+
+def start_tunnel():
+    try:
+        log_file = open(TUNNEL_LOG_PATH, "w", buffering=1)
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", "http://localhost:8000"],
             stdout=log_file,
             stderr=log_file,
         )
+        print(f"Tunnel started (pid {proc.pid}). URL will appear in: {TUNNEL_LOG_PATH}")
+        threading.Thread(target=watch_tunnel_log, daemon=True).start()
+        return proc
     except Exception:
         logging.getLogger("tom.quest").exception("Tunnel start failed")
         return None
