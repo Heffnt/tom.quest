@@ -2,6 +2,7 @@ import subprocess
 import threading
 import re
 from pathlib import Path
+from job_screens import save_screen_mapping
 
 def run_command(cmd: str) -> tuple[str, str, int]:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -36,7 +37,7 @@ def list_screens() -> list[str]:
 
 def get_project_screens(project_name: str) -> list[str]:
     all_screens = list_screens()
-    prefix = f"tq_{project_name}_"
+    prefix = f"{project_name}_"
     return [s for s in all_screens if s.startswith(prefix)]
 
 def get_next_screen_name(project_dir: str) -> str:
@@ -48,13 +49,13 @@ def get_next_screen_name(project_dir: str) -> str:
     existing = get_project_screens(project_name)
     existing_indices = []
     for s in existing:
-        match = re.search(rf'tq_{re.escape(project_name)}_(\d+)$', s)
+        match = re.search(rf'{re.escape(project_name)}_(\d+)$', s)
         if match:
             existing_indices.append(int(match.group(1)))
     next_index = 0
     while next_index in existing_indices:
         next_index += 1
-    return f"tq_{project_name}_{next_index}"
+    return f"{project_name}_{next_index}"
 
 def _get_job_status(job_id: str) -> str:
     """Get current status of a job (PENDING, RUNNING, etc)."""
@@ -86,12 +87,12 @@ def _setup_screen_worker(screen_name: str, job_id: str, commands: list[str]):
 
 def setup_allocation_screen(job_id: str, commands: list[str], project_dir: str = "") -> str:
     screen_name = get_next_screen_name(project_dir)
+    save_screen_mapping(job_id, screen_name)
     thread = threading.Thread(target=_setup_screen_worker, args=(screen_name, job_id, commands))
     thread.start()
     return screen_name
 
-def cleanup_screen(job_id: str) -> bool:
-    screen_name = f"tq_{job_id}"
-    if screen_exists(screen_name):
+def cleanup_screen(screen_name: str) -> bool:
+    if screen_name and screen_exists(screen_name):
         return kill_screen(screen_name)
     return True

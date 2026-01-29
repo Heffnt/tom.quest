@@ -27,7 +27,7 @@ app/                      # Next.js frontend
 └── components/Navigation.tsx
 
 tom-quest-api/            # FastAPI on Turing HPC
-├── main.py, gpu_report.py, slurm.py, screens.py, dirs.py
+├── main.py, gpu_report.py, slurm.py, screens.py, dirs.py, job_screens.py
 ```
 
 ## Turing Dashboard
@@ -38,7 +38,8 @@ tom-quest-api/            # FastAPI on Turing HPC
 - Vercel env: TURING_URL_GIST (raw gist url), TURING_API_KEY
 - GPUs: nvidia=H100, tesla=V100, max 12 allocations
 - Allocation: --job-name=tom.quest, non-blocking salloc (returns job ID immediately even if PENDING)
-- Screens: `tq_{project_name}_{index}` - waits for job RUNNING before sending commands (polls up to 30min)
+- Screens: `{project_name}_{index}` - waits for job RUNNING before sending commands (polls up to 30min)
+- Screen mapping: `~/.tom-quest-screens.json` stores job_id → screen_name (jobs without mapping show "-")
 - localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
 - Active Jobs: manual refresh + auto-refresh toggle (30s), saved in `turing_auto_refresh_jobs`
 - Dir browse: always sends path (default `~`), surfaces upstream error
@@ -49,6 +50,7 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API
 - [2026-01-29] salloc timeout on resource wait → non-blocking Popen, capture job ID from early output, screen polls for RUNNING before commands
+- [2026-01-29] Active Jobs showed wrong screen name → added job_screens.py mapping file, simplified screen names to `{project}_{index}`, external jobs show "-"
 
 ## Placeholders
 - /projects: showcase work

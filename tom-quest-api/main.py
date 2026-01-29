@@ -11,7 +11,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from gpu_report import parse_gpu_report, format_gpu_report, get_free_gpu_types
 from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
-from screens import setup_allocation_screen, cleanup_screen, get_next_screen_name
+from screens import setup_allocation_screen, cleanup_screen
+from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir
 
 load_dotenv()
@@ -203,7 +204,9 @@ async def list_jobs(auth: bool = Depends(verify_api_key)):
 async def delete_job(job_id: str, auth: bool = Depends(verify_api_key)):
     success, error = cancel_job(job_id)
     if success:
-        cleanup_screen(job_id)
+        screen_name = get_screen_name(job_id)
+        cleanup_screen(screen_name)
+        remove_screen_mapping(job_id)
         return {"success": True, "message": f"Job {job_id} cancelled"}
     raise HTTPException(status_code=400, detail=error or f"Failed to cancel job {job_id}")
 

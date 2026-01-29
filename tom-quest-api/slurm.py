@@ -3,6 +3,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from job_screens import get_screen_name
 
 MAX_GPU_ALLOCATIONS = 12
 SALLOC_JOB_ID_TIMEOUT = 10  # seconds to wait for job ID
@@ -93,7 +94,7 @@ def get_user_jobs() -> list[JobInfo]:
             status=status.strip(),
             time_remaining=time_left.strip(),
             time_remaining_seconds=time_remaining_seconds,
-            screen_name=f"tq_{job_id.strip()}",
+            screen_name=get_screen_name(job_id.strip()),
             start_time=start_time.strip(),
             end_time=end_time.strip()
         ))

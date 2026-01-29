@@ -757,7 +757,7 @@ export default function Turing() {
                           {job.time_remaining}
                         </td>
                         <td className="px-4 py-3 font-mono text-white/60">
-                          {job.screen_name}
+                          {job.screen_name || "-"}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <button
