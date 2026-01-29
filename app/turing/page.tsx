@@ -50,7 +50,8 @@ interface DebugLogEntry {
 
 const API_BASE = "/api/turing";
 const SAVED_COMMANDS_KEY = "turing_project_commands";
-const AUTO_REFRESH_JOBS_KEY = "turing_auto_refresh_jobs";
+const AUTO_REFRESH_KEY = "turing_auto_refresh";
+const REFRESH_INTERVAL_KEY = "turing_refresh_interval";
 
 export default function Turing() {
   const [gpuReport, setGpuReport] = useState<GPUReport | null>(null);
@@ -59,9 +60,10 @@ export default function Turing() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
-  const [autoRefreshJobs, setAutoRefreshJobs] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshInterval, setRefreshInterval] = useState(30);
   const [gpuType, setGpuType] = useState("");
-  const [timeMins, setTimeMins] = useState("60");
+  const [timeMins, setTimeMins] = useState("1440");
   const [memoryMb, setMemoryMb] = useState("64000");
   const [count, setCount] = useState("1");
   const [commands, setCommands] = useState<string[]>([""]);
@@ -168,13 +170,17 @@ export default function Turing() {
     }
   }, [debugFetch]);
 
-  useEffect(() => {
+  const refreshAll = useCallback(() => {
     fetchGpuReport();
     fetchJobs();
-    if (!autoRefreshJobs) return;
-    const interval = setInterval(fetchJobs, 30000);
+  }, [fetchGpuReport, fetchJobs]);
+
+  useEffect(() => {
+    refreshAll();
+    if (!autoRefresh) return;
+    const interval = setInterval(refreshAll, refreshInterval * 1000);
     return () => clearInterval(interval);
-  }, [fetchGpuReport, fetchJobs, autoRefreshJobs]);
+  }, [refreshAll, autoRefresh, refreshInterval]);
 
   useEffect(() => {
     try {
@@ -191,17 +197,25 @@ export default function Turing() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(AUTO_REFRESH_JOBS_KEY);
-      if (raw === null) return;
-      setAutoRefreshJobs(raw === "true");
+      const rawRefresh = localStorage.getItem(AUTO_REFRESH_KEY);
+      if (rawRefresh !== null) setAutoRefresh(rawRefresh === "true");
+      const rawInterval = localStorage.getItem(REFRESH_INTERVAL_KEY);
+      if (rawInterval !== null) {
+        const parsed = parseInt(rawInterval, 10);
+        if (!isNaN(parsed) && parsed >= 5) setRefreshInterval(parsed);
+      }
     } catch {
-      setAutoRefreshJobs(true);
+      // Use defaults
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(AUTO_REFRESH_JOBS_KEY, String(autoRefreshJobs));
-  }, [autoRefreshJobs]);
+    localStorage.setItem(AUTO_REFRESH_KEY, String(autoRefresh));
+  }, [autoRefresh]);
+
+  useEffect(() => {
+    localStorage.setItem(REFRESH_INTERVAL_KEY, String(refreshInterval));
+  }, [refreshInterval]);
 
   const handleAllocate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -348,6 +362,50 @@ export default function Turing() {
         <p className="mt-4 text-xl text-white/60 animate-fade-in-delay">
           GPU allocation and monitoring dashboard
         </p>
+
+        {/* Refresh Controls */}
+        <div className="mt-8 flex flex-wrap items-center gap-4 border border-white/10 rounded-lg p-4 animate-fade-in-delay">
+          <button
+            onClick={refreshAll}
+            disabled={gpuReportLoading || jobsLoading}
+            className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+          >
+            {gpuReportLoading || jobsLoading ? "Loading..." : "Refresh All"}
+          </button>
+          <label className="flex items-center gap-2 text-sm text-white/60 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="sr-only"
+            />
+            <span
+              className={`w-9 h-5 rounded-full border transition-colors ${
+                autoRefresh ? "bg-white/80 border-white/60" : "bg-white/10 border-white/20"
+              }`}
+            >
+              <span
+                className={`block w-4 h-4 bg-black rounded-full transition-transform ${
+                  autoRefresh ? "translate-x-4" : "translate-x-0"
+                }`}
+              />
+            </span>
+            Auto-refresh
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min="5"
+              value={refreshInterval}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                if (!isNaN(val) && val >= 5) setRefreshInterval(val);
+              }}
+              className="w-20 px-2 py-1 text-sm bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
+            />
+            <span className="text-sm text-white/40">seconds</span>
+          </div>
+        </div>
 
         {/* GPU Report Panel */}
         <section className="mt-12 animate-fade-in-delay">
@@ -671,35 +729,13 @@ export default function Turing() {
         <section className="mt-12 animate-fade-in-delay pb-20">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">Active Jobs</h2>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={fetchJobs}
-                disabled={jobsLoading}
-                className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
-              >
-                {jobsLoading ? "Loading..." : "Refresh"}
-              </button>
-              <label className="flex items-center gap-2 text-xs text-white/50 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoRefreshJobs}
-                  onChange={(e) => setAutoRefreshJobs(e.target.checked)}
-                  className="sr-only"
-                />
-                <span
-                  className={`w-9 h-5 rounded-full border transition-colors ${
-                    autoRefreshJobs ? "bg-white/80 border-white/60" : "bg-white/10 border-white/20"
-                  }`}
-                >
-                  <span
-                    className={`block w-4 h-4 bg-black rounded-full transition-transform ${
-                      autoRefreshJobs ? "translate-x-4" : "translate-x-0"
-                    }`}
-                  />
-                </span>
-                Auto-refresh
-              </label>
-            </div>
+            <button
+              onClick={fetchJobs}
+              disabled={jobsLoading}
+              className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+            >
+              {jobsLoading ? "Loading..." : "Refresh"}
+            </button>
           </div>
           {jobsError && <p className="text-red-400 mb-4">{jobsError}</p>}
           {jobs.length === 0 ? (
@@ -745,7 +781,7 @@ export default function Turing() {
                         <td className="px-4 py-3">
                           <span
                             className={`px-2 py-1 rounded text-xs ${
-                              job.status === "RUNNING"
+                              job.status.startsWith("RUNNING")
                                 ? "bg-green-400/20 text-green-400"
                                 : "bg-yellow-400/20 text-yellow-400"
                             }`}
@@ -774,9 +810,6 @@ export default function Turing() {
               </div>
             </div>
           )}
-          <p className="mt-2 text-xs text-white/30">
-            {autoRefreshJobs ? "Auto-refresh on (30s)" : "Auto-refresh off"}
-          </p>
         </section>
       </div>
 

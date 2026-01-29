@@ -9,7 +9,7 @@ def run_command(cmd: str) -> tuple[str, str, int]:
     return result.stdout, result.stderr, result.returncode
 
 def create_screen(screen_name: str) -> bool:
-    stdout, stderr, returncode = run_command(f"screen -dmS {screen_name}")
+    stdout, stderr, returncode = run_command(f"screen -S {screen_name}")
     return returncode == 0
 
 def send_to_screen(screen_name: str, command: str) -> bool:
@@ -52,7 +52,7 @@ def get_next_screen_name(project_dir: str) -> str:
         match = re.search(rf'{re.escape(project_name)}_(\d+)$', s)
         if match:
             existing_indices.append(int(match.group(1)))
-    next_index = 0
+    next_index = 1
     while next_index in existing_indices:
         next_index += 1
     return f"{project_name}_{next_index}"

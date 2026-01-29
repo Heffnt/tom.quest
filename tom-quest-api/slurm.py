@@ -73,25 +73,32 @@ def cancel_job(job_id: str) -> tuple[bool, str | None]:
 
 def get_user_jobs() -> list[JobInfo]:
     stdout, stderr, returncode = run_command(
-        "squeue --me --format='%i|%T|%L|%S|%e|%b' --noheader"
+        "squeue --me --format='%i|%T|%L|%S|%e|%b|%R' --noheader"
     )
     jobs = []
     for line in stdout.strip().split('\n'):
         if not line.strip():
             continue
         parts = line.strip().split('|')
-        if len(parts) < 6:
+        if len(parts) < 7:
             continue
-        job_id, status, time_left, start_time, end_time, gres = parts
+        job_id, status, time_left, start_time, end_time, gres, reason = parts
         gpu_type = "unknown"
         gres_match = re.search(r'gpu:([^:]+):', gres)
         if gres_match:
             gpu_type = gres_match.group(1)
         time_remaining_seconds = parse_time_to_seconds(time_left)
+        # For pending jobs, show reason; for running, show node
+        display_status = status.strip()
+        reason = reason.strip()
+        if display_status == "PENDING" and reason:
+            display_status = f"PENDING ({reason})"
+        elif display_status == "RUNNING" and reason:
+            display_status = f"RUNNING ({reason})"
         jobs.append(JobInfo(
             job_id=job_id.strip(),
             gpu_type=gpu_type,
-            status=status.strip(),
+            status=display_status,
             time_remaining=time_left.strip(),
             time_remaining_seconds=time_remaining_seconds,
             screen_name=get_screen_name(job_id.strip()),

@@ -38,11 +38,12 @@ tom-quest-api/            # FastAPI on Turing HPC
 - Turing .env: API_KEY, GITHUB_TOKEN (gist scope), GIST_ID
 - Vercel env: TURING_URL_GIST (raw gist url), TURING_API_KEY
 - GPUs: nvidia=H100, tesla=V100, max 12 allocations
-- Allocation: --job-name=tom.quest, non-blocking salloc (returns job ID immediately even if PENDING)
-- Screens: `{project_name}_{index}` - polls until job RUNNING, then creates screen + srun + commands
+- Allocation: --job-name=tom.quest, non-blocking salloc, default 1440 mins
+- Screens: `{project_name}_{index}` (1-indexed), no -dm flag, polls until RUNNING then creates screen + srun + commands
 - Screen mapping: `~/.tom-quest-screens.json` stores job_id → screen_name (jobs without mapping show "-")
-- localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
-- Active Jobs: manual refresh + auto-refresh toggle (30s), saved in `turing_auto_refresh_jobs`
+- localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`
+- Auto-refresh: unified at top for all panels, configurable interval (default 30s), each panel has own refresh button
+- Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
 - Dir browse: always sends path (default `~`), surfaces upstream error
 - Turing setup: clone repo to `~/tom.quest`, use `tom-quest-api/` subdir
 
@@ -54,6 +55,7 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-29] Active Jobs showed wrong screen name → added job_screens.py mapping file, simplified screen names to `{project}_{index}`, external jobs show "-"
 - [2026-01-29] 530 errors after API restart → transient: wait ~1-2min for new tunnel + gist update + Vercel cache (1min TTL) to refresh
 - [2026-01-29] srun failed on PENDING job → poll for RUNNING first, then create screen and send srun
+- [2026-01-29] Screen names 1-indexed, job status shows squeue reason, unified auto-refresh controls at top
 
 ## Placeholders
 - /projects: showcase work
