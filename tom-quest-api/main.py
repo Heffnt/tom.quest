@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from gpu_report import parse_gpu_report, format_gpu_report, get_free_gpu_types
+from gpu_report import format_gpu_report_v2, get_free_gpu_types
 from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
 from screens import setup_allocation_screen, cleanup_screen
 from job_screens import get_screen_name, remove_screen_mapping
@@ -130,8 +130,7 @@ async def health():
 @app.get("/gpu-report")
 async def gpu_report(auth: bool = Depends(verify_api_key)):
     try:
-        report = parse_gpu_report()
-        return format_gpu_report(report)
+        return format_gpu_report_v2()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GPU report failed: {str(e)}")
 

@@ -8,10 +8,14 @@ class GPUTypeInfo:
     nodes: list[str] = field(default_factory=list)
 
 @dataclass
-class GPUReport:
-    available: dict[str, GPUTypeInfo] = field(default_factory=dict)
-    unavailable: dict[str, GPUTypeInfo] = field(default_factory=dict)
-    free: dict[str, GPUTypeInfo] = field(default_factory=dict)
+class NodeInfo:
+    name: str
+    gpu_type: str
+    total_gpus: int
+    allocated_gpus: int
+    state: str  # "up" | "down" | "drain"
+    memory_total_mb: int
+    memory_allocated_mb: int
 
 def run_command(cmd: str) -> str:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -29,57 +33,112 @@ def get_gpu_nodes() -> list[str]:
 def get_node_info(node: str) -> str:
     return run_command(f"scontrol show node {node}")
 
-def parse_gpu_report() -> GPUReport:
-    report = GPUReport()
-    gpu_nodes = get_gpu_nodes()
-    for node in gpu_nodes:
-        node_info = get_node_info(node)
-        if 'Partitions=' in node_info and 'academic' in node_info:
+def parse_memory(tres_str: str) -> int:
+    """Parse memory from TRES string, returns MB."""
+    mem_match = re.search(r'mem=(\d+)([KMGT]?)', tres_str)
+    if not mem_match:
+        return 0
+    value = int(mem_match.group(1))
+    unit = mem_match.group(2)
+    if unit == 'K':
+        return value // 1024
+    elif unit == 'G':
+        return value * 1024
+    elif unit == 'T':
+        return value * 1024 * 1024
+    return value  # Already in MB or no unit
+
+def parse_gpu_nodes() -> list[NodeInfo]:
+    """Parse all GPU nodes and return per-node info."""
+    nodes = []
+    gpu_node_names = get_gpu_nodes()
+    for node_name in gpu_node_names:
+        node_info_str = get_node_info(node_name)
+        if 'Partitions=' in node_info_str and 'academic' in node_info_str:
             continue
-        node_down_reserved = False
-        if any(state in node_info for state in ['State=.*DRAIN', 'DRAIN', 'RESERVED', 'DOWN', 'NOT_RESPONDING']):
-            if re.search(r'State=\S*(DRAIN|RESERVED|DOWN|NOT_RESPONDING)', node_info):
-                node_down_reserved = True
-        gres_match = re.search(r'Gres=gpu:([^:]+):(\d+)', node_info)
+        # Determine node state
+        state = "up"
+        if re.search(r'State=\S*(DRAIN|RESERVED|DOWN|NOT_RESPONDING)', node_info_str):
+            if 'DRAIN' in node_info_str:
+                state = "drain"
+            else:
+                state = "down"
+        # Parse GPU type and count
+        gres_match = re.search(r'Gres=gpu:([^:]+):(\d+)', node_info_str)
         if not gres_match:
             continue
         gpu_type = gres_match.group(1)
-        total_node_gpus = int(gres_match.group(2))
-        if node_down_reserved:
-            if gpu_type not in report.unavailable:
-                report.unavailable[gpu_type] = GPUTypeInfo()
-            report.unavailable[gpu_type].count += total_node_gpus
-            report.unavailable[gpu_type].nodes.append(f"{node}({total_node_gpus})")
-            continue
-        alloc_node_gpus = 0
-        for line in node_info.split('\n'):
-            if 'AllocTRES=' in line:
-                alloc_match = re.search(r'gres/gpu=(\d+)', line)
-                if alloc_match:
-                    alloc_node_gpus = int(alloc_match.group(1))
-                break
-        unused_node_gpus = total_node_gpus - alloc_node_gpus
-        if gpu_type not in report.available:
-            report.available[gpu_type] = GPUTypeInfo()
-        report.available[gpu_type].count += total_node_gpus
-        report.available[gpu_type].nodes.append(f"{node}({total_node_gpus})")
-        if unused_node_gpus > 0:
-            if gpu_type not in report.free:
-                report.free[gpu_type] = GPUTypeInfo()
-            report.free[gpu_type].count += unused_node_gpus
-            report.free[gpu_type].nodes.append(f"{node}({unused_node_gpus})")
-    return report
+        total_gpus = int(gres_match.group(2))
+        # Parse allocated GPUs
+        allocated_gpus = 0
+        alloc_match = re.search(r'AllocTRES=.*?gres/gpu=(\d+)', node_info_str)
+        if alloc_match:
+            allocated_gpus = int(alloc_match.group(1))
+        # Parse memory
+        cfg_tres_match = re.search(r'CfgTRES=([^\n]+)', node_info_str)
+        alloc_tres_match = re.search(r'AllocTRES=([^\n]+)', node_info_str)
+        memory_total_mb = parse_memory(cfg_tres_match.group(1)) if cfg_tres_match else 0
+        memory_allocated_mb = parse_memory(alloc_tres_match.group(1)) if alloc_tres_match else 0
+        nodes.append(NodeInfo(
+            name=node_name,
+            gpu_type=gpu_type,
+            total_gpus=total_gpus,
+            allocated_gpus=allocated_gpus,
+            state=state,
+            memory_total_mb=memory_total_mb,
+            memory_allocated_mb=memory_allocated_mb
+        ))
+    return nodes
 
-def format_gpu_report(report: GPUReport) -> dict:
+def compute_summary(nodes: list[NodeInfo]) -> dict:
+    """Compute summary stats from node list for dropdown compatibility."""
+    available: dict[str, GPUTypeInfo] = {}
+    unavailable: dict[str, GPUTypeInfo] = {}
+    free: dict[str, GPUTypeInfo] = {}
+    for node in nodes:
+        gpu_type = node.gpu_type
+        if node.state != "up":
+            if gpu_type not in unavailable:
+                unavailable[gpu_type] = GPUTypeInfo()
+            unavailable[gpu_type].count += node.total_gpus
+            unavailable[gpu_type].nodes.append(f"{node.name}({node.total_gpus})")
+        else:
+            if gpu_type not in available:
+                available[gpu_type] = GPUTypeInfo()
+            available[gpu_type].count += node.total_gpus
+            available[gpu_type].nodes.append(f"{node.name}({node.total_gpus})")
+            free_gpus = node.total_gpus - node.allocated_gpus
+            if free_gpus > 0:
+                if gpu_type not in free:
+                    free[gpu_type] = GPUTypeInfo()
+                free[gpu_type].count += free_gpus
+                free[gpu_type].nodes.append(f"{node.name}({free_gpus})")
     def format_type_info(info: dict[str, GPUTypeInfo]) -> list[dict]:
-        return [
-            {"type": gpu_type, "count": data.count, "nodes": data.nodes}
-            for gpu_type, data in info.items()
-        ]
+        return [{"type": t, "count": d.count, "nodes": d.nodes} for t, d in info.items()]
     return {
-        "available": format_type_info(report.available),
-        "unavailable": format_type_info(report.unavailable),
-        "free": format_type_info(report.free),
+        "available": format_type_info(available),
+        "unavailable": format_type_info(unavailable),
+        "free": format_type_info(free)
+    }
+
+def format_gpu_report_v2() -> dict:
+    """New format with per-node data and summary."""
+    nodes = parse_gpu_nodes()
+    summary = compute_summary(nodes)
+    return {
+        "nodes": [
+            {
+                "name": n.name,
+                "gpu_type": n.gpu_type,
+                "total_gpus": n.total_gpus,
+                "allocated_gpus": n.allocated_gpus,
+                "state": n.state,
+                "memory_total_mb": n.memory_total_mb,
+                "memory_allocated_mb": n.memory_allocated_mb
+            }
+            for n in nodes
+        ],
+        "summary": summary,
         "notes": [
             "nvidia = H100",
             "tesla = V100",
@@ -89,5 +148,6 @@ def format_gpu_report(report: GPUReport) -> dict:
     }
 
 def get_free_gpu_types() -> list[str]:
-    report = parse_gpu_report()
-    return list(report.free.keys())
+    nodes = parse_gpu_nodes()
+    summary = compute_summary(nodes)
+    return [item["type"] for item in summary["free"]]

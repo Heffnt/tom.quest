@@ -8,10 +8,23 @@ interface GPUTypeInfo {
   nodes: string[];
 }
 
+interface NodeInfo {
+  name: string;
+  gpu_type: string;
+  total_gpus: number;
+  allocated_gpus: number;
+  state: "up" | "down" | "drain";
+  memory_total_mb: number;
+  memory_allocated_mb: number;
+}
+
 interface GPUReport {
-  available: GPUTypeInfo[];
-  unavailable: GPUTypeInfo[];
-  free: GPUTypeInfo[];
+  nodes: NodeInfo[];
+  summary: {
+    available: GPUTypeInfo[];
+    unavailable: GPUTypeInfo[];
+    free: GPUTypeInfo[];
+  };
   notes: string[];
 }
 
@@ -78,8 +91,12 @@ export default function Turing() {
   const [dirBrowserOpen, setDirBrowserOpen] = useState(false);
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(256);
+  const [isResizing, setIsResizing] = useState(false);
   const debugLogIdRef = useRef(0);
   const debugTerminalRef = useRef<HTMLDivElement>(null);
+  const resizeStartY = useRef(0);
+  const resizeStartHeight = useRef(0);
 
   const addDebugLog = useCallback((entry: Omit<DebugLogEntry, "id" | "timestamp">) => {
     setDebugLogs((prev) => {
@@ -116,6 +133,50 @@ export default function Turing() {
     }
   }, [debugLogs, debugOpen]);
 
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      const deltaY = resizeStartY.current - e.clientY;
+      const newHeight = Math.min(Math.max(resizeStartHeight.current + deltaY, 100), window.innerHeight - 100);
+      setTerminalHeight(newHeight);
+    };
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+    if (isResizing) {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+    }
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeStartY.current = e.clientY;
+    resizeStartHeight.current = terminalHeight;
+    setIsResizing(true);
+  };
+
+  const copyDebugLogs = async () => {
+    const text = debugLogs.map((log) => {
+      const time = log.timestamp.toLocaleTimeString();
+      if (log.type === "request") {
+        return `${time} → ${log.method} ${log.url}${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+      }
+      if (log.type === "response") {
+        return `${time} ← ${log.status} ${log.url} (${log.duration}ms)${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+      }
+      if (log.type === "error") {
+        return `${time} ✕ ERROR: ${log.message} (${log.duration}ms)`;
+      }
+      return `${time} ${log.message}`;
+    }).join("\n\n");
+    await navigator.clipboard.writeText(text);
+  };
+
   const fetchGpuReport = useCallback(async () => {
     setGpuReportLoading(true);
     setGpuReportError(null);
@@ -124,8 +185,8 @@ export default function Turing() {
       if (!res.ok) throw new Error("Failed to fetch GPU report");
       const data = await res.json();
       setGpuReport(data);
-      if (data.free?.length > 0 && !gpuType) {
-        setGpuType(data.free[0].type);
+      if (data.summary?.free?.length > 0 && !gpuType) {
+        setGpuType(data.summary.free[0].type);
       }
     } catch (e) {
       setGpuReportError(e instanceof Error ? e.message : "Unknown error");
@@ -354,7 +415,7 @@ export default function Turing() {
   };
 
   return (
-    <div className="min-h-screen px-6 py-16">
+    <div className="min-h-screen px-6 py-16" style={{ paddingBottom: debugOpen ? terminalHeight + 60 : 60 }}>
       <div className="max-w-4xl mx-auto">
         <h1 className="text-4xl md:text-5xl font-bold tracking-tight animate-fade-in">
           Turing
@@ -423,44 +484,85 @@ export default function Turing() {
             <p className="text-red-400 mb-4">{gpuReportError}</p>
           )}
           {gpuReport && (
-            <div className="border border-white/10 rounded-lg p-6 font-mono text-sm space-y-4">
-              <div>
-                <h3 className="text-white/80 mb-2">Free GPUs:</h3>
-                {gpuReport.free.length === 0 ? (
-                  <p className="text-white/40">None available</p>
-                ) : (
-                  gpuReport.free.map((g) => (
-                    <p key={g.type} className="text-green-400">
-                      {g.type}: {g.count} free on {g.nodes.join(", ")}
-                    </p>
-                  ))
-                )}
+            <div className="border border-white/10 rounded-lg p-6 space-y-6">
+              {/* Legend */}
+              <div className="flex flex-wrap items-center gap-6 text-sm">
+                <div className="flex items-center gap-2">
+                  <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#22c55e" /></svg>
+                  <span className="text-white/60">Free</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#6b7280" /></svg>
+                  <span className="text-white/60">In Use</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#ef4444" /></svg>
+                  <span className="text-white/60">Down</span>
+                </div>
               </div>
-              <div>
-                <h3 className="text-white/80 mb-2">Available GPUs (total):</h3>
-                {gpuReport.available.length === 0 ? (
-                  <p className="text-white/40">None</p>
-                ) : (
-                  gpuReport.available.map((g) => (
-                    <p key={g.type} className="text-white/60">
-                      {g.type}: {g.count} on {g.nodes.join(", ")}
-                    </p>
-                  ))
-                )}
-              </div>
-              <div>
-                <h3 className="text-white/80 mb-2">Unavailable GPUs:</h3>
-                {gpuReport.unavailable.length === 0 ? (
-                  <p className="text-white/40">None</p>
-                ) : (
-                  gpuReport.unavailable.map((g) => (
-                    <p key={g.type} className="text-red-400/60">
-                      {g.type}: {g.count} on {g.nodes.join(", ")}
-                    </p>
-                  ))
-                )}
-              </div>
-              <div className="text-white/30 text-xs pt-2 border-t border-white/10">
+              {/* GPU Grid by Type */}
+              {(() => {
+                const gpuTypes = [...new Set(gpuReport.nodes.map(n => n.gpu_type))];
+                const gpuTypeLabels: Record<string, string> = { nvidia: "H100", tesla: "V100" };
+                return gpuTypes.map(gpuType => {
+                  const nodesOfType = gpuReport.nodes.filter(n => n.gpu_type === gpuType);
+                  const label = gpuTypeLabels[gpuType] || gpuType;
+                  return (
+                    <div key={gpuType}>
+                      <h3 className="text-lg font-medium text-white/80 mb-3">{label}</h3>
+                      <div className="flex flex-wrap gap-4">
+                        {nodesOfType.map(node => {
+                          const freeGpus = node.state === "up" ? node.total_gpus - node.allocated_gpus : 0;
+                          const inUseGpus = node.state === "up" ? node.allocated_gpus : 0;
+                          const downGpus = node.state !== "up" ? node.total_gpus : 0;
+                          const gpuBoxes: Array<"free" | "in_use" | "down"> = [];
+                          for (let i = 0; i < freeGpus; i++) gpuBoxes.push("free");
+                          for (let i = 0; i < inUseGpus; i++) gpuBoxes.push("in_use");
+                          for (let i = 0; i < downGpus; i++) gpuBoxes.push("down");
+                          const boxSize = 14;
+                          const gap = 3;
+                          const cols = Math.min(node.total_gpus, 4);
+                          const rows = Math.ceil(node.total_gpus / cols);
+                          const svgWidth = cols * boxSize + (cols - 1) * gap;
+                          const svgHeight = rows * boxSize + (rows - 1) * gap;
+                          const memoryTotalGb = Math.round(node.memory_total_mb / 1024);
+                          const memoryAllocGb = Math.round(node.memory_allocated_mb / 1024);
+                          const memoryPct = memoryTotalGb > 0 ? (memoryAllocGb / memoryTotalGb) * 100 : 0;
+                          return (
+                            <div key={node.name} className="border border-white/10 rounded-lg p-3 bg-white/[0.02]">
+                              <div className="text-xs text-white/50 mb-2 font-mono">{node.name}</div>
+                              <svg width={svgWidth} height={svgHeight}>
+                                {gpuBoxes.map((status, i) => {
+                                  const col = i % cols;
+                                  const row = Math.floor(i / cols);
+                                  const x = col * (boxSize + gap);
+                                  const y = row * (boxSize + gap);
+                                  const fill = status === "free" ? "#22c55e" : status === "in_use" ? "#6b7280" : "#ef4444";
+                                  return <rect key={i} x={x} y={y} width={boxSize} height={boxSize} rx={2} fill={fill} />;
+                                })}
+                              </svg>
+                              {/* Memory Bar */}
+                              <div className="mt-3">
+                                <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-white/40 transition-all"
+                                    style={{ width: `${memoryPct}%` }}
+                                  />
+                                </div>
+                                <div className="text-[10px] text-white/40 mt-1 font-mono">
+                                  {memoryAllocGb}/{memoryTotalGb} GB
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+              {/* Notes */}
+              <div className="text-white/30 text-xs pt-4 border-t border-white/10">
                 {gpuReport.notes.map((note, i) => (
                   <p key={i}>{note}</p>
                 ))}
@@ -569,7 +671,7 @@ export default function Turing() {
                   onChange={(e) => setGpuType(e.target.value)}
                   className="w-full px-3 py-2 bg-black/80 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 >
-                  {gpuReport?.free.map((g) => (
+                  {gpuReport?.summary.free.map((g) => (
                     <option
                       key={g.type}
                       value={g.type}
@@ -814,29 +916,43 @@ export default function Turing() {
       </div>
 
       {/* Debug Terminal */}
-      <div className="fixed bottom-0 left-0 right-0 z-40">
-        <button
-          onClick={() => setDebugOpen(!debugOpen)}
-          className="w-full px-4 py-2 bg-black border-t border-white/20 text-left text-sm font-mono flex items-center justify-between hover:bg-white/5 transition-colors"
+      <div className="fixed bottom-0 left-0 right-0 z-40" style={{ userSelect: isResizing ? "none" : "auto" }}>
+        <div
+          onMouseDown={debugOpen ? handleResizeStart : undefined}
+          className={`w-full border-t border-white/20 ${debugOpen ? "cursor-ns-resize" : ""}`}
         >
-          <span className="text-white/60">
-            Debug Terminal {debugLogs.length > 0 && <span className="text-white/40">({debugLogs.length} entries)</span>}
-          </span>
-          <span className="text-white/40">{debugOpen ? "▼" : "▲"}</span>
-        </button>
+          <button
+            onClick={() => setDebugOpen(!debugOpen)}
+            className="w-full px-4 py-2 bg-black text-left text-sm font-mono flex items-center justify-between hover:bg-[#111] transition-colors"
+          >
+            <span className="text-white/60">
+              Debug Terminal {debugLogs.length > 0 && <span className="text-white/40">({debugLogs.length} entries)</span>}
+            </span>
+            <span className="text-white/40">{debugOpen ? "▼" : "▲"}</span>
+          </button>
+        </div>
         {debugOpen && (
           <div
             ref={debugTerminalRef}
-            className="bg-black border-t border-white/10 h-64 overflow-y-auto font-mono text-xs"
+            className="bg-black border-t border-white/10 overflow-y-auto font-mono text-xs"
+            style={{ height: terminalHeight }}
           >
-            <div className="sticky top-0 bg-black/95 border-b border-white/10 px-4 py-2 flex justify-between items-center">
+            <div className="sticky top-0 bg-black border-b border-white/10 px-4 py-2 flex justify-between items-center">
               <span className="text-white/40">API Request/Response Log</span>
-              <button
-                onClick={() => setDebugLogs([])}
-                className="text-white/40 hover:text-white/60 transition-colors"
-              >
-                Clear
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={copyDebugLogs}
+                  className="text-white/40 hover:text-white/60 transition-colors"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => setDebugLogs([])}
+                  className="text-white/40 hover:text-white/60 transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
             <div className="p-4 space-y-2">
               {debugLogs.length === 0 ? (
