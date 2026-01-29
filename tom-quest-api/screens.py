@@ -64,6 +64,17 @@ def _get_job_status(job_id: str) -> str:
 
 def _setup_screen_worker(screen_name: str, job_id: str, commands: list[str]):
     import time
+    # Wait for job to be RUNNING before creating screen (poll up to 30 min)
+    for _ in range(900):
+        status = _get_job_status(job_id)
+        if status == "RUNNING":
+            break
+        if status == "" or status in ("CANCELLED", "FAILED", "COMPLETED", "TIMEOUT"):
+            return  # Job is gone, don't create screen
+        time.sleep(2)
+    else:
+        return  # Timed out waiting for job
+    # Now job is running - create screen and attach
     if screen_exists(screen_name):
         kill_screen(screen_name)
         time.sleep(0.2)
@@ -71,15 +82,7 @@ def _setup_screen_worker(screen_name: str, job_id: str, commands: list[str]):
     time.sleep(0.2)
     srun_cmd = f"srun --pty --jobid={job_id} bash"
     send_to_screen(screen_name, srun_cmd)
-    # Wait for job to be RUNNING before sending commands (poll up to 30 min)
-    for _ in range(900):
-        time.sleep(2)
-        status = _get_job_status(job_id)
-        if status == "RUNNING":
-            break
-        if status == "" or status in ("CANCELLED", "FAILED", "COMPLETED", "TIMEOUT"):
-            return  # Job is gone, don't send commands
-    time.sleep(1)  # Brief pause after job starts
+    time.sleep(1)  # Brief pause after srun
     for cmd in commands:
         if cmd.strip():
             send_to_screen(screen_name, cmd)

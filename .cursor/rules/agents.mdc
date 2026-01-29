@@ -32,13 +32,14 @@ tom-quest-api/            # FastAPI on Turing HPC
 
 ## Turing Dashboard
 - Proxy: frontend → /api/turing/* → Turing backend (via Cloudflare quick tunnel)
-- URL discovery: API auto-updates GitHub Gist → Vercel reads from `TURING_URL_GIST`
+- URL discovery: API auto-updates GitHub Gist → Vercel reads from `TURING_URL_GIST` (1min cache TTL)
+- After API restart: expect ~1-2min of 530 errors while tunnel establishes + caches refresh
 - Auth: X-API-Key header (TURING_API_KEY on Vercel, API_KEY on Turing)
 - Turing .env: API_KEY, GITHUB_TOKEN (gist scope), GIST_ID
 - Vercel env: TURING_URL_GIST (raw gist url), TURING_API_KEY
 - GPUs: nvidia=H100, tesla=V100, max 12 allocations
 - Allocation: --job-name=tom.quest, non-blocking salloc (returns job ID immediately even if PENDING)
-- Screens: `{project_name}_{index}` - waits for job RUNNING before sending commands (polls up to 30min)
+- Screens: `{project_name}_{index}` - polls until job RUNNING, then creates screen + srun + commands
 - Screen mapping: `~/.tom-quest-screens.json` stores job_id → screen_name (jobs without mapping show "-")
 - localStorage: `turing_project_commands` = {projectDir: [{name, commands}]}
 - Active Jobs: manual refresh + auto-refresh toggle (30s), saved in `turing_auto_refresh_jobs`
@@ -51,6 +52,8 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API
 - [2026-01-29] salloc timeout on resource wait → non-blocking Popen, capture job ID from early output, screen polls for RUNNING before commands
 - [2026-01-29] Active Jobs showed wrong screen name → added job_screens.py mapping file, simplified screen names to `{project}_{index}`, external jobs show "-"
+- [2026-01-29] 530 errors after API restart → transient: wait ~1-2min for new tunnel + gist update + Vercel cache (1min TTL) to refresh
+- [2026-01-29] srun failed on PENDING job → poll for RUNNING first, then create screen and send srun
 
 ## Placeholders
 - /projects: showcase work
