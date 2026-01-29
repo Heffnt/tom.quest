@@ -1,9 +1,11 @@
 import subprocess
 import re
+import threading
+import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 
 MAX_GPU_ALLOCATIONS = 12
+SALLOC_JOB_ID_TIMEOUT = 10  # seconds to wait for job ID
 
 @dataclass
 class JobInfo:
@@ -21,16 +23,46 @@ def run_command(cmd: str) -> tuple[str, str, int]:
     return result.stdout, result.stderr, result.returncode
 
 def allocate_gpu(gpu_type: str, time_mins: int, memory_mb: int = 64000) -> tuple[str | None, str | None]:
+    """Start salloc non-blocking, capture job ID from initial output, return immediately."""
     cmd = f"salloc --gres=gpu:{gpu_type}:1 --time={time_mins} --mem={memory_mb} --job-name=tom.quest"
-    stdout, stderr, returncode = run_command(cmd)
-    output = stdout + stderr
-    job_match = re.search(r'job (\d+)', output, re.IGNORECASE)
-    if job_match:
-        return job_match.group(1), None
-    grant_match = re.search(r'Granted job allocation (\d+)', output)
-    if grant_match:
-        return grant_match.group(1), None
-    return None, output or "Failed to allocate GPU"
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    job_id = None
+    output_lines = []
+    def read_output(stream, lines):
+        nonlocal job_id
+        try:
+            for line in iter(stream.readline, ''):
+                lines.append(line)
+                if job_id is None:
+                    match = re.search(r'job (\d+)', line, re.IGNORECASE)
+                    if match:
+                        job_id = match.group(1)
+        except:
+            pass
+    stdout_thread = threading.Thread(target=read_output, args=(proc.stdout, output_lines))
+    stderr_thread = threading.Thread(target=read_output, args=(proc.stderr, output_lines))
+    stdout_thread.start()
+    stderr_thread.start()
+    # Wait for job ID or timeout
+    start = time.time()
+    while job_id is None and (time.time() - start) < SALLOC_JOB_ID_TIMEOUT:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    if job_id:
+        return job_id, None
+    # If no job ID found, process may have failed - wait briefly for output
+    proc.terminate()
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    output = ''.join(output_lines)
+    return None, output.strip() or "Failed to allocate GPU (no job ID received)"
 
 def cancel_job(job_id: str) -> tuple[bool, str | None]:
     stdout, stderr, returncode = run_command(f"scancel {job_id}")
@@ -69,7 +101,7 @@ def get_user_jobs() -> list[JobInfo]:
 
 def parse_time_to_seconds(time_str: str) -> int:
     time_str = time_str.strip()
-    if not time_str or time_str == "INVALID":
+    if not time_str or time_str in ("INVALID", "N/A", "NOT_SET"):
         return 0
     total_seconds = 0
     if '-' in time_str:

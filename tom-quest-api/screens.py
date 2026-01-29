@@ -56,6 +56,11 @@ def get_next_screen_name(project_dir: str) -> str:
         next_index += 1
     return f"tq_{project_name}_{next_index}"
 
+def _get_job_status(job_id: str) -> str:
+    """Get current status of a job (PENDING, RUNNING, etc)."""
+    stdout, _, _ = run_command(f"squeue -j {job_id} -h -o '%T'")
+    return stdout.strip()
+
 def _setup_screen_worker(screen_name: str, job_id: str, commands: list[str]):
     import time
     if screen_exists(screen_name):
@@ -65,7 +70,15 @@ def _setup_screen_worker(screen_name: str, job_id: str, commands: list[str]):
     time.sleep(0.2)
     srun_cmd = f"srun --pty --jobid={job_id} bash"
     send_to_screen(screen_name, srun_cmd)
-    time.sleep(1)
+    # Wait for job to be RUNNING before sending commands (poll up to 30 min)
+    for _ in range(900):
+        time.sleep(2)
+        status = _get_job_status(job_id)
+        if status == "RUNNING":
+            break
+        if status == "" or status in ("CANCELLED", "FAILED", "COMPLETED", "TIMEOUT"):
+            return  # Job is gone, don't send commands
+    time.sleep(1)  # Brief pause after job starts
     for cmd in commands:
         if cmd.strip():
             send_to_screen(screen_name, cmd)
