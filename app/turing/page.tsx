@@ -98,8 +98,15 @@ export default function Turing() {
   const [isResizing, setIsResizing] = useState(false);
   const [collapsedPartitions, setCollapsedPartitions] = useState<Set<string>>(new Set());
   const [gpuOnlyFilter, setGpuOnlyFilter] = useState(true);
+  const [sessionViewerOpen, setSessionViewerOpen] = useState(false);
+  const [sessionViewerName, setSessionViewerName] = useState("");
+  const [sessionOutput, setSessionOutput] = useState("");
+  const [sessionOutputLoading, setSessionOutputLoading] = useState(false);
+  const [sessionOutputError, setSessionOutputError] = useState<string | null>(null);
+  const [sessionAutoRefresh, setSessionAutoRefresh] = useState(false);
   const debugLogIdRef = useRef(0);
   const debugTerminalRef = useRef<HTMLDivElement>(null);
+  const sessionOutputRef = useRef<HTMLPreElement>(null);
   const resizeStartY = useRef(0);
   const resizeStartHeight = useRef(0);
 
@@ -236,6 +243,31 @@ export default function Turing() {
     }
   }, [debugFetch]);
 
+  const fetchSessionOutput = useCallback(async (sessionName: string) => {
+    setSessionOutputLoading(true);
+    setSessionOutputError(null);
+    try {
+      const res = await debugFetch(`${API_BASE}/sessions/${encodeURIComponent(sessionName)}/output`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.detail || "Failed to fetch session output");
+      }
+      setSessionOutput(data.output || "");
+    } catch (e) {
+      setSessionOutputError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setSessionOutputLoading(false);
+    }
+  }, [debugFetch]);
+
+  const openSessionViewer = useCallback((sessionName: string) => {
+    setSessionViewerName(sessionName);
+    setSessionViewerOpen(true);
+    setSessionOutput("");
+    setSessionOutputError(null);
+    fetchSessionOutput(sessionName);
+  }, [fetchSessionOutput]);
+
   const refreshAll = useCallback(() => {
     fetchGpuReport();
     fetchJobs();
@@ -301,6 +333,20 @@ export default function Turing() {
   useEffect(() => {
     localStorage.setItem(GPU_ONLY_FILTER_KEY, String(gpuOnlyFilter));
   }, [gpuOnlyFilter]);
+
+  useEffect(() => {
+    if (!sessionViewerOpen || !sessionAutoRefresh || !sessionViewerName) return;
+    const interval = setInterval(() => {
+      fetchSessionOutput(sessionViewerName);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [sessionViewerOpen, sessionAutoRefresh, sessionViewerName, fetchSessionOutput]);
+
+  useEffect(() => {
+    if (sessionOutputRef.current && sessionOutput) {
+      sessionOutputRef.current.scrollTop = sessionOutputRef.current.scrollHeight;
+    }
+  }, [sessionOutput]);
 
   const togglePartition = (partition: string) => {
     setCollapsedPartitions(prev => {
@@ -933,10 +979,10 @@ export default function Turing() {
                         Time Left
                       </th>
                       <th className="px-4 py-3 text-left font-medium text-white/60">
-                        Screen
+                        Session
                       </th>
                       <th className="px-4 py-3 text-right font-medium text-white/60">
-                        Action
+                        Actions
                       </th>
                     </tr>
                   </thead>
@@ -965,7 +1011,15 @@ export default function Turing() {
                         <td className="px-4 py-3 font-mono text-white/60">
                           {job.screen_name || "-"}
                         </td>
-                        <td className="px-4 py-3 text-right">
+                        <td className="px-4 py-3 text-right space-x-2">
+                          {job.screen_name && job.status.startsWith("RUNNING") && (
+                            <button
+                              onClick={() => openSessionViewer(job.screen_name)}
+                              className="px-3 py-1 text-sm text-blue-400 hover:bg-blue-400/10 rounded transition-colors"
+                            >
+                              View
+                            </button>
+                          )}
                           <button
                             onClick={() => handleCancel(job.job_id)}
                             className="px-3 py-1 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
@@ -982,6 +1036,71 @@ export default function Turing() {
           )}
         </section>
       </div>
+
+      {/* Session Output Viewer Modal */}
+      {sessionViewerOpen && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50">
+          <div className="bg-black border border-white/20 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col mx-4">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+              <div className="flex items-center gap-4">
+                <h3 className="text-lg font-semibold font-mono">{sessionViewerName}</h3>
+                <span className="text-xs text-white/40">tmux session</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-sm text-white/60 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={sessionAutoRefresh}
+                    onChange={(e) => setSessionAutoRefresh(e.target.checked)}
+                    className="sr-only"
+                  />
+                  <span
+                    className={`w-8 h-4 rounded-full border transition-colors ${
+                      sessionAutoRefresh ? "bg-white/80 border-white/60" : "bg-white/10 border-white/20"
+                    }`}
+                  >
+                    <span
+                      className={`block w-3 h-3 bg-black rounded-full transition-transform ${
+                        sessionAutoRefresh ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </span>
+                  Auto
+                </label>
+                <button
+                  onClick={() => fetchSessionOutput(sessionViewerName)}
+                  disabled={sessionOutputLoading}
+                  className="px-3 py-1 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+                >
+                  {sessionOutputLoading ? "..." : "Refresh"}
+                </button>
+                <button
+                  onClick={() => {
+                    setSessionViewerOpen(false);
+                    setSessionAutoRefresh(false);
+                  }}
+                  className="text-white/60 hover:text-white px-2"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-hidden p-1">
+              {sessionOutputError ? (
+                <div className="p-4 text-red-400">{sessionOutputError}</div>
+              ) : (
+                <pre
+                  ref={sessionOutputRef}
+                  className="h-full overflow-auto p-4 text-sm font-mono text-green-400 bg-black/50 rounded whitespace-pre-wrap break-all"
+                  style={{ maxHeight: "calc(90vh - 80px)" }}
+                >
+                  {sessionOutput || (sessionOutputLoading ? "Loading..." : "No output yet")}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Debug Terminal */}
       <div className="fixed bottom-0 left-0 right-0 z-40" style={{ userSelect: isResizing ? "none" : "auto" }}>

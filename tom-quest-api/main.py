@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from gpu_report import format_gpu_report_v2, get_free_gpu_types
 from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
-from screens import setup_allocation_screen, cleanup_screen
+from tmux import setup_allocation_session, cleanup_session, capture_output, session_exists
 from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir
 
@@ -169,7 +169,7 @@ async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_k
             job_id, error = allocate_gpu(request.gpu_type, request.time_mins, request.memory_mb)
             if job_id:
                 job_ids.append(job_id)
-                screen_name = setup_allocation_screen(job_id, commands, request.project_dir)
+                screen_name = setup_allocation_session(job_id, commands, request.project_dir)
                 screen_names.append(screen_name)
             else:
                 errors.append(error or f"Failed to allocate GPU {i+1}")
@@ -204,10 +204,17 @@ async def delete_job(job_id: str, auth: bool = Depends(verify_api_key)):
     success, error = cancel_job(job_id)
     if success:
         screen_name = get_screen_name(job_id)
-        cleanup_screen(screen_name)
+        cleanup_session(screen_name)
         remove_screen_mapping(job_id)
         return {"success": True, "message": f"Job {job_id} cancelled"}
     raise HTTPException(status_code=400, detail=error or f"Failed to cancel job {job_id}")
+
+@app.get("/sessions/{session_name}/output")
+async def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_api_key)):
+    if not session_exists(session_name):
+        raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
+    output = capture_output(session_name, lines)
+    return {"session_name": session_name, "output": output}
 
 if __name__ == "__main__":
     import uvicorn

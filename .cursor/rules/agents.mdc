@@ -23,11 +23,12 @@ app/                      # Next.js frontend
 │   ├── gpu-report/       # GET gpu availability
 │   ├── allocate/         # POST allocation request
 │   ├── jobs/             # GET list, DELETE cancel
-│   └── dirs/             # GET directory listing
+│   ├── dirs/             # GET directory listing
+│   └── sessions/[name]/output/ # GET tmux session output
 └── components/Navigation.tsx
 
 tom-quest-api/            # FastAPI on Turing HPC
-├── main.py, gpu_report.py, slurm.py, screens.py, dirs.py, job_screens.py
+├── main.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py
 ```
 
 ## Turing Dashboard
@@ -44,8 +45,10 @@ tom-quest-api/            # FastAPI on Turing HPC
 - GPU Visual Grid: partition → GPU type hierarchy, collapsible partitions, SVG boxes per GPU (green=free, gray=in use, red=down), memory bar per node
 - GPU type labels: "nvidia (H100)", "tesla (V100)"
 - Allocation: --job-name=tom.quest, non-blocking salloc, default 1440 mins
-- Screens: `{project_name}_{index}` (1-indexed), no -dm flag, polls until RUNNING then creates screen + srun + commands
-- Screen mapping: `~/.tom-quest-screens.json` stores job_id → screen_name (jobs without mapping show "-")
+- tmux sessions: `{project_name}_{index}` (1-indexed), polls until RUNNING then creates tmux session + srun + commands
+- Session mapping: `~/.tom-quest-screens.json` stores job_id → session_name (jobs without mapping show "-")
+- Session viewer: "View" button on running jobs → modal with tmux output, auto-refresh toggle (2s interval)
+- SSH attach: `tmux attach -t {session_name}`, detach with `Ctrl+b d`
 - localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`, `turing_collapsed_partitions`, `turing_gpu_only_filter`
 - Auto-refresh: unified at top for all panels, configurable interval (default 30s), each panel has own refresh button
 - Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
@@ -65,6 +68,7 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-29] Debug terminal: resizable (drag header), dynamic bottom padding, copy button, fixed hover transparency
 - [2026-01-29] GPU Availability: visual SVG grid with per-node GPU boxes + memory bars, API returns per-node data instead of aggregates
 - [2026-01-29] GPU grid: partition hierarchy, collapsible sections (localStorage), gpu-only filter toggle, removed notes (replaced by implemented features)
+- [2026-01-30] Replaced GNU screen with tmux: better VSCode scrolling, session output viewable from web via `tmux capture-pane`
 
 ## Placeholders
 - /projects: showcase work
