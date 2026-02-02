@@ -47,9 +47,9 @@ tom-quest-api/            # FastAPI on Turing HPC
 - Allocation: --job-name=tom.quest, non-blocking salloc, default 1440 mins
 - tmux sessions: `{project_name}_{index}` (1-indexed), polls until RUNNING then creates tmux session + srun + commands
 - Session mapping: `~/.tom-quest-screens.json` stores job_id → session_name (jobs without mapping show "-")
-- Session viewer: "View" button on running jobs → modal with tmux output, auto-refresh toggle (2s interval)
+- Session viewer: "View" button on running jobs → modal with tmux output, auto-refresh toggle (configurable interval, persisted), arrow navigation between sessions, click-outside-to-close
 - SSH attach: `tmux attach -t {session_name}`, detach with `Ctrl+b d`
-- localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`, `turing_collapsed_partitions`, `turing_gpu_only_filter`
+- localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`, `turing_collapsed_partitions`, `turing_gpu_only_filter`, `turing_session_auto_refresh`, `turing_session_refresh_interval`
 - Auto-refresh: unified at top for all panels, configurable interval (default 30s), each panel has own refresh button
 - Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
 - Dir browse: always sends path (default `~`), surfaces upstream error

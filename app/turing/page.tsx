@@ -67,6 +67,8 @@ const AUTO_REFRESH_KEY = "turing_auto_refresh";
 const REFRESH_INTERVAL_KEY = "turing_refresh_interval";
 const COLLAPSED_PARTITIONS_KEY = "turing_collapsed_partitions";
 const GPU_ONLY_FILTER_KEY = "turing_gpu_only_filter";
+const SESSION_AUTO_REFRESH_KEY = "turing_session_auto_refresh";
+const SESSION_REFRESH_INTERVAL_KEY = "turing_session_refresh_interval";
 const GPU_TYPE_LABELS: Record<string, string> = { nvidia: "H100", tesla: "V100" };
 
 export default function Turing() {
@@ -104,7 +106,9 @@ export default function Turing() {
   const [sessionOutputLoading, setSessionOutputLoading] = useState(false);
   const [sessionOutputError, setSessionOutputError] = useState<string | null>(null);
   const [sessionAutoRefresh, setSessionAutoRefresh] = useState(false);
+  const [sessionRefreshInterval, setSessionRefreshInterval] = useState(2);
   const debugLogIdRef = useRef(0);
+  const sessionModalRef = useRef<HTMLDivElement>(null);
   const debugTerminalRef = useRef<HTMLDivElement>(null);
   const sessionOutputRef = useRef<HTMLPreElement>(null);
   const resizeStartY = useRef(0);
@@ -268,6 +272,32 @@ export default function Turing() {
     fetchSessionOutput(sessionName);
   }, [fetchSessionOutput]);
 
+  const viewableSessions = jobs
+    .filter(job => job.screen_name && job.status.startsWith("RUNNING"))
+    .map(job => job.screen_name);
+
+  const navigateSession = useCallback((direction: -1 | 1) => {
+    if (viewableSessions.length === 0) return;
+    const currentIndex = viewableSessions.indexOf(sessionViewerName);
+    let newIndex: number;
+    if (currentIndex === -1) {
+      newIndex = 0;
+    } else {
+      newIndex = (currentIndex + direction + viewableSessions.length) % viewableSessions.length;
+    }
+    const newSession = viewableSessions[newIndex];
+    setSessionViewerName(newSession);
+    setSessionOutput("");
+    setSessionOutputError(null);
+    fetchSessionOutput(newSession);
+  }, [viewableSessions, sessionViewerName, fetchSessionOutput]);
+
+  const handleSessionModalBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (sessionModalRef.current && !sessionModalRef.current.contains(e.target as Node)) {
+      setSessionViewerOpen(false);
+    }
+  }, []);
+
   const refreshAll = useCallback(() => {
     fetchGpuReport();
     fetchJobs();
@@ -335,12 +365,34 @@ export default function Turing() {
   }, [gpuOnlyFilter]);
 
   useEffect(() => {
+    try {
+      const rawAutoRefresh = localStorage.getItem(SESSION_AUTO_REFRESH_KEY);
+      if (rawAutoRefresh !== null) setSessionAutoRefresh(rawAutoRefresh === "true");
+      const rawInterval = localStorage.getItem(SESSION_REFRESH_INTERVAL_KEY);
+      if (rawInterval !== null) {
+        const parsed = parseInt(rawInterval, 10);
+        if (!isNaN(parsed) && parsed >= 1) setSessionRefreshInterval(parsed);
+      }
+    } catch {
+      // Use defaults
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(SESSION_AUTO_REFRESH_KEY, String(sessionAutoRefresh));
+  }, [sessionAutoRefresh]);
+
+  useEffect(() => {
+    localStorage.setItem(SESSION_REFRESH_INTERVAL_KEY, String(sessionRefreshInterval));
+  }, [sessionRefreshInterval]);
+
+  useEffect(() => {
     if (!sessionViewerOpen || !sessionAutoRefresh || !sessionViewerName) return;
     const interval = setInterval(() => {
       fetchSessionOutput(sessionViewerName);
-    }, 2000);
+    }, sessionRefreshInterval * 1000);
     return () => clearInterval(interval);
-  }, [sessionViewerOpen, sessionAutoRefresh, sessionViewerName, fetchSessionOutput]);
+  }, [sessionViewerOpen, sessionAutoRefresh, sessionViewerName, sessionRefreshInterval, fetchSessionOutput]);
 
   useEffect(() => {
     if (sessionOutputRef.current && sessionOutput) {
@@ -1039,12 +1091,40 @@ export default function Turing() {
 
       {/* Session Output Viewer Modal */}
       {sessionViewerOpen && (
-        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50">
-          <div className="bg-black border border-white/20 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col mx-4">
+        <div
+          className="fixed inset-0 bg-black/90 flex items-center justify-center z-50"
+          onClick={handleSessionModalBackdropClick}
+        >
+          <div
+            ref={sessionModalRef}
+            className="bg-black border border-white/20 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col mx-4"
+          >
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                {viewableSessions.length > 1 && (
+                  <button
+                    onClick={() => navigateSession(-1)}
+                    className="px-2 py-1 text-white/60 hover:text-white hover:bg-white/10 rounded transition-colors"
+                    title="Previous session"
+                  >
+                    ←
+                  </button>
+                )}
                 <h3 className="text-lg font-semibold font-mono">{sessionViewerName}</h3>
-                <span className="text-xs text-white/40">tmux session</span>
+                {viewableSessions.length > 1 && (
+                  <button
+                    onClick={() => navigateSession(1)}
+                    className="px-2 py-1 text-white/60 hover:text-white hover:bg-white/10 rounded transition-colors"
+                    title="Next session"
+                  >
+                    →
+                  </button>
+                )}
+                <span className="text-xs text-white/40 ml-2">
+                  {viewableSessions.length > 1
+                    ? `${viewableSessions.indexOf(sessionViewerName) + 1}/${viewableSessions.length}`
+                    : "tmux session"}
+                </span>
               </div>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-2 text-sm text-white/60 cursor-pointer select-none">
@@ -1067,6 +1147,19 @@ export default function Turing() {
                   </span>
                   Auto
                 </label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="1"
+                    value={sessionRefreshInterval}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!isNaN(val) && val >= 1) setSessionRefreshInterval(val);
+                    }}
+                    className="w-12 px-2 py-1 text-xs bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
+                  />
+                  <span className="text-xs text-white/40">s</span>
+                </div>
                 <button
                   onClick={() => fetchSessionOutput(sessionViewerName)}
                   disabled={sessionOutputLoading}
@@ -1075,10 +1168,7 @@ export default function Turing() {
                   {sessionOutputLoading ? "..." : "Refresh"}
                 </button>
                 <button
-                  onClick={() => {
-                    setSessionViewerOpen(false);
-                    setSessionAutoRefresh(false);
-                  }}
+                  onClick={() => setSessionViewerOpen(false)}
                   className="text-white/60 hover:text-white px-2"
                 >
                   ✕
