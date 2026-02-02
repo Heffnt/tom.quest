@@ -1,11 +1,10 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getTuringUrl, getHeaders } from "@/app/lib/turing";
+import { fetchTuring, getHeaders } from "@/app/lib/turing";
 
 export async function POST(request: NextRequest) {
   try {
-    const baseUrl = await getTuringUrl();
     const body = await request.json();
-    const res = await fetch(`${baseUrl}/allocate`, {
+    const res = await fetchTuring("/allocate", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

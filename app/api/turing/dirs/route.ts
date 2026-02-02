@@ -1,14 +1,11 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getTuringUrl, getHeaders } from "@/app/lib/turing";
+import { fetchTuring, getHeaders } from "@/app/lib/turing";
 
 export async function GET(request: NextRequest) {
   try {
-    const baseUrl = await getTuringUrl();
     const { searchParams } = new URL(request.url);
     const path = searchParams.get("path") || "~";
-    const url = new URL(`${baseUrl}/dirs`);
-    url.searchParams.set("path", path);
-    const res = await fetch(url.toString(), {
+    const res = await fetchTuring(`/dirs?path=${encodeURIComponent(path)}`, {
       headers: getHeaders(),
       cache: "no-store",
     });

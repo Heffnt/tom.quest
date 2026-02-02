@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTuringUrl, getHeaders } from "@/app/lib/turing";
+import { fetchTuring, getHeaders } from "@/app/lib/turing";
 
 export async function GET(
   request: NextRequest,
@@ -9,9 +9,8 @@ export async function GET(
     const { sessionName } = await params;
     const { searchParams } = new URL(request.url);
     const lines = searchParams.get("lines") || "500";
-    const baseUrl = await getTuringUrl();
-    const res = await fetch(
-      `${baseUrl}/sessions/${encodeURIComponent(sessionName)}/output?lines=${lines}`,
+    const res = await fetchTuring(
+      `/sessions/${encodeURIComponent(sessionName)}/output?lines=${encodeURIComponent(lines)}`,
       {
         headers: getHeaders(),
         cache: "no-store",

@@ -5,8 +5,18 @@ let cachedUrl: string | null = null;
 let cacheTime = 0;
 const CACHE_TTL_MS = 60_000; // 1 minute
 
-export async function getTuringUrl(): Promise<string> {
-  if (cachedUrl && Date.now() - cacheTime < CACHE_TTL_MS) {
+type TuringUrlOptions = {
+  forceRefresh?: boolean;
+};
+
+function buildTuringUrl(baseUrl: string, path: string): string {
+  const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+export async function getTuringUrl(options: TuringUrlOptions = {}): Promise<string> {
+  if (!options.forceRefresh && cachedUrl && Date.now() - cacheTime < CACHE_TTL_MS) {
     return cachedUrl;
   }
   if (!TURING_URL_GIST) {
@@ -22,6 +32,16 @@ export async function getTuringUrl(): Promise<string> {
     }
   } catch {}
   return cachedUrl || "http://localhost:8000";
+}
+
+export async function fetchTuring(path: string, init?: RequestInit): Promise<Response> {
+  const baseUrl = await getTuringUrl();
+  try {
+    return await fetch(buildTuringUrl(baseUrl, path), init);
+  } catch (error) {
+    const refreshedUrl = await getTuringUrl({ forceRefresh: true });
+    return await fetch(buildTuringUrl(refreshedUrl, path), init);
+  }
 }
 
 export function getApiKey(): string {

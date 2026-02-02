@@ -73,6 +73,7 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-29] GPU Availability: visual SVG grid with per-node GPU boxes + memory bars, API returns per-node data instead of aggregates
 - [2026-01-29] GPU grid: partition hierarchy, collapsible sections (localStorage), gpu-only filter toggle, removed notes (replaced by implemented features)
 - [2026-01-30] Replaced GNU screen with tmux: better VSCode scrolling, session output viewable from web via `tmux capture-pane`
+- [2026-02-02] Proxy fetch failures after tunnel changes → retry once with forced gist refresh
 
 ## Placeholders
 - /projects: showcase work

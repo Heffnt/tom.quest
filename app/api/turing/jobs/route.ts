@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { getTuringUrl, getHeaders } from "@/app/lib/turing";
+import { fetchTuring, getHeaders } from "@/app/lib/turing";
 
 export async function GET() {
   try {
-    const baseUrl = await getTuringUrl();
-    const res = await fetch(`${baseUrl}/jobs`, {
+    const res = await fetchTuring("/jobs", {
       headers: getHeaders(),
       cache: "no-store",
     });
