@@ -9,10 +9,40 @@ type TuringUrlOptions = {
   forceRefresh?: boolean;
 };
 
+function isValidTuringUrl(value: string): boolean {
+  return value.startsWith("http://") || value.startsWith("https://");
+}
+
 function buildTuringUrl(baseUrl: string, path: string): string {
   const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${normalizedBase}${normalizedPath}`;
+}
+
+function describeCause(cause: unknown): string | null {
+  if (!cause) return null;
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === "string") return cause;
+  if (typeof cause === "object") {
+    const typed = cause as { code?: unknown; syscall?: unknown; address?: unknown; port?: unknown; message?: unknown };
+    const parts = [
+      typed.code ? `code=${String(typed.code)}` : null,
+      typed.syscall ? `syscall=${String(typed.syscall)}` : null,
+      typed.address ? `address=${String(typed.address)}` : null,
+      typed.port ? `port=${String(typed.port)}` : null,
+      typed.message ? `message=${String(typed.message)}` : null,
+    ].filter(Boolean);
+    if (parts.length > 0) return parts.join(" ");
+  }
+  return String(cause);
+}
+
+function formatFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const parts = [error.message];
+  const causeText = describeCause((error as { cause?: unknown }).cause);
+  if (causeText && causeText !== error.message) parts.push(`cause: ${causeText}`);
+  return parts.join("; ");
 }
 
 export async function getTuringUrl(options: TuringUrlOptions = {}): Promise<string> {
@@ -26,9 +56,12 @@ export async function getTuringUrl(options: TuringUrlOptions = {}): Promise<stri
     const res = await fetch(TURING_URL_GIST, { cache: "no-store" });
     if (res.ok) {
       const text = await res.text();
-      cachedUrl = text.trim();
-      cacheTime = Date.now();
-      return cachedUrl;
+      const nextUrl = text.trim();
+      if (isValidTuringUrl(nextUrl)) {
+        cachedUrl = nextUrl;
+        cacheTime = Date.now();
+        return cachedUrl;
+      }
     }
   } catch {}
   return cachedUrl || "http://localhost:8000";
@@ -40,7 +73,14 @@ export async function fetchTuring(path: string, init?: RequestInit): Promise<Res
     return await fetch(buildTuringUrl(baseUrl, path), init);
   } catch (error) {
     const refreshedUrl = await getTuringUrl({ forceRefresh: true });
-    return await fetch(buildTuringUrl(refreshedUrl, path), init);
+    try {
+      return await fetch(buildTuringUrl(refreshedUrl, path), init);
+    } catch (retryError) {
+      const detail = formatFetchError(retryError);
+      const baseLabel = isValidTuringUrl(baseUrl) ? baseUrl : "invalid url";
+      const retryLabel = isValidTuringUrl(refreshedUrl) ? refreshedUrl : "invalid url";
+      throw new Error(`Upstream fetch failed (${baseLabel} -> ${retryLabel}): ${detail}`);
+    }
   }
 }
 

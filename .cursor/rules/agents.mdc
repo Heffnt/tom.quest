@@ -1,9 +1,9 @@
 ---
-description: Project context for TOM.quest - UPDATE THIS FILE after any changes or fixes
+description: Project context for tom.Quest - UPDATE THIS FILE after any changes or fixes
 alwaysApply: true
 ---
 
-# TOM.quest
+# tom.Quest
 
 **AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. This prevents repeated mistakes and keeps context accurate.**
 
@@ -74,6 +74,7 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-29] GPU grid: partition hierarchy, collapsible sections (localStorage), gpu-only filter toggle, removed notes (replaced by implemented features)
 - [2026-01-30] Replaced GNU screen with tmux: better VSCode scrolling, session output viewable from web via `tmux capture-pane`
 - [2026-02-02] Proxy fetch failures after tunnel changes → retry once with forced gist refresh
+- [2026-02-02] Proxy fetch failed had no cause info → validate gist URL, surface fetch cause details
 
 ## Placeholders
 - /projects: showcase work
