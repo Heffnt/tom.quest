@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { UAParser } from "ua-parser-js";
 import { createBrowserSupabaseClient, isSupabaseConfigured } from "../lib/supabase";
 import { SupabaseClient } from "@supabase/supabase-js";
+import { logDebug } from "../lib/debug";
 
 function generateDeviceId(): string {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -36,6 +37,9 @@ export default function DeviceTracker() {
     if (!initializedRef.current && isSupabaseConfigured()) {
       supabaseRef.current = createBrowserSupabaseClient();
       initializedRef.current = true;
+      logDebug("info", "Device tracker initialized");
+    } else if (!isSupabaseConfigured()) {
+      logDebug("info", "Device tracker disabled (Supabase not configured)");
     }
   }, []);
 
@@ -55,24 +59,28 @@ export default function DeviceTracker() {
     if (!supabase) return;
     const deviceId = getOrCreateDeviceId();
     const deviceName = getDeviceName();
-    const { data: existing } = await supabase
-      .from("devices")
-      .select("id, total_visits")
-      .eq("device_id", deviceId)
-      .single();
-    if (existing) {
-      await supabase
+    try {
+      const { data: existing } = await supabase
         .from("devices")
-        .update({
-          last_seen: new Date().toISOString(),
-          total_visits: existing.total_visits + 1,
-        })
-        .eq("device_id", deviceId);
-    } else {
-      await supabase.from("devices").insert({
-        device_id: deviceId,
-        device_name: deviceName,
-      });
+        .select("id, total_visits")
+        .eq("device_id", deviceId)
+        .single();
+      if (existing) {
+        await supabase
+          .from("devices")
+          .update({
+            last_seen: new Date().toISOString(),
+            total_visits: existing.total_visits + 1,
+          })
+          .eq("device_id", deviceId);
+      } else {
+        await supabase.from("devices").insert({
+          device_id: deviceId,
+          device_name: deviceName,
+        });
+      }
+    } catch (error) {
+      logDebug("error", "Device register failed", { error: error instanceof Error ? error.message : "Unknown error" });
     }
   }, [getOrCreateDeviceId]);
 
@@ -80,16 +88,20 @@ export default function DeviceTracker() {
     const supabase = supabaseRef.current;
     if (!supabase) return;
     const deviceId = getOrCreateDeviceId();
-    const { data } = await supabase
-      .from("page_visits")
-      .insert({
-        device_id: deviceId,
-        path,
-      })
-      .select("id")
-      .single();
-    if (data) {
-      visitIdRef.current = data.id;
+    try {
+      const { data } = await supabase
+        .from("page_visits")
+        .insert({
+          device_id: deviceId,
+          path,
+        })
+        .select("id")
+        .single();
+      if (data) {
+        visitIdRef.current = data.id;
+      }
+    } catch (error) {
+      logDebug("error", "Page visit log failed", { error: error instanceof Error ? error.message : "Unknown error" });
     }
   }, [getOrCreateDeviceId]);
 
@@ -98,25 +110,29 @@ export default function DeviceTracker() {
     const supabase = supabaseRef.current;
     if (!supabase) return;
     const duration = Math.round((Date.now() - pageEnterTimeRef.current) / 1000);
-    await supabase
-      .from("page_visits")
-      .update({ duration_seconds: duration })
-      .eq("id", visitIdRef.current);
-    // Also update total time on device
-    const deviceId = getOrCreateDeviceId();
-    const { data: device } = await supabase
-      .from("devices")
-      .select("total_time_seconds")
-      .eq("device_id", deviceId)
-      .single();
-    if (device) {
+    try {
       await supabase
+        .from("page_visits")
+        .update({ duration_seconds: duration })
+        .eq("id", visitIdRef.current);
+      // Also update total time on device
+      const deviceId = getOrCreateDeviceId();
+      const { data: device } = await supabase
         .from("devices")
-        .update({
-          total_time_seconds: device.total_time_seconds + duration,
-          last_seen: new Date().toISOString(),
-        })
-        .eq("device_id", deviceId);
+        .select("total_time_seconds")
+        .eq("device_id", deviceId)
+        .single();
+      if (device) {
+        await supabase
+          .from("devices")
+          .update({
+            total_time_seconds: device.total_time_seconds + duration,
+            last_seen: new Date().toISOString(),
+          })
+          .eq("device_id", deviceId);
+      }
+    } catch (error) {
+      logDebug("error", "Visit duration update failed", { error: error instanceof Error ? error.message : "Unknown error" });
     }
   }, [getOrCreateDeviceId]);
 

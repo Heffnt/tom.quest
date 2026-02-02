@@ -2,15 +2,20 @@
 
 import { useState } from "react";
 import { useAuth } from "./AuthProvider";
+import { logDebug } from "../lib/debug";
 
 interface LoginModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+function normalizeUsername(username: string): string {
+  return username.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 // Generate fake email from username for Supabase
 function usernameToEmail(username: string): string {
-  return `${username.toLowerCase().replace(/[^a-z0-9]/g, "")}@tom.quest`;
+  return `${normalizeUsername(username)}@tom.quest`;
 }
 
 export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
@@ -28,8 +33,15 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
     setError(null);
     setLoading(true);
 
-    if (!username.trim()) {
+    const rawUsername = username.trim();
+    const normalized = normalizeUsername(rawUsername);
+    if (!rawUsername) {
       setError("Username is required");
+      setLoading(false);
+      return;
+    }
+    if (!normalized) {
+      setError("Username must contain letters or numbers");
       setLoading(false);
       return;
     }
@@ -37,16 +49,25 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
     try {
       if (mode === "signin") {
         // Sign in using generated email from username
-        const email = usernameToEmail(username.trim());
+        const email = usernameToEmail(rawUsername);
+        logDebug("request", "Sign in attempt", { username: rawUsername });
         const { error } = await signIn(email, password);
         if (error) {
-          setError("Invalid username or password");
+          logDebug("error", "Sign in failed", { message: error.message });
+          if (error.message.includes("Supabase not configured")) {
+            setError("Sign in is not available yet");
+          } else {
+            setError("Invalid username or password");
+          }
         } else {
+          logDebug("info", "Sign in success", { username: rawUsername });
           onClose();
         }
       } else {
-        const { error } = await signUp(username.trim(), password);
+        logDebug("request", "Sign up attempt", { username: rawUsername });
+        const { error } = await signUp(rawUsername, password);
         if (error) {
+          logDebug("error", "Sign up failed", { message: error.message });
           if (error.message.includes("already registered")) {
             setError("Username already taken");
           } else {
@@ -54,16 +75,19 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
           }
         } else {
           // Auto sign in after signup
-          const email = usernameToEmail(username.trim());
+          const email = usernameToEmail(rawUsername);
           const { error: signInError } = await signIn(email, password);
           if (signInError) {
+            logDebug("error", "Auto sign in failed", { message: signInError.message });
             setError("Account created! Please sign in.");
           } else {
+            logDebug("info", "Sign up success", { username: rawUsername });
             onClose();
           }
         }
       }
     } catch {
+      logDebug("error", "Auth unexpected error");
       setError("An unexpected error occurred");
     } finally {
       setLoading(false);

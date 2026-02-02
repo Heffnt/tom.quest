@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Message } from "../lib/supabase";
+import { logDebug } from "../lib/debug";
 
 interface ChatInterfaceProps {
   isOpen: boolean;
@@ -13,6 +14,7 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -20,13 +22,17 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
   const fetchMessages = useCallback(async () => {
     if (!deviceId) return;
     try {
+      logDebug("request", "Fetch chat messages", { deviceId });
       const res = await fetch(`/api/chat/messages?deviceId=${deviceId}`);
       const data = await res.json();
       if (data.messages) {
         setMessages(data.messages);
+        logDebug("response", "Fetched chat messages", { count: data.messages.length });
+      } else if (data.error) {
+        logDebug("error", "Failed to fetch messages", { error: data.error });
       }
     } catch {
-      // Ignore errors
+      logDebug("error", "Fetch messages failed");
     }
   }, [deviceId]);
 
@@ -58,7 +64,9 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
   const sendMessage = async () => {
     if (!input.trim() || !deviceId || sending) return;
     setSending(true);
+    setSendError(null);
     try {
+      logDebug("request", "Send chat message", { deviceId, length: input.trim().length });
       const res = await fetch("/api/chat/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -68,12 +76,19 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
           fromTom: false,
         }),
       });
-      if (res.ok) {
-        setInput("");
-        fetchMessages();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const errorMessage = data?.error || "Failed to send message";
+        setSendError(errorMessage);
+        logDebug("error", "Send message failed", { error: errorMessage });
+        return;
       }
+      logDebug("response", "Send message success");
+      setInput("");
+      fetchMessages();
     } catch {
-      // Ignore errors
+      setSendError("Failed to send message");
+      logDebug("error", "Send message failed");
     } finally {
       setSending(false);
     }
@@ -154,6 +169,9 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
               Send
             </button>
           </div>
+          {sendError && (
+            <p className="text-red-400 text-sm mt-2">{sendError}</p>
+          )}
         </div>
       </div>
     </div>

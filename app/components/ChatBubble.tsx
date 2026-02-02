@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useAuth } from "./AuthProvider";
 import LoginModal from "./LoginModal";
 import ChatInterface from "./ChatInterface";
+import { logDebug } from "../lib/debug";
 
 export default function ChatBubble() {
   const { user, profile } = useAuth();
@@ -17,11 +18,15 @@ export default function ChatBubble() {
     const storedDeviceId = localStorage.getItem("device_id");
     if (storedDeviceId) {
       // Fetch device info to get the name
+      logDebug("request", "Fetch device info", { deviceId: storedDeviceId });
       fetch(`/api/chat/devices?deviceId=${storedDeviceId}`)
         .then((res) => res.json())
         .then((data) => {
           if (data.device) {
             setDeviceName(data.device.device_name);
+            logDebug("response", "Device info loaded");
+          } else if (data.error) {
+            logDebug("error", "Device info error", { error: data.error });
           }
         })
         .catch(() => {});
@@ -34,10 +39,14 @@ export default function ChatBubble() {
       const deviceId = localStorage.getItem("device_id");
       if (!deviceId) return;
       try {
+        logDebug("request", "Check chat replies", { deviceId });
         const res = await fetch(`/api/chat/messages?deviceId=${deviceId}`);
         const data = await res.json();
         if (data.messages?.some((m: { from_tom: boolean }) => m.from_tom)) {
           setHasReplies(true);
+        }
+        if (data.error) {
+          logDebug("error", "Check replies error", { error: data.error });
         }
       } catch {
         // Ignore errors

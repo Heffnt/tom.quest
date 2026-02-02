@@ -43,10 +43,12 @@ app/
 │   ├── LoginModal.tsx       # Sign in/up modal
 │   ├── ChatBubble.tsx       # Floating chat + login buttons
 │   ├── ChatInterface.tsx    # Chat modal
+│   ├── DebugTerminal.tsx    # Client debug terminal (home page)
 │   ├── DeviceTracker.tsx    # Device registration + page tracking
 │   ├── ClientProviders.tsx  # Wraps auth/chat in layout
 │   └── Navigation.tsx       # Nav with conditional Tom links
 └── lib/
+    ├── debug.ts             # Client debug logger
     ├── supabase.ts          # Supabase client + types
     └── turing.ts            # Turing URL resolution (Tom's gist or user's connection)
 
@@ -55,7 +57,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 ```
 
 ## Auth & Chat System
-- Supabase Auth: email/password signup/signin
+- Supabase Auth: username/password signup/signin (email derived as `{normalizedUsername}@tom.quest`)
 - Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `TOM_USER_ID`
 - Tom identified by `TOM_USER_ID` env var matching Supabase user ID
 - DB tables: `profiles`, `devices`, `messages`, `page_visits`, `turing_connections`
@@ -63,6 +65,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - ChatBubble: floating top-left, "Tell Tom something!" + login/user icon
 - Chat (Tom) page: visible only to Tom, shows all devices, conversations, device info modal
 - Polling: chat polls every 5s when open
+ - Home page includes DebugTerminal for client-side logs
 
 ## Multi-User Turing
 - Guests/non-connected users: view Tom's dashboard (read-only)
@@ -120,6 +123,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-02] Added auth + chat system: Supabase Auth, device tracking, chat bubble, Tom's dashboard
 - [2026-02-02] Added multi-user Turing: users can connect own backend, read-only mode for guests
 - [2026-02-02] ua-parser-js import fix: use named export `{ UAParser }` not default
+- [2026-02-02] Username-only auth: generate emails from username, disable email confirmation
+- [2026-02-02] Home debug terminal + client debug logging for auth/chat/device issues
 
 ## Placeholders
 - /projects: showcase work

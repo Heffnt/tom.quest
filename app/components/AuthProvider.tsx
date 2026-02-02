@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient, Profile, TuringConnection } from "../lib/supabase";
+import { logDebug } from "../lib/debug";
 
 interface AuthContextType {
   user: User | null;
@@ -19,6 +20,14 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+function normalizeUsername(username: string): string {
+  return username.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function usernameToEmail(username: string): string {
+  return `${normalizeUsername(username)}@tom.quest`;
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [supabase] = useState<SupabaseClient | null>(() => createBrowserSupabaseClient());
@@ -61,15 +70,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!supabase) {
+      logDebug("info", "Supabase not configured");
       setLoading(false);
       return;
     }
 
     const initAuth = async () => {
+      logDebug("request", "Auth init");
       const { data: { session } } = await supabase.auth.getSession();
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
+        logDebug("info", "Session found", { userId: session.user.id });
         await Promise.all([
           fetchProfile(session.user.id),
           fetchTuringConnection(session.user.id),
@@ -82,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      logDebug("info", "Auth state change", { event, hasSession: !!session });
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
@@ -116,14 +129,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signUp = async (username: string, password: string) => {
     if (!supabase) return { error: new Error("Supabase not configured") };
+    const normalized = normalizeUsername(username);
+    if (!normalized) return { error: new Error("Username must contain letters or numbers") };
     // Generate a fake email from username (Supabase requires email)
-    const email = `${username.toLowerCase().replace(/[^a-z0-9]/g, "")}@tom.quest`;
+    const email = usernameToEmail(username);
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: { username },
-        emailRedirectTo: undefined,
       },
     });
     return { error: error as Error | null };
