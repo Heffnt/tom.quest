@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TOM.quest | Tom Heffernan",
+  title: "tom.Quest",
   description: "The personal website of Tom Heffernan - PhD Student in Artificial Intelligence at WPI",
 };
 
