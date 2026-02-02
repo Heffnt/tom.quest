@@ -70,7 +70,10 @@ export async function getTuringUrl(options: TuringUrlOptions = {}): Promise<stri
 export async function fetchTuring(path: string, init?: RequestInit): Promise<Response> {
   const baseUrl = await getTuringUrl();
   try {
-    return await fetch(buildTuringUrl(baseUrl, path), init);
+    const res = await fetch(buildTuringUrl(baseUrl, path), init);
+    if (res.status !== 530) return res;
+    const refreshedUrl = await getTuringUrl({ forceRefresh: true });
+    return await fetch(buildTuringUrl(refreshedUrl, path), init);
   } catch (error) {
     const refreshedUrl = await getTuringUrl({ forceRefresh: true });
     try {

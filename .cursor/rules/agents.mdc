@@ -75,6 +75,7 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-01-30] Replaced GNU screen with tmux: better VSCode scrolling, session output viewable from web via `tmux capture-pane`
 - [2026-02-02] Proxy fetch failures after tunnel changes → retry once with forced gist refresh
 - [2026-02-02] Proxy fetch failed had no cause info → validate gist URL, surface fetch cause details
+- [2026-02-02] Cloudflare 530 after restart → force gist refresh + retry on 530
 
 ## Placeholders
 - /projects: showcase work
