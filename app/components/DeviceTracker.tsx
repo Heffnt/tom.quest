@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import { usePathname } from "next/navigation";
-import UAParser from "ua-parser-js";
+import { UAParser } from "ua-parser-js";
 import { createBrowserSupabaseClient } from "../lib/supabase";
 
 function generateDeviceId(): string {
