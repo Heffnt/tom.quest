@@ -8,7 +8,7 @@ alwaysApply: true
 **AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. This prevents repeated mistakes and keeps context accurate.**
 
 ## Rules
-- always commit after making changes
+- always commit and push after making changes
 - always style the site name as tom.Quest
 - avoid number input spinners; use text inputs for numeric intervals
 

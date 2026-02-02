@@ -8,43 +8,59 @@ interface LoginModalProps {
   onClose: () => void;
 }
 
+// Generate fake email from username for Supabase
+function usernameToEmail(username: string): string {
+  return `${username.toLowerCase().replace(/[^a-z0-9]/g, "")}@tom.quest`;
+}
+
 export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const { signIn, signUp } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSuccess(null);
     setLoading(true);
+
+    if (!username.trim()) {
+      setError("Username is required");
+      setLoading(false);
+      return;
+    }
 
     try {
       if (mode === "signin") {
+        // Sign in using generated email from username
+        const email = usernameToEmail(username.trim());
         const { error } = await signIn(email, password);
         if (error) {
-          setError(error.message);
+          setError("Invalid username or password");
         } else {
           onClose();
         }
       } else {
-        if (!username.trim()) {
-          setError("Username is required");
-          setLoading(false);
-          return;
-        }
-        const { error } = await signUp(email, password, username.trim());
+        const { error } = await signUp(username.trim(), password);
         if (error) {
-          setError(error.message);
+          if (error.message.includes("already registered")) {
+            setError("Username already taken");
+          } else {
+            setError(error.message);
+          }
         } else {
-          setSuccess("Check your email to confirm your account!");
+          // Auto sign in after signup
+          const email = usernameToEmail(username.trim());
+          const { error: signInError } = await signIn(email, password);
+          if (signInError) {
+            setError("Account created! Please sign in.");
+          } else {
+            onClose();
+          }
         }
       }
     } catch {
@@ -57,7 +73,6 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const switchMode = () => {
     setMode(mode === "signin" ? "signup" : "signin");
     setError(null);
-    setSuccess(null);
   };
 
   return (
@@ -78,28 +93,14 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
         </h2>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {mode === "signup" && (
-            <div>
-              <label className="block text-sm text-white/60 mb-1">Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white focus:outline-none focus:border-white/30"
-                placeholder="Choose a username"
-                required
-              />
-            </div>
-          )}
-
           <div>
-            <label className="block text-sm text-white/60 mb-1">Email</label>
+            <label className="block text-sm text-white/60 mb-1">Username</label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
               className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white focus:outline-none focus:border-white/30"
-              placeholder="you@example.com"
+              placeholder={mode === "signin" ? "Your username" : "Choose a username"}
               required
             />
           </div>
@@ -119,10 +120,6 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
 
           {error && (
             <p className="text-red-400 text-sm">{error}</p>
-          )}
-
-          {success && (
-            <p className="text-green-400 text-sm">{success}</p>
           )}
 
           <button

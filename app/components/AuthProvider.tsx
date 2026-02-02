@@ -12,7 +12,7 @@ interface AuthContextType {
   isTom: boolean;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, username: string) => Promise<{ error: Error | null }>;
+  signUp: (username: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   refreshTuringConnection: () => Promise<void>;
@@ -114,13 +114,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error as Error | null };
   };
 
-  const signUp = async (email: string, password: string, username: string) => {
+  const signUp = async (username: string, password: string) => {
     if (!supabase) return { error: new Error("Supabase not configured") };
+    // Generate a fake email from username (Supabase requires email)
+    const email = `${username.toLowerCase().replace(/[^a-z0-9]/g, "")}@tom.quest`;
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: { username },
+        emailRedirectTo: undefined,
       },
     });
     return { error: error as Error | null };
