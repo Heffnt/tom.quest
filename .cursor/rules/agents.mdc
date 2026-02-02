@@ -8,9 +8,10 @@ alwaysApply: true
 **AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. This prevents repeated mistakes and keeps context accurate.**
 
 ## Stack
-Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Geist fonts | Vercel
+Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel
 
 ## Design
+- Font: Poppins via `--font-app` in `app/layout.tsx`
 - Colors: black bg, white text (60%/40% opacity for secondary)
 - Layout: max-w-3xl mx-auto, px-6 py-16, min-h-screen
 - Animations: animate-fade-in, animate-fade-in-delay (globals.css)
