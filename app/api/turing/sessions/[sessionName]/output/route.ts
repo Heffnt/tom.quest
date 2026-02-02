@@ -6,6 +6,7 @@ export async function GET(
   { params }: { params: Promise<{ sessionName: string }> }
 ) {
   try {
+    const userId = request.headers.get("x-user-id") || undefined;
     const { sessionName } = await params;
     const { searchParams } = new URL(request.url);
     const lines = searchParams.get("lines") || "500";
@@ -14,7 +15,8 @@ export async function GET(
       {
         headers: getHeaders(),
         cache: "no-store",
-      }
+      },
+      userId
     );
     if (!res.ok) {
       const data = await res.json().catch(() => null);

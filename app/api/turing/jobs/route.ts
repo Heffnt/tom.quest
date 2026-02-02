@@ -1,12 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { fetchTuring, getHeaders } from "@/app/lib/turing";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const userId = request.headers.get("x-user-id") || undefined;
     const res = await fetchTuring("/jobs", {
       headers: getHeaders(),
       cache: "no-store",
-    });
+    }, userId);
     if (!res.ok) {
       return NextResponse.json(
         { error: "Failed to fetch jobs" },

@@ -1,3 +1,5 @@
+import { createServerSupabaseClient, isTomUser } from "./supabase";
+
 const TURING_URL_GIST = process.env.TURING_URL_GIST || "";
 const TURING_API_KEY = process.env.TURING_API_KEY || "";
 
@@ -45,7 +47,8 @@ function formatFetchError(error: unknown): string {
   return parts.join("; ");
 }
 
-export async function getTuringUrl(options: TuringUrlOptions = {}): Promise<string> {
+// Get Tom's Turing URL from gist
+export async function getTomTuringUrl(options: TuringUrlOptions = {}): Promise<string> {
   if (!options.forceRefresh && cachedUrl && Date.now() - cacheTime < CACHE_TTL_MS) {
     return cachedUrl;
   }
@@ -67,23 +70,64 @@ export async function getTuringUrl(options: TuringUrlOptions = {}): Promise<stri
   return cachedUrl || "http://localhost:8000";
 }
 
-export async function fetchTuring(path: string, init?: RequestInit): Promise<Response> {
-  const baseUrl = await getTuringUrl();
+// Get user's Turing URL from database
+export async function getUserTuringUrl(userId: string): Promise<string | null> {
+  const supabase = createServerSupabaseClient();
+  const { data } = await supabase
+    .from("turing_connections")
+    .select("tunnel_url")
+    .eq("user_id", userId)
+    .single();
+  return data?.tunnel_url || null;
+}
+
+// Get the appropriate Turing URL for a user
+export async function getTuringUrl(userId?: string, options: TuringUrlOptions = {}): Promise<string> {
+  // If user is Tom, use Tom's URL
+  if (userId && isTomUser(userId)) {
+    return getTomTuringUrl(options);
+  }
+  // If user has their own connection, use that
+  if (userId) {
+    const userUrl = await getUserTuringUrl(userId);
+    if (userUrl) return userUrl;
+  }
+  // Default to Tom's URL (for read-only access)
+  return getTomTuringUrl(options);
+}
+
+// Check if user can write (has own connection or is Tom)
+export async function canUserWrite(userId?: string): Promise<boolean> {
+  if (!userId) return false;
+  if (isTomUser(userId)) return true;
+  const userUrl = await getUserTuringUrl(userId);
+  return !!userUrl;
+}
+
+// Fetch from user's Turing backend or Tom's
+export async function fetchTuring(path: string, init?: RequestInit, userId?: string): Promise<Response> {
+  const baseUrl = await getTuringUrl(userId);
   try {
     const res = await fetch(buildTuringUrl(baseUrl, path), init);
     if (res.status !== 530) return res;
-    const refreshedUrl = await getTuringUrl({ forceRefresh: true });
-    return await fetch(buildTuringUrl(refreshedUrl, path), init);
-  } catch (error) {
-    const refreshedUrl = await getTuringUrl({ forceRefresh: true });
-    try {
+    // Only retry with refresh for Tom's URL (gist-based)
+    if (!userId || isTomUser(userId)) {
+      const refreshedUrl = await getTomTuringUrl({ forceRefresh: true });
       return await fetch(buildTuringUrl(refreshedUrl, path), init);
-    } catch (retryError) {
-      const detail = formatFetchError(retryError);
-      const baseLabel = isValidTuringUrl(baseUrl) ? baseUrl : "invalid url";
-      const retryLabel = isValidTuringUrl(refreshedUrl) ? refreshedUrl : "invalid url";
-      throw new Error(`Upstream fetch failed (${baseLabel} -> ${retryLabel}): ${detail}`);
     }
+    return res;
+  } catch (error) {
+    // Only retry with refresh for Tom's URL
+    if (!userId || isTomUser(userId)) {
+      const refreshedUrl = await getTomTuringUrl({ forceRefresh: true });
+      try {
+        return await fetch(buildTuringUrl(refreshedUrl, path), init);
+      } catch (retryError) {
+        const detail = formatFetchError(retryError);
+        throw new Error(`Upstream fetch failed: ${detail}`);
+      }
+    }
+    throw new Error(`Upstream fetch failed: ${formatFetchError(error)}`);
   }
 }
 

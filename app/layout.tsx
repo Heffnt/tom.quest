@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Poppins } from "next/font/google";
 import "./globals.css";
 import Navigation from "./components/Navigation";
+import ClientProviders from "./components/ClientProviders";
 
 const appFont = Poppins({
   variable: "--font-app",
@@ -24,10 +25,12 @@ export default function RootLayout({
       <body
         className={`${appFont.variable} antialiased`}
       >
-        <Navigation />
-        <main className="pt-16">
-          {children}
-        </main>
+        <ClientProviders>
+          <Navigation />
+          <main className="pt-16">
+            {children}
+          </main>
+        </ClientProviders>
       </body>
     </html>
   );

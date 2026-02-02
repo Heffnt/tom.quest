@@ -3,6 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { useAuth } from "./AuthProvider";
 
 const navLinks = [
   { href: "/", label: "Home" },
@@ -14,6 +15,11 @@ const navLinks = [
 
 export default function Navigation() {
   const pathname = usePathname();
+  const { isTom } = useAuth();
+
+  const allLinks = isTom
+    ? [...navLinks, { href: "/chat-tom", label: "Chat (Tom)" }]
+    : navLinks;
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-sm border-b border-white/10">
@@ -31,7 +37,7 @@ export default function Navigation() {
             />
           </Link>
           <div className="flex gap-6">
-            {navLinks.slice(1).map((link) => (
+            {allLinks.slice(1).map((link) => (
               <Link
                 key={link.href}
                 href={link.href}

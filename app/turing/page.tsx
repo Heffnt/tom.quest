@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useAuth } from "../components/AuthProvider";
 
 interface GPUTypeInfo {
   type: string;
@@ -61,6 +62,24 @@ interface DebugLogEntry {
   duration?: number;
 }
 
+const isGpuNamedNode = (node: NodeInfo) => node.name.toLowerCase().includes("gpu");
+const isNonAcademicPartition = (partition: string) => !partition.toLowerCase().includes("academic");
+const getGpuTotals = (nodes: NodeInfo[]) => {
+  return nodes.reduce(
+    (totals, node) => {
+      if (node.state === "up") {
+        const free = Math.max(node.total_gpus - node.allocated_gpus, 0);
+        totals.free += free;
+        totals.inUse += Math.max(node.allocated_gpus, 0);
+      } else {
+        totals.down += Math.max(node.total_gpus, 0);
+      }
+      return totals;
+    },
+    { free: 0, inUse: 0, down: 0 }
+  );
+};
+
 const API_BASE = "/api/turing";
 const SAVED_COMMANDS_KEY = "turing_project_commands";
 const AUTO_REFRESH_KEY = "turing_auto_refresh";
@@ -72,18 +91,28 @@ const SESSION_REFRESH_INTERVAL_KEY = "turing_session_refresh_interval";
 const GPU_TYPE_LABELS: Record<string, string> = { nvidia: "H100", tesla: "V100" };
 
 export default function Turing() {
+  const { user, isTom, turingConnection, refreshTuringConnection, loading: authLoading } = useAuth();
+  const canWrite = isTom || !!turingConnection;
+  const [connectionUrl, setConnectionUrl] = useState("");
+  const [connectingTuring, setConnectingTuring] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionSuccess, setConnectionSuccess] = useState<string | null>(null);
   const [gpuReport, setGpuReport] = useState<GPUReport | null>(null);
   const [gpuReportLoading, setGpuReportLoading] = useState(false);
   const [gpuReportError, setGpuReportError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
+  const [cancelAllOpen, setCancelAllOpen] = useState(false);
+  const [cancelAllLoading, setCancelAllLoading] = useState(false);
+  const [cancelAllError, setCancelAllError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState(30);
+  const [refreshIntervalInput, setRefreshIntervalInput] = useState("30");
   const [gpuType, setGpuType] = useState("");
   const [timeMins, setTimeMins] = useState("1440");
   const [memoryMb, setMemoryMb] = useState("64000");
-  const [count, setCount] = useState("1");
+  const [count, setCount] = useState("");
   const [commands, setCommands] = useState<string[]>([""]);
   const [projectCommands, setProjectCommands] = useState<ProjectCommands>({});
   const [saveSetName, setSaveSetName] = useState("");
@@ -113,6 +142,41 @@ export default function Turing() {
   const sessionOutputRef = useRef<HTMLPreElement>(null);
   const resizeStartY = useRef(0);
   const resizeStartHeight = useRef(0);
+  const filteredNodes = useMemo(() => {
+    if (!gpuReport) return [];
+    return gpuOnlyFilter ? gpuReport.nodes.filter(isGpuNamedNode) : gpuReport.nodes;
+  }, [gpuReport, gpuOnlyFilter]);
+  const visibleNodes = useMemo(() => {
+    return filteredNodes.filter((node) => !collapsedPartitions.has(node.partition));
+  }, [filteredNodes, collapsedPartitions]);
+  const visibleTotals = useMemo(() => getGpuTotals(visibleNodes), [visibleNodes]);
+  const allocationFreeByType = useMemo(() => {
+    if (!gpuReport) return {};
+    const allocationNodes = gpuReport.nodes.filter(
+      (node) => isGpuNamedNode(node) && isNonAcademicPartition(node.partition)
+    );
+    const totals: Record<string, number> = {};
+    allocationNodes.forEach((node) => {
+      if (node.state !== "up") return;
+      const free = Math.max(node.total_gpus - node.allocated_gpus, 0);
+      if (free < 1) return;
+      totals[node.gpu_type] = (totals[node.gpu_type] || 0) + free;
+    });
+    return totals;
+  }, [gpuReport]);
+  const allocationOptions = useMemo(() => {
+    return Object.entries(allocationFreeByType).sort(([a], [b]) => a.localeCompare(b));
+  }, [allocationFreeByType]);
+  const maxAllocatable = gpuType ? allocationFreeByType[gpuType] || 0 : 0;
+  useEffect(() => {
+    if (allocationOptions.length === 0) {
+      if (gpuType) setGpuType("");
+      return;
+    }
+    if (!gpuType || !allocationFreeByType[gpuType]) {
+      setGpuType(allocationOptions[0][0]);
+    }
+  }, [allocationOptions, allocationFreeByType, gpuType]);
 
   const addDebugLog = useCallback((entry: Omit<DebugLogEntry, "id" | "timestamp">) => {
     setDebugLogs((prev) => {
@@ -130,8 +194,13 @@ export default function Turing() {
     const method = options?.method || "GET";
     const startTime = Date.now();
     addDebugLog({ type: "request", method, url, data: options?.body ? JSON.parse(options.body as string) : undefined });
+    // Add user ID header for auth
+    const headers = {
+      ...options?.headers,
+      ...(user?.id ? { "x-user-id": user.id } : {}),
+    };
     try {
-      const res = await fetch(url, options);
+      const res = await fetch(url, { ...options, headers });
       const duration = Date.now() - startTime;
       const data = await res.clone().json().catch(() => null);
       addDebugLog({ type: "response", method, url, status: res.status, data, duration });
@@ -141,7 +210,7 @@ export default function Turing() {
       addDebugLog({ type: "error", method, url, message: e instanceof Error ? e.message : "Unknown error", duration });
       throw e;
     }
-  }, [addDebugLog]);
+  }, [addDebugLog, user?.id]);
 
   useEffect(() => {
     if (debugTerminalRef.current && debugOpen) {
@@ -201,15 +270,12 @@ export default function Turing() {
       if (!res.ok) throw new Error("Failed to fetch GPU report");
       const data = await res.json();
       setGpuReport(data);
-      if (data.summary?.free?.length > 0 && !gpuType) {
-        setGpuType(data.summary.free[0].type);
-      }
     } catch (e) {
       setGpuReportError(e instanceof Error ? e.message : "Unknown error");
     } finally {
       setGpuReportLoading(false);
     }
-  }, [gpuType, debugFetch]);
+  }, [debugFetch]);
 
   const fetchJobs = useCallback(async () => {
     setJobsLoading(true);
@@ -330,7 +396,10 @@ export default function Turing() {
       const rawInterval = localStorage.getItem(REFRESH_INTERVAL_KEY);
       if (rawInterval !== null) {
         const parsed = parseInt(rawInterval, 10);
-        if (!isNaN(parsed) && parsed >= 5) setRefreshInterval(parsed);
+        if (!isNaN(parsed) && parsed >= 5) {
+          setRefreshInterval(parsed);
+          setRefreshIntervalInput(String(parsed));
+        }
       }
     } catch {
       // Use defaults
@@ -414,10 +483,16 @@ export default function Turing() {
     setAllocating(true);
     setAllocateError(null);
     setAllocateSuccess(null);
-    const countNum = parseInt(count, 10);
+    const countValue = count.trim();
     const timeNum = parseInt(timeMins, 10);
     const memoryNum = parseInt(memoryMb, 10);
-    if (isNaN(countNum) || countNum < 1 || countNum > 12) {
+    const resolvedCount = countValue ? parseInt(countValue, 10) : Math.min(maxAllocatable, 12);
+    if (!countValue && maxAllocatable === 0) {
+      setAllocateError("No free GPUs available for this type");
+      setAllocating(false);
+      return;
+    }
+    if (isNaN(resolvedCount) || resolvedCount < 1 || resolvedCount > 12) {
       setAllocateError("Count must be between 1 and 12");
       setAllocating(false);
       return;
@@ -440,7 +515,7 @@ export default function Turing() {
           gpu_type: gpuType,
           time_mins: timeNum,
           memory_mb: memoryNum,
-          count: countNum,
+          count: resolvedCount,
           commands: commands.filter((c) => c.trim()),
           project_dir: projectDir,
         }),
@@ -477,6 +552,36 @@ export default function Turing() {
     } catch (e) {
       setJobsError(e instanceof Error ? e.message : "Failed to cancel job");
     }
+  };
+  const openCancelAll = () => {
+    setCancelAllError(null);
+    setCancelAllOpen(true);
+  };
+  const handleCancelAll = async () => {
+    setCancelAllLoading(true);
+    setCancelAllError(null);
+    const failures: string[] = [];
+    for (const job of jobs) {
+      try {
+        const res = await debugFetch(`${API_BASE}/jobs/${job.job_id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          const message = data && typeof data === "object" && ("detail" in data || "error" in data)
+            ? String((data as { detail?: string; error?: string }).detail ?? (data as { error?: string }).error)
+            : "Failed to cancel";
+          failures.push(`${job.job_id}: ${message}`);
+        }
+      } catch (e) {
+        failures.push(`${job.job_id}: ${e instanceof Error ? e.message : "Unknown error"}`);
+      }
+    }
+    if (failures.length > 0) {
+      setCancelAllError(failures.join(", "));
+    } else {
+      setCancelAllOpen(false);
+    }
+    setCancelAllLoading(false);
+    refreshAll();
   };
 
   const addCommand = () => setCommands([...commands, ""]);
@@ -520,6 +625,47 @@ export default function Turing() {
 
   const currentProjectSets = projectDir ? (projectCommands[projectDir] || []) : [];
 
+  const handleConnectTuring = async () => {
+    if (!connectionUrl.trim() || !user) return;
+    setConnectingTuring(true);
+    setConnectionError(null);
+    setConnectionSuccess(null);
+    try {
+      const res = await fetch(`${API_BASE}/connection`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": user.id,
+        },
+        body: JSON.stringify({ tunnelUrl: connectionUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to connect");
+      }
+      setConnectionSuccess("Connected successfully!");
+      setConnectionUrl("");
+      refreshTuringConnection();
+    } catch (e) {
+      setConnectionError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setConnectingTuring(false);
+    }
+  };
+
+  const handleDisconnectTuring = async () => {
+    if (!user) return;
+    try {
+      await fetch(`${API_BASE}/connection`, {
+        method: "DELETE",
+        headers: { "x-user-id": user.id },
+      });
+      refreshTuringConnection();
+    } catch {
+      // Ignore errors
+    }
+  };
+
   const openDirBrowser = () => {
     setDirBrowserOpen(true);
     fetchDirs(projectDir || "");
@@ -555,6 +701,71 @@ export default function Turing() {
           GPU allocation and monitoring dashboard
         </p>
 
+        {/* Read-only banner for guests */}
+        {!canWrite && !authLoading && (
+          <div className="mt-6 p-4 border border-yellow-500/30 bg-yellow-500/10 rounded-lg animate-fade-in-delay">
+            <p className="text-yellow-400 text-sm">
+              {user ? (
+                <>You&apos;re viewing Tom&apos;s Turing dashboard in read-only mode. Connect your own Turing account below to allocate GPUs.</>
+              ) : (
+                <>You&apos;re viewing Tom&apos;s Turing dashboard in read-only mode. Sign in and connect your Turing account to allocate GPUs.</>
+              )}
+            </p>
+          </div>
+        )}
+
+        {/* Turing Connection Setup (for logged-in users without connection) */}
+        {user && !isTom && !authLoading && (
+          <section className="mt-6 animate-fade-in-delay">
+            <div className="border border-white/10 rounded-lg p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold">Your Turing Connection</h2>
+                {turingConnection && (
+                  <span className="text-xs text-green-400 bg-green-400/10 px-2 py-1 rounded">Connected</span>
+                )}
+              </div>
+              {turingConnection ? (
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm text-white/60">Connected to:</p>
+                    <p className="font-mono text-sm truncate">{turingConnection.tunnel_url}</p>
+                  </div>
+                  <button
+                    onClick={handleDisconnectTuring}
+                    className="px-4 py-2 text-sm text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded transition-colors"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-sm text-white/60">
+                    To use your own Turing account, run the tom-quest-api on Turing with a Cloudflare tunnel and enter the URL below.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={connectionUrl}
+                      onChange={(e) => setConnectionUrl(e.target.value)}
+                      placeholder="https://your-tunnel.trycloudflare.com"
+                      className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded text-white font-mono text-sm focus:outline-none focus:border-white/30"
+                    />
+                    <button
+                      onClick={handleConnectTuring}
+                      disabled={connectingTuring || !connectionUrl.trim()}
+                      className="px-4 py-2 text-sm bg-white text-black font-medium rounded hover:bg-white/90 transition-colors disabled:opacity-50"
+                    >
+                      {connectingTuring ? "Connecting..." : "Connect"}
+                    </button>
+                  </div>
+                  {connectionError && <p className="text-red-400 text-sm">{connectionError}</p>}
+                  {connectionSuccess && <p className="text-green-400 text-sm">{connectionSuccess}</p>}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {/* Refresh Controls */}
         <div className="mt-8 flex flex-wrap items-center gap-4 border border-white/10 rounded-lg p-4 animate-fade-in-delay">
           <button
@@ -586,12 +797,20 @@ export default function Turing() {
           </label>
           <div className="flex items-center gap-2">
             <input
-              type="number"
-              min="5"
-              value={refreshInterval}
+              type="text"
+              inputMode="numeric"
+              value={refreshIntervalInput}
               onChange={(e) => {
-                const val = parseInt(e.target.value, 10);
+                const value = e.target.value;
+                setRefreshIntervalInput(value);
+                const val = parseInt(value, 10);
                 if (!isNaN(val) && val >= 5) setRefreshInterval(val);
+              }}
+              onBlur={() => {
+                const val = parseInt(refreshIntervalInput, 10);
+                if (isNaN(val) || val < 5) {
+                  setRefreshIntervalInput(String(refreshInterval));
+                }
               }}
               className="w-20 px-2 py-1 text-sm bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
             />
@@ -620,15 +839,21 @@ export default function Turing() {
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-6 text-sm">
                   <div className="flex items-center gap-2">
-                    <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#22c55e" /></svg>
+                    <div className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-semibold text-black bg-[#22c55e]">
+                      {visibleTotals.free}
+                    </div>
                     <span className="text-white/60">Free</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#6b7280" /></svg>
+                    <div className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-semibold text-black bg-[#6b7280]">
+                      {visibleTotals.inUse}
+                    </div>
                     <span className="text-white/60">In Use</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <svg width="14" height="14"><rect width="14" height="14" rx="2" fill="#ef4444" /></svg>
+                    <div className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-semibold text-black bg-[#ef4444]">
+                      {visibleTotals.down}
+                    </div>
                     <span className="text-white/60">Down</span>
                   </div>
                 </div>
@@ -655,9 +880,6 @@ export default function Turing() {
               </div>
               {/* GPU Grid by Partition → GPU Type */}
               {(() => {
-                const filteredNodes = gpuOnlyFilter
-                  ? gpuReport.nodes.filter(n => n.name.toLowerCase().includes('gpu'))
-                  : gpuReport.nodes;
                 const partitions = [...new Set(filteredNodes.map(n => n.partition))].sort();
                 return partitions.map(partition => {
                   const partitionNodes = filteredNodes.filter(n => n.partition === partition);
@@ -733,6 +955,12 @@ export default function Turing() {
                   );
                 });
               })()}
+              <div className="text-sm text-white/60">
+                <div>Visible GPU totals</div>
+                <div className="text-white/40">
+                  Free: {visibleTotals.free} / In use: {visibleTotals.inUse} / Down: {visibleTotals.down}
+                </div>
+              </div>
             </div>
           )}
         </section>
@@ -740,6 +968,13 @@ export default function Turing() {
         {/* Allocation Form */}
         <section className="mt-12 animate-fade-in-delay">
           <h2 className="text-2xl font-semibold mb-4">Allocate GPUs</h2>
+          {!canWrite ? (
+            <div className="border border-white/10 rounded-lg p-6 text-center">
+              <p className="text-white/40">
+                {user ? "Connect your Turing account above to allocate GPUs." : "Sign in and connect your Turing account to allocate GPUs."}
+              </p>
+            </div>
+          ) : (
           <form
             onSubmit={handleAllocate}
             className="border border-white/10 rounded-lg p-6 space-y-4"
@@ -835,17 +1070,28 @@ export default function Turing() {
                 <select
                   value={gpuType}
                   onChange={(e) => setGpuType(e.target.value)}
+                  disabled={allocationOptions.length === 0}
                   className="w-full px-3 py-2 bg-black/80 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 >
-                  {gpuReport?.summary.free.map((g) => (
-                    <option
-                      key={g.type}
-                      value={g.type}
-                      className="bg-black text-white"
-                    >
-                      {g.type} ({g.count} free)
+                  {allocationOptions.length === 0 ? (
+                    <option value="" className="bg-black text-white">
+                      No free GPUs available
                     </option>
-                  ))}
+                  ) : (
+                    allocationOptions.map(([type, free]) => {
+                      const alias = GPU_TYPE_LABELS[type];
+                      const label = alias ? `${type} (${alias})` : type;
+                      return (
+                        <option
+                          key={type}
+                          value={type}
+                          className="bg-black text-white"
+                        >
+                          {label} ({free} free)
+                        </option>
+                      );
+                    })
+                  )}
                 </select>
               </div>
               <div>
@@ -856,9 +1102,12 @@ export default function Turing() {
                   type="text"
                   value={count}
                   onChange={(e) => setCount(e.target.value)}
-                  placeholder="1"
+                  placeholder="All"
                   className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 />
+                <p className="text-xs text-white/40 mt-1">
+                  Leave blank to allocate all free GPUs in the selected type.
+                </p>
               </div>
               <div>
                 <label className="block text-sm text-white/60 mb-1">
@@ -991,19 +1240,31 @@ export default function Turing() {
               {allocating ? "Allocating..." : "Allocate"}
             </button>
           </form>
+          )}
         </section>
 
         {/* Active Jobs Table */}
         <section className="mt-12 animate-fade-in-delay pb-20">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">Active Jobs</h2>
-            <button
-              onClick={fetchJobs}
-              disabled={jobsLoading}
-              className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
-            >
-              {jobsLoading ? "Loading..." : "Refresh"}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchJobs}
+                disabled={jobsLoading}
+                className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+              >
+                {jobsLoading ? "Loading..." : "Refresh"}
+              </button>
+              {canWrite && (
+                <button
+                  onClick={openCancelAll}
+                  disabled={jobsLoading || jobs.length === 0}
+                  className="px-4 py-2 text-sm text-red-300 bg-red-500/10 hover:bg-red-500/20 rounded transition-colors disabled:opacity-50"
+                >
+                  Cancel All
+                </button>
+              )}
+            </div>
           </div>
           {jobsError && <p className="text-red-400 mb-4">{jobsError}</p>}
           {jobs.length === 0 ? (
@@ -1072,12 +1333,14 @@ export default function Turing() {
                               View
                             </button>
                           )}
-                          <button
-                            onClick={() => handleCancel(job.job_id)}
-                            className="px-3 py-1 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
-                          >
-                            Cancel
-                          </button>
+                          {canWrite && (
+                            <button
+                              onClick={() => handleCancel(job.job_id)}
+                              className="px-3 py-1 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1088,6 +1351,36 @@ export default function Turing() {
           )}
         </section>
       </div>
+
+      {cancelAllOpen && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-black border border-white/20 rounded-lg p-6 w-full max-w-md mx-4">
+            <h3 className="text-lg font-semibold">Cancel all jobs?</h3>
+            <p className="text-sm text-white/60 mt-2">
+              This will cancel {jobs.length} active job{jobs.length === 1 ? "" : "s"}.
+            </p>
+            {cancelAllError && <p className="text-red-400 text-sm mt-3">{cancelAllError}</p>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCancelAllOpen(false)}
+                disabled={cancelAllLoading}
+                className="px-3 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+              >
+                Keep Jobs
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelAll}
+                disabled={cancelAllLoading}
+                className="px-3 py-2 text-sm text-red-200 bg-red-500/20 hover:bg-red-500/30 rounded transition-colors disabled:opacity-50"
+              >
+                {cancelAllLoading ? "Canceling..." : "Cancel All"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Session Output Viewer Modal */}
       {sessionViewerOpen && (

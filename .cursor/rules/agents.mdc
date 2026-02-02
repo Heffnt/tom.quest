@@ -10,9 +10,10 @@ alwaysApply: true
 ## Rules
 - always commit after making changes
 - always style the site name as tom.Quest
+- avoid number input spinners; use text inputs for numeric intervals
 
 ## Stack
-Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel
+Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB)
 
 ## Design
 - Font: Poppins via `--font-app` in `app/layout.tsx`
@@ -25,19 +26,51 @@ Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Ve
 
 ## Structure
 ```
-app/                      # Next.js frontend
-├── turing/page.tsx       # GPU dashboard (client component)
-├── api/turing/           # Proxy routes → Turing backend
-│   ├── gpu-report/       # GET gpu availability
-│   ├── allocate/         # POST allocation request
-│   ├── jobs/             # GET list, DELETE cancel
-│   ├── dirs/             # GET directory listing
-│   └── sessions/[name]/output/ # GET tmux session output
-└── components/Navigation.tsx
+app/
+├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
+├── chat-tom/page.tsx        # Tom's chat dashboard (Tom only)
+├── api/
+│   ├── turing/              # Proxy routes → user's or Tom's Turing backend
+│   │   ├── connection/      # GET/POST/DELETE user Turing connection
+│   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions
+│   ├── chat/                # Chat system API
+│   │   ├── devices/         # GET/POST devices, [id] for details
+│   │   ├── messages/        # GET/POST messages
+│   │   └── track/           # POST page visits
+│   └── auth/is-tom/         # POST verify if user is Tom
+├── components/
+│   ├── AuthProvider.tsx     # Auth context (user, profile, isTom, turingConnection)
+│   ├── LoginModal.tsx       # Sign in/up modal
+│   ├── ChatBubble.tsx       # Floating chat + login buttons
+│   ├── ChatInterface.tsx    # Chat modal
+│   ├── DeviceTracker.tsx    # Device registration + page tracking
+│   ├── ClientProviders.tsx  # Wraps auth/chat in layout
+│   └── Navigation.tsx       # Nav with conditional Tom links
+└── lib/
+    ├── supabase.ts          # Supabase client + types
+    └── turing.ts            # Turing URL resolution (Tom's gist or user's connection)
 
-tom-quest-api/            # FastAPI on Turing HPC
+tom-quest-api/               # FastAPI on Turing HPC
 ├── main.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py
 ```
+
+## Auth & Chat System
+- Supabase Auth: email/password signup/signin
+- Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `TOM_USER_ID`
+- Tom identified by `TOM_USER_ID` env var matching Supabase user ID
+- DB tables: `profiles`, `devices`, `messages`, `page_visits`, `turing_connections`
+- Device tracking: UUID in localStorage, UA parsing via `ua-parser-js`, tracks page visits + duration
+- ChatBubble: floating top-left, "Tell Tom something!" + login/user icon
+- Chat (Tom) page: visible only to Tom, shows all devices, conversations, device info modal
+- Polling: chat polls every 5s when open
+
+## Multi-User Turing
+- Guests/non-connected users: view Tom's dashboard (read-only)
+- Logged-in users can connect their own Turing backend (tunnel URL)
+- Connection verified by hitting `/health` endpoint before saving
+- API routes check `x-user-id` header, proxy to user's URL or Tom's
+- Write endpoints (allocate, cancel, dirs) require own connection or Tom
+- Read endpoints (gpu-report, jobs, sessions output) allowed for all
 
 ## Turing Dashboard
 - Proxy: frontend → /api/turing/* → Turing backend (via Cloudflare quick tunnel)
@@ -58,10 +91,13 @@ tom-quest-api/            # FastAPI on Turing HPC
 - Session viewer: "View" button on running jobs → modal with tmux output, auto-refresh toggle (configurable interval, persisted), arrow navigation between sessions, click-outside-to-close
 - SSH attach: `tmux attach -t {session_name}`, detach with `Ctrl+b d`
 - localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`, `turing_collapsed_partitions`, `turing_gpu_only_filter`, `turing_session_auto_refresh`, `turing_session_refresh_interval`
-- Auto-refresh: unified at top for all panels, configurable interval (default 30s), each panel has own refresh button
+- Auto-refresh: unified at top for all panels, configurable interval (default 30s) via text input, each panel has own refresh button
 - Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
 - Dir browse: always sends path (default `~`), surfaces upstream error
 - Turing setup: clone repo to `~/tom.quest`, use `tom-quest-api/` subdir
+- Allocate panel: GPU types from non-academic partitions with `gpu` node names; blank count allocates all free (up to 12)
+- GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
+- Active Jobs: cancel-all button with confirm modal
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
@@ -81,6 +117,8 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-02-02] Proxy fetch failed had no cause info → validate gist URL, surface fetch cause details
 - [2026-02-02] Cloudflare 530 after restart → force gist refresh + retry on 530
 - [2026-02-02] Session indices never reset → `get_active_mapped_screens()` only reserves indices for jobs still in queue, not historical mappings
+- [2026-02-02] Added auth + chat system: Supabase Auth, device tracking, chat bubble, Tom's dashboard
+- [2026-02-02] Added multi-user Turing: users can connect own backend, read-only mode for guests
 
 ## Placeholders
 - /projects: showcase work
