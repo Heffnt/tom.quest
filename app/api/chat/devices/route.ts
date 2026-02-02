@@ -13,15 +13,14 @@ export async function GET(request: Request) {
 
   // If deviceId is provided, return that single device
   if (deviceId) {
-    const { data: device, error } = await supabase
+    const { data: device } = await supabase
       .from("devices")
       .select("*")
       .eq("device_id", deviceId)
-      .single();
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 404 });
-    }
-    return NextResponse.json({ device });
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return NextResponse.json({ device: device || null });
   }
 
   // List all devices - Tom only
@@ -57,7 +56,7 @@ export async function GET(request: Request) {
         .eq("from_tom", true)
         .order("created_at", { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       // Count messages from visitor after Tom's last reply
       let unread = 0;

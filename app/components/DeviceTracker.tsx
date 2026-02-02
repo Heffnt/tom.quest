@@ -64,7 +64,9 @@ export default function DeviceTracker() {
         .from("devices")
         .select("id, total_visits")
         .eq("device_id", deviceId)
-        .single();
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
       if (existing) {
         await supabase
           .from("devices")
@@ -96,7 +98,7 @@ export default function DeviceTracker() {
           path,
         })
         .select("id")
-        .single();
+        .maybeSingle();
       if (data) {
         visitIdRef.current = data.id;
       }
@@ -121,7 +123,9 @@ export default function DeviceTracker() {
         .from("devices")
         .select("total_time_seconds")
         .eq("device_id", deviceId)
-        .single();
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
       if (device) {
         await supabase
           .from("devices")
