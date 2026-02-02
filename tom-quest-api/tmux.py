@@ -2,7 +2,7 @@ import subprocess
 import threading
 import re
 from pathlib import Path
-from job_screens import save_screen_mapping, get_all_mapped_screens
+from job_screens import save_screen_mapping, get_active_mapped_screens
 
 def run_command(cmd: str) -> tuple[str, str, int]:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -44,7 +44,7 @@ def get_next_session_name(project_dir: str) -> str:
         project_name = Path(project_dir).name
     project_name = re.sub(r'[^a-zA-Z0-9_-]', '_', project_name)
     existing = get_project_sessions(project_name)
-    mapped = [s for s in get_all_mapped_screens() if s.startswith(f"{project_name}_")]
+    mapped = [s for s in get_active_mapped_screens() if s.startswith(f"{project_name}_")]
     all_sessions = set(existing + mapped)
     used_indices = set()
     for s in all_sessions:

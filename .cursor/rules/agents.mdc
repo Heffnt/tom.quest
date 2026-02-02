@@ -7,6 +7,10 @@ alwaysApply: true
 
 **AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. This prevents repeated mistakes and keeps context accurate.**
 
+## Rules
+- always commit after making changes
+- always style the site name as tom.Quest
+
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel
 
@@ -76,6 +80,7 @@ tom-quest-api/            # FastAPI on Turing HPC
 - [2026-02-02] Proxy fetch failures after tunnel changes → retry once with forced gist refresh
 - [2026-02-02] Proxy fetch failed had no cause info → validate gist URL, surface fetch cause details
 - [2026-02-02] Cloudflare 530 after restart → force gist refresh + retry on 530
+- [2026-02-02] Session indices never reset → `get_active_mapped_screens()` only reserves indices for jobs still in queue, not historical mappings
 
 ## Placeholders
 - /projects: showcase work
