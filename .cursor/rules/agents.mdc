@@ -119,6 +119,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-02] Session indices never reset → `get_active_mapped_screens()` only reserves indices for jobs still in queue, not historical mappings
 - [2026-02-02] Added auth + chat system: Supabase Auth, device tracking, chat bubble, Tom's dashboard
 - [2026-02-02] Added multi-user Turing: users can connect own backend, read-only mode for guests
+- [2026-02-02] ua-parser-js import fix: use named export `{ UAParser }` not default
 
 ## Placeholders
 - /projects: showcase work
