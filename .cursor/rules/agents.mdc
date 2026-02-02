@@ -14,6 +14,9 @@ Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Geist fonts | Ver
 - Colors: black bg, white text (60%/40% opacity for secondary)
 - Layout: max-w-3xl mx-auto, px-6 py-16, min-h-screen
 - Animations: animate-fade-in, animate-fade-in-delay (globals.css)
+- Logos: `public/images/` (SVG: logo-{black,white}-{on-black,on-white,transparent}.svg, PNG symbols: symbol-*)
+- Favicon: `app/icon.png` (symbol-white-on-black.png)
+- Landing page + nav: logo-white-transparent.svg
 
 ## Structure
 ```

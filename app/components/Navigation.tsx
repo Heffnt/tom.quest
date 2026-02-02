@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 
 const navLinks = [
@@ -20,9 +21,14 @@ export default function Navigation() {
         <div className="flex items-center justify-between">
           <Link
             href="/"
-            className="font-mono text-lg tracking-tight hover:opacity-70 transition-opacity"
+            className="hover:opacity-70 transition-opacity"
           >
-            TOM.quest
+            <Image
+              src="/images/logo-white-transparent.svg"
+              alt="tom.quest"
+              width={120}
+              height={30}
+            />
           </Link>
           <div className="flex gap-6">
             {navLinks.slice(1).map((link) => (
