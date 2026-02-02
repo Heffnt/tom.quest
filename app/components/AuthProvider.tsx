@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
-import { User, Session } from "@supabase/supabase-js";
+import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient, Profile, TuringConnection } from "../lib/supabase";
 
 interface AuthContextType {
@@ -21,7 +21,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [supabase] = useState(() => createBrowserSupabaseClient());
+  const [supabase] = useState<SupabaseClient | null>(() => createBrowserSupabaseClient());
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -30,6 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isTom, setIsTom] = useState(false);
 
   const fetchProfile = useCallback(async (userId: string) => {
+    if (!supabase) return;
     const { data } = await supabase
       .from("profiles")
       .select("*")
@@ -39,6 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [supabase]);
 
   const fetchTuringConnection = useCallback(async (userId: string) => {
+    if (!supabase) return;
     const { data } = await supabase
       .from("turing_connections")
       .select("*")
@@ -58,6 +60,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
     const initAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setSession(session);
@@ -102,11 +109,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [supabase, fetchProfile, fetchTuringConnection, checkIsTom]);
 
   const signIn = async (email: string, password: string) => {
+    if (!supabase) return { error: new Error("Supabase not configured") };
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error: error as Error | null };
   };
 
   const signUp = async (email: string, password: string, username: string) => {
+    if (!supabase) return { error: new Error("Supabase not configured") };
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -118,6 +127,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
+    if (!supabase) return;
     await supabase.auth.signOut();
   };
 

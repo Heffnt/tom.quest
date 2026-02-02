@@ -3,7 +3,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { usePathname } from "next/navigation";
 import { UAParser } from "ua-parser-js";
-import { createBrowserSupabaseClient } from "../lib/supabase";
+import { createBrowserSupabaseClient, isSupabaseConfigured } from "../lib/supabase";
+import { SupabaseClient } from "@supabase/supabase-js";
 
 function generateDeviceId(): string {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -23,11 +24,20 @@ function getDeviceName(): string {
 
 export default function DeviceTracker() {
   const pathname = usePathname();
-  const supabaseRef = useRef(createBrowserSupabaseClient());
+  const supabaseRef = useRef<SupabaseClient | null>(null);
+  const initializedRef = useRef(false);
   const pageEnterTimeRef = useRef<number>(Date.now());
   const currentPathRef = useRef<string>(pathname);
   const visitIdRef = useRef<string | null>(null);
   const deviceIdRef = useRef<string | null>(null);
+
+  // Initialize supabase client on mount (client-side only)
+  useEffect(() => {
+    if (!initializedRef.current && isSupabaseConfigured()) {
+      supabaseRef.current = createBrowserSupabaseClient();
+      initializedRef.current = true;
+    }
+  }, []);
 
   const getOrCreateDeviceId = useCallback(() => {
     if (deviceIdRef.current) return deviceIdRef.current;
@@ -42,6 +52,7 @@ export default function DeviceTracker() {
 
   const registerDevice = useCallback(async () => {
     const supabase = supabaseRef.current;
+    if (!supabase) return;
     const deviceId = getOrCreateDeviceId();
     const deviceName = getDeviceName();
     const { data: existing } = await supabase
@@ -67,6 +78,7 @@ export default function DeviceTracker() {
 
   const logPageVisit = useCallback(async (path: string) => {
     const supabase = supabaseRef.current;
+    if (!supabase) return;
     const deviceId = getOrCreateDeviceId();
     const { data } = await supabase
       .from("page_visits")
@@ -84,6 +96,7 @@ export default function DeviceTracker() {
   const updateVisitDuration = useCallback(async () => {
     if (!visitIdRef.current) return;
     const supabase = supabaseRef.current;
+    if (!supabase) return;
     const duration = Math.round((Date.now() - pageEnterTimeRef.current) / 1000);
     await supabase
       .from("page_visits")
@@ -107,13 +120,16 @@ export default function DeviceTracker() {
     }
   }, [getOrCreateDeviceId]);
 
-  // Register device on mount
+  // Register device on mount (after supabase is ready)
   useEffect(() => {
-    registerDevice();
+    if (initializedRef.current) {
+      registerDevice();
+    }
   }, [registerDevice]);
 
   // Log page visit on pathname change
   useEffect(() => {
+    if (!initializedRef.current) return;
     // Update duration of previous page visit
     if (currentPathRef.current !== pathname && visitIdRef.current) {
       updateVisitDuration();

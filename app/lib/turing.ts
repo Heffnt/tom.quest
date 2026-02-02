@@ -73,6 +73,7 @@ export async function getTomTuringUrl(options: TuringUrlOptions = {}): Promise<s
 // Get user's Turing URL from database
 export async function getUserTuringUrl(userId: string): Promise<string | null> {
   const supabase = createServerSupabaseClient();
+  if (!supabase) return null;
   const { data } = await supabase
     .from("turing_connections")
     .select("tunnel_url")

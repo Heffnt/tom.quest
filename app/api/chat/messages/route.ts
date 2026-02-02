@@ -11,6 +11,9 @@ export async function GET(request: Request) {
   }
 
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
 
   const { data: messages, error } = await supabase
     .from("messages")
@@ -39,6 +42,9 @@ export async function POST(request: Request) {
   }
 
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
 
   const { data, error } = await supabase
     .from("messages")

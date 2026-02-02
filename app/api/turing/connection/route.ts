@@ -8,6 +8,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
   const { data, error } = await supabase
     .from("turing_connections")
     .select("*")
@@ -50,6 +53,9 @@ export async function POST(request: NextRequest) {
     );
   }
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
   // Check if connection exists
   const { data: existing } = await supabase
     .from("turing_connections")
@@ -89,6 +95,9 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
   const { error } = await supabase
     .from("turing_connections")
     .delete()

@@ -10,6 +10,9 @@ export async function POST(request: Request) {
   }
 
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
 
   // If duration is provided, update an existing visit
   if (duration !== undefined) {

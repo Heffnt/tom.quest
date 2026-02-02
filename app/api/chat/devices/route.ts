@@ -7,6 +7,9 @@ export async function GET(request: Request) {
   const deviceId = searchParams.get("deviceId");
   const userId = searchParams.get("userId");
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
 
   // If deviceId is provided, return that single device
   if (deviceId) {
@@ -85,6 +88,9 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const { deviceId, deviceName } = await request.json();
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
 
   const { data: existing } = await supabase
     .from("devices")

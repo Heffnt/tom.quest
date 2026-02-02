@@ -15,6 +15,9 @@ export async function GET(
   }
 
   const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
 
   // Get device info
   const { data: device, error: deviceError } = await supabase
