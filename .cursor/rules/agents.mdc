@@ -126,6 +126,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-02] Username-only auth: generate emails from username, disable email confirmation
 - [2026-02-02] Home debug terminal + client debug logging for auth/chat/device issues
 - [2026-02-02] Device info fetch error → use maybeSingle + limit to avoid single-row coercion
+- [2026-02-02] Logged-in username display → infer username from metadata/last_username/email
 
 ## Placeholders
 - /projects: showcase work

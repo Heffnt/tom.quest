@@ -47,6 +47,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
     }
 
     try {
+      localStorage.setItem("last_username", rawUsername);
       if (mode === "signin") {
         // Sign in using generated email from username
         const email = usernameToEmail(rawUsername);

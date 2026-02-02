@@ -12,6 +12,7 @@ export default function ChatBubble() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [hasReplies, setHasReplies] = useState(false);
   const [deviceName, setDeviceName] = useState<string | null>(null);
+  const [lastUsername, setLastUsername] = useState<string | null>(null);
 
   useEffect(() => {
     // Get device name from localStorage or use profile username
@@ -31,6 +32,10 @@ export default function ChatBubble() {
         })
         .catch(() => {});
     }
+  }, []);
+
+  useEffect(() => {
+    setLastUsername(localStorage.getItem("last_username"));
   }, []);
 
   useEffect(() => {
@@ -55,7 +60,14 @@ export default function ChatBubble() {
     checkReplies();
   }, []);
 
-  const displayName = profile?.username || deviceName || "Anonymous";
+  const displayName =
+    profile?.username ||
+    (typeof user?.user_metadata === "object"
+      ? (user.user_metadata as { username?: string }).username
+      : null) ||
+    lastUsername ||
+    deviceName ||
+    "Anonymous";
 
   return (
     <>

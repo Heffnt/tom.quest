@@ -38,6 +38,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [isTom, setIsTom] = useState(false);
 
+  const getInferredUsername = useCallback((user: User) => {
+    const metaUsername = typeof user.user_metadata === "object"
+      ? (user.user_metadata as { username?: string }).username
+      : undefined;
+    const lastUsername = typeof window !== "undefined"
+      ? localStorage.getItem("last_username")
+      : null;
+    const emailUsername = user.email ? user.email.split("@")[0] : null;
+    return metaUsername || lastUsername || emailUsername || null;
+  }, []);
+
+  const ensureProfile = useCallback(async (user: User) => {
+    if (!supabase) return;
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (existing) {
+      setProfile(existing);
+      return;
+    }
+    const inferred = getInferredUsername(user);
+    if (!inferred) return;
+    const { data } = await supabase
+      .from("profiles")
+      .upsert({ id: user.id, username: inferred }, { onConflict: "id" })
+      .select("*")
+      .maybeSingle();
+    if (data) {
+      setProfile(data);
+      logDebug("info", "Profile created from inferred username", { username: inferred });
+    }
+  }, [supabase, getInferredUsername]);
+
   const fetchProfile = useCallback(async (userId: string) => {
     if (!supabase) return;
     const { data } = await supabase
@@ -87,6 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           fetchTuringConnection(session.user.id),
           checkIsTom(session.user.id),
         ]);
+        await ensureProfile(session.user);
       }
       setLoading(false);
     };
@@ -103,6 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           fetchTuringConnection(session.user.id),
           checkIsTom(session.user.id),
         ]);
+        await ensureProfile(session.user);
         // Link device to user on login
         const deviceId = localStorage.getItem("device_id");
         if (deviceId) {
