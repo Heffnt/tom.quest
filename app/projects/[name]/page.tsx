@@ -10,8 +10,9 @@ const PROJECTS = {
 
 type ProjectKey = keyof typeof PROJECTS;
 
-export default function ProjectPage({ params }: { params: { name: string } }) {
-  const project = PROJECTS[params.name as ProjectKey];
+export default async function ProjectPage({ params }: { params: Promise<{ name: string }> }) {
+  const { name } = await params;
+  const project = PROJECTS[name as ProjectKey];
   if (!project) {
     notFound();
   }
