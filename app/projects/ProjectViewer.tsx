@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAuth } from "../components/AuthProvider";
+import { fetchUserSetting, saveUserSetting } from "../lib/userSettings";
 
 type ProjectViewerProps = {
   title: string;
@@ -12,11 +14,13 @@ function getStorageKey(filePath: string) {
 }
 
 export default function ProjectViewer({ title, filePath }: ProjectViewerProps) {
+  const { user } = useAuth();
   const [html, setHtml] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const storageKey = getStorageKey(filePath);
+  const [iframeLoaded, setIframeLoaded] = useState(false);
 
   const loadFile = useCallback(async () => {
     setLoading(true);
@@ -44,29 +48,47 @@ export default function ProjectViewer({ title, filePath }: ProjectViewerProps) {
     void loadFile();
   }, [loadFile]);
 
+  const sendSavedSettings = useCallback(async () => {
+    let settings: unknown | null = null;
+    if (user) {
+      settings = await fetchUserSetting<unknown>(user.id, storageKey);
+    } else {
+      try {
+        const saved = localStorage.getItem(storageKey);
+        settings = saved ? JSON.parse(saved) : null;
+      } catch {
+        settings = null;
+      }
+    }
+    if (!settings || !iframeRef.current?.contentWindow) return;
+    iframeRef.current.contentWindow.postMessage({ type: "loadSettings", settings }, "*");
+  }, [storageKey, user]);
+
   // Listen for settings from iframe
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.data?.type === "saveSettings" && event.data?.settings) {
-        localStorage.setItem(storageKey, JSON.stringify(event.data.settings));
+        if (user) {
+          void saveUserSetting(user.id, storageKey, event.data.settings);
+        } else {
+          localStorage.setItem(storageKey, JSON.stringify(event.data.settings));
+        }
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [storageKey]);
+  }, [storageKey, user]);
+
+  useEffect(() => {
+    if (!iframeLoaded) return;
+    void sendSavedSettings();
+  }, [iframeLoaded, sendSavedSettings]);
 
   // Send saved settings to iframe when it loads
   const handleIframeLoad = useCallback(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved && iframeRef.current?.contentWindow) {
-      try {
-        const settings = JSON.parse(saved);
-        iframeRef.current.contentWindow.postMessage({ type: "loadSettings", settings }, "*");
-      } catch {
-        // Ignore parse errors
-      }
-    }
-  }, [storageKey]);
+    setIframeLoaded(true);
+    void sendSavedSettings();
+  }, [sendSavedSettings]);
 
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col px-4 py-4">

@@ -48,6 +48,10 @@ export async function GET(request: Request) {
         .select("*", { count: "exact", head: true })
         .eq("device_id", device.device_id)
         .eq("from_tom", false);
+      const userMessageCount = count ?? 0;
+      if (userMessageCount === 0) {
+        return null;
+      }
 
       const { data: lastMessage } = await supabase
         .from("messages")
@@ -83,7 +87,7 @@ export async function GET(request: Request) {
           .gt("created_at", readCutoff);
         unread = unreadCount || 0;
       } else {
-        unread = count || 0;
+        unread = userMessageCount;
       }
 
       return {
@@ -95,7 +99,11 @@ export async function GET(request: Request) {
     })
   );
 
-  return NextResponse.json({ devices: devicesWithUnread });
+  const filteredDevices = devicesWithUnread.filter(
+    (device): device is NonNullable<typeof device> => Boolean(device)
+  );
+
+  return NextResponse.json({ devices: filteredDevices });
 }
 
 // POST - Register or update a device

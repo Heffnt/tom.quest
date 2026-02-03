@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "../components/AuthProvider";
+import { fetchUserSetting, saveUserSetting } from "../lib/userSettings";
 
 interface GPUTypeInfo {
   type: string;
@@ -62,6 +63,22 @@ interface DebugLogEntry {
   duration?: number;
 }
 
+interface TuringSettings {
+  autoRefresh?: boolean;
+  refreshInterval?: number;
+  gpuType?: string;
+  timeMins?: string;
+  memoryMb?: string;
+  count?: string;
+  commands?: string[];
+  projectCommands?: ProjectCommands;
+  projectDir?: string;
+  gpuOnlyFilter?: boolean;
+  collapsedPartitions?: string[];
+  sessionAutoRefresh?: boolean;
+  sessionRefreshInterval?: number;
+}
+
 const isGpuNamedNode = (node: NodeInfo) => node.name.toLowerCase().includes("gpu");
 const isNonAcademicPartition = (partition: string) => !partition.toLowerCase().includes("academic");
 const getGpuTotals = (nodes: NodeInfo[]) => {
@@ -81,13 +98,7 @@ const getGpuTotals = (nodes: NodeInfo[]) => {
 };
 
 const API_BASE = "/api/turing";
-const SAVED_COMMANDS_KEY = "turing_project_commands";
-const AUTO_REFRESH_KEY = "turing_auto_refresh";
-const REFRESH_INTERVAL_KEY = "turing_refresh_interval";
-const COLLAPSED_PARTITIONS_KEY = "turing_collapsed_partitions";
-const GPU_ONLY_FILTER_KEY = "turing_gpu_only_filter";
-const SESSION_AUTO_REFRESH_KEY = "turing_session_auto_refresh";
-const SESSION_REFRESH_INTERVAL_KEY = "turing_session_refresh_interval";
+const TURING_SETTINGS_KEY = "turing_settings";
 const GPU_TYPE_LABELS: Record<string, string> = { nvidia: "H100", tesla: "V100" };
 
 export default function Turing() {
@@ -140,6 +151,7 @@ export default function Turing() {
   const [sessionOutputError, setSessionOutputError] = useState<string | null>(null);
   const [sessionAutoRefresh, setSessionAutoRefresh] = useState(false);
   const [sessionRefreshInterval, setSessionRefreshInterval] = useState(2);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const debugLogIdRef = useRef(0);
   const debugCopyTimeoutRef = useRef<number | null>(null);
   const sessionModalRef = useRef<HTMLDivElement>(null);
@@ -155,6 +167,9 @@ export default function Turing() {
     return filteredNodes.filter((node) => !collapsedPartitions.has(node.partition));
   }, [filteredNodes, collapsedPartitions]);
   const visibleTotals = useMemo(() => getGpuTotals(visibleNodes), [visibleNodes]);
+  const collapsedPartitionsList = useMemo(() => {
+    return [...collapsedPartitions].sort();
+  }, [collapsedPartitions]);
   const allocationFreeByType = useMemo(() => {
     if (!gpuReport) return {};
     const allocationNodes = gpuReport.nodes.filter(
@@ -173,7 +188,67 @@ export default function Turing() {
     return Object.entries(allocationFreeByType).sort(([a], [b]) => a.localeCompare(b));
   }, [allocationFreeByType]);
   const maxAllocatable = gpuType ? allocationFreeByType[gpuType] || 0 : 0;
+  const applySettings = useCallback((settings: TuringSettings) => {
+    if (typeof settings.autoRefresh === "boolean") setAutoRefresh(settings.autoRefresh);
+    if (typeof settings.refreshInterval === "number" && settings.refreshInterval >= 5) {
+      setRefreshInterval(settings.refreshInterval);
+      setRefreshIntervalInput(String(settings.refreshInterval));
+    }
+    if (typeof settings.gpuType === "string") setGpuType(settings.gpuType);
+    if (typeof settings.timeMins === "string") setTimeMins(settings.timeMins);
+    if (typeof settings.memoryMb === "string") setMemoryMb(settings.memoryMb);
+    if (typeof settings.count === "string") setCount(settings.count);
+    if (Array.isArray(settings.commands)) {
+      setCommands(settings.commands.length > 0 ? settings.commands : [""]);
+    }
+    if (settings.projectCommands && typeof settings.projectCommands === "object" && !Array.isArray(settings.projectCommands)) {
+      setProjectCommands(settings.projectCommands as ProjectCommands);
+    }
+    if (typeof settings.projectDir === "string") setProjectDir(settings.projectDir);
+    if (typeof settings.gpuOnlyFilter === "boolean") setGpuOnlyFilter(settings.gpuOnlyFilter);
+    if (Array.isArray(settings.collapsedPartitions)) {
+      setCollapsedPartitions(
+        new Set(settings.collapsedPartitions.filter((partition) => typeof partition === "string"))
+      );
+    }
+    if (typeof settings.sessionAutoRefresh === "boolean") setSessionAutoRefresh(settings.sessionAutoRefresh);
+    if (typeof settings.sessionRefreshInterval === "number" && settings.sessionRefreshInterval >= 1) {
+      setSessionRefreshInterval(settings.sessionRefreshInterval);
+    }
+  }, []);
+  const turingSettings = useMemo<TuringSettings>(() => {
+    return {
+      autoRefresh,
+      refreshInterval,
+      gpuType,
+      timeMins,
+      memoryMb,
+      count,
+      commands,
+      projectCommands,
+      projectDir,
+      gpuOnlyFilter,
+      collapsedPartitions: collapsedPartitionsList,
+      sessionAutoRefresh,
+      sessionRefreshInterval,
+    };
+  }, [
+    autoRefresh,
+    refreshInterval,
+    gpuType,
+    timeMins,
+    memoryMb,
+    count,
+    commands,
+    projectCommands,
+    projectDir,
+    gpuOnlyFilter,
+    collapsedPartitionsList,
+    sessionAutoRefresh,
+    sessionRefreshInterval,
+  ]);
   useEffect(() => {
+    if (!settingsLoaded) return;
     if (allocationOptions.length === 0) {
       if (gpuType) setGpuType("");
       return;
@@ -181,7 +256,7 @@ export default function Turing() {
     if (!gpuType || !(gpuType in allocationFreeByType)) {
       setGpuType(allocationOptions[0][0]);
     }
-  }, [allocationOptions, allocationFreeByType, gpuType]);
+  }, [allocationOptions, allocationFreeByType, gpuType, settingsLoaded]);
 
   const addDebugLog = useCallback((entry: Omit<DebugLogEntry, "id" | "timestamp">) => {
     setDebugLogs((prev) => {
@@ -416,83 +491,50 @@ export default function Turing() {
   }, [refreshAll, autoRefresh, refreshInterval]);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SAVED_COMMANDS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (typeof parsed === "object" && !Array.isArray(parsed)) {
-        setProjectCommands(parsed);
-      }
-    } catch {
-      setProjectCommands({});
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      const rawRefresh = localStorage.getItem(AUTO_REFRESH_KEY);
-      if (rawRefresh !== null) setAutoRefresh(rawRefresh === "true");
-      const rawInterval = localStorage.getItem(REFRESH_INTERVAL_KEY);
-      if (rawInterval !== null) {
-        const parsed = parseInt(rawInterval, 10);
-        if (!isNaN(parsed) && parsed >= 5) {
-          setRefreshInterval(parsed);
-          setRefreshIntervalInput(String(parsed));
+    let cancelled = false;
+    const loadSettings = async () => {
+      setSettingsLoaded(false);
+      if (user) {
+        const settings = await fetchUserSetting<TuringSettings>(user.id, TURING_SETTINGS_KEY);
+        if (!cancelled && settings) {
+          applySettings(settings);
         }
+        if (!cancelled) setSettingsLoaded(true);
+        return;
       }
-    } catch {
-      // Use defaults
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(AUTO_REFRESH_KEY, String(autoRefresh));
-  }, [autoRefresh]);
-
-  useEffect(() => {
-    localStorage.setItem(REFRESH_INTERVAL_KEY, String(refreshInterval));
-  }, [refreshInterval]);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(COLLAPSED_PARTITIONS_KEY);
-      if (raw) setCollapsedPartitions(new Set(JSON.parse(raw)));
-      const gpuOnly = localStorage.getItem(GPU_ONLY_FILTER_KEY);
-      if (gpuOnly !== null) setGpuOnlyFilter(gpuOnly === "true");
-    } catch {
-      // Use defaults
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(COLLAPSED_PARTITIONS_KEY, JSON.stringify([...collapsedPartitions]));
-  }, [collapsedPartitions]);
-
-  useEffect(() => {
-    localStorage.setItem(GPU_ONLY_FILTER_KEY, String(gpuOnlyFilter));
-  }, [gpuOnlyFilter]);
-
-  useEffect(() => {
-    try {
-      const rawAutoRefresh = localStorage.getItem(SESSION_AUTO_REFRESH_KEY);
-      if (rawAutoRefresh !== null) setSessionAutoRefresh(rawAutoRefresh === "true");
-      const rawInterval = localStorage.getItem(SESSION_REFRESH_INTERVAL_KEY);
-      if (rawInterval !== null) {
-        const parsed = parseInt(rawInterval, 10);
-        if (!isNaN(parsed) && parsed >= 1) setSessionRefreshInterval(parsed);
+      try {
+        const raw = localStorage.getItem(TURING_SETTINGS_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed === "object" && parsed !== null) {
+            applySettings(parsed as TuringSettings);
+          }
+        }
+      } catch {
+        // Ignore parse errors
       }
-    } catch {
-      // Use defaults
+      if (!cancelled) setSettingsLoaded(true);
+    };
+    void loadSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, applySettings]);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (user) {
+      const timeoutId = window.setTimeout(() => {
+        void saveUserSetting(user.id, TURING_SETTINGS_KEY, turingSettings);
+      }, 400);
+      return () => window.clearTimeout(timeoutId);
     }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(SESSION_AUTO_REFRESH_KEY, String(sessionAutoRefresh));
-  }, [sessionAutoRefresh]);
-
-  useEffect(() => {
-    localStorage.setItem(SESSION_REFRESH_INTERVAL_KEY, String(sessionRefreshInterval));
-  }, [sessionRefreshInterval]);
+    try {
+      localStorage.setItem(TURING_SETTINGS_KEY, JSON.stringify(turingSettings));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [settingsLoaded, user, turingSettings]);
 
   useEffect(() => {
     if (!sessionViewerOpen || !sessionAutoRefresh || !sessionViewerName) return;
@@ -653,7 +695,6 @@ export default function Turing() {
 
   const persistProjectCommands = (cmds: ProjectCommands) => {
     setProjectCommands(cmds);
-    localStorage.setItem(SAVED_COMMANDS_KEY, JSON.stringify(cmds));
   };
 
   const handleSaveCommandSet = () => {

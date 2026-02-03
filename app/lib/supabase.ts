@@ -74,6 +74,15 @@ export interface TuringConnection {
   last_verified: string | null;
 }
 
+export interface UserSetting {
+  id: string;
+  user_id: string;
+  setting_key: string;
+  value: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
 /*
 SQL Schema - Run this in Supabase SQL Editor:
 
@@ -164,4 +173,20 @@ create policy "Users can view own turing connection" on turing_connections for s
 create policy "Users can insert own turing connection" on turing_connections for insert with check (auth.uid() = user_id);
 create policy "Users can update own turing connection" on turing_connections for update using (auth.uid() = user_id);
 create policy "Users can delete own turing connection" on turing_connections for delete using (auth.uid() = user_id);
+
+-- User settings table
+create table public.user_settings (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references public.profiles(id) on delete cascade not null,
+  setting_key text not null,
+  value jsonb not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique (user_id, setting_key)
+);
+
+alter table public.user_settings enable row level security;
+create policy "Users can view own settings" on user_settings for select using (auth.uid() = user_id);
+create policy "Users can insert own settings" on user_settings for insert with check (auth.uid() = user_id);
+create policy "Users can update own settings" on user_settings for update using (auth.uid() = user_id);
 */

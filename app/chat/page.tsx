@@ -28,6 +28,7 @@ export default function ChatPage() {
   const [deviceDetails, setDeviceDetails] = useState<DeviceDetails | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [tomChecked, setTomChecked] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchDevices = useCallback(async () => {
@@ -87,12 +88,49 @@ export default function ChatPage() {
     fetchDevices();
   }, [fetchDevices, markDeviceRead]);
 
-  // Redirect if not Tom
   useEffect(() => {
-    if (!loading && !isTom) {
-      router.replace("/");
-    }
-  }, [loading, isTom, router]);
+    setTomChecked(false);
+  }, [user?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const verifyTom = async () => {
+      if (!user) {
+        if (!loading) {
+          router.replace("/");
+        }
+        return;
+      }
+      if (isTom) {
+        if (!cancelled) {
+          setTomChecked(true);
+        }
+        return;
+      }
+      try {
+        const res = await fetch("/api/auth/is-tom", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id }),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!data.isTom) {
+          router.replace("/");
+          return;
+        }
+        setTomChecked(true);
+      } catch {
+        if (!cancelled) {
+          router.replace("/");
+        }
+      }
+    };
+    verifyTom();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, loading, isTom, router]);
 
   // Fetch devices on mount
   useEffect(() => {
@@ -177,14 +215,7 @@ export default function ChatPage() {
 
   const sortedDevices = [...devices].sort((a, b) => getActivityTime(b) - getActivityTime(a));
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <p className="text-white/60">Loading...</p>
-      </div>
-    );
-  }
-  if (!isTom) {
+  if (!tomChecked) {
     return null;
   }
 
