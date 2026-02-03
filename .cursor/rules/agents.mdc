@@ -17,6 +17,7 @@ alwaysApply: true
 - NO `&&` chaining: use `;` or separate commands
 - NO heredoc `<<'EOF'`: use simple `-m "message"` for commits
 - Use `working_directory` param instead of `cd`
+- rg tool can fail with absolute paths; omit path for root search
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB)
@@ -34,7 +35,7 @@ Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Ve
 ```
 app/
 ├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
-├── chat-tom/page.tsx        # Tom's chat dashboard (Tom only)
+├── chat/page.tsx            # Chat dashboard (Tom only)
 ├── projects/ProjectViewer.tsx # Client project HTML viewer
 ├── projects/[name]/page.tsx # Project HTML viewer page (hardcoded config)
 ├── api/
@@ -76,8 +77,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Login: top-right nav button shows Log in or username (Tom outlined)
 - Profile modal: username click shows sign out, stored password, time on tom.Quest
 - Login modal: defaults to sign in on open, scrolls if viewport is short
-- Chat (Tom) page: visible only to Tom, chat list sorted by last activity with unread indicators
-- Chat (Tom) nav: green dot when any unread chats exist
+- Chat page: visible only to Tom, chat list sorted by last activity with unread indicators
+- Chat nav: green dot when any unread chats exist
 - ChatBubble hidden for Tom users
 - Polling: chat polls every 5s when open
  - Home page includes DebugTerminal for client-side logs
@@ -119,8 +120,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
-- [2026-02-03] Profile time unavailable + Chat (Tom) loading hang → link device on auth init; auth init now guards errors
-- [2026-02-03] Chat (Tom) list sorted by last activity + unread indicators; nav shows unread dot, hide Tom self-chat bubble
+- [2026-02-03] Profile time unavailable + Chat loading hang → link device on auth init; auth init now guards errors
+- [2026-02-03] Chat list sorted by last activity + unread indicators; nav shows unread dot, hide Tom self-chat bubble
 - [2026-02-03] Allocation dropdown hid zero-free types → include them; blank count defaults to 1
 - [2026-02-03] Debug log copy buttons now show success checkmark
 - [2026-02-03] Login/Profile modals rendered behind page → move modals outside nav element (use fragment), nav z-40 modals z-50

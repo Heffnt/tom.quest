@@ -65,7 +65,7 @@ export default function Navigation() {
     "User";
 
   const allLinks = isTom
-    ? [...navLinks, { href: "/chat-tom", label: "Chat (Tom)" }]
+    ? [...navLinks, { href: "/chat", label: "Chat" }]
     : navLinks;
 
   return (
@@ -96,7 +96,7 @@ export default function Navigation() {
                   }`}
                 >
                   {link.label}
-                  {isTom && link.href === "/chat-tom" && hasUnreadChats && (
+                  {isTom && link.href === "/chat" && hasUnreadChats && (
                     <span className="absolute -right-3 top-1 h-2 w-2 rounded-full bg-green-500" />
                   )}
                 </Link>
