@@ -62,7 +62,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Tom identified by `TOM_USER_ID` env var matching Supabase user ID
 - DB tables: `profiles`, `devices`, `messages`, `page_visits`, `turing_connections`
 - Device tracking: UUID in localStorage, UA parsing via `ua-parser-js`, tracks page visits + duration
-- ChatBubble: floating top-left, "Tell Tom something!" + login/user icon
+- ChatBubble: floating top-right icon button (no text)
+- Login: top-right nav button shows Log in or username (Tom outlined)
 - Chat (Tom) page: visible only to Tom, shows all devices, conversations, device info modal
 - Polling: chat polls every 5s when open
  - Home page includes DebugTerminal for client-side logs

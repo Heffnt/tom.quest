@@ -3,7 +3,9 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useAuth } from "./AuthProvider";
+import LoginModal from "./LoginModal";
 
 const navLinks = [
   { href: "/", label: "Home" },
@@ -15,7 +17,21 @@ const navLinks = [
 
 export default function Navigation() {
   const pathname = usePathname();
-  const { isTom } = useAuth();
+  const { isTom, user, profile } = useAuth();
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [lastUsername, setLastUsername] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLastUsername(localStorage.getItem("last_username"));
+  }, []);
+
+  const displayName =
+    profile?.username ||
+    (typeof user?.user_metadata === "object"
+      ? (user.user_metadata as { username?: string }).username
+      : null) ||
+    lastUsername ||
+    "User";
 
   const allLinks = isTom
     ? [...navLinks, { href: "/chat-tom", label: "Chat (Tom)" }]
@@ -36,7 +52,7 @@ export default function Navigation() {
               height={30}
             />
           </Link>
-          <div className="flex gap-6">
+          <div className="flex items-center gap-6">
             {allLinks.slice(1).map((link) => (
               <Link
                 key={link.href}
@@ -50,9 +66,28 @@ export default function Navigation() {
                 {link.label}
               </Link>
             ))}
+            {user ? (
+              <span
+                className={`text-sm px-3 py-1 rounded-full border ${
+                  isTom
+                    ? "border-green-400 text-green-300"
+                    : "border-white/20 text-white/70"
+                }`}
+              >
+                {displayName}
+              </span>
+            ) : (
+              <button
+                onClick={() => setLoginOpen(true)}
+                className="text-sm px-3 py-1 rounded-full border border-white/20 text-white/70 hover:text-white hover:border-white/40 transition-colors"
+              >
+                Log in
+              </button>
+            )}
           </div>
         </div>
       </div>
+      <LoginModal isOpen={loginOpen} onClose={() => setLoginOpen(false)} />
     </nav>
   );
 }
