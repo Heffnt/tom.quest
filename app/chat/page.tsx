@@ -89,10 +89,10 @@ export default function ChatPage() {
 
   // Redirect if not Tom
   useEffect(() => {
-    if (!loading && (!user || !isTom)) {
-      router.push("/");
+    if (!loading && !isTom) {
+      router.replace("/");
     }
-  }, [loading, user, isTom, router]);
+  }, [loading, isTom, router]);
 
   // Fetch devices on mount
   useEffect(() => {
@@ -177,12 +177,15 @@ export default function ChatPage() {
 
   const sortedDevices = [...devices].sort((a, b) => getActivityTime(b) - getActivityTime(a));
 
-  if (loading || !isTom) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <p className="text-white/60">Loading...</p>
       </div>
     );
+  }
+  if (!isTom) {
+    return null;
   }
 
   return (

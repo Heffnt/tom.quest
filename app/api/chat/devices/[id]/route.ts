@@ -56,3 +56,27 @@ export async function GET(
     messageCount: messageCount || 0,
   });
 }
+
+// PATCH - Mark device messages as read (Tom only)
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const { userId } = await request.json();
+  if (!userId || !isTomUser(userId)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const supabase = createServerSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
+  const { error } = await supabase
+    .from("devices")
+    .update({ tom_last_read_at: new Date().toISOString() })
+    .eq("device_id", id);
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ success: true });
+}

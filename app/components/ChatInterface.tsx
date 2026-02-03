@@ -119,7 +119,7 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {messages.length === 0 ? (
             <p className="text-center text-white/40 text-sm py-8">
-              No messages yet. Say hi to Tom!
+              Let Tom know about any bugs, feature requests, or just say hi!
             </p>
           ) : (
             messages.map((msg) => (

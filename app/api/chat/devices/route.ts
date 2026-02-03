@@ -66,15 +66,21 @@ export async function GET(request: Request) {
         .limit(1)
         .maybeSingle();
 
-      // Count messages from visitor after Tom's last reply
+      const readTimestamps = [device.tom_last_read_at, lastTomMessage?.created_at]
+        .filter((value): value is string => Boolean(value))
+        .map((value) => Date.parse(value))
+        .filter((value) => !Number.isNaN(value));
+      const readCutoff = readTimestamps.length
+        ? new Date(Math.max(...readTimestamps)).toISOString()
+        : null;
       let unread = 0;
-      if (lastTomMessage) {
+      if (readCutoff) {
         const { count: unreadCount } = await supabase
           .from("messages")
           .select("*", { count: "exact", head: true })
           .eq("device_id", device.device_id)
           .eq("from_tom", false)
-          .gt("created_at", lastTomMessage.created_at);
+          .gt("created_at", readCutoff);
         unread = unreadCount || 0;
       } else {
         unread = count || 0;

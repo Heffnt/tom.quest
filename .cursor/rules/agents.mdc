@@ -122,6 +122,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-03] Non-Tom /chat access → redirect to tom.Quest home with replace + blank render
 - [2026-02-03] Profile time unavailable + Chat loading hang → link device on auth init; auth init now guards errors
 - [2026-02-03] Chat list sorted by last activity + unread indicators; nav shows unread dot, hide Tom self-chat bubble
 - [2026-02-03] Allocation dropdown hid zero-free types → include them; blank count defaults to 1

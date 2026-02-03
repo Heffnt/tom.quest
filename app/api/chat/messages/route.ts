@@ -60,5 +60,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  if (fromTom) {
+    await supabase
+      .from("devices")
+      .update({ tom_last_read_at: new Date().toISOString() })
+      .eq("device_id", deviceId);
+  }
+
   return NextResponse.json({ message: data });
 }
