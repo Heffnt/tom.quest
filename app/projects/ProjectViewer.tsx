@@ -1,16 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type ProjectViewerProps = {
   title: string;
   filePath: string;
 };
 
+function getStorageKey(filePath: string) {
+  return `project_settings_${filePath.replace(/[^a-zA-Z0-9]/g, "_")}`;
+}
+
 export default function ProjectViewer({ title, filePath }: ProjectViewerProps) {
   const [html, setHtml] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const storageKey = getStorageKey(filePath);
 
   const loadFile = useCallback(async () => {
     setLoading(true);
@@ -38,6 +44,30 @@ export default function ProjectViewer({ title, filePath }: ProjectViewerProps) {
     void loadFile();
   }, [loadFile]);
 
+  // Listen for settings from iframe
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === "saveSettings" && event.data?.settings) {
+        localStorage.setItem(storageKey, JSON.stringify(event.data.settings));
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [storageKey]);
+
+  // Send saved settings to iframe when it loads
+  const handleIframeLoad = useCallback(() => {
+    const saved = localStorage.getItem(storageKey);
+    if (saved && iframeRef.current?.contentWindow) {
+      try {
+        const settings = JSON.parse(saved);
+        iframeRef.current.contentWindow.postMessage({ type: "loadSettings", settings }, "*");
+      } catch {
+        // Ignore parse errors
+      }
+    }
+  }, [storageKey]);
+
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col px-4 py-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
@@ -60,10 +90,12 @@ export default function ProjectViewer({ title, filePath }: ProjectViewerProps) {
         </div>
       ) : (
         <iframe
+          ref={iframeRef}
           title={`${title} preview`}
           sandbox="allow-scripts"
           className="w-full flex-1 rounded-lg border border-white/10 bg-white"
           srcDoc={html}
+          onLoad={handleIframeLoad}
         />
       )}
     </div>
