@@ -6,7 +6,9 @@ import { DebugLogEntry } from "../lib/debug";
 export default function DebugTerminal() {
   const [logs, setLogs] = useState<DebugLogEntry[]>([]);
   const [open, setOpen] = useState(false);
+  const [copySuccess, setCopySuccess] = useState(false);
   const terminalRef = useRef<HTMLDivElement>(null);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -24,6 +26,13 @@ export default function DebugTerminal() {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [logs, open]);
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const copyLogs = async () => {
     const text = logs.map((log) => {
@@ -31,7 +40,18 @@ export default function DebugTerminal() {
       const base = `${time} [${log.type.toUpperCase()}] ${log.message}`;
       return log.data ? `${base}\n${JSON.stringify(log.data, null, 2)}` : base;
     }).join("\n\n");
-    await navigator.clipboard.writeText(text);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopySuccess(true);
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+      copyTimeoutRef.current = window.setTimeout(() => {
+        setCopySuccess(false);
+      }, 2000);
+    } catch {
+      // Ignore clipboard errors
+    }
   };
 
   return (
@@ -60,7 +80,7 @@ export default function DebugTerminal() {
                 onClick={copyLogs}
                 className="text-white/40 hover:text-white/60 transition-colors"
               >
-                Copy
+                {copySuccess ? "✓" : "Copy"}
               </button>
               <button
                 onClick={() => setLogs([])}

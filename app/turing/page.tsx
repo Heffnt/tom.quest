@@ -106,6 +106,9 @@ export default function Turing() {
   const [cancelAllOpen, setCancelAllOpen] = useState(false);
   const [cancelAllLoading, setCancelAllLoading] = useState(false);
   const [cancelAllError, setCancelAllError] = useState<string | null>(null);
+  const [cancelJobId, setCancelJobId] = useState<string | null>(null);
+  const [cancelJobLoading, setCancelJobLoading] = useState(false);
+  const [cancelJobError, setCancelJobError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState(30);
   const [refreshIntervalInput, setRefreshIntervalInput] = useState("30");
@@ -125,6 +128,7 @@ export default function Turing() {
   const [dirBrowserOpen, setDirBrowserOpen] = useState(false);
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [debugCopySuccess, setDebugCopySuccess] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(256);
   const [isResizing, setIsResizing] = useState(false);
   const [collapsedPartitions, setCollapsedPartitions] = useState<Set<string>>(new Set());
@@ -137,6 +141,7 @@ export default function Turing() {
   const [sessionAutoRefresh, setSessionAutoRefresh] = useState(false);
   const [sessionRefreshInterval, setSessionRefreshInterval] = useState(2);
   const debugLogIdRef = useRef(0);
+  const debugCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionModalRef = useRef<HTMLDivElement>(null);
   const debugTerminalRef = useRef<HTMLDivElement>(null);
   const sessionOutputRef = useRef<HTMLPreElement>(null);
@@ -157,10 +162,10 @@ export default function Turing() {
     );
     const totals: Record<string, number> = {};
     allocationNodes.forEach((node) => {
+      if (totals[node.gpu_type] === undefined) totals[node.gpu_type] = 0;
       if (node.state !== "up") return;
       const free = Math.max(node.total_gpus - node.allocated_gpus, 0);
-      if (free < 1) return;
-      totals[node.gpu_type] = (totals[node.gpu_type] || 0) + free;
+      totals[node.gpu_type] += free;
     });
     return totals;
   }, [gpuReport]);
@@ -173,7 +178,7 @@ export default function Turing() {
       if (gpuType) setGpuType("");
       return;
     }
-    if (!gpuType || !allocationFreeByType[gpuType]) {
+    if (!gpuType || !(gpuType in allocationFreeByType)) {
       setGpuType(allocationOptions[0][0]);
     }
   }, [allocationOptions, allocationFreeByType, gpuType]);
@@ -217,6 +222,13 @@ export default function Turing() {
       debugTerminalRef.current.scrollTop = debugTerminalRef.current.scrollHeight;
     }
   }, [debugLogs, debugOpen]);
+  useEffect(() => {
+    return () => {
+      if (debugCopyTimeoutRef.current) {
+        clearTimeout(debugCopyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -259,7 +271,18 @@ export default function Turing() {
       }
       return `${time} ${log.message}`;
     }).join("\n\n");
-    await navigator.clipboard.writeText(text);
+    try {
+      await navigator.clipboard.writeText(text);
+      setDebugCopySuccess(true);
+      if (debugCopyTimeoutRef.current) {
+        clearTimeout(debugCopyTimeoutRef.current);
+      }
+      debugCopyTimeoutRef.current = window.setTimeout(() => {
+        setDebugCopySuccess(false);
+      }, 2000);
+    } catch {
+      // Ignore clipboard errors
+    }
   };
 
   const fetchGpuReport = useCallback(async () => {
@@ -486,12 +509,7 @@ export default function Turing() {
     const countValue = count.trim();
     const timeNum = parseInt(timeMins, 10);
     const memoryNum = parseInt(memoryMb, 10);
-    const resolvedCount = countValue ? parseInt(countValue, 10) : Math.min(maxAllocatable, 12);
-    if (!countValue && maxAllocatable === 0) {
-      setAllocateError("No free GPUs available for this type");
-      setAllocating(false);
-      return;
-    }
+    const resolvedCount = countValue ? parseInt(countValue, 10) : Math.min(Math.max(maxAllocatable, 1), 12);
     if (isNaN(resolvedCount) || resolvedCount < 1 || resolvedCount > 12) {
       setAllocateError("Count must be between 1 and 12");
       setAllocating(false);
@@ -549,8 +567,31 @@ export default function Turing() {
         throw new Error(data.detail || "Failed to cancel");
       }
       fetchJobs();
+      return true;
     } catch (e) {
-      setJobsError(e instanceof Error ? e.message : "Failed to cancel job");
+      const message = e instanceof Error ? e.message : "Failed to cancel job";
+      setJobsError(message);
+      setCancelJobError(message);
+      return false;
+    }
+  };
+  const openCancelJob = (jobId: string) => {
+    setCancelJobError(null);
+    setCancelJobLoading(false);
+    setCancelJobId(jobId);
+  };
+  const closeCancelJob = () => {
+    if (cancelJobLoading) return;
+    setCancelJobId(null);
+    setCancelJobError(null);
+  };
+  const handleConfirmCancelJob = async () => {
+    if (!cancelJobId) return;
+    setCancelJobLoading(true);
+    const success = await handleCancel(cancelJobId);
+    setCancelJobLoading(false);
+    if (success) {
+      setCancelJobId(null);
     }
   };
   const openCancelAll = () => {
@@ -1075,7 +1116,7 @@ export default function Turing() {
                 >
                   {allocationOptions.length === 0 ? (
                     <option value="" className="bg-black text-white">
-                      No free GPUs available
+                      No allocatable GPU types
                     </option>
                   ) : (
                     allocationOptions.map(([type, free]) => {
@@ -1106,7 +1147,7 @@ export default function Turing() {
                   className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 />
                 <p className="text-xs text-white/40 mt-1">
-                  Leave blank to allocate all free GPUs in the selected type.
+                  Leave blank to allocate all free GPUs (defaults to 1 if none free).
                 </p>
               </div>
               <div>
@@ -1120,6 +1161,9 @@ export default function Turing() {
                   placeholder="60"
                   className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 />
+                <p className="text-xs text-white/40 mt-1">
+                  Set to 1440 for 24 hours.
+                </p>
               </div>
               <div>
                 <label className="block text-sm text-white/60 mb-1">
@@ -1335,7 +1379,7 @@ export default function Turing() {
                           )}
                           {canWrite && (
                             <button
-                              onClick={() => handleCancel(job.job_id)}
+                              onClick={() => openCancelJob(job.job_id)}
                               className="px-3 py-1 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
                             >
                               Cancel
@@ -1352,6 +1396,35 @@ export default function Turing() {
         </section>
       </div>
 
+      {cancelJobId && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-black border border-white/20 rounded-lg p-6 w-full max-w-md mx-4">
+            <h3 className="text-lg font-semibold">Cancel job {cancelJobId}?</h3>
+            <p className="text-sm text-white/60 mt-2">
+              This will cancel the selected job.
+            </p>
+            {cancelJobError && <p className="text-red-400 text-sm mt-3">{cancelJobError}</p>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeCancelJob}
+                disabled={cancelJobLoading}
+                className="px-3 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
+              >
+                Keep Job
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCancelJob}
+                disabled={cancelJobLoading}
+                className="px-3 py-2 text-sm text-red-200 bg-red-500/20 hover:bg-red-500/30 rounded transition-colors disabled:opacity-50"
+              >
+                {cancelJobLoading ? "Canceling..." : "Cancel Job"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {cancelAllOpen && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
           <div className="bg-black border border-white/20 rounded-lg p-6 w-full max-w-md mx-4">
@@ -1514,7 +1587,7 @@ export default function Turing() {
                   onClick={copyDebugLogs}
                   className="text-white/40 hover:text-white/60 transition-colors"
                 >
-                  Copy
+                  {debugCopySuccess ? "✓" : "Copy"}
                 </button>
                 <button
                   onClick={() => setDebugLogs([])}

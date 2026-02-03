@@ -64,6 +64,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Device tracking: UUID in localStorage, UA parsing via `ua-parser-js`, tracks page visits + duration
 - ChatBubble: floating top-right icon button (no text)
 - Login: top-right nav button shows Log in or username (Tom outlined)
+- Login modal: defaults to sign up on open, scrolls if viewport is short
 - Chat (Tom) page: visible only to Tom, shows all devices, conversations, device info modal
 - Polling: chat polls every 5s when open
  - Home page includes DebugTerminal for client-side logs
@@ -99,12 +100,15 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
 - Dir browse: always sends path (default `~`), surfaces upstream error
 - Turing setup: clone repo to `~/tom.quest`, use `tom-quest-api/` subdir
-- Allocate panel: GPU types from non-academic partitions with `gpu` node names; blank count allocates all free (up to 12)
+- Allocate panel: GPU types from non-academic partitions with `gpu` node names; blank count allocates all free (defaults to 1 if none free)
 - GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
-- Active Jobs: cancel-all button with confirm modal
+- Active Jobs: cancel single + cancel-all confirm modals
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-03] Allocation dropdown hid zero-free types → include them; blank count defaults to 1
+- [2026-02-03] Debug log copy buttons now show success checkmark
+- [2026-02-03] Login modal could render too high to access → top-align with scrollable modal and default to sign up
 - [2026-02-02] Global font not applied to form controls → set button/input/select/textarea to inherit font
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API
