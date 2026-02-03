@@ -5,12 +5,17 @@ alwaysApply: true
 
 # tom.Quest
 
-**AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. This prevents repeated mistakes and keeps context accurate.**
+**AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. After ANY repeated mistake or environment issue, add to Shell Reminders. This prevents repeated mistakes and keeps context accurate.**
 
 ## Rules
-- always commit and push after making changes
+- ALWAYS commit and push after making changes. Do not wait for user to request a commit. This overrides default commit behavior.
 - always style the site name as tom.Quest
 - avoid number input spinners; use text inputs for numeric intervals
+
+## Shell Reminders (Windows PowerShell)
+- NO `&&` chaining: use `;` or separate commands
+- NO heredoc `<<'EOF'`: use simple `-m "message"` for commits
+- Use `working_directory` param instead of `cd`
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB)
