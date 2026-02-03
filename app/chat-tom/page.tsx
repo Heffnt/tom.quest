@@ -8,6 +8,7 @@ import { Device, Message, PageVisit } from "../lib/supabase";
 interface DeviceWithExtras extends Device {
   username: string | null;
   unread: number;
+  last_message_at: string | null;
 }
 
 interface DeviceDetails {
@@ -155,6 +156,13 @@ export default function ChatTomPage() {
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
   };
 
+  const getActivityTime = (device: DeviceWithExtras) => {
+    const timestamp = Date.parse(device.last_message_at || device.last_seen);
+    return Number.isNaN(timestamp) ? 0 : timestamp;
+  };
+
+  const sortedDevices = [...devices].sort((a, b) => getActivityTime(b) - getActivityTime(a));
+
   if (loading || !isTom) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -183,10 +191,12 @@ export default function ChatTomPage() {
           {/* Device List */}
           <div className="bg-white/5 border border-white/10 rounded-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-white/10">
-              <h2 className="font-medium">Devices ({devices.length})</h2>
+              <h2 className="font-medium">Chats ({devices.length})</h2>
             </div>
             <div className="divide-y divide-white/5 max-h-[600px] overflow-y-auto">
-              {devices.map((device) => (
+              {sortedDevices.map((device) => {
+                const lastActivity = device.last_message_at || device.last_seen;
+                return (
                 <button
                   key={device.device_id}
                   onClick={() => setSelectedDevice(device.device_id)}
@@ -198,7 +208,7 @@ export default function ChatTomPage() {
                     <div className="flex items-center gap-2">
                       <span
                         className={`w-2 h-2 rounded-full ${
-                          isActive(device.last_seen) ? "bg-green-500" : "bg-white/20"
+                          isActive(device.last_seen) ? "bg-white/40" : "bg-white/20"
                         }`}
                       />
                       <span className="font-medium truncate max-w-[150px]">
@@ -206,6 +216,9 @@ export default function ChatTomPage() {
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
+                      {device.unread > 0 && (
+                        <span className="w-2 h-2 rounded-full bg-green-500" />
+                      )}
                       {device.unread > 0 && (
                         <span className="bg-white text-black text-xs px-2 py-0.5 rounded-full">
                           {device.unread}
@@ -227,12 +240,13 @@ export default function ChatTomPage() {
                     </div>
                   </div>
                   <p className="text-xs text-white/40 mt-1">
-                    Last seen: {new Date(device.last_seen).toLocaleString()}
+                    Last activity: {new Date(lastActivity).toLocaleString()}
                   </p>
                 </button>
-              ))}
-              {devices.length === 0 && (
-                <p className="px-4 py-8 text-center text-white/40">No devices yet</p>
+              );
+              })}
+              {sortedDevices.length === 0 && (
+                <p className="px-4 py-8 text-center text-white/40">No chats yet</p>
               )}
             </div>
           </div>

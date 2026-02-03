@@ -48,6 +48,14 @@ export async function GET(request: Request) {
         .select("*", { count: "exact", head: true })
         .eq("device_id", device.device_id)
         .eq("from_tom", false);
+
+      const { data: lastMessage } = await supabase
+        .from("messages")
+        .select("created_at")
+        .eq("device_id", device.device_id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
       
       const { data: lastTomMessage } = await supabase
         .from("messages")
@@ -76,6 +84,7 @@ export async function GET(request: Request) {
         ...device,
         username: device.profiles?.username || null,
         unread,
+        last_message_at: lastMessage?.created_at || null,
       };
     })
   );

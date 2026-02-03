@@ -46,7 +46,8 @@ app/
 │   ├── DebugTerminal.tsx    # Client debug terminal (home page)
 │   ├── DeviceTracker.tsx    # Device registration + page tracking
 │   ├── ClientProviders.tsx  # Wraps auth/chat in layout
-│   └── Navigation.tsx       # Nav with conditional Tom links
+│   ├── Navigation.tsx       # Nav with conditional Tom links
+│   └── ProfileModal.tsx     # Username profile modal
 └── lib/
     ├── debug.ts             # Client debug logger
     ├── supabase.ts          # Supabase client + types
@@ -64,8 +65,11 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Device tracking: UUID in localStorage, UA parsing via `ua-parser-js`, tracks page visits + duration
 - ChatBubble: floating top-right icon button (no text)
 - Login: top-right nav button shows Log in or username (Tom outlined)
+- Profile modal: username click shows sign out, stored password, time on tom.Quest
 - Login modal: defaults to sign up on open, scrolls if viewport is short
-- Chat (Tom) page: visible only to Tom, shows all devices, conversations, device info modal
+- Chat (Tom) page: visible only to Tom, chat list sorted by last activity with unread indicators
+- Chat (Tom) nav: green dot when any unread chats exist
+- ChatBubble hidden for Tom users
 - Polling: chat polls every 5s when open
  - Home page includes DebugTerminal for client-side logs
 
@@ -106,6 +110,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-03] Chat (Tom) list sorted by last activity + unread indicators; nav shows unread dot, hide Tom self-chat bubble
 - [2026-02-03] Allocation dropdown hid zero-free types → include them; blank count defaults to 1
 - [2026-02-03] Debug log copy buttons now show success checkmark
 - [2026-02-03] Login modal could render too high to access → top-align with scrollable modal and default to sign up

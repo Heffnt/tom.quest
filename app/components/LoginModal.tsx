@@ -25,6 +25,13 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const storePassword = (value: string) => {
+    try {
+      sessionStorage.setItem("last_password", value);
+    } catch {
+      // Ignore storage errors
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -69,6 +76,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
           }
         } else {
           logDebug("info", "Sign in success", { username: rawUsername });
+          storePassword(password);
           onClose();
         }
       } else {
@@ -90,6 +98,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
             setError("Account created! Please sign in.");
           } else {
             logDebug("info", "Sign up success", { username: rawUsername });
+            storePassword(password);
             onClose();
           }
         }

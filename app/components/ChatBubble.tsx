@@ -6,7 +6,7 @@ import ChatInterface from "./ChatInterface";
 import { logDebug } from "../lib/debug";
 
 export default function ChatBubble() {
-  const { user, profile } = useAuth();
+  const { user, profile, isTom } = useAuth();
   const [chatOpen, setChatOpen] = useState(false);
   const [hasReplies, setHasReplies] = useState(false);
   const [deviceName, setDeviceName] = useState<string | null>(null);
@@ -66,6 +66,8 @@ export default function ChatBubble() {
     lastUsername ||
     deviceName ||
     "Anonymous";
+
+  if (isTom) return null;
 
   return (
     <>
