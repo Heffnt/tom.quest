@@ -105,6 +105,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-02] Global font not applied to form controls → set button/input/select/textarea to inherit font
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API
 - [2026-01-29] salloc timeout on resource wait → non-blocking Popen, capture job ID from early output, screen polls for RUNNING before commands
