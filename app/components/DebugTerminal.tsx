@@ -8,7 +8,7 @@ export default function DebugTerminal() {
   const [open, setOpen] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
   const terminalRef = useRef<HTMLDivElement>(null);
-  const copyTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const copyTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     const handler = (event: Event) => {
