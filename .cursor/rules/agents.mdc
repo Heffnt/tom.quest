@@ -115,6 +115,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-03] Debug log copy buttons now show success checkmark
 - [2026-02-03] Login modal could render too high to access → top-align with scrollable modal and default to sign up
 - [2026-02-03] Debug terminal build failed on setTimeout typing → use `number` type for ref (Node.js types conflict with browser)
+- [2026-02-03] Added debug logs for turing debug-copy timeout typing investigation
+- [2026-02-03] Turing debug copy timeout type mismatch → use `number` ref for browser setTimeout
 - [2026-02-02] Global font not applied to form controls → set button/input/select/textarea to inherit font
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API

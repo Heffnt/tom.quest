@@ -141,7 +141,7 @@ export default function Turing() {
   const [sessionAutoRefresh, setSessionAutoRefresh] = useState(false);
   const [sessionRefreshInterval, setSessionRefreshInterval] = useState(2);
   const debugLogIdRef = useRef(0);
-  const debugCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debugCopyTimeoutRef = useRef<number | null>(null);
   const sessionModalRef = useRef<HTMLDivElement>(null);
   const debugTerminalRef = useRef<HTMLDivElement>(null);
   const sessionOutputRef = useRef<HTMLPreElement>(null);
@@ -225,6 +225,9 @@ export default function Turing() {
   useEffect(() => {
     return () => {
       if (debugCopyTimeoutRef.current) {
+        // #region agent log
+        fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:227",message:"clear debug copy timeout on unmount",data:{timeoutType:typeof debugCopyTimeoutRef.current},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H3"})}).catch(()=>{});
+        // #endregion
         clearTimeout(debugCopyTimeoutRef.current);
       }
     };
@@ -271,16 +274,29 @@ export default function Turing() {
       }
       return `${time} ${log.message}`;
     }).join("\n\n");
+    // #region agent log
+    fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:274",message:"copyDebugLogs start",data:{logCount:debugLogs.length,textLength:text.length},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H1"})}).catch(()=>{});
+    // #endregion
     try {
       await navigator.clipboard.writeText(text);
       setDebugCopySuccess(true);
+      // #region agent log
+      fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:280",message:"copyDebugLogs clipboard success",data:{hadTimeout:!!debugCopyTimeoutRef.current,currentType:typeof debugCopyTimeoutRef.current},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H1"})}).catch(()=>{});
+      // #endregion
       if (debugCopyTimeoutRef.current) {
         clearTimeout(debugCopyTimeoutRef.current);
       }
-      debugCopyTimeoutRef.current = window.setTimeout(() => {
+      const timeoutId = window.setTimeout(() => {
         setDebugCopySuccess(false);
       }, 2000);
-    } catch {
+      debugCopyTimeoutRef.current = timeoutId;
+      // #region agent log
+      fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:289",message:"copyDebugLogs setTimeout assigned",data:{timeoutType:typeof timeoutId,timeoutIdIsNumber:typeof timeoutId === "number"},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H2"})}).catch(()=>{});
+      // #endregion
+    } catch (err) {
+      // #region agent log
+      fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:293",message:"copyDebugLogs clipboard error",data:{error:err instanceof Error ? err.message : "unknown"},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H4"})}).catch(()=>{});
+      // #endregion
       // Ignore clipboard errors
     }
   };
