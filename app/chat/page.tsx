@@ -28,7 +28,6 @@ export default function ChatPage() {
   const [deviceDetails, setDeviceDetails] = useState<DeviceDetails | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchDevices = useCallback(async () => {
@@ -44,6 +43,19 @@ export default function ChatPage() {
     }
   }, [user]);
 
+  const markDeviceRead = useCallback(async (deviceId: string) => {
+    if (!user || !isTom) return;
+    try {
+      await fetch(`/api/chat/devices/${deviceId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id }),
+      });
+    } catch {
+      // Ignore errors
+    }
+  }, [user, isTom]);
+
   const fetchMessages = useCallback(async () => {
     if (!selectedDevice) return;
     try {
@@ -51,11 +63,12 @@ export default function ChatPage() {
       const data = await res.json();
       if (data.messages) {
         setMessages(data.messages);
+        markDeviceRead(selectedDevice);
       }
     } catch {
       // Ignore errors
     }
-  }, [selectedDevice]);
+  }, [selectedDevice, markDeviceRead]);
 
   const fetchDeviceDetails = useCallback(async (deviceId: string) => {
     if (!user) return;
@@ -67,6 +80,12 @@ export default function ChatPage() {
       // Ignore errors
     }
   }, [user]);
+
+  const handleSelectDevice = useCallback(async (deviceId: string) => {
+    setSelectedDevice(deviceId);
+    await markDeviceRead(deviceId);
+    fetchDevices();
+  }, [fetchDevices, markDeviceRead]);
 
   // Redirect if not Tom
   useEffect(() => {
@@ -106,11 +125,6 @@ export default function ChatPage() {
       }
     };
   }, [autoRefresh, user, isTom, selectedDevice, fetchDevices, fetchMessages]);
-
-  // Scroll to bottom on new messages
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   const sendMessage = async () => {
     if (!input.trim() || !selectedDevice || !user || sending) return;
@@ -199,7 +213,7 @@ export default function ChatPage() {
                 return (
                   <button
                     key={device.device_id}
-                    onClick={() => setSelectedDevice(device.device_id)}
+                    onClick={() => handleSelectDevice(device.device_id)}
                     className={`w-full px-4 py-3 text-left hover:bg-white/5 transition-colors ${
                       selectedDevice === device.device_id ? "bg-white/10" : ""
                     }`}
@@ -286,7 +300,6 @@ export default function ChatPage() {
                       </div>
                     ))
                   )}
-                  <div ref={messagesEndRef} />
                 </div>
                 <div className="p-4 border-t border-white/10">
                   <div className="flex gap-2">

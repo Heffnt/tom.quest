@@ -16,7 +16,6 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchMessages = useCallback(async () => {
@@ -56,10 +55,6 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
       }
     };
   }, [isOpen, deviceId, fetchMessages]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   const sendMessage = async () => {
     if (!input.trim() || !deviceId || sending) return;
@@ -147,7 +142,6 @@ export default function ChatInterface({ isOpen, onClose, displayName }: ChatInte
               </div>
             ))
           )}
-          <div ref={messagesEndRef} />
         </div>
 
         {/* Input */}

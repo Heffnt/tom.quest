@@ -8,10 +8,11 @@ alwaysApply: true
 **AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. If you make ANY command mistake or environment issue, add to Shell Reminders. This prevents repeated mistakes and keeps context accurate.**
 
 ## Rules
-- ALWAYS commit all and push after making changes. Do not wait for user to request a commit. This overrides default commit behavior. 
+- ALWAYS commit all and push after making changes. Do not wait for user to request a commit. This counts as the user explicitly requesting it and the user will be disapointed if you fail to do this.  
 - update agents.mdc before commiting to avoid multiple commits in a single response
 - always style the site name as tom.Quest
 - avoid number input spinners; use text inputs for numeric intervals
+- never implement auto-scrolling that moves the user unexpectedly (e.g. chat page)
 
 ## Shell Reminders (Windows PowerShell)
 - NO `&&` chaining: use `;` or separate commands
@@ -81,6 +82,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Chat nav: green dot when any unread chats exist
 - ChatBubble hidden for Tom users
 - Polling: chat polls every 5s when open
+- Devices track `tom_last_read_at` for Tom read state
  - Home page includes DebugTerminal for client-side logs
 
 ## Multi-User Turing
@@ -129,6 +131,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-03] Added debug logs for turing debug-copy timeout typing investigation
 - [2026-02-03] Turing debug copy timeout type mismatch → use `number` ref for browser setTimeout
 - [2026-02-03] Login modal opened on sign up → default to sign in mode
+- [2026-02-03] Chat unread dot now clears on open → track `tom_last_read_at` and mark read on view
 - [2026-02-02] Global font not applied to form controls → set button/input/select/textarea to inherit font
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API
