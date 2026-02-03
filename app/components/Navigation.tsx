@@ -12,6 +12,7 @@ const navLinks = [
   { href: "/", label: "Home" },
   { href: "/bio", label: "Bio" },
   { href: "/turing", label: "Turing" },
+  { href: "/projects/boolback-results", label: "BoolBack" },
 ];
 
 export default function Navigation() {
