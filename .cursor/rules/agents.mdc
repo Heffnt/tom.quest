@@ -5,7 +5,7 @@ alwaysApply: true
 
 # tom.Quest
 
-**AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. After ANY repeated mistake or environment issue, add to Shell Reminders. This prevents repeated mistakes and keeps context accurate.**
+**AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. If you make ANY command mistake or environment issue, add to Shell Reminders. This prevents repeated mistakes and keeps context accurate.**
 
 ## Rules
 - ALWAYS commit and push after making changes. Do not wait for user to request a commit. This overrides default commit behavior.
@@ -148,6 +148,4 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-02] Home debug terminal + client debug logging for auth/chat/device issues
 - [2026-02-02] Device info fetch error → use maybeSingle + limit to avoid single-row coercion
 - [2026-02-02] Logged-in username display → infer username from metadata/last_username/email
-
-## Placeholders
-- None (removed /projects and /data-labeling)
+- [2026-02-03] Dynamic route params 404 → Next.js 15+ `params` is a Promise, must await it
