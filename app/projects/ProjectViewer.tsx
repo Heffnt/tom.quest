@@ -39,35 +39,33 @@ export default function ProjectViewer({ title, filePath }: ProjectViewerProps) {
   }, [loadFile]);
 
   return (
-    <div className="min-h-screen px-6 py-16">
-      <div className="max-w-3xl mx-auto space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">{title}</h1>
-            <p className="text-sm text-white/60 break-all">{filePath}</p>
-          </div>
-          <button
-            type="button"
-            onClick={loadFile}
-            disabled={loading}
-            className="inline-flex items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? "Loading..." : "Refresh"}
-          </button>
+    <div className="h-[calc(100vh-4rem)] flex flex-col px-4 py-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
+        <div>
+          <h1 className="text-xl font-semibold">{title}</h1>
+          <p className="text-xs text-white/60 break-all">{filePath}</p>
         </div>
-        {error ? (
-          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
-            {error}
-          </div>
-        ) : (
-          <iframe
-            title={`${title} preview`}
-            sandbox="allow-scripts"
-            className="w-full h-[70vh] rounded-lg border border-white/10 bg-white"
-            srcDoc={html}
-          />
-        )}
+        <button
+          type="button"
+          onClick={loadFile}
+          disabled={loading}
+          className="inline-flex items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? "Loading..." : "Refresh"}
+        </button>
       </div>
+      {error ? (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
+          {error}
+        </div>
+      ) : (
+        <iframe
+          title={`${title} preview`}
+          sandbox="allow-scripts"
+          className="w-full flex-1 rounded-lg border border-white/10 bg-white"
+          srcDoc={html}
+        />
+      )}
     </div>
   );
 }
