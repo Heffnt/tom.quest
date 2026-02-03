@@ -117,9 +117,9 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-12 sm:items-center sm:py-0">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-black border border-white/20 rounded-lg p-6 w-full max-w-md mx-4 max-h-[calc(100vh-6rem)] overflow-y-auto sm:max-h-[calc(100vh-2rem)]">
+      <div className="relative bg-black border border-white/20 rounded-lg p-6 w-full max-w-md">
         <button
           onClick={onClose}
           className="absolute top-4 right-4 text-white/60 hover:text-white"
