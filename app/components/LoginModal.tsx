@@ -35,7 +35,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
 
   useEffect(() => {
     if (isOpen) {
-      setMode("signup");
+      setMode("signin");
       setError(null);
     }
   }, [isOpen]);

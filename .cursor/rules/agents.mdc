@@ -8,7 +8,8 @@ alwaysApply: true
 **AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. If you make ANY command mistake or environment issue, add to Shell Reminders. This prevents repeated mistakes and keeps context accurate.**
 
 ## Rules
-- ALWAYS commit and push after making changes. Do not wait for user to request a commit. This overrides default commit behavior.
+- ALWAYS commit all and push after making changes. Do not wait for user to request a commit. This overrides default commit behavior. 
+- update agents.mdc before commiting to avoid multiple commits in a single response
 - always style the site name as tom.Quest
 - avoid number input spinners; use text inputs for numeric intervals
 
@@ -70,10 +71,11 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Tom identified by `TOM_USER_ID` env var matching Supabase user ID
 - DB tables: `profiles`, `devices`, `messages`, `page_visits`, `turing_connections`
 - Device tracking: UUID in localStorage, UA parsing via `ua-parser-js`, tracks page visits + duration
+- Auth init links current device to user when session exists
 - ChatBubble: floating top-right icon button (no text)
 - Login: top-right nav button shows Log in or username (Tom outlined)
 - Profile modal: username click shows sign out, stored password, time on tom.Quest
-- Login modal: defaults to sign up on open, scrolls if viewport is short
+- Login modal: defaults to sign in on open, scrolls if viewport is short
 - Chat (Tom) page: visible only to Tom, chat list sorted by last activity with unread indicators
 - Chat (Tom) nav: green dot when any unread chats exist
 - ChatBubble hidden for Tom users
@@ -117,6 +119,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-03] Profile time unavailable + Chat (Tom) loading hang → link device on auth init; auth init now guards errors
 - [2026-02-03] Chat (Tom) list sorted by last activity + unread indicators; nav shows unread dot, hide Tom self-chat bubble
 - [2026-02-03] Allocation dropdown hid zero-free types → include them; blank count defaults to 1
 - [2026-02-03] Debug log copy buttons now show success checkmark
@@ -124,6 +127,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-03] Debug terminal build failed on setTimeout typing → use `number` type for ref (Node.js types conflict with browser)
 - [2026-02-03] Added debug logs for turing debug-copy timeout typing investigation
 - [2026-02-03] Turing debug copy timeout type mismatch → use `number` ref for browser setTimeout
+- [2026-02-03] Login modal opened on sign up → default to sign in mode
 - [2026-02-02] Global font not applied to form controls → set button/input/select/textarea to inherit font
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API

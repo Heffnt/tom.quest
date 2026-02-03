@@ -17,7 +17,7 @@ interface DeviceDetails {
   messageCount: number;
 }
 
-export default function ChatTomPage() {
+export default function ChatPage() {
   const { user, isTom, loading } = useAuth();
   const router = useRouter();
   const [devices, setDevices] = useState<DeviceWithExtras[]>([]);
@@ -197,53 +197,53 @@ export default function ChatTomPage() {
               {sortedDevices.map((device) => {
                 const lastActivity = device.last_message_at || device.last_seen;
                 return (
-                <button
-                  key={device.device_id}
-                  onClick={() => setSelectedDevice(device.device_id)}
-                  className={`w-full px-4 py-3 text-left hover:bg-white/5 transition-colors ${
-                    selectedDevice === device.device_id ? "bg-white/10" : ""
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          isActive(device.last_seen) ? "bg-white/40" : "bg-white/20"
-                        }`}
-                      />
-                      <span className="font-medium truncate max-w-[150px]">
-                        {device.username || device.device_name}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {device.unread > 0 && (
-                        <span className="w-2 h-2 rounded-full bg-green-500" />
-                      )}
-                      {device.unread > 0 && (
-                        <span className="bg-white text-black text-xs px-2 py-0.5 rounded-full">
-                          {device.unread}
+                  <button
+                    key={device.device_id}
+                    onClick={() => setSelectedDevice(device.device_id)}
+                    className={`w-full px-4 py-3 text-left hover:bg-white/5 transition-colors ${
+                      selectedDevice === device.device_id ? "bg-white/10" : ""
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            isActive(device.last_seen) ? "bg-white/40" : "bg-white/20"
+                          }`}
+                        />
+                        <span className="font-medium truncate max-w-[150px]">
+                          {device.username || device.device_name}
                         </span>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          fetchDeviceDetails(device.device_id);
-                          setShowDetails(true);
-                        }}
-                        className="text-white/40 hover:text-white p-1"
-                        title="Device info"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {device.unread > 0 && (
+                          <span className="w-2 h-2 rounded-full bg-green-500" />
+                        )}
+                        {device.unread > 0 && (
+                          <span className="bg-white text-black text-xs px-2 py-0.5 rounded-full">
+                            {device.unread}
+                          </span>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            fetchDeviceDetails(device.device_id);
+                            setShowDetails(true);
+                          }}
+                          className="text-white/40 hover:text-white p-1"
+                          title="Device info"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <p className="text-xs text-white/40 mt-1">
-                    Last activity: {new Date(lastActivity).toLocaleString()}
-                  </p>
-                </button>
-              );
+                    <p className="text-xs text-white/40 mt-1">
+                      Last activity: {new Date(lastActivity).toLocaleString()}
+                    </p>
+                  </button>
+                );
               })}
               {sortedDevices.length === 0 && (
                 <p className="px-4 py-8 text-center text-white/40">No chats yet</p>

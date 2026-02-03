@@ -94,14 +94,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [supabase]);
 
   const checkIsTom = useCallback(async (userId: string) => {
-    const response = await fetch("/api/auth/is-tom", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId }),
-    });
-    const { isTom } = await response.json();
-    setIsTom(isTom);
+    try {
+      const response = await fetch("/api/auth/is-tom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      const { isTom } = await response.json();
+      setIsTom(isTom);
+    } catch (error) {
+      logDebug("error", "Tom check failed", {
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+      setIsTom(false);
+    }
   }, []);
+
+  const linkDeviceToUser = useCallback(async (userId: string) => {
+    if (!supabase) return;
+    if (typeof window === "undefined") return;
+    try {
+      const deviceId = localStorage.getItem("device_id");
+      if (!deviceId) return;
+      await supabase
+        .from("devices")
+        .update({ user_id: userId })
+        .eq("device_id", deviceId);
+    } catch (error) {
+      logDebug("error", "Device link failed", {
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }, [supabase]);
 
   useEffect(() => {
     if (!supabase) {
@@ -112,19 +136,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const initAuth = async () => {
       logDebug("request", "Auth init");
-      const { data: { session } } = await supabase.auth.getSession();
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        logDebug("info", "Session found", { userId: session.user.id });
-        await Promise.all([
-          fetchProfile(session.user.id),
-          fetchTuringConnection(session.user.id),
-          checkIsTom(session.user.id),
-        ]);
-        await ensureProfile(session.user);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        setSession(session);
+        setUser(session?.user ?? null);
+        if (session?.user) {
+          logDebug("info", "Session found", { userId: session.user.id });
+          await Promise.all([
+            fetchProfile(session.user.id),
+            fetchTuringConnection(session.user.id),
+            checkIsTom(session.user.id),
+          ]);
+          await ensureProfile(session.user);
+          await linkDeviceToUser(session.user.id);
+        }
+      } catch (error) {
+        logDebug("error", "Auth init failed", {
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
 
     initAuth();
@@ -140,14 +172,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           checkIsTom(session.user.id),
         ]);
         await ensureProfile(session.user);
-        // Link device to user on login
-        const deviceId = localStorage.getItem("device_id");
-        if (deviceId) {
-          await supabase
-            .from("devices")
-            .update({ user_id: session.user.id })
-            .eq("device_id", deviceId);
-        }
+        await linkDeviceToUser(session.user.id);
       } else {
         setProfile(null);
         setTuringConnection(null);
@@ -156,7 +181,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => subscription.unsubscribe();
-  }, [supabase, fetchProfile, fetchTuringConnection, checkIsTom]);
+  }, [supabase, fetchProfile, fetchTuringConnection, checkIsTom, linkDeviceToUser, ensureProfile]);
 
   const signIn = async (email: string, password: string) => {
     if (!supabase) return { error: new Error("Supabase not configured") };
