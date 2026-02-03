@@ -144,6 +144,17 @@ async def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)):
         path = get_home_dir()
     return list_directory(path)
 
+@app.get("/file")
+async def get_file(path: str, auth: bool = Depends(verify_api_key)):
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        with open(expanded, "r", encoding="utf-8") as file_handle:
+            return {"content": file_handle.read(), "path": path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
+
 @app.post("/allocate", response_model=AllocationResponse)
 async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)):
     if request.count < 1:

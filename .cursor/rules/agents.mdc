@@ -29,10 +29,12 @@ Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Ve
 app/
 ├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
 ├── chat-tom/page.tsx        # Tom's chat dashboard (Tom only)
+├── projects/ProjectViewer.tsx # Client project HTML viewer
+├── projects/[name]/page.tsx # Project HTML viewer page (hardcoded config)
 ├── api/
 │   ├── turing/              # Proxy routes → user's or Tom's Turing backend
 │   │   ├── connection/      # GET/POST/DELETE user Turing connection
-│   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions
+│   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions, file
 │   ├── chat/                # Chat system API
 │   │   ├── devices/         # GET/POST devices, [id] for details
 │   │   ├── messages/        # GET/POST messages
@@ -54,7 +56,7 @@ app/
     └── turing.ts            # Turing URL resolution (Tom's gist or user's connection)
 
 tom-quest-api/               # FastAPI on Turing HPC
-├── main.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py
+├── main.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py (includes /file endpoint)
 ```
 
 ## Auth & Chat System
