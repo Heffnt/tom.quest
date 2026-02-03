@@ -11,9 +11,7 @@ import ProfileModal from "./ProfileModal";
 const navLinks = [
   { href: "/", label: "Home" },
   { href: "/bio", label: "Bio" },
-  { href: "/projects", label: "Projects" },
   { href: "/turing", label: "Turing" },
-  { href: "/data-labeling", label: "Data Labeling" },
 ];
 
 export default function Navigation() {

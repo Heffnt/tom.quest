@@ -143,5 +143,4 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-02] Logged-in username display → infer username from metadata/last_username/email
 
 ## Placeholders
-- /projects: showcase work
-- /data-labeling: annotation tools
+- None (removed /projects and /data-labeling)
