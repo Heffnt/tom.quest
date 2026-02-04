@@ -1,4 +1,3 @@
-import { createBrowserClient } from '@supabase/ssr';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -15,7 +14,7 @@ export function createBrowserSupabaseClient(): SupabaseClient | null {
   if (!isSupabaseConfigured()) {
     return null;
   }
-  return createBrowserClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
 // Server client with service key for Tom-only operations
