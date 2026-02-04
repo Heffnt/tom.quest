@@ -125,7 +125,6 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
-- [2026-02-03] Refresh still logged out → restore session from local storage tokens on auth init
 - [2026-02-03] Refresh logged out users → use supabase-js `createClient` for browser session persistence
 - [2026-02-03] Chat dashboard showed silent users → filter devices with user messages
 - [2026-02-03] Slow /chat redirect for non-Tom → verify Tom early and render null

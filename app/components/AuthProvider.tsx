@@ -5,44 +5,6 @@ import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient, Profile, TuringConnection } from "../lib/supabase";
 import { logDebug } from "../lib/debug";
 
-const SESSION_STORAGE_KEY = "tomquest_auth_session";
-
-type StoredSession = {
-  access_token: string;
-  refresh_token: string;
-};
-
-function loadStoredSession(): StoredSession | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<StoredSession>;
-    if (typeof parsed.access_token !== "string" || typeof parsed.refresh_token !== "string") {
-      return null;
-    }
-    return { access_token: parsed.access_token, refresh_token: parsed.refresh_token };
-  } catch {
-    return null;
-  }
-}
-
-function persistSession(session: Session | null) {
-  if (typeof window === "undefined") return;
-  try {
-    if (!session) {
-      localStorage.removeItem(SESSION_STORAGE_KEY);
-      return;
-    }
-    localStorage.setItem(
-      SESSION_STORAGE_KEY,
-      JSON.stringify({ access_token: session.access_token, refresh_token: session.refresh_token }),
-    );
-  } catch {
-    // Ignore storage errors
-  }
-}
-
 interface AuthContextType {
   user: User | null;
   session: Session | null;
@@ -175,32 +137,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const initAuth = async () => {
       logDebug("request", "Auth init");
       try {
-        const { data: { session: initialSession } } = await supabase.auth.getSession();
-        let activeSession = initialSession ?? null;
-        if (!activeSession) {
-          const storedSession = loadStoredSession();
-          if (storedSession) {
-            const { data, error } = await supabase.auth.setSession(storedSession);
-            if (!error && data.session) {
-              activeSession = data.session;
-              logDebug("info", "Session restored from local storage", { userId: data.session.user.id });
-            } else {
-              persistSession(null);
-            }
-          }
-        }
-        setSession(activeSession);
-        setUser(activeSession?.user ?? null);
-        persistSession(activeSession);
-        if (activeSession?.user) {
-          logDebug("info", "Session found", { userId: activeSession.user.id });
+        const { data: { session } } = await supabase.auth.getSession();
+        setSession(session);
+        setUser(session?.user ?? null);
+        if (session?.user) {
+          logDebug("info", "Session found", { userId: session.user.id });
           await Promise.all([
-            fetchProfile(activeSession.user.id),
-            fetchTuringConnection(activeSession.user.id),
-            checkIsTom(activeSession.user.id),
+            fetchProfile(session.user.id),
+            fetchTuringConnection(session.user.id),
+            checkIsTom(session.user.id),
           ]);
-          await ensureProfile(activeSession.user);
-          await linkDeviceToUser(activeSession.user.id);
+          await ensureProfile(session.user);
+          await linkDeviceToUser(session.user.id);
         }
       } catch (error) {
         logDebug("error", "Auth init failed", {
@@ -215,7 +163,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       logDebug("info", "Auth state change", { event, hasSession: !!session });
-      persistSession(session ?? null);
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
