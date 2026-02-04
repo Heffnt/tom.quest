@@ -13,6 +13,9 @@ const appFont = Poppins({
 export const metadata: Metadata = {
   title: "tom.Quest",
   description: "The personal website of Tom Heffernan - PhD Student in Artificial Intelligence at WPI",
+  icons: {
+    icon: "/images/symbol-white-transparent.png",
+  },
 };
 
 export default function RootLayout({
