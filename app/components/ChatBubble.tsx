@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "./AuthProvider";
 import ChatInterface from "./ChatInterface";
 import { logDebug } from "../lib/debug";
@@ -8,55 +8,52 @@ import { logDebug } from "../lib/debug";
 export default function ChatBubble() {
   const { user, profile, isTom } = useAuth();
   const [chatOpen, setChatOpen] = useState(false);
-  const [hasReplies, setHasReplies] = useState(false);
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [lastUsername, setLastUsername] = useState<string | null>(null);
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [userUnread, setUserUnread] = useState(0);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const fetchDeviceInfo = useCallback(async () => {
+    if (!deviceId) return;
+    try {
+      logDebug("request", "Fetch device info", { deviceId });
+      const res = await fetch(`/api/chat/devices?deviceId=${deviceId}`);
+      const data = await res.json();
+      if (data.device) {
+        setDeviceName(data.device.device_name);
+        logDebug("response", "Device info loaded");
+      }
+      if (typeof data.user_unread === "number") {
+        setUserUnread(data.user_unread);
+      }
+      if (data.error) {
+        logDebug("error", "Device info error", { error: data.error });
+      }
+    } catch {
+      // Ignore errors
+    }
+  }, [deviceId]);
 
   useEffect(() => {
-    // Get device name from localStorage or use profile username
     const storedDeviceId = localStorage.getItem("device_id");
     if (storedDeviceId) {
-      // Fetch device info to get the name
-      logDebug("request", "Fetch device info", { deviceId: storedDeviceId });
-      fetch(`/api/chat/devices?deviceId=${storedDeviceId}`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.device) {
-            setDeviceName(data.device.device_name);
-            logDebug("response", "Device info loaded");
-          } else if (data.error) {
-            logDebug("error", "Device info error", { error: data.error });
-          }
-        })
-        .catch(() => {});
+      setDeviceId(storedDeviceId);
     }
-  }, []);
-
-  useEffect(() => {
     setLastUsername(localStorage.getItem("last_username"));
   }, []);
 
   useEffect(() => {
-    // Check if Tom has replied to this device
-    const checkReplies = async () => {
-      const deviceId = localStorage.getItem("device_id");
-      if (!deviceId) return;
-      try {
-        logDebug("request", "Check chat replies", { deviceId });
-        const res = await fetch(`/api/chat/messages?deviceId=${deviceId}`);
-        const data = await res.json();
-        if (data.messages?.some((m: { from_tom: boolean }) => m.from_tom)) {
-          setHasReplies(true);
-        }
-        if (data.error) {
-          logDebug("error", "Check replies error", { error: data.error });
-        }
-      } catch {
-        // Ignore errors
+    if (!deviceId) return;
+    fetchDeviceInfo();
+    pollIntervalRef.current = setInterval(fetchDeviceInfo, 5000);
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
       }
     };
-    checkReplies();
-  }, []);
+  }, [deviceId, fetchDeviceInfo]);
 
   const displayName =
     profile?.username ||
@@ -74,11 +71,14 @@ export default function ChatBubble() {
       {/* Chat Bubble */}
       <div className="fixed top-20 right-4 z-40">
         <button
-          onClick={() => setChatOpen(true)}
+          onClick={() => {
+            setChatOpen(true);
+            setUserUnread(0);
+          }}
           aria-label="Open chat"
           className="relative flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/20 rounded-full w-12 h-12 transition-colors"
         >
-          {hasReplies && (
+          {userUnread > 0 && (
             <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full animate-pulse" />
           )}
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

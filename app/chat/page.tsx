@@ -37,12 +37,16 @@ export default function ChatPage() {
       const res = await fetch(`/api/chat/devices?userId=${user.id}`);
       const data = await res.json();
       if (data.devices) {
-        setDevices(data.devices);
+        setDevices(
+          data.devices.map((device: DeviceWithExtras) =>
+            device.device_id === selectedDevice ? { ...device, unread: 0 } : device
+          )
+        );
       }
     } catch {
       // Ignore errors
     }
-  }, [user]);
+  }, [user, selectedDevice]);
 
   const fetchMessages = useCallback(async () => {
     if (!selectedDevice || !user) return;

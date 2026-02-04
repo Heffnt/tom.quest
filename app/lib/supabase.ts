@@ -46,6 +46,7 @@ export interface Device {
   created_at: string;
   last_seen: string;
   tom_last_read_at: string | null;
+  user_last_read_at: string | null;
   total_visits: number;
   total_time_seconds: number;
 }
@@ -123,6 +124,7 @@ create table public.devices (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   last_seen timestamp with time zone default timezone('utc'::text, now()) not null,
   tom_last_read_at timestamp with time zone,
+  user_last_read_at timestamp with time zone,
   total_visits integer default 1 not null,
   total_time_seconds integer default 0 not null
 );

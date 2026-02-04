@@ -20,7 +20,26 @@ export async function GET(request: Request) {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    return NextResponse.json({ device: device || null });
+    let userUnread = 0;
+    if (device) {
+      if (device.user_last_read_at) {
+        const { count } = await supabase
+          .from("messages")
+          .select("*", { count: "exact", head: true })
+          .eq("device_id", device.device_id)
+          .eq("from_tom", true)
+          .gt("created_at", device.user_last_read_at);
+        userUnread = count || 0;
+      } else {
+        const { count } = await supabase
+          .from("messages")
+          .select("*", { count: "exact", head: true })
+          .eq("device_id", device.device_id)
+          .eq("from_tom", true);
+        userUnread = count || 0;
+      }
+    }
+    return NextResponse.json({ device: device || null, user_unread: userUnread });
   }
 
   // List all devices - Tom only

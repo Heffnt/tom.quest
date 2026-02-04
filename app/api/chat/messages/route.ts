@@ -26,10 +26,16 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  const readTimestamp = new Date().toISOString();
   if (userId && isTomUser(userId)) {
     await supabase
       .from("devices")
-      .update({ tom_last_read_at: new Date().toISOString() })
+      .update({ tom_last_read_at: readTimestamp })
+      .eq("device_id", deviceId);
+  } else {
+    await supabase
+      .from("devices")
+      .update({ user_last_read_at: readTimestamp })
       .eq("device_id", deviceId);
   }
 

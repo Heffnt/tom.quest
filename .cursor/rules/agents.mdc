@@ -84,6 +84,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - ChatBubble hidden for Tom users
 - Polling: chat polls every 5s when open
 - Devices track `tom_last_read_at` for Tom read state
+- Devices track `user_last_read_at`; ChatBubble uses `user_unread` polling
 - Chat page marks read on message fetch
  - Home page includes DebugTerminal for client-side logs
 
@@ -138,6 +139,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-03] Login modal opened on sign up → default to sign in mode
 - [2026-02-03] Chat unread dot now clears on open → track `tom_last_read_at` and mark read on view
 - [2026-02-03] Chat unread still showing after open → mark read on message fetch + optimistic clear
+- [2026-02-03] Unread indicators reappeared → add user read tracking + server read on fetch
 - [2026-02-02] Global font not applied to form controls → set button/input/select/textarea to inherit font
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API
