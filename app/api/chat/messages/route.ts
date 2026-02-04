@@ -5,6 +5,7 @@ import { createServerSupabaseClient, isTomUser } from "../../../lib/supabase";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const deviceId = searchParams.get("deviceId");
+  const userId = searchParams.get("userId");
 
   if (!deviceId) {
     return NextResponse.json({ error: "deviceId required" }, { status: 400 });
@@ -23,6 +24,13 @@ export async function GET(request: Request) {
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (userId && isTomUser(userId)) {
+    await supabase
+      .from("devices")
+      .update({ tom_last_read_at: new Date().toISOString() })
+      .eq("device_id", deviceId);
   }
 
   return NextResponse.json({ messages });

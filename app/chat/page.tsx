@@ -44,32 +44,25 @@ export default function ChatPage() {
     }
   }, [user]);
 
-  const markDeviceRead = useCallback(async (deviceId: string) => {
-    if (!user || !isTom) return;
-    try {
-      await fetch(`/api/chat/devices/${deviceId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: user.id }),
-      });
-    } catch {
-      // Ignore errors
-    }
-  }, [user, isTom]);
-
   const fetchMessages = useCallback(async () => {
-    if (!selectedDevice) return;
+    if (!selectedDevice || !user) return;
     try {
-      const res = await fetch(`/api/chat/messages?deviceId=${selectedDevice}`);
+      const res = await fetch(
+        `/api/chat/messages?deviceId=${selectedDevice}&userId=${user.id}`
+      );
       const data = await res.json();
       if (data.messages) {
         setMessages(data.messages);
-        markDeviceRead(selectedDevice);
+        setDevices((prev) =>
+          prev.map((device) =>
+            device.device_id === selectedDevice ? { ...device, unread: 0 } : device
+          )
+        );
       }
     } catch {
       // Ignore errors
     }
-  }, [selectedDevice, markDeviceRead]);
+  }, [selectedDevice, user]);
 
   const fetchDeviceDetails = useCallback(async (deviceId: string) => {
     if (!user) return;
@@ -82,11 +75,14 @@ export default function ChatPage() {
     }
   }, [user]);
 
-  const handleSelectDevice = useCallback(async (deviceId: string) => {
+  const handleSelectDevice = useCallback((deviceId: string) => {
     setSelectedDevice(deviceId);
-    await markDeviceRead(deviceId);
-    fetchDevices();
-  }, [fetchDevices, markDeviceRead]);
+    setDevices((prev) =>
+      prev.map((device) =>
+        device.device_id === deviceId ? { ...device, unread: 0 } : device
+      )
+    );
+  }, []);
 
   useEffect(() => {
     setTomChecked(false);

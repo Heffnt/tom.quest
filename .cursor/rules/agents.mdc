@@ -61,6 +61,7 @@ app/
 └── lib/
     ├── debug.ts             # Client debug logger
     ├── supabase.ts          # Supabase client + types
+    ├── userSettings.ts      # Supabase-backed user settings helpers
     └── turing.ts            # Turing URL resolution (Tom's gist or user's connection)
 
 tom-quest-api/               # FastAPI on Turing HPC
@@ -71,7 +72,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Supabase Auth: username/password signup/signin (email derived as `{normalizedUsername}@tom.quest`)
 - Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `TOM_USER_ID`
 - Tom identified by `TOM_USER_ID` env var matching Supabase user ID
-- DB tables: `profiles`, `devices`, `messages`, `page_visits`, `turing_connections`
+- DB tables: `profiles`, `devices`, `messages`, `page_visits`, `turing_connections`, `user_settings`
 - Device tracking: UUID in localStorage, UA parsing via `ua-parser-js`, tracks page visits + duration
 - Auth init links current device to user when session exists
 - ChatBubble: floating top-right icon button (no text)
@@ -83,6 +84,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - ChatBubble hidden for Tom users
 - Polling: chat polls every 5s when open
 - Devices track `tom_last_read_at` for Tom read state
+- Chat page marks read on message fetch
  - Home page includes DebugTerminal for client-side logs
 
 ## Multi-User Turing
@@ -111,7 +113,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Session mapping: `~/.tom-quest-screens.json` stores job_id → session_name (jobs without mapping show "-")
 - Session viewer: "View" button on running jobs → modal with tmux output, auto-refresh toggle (configurable interval, persisted), arrow navigation between sessions, click-outside-to-close
 - SSH attach: `tmux attach -t {session_name}`, detach with `Ctrl+b d`
-- localStorage: `turing_project_commands`, `turing_auto_refresh`, `turing_refresh_interval`, `turing_collapsed_partitions`, `turing_gpu_only_filter`, `turing_session_auto_refresh`, `turing_session_refresh_interval`
+- Settings persistence: `user_settings` for signed-in users; `turing_settings` localStorage for guests
 - Auto-refresh: unified at top for all panels, configurable interval (default 30s) via text input, each panel has own refresh button
 - Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
 - Dir browse: always sends path (default `~`), surfaces upstream error
@@ -135,6 +137,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-03] Turing debug copy timeout type mismatch → use `number` ref for browser setTimeout
 - [2026-02-03] Login modal opened on sign up → default to sign in mode
 - [2026-02-03] Chat unread dot now clears on open → track `tom_last_read_at` and mark read on view
+- [2026-02-03] Chat unread still showing after open → mark read on message fetch + optimistic clear
 - [2026-02-02] Global font not applied to form controls → set button/input/select/textarea to inherit font
 - [2026-01-28] /api/turing/dirs 404 without path → default to `~`, show upstream error
 - [2026-01-29] Cloudflare 524/HTML responses → auto-start tunnel + file logs in API

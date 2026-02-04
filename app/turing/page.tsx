@@ -216,6 +216,22 @@ export default function Turing() {
       setSessionRefreshInterval(settings.sessionRefreshInterval);
     }
   }, []);
+  const resetSettings = useCallback(() => {
+    setAutoRefresh(true);
+    setRefreshInterval(30);
+    setRefreshIntervalInput("30");
+    setGpuType("");
+    setTimeMins("1440");
+    setMemoryMb("64000");
+    setCount("");
+    setCommands([""]);
+    setProjectCommands({});
+    setProjectDir("");
+    setGpuOnlyFilter(true);
+    setCollapsedPartitions(new Set());
+    setSessionAutoRefresh(false);
+    setSessionRefreshInterval(2);
+  }, []);
   const turingSettings = useMemo<TuringSettings>(() => {
     return {
       autoRefresh,
@@ -494,6 +510,7 @@ export default function Turing() {
     let cancelled = false;
     const loadSettings = async () => {
       setSettingsLoaded(false);
+      resetSettings();
       if (user) {
         const settings = await fetchUserSetting<TuringSettings>(user.id, TURING_SETTINGS_KEY);
         if (!cancelled && settings) {
@@ -519,7 +536,7 @@ export default function Turing() {
     return () => {
       cancelled = true;
     };
-  }, [user, applySettings]);
+  }, [user, applySettings, resetSettings]);
 
   useEffect(() => {
     if (!settingsLoaded) return;
@@ -1572,8 +1589,8 @@ export default function Turing() {
                 </label>
                 <div className="flex items-center gap-1">
                   <input
-                    type="number"
-                    min="1"
+                    type="text"
+                    inputMode="numeric"
                     value={sessionRefreshInterval}
                     onChange={(e) => {
                       const val = parseInt(e.target.value, 10);
