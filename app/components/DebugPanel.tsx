@@ -10,6 +10,8 @@ export default function DebugPanel() {
   const [panelHeight, setPanelHeight] = useState(256);
   const [isResizing, setIsResizing] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const baseBodyPaddingRef = useRef<string | null>(null);
   const copyTimeoutRef = useRef<number | null>(null);
   const resizeStartY = useRef(0);
   const resizeStartHeight = useRef(0);
@@ -38,6 +40,22 @@ export default function DebugPanel() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (baseBodyPaddingRef.current === null) {
+      baseBodyPaddingRef.current = document.body.style.paddingBottom;
+    }
+    const root = rootRef.current;
+    if (!root) return;
+    const nextPadding = open ? `${root.offsetHeight}px` : baseBodyPaddingRef.current || "";
+    document.body.style.paddingBottom = nextPadding;
+    return () => {
+      if (baseBodyPaddingRef.current !== null) {
+        document.body.style.paddingBottom = baseBodyPaddingRef.current;
+      }
+    };
+  }, [open, panelHeight]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -96,7 +114,7 @@ export default function DebugPanel() {
   };
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40" style={{ userSelect: isResizing ? "none" : "auto" }}>
+    <div ref={rootRef} className="fixed bottom-0 left-0 right-0 z-40" style={{ userSelect: isResizing ? "none" : "auto" }}>
       <div
         onMouseDown={open ? handleResizeStart : undefined}
         className={`w-full border-t border-white/20 ${open ? "cursor-ns-resize" : ""}`}
