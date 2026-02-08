@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "../components/AuthProvider";
 import { fetchUserSetting, saveUserSetting } from "../lib/userSettings";
+import { debugFetch } from "../lib/debug";
 
 type ProjectViewerProps = {
   title: string;
@@ -26,7 +27,7 @@ export default function ProjectViewer({ title, filePath }: ProjectViewerProps) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/turing/file?path=${encodeURIComponent(filePath)}`, {
+      const res = await debugFetch(`/api/turing/file?path=${encodeURIComponent(filePath)}`, {
         cache: "no-store",
       });
       if (!res.ok) {

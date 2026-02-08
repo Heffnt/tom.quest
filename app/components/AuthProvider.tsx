@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient, Profile, TuringConnection } from "../lib/supabase";
-import { logDebug } from "../lib/debug";
+import { logDebug, debugFetch } from "../lib/debug";
 
 interface AuthContextType {
   user: User | null;
@@ -92,7 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkIsTom = useCallback(async (userId: string) => {
     try {
-      const response = await fetch("/api/auth/is-tom", {
+      const response = await debugFetch("/api/auth/is-tom", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId }),

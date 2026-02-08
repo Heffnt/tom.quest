@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./AuthProvider";
+import { debugFetch } from "../lib/debug";
 
 export default function FeedbackButton() {
   const { user, profile, session } = useAuth();
@@ -38,7 +39,7 @@ export default function FeedbackButton() {
     setError(null);
     setSuccess(null);
     try {
-      const res = await fetch("/api/feedback", {
+      const res = await debugFetch("/api/feedback", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

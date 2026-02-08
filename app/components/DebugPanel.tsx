@@ -3,12 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import { DebugLogEntry } from "../lib/debug";
 
-export default function DebugTerminal() {
+export default function DebugPanel() {
   const [logs, setLogs] = useState<DebugLogEntry[]>([]);
   const [open, setOpen] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
-  const terminalRef = useRef<HTMLDivElement>(null);
+  const [panelHeight, setPanelHeight] = useState(256);
+  const [isResizing, setIsResizing] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
   const copyTimeoutRef = useRef<number | null>(null);
+  const resizeStartY = useRef(0);
+  const resizeStartHeight = useRef(0);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -22,10 +26,11 @@ export default function DebugTerminal() {
   }, []);
 
   useEffect(() => {
-    if (terminalRef.current && open) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    if (panelRef.current && open) {
+      panelRef.current.scrollTop = panelRef.current.scrollHeight;
     }
   }, [logs, open]);
+
   useEffect(() => {
     return () => {
       if (copyTimeoutRef.current) {
@@ -34,9 +39,45 @@ export default function DebugTerminal() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      const deltaY = resizeStartY.current - e.clientY;
+      const newHeight = Math.min(Math.max(resizeStartHeight.current + deltaY, 100), window.innerHeight - 100);
+      setPanelHeight(newHeight);
+    };
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+    if (isResizing) {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+    }
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeStartY.current = e.clientY;
+    resizeStartHeight.current = panelHeight;
+    setIsResizing(true);
+  };
+
   const copyLogs = async () => {
     const text = logs.map((log) => {
       const time = log.timestamp.toLocaleTimeString();
+      if (log.type === "request") {
+        return `${time} → ${log.method || ""} ${log.url || log.message}${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+      }
+      if (log.type === "response") {
+        return `${time} ← ${log.status} ${log.url || ""} (${log.duration}ms)${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+      }
+      if (log.type === "error") {
+        return `${time} ✕ ${log.message}${log.duration != null ? ` (${log.duration}ms)` : ""}`;
+      }
       const base = `${time} [${log.type.toUpperCase()}] ${log.message}`;
       return log.data ? `${base}\n${JSON.stringify(log.data, null, 2)}` : base;
     }).join("\n\n");
@@ -55,26 +96,29 @@ export default function DebugTerminal() {
   };
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40">
-      <div className="w-full border-t border-white/20">
+    <div className="fixed bottom-0 left-0 right-0 z-40" style={{ userSelect: isResizing ? "none" : "auto" }}>
+      <div
+        onMouseDown={open ? handleResizeStart : undefined}
+        className={`w-full border-t border-white/20 ${open ? "cursor-ns-resize" : ""}`}
+      >
         <button
           onClick={() => setOpen(!open)}
           className="w-full px-4 py-2 bg-black text-left text-sm font-mono flex items-center justify-between hover:bg-[#111] transition-colors"
         >
           <span className="text-white/60">
-            Debug Terminal {logs.length > 0 && <span className="text-white/40">({logs.length} entries)</span>}
+            Debug Logs {logs.length > 0 && <span className="text-white/40">({logs.length} entries)</span>}
           </span>
           <span className="text-white/40">{open ? "▼" : "▲"}</span>
         </button>
       </div>
       {open && (
         <div
-          ref={terminalRef}
+          ref={panelRef}
           className="bg-black border-t border-white/10 overflow-y-auto font-mono text-xs"
-          style={{ height: 240 }}
+          style={{ height: panelHeight }}
         >
           <div className="sticky top-0 bg-black border-b border-white/10 px-4 py-2 flex justify-between items-center">
-            <span className="text-white/40">Client Debug Log</span>
+            <span className="text-white/40">Debug Logs</span>
             <div className="flex gap-3">
               <button
                 onClick={copyLogs}
@@ -100,22 +144,27 @@ export default function DebugTerminal() {
                     <span className="text-white/30 shrink-0">
                       {log.timestamp.toLocaleTimeString()}
                     </span>
-                    <span
-                      className={
-                        log.type === "error"
-                          ? "text-red-400"
-                          : log.type === "request"
-                          ? "text-blue-400"
-                          : log.type === "response"
-                          ? "text-green-400"
-                          : "text-yellow-400"
-                      }
-                    >
-                      {log.message}
-                    </span>
+                    {log.type === "request" && (
+                      <span className="text-blue-400">
+                        {log.message}
+                      </span>
+                    )}
+                    {log.type === "response" && (
+                      <span className={log.status && log.status >= 400 ? "text-red-400" : "text-green-400"}>
+                        {log.message} <span className="text-white/30">({log.duration}ms)</span>
+                      </span>
+                    )}
+                    {log.type === "error" && (
+                      <span className="text-red-400">
+                        {log.message}{log.duration != null && <span className="text-white/30"> ({log.duration}ms)</span>}
+                      </span>
+                    )}
+                    {log.type === "info" && (
+                      <span className="text-yellow-400">{log.message}</span>
+                    )}
                   </div>
                   {log.data !== undefined && (
-                    <pre className="mt-1 ml-16 text-white/40 overflow-x-auto max-w-full">
+                    <pre className="mt-1 ml-20 text-white/40 overflow-x-auto max-w-full">
                       {JSON.stringify(log.data, null, 2) as string}
                     </pre>
                   )}

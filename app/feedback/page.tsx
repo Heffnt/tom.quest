@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../components/AuthProvider";
 import { Feedback } from "../lib/supabase";
+import { debugFetch } from "../lib/debug";
 
 type FeedbackEntry = Feedback & { username?: string | null };
 
@@ -35,7 +36,7 @@ export default function FeedbackPage() {
         return;
       }
       try {
-        const res = await fetch("/api/auth/is-tom", {
+        const res = await debugFetch("/api/auth/is-tom", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ userId: user.id }),
@@ -67,7 +68,7 @@ export default function FeedbackPage() {
     setFeedbackLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/feedback", {
+      const res = await debugFetch("/api/feedback", {
         headers: {
           Authorization: `Bearer ${session.access_token}`,
         },

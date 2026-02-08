@@ -1,5 +1,4 @@
 import Image from "next/image";
-import DebugTerminal from "./components/DebugTerminal";
 
 export default function Home() {
   return (
@@ -17,7 +16,6 @@ export default function Home() {
           The personal website of Tom Heffernan
         </p>
       </div>
-      <DebugTerminal />
     </div>
   );
 }

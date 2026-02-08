@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "../components/AuthProvider";
 import { fetchUserSetting, saveUserSetting } from "../lib/userSettings";
+import { debugFetch as globalDebugFetch } from "../lib/debug";
 
 interface GPUTypeInfo {
   type: string;
@@ -49,18 +50,6 @@ interface DirListing {
 
 interface ProjectCommands {
   [projectDir: string]: { name: string; commands: string[] }[];
-}
-
-interface DebugLogEntry {
-  id: number;
-  timestamp: Date;
-  type: "request" | "response" | "error" | "info";
-  method?: string;
-  url?: string;
-  status?: number;
-  data?: unknown;
-  message?: string;
-  duration?: number;
 }
 
 interface TuringSettings {
@@ -137,11 +126,6 @@ export default function Turing() {
   const [dirListing, setDirListing] = useState<DirListing | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
   const [dirBrowserOpen, setDirBrowserOpen] = useState(false);
-  const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
-  const [debugOpen, setDebugOpen] = useState(false);
-  const [debugCopySuccess, setDebugCopySuccess] = useState(false);
-  const [terminalHeight, setTerminalHeight] = useState(256);
-  const [isResizing, setIsResizing] = useState(false);
   const [collapsedPartitions, setCollapsedPartitions] = useState<Set<string>>(new Set());
   const [gpuOnlyFilter, setGpuOnlyFilter] = useState(true);
   const [sessionViewerOpen, setSessionViewerOpen] = useState(false);
@@ -152,13 +136,8 @@ export default function Turing() {
   const [sessionAutoRefresh, setSessionAutoRefresh] = useState(false);
   const [sessionRefreshInterval, setSessionRefreshInterval] = useState(2);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const debugLogIdRef = useRef(0);
-  const debugCopyTimeoutRef = useRef<number | null>(null);
   const sessionModalRef = useRef<HTMLDivElement>(null);
-  const debugTerminalRef = useRef<HTMLDivElement>(null);
   const sessionOutputRef = useRef<HTMLPreElement>(null);
-  const resizeStartY = useRef(0);
-  const resizeStartHeight = useRef(0);
   const filteredNodes = useMemo(() => {
     if (!gpuReport) return [];
     return gpuOnlyFilter ? gpuReport.nodes.filter(isGpuNamedNode) : gpuReport.nodes;
@@ -274,123 +253,13 @@ export default function Turing() {
     }
   }, [allocationOptions, allocationFreeByType, gpuType, settingsLoaded]);
 
-  const addDebugLog = useCallback((entry: Omit<DebugLogEntry, "id" | "timestamp">) => {
-    setDebugLogs((prev) => {
-      const newEntry: DebugLogEntry = {
-        ...entry,
-        id: debugLogIdRef.current++,
-        timestamp: new Date(),
-      };
-      const updated = [...prev, newEntry];
-      return updated.slice(-100); // Keep last 100 entries
-    });
-  }, []);
-
   const debugFetch = useCallback(async (url: string, options?: RequestInit) => {
-    const method = options?.method || "GET";
-    const startTime = Date.now();
-    addDebugLog({ type: "request", method, url, data: options?.body ? JSON.parse(options.body as string) : undefined });
-    // Add user ID header for auth
     const headers = {
       ...options?.headers,
       ...(user?.id ? { "x-user-id": user.id } : {}),
     };
-    try {
-      const res = await fetch(url, { ...options, headers });
-      const duration = Date.now() - startTime;
-      const data = await res.clone().json().catch(() => null);
-      addDebugLog({ type: "response", method, url, status: res.status, data, duration });
-      return res;
-    } catch (e) {
-      const duration = Date.now() - startTime;
-      addDebugLog({ type: "error", method, url, message: e instanceof Error ? e.message : "Unknown error", duration });
-      throw e;
-    }
-  }, [addDebugLog, user?.id]);
-
-  useEffect(() => {
-    if (debugTerminalRef.current && debugOpen) {
-      debugTerminalRef.current.scrollTop = debugTerminalRef.current.scrollHeight;
-    }
-  }, [debugLogs, debugOpen]);
-  useEffect(() => {
-    return () => {
-      if (debugCopyTimeoutRef.current) {
-        // #region agent log
-        fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:227",message:"clear debug copy timeout on unmount",data:{timeoutType:typeof debugCopyTimeoutRef.current},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H3"})}).catch(()=>{});
-        // #endregion
-        clearTimeout(debugCopyTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing) return;
-      const deltaY = resizeStartY.current - e.clientY;
-      const newHeight = Math.min(Math.max(resizeStartHeight.current + deltaY, 100), window.innerHeight - 100);
-      setTerminalHeight(newHeight);
-    };
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-    if (isResizing) {
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
-    }
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isResizing]);
-
-  const handleResizeStart = (e: React.MouseEvent) => {
-    e.preventDefault();
-    resizeStartY.current = e.clientY;
-    resizeStartHeight.current = terminalHeight;
-    setIsResizing(true);
-  };
-
-  const copyDebugLogs = async () => {
-    const text = debugLogs.map((log) => {
-      const time = log.timestamp.toLocaleTimeString();
-      if (log.type === "request") {
-        return `${time} → ${log.method} ${log.url}${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
-      }
-      if (log.type === "response") {
-        return `${time} ← ${log.status} ${log.url} (${log.duration}ms)${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
-      }
-      if (log.type === "error") {
-        return `${time} ✕ ERROR: ${log.message} (${log.duration}ms)`;
-      }
-      return `${time} ${log.message}`;
-    }).join("\n\n");
-    // #region agent log
-    fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:274",message:"copyDebugLogs start",data:{logCount:debugLogs.length,textLength:text.length},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H1"})}).catch(()=>{});
-    // #endregion
-    try {
-      await navigator.clipboard.writeText(text);
-      setDebugCopySuccess(true);
-      // #region agent log
-      fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:280",message:"copyDebugLogs clipboard success",data:{hadTimeout:!!debugCopyTimeoutRef.current,currentType:typeof debugCopyTimeoutRef.current},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H1"})}).catch(()=>{});
-      // #endregion
-      if (debugCopyTimeoutRef.current) {
-        clearTimeout(debugCopyTimeoutRef.current);
-      }
-      const timeoutId = window.setTimeout(() => {
-        setDebugCopySuccess(false);
-      }, 2000);
-      debugCopyTimeoutRef.current = timeoutId;
-      // #region agent log
-      fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:289",message:"copyDebugLogs setTimeout assigned",data:{timeoutType:typeof timeoutId,timeoutIdIsNumber:typeof timeoutId === "number"},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H2"})}).catch(()=>{});
-      // #endregion
-    } catch (err) {
-      // #region agent log
-      fetch("http://127.0.0.1:7250/ingest/33938df4-b546-4d39-88db-8d09c7a4a5fa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:"app/turing/page.tsx:293",message:"copyDebugLogs clipboard error",data:{error:err instanceof Error ? err.message : "unknown"},timestamp:Date.now(),sessionId:"debug-session",runId:"pre-fix",hypothesisId:"H4"})}).catch(()=>{});
-      // #endregion
-      // Ignore clipboard errors
-    }
-  };
+    return globalDebugFetch(url, { ...options, headers });
+  }, [user?.id]);
 
   const fetchGpuReport = useCallback(async () => {
     setGpuReportLoading(true);
@@ -807,7 +676,7 @@ export default function Turing() {
   };
 
   return (
-    <div className="min-h-screen px-6 py-16" style={{ paddingBottom: debugOpen ? terminalHeight + 60 : 60 }}>
+    <div className="min-h-screen px-6 py-16" style={{ paddingBottom: 60 }}>
       <div className="max-w-4xl mx-auto">
         <h1 className="text-4xl md:text-5xl font-bold tracking-tight animate-fade-in">
           Turing
@@ -1640,86 +1509,6 @@ export default function Turing() {
         </div>
       )}
 
-      {/* Debug Terminal */}
-      <div className="fixed bottom-0 left-0 right-0 z-40" style={{ userSelect: isResizing ? "none" : "auto" }}>
-        <div
-          onMouseDown={debugOpen ? handleResizeStart : undefined}
-          className={`w-full border-t border-white/20 ${debugOpen ? "cursor-ns-resize" : ""}`}
-        >
-          <button
-            onClick={() => setDebugOpen(!debugOpen)}
-            className="w-full px-4 py-2 bg-black text-left text-sm font-mono flex items-center justify-between hover:bg-[#111] transition-colors"
-          >
-            <span className="text-white/60">
-              Debug Terminal {debugLogs.length > 0 && <span className="text-white/40">({debugLogs.length} entries)</span>}
-            </span>
-            <span className="text-white/40">{debugOpen ? "▼" : "▲"}</span>
-          </button>
-        </div>
-        {debugOpen && (
-          <div
-            ref={debugTerminalRef}
-            className="bg-black border-t border-white/10 overflow-y-auto font-mono text-xs"
-            style={{ height: terminalHeight }}
-          >
-            <div className="sticky top-0 bg-black border-b border-white/10 px-4 py-2 flex justify-between items-center">
-              <span className="text-white/40">API Request/Response Log</span>
-              <div className="flex gap-3">
-                <button
-                  onClick={copyDebugLogs}
-                  className="text-white/40 hover:text-white/60 transition-colors"
-                >
-                  {debugCopySuccess ? "✓" : "Copy"}
-                </button>
-                <button
-                  onClick={() => setDebugLogs([])}
-                  className="text-white/40 hover:text-white/60 transition-colors"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-            <div className="p-4 space-y-2">
-              {debugLogs.length === 0 ? (
-                <p className="text-white/30">No requests logged yet</p>
-              ) : (
-                debugLogs.map((log) => (
-                  <div key={log.id} className="border-b border-white/5 pb-2">
-                    <div className="flex items-start gap-2">
-                      <span className="text-white/30 shrink-0">
-                        {log.timestamp.toLocaleTimeString()}
-                      </span>
-                      {log.type === "request" && (
-                        <span className="text-blue-400">
-                          → {log.method} {log.url}
-                        </span>
-                      )}
-                      {log.type === "response" && (
-                        <span className={log.status && log.status >= 400 ? "text-red-400" : "text-green-400"}>
-                          ← {log.status} {log.url} <span className="text-white/30">({log.duration}ms)</span>
-                        </span>
-                      )}
-                      {log.type === "error" && (
-                        <span className="text-red-400">
-                          ✕ ERROR: {log.message} <span className="text-white/30">({log.duration}ms)</span>
-                        </span>
-                      )}
-                      {log.type === "info" && (
-                        <span className="text-yellow-400">{log.message}</span>
-                      )}
-                    </div>
-                    {log.data !== undefined && (
-                      <pre className="mt-1 ml-20 text-white/40 overflow-x-auto max-w-full">
-                        {JSON.stringify(log.data, null, 2) as string}
-                      </pre>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

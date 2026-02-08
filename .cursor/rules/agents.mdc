@@ -48,13 +48,13 @@ app/
 ├── components/
 │   ├── AuthProvider.tsx     # Auth context (user, profile, isTom, turingConnection)
 │   ├── LoginModal.tsx       # Sign in/up modal
-│   ├── DebugTerminal.tsx    # Client debug terminal (home page)
+│   ├── DebugPanel.tsx       # Global debug logs panel (all pages, via ClientProviders)
 │   ├── FeedbackButton.tsx   # Floating feedback form button
-│   ├── ClientProviders.tsx  # Wraps auth/feedback in layout
+│   ├── ClientProviders.tsx  # Wraps auth/feedback/debug in layout
 │   ├── Navigation.tsx       # Nav with conditional Tom links
 │   └── ProfileModal.tsx     # Username profile modal
 └── lib/
-    ├── debug.ts             # Client debug logger
+    ├── debug.ts             # Client debug logger (logDebug + debugFetch)
     ├── supabase.ts          # Supabase client + types
     ├── userSettings.ts      # Supabase-backed user settings helpers
     └── turing.ts            # Turing URL resolution (DB-based, per-user connection keys)
@@ -73,7 +73,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Login modal: defaults to sign in on open, scrolls if viewport is short
 - Feedback button: floating bottom-right modal for user feedback
 - Feedback page: Tom-only list of submissions with name + username when available
-- Home page includes DebugTerminal for client-side logs
+- Debug Logs: global panel in ClientProviders, resizable, tracks all logDebug + debugFetch calls across all pages
 
 ## Multi-User Turing
 - Guests/non-connected users: view Tom's dashboard (read-only)
@@ -159,3 +159,4 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-03] Dynamic route params 404 → Next.js 15+ `params` is a Promise, must await it
 - [2026-02-07] Sign out hang on failed logout → timeout remote sign-out, fallback to local sign-out
 - [2026-02-07] Turing connection: replaced gist-based URL discovery + manual tunnel URL entry with persistent key system; API auto-registers via heartbeat, users enter key once
+- [2026-02-07] Unified debug logs: replaced separate home DebugTerminal + Turing inline debug terminal with single global DebugPanel in ClientProviders; added debugFetch to lib/debug.ts; all client fetch calls now use debugFetch
