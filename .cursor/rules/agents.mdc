@@ -161,3 +161,4 @@ tom-quest-api/               # FastAPI on Turing HPC
 - [2026-02-07] Turing connection: replaced gist-based URL discovery + manual tunnel URL entry with persistent key system; API auto-registers via heartbeat, users enter key once
 - [2026-02-07] Unified debug logs: replaced separate home DebugTerminal + Turing inline debug terminal with single global DebugPanel in ClientProviders; added debugFetch to lib/debug.ts; all client fetch calls now use debugFetch
 - [2026-02-07] Debug panel covered page bottom → apply body padding equal to open DebugPanel height
+- [2026-02-07] Turing auth log spam → reuse browser Supabase client + skip duplicate auth events

@@ -9,12 +9,17 @@ export function isSupabaseConfigured(): boolean {
   return !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 }
 
+let browserClient: SupabaseClient | null = null;
+
 // Browser client for client components
 export function createBrowserSupabaseClient(): SupabaseClient | null {
   if (!isSupabaseConfigured()) {
     return null;
   }
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  if (!browserClient) {
+    browserClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return browserClient;
 }
 
 // Server client with service key for Tom-only operations

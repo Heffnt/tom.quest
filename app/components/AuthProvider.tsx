@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, ReactNode, useRef } from "react";
 import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient, Profile, TuringConnection } from "../lib/supabase";
 import { logDebug, debugFetch } from "../lib/debug";
@@ -37,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [turingConnection, setTuringConnection] = useState<TuringConnection | null>(null);
   const [loading, setLoading] = useState(true);
   const [isTom, setIsTom] = useState(false);
+  const lastAuthRef = useRef<{ userId: string | null; accessToken: string | null } | null>(null);
 
   const getInferredUsername = useCallback((user: User) => {
     const metaUsername = typeof user.user_metadata === "object"
@@ -120,6 +121,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data: { session } } = await supabase.auth.getSession();
         setSession(session);
         setUser(session?.user ?? null);
+        lastAuthRef.current = {
+          userId: session?.user?.id ?? null,
+          accessToken: session?.access_token ?? null,
+        };
         if (session?.user) {
           logDebug("info", "Session found", { userId: session.user.id });
           await Promise.all([
@@ -141,6 +146,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      const nextUserId = session?.user?.id ?? null;
+      const nextAccessToken = session?.access_token ?? null;
+      const lastAuth = lastAuthRef.current;
+      const isSameAuth = lastAuth
+        && lastAuth.userId === nextUserId
+        && lastAuth.accessToken === nextAccessToken;
+      if (isSameAuth) return;
+      lastAuthRef.current = { userId: nextUserId, accessToken: nextAccessToken };
       logDebug("info", "Auth state change", { event, hasSession: !!session });
       setSession(session);
       setUser(session?.user ?? null);
