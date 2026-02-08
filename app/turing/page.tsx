@@ -97,6 +97,7 @@ export default function Turing() {
   const [connectingTuring, setConnectingTuring] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionSuccess, setConnectionSuccess] = useState<string | null>(null);
+  const [showKeyInput, setShowKeyInput] = useState(false);
   const [gpuReport, setGpuReport] = useState<GPUReport | null>(null);
   const [gpuReportLoading, setGpuReportLoading] = useState(false);
   const [gpuReportError, setGpuReportError] = useState<string | null>(null);
@@ -684,6 +685,7 @@ export default function Turing() {
       }
       setConnectionSuccess("Connected successfully!");
       setConnectionKey("");
+      setShowKeyInput(false);
       refreshTuringConnection();
       logDebug("info", "Turing connected", { userId: user.id }, logSource);
     } catch (e) {
@@ -781,18 +783,26 @@ export default function Turing() {
                   );
                 })()}
               </div>
-              {turingConnection ? (
+              {turingConnection && !showKeyInput ? (
                 <div className="space-y-3">
                   <div>
                     <p className="text-sm text-white/60">Connection key:</p>
                     <p className="font-mono text-sm truncate">{turingConnection.connection_key}</p>
                   </div>
-                  <button
-                    onClick={handleDisconnectTuring}
-                    className="px-4 py-2 text-sm text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded transition-colors"
-                  >
-                    Disconnect
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setShowKeyInput(true); setConnectionError(null); setConnectionSuccess(null); }}
+                      className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors"
+                    >
+                      Update Key
+                    </button>
+                    <button
+                      onClick={handleDisconnectTuring}
+                      className="px-4 py-2 text-sm text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded transition-colors"
+                    >
+                      Disconnect
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -814,6 +824,14 @@ export default function Turing() {
                     >
                       {connectingTuring ? "Connecting..." : "Connect"}
                     </button>
+                    {turingConnection && (
+                      <button
+                        onClick={() => { setShowKeyInput(false); setConnectionError(null); setConnectionSuccess(null); setConnectionKey(""); }}
+                        className="px-3 py-2 text-sm text-white/40 hover:text-white/60 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    )}
                   </div>
                   {connectionError && <p className="text-red-400 text-sm">{connectionError}</p>}
                   {connectionSuccess && <p className="text-green-400 text-sm">{connectionSuccess}</p>}

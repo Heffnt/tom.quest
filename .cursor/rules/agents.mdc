@@ -12,7 +12,7 @@ alwaysApply: true
 - always style the site name as tom.Quest
 - avoid number input spinners; use text inputs for numeric intervals
 - never implement auto-scrolling that moves the user unexpectedly (e.g. chat page)
-- maintain comprehensive logs when creating/modifying code
+- maintain comprehensive debug logs when creating/modifying code
 
 ## Shell Reminders (Windows PowerShell)
 - NO `&&` chaining: use `;` or separate commands
