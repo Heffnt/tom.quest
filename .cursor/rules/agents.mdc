@@ -74,7 +74,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Login modal: defaults to sign in on open, scrolls if viewport is short
 - Feedback button: floating bottom-right modal for user feedback
 - Feedback page: Tom-only list of submissions with name + username when available
-- Debug Logs: global panel in ClientProviders, resizable; adds body padding when open; tracks logDebug + debugFetch; filters by type (request/response/error/info/action/lifecycle), search, source badges; max 500 entries
+- Debug Logs: global panel in ClientProviders, resizable; adds body padding when open; tracks logDebug + debugFetch; filters/search in sticky header row; source badges; max 500 entries
 
 ## Multi-User Turing
 - Guests/non-connected users: view Tom's dashboard (read-only)

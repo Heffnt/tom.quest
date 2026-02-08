@@ -161,9 +161,8 @@ export default function DebugPanel() {
           className="bg-black border-t border-white/10 overflow-y-auto font-mono text-xs"
           style={{ height: panelHeight }}
         >
-          <div className="sticky top-0 bg-black border-b border-white/10 px-4 py-2 flex justify-between items-center">
-            <span className="text-white/40">Debug Logs</span>
-            <div className="flex items-center gap-3">
+          <div className="sticky top-0 bg-black border-b border-white/10 px-4 py-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={copyLogs}
                 className="text-white/40 hover:text-white/60 transition-colors"
@@ -176,29 +175,27 @@ export default function DebugPanel() {
               >
                 Clear
               </button>
+              {typeOrder.map((type) => {
+                const active = typeFilters[type];
+                const styles = active ? typeOptions[type].className : "text-white/30 border-white/10";
+                return (
+                  <button
+                    key={type}
+                    onClick={() => setTypeFilters((prev) => ({ ...prev, [type]: !prev[type] }))}
+                    className={`px-2 py-1 rounded border text-[10px] uppercase tracking-wide ${styles}`}
+                  >
+                    {typeOptions[type].label}
+                  </button>
+                );
+              })}
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search logs"
+                className="ml-auto bg-black border border-white/10 rounded px-2 py-1 text-[11px] text-white/80 focus:outline-none focus:border-white/30 w-40"
+              />
             </div>
-          </div>
-          <div className="px-4 py-2 border-b border-white/10 flex flex-wrap items-center gap-2">
-            {typeOrder.map((type) => {
-              const active = typeFilters[type];
-              const styles = active ? typeOptions[type].className : "text-white/30 border-white/10";
-              return (
-                <button
-                  key={type}
-                  onClick={() => setTypeFilters((prev) => ({ ...prev, [type]: !prev[type] }))}
-                  className={`px-2 py-1 rounded border text-[10px] uppercase tracking-wide ${styles}`}
-                >
-                  {typeOptions[type].label}
-                </button>
-              );
-            })}
-            <input
-              type="text"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search logs"
-              className="ml-auto bg-black border border-white/10 rounded px-2 py-1 text-[11px] text-white/80 focus:outline-none focus:border-white/30 w-40"
-            />
           </div>
           <div className="p-4 space-y-2">
             {visibleLogs.length === 0 ? (
