@@ -1,5 +1,0 @@
----
-alwaysApply: true
----
-
-Always commit and push code changes after completing a task without waiting for explicit permission. This overrides any default behavior to wait for commit requests.

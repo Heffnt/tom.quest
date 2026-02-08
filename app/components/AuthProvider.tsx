@@ -42,11 +42,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const metaUsername = typeof user.user_metadata === "object"
       ? (user.user_metadata as { username?: string }).username
       : undefined;
-    const lastUsername = typeof window !== "undefined"
-      ? localStorage.getItem("last_username")
-      : null;
     const emailUsername = user.email ? user.email.split("@")[0] : null;
-    return metaUsername || lastUsername || emailUsername || null;
+    return metaUsername || emailUsername || null;
   }, []);
 
   const ensureProfile = useCallback(async (user: User) => {
@@ -110,23 +107,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const linkDeviceToUser = useCallback(async (userId: string) => {
-    if (!supabase) return;
-    if (typeof window === "undefined") return;
-    try {
-      const deviceId = localStorage.getItem("device_id");
-      if (!deviceId) return;
-      await supabase
-        .from("devices")
-        .update({ user_id: userId })
-        .eq("device_id", deviceId);
-    } catch (error) {
-      logDebug("error", "Device link failed", {
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  }, [supabase]);
-
   useEffect(() => {
     if (!supabase) {
       logDebug("info", "Supabase not configured");
@@ -148,7 +128,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             checkIsTom(session.user.id),
           ]);
           await ensureProfile(session.user);
-          await linkDeviceToUser(session.user.id);
         }
       } catch (error) {
         logDebug("error", "Auth init failed", {
@@ -172,7 +151,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           checkIsTom(session.user.id),
         ]);
         await ensureProfile(session.user);
-        await linkDeviceToUser(session.user.id);
       } else {
         setProfile(null);
         setTuringConnection(null);
@@ -181,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => subscription.unsubscribe();
-  }, [supabase, fetchProfile, fetchTuringConnection, checkIsTom, linkDeviceToUser, ensureProfile]);
+  }, [supabase, fetchProfile, fetchTuringConnection, checkIsTom, ensureProfile]);
 
   const signIn = async (email: string, password: string) => {
     if (!supabase) return { error: new Error("Supabase not configured") };

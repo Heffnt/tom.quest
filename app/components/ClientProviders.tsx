@@ -2,14 +2,12 @@
 
 import { ReactNode } from "react";
 import { AuthProvider } from "./AuthProvider";
-import DeviceTracker from "./DeviceTracker";
-import ChatBubble from "./ChatBubble";
+import FeedbackButton from "./FeedbackButton";
 
 export default function ClientProviders({ children }: { children: ReactNode }) {
   return (
     <AuthProvider>
-      <DeviceTracker />
-      <ChatBubble />
+      <FeedbackButton />
       {children}
     </AuthProvider>
   );

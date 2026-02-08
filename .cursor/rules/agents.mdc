@@ -8,7 +8,7 @@ alwaysApply: true
 **AGENT REQUIREMENT: After ANY code change, add/update relevant info here. After ANY bug fix, add to Fixes section. If you make ANY command mistake or environment issue, add to Shell Reminders. This prevents repeated mistakes and keeps context accurate.**
 
 ## Rules
-- ALWAYS commit all and push after making changes. Do not wait for user to request a commit. This counts as the user explicitly requesting it and the user will be disapointed if you fail to do this.  
+- After making changes, give me a commit command to run that contains a descriptive message about what was changed. 
 - update agents.mdc before commiting to avoid multiple commits in a single response
 - always style the site name as tom.Quest
 - avoid number input spinners; use text inputs for numeric intervals
@@ -36,26 +36,21 @@ Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Ve
 ```
 app/
 ├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
-├── chat/page.tsx            # Chat dashboard (Tom only)
+├── feedback/page.tsx        # Feedback dashboard (Tom only)
 ├── projects/ProjectViewer.tsx # Client project HTML viewer
 ├── projects/[name]/page.tsx # Project HTML viewer page (hardcoded config)
 ├── api/
 │   ├── turing/              # Proxy routes → user's or Tom's Turing backend
 │   │   ├── connection/      # GET/POST/DELETE user Turing connection
 │   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions, file
-│   ├── chat/                # Chat system API
-│   │   ├── devices/         # GET/POST devices, [id] for details
-│   │   ├── messages/        # GET/POST messages
-│   │   └── track/           # POST page visits
+│   ├── feedback/            # GET/POST feedback
 │   └── auth/is-tom/         # POST verify if user is Tom
 ├── components/
 │   ├── AuthProvider.tsx     # Auth context (user, profile, isTom, turingConnection)
 │   ├── LoginModal.tsx       # Sign in/up modal
-│   ├── ChatBubble.tsx       # Floating chat + login buttons
-│   ├── ChatInterface.tsx    # Chat modal
 │   ├── DebugTerminal.tsx    # Client debug terminal (home page)
-│   ├── DeviceTracker.tsx    # Device registration + page tracking
-│   ├── ClientProviders.tsx  # Wraps auth/chat in layout
+│   ├── FeedbackButton.tsx   # Floating feedback form button
+│   ├── ClientProviders.tsx  # Wraps auth/feedback in layout
 │   ├── Navigation.tsx       # Nav with conditional Tom links
 │   └── ProfileModal.tsx     # Username profile modal
 └── lib/
@@ -68,25 +63,17 @@ tom-quest-api/               # FastAPI on Turing HPC
 ├── main.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py (includes /file endpoint)
 ```
 
-## Auth & Chat System
+## Auth & Feedback System
 - Supabase Auth: username/password signup/signin (email derived as `{normalizedUsername}@tom.quest`)
 - Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `TOM_USER_ID`
 - Tom identified by `TOM_USER_ID` env var matching Supabase user ID
-- DB tables: `profiles`, `devices`, `messages`, `page_visits`, `turing_connections`, `user_settings`
-- Device tracking: UUID in localStorage, UA parsing via `ua-parser-js`, tracks page visits + duration
-- Auth init links current device to user when session exists
-- ChatBubble: floating top-right icon button (no text)
+- DB tables: `profiles`, `feedback`, `turing_connections`, `user_settings`
 - Login: top-right nav button shows Log in or username (Tom outlined)
-- Profile modal: username click shows sign out, stored password, time on tom.Quest
+- Profile modal: username click shows sign out
 - Login modal: defaults to sign in on open, scrolls if viewport is short
-- Chat page: visible only to Tom, chat list sorted by last activity with unread indicators
-- Chat nav: green dot when any unread chats exist
-- ChatBubble hidden for Tom users
-- Polling: chat polls every 5s when open
-- Devices track `tom_last_read_at` for Tom read state
-- Devices track `user_last_read_at`; ChatBubble uses `user_unread` polling
-- Chat page marks read on message fetch
- - Home page includes DebugTerminal for client-side logs
+- Feedback button: floating bottom-right modal for user feedback
+- Feedback page: Tom-only list of submissions with manual refresh
+- Home page includes DebugTerminal for client-side logs
 
 ## Multi-User Turing
 - Guests/non-connected users: view Tom's dashboard (read-only)

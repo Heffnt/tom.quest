@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "./AuthProvider";
 import LoginModal from "./LoginModal";
 import ProfileModal from "./ProfileModal";
@@ -20,52 +20,16 @@ export default function Navigation() {
   const { isTom, user, profile } = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [lastUsername, setLastUsername] = useState<string | null>(null);
-  const [hasUnreadChats, setHasUnreadChats] = useState(false);
-  const unreadIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    setLastUsername(localStorage.getItem("last_username"));
-  }, []);
-
-  const checkUnreadChats = useCallback(async () => {
-    if (!user || !isTom) return;
-    try {
-      const res = await fetch(`/api/chat/devices?userId=${user.id}`);
-      const data = await res.json();
-      if (Array.isArray(data.devices)) {
-        setHasUnreadChats(data.devices.some((device: { unread?: number }) => (device.unread || 0) > 0));
-      }
-    } catch {
-      // Ignore errors
-    }
-  }, [user, isTom]);
-
-  useEffect(() => {
-    if (!user || !isTom) {
-      setHasUnreadChats(false);
-      return;
-    }
-    checkUnreadChats();
-    unreadIntervalRef.current = setInterval(checkUnreadChats, 5000);
-    return () => {
-      if (unreadIntervalRef.current) {
-        clearInterval(unreadIntervalRef.current);
-        unreadIntervalRef.current = null;
-      }
-    };
-  }, [user, isTom, checkUnreadChats]);
 
   const displayName =
     profile?.username ||
     (typeof user?.user_metadata === "object"
       ? (user.user_metadata as { username?: string }).username
       : null) ||
-    lastUsername ||
     "User";
 
   const allLinks = isTom
-    ? [...navLinks, { href: "/chat", label: "Chat" }]
+    ? [...navLinks, { href: "/feedback", label: "Feedback" }]
     : navLinks;
 
   return (
@@ -96,9 +60,6 @@ export default function Navigation() {
                   }`}
                 >
                   {link.label}
-                  {isTom && link.href === "/chat" && hasUnreadChats && (
-                    <span className="absolute -right-3 top-1 h-2 w-2 rounded-full bg-green-500" />
-                  )}
                 </Link>
               ))}
               {user ? (
