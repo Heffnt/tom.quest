@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { DebugLogEntry } from "../lib/debug";
+import { DebugLogEntry, DebugLogType } from "../lib/debug";
 
 export default function DebugPanel() {
   const [logs, setLogs] = useState<DebugLogEntry[]>([]);
@@ -9,6 +9,15 @@ export default function DebugPanel() {
   const [copySuccess, setCopySuccess] = useState(false);
   const [panelHeight, setPanelHeight] = useState(256);
   const [isResizing, setIsResizing] = useState(false);
+  const [search, setSearch] = useState("");
+  const [typeFilters, setTypeFilters] = useState<Record<DebugLogType, boolean>>({
+    request: true,
+    response: true,
+    error: true,
+    info: true,
+    action: true,
+    lifecycle: true,
+  });
   const panelRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const baseBodyPaddingRef = useRef<string | null>(null);
@@ -19,7 +28,7 @@ export default function DebugPanel() {
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<DebugLogEntry>).detail;
-      setLogs((prev) => [...prev, detail].slice(-200));
+      setLogs((prev) => [...prev, detail].slice(-500));
     };
     window.addEventListener("tomquest-debug", handler as EventListener);
     return () => {
@@ -84,19 +93,36 @@ export default function DebugPanel() {
     setIsResizing(true);
   };
 
+  const typeOptions: Record<DebugLogType, { label: string; className: string }> = {
+    request: { label: "Request", className: "text-blue-400 border-blue-400/40" },
+    response: { label: "Response", className: "text-green-400 border-green-400/40" },
+    error: { label: "Error", className: "text-red-400 border-red-400/40" },
+    info: { label: "Info", className: "text-yellow-400 border-yellow-400/40" },
+    action: { label: "Action", className: "text-violet-400 border-violet-400/40" },
+    lifecycle: { label: "Lifecycle", className: "text-white/60 border-white/30" },
+  };
+  const typeOrder: DebugLogType[] = ["request", "response", "error", "info", "action", "lifecycle"];
+  const searchValue = search.trim().toLowerCase();
+  const visibleLogs = logs.filter((log) => {
+    if (!typeFilters[log.type]) return false;
+    if (!searchValue) return true;
+    const haystack = `${log.message} ${log.source || ""} ${log.url || ""}`.toLowerCase();
+    return haystack.includes(searchValue);
+  });
   const copyLogs = async () => {
-    const text = logs.map((log) => {
+    const text = visibleLogs.map((log) => {
       const time = log.timestamp.toLocaleTimeString();
+      const source = log.source ? ` [${log.source}]` : "";
       if (log.type === "request") {
-        return `${time} → ${log.method || ""} ${log.url || log.message}${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+        return `${time}${source} → ${log.method || ""} ${log.url || log.message}${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
       }
       if (log.type === "response") {
-        return `${time} ← ${log.status} ${log.url || ""} (${log.duration}ms)${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+        return `${time}${source} ← ${log.status} ${log.url || ""} (${log.duration}ms)${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
       }
       if (log.type === "error") {
-        return `${time} ✕ ${log.message}${log.duration != null ? ` (${log.duration}ms)` : ""}`;
+        return `${time}${source} ✕ ${log.message}${log.duration != null ? ` (${log.duration}ms)` : ""}`;
       }
-      const base = `${time} [${log.type.toUpperCase()}] ${log.message}`;
+      const base = `${time}${source} [${log.type.toUpperCase()}] ${log.message}`;
       return log.data ? `${base}\n${JSON.stringify(log.data, null, 2)}` : base;
     }).join("\n\n");
     try {
@@ -137,7 +163,7 @@ export default function DebugPanel() {
         >
           <div className="sticky top-0 bg-black border-b border-white/10 px-4 py-2 flex justify-between items-center">
             <span className="text-white/40">Debug Logs</span>
-            <div className="flex gap-3">
+            <div className="flex items-center gap-3">
               <button
                 onClick={copyLogs}
                 className="text-white/40 hover:text-white/60 transition-colors"
@@ -152,16 +178,41 @@ export default function DebugPanel() {
               </button>
             </div>
           </div>
+          <div className="px-4 py-2 border-b border-white/10 flex flex-wrap items-center gap-2">
+            {typeOrder.map((type) => {
+              const active = typeFilters[type];
+              const styles = active ? typeOptions[type].className : "text-white/30 border-white/10";
+              return (
+                <button
+                  key={type}
+                  onClick={() => setTypeFilters((prev) => ({ ...prev, [type]: !prev[type] }))}
+                  className={`px-2 py-1 rounded border text-[10px] uppercase tracking-wide ${styles}`}
+                >
+                  {typeOptions[type].label}
+                </button>
+              );
+            })}
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search logs"
+              className="ml-auto bg-black border border-white/10 rounded px-2 py-1 text-[11px] text-white/80 focus:outline-none focus:border-white/30 w-40"
+            />
+          </div>
           <div className="p-4 space-y-2">
-            {logs.length === 0 ? (
-              <p className="text-white/30">No logs yet</p>
+            {visibleLogs.length === 0 ? (
+              <p className="text-white/30">{logs.length === 0 ? "No logs yet" : "No matching logs"}</p>
             ) : (
-              logs.map((log) => (
+              visibleLogs.map((log) => (
                 <div key={log.id} className="border-b border-white/5 pb-2">
                   <div className="flex items-start gap-2">
                     <span className="text-white/30 shrink-0">
                       {log.timestamp.toLocaleTimeString()}
                     </span>
+                    {log.source && (
+                      <span className="text-white/30">[{log.source}]</span>
+                    )}
                     {log.type === "request" && (
                       <span className="text-blue-400">
                         {log.message}
@@ -179,6 +230,12 @@ export default function DebugPanel() {
                     )}
                     {log.type === "info" && (
                       <span className="text-yellow-400">{log.message}</span>
+                    )}
+                    {log.type === "action" && (
+                      <span className="text-violet-400">{log.message}</span>
+                    )}
+                    {log.type === "lifecycle" && (
+                      <span className="text-white/50">{log.message}</span>
                     )}
                   </div>
                   {log.data !== undefined && (

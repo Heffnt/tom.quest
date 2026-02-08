@@ -38,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [isTom, setIsTom] = useState(false);
   const lastAuthRef = useRef<{ userId: string | null; accessToken: string | null } | null>(null);
+  const logSource = "Auth";
 
   const getInferredUsername = useCallback((user: User) => {
     const metaUsername = typeof user.user_metadata === "object"
@@ -49,45 +50,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const ensureProfile = useCallback(async (user: User) => {
     if (!supabase) return;
-    const { data: existing } = await supabase
+    logDebug("lifecycle", "Ensure profile start", { userId: user.id }, logSource);
+    const { data: existing, error: existingError } = await supabase
       .from("profiles")
       .select("*")
       .eq("id", user.id)
       .maybeSingle();
+    if (existingError) {
+      logDebug("error", "Ensure profile lookup failed", { message: existingError.message }, logSource);
+    }
     if (existing) {
       setProfile(existing);
+      logDebug("info", "Profile already exists", { userId: user.id }, logSource);
       return;
     }
     const inferred = getInferredUsername(user);
     if (!inferred) return;
-    const { data } = await supabase
+    const { data, error: upsertError } = await supabase
       .from("profiles")
       .upsert({ id: user.id, username: inferred }, { onConflict: "id" })
       .select("*")
       .maybeSingle();
+    if (upsertError) {
+      logDebug("error", "Profile upsert failed", { message: upsertError.message }, logSource);
+    }
     if (data) {
       setProfile(data);
-      logDebug("info", "Profile created from inferred username", { username: inferred });
+      logDebug("info", "Profile created from inferred username", { username: inferred }, logSource);
     }
   }, [supabase, getInferredUsername]);
 
   const fetchProfile = useCallback(async (userId: string) => {
     if (!supabase) return;
-    const { data } = await supabase
+    logDebug("lifecycle", "Fetch profile start", { userId }, logSource);
+    const { data, error } = await supabase
       .from("profiles")
       .select("*")
       .eq("id", userId)
       .single();
+    if (error) {
+      logDebug("error", "Fetch profile failed", { message: error.message }, logSource);
+    }
     setProfile(data);
   }, [supabase]);
 
   const fetchTuringConnection = useCallback(async (userId: string) => {
     if (!supabase) return;
-    const { data } = await supabase
+    logDebug("lifecycle", "Fetch turing connection start", { userId }, logSource);
+    const { data, error } = await supabase
       .from("turing_connections")
       .select("*")
       .eq("user_id", userId)
       .single();
+    if (error) {
+      logDebug("error", "Fetch turing connection failed", { message: error.message }, logSource);
+    }
     setTuringConnection(data);
   }, [supabase]);
 
@@ -103,20 +120,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       logDebug("error", "Tom check failed", {
         message: error instanceof Error ? error.message : "Unknown error",
-      });
+      }, logSource);
       setIsTom(false);
     }
   }, []);
 
   useEffect(() => {
     if (!supabase) {
-      logDebug("info", "Supabase not configured");
+      logDebug("info", "Supabase not configured", undefined, logSource);
       setLoading(false);
       return;
     }
 
     const initAuth = async () => {
-      logDebug("request", "Auth init");
+      logDebug("lifecycle", "Auth init start", undefined, logSource);
       try {
         const { data: { session } } = await supabase.auth.getSession();
         setSession(session);
@@ -126,7 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           accessToken: session?.access_token ?? null,
         };
         if (session?.user) {
-          logDebug("info", "Session found", { userId: session.user.id });
+          logDebug("info", "Session found", { userId: session.user.id }, logSource);
           await Promise.all([
             fetchProfile(session.user.id),
             fetchTuringConnection(session.user.id),
@@ -137,7 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         logDebug("error", "Auth init failed", {
           message: error instanceof Error ? error.message : "Unknown error",
-        });
+        }, logSource);
       } finally {
         setLoading(false);
       }
@@ -154,7 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         && lastAuth.accessToken === nextAccessToken;
       if (isSameAuth) return;
       lastAuthRef.current = { userId: nextUserId, accessToken: nextAccessToken };
-      logDebug("info", "Auth state change", { event, hasSession: !!session });
+      logDebug("lifecycle", "Auth state change", { event, hasSession: !!session }, logSource);
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
@@ -175,17 +192,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [supabase, fetchProfile, fetchTuringConnection, checkIsTom, ensureProfile]);
 
   const signIn = async (email: string, password: string) => {
-    if (!supabase) return { error: new Error("Supabase not configured") };
+    if (!supabase) {
+      logDebug("error", "Sign in failed: Supabase not configured", undefined, logSource);
+      return { error: new Error("Supabase not configured") };
+    }
+    logDebug("action", "Sign in requested", { email }, logSource);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      logDebug("error", "Sign in failed", { message: error.message }, logSource);
+    } else {
+      logDebug("info", "Sign in success", { email }, logSource);
+    }
     return { error: error as Error | null };
   };
 
   const signUp = async (username: string, password: string) => {
-    if (!supabase) return { error: new Error("Supabase not configured") };
+    if (!supabase) {
+      logDebug("error", "Sign up failed: Supabase not configured", undefined, logSource);
+      return { error: new Error("Supabase not configured") };
+    }
     const normalized = normalizeUsername(username);
-    if (!normalized) return { error: new Error("Username must contain letters or numbers") };
+    if (!normalized) {
+      logDebug("error", "Sign up failed: invalid username", { username }, logSource);
+      return { error: new Error("Username must contain letters or numbers") };
+    }
     // Generate a fake email from username (Supabase requires email)
     const email = usernameToEmail(username);
+    logDebug("action", "Sign up requested", { username, email }, logSource);
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -193,12 +226,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         data: { username },
       },
     });
+    if (error) {
+      logDebug("error", "Sign up failed", { message: error.message }, logSource);
+    } else {
+      logDebug("info", "Sign up success", { username, email }, logSource);
+    }
     return { error: error as Error | null };
   };
 
   const signOut = async () => {
     if (!supabase) return;
     const timeoutMs = 5000;
+    logDebug("action", "Sign out requested", undefined, logSource);
     const attemptRemoteSignOut = async () => {
       const { error } = await supabase.auth.signOut();
       if (error) {
@@ -214,22 +253,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }, timeoutMs);
         }),
       ]);
+      logDebug("info", "Sign out success", undefined, logSource);
     } catch (error) {
       logDebug("error", "Remote sign out failed", {
         message: error instanceof Error ? error.message : "Unknown error",
-      });
+      }, logSource);
       await supabase.auth.signOut({ scope: "local" });
+      logDebug("info", "Local sign out completed", undefined, logSource);
     }
   };
 
   const refreshProfile = async () => {
     if (user) {
+      logDebug("lifecycle", "Refresh profile requested", { userId: user.id }, logSource);
       await fetchProfile(user.id);
     }
   };
 
   const refreshTuringConnection = async () => {
     if (user) {
+      logDebug("lifecycle", "Refresh turing connection requested", { userId: user.id }, logSource);
       await fetchTuringConnection(user.id);
     }
   };

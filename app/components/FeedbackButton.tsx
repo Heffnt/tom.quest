@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./AuthProvider";
-import { debugFetch } from "../lib/debug";
+import { debugFetch, logDebug } from "../lib/debug";
 
 export default function FeedbackButton() {
   const { user, profile, session } = useAuth();
@@ -12,6 +12,7 @@ export default function FeedbackButton() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const logSource = "Feedback";
 
   const defaultName = useMemo(() => {
     const metaName = typeof user?.user_metadata === "object"
@@ -25,6 +26,7 @@ export default function FeedbackButton() {
     setName((current) => current || defaultName);
     setError(null);
     setSuccess(null);
+    logDebug("action", "Feedback modal opened", undefined, logSource);
   }, [open, defaultName]);
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -33,12 +35,14 @@ export default function FeedbackButton() {
     const trimmed = message.trim();
     if (!trimmed) {
       setError("Please enter a message.");
+      logDebug("error", "Feedback validation failed", { reason: "empty_message" }, logSource);
       return;
     }
     setSending(true);
     setError(null);
     setSuccess(null);
     try {
+      logDebug("action", "Feedback submit", { hasUser: !!user?.id }, logSource);
       const res = await debugFetch("/api/feedback", {
         method: "POST",
         headers: {
@@ -54,15 +58,22 @@ export default function FeedbackButton() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data.error || "Could not send feedback.");
+        logDebug("error", "Feedback submit failed", { message: data.error || "Unknown error" }, logSource);
         return;
       }
       setMessage("");
       setSuccess("Thanks for the feedback.");
+      logDebug("info", "Feedback submitted", undefined, logSource);
     } catch {
       setError("Could not send feedback.");
+      logDebug("error", "Feedback submit failed", { message: "Request error" }, logSource);
     } finally {
       setSending(false);
     }
+  };
+  const handleClose = () => {
+    logDebug("action", "Feedback modal closed", undefined, logSource);
+    setOpen(false);
   };
 
   return (
@@ -76,10 +87,10 @@ export default function FeedbackButton() {
       </button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpen(false)} />
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
           <div className="relative bg-black border border-white/20 rounded-lg p-6 w-full max-w-md">
             <button
-              onClick={() => setOpen(false)}
+              onClick={handleClose}
               className="absolute top-4 right-4 text-white/60 hover:text-white"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

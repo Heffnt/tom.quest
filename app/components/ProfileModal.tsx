@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useAuth } from "./AuthProvider";
+import { logDebug } from "../lib/debug";
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -12,10 +13,12 @@ interface ProfileModalProps {
 export default function ProfileModal({ isOpen, onClose, displayName }: ProfileModalProps) {
   const { signOut } = useAuth();
   const [signingOut, setSigningOut] = useState(false);
+  const logSource = "Profile";
 
   if (!isOpen) return null;
 
   const handleSignOut = async () => {
+    logDebug("action", "Sign out clicked", undefined, logSource);
     setSigningOut(true);
     try {
       await signOut();

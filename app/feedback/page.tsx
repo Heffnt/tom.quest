@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../components/AuthProvider";
 import { Feedback } from "../lib/supabase";
-import { debugFetch } from "../lib/debug";
+import { debugFetch, logDebug } from "../lib/debug";
 
 type FeedbackEntry = Feedback & { username?: string | null };
 
@@ -15,6 +15,7 @@ export default function FeedbackPage() {
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tomChecked, setTomChecked] = useState(false);
+  const logSource = "FeedbackPage";
 
   useEffect(() => {
     setTomChecked(false);
@@ -25,6 +26,7 @@ export default function FeedbackPage() {
     const verifyTom = async () => {
       if (!user) {
         if (!loading) {
+          logDebug("info", "Feedback access blocked: no user", undefined, logSource);
           router.replace("/");
         }
         return;
@@ -32,6 +34,7 @@ export default function FeedbackPage() {
       if (isTom) {
         if (!cancelled) {
           setTomChecked(true);
+          logDebug("lifecycle", "Tom verified from auth state", { userId: user.id }, logSource);
         }
         return;
       }
@@ -44,12 +47,15 @@ export default function FeedbackPage() {
         const data = await res.json();
         if (cancelled) return;
         if (!data.isTom) {
+          logDebug("info", "Feedback access denied: not Tom", { userId: user.id }, logSource);
           router.replace("/");
           return;
         }
         setTomChecked(true);
+        logDebug("lifecycle", "Tom verified from API", { userId: user.id }, logSource);
       } catch {
         if (!cancelled) {
+          logDebug("error", "Tom verification failed", { userId: user?.id ?? null }, logSource);
           router.replace("/");
         }
       }
@@ -63,6 +69,7 @@ export default function FeedbackPage() {
   const fetchFeedback = useCallback(async () => {
     if (!session?.access_token) {
       setError("Not authenticated.");
+      logDebug("error", "Feedback fetch blocked: not authenticated", undefined, logSource);
       return;
     }
     setFeedbackLoading(true);
@@ -76,11 +83,13 @@ export default function FeedbackPage() {
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Could not load feedback.");
+        logDebug("error", "Feedback fetch failed", { message: data.error || "Unknown error" }, logSource);
         return;
       }
       setFeedback(Array.isArray(data.feedback) ? data.feedback : []);
     } catch {
       setError("Could not load feedback.");
+      logDebug("error", "Feedback fetch failed", { message: "Request error" }, logSource);
     } finally {
       setFeedbackLoading(false);
     }
@@ -103,7 +112,10 @@ export default function FeedbackPage() {
           <h1 className="text-2xl font-semibold">Feedback</h1>
           <button
             type="button"
-            onClick={fetchFeedback}
+            onClick={() => {
+              logDebug("action", "Feedback refresh clicked", undefined, logSource);
+              fetchFeedback();
+            }}
             disabled={feedbackLoading}
             className="text-sm px-3 py-1 rounded border border-white/20 text-white/70 hover:text-white hover:border-white/40 transition-colors disabled:opacity-50"
           >

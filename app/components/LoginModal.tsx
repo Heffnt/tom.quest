@@ -25,15 +25,21 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const logSource = "Login";
   useEffect(() => {
     if (isOpen) {
       setMode("signin");
       setError(null);
+      logDebug("action", "Login modal opened", undefined, logSource);
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
+  const handleClose = (reason: string) => {
+    logDebug("action", "Login modal closed", { reason }, logSource);
+    onClose();
+  };
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -56,24 +62,24 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
       if (mode === "signin") {
         // Sign in using generated email from username
         const email = usernameToEmail(rawUsername);
-        logDebug("request", "Sign in attempt", { username: rawUsername });
+        logDebug("request", "Sign in attempt", { username: rawUsername }, logSource);
         const { error } = await signIn(email, password);
         if (error) {
-          logDebug("error", "Sign in failed", { message: error.message });
+          logDebug("error", "Sign in failed", { message: error.message }, logSource);
           if (error.message.includes("Supabase not configured")) {
             setError("Sign in is not available yet");
           } else {
             setError("Invalid username or password");
           }
         } else {
-          logDebug("info", "Sign in success", { username: rawUsername });
-          onClose();
+          logDebug("info", "Sign in success", { username: rawUsername }, logSource);
+          handleClose("success");
         }
       } else {
-        logDebug("request", "Sign up attempt", { username: rawUsername });
+        logDebug("request", "Sign up attempt", { username: rawUsername }, logSource);
         const { error } = await signUp(rawUsername, password);
         if (error) {
-          logDebug("error", "Sign up failed", { message: error.message });
+          logDebug("error", "Sign up failed", { message: error.message }, logSource);
           if (error.message.includes("already registered")) {
             setError("Username already taken");
           } else {
@@ -84,16 +90,16 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
           const email = usernameToEmail(rawUsername);
           const { error: signInError } = await signIn(email, password);
           if (signInError) {
-            logDebug("error", "Auto sign in failed", { message: signInError.message });
+            logDebug("error", "Auto sign in failed", { message: signInError.message }, logSource);
             setError("Account created! Please sign in.");
           } else {
-            logDebug("info", "Sign up success", { username: rawUsername });
-            onClose();
+            logDebug("info", "Sign up success", { username: rawUsername }, logSource);
+            handleClose("success");
           }
         }
       }
     } catch {
-      logDebug("error", "Auth unexpected error");
+      logDebug("error", "Auth unexpected error", undefined, logSource);
       setError("An unexpected error occurred");
     } finally {
       setLoading(false);
@@ -107,10 +113,10 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => handleClose("backdrop")} />
       <div className="relative bg-black border border-white/20 rounded-lg p-6 w-full max-w-md">
         <button
-          onClick={onClose}
+          onClick={() => handleClose("close-button")}
           className="absolute top-4 right-4 text-white/60 hover:text-white"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

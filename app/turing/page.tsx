@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "../components/AuthProvider";
 import { fetchUserSetting, saveUserSetting } from "../lib/userSettings";
-import { debugFetch as globalDebugFetch } from "../lib/debug";
+import { debugFetch as globalDebugFetch, logDebug } from "../lib/debug";
 
 interface GPUTypeInfo {
   type: string;
@@ -138,6 +138,7 @@ export default function Turing() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const sessionModalRef = useRef<HTMLDivElement>(null);
   const sessionOutputRef = useRef<HTMLPreElement>(null);
+  const logSource = "Turing";
   const filteredNodes = useMemo(() => {
     if (!gpuReport) return [];
     return gpuOnlyFilter ? gpuReport.nodes.filter(isGpuNamedNode) : gpuReport.nodes;
@@ -243,13 +244,18 @@ export default function Turing() {
     sessionRefreshInterval,
   ]);
   useEffect(() => {
+    logDebug("lifecycle", "Turing page mounted", undefined, logSource);
+  }, []);
+  useEffect(() => {
     if (!settingsLoaded) return;
     if (allocationOptions.length === 0) {
       if (gpuType) setGpuType("");
       return;
     }
     if (!gpuType || !(gpuType in allocationFreeByType)) {
-      setGpuType(allocationOptions[0][0]);
+      const nextType = allocationOptions[0][0];
+      setGpuType(nextType);
+      logDebug("lifecycle", "GPU type auto-selected", { gpuType: nextType }, logSource);
     }
   }, [allocationOptions, allocationFreeByType, gpuType, settingsLoaded]);
 
@@ -270,7 +276,9 @@ export default function Turing() {
       const data = await res.json();
       setGpuReport(data);
     } catch (e) {
-      setGpuReportError(e instanceof Error ? e.message : "Unknown error");
+      const message = e instanceof Error ? e.message : "Unknown error";
+      setGpuReportError(message);
+      logDebug("error", "GPU report fetch failed", { message }, logSource);
     } finally {
       setGpuReportLoading(false);
     }
@@ -285,7 +293,9 @@ export default function Turing() {
       const data = await res.json();
       setJobs(data);
     } catch (e) {
-      setJobsError(e instanceof Error ? e.message : "Unknown error");
+      const message = e instanceof Error ? e.message : "Unknown error";
+      setJobsError(message);
+      logDebug("error", "Jobs fetch failed", { message }, logSource);
     } finally {
       setJobsLoading(false);
     }
@@ -306,7 +316,9 @@ export default function Turing() {
       if (!data) throw new Error("Invalid directory response");
       setDirListing(data);
     } catch (e) {
-      setDirListing({ path: path, dirs: [], error: e instanceof Error ? e.message : "Unknown error" });
+      const message = e instanceof Error ? e.message : "Unknown error";
+      setDirListing({ path: path, dirs: [], error: message });
+      logDebug("error", "Directory fetch failed", { path, message }, logSource);
     } finally {
       setDirLoading(false);
     }
@@ -323,13 +335,16 @@ export default function Turing() {
       }
       setSessionOutput(data.output || "");
     } catch (e) {
-      setSessionOutputError(e instanceof Error ? e.message : "Unknown error");
+      const message = e instanceof Error ? e.message : "Unknown error";
+      setSessionOutputError(message);
+      logDebug("error", "Session output fetch failed", { sessionName, message }, logSource);
     } finally {
       setSessionOutputLoading(false);
     }
   }, [debugFetch]);
 
   const openSessionViewer = useCallback((sessionName: string) => {
+    logDebug("action", "Session viewer opened", { sessionName }, logSource);
     setSessionViewerName(sessionName);
     setSessionViewerOpen(true);
     setSessionOutput("");
@@ -351,6 +366,7 @@ export default function Turing() {
       newIndex = (currentIndex + direction + viewableSessions.length) % viewableSessions.length;
     }
     const newSession = viewableSessions[newIndex];
+    logDebug("action", "Session viewer navigated", { from: sessionViewerName, to: newSession }, logSource);
     setSessionViewerName(newSession);
     setSessionOutput("");
     setSessionOutputError(null);
@@ -359,6 +375,7 @@ export default function Turing() {
 
   const handleSessionModalBackdropClick = useCallback((e: React.MouseEvent) => {
     if (sessionModalRef.current && !sessionModalRef.current.contains(e.target as Node)) {
+      logDebug("action", "Session viewer closed", { reason: "backdrop" }, logSource);
       setSessionViewerOpen(false);
     }
   }, []);
@@ -380,11 +397,13 @@ export default function Turing() {
     const loadSettings = async () => {
       setSettingsLoaded(false);
       resetSettings();
+      logDebug("lifecycle", "Turing settings load start", { userId: user?.id ?? null }, logSource);
       if (user) {
         const settings = await fetchUserSetting<TuringSettings>(user.id, TURING_SETTINGS_KEY);
         if (!cancelled && settings) {
           applySettings(settings);
         }
+        logDebug("lifecycle", "Turing settings loaded from Supabase", { hasSettings: !!settings }, logSource);
         if (!cancelled) setSettingsLoaded(true);
         return;
       }
@@ -396,8 +415,10 @@ export default function Turing() {
             applySettings(parsed as TuringSettings);
           }
         }
+        logDebug("lifecycle", "Turing settings loaded from localStorage", { hasSettings: !!raw }, logSource);
       } catch {
         // Ignore parse errors
+        logDebug("error", "Turing settings parse failed", undefined, logSource);
       }
       if (!cancelled) setSettingsLoaded(true);
     };
@@ -411,14 +432,17 @@ export default function Turing() {
     if (!settingsLoaded) return;
     if (user) {
       const timeoutId = window.setTimeout(() => {
+        logDebug("lifecycle", "Turing settings saved to Supabase", { userId: user.id }, logSource);
         void saveUserSetting(user.id, TURING_SETTINGS_KEY, turingSettings);
       }, 400);
       return () => window.clearTimeout(timeoutId);
     }
     try {
       localStorage.setItem(TURING_SETTINGS_KEY, JSON.stringify(turingSettings));
+      logDebug("lifecycle", "Turing settings saved to localStorage", undefined, logSource);
     } catch {
       // Ignore storage errors
+      logDebug("error", "Turing settings save failed", undefined, logSource);
     }
   }, [settingsLoaded, user, turingSettings]);
 
@@ -439,14 +463,20 @@ export default function Turing() {
   const togglePartition = (partition: string) => {
     setCollapsedPartitions(prev => {
       const next = new Set(prev);
-      if (next.has(partition)) next.delete(partition);
-      else next.add(partition);
+      if (next.has(partition)) {
+        next.delete(partition);
+        logDebug("action", "Partition expanded", { partition }, logSource);
+      } else {
+        next.add(partition);
+        logDebug("action", "Partition collapsed", { partition }, logSource);
+      }
       return next;
     });
   };
 
   const handleAllocate = async (e: React.FormEvent) => {
     e.preventDefault();
+    logDebug("action", "Allocation submit", { gpuType, projectDir }, logSource);
     setAllocating(true);
     setAllocateError(null);
     setAllocateSuccess(null);
@@ -456,16 +486,19 @@ export default function Turing() {
     const resolvedCount = countValue ? parseInt(countValue, 10) : Math.min(Math.max(maxAllocatable, 1), 12);
     if (isNaN(resolvedCount) || resolvedCount < 1 || resolvedCount > 12) {
       setAllocateError("Count must be between 1 and 12");
+      logDebug("error", "Allocation validation failed", { field: "count", value: countValue }, logSource);
       setAllocating(false);
       return;
     }
     if (isNaN(timeNum) || timeNum < 1) {
       setAllocateError("Time must be at least 1 minute");
+      logDebug("error", "Allocation validation failed", { field: "time_mins", value: timeMins }, logSource);
       setAllocating(false);
       return;
     }
     if (isNaN(memoryNum) || memoryNum < 1) {
       setAllocateError("Memory must be at least 1 MB");
+      logDebug("error", "Allocation validation failed", { field: "memory_mb", value: memoryMb }, logSource);
       setAllocating(false);
       return;
     }
@@ -490,14 +523,18 @@ export default function Turing() {
         setAllocateSuccess(
           `Allocated ${data.job_ids.length} GPU(s): ${data.job_ids.join(", ")}`
         );
+        logDebug("info", "Allocation success", { jobIds: data.job_ids }, logSource);
         fetchJobs();
         fetchGpuReport();
       }
       if (data.errors?.length > 0) {
         setAllocateError(data.errors.join(", "));
+        logDebug("error", "Allocation errors reported", { errors: data.errors }, logSource);
       }
     } catch (e) {
-      setAllocateError(e instanceof Error ? e.message : "Unknown error");
+      const message = e instanceof Error ? e.message : "Unknown error";
+      setAllocateError(message);
+      logDebug("error", "Allocation failed", { message }, logSource);
     } finally {
       setAllocating(false);
     }
@@ -505,32 +542,38 @@ export default function Turing() {
 
   const handleCancel = async (jobId: string) => {
     try {
+      logDebug("action", "Cancel job requested", { jobId }, logSource);
       const res = await debugFetch(`${API_BASE}/jobs/${jobId}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.detail || "Failed to cancel");
       }
       fetchJobs();
+      logDebug("info", "Job cancelled", { jobId }, logSource);
       return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to cancel job";
       setJobsError(message);
       setCancelJobError(message);
+      logDebug("error", "Cancel job failed", { jobId, message }, logSource);
       return false;
     }
   };
   const openCancelJob = (jobId: string) => {
+    logDebug("action", "Cancel job modal opened", { jobId }, logSource);
     setCancelJobError(null);
     setCancelJobLoading(false);
     setCancelJobId(jobId);
   };
   const closeCancelJob = () => {
     if (cancelJobLoading) return;
+    logDebug("action", "Cancel job modal closed", undefined, logSource);
     setCancelJobId(null);
     setCancelJobError(null);
   };
   const handleConfirmCancelJob = async () => {
     if (!cancelJobId) return;
+    logDebug("action", "Cancel job confirmed", { jobId: cancelJobId }, logSource);
     setCancelJobLoading(true);
     const success = await handleCancel(cancelJobId);
     setCancelJobLoading(false);
@@ -539,10 +582,12 @@ export default function Turing() {
     }
   };
   const openCancelAll = () => {
+    logDebug("action", "Cancel all modal opened", { count: jobs.length }, logSource);
     setCancelAllError(null);
     setCancelAllOpen(true);
   };
   const handleCancelAll = async () => {
+    logDebug("action", "Cancel all confirmed", { count: jobs.length }, logSource);
     setCancelAllLoading(true);
     setCancelAllError(null);
     const failures: string[] = [];
@@ -562,15 +607,21 @@ export default function Turing() {
     }
     if (failures.length > 0) {
       setCancelAllError(failures.join(", "));
+      logDebug("error", "Cancel all failed", { failures }, logSource);
     } else {
       setCancelAllOpen(false);
+      logDebug("info", "All jobs cancelled", { count: jobs.length }, logSource);
     }
     setCancelAllLoading(false);
     refreshAll();
   };
 
-  const addCommand = () => setCommands([...commands, ""]);
+  const addCommand = () => {
+    logDebug("action", "Command added", { count: commands.length + 1 }, logSource);
+    setCommands([...commands, ""]);
+  };
   const removeCommand = (index: number) => {
+    logDebug("action", "Command removed", { index }, logSource);
     setCommands(commands.filter((_, i) => i !== index));
   };
   const updateCommand = (index: number, value: string) => {
@@ -594,10 +645,12 @@ export default function Turing() {
     ];
     persistProjectCommands({ ...projectCommands, [projectDir]: newSets });
     setSaveSetName("");
+    logDebug("action", "Command set saved", { projectDir, name: trimmedName }, logSource);
   };
 
   const handleLoadCommandSet = (commandsToLoad: string[]) => {
     setCommands(commandsToLoad.length > 0 ? commandsToLoad : [""]);
+    logDebug("action", "Command set loaded", { projectDir, count: commandsToLoad.length }, logSource);
   };
 
   const handleDeleteCommandSet = (name: string) => {
@@ -605,17 +658,19 @@ export default function Turing() {
     const projectSets = projectCommands[projectDir] || [];
     const newSets = projectSets.filter((set) => set.name !== name);
     persistProjectCommands({ ...projectCommands, [projectDir]: newSets });
+    logDebug("action", "Command set deleted", { projectDir, name }, logSource);
   };
 
   const currentProjectSets = projectDir ? (projectCommands[projectDir] || []) : [];
 
   const handleConnectTuring = async () => {
     if (!connectionKey.trim() || !user) return;
+    logDebug("action", "Turing connect requested", { userId: user.id }, logSource);
     setConnectingTuring(true);
     setConnectionError(null);
     setConnectionSuccess(null);
     try {
-      const res = await fetch(`${API_BASE}/connection`, {
+      const res = await debugFetch(`${API_BASE}/connection`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -630,8 +685,11 @@ export default function Turing() {
       setConnectionSuccess("Connected successfully!");
       setConnectionKey("");
       refreshTuringConnection();
+      logDebug("info", "Turing connected", { userId: user.id }, logSource);
     } catch (e) {
-      setConnectionError(e instanceof Error ? e.message : "Unknown error");
+      const message = e instanceof Error ? e.message : "Unknown error";
+      setConnectionError(message);
+      logDebug("error", "Turing connect failed", { message }, logSource);
     } finally {
       setConnectingTuring(false);
     }
@@ -640,24 +698,29 @@ export default function Turing() {
   const handleDisconnectTuring = async () => {
     if (!user) return;
     try {
-      await fetch(`${API_BASE}/connection`, {
+      logDebug("action", "Turing disconnect requested", { userId: user.id }, logSource);
+      await debugFetch(`${API_BASE}/connection`, {
         method: "DELETE",
         headers: { "x-user-id": user.id },
       });
       refreshTuringConnection();
+      logDebug("info", "Turing disconnected", { userId: user.id }, logSource);
     } catch {
       // Ignore errors
+      logDebug("error", "Turing disconnect failed", undefined, logSource);
     }
   };
 
   const openDirBrowser = () => {
     setDirBrowserOpen(true);
     fetchDirs(projectDir || "");
+    logDebug("action", "Directory browser opened", { path: projectDir || "" }, logSource);
   };
 
   const navigateToDir = (dir: string) => {
     const newPath = dirListing ? `${dirListing.path}/${dir}` : dir;
     fetchDirs(newPath);
+    logDebug("action", "Directory browser navigate", { path: newPath }, logSource);
   };
 
   const navigateUp = () => {
@@ -666,11 +729,13 @@ export default function Turing() {
     parts.pop();
     const newPath = parts.join("/") || "/";
     fetchDirs(newPath);
+    logDebug("action", "Directory browser navigate up", { path: newPath }, logSource);
   };
 
   const selectCurrentDir = () => {
     if (dirListing) {
       setProjectDir(dirListing.path);
+      logDebug("action", "Directory selected", { path: dirListing.path }, logSource);
     }
     setDirBrowserOpen(false);
   };
@@ -761,7 +826,10 @@ export default function Turing() {
         {/* Refresh Controls */}
         <div className="mt-8 flex flex-wrap items-center gap-4 border border-white/10 rounded-lg p-4 animate-fade-in-delay">
           <button
-            onClick={refreshAll}
+            onClick={() => {
+              logDebug("action", "Refresh all clicked", undefined, logSource);
+              refreshAll();
+            }}
             disabled={gpuReportLoading || jobsLoading}
             className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
           >
@@ -771,7 +839,11 @@ export default function Turing() {
             <input
               type="checkbox"
               checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setAutoRefresh(next);
+                logDebug("action", "Auto-refresh toggled", { enabled: next }, logSource);
+              }}
               className="sr-only"
             />
             <span
@@ -802,6 +874,9 @@ export default function Turing() {
                 const val = parseInt(refreshIntervalInput, 10);
                 if (isNaN(val) || val < 5) {
                   setRefreshIntervalInput(String(refreshInterval));
+                  logDebug("error", "Auto-refresh interval invalid", { value: refreshIntervalInput }, logSource);
+                } else if (val !== refreshInterval) {
+                  logDebug("action", "Auto-refresh interval set", { value: val }, logSource);
                 }
               }}
               className="w-20 px-2 py-1 text-sm bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
@@ -815,7 +890,10 @@ export default function Turing() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">GPU Availability</h2>
             <button
-              onClick={fetchGpuReport}
+              onClick={() => {
+                logDebug("action", "GPU report refresh clicked", undefined, logSource);
+                fetchGpuReport();
+              }}
               disabled={gpuReportLoading}
               className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
             >
@@ -853,7 +931,11 @@ export default function Turing() {
                   <input
                     type="checkbox"
                     checked={gpuOnlyFilter}
-                    onChange={(e) => setGpuOnlyFilter(e.target.checked)}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setGpuOnlyFilter(next);
+                        logDebug("action", "GPU-only filter toggled", { enabled: next }, logSource);
+                      }}
                     className="sr-only"
                   />
                   <span
@@ -1003,7 +1085,10 @@ export default function Turing() {
                     <h3 className="text-lg font-semibold">Select Project Directory</h3>
                     <button
                       type="button"
-                      onClick={() => setDirBrowserOpen(false)}
+                      onClick={() => {
+                        logDebug("action", "Directory browser closed", undefined, logSource);
+                        setDirBrowserOpen(false);
+                      }}
                       className="text-white/60 hover:text-white"
                     >
                       ✕
@@ -1061,7 +1146,11 @@ export default function Turing() {
                 </label>
                 <select
                   value={gpuType}
-                  onChange={(e) => setGpuType(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setGpuType(next);
+                    logDebug("action", "GPU type selected", { gpuType: next }, logSource);
+                  }}
                   disabled={allocationOptions.length === 0}
                   className="w-full px-3 py-2 bg-black/80 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                 >
@@ -1244,7 +1333,10 @@ export default function Turing() {
             <h2 className="text-2xl font-semibold">Active Jobs</h2>
             <div className="flex items-center gap-2">
               <button
-                onClick={fetchJobs}
+                onClick={() => {
+                  logDebug("action", "Jobs refresh clicked", undefined, logSource);
+                  fetchJobs();
+                }}
                 disabled={jobsLoading}
                 className="px-4 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
               >
@@ -1387,7 +1479,10 @@ export default function Turing() {
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setCancelAllOpen(false)}
+                onClick={() => {
+                  logDebug("action", "Cancel all modal closed", { reason: "keep" }, logSource);
+                  setCancelAllOpen(false);
+                }}
                 disabled={cancelAllLoading}
                 className="px-3 py-2 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
               >
@@ -1448,7 +1543,11 @@ export default function Turing() {
                   <input
                     type="checkbox"
                     checked={sessionAutoRefresh}
-                    onChange={(e) => setSessionAutoRefresh(e.target.checked)}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setSessionAutoRefresh(next);
+                      logDebug("action", "Session auto-refresh toggled", { enabled: next }, logSource);
+                    }}
                     className="sr-only"
                   />
                   <span
@@ -1473,19 +1572,33 @@ export default function Turing() {
                       const val = parseInt(e.target.value, 10);
                       if (!isNaN(val) && val >= 1) setSessionRefreshInterval(val);
                     }}
+                    onBlur={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (isNaN(val) || val < 1) {
+                        logDebug("error", "Session refresh interval invalid", { value: e.target.value }, logSource);
+                      } else {
+                        logDebug("action", "Session refresh interval set", { value: val }, logSource);
+                      }
+                    }}
                     className="w-12 px-2 py-1 text-xs bg-white/5 border border-white/10 rounded text-white focus:outline-none focus:border-white/30"
                   />
                   <span className="text-xs text-white/40">s</span>
                 </div>
                 <button
-                  onClick={() => fetchSessionOutput(sessionViewerName)}
+                  onClick={() => {
+                    logDebug("action", "Session refresh clicked", { sessionName: sessionViewerName }, logSource);
+                    fetchSessionOutput(sessionViewerName);
+                  }}
                   disabled={sessionOutputLoading}
                   className="px-3 py-1 text-sm bg-white/10 hover:bg-white/20 rounded transition-colors disabled:opacity-50"
                 >
                   {sessionOutputLoading ? "..." : "Refresh"}
                 </button>
                 <button
-                  onClick={() => setSessionViewerOpen(false)}
+                  onClick={() => {
+                    logDebug("action", "Session viewer closed", { reason: "close-button" }, logSource);
+                    setSessionViewerOpen(false);
+                  }}
                   className="text-white/60 hover:text-white px-2"
                 >
                   ✕

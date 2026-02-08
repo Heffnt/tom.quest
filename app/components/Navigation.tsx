@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useAuth } from "./AuthProvider";
 import LoginModal from "./LoginModal";
 import ProfileModal from "./ProfileModal";
+import { logDebug } from "../lib/debug";
 
 const navLinks = [
   { href: "/", label: "Home" },
@@ -20,6 +21,7 @@ export default function Navigation() {
   const { isTom, user, profile } = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const logSource = "Nav";
 
   const displayName =
     profile?.username ||
@@ -65,7 +67,10 @@ export default function Navigation() {
               {user ? (
                 <button
                   type="button"
-                  onClick={() => setProfileOpen(true)}
+                  onClick={() => {
+                    logDebug("action", "Profile modal opened", undefined, logSource);
+                    setProfileOpen(true);
+                  }}
                   className={`text-sm px-3 py-1 rounded-full border transition-colors hover:text-white hover:border-white/40 ${
                     isTom
                       ? "border-green-400 text-green-300"
@@ -76,7 +81,10 @@ export default function Navigation() {
                 </button>
               ) : (
                 <button
-                  onClick={() => setLoginOpen(true)}
+                  onClick={() => {
+                    logDebug("action", "Login modal opened", undefined, logSource);
+                    setLoginOpen(true);
+                  }}
                   className="text-sm px-3 py-1 rounded-full border border-white/20 text-white/70 hover:text-white hover:border-white/40 transition-colors"
                 >
                   Log in

@@ -1,10 +1,11 @@
-export type DebugLogType = "request" | "response" | "error" | "info";
+export type DebugLogType = "request" | "response" | "error" | "info" | "action" | "lifecycle";
 
 export interface DebugLogEntry {
   id: number;
   timestamp: Date;
   type: DebugLogType;
   message: string;
+  source?: string;
   method?: string;
   url?: string;
   status?: number;
@@ -14,7 +15,7 @@ export interface DebugLogEntry {
 
 let nextId = 0;
 
-export function logDebug(type: DebugLogType, message: string, data?: unknown) {
+export function logDebug(type: DebugLogType, message: string, data?: unknown, source?: string) {
   if (typeof window === "undefined") return;
   const entry: DebugLogEntry = {
     id: nextId++,
@@ -22,6 +23,7 @@ export function logDebug(type: DebugLogType, message: string, data?: unknown) {
     type,
     message,
     data,
+    source,
   };
   window.dispatchEvent(new CustomEvent("tomquest-debug", { detail: entry }));
 }
@@ -43,6 +45,7 @@ export async function debugFetch(url: string, options?: RequestInit): Promise<Re
     timestamp: new Date(),
     type: "request",
     message: `→ ${method} ${url}`,
+    source: "fetch",
     method,
     url,
     data: bodyData,
@@ -57,6 +60,7 @@ export async function debugFetch(url: string, options?: RequestInit): Promise<Re
       timestamp: new Date(),
       type: "response",
       message: `← ${res.status} ${url}`,
+      source: "fetch",
       method,
       url,
       status: res.status,
@@ -72,6 +76,7 @@ export async function debugFetch(url: string, options?: RequestInit): Promise<Re
       timestamp: new Date(),
       type: "error",
       message: `✕ ${method} ${url}: ${e instanceof Error ? e.message : "Unknown error"}`,
+      source: "fetch",
       method,
       url,
       duration,
