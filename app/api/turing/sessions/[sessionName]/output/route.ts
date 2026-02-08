@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchTuring, getHeaders } from "@/app/lib/turing";
+import { fetchTuring } from "@/app/lib/turing";
 
 export async function GET(
   request: NextRequest,
@@ -13,7 +13,6 @@ export async function GET(
     const res = await fetchTuring(
       `/sessions/${encodeURIComponent(sessionName)}/output?lines=${encodeURIComponent(lines)}`,
       {
-        headers: getHeaders(),
         cache: "no-store",
       },
       userId

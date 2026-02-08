@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "../components/AuthProvider";
 import { Feedback } from "../lib/supabase";
 
+type FeedbackEntry = Feedback & { username?: string | null };
+
 export default function FeedbackPage() {
   const { user, isTom, loading, session } = useAuth();
   const router = useRouter();
-  const [feedback, setFeedback] = useState<Feedback[]>([]);
+  const [feedback, setFeedback] = useState<FeedbackEntry[]>([]);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tomChecked, setTomChecked] = useState(false);
@@ -116,23 +118,26 @@ export default function FeedbackPage() {
           {feedback.length === 0 && !feedbackLoading ? (
             <p className="text-white/40">No feedback yet.</p>
           ) : (
-            feedback.map((entry) => (
-              <div
-                key={entry.id}
-                className="bg-white/5 border border-white/10 rounded-lg p-4"
-              >
+            feedback.map((entry) => {
+              const nameParts = [entry.name || null, entry.username ? `@${entry.username}` : null].filter(Boolean);
+              const displayName = nameParts.length > 0 ? nameParts.join(" · ") : "Anonymous";
+              return (
+                <div
+                  key={entry.id}
+                  className="bg-white/5 border border-white/10 rounded-lg p-4"
+                >
                 <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm text-white/60">
-                    {entry.name || "Anonymous"}
-                    {entry.user_id ? " (logged in)" : ""}
+                    <div className="text-sm text-white/60">
+                      {displayName}
+                    </div>
+                    <div className="text-xs text-white/40">
+                      {new Date(entry.created_at).toLocaleString()}
+                    </div>
                   </div>
-                  <div className="text-xs text-white/40">
-                    {new Date(entry.created_at).toLocaleString()}
-                  </div>
+                  <p className="mt-2 whitespace-pre-wrap">{entry.content}</p>
                 </div>
-                <p className="mt-2 whitespace-pre-wrap">{entry.content}</p>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

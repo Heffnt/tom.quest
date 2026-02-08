@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from "next/server";
-import { fetchTuring, getHeaders, canUserWrite } from "@/app/lib/turing";
+import { fetchTuring, canUserWrite } from "@/app/lib/turing";
 
 export async function DELETE(
   request: NextRequest,
@@ -17,7 +17,6 @@ export async function DELETE(
   try {
     const res = await fetchTuring(`/jobs/${jobId}`, {
       method: "DELETE",
-      headers: getHeaders(),
     }, userId);
     if (!res.ok) {
       const data = await res.json();

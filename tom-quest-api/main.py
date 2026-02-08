@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 import requests
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,11 +17,15 @@ from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir
 
 load_dotenv()
-API_KEY = os.getenv("API_KEY", "")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-GIST_ID = os.getenv("GIST_ID", "")
+TOM_QUEST_URL = os.getenv("TOM_QUEST_URL", "https://tom.quest")
+KEY_FILE = os.path.expanduser("~/.tom-quest-key")
 LOG_PATH = "tom-quest-api.log"
 TUNNEL_LOG_PATH = "tom-quest-tunnel.log"
+HEARTBEAT_INTERVAL = 30  # seconds
+
+# Global state
+API_KEY = ""
+TUNNEL_URL = ""
 
 def setup_logging():
     logging.basicConfig(
@@ -33,26 +38,46 @@ def setup_logging():
         logger.handlers = []
         logger.propagate = True
 
-def update_gist(url: str):
-    if not GITHUB_TOKEN or not GIST_ID:
-        print("GITHUB_TOKEN or GIST_ID not set, skipping gist update")
-        return False
+def load_or_generate_key() -> str:
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "r") as f:
+            key = f.read().strip()
+        if key:
+            return key
+    key = str(uuid.uuid4())
+    with open(KEY_FILE, "w") as f:
+        f.write(key)
+    print(f"\n{'='*60}")
+    print(f"  New connection key generated!")
+    print(f"  Key: {key}")
+    print(f"  Saved to: {KEY_FILE}")
+    print(f"\n  Enter this key on tom.quest/turing to connect.")
+    print(f"{'='*60}\n")
+    return key
+
+def register_with_tom_quest(key: str, url: str) -> bool:
     try:
-        res = requests.patch(
-            f"https://api.github.com/gists/{GIST_ID}",
-            headers={"Authorization": f"token {GITHUB_TOKEN}"},
-            json={"files": {"tunnel_url.txt": {"content": url}}},
+        res = requests.post(
+            f"{TOM_QUEST_URL}/api/turing/register",
+            json={"key": key, "url": url},
             timeout=10,
         )
         if res.ok:
-            print(f"Gist updated with URL: {url}")
             return True
-        print(f"Gist update failed: {res.status_code}")
+        print(f"Registration failed: {res.status_code} {res.text}")
     except Exception as e:
-        print(f"Gist update error: {e}")
+        print(f"Registration error: {e}")
     return False
 
-def watch_tunnel_log():
+def heartbeat_loop(key: str):
+    global TUNNEL_URL
+    while True:
+        time.sleep(HEARTBEAT_INTERVAL)
+        if TUNNEL_URL:
+            register_with_tom_quest(key, TUNNEL_URL)
+
+def watch_tunnel_log(key: str):
+    global TUNNEL_URL
     url_pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
     for _ in range(30):
         time.sleep(1)
@@ -61,13 +86,18 @@ def watch_tunnel_log():
                 content = f.read()
             match = url_pattern.search(content)
             if match:
-                update_gist(match.group(0))
+                TUNNEL_URL = match.group(0)
+                print(f"Tunnel URL: {TUNNEL_URL}")
+                if register_with_tom_quest(key, TUNNEL_URL):
+                    print("Registered with tom.quest")
+                else:
+                    print("Failed to register with tom.quest (will retry via heartbeat)")
                 return
         except FileNotFoundError:
             pass
     print("Tunnel URL not found in log after 30s")
 
-def start_tunnel():
+def start_tunnel(key: str):
     try:
         log_file = open(TUNNEL_LOG_PATH, "w", buffering=1)
         proc = subprocess.Popen(
@@ -76,7 +106,8 @@ def start_tunnel():
             stderr=log_file,
         )
         print(f"Tunnel started (pid {proc.pid}). URL will appear in: {TUNNEL_LOG_PATH}")
-        threading.Thread(target=watch_tunnel_log, daemon=True).start()
+        threading.Thread(target=watch_tunnel_log, args=(key,), daemon=True).start()
+        threading.Thread(target=heartbeat_loop, args=(key,), daemon=True).start()
         return proc
     except Exception:
         logging.getLogger("tom.quest").exception("Tunnel start failed")
@@ -230,5 +261,8 @@ async def get_session_output(session_name: str, lines: int = 500, auth: bool = D
 if __name__ == "__main__":
     import uvicorn
     setup_logging()
-    start_tunnel()
+    API_KEY = load_or_generate_key()
+    print(f"\nConnection key: {API_KEY}")
+    print(f"Enter this key on {TOM_QUEST_URL}/turing to connect.\n")
+    start_tunnel(API_KEY)
     uvicorn.run(app, host="0.0.0.0", port=8000, access_log=True, log_config=None)

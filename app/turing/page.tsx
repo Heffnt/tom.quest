@@ -104,7 +104,7 @@ const GPU_TYPE_LABELS: Record<string, string> = { nvidia: "H100", tesla: "V100" 
 export default function Turing() {
   const { user, isTom, turingConnection, refreshTuringConnection, loading: authLoading } = useAuth();
   const canWrite = isTom || !!turingConnection;
-  const [connectionUrl, setConnectionUrl] = useState("");
+  const [connectionKey, setConnectionKey] = useState("");
   const [connectingTuring, setConnectingTuring] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionSuccess, setConnectionSuccess] = useState<string | null>(null);
@@ -741,7 +741,7 @@ export default function Turing() {
   const currentProjectSets = projectDir ? (projectCommands[projectDir] || []) : [];
 
   const handleConnectTuring = async () => {
-    if (!connectionUrl.trim() || !user) return;
+    if (!connectionKey.trim() || !user) return;
     setConnectingTuring(true);
     setConnectionError(null);
     setConnectionSuccess(null);
@@ -752,14 +752,14 @@ export default function Turing() {
           "Content-Type": "application/json",
           "x-user-id": user.id,
         },
-        body: JSON.stringify({ tunnelUrl: connectionUrl.trim() }),
+        body: JSON.stringify({ connectionKey: connectionKey.trim() }),
       });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || "Failed to connect");
       }
       setConnectionSuccess("Connected successfully!");
-      setConnectionUrl("");
+      setConnectionKey("");
       refreshTuringConnection();
     } catch (e) {
       setConnectionError(e instanceof Error ? e.message : "Unknown error");
@@ -835,15 +835,23 @@ export default function Turing() {
             <div className="border border-white/10 rounded-lg p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold">Your Turing Connection</h2>
-                {turingConnection && (
-                  <span className="text-xs text-green-400 bg-green-400/10 px-2 py-1 rounded">Connected</span>
-                )}
+                {turingConnection && (() => {
+                  const heartbeatAge = turingConnection.last_heartbeat
+                    ? Date.now() - new Date(turingConnection.last_heartbeat).getTime()
+                    : Infinity;
+                  const isOnline = heartbeatAge < 120_000;
+                  return (
+                    <span className={`text-xs px-2 py-1 rounded ${isOnline ? "text-green-400 bg-green-400/10" : "text-yellow-400 bg-yellow-400/10"}`}>
+                      {isOnline ? "Connected" : "Backend offline"}
+                    </span>
+                  );
+                })()}
               </div>
               {turingConnection ? (
                 <div className="space-y-3">
                   <div>
-                    <p className="text-sm text-white/60">Connected to:</p>
-                    <p className="font-mono text-sm truncate">{turingConnection.tunnel_url}</p>
+                    <p className="text-sm text-white/60">Connection key:</p>
+                    <p className="font-mono text-sm truncate">{turingConnection.connection_key}</p>
                   </div>
                   <button
                     onClick={handleDisconnectTuring}
@@ -855,19 +863,19 @@ export default function Turing() {
               ) : (
                 <div className="space-y-4">
                   <p className="text-sm text-white/60">
-                    To use your own Turing account, run the tom-quest-api on Turing with a Cloudflare tunnel and enter the URL below.
+                    Run <span className="font-mono text-white/80">python main.py</span> in <span className="font-mono text-white/80">tom-quest-api/</span> on Turing, then paste your connection key below.
                   </p>
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      value={connectionUrl}
-                      onChange={(e) => setConnectionUrl(e.target.value)}
-                      placeholder="https://your-tunnel.trycloudflare.com"
+                      value={connectionKey}
+                      onChange={(e) => setConnectionKey(e.target.value)}
+                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
                       className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded text-white font-mono text-sm focus:outline-none focus:border-white/30"
                     />
                     <button
                       onClick={handleConnectTuring}
-                      disabled={connectingTuring || !connectionUrl.trim()}
+                      disabled={connectingTuring || !connectionKey.trim()}
                       className="px-4 py-2 text-sm bg-white text-black font-medium rounded hover:bg-white/90 transition-colors disabled:opacity-50"
                     >
                       {connectingTuring ? "Connecting..." : "Connect"}

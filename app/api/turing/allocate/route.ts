@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from "next/server";
-import { fetchTuring, getHeaders, canUserWrite } from "@/app/lib/turing";
+import { fetchTuring, canUserWrite } from "@/app/lib/turing";
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,10 +14,7 @@ export async function POST(request: NextRequest) {
     }
     const res = await fetchTuring("/allocate", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...getHeaders(),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }, userId);
     const data = await res.json();

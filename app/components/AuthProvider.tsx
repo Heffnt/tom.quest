@@ -185,7 +185,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     if (!supabase) return;
-    await supabase.auth.signOut();
+    const timeoutMs = 5000;
+    const attemptRemoteSignOut = async () => {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        throw error;
+      }
+    };
+    try {
+      await Promise.race([
+        attemptRemoteSignOut(),
+        new Promise((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("Sign out timed out"));
+          }, timeoutMs);
+        }),
+      ]);
+    } catch (error) {
+      logDebug("error", "Remote sign out failed", {
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+      await supabase.auth.signOut({ scope: "local" });
+    }
   };
 
   const refreshProfile = async () => {

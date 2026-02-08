@@ -47,10 +47,11 @@ export interface Feedback {
 
 export interface TuringConnection {
   id: string;
-  user_id: string;
+  user_id: string | null;
+  connection_key: string;
   tunnel_url: string;
   created_at: string;
-  last_verified: string | null;
+  last_heartbeat: string | null;
 }
 
 export interface UserSetting {
@@ -108,20 +109,27 @@ create policy "Anyone can insert feedback" on feedback
 create policy "Feedback owner can read" on feedback
   for select using (auth.uid() = user_id);
 
--- Turing connections table
+-- Turing connections table (key-based: API registers by key, user links by key)
 create table public.turing_connections (
   id uuid default gen_random_uuid() primary key,
-  user_id uuid references public.profiles(id) on delete cascade unique not null,
+  user_id uuid references public.profiles(id) on delete set null unique,
+  connection_key text unique not null,
   tunnel_url text not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  last_verified timestamp with time zone
+  last_heartbeat timestamp with time zone
 );
 
 alter table public.turing_connections enable row level security;
 create policy "Users can view own turing connection" on turing_connections for select using (auth.uid() = user_id);
-create policy "Users can insert own turing connection" on turing_connections for insert with check (auth.uid() = user_id);
 create policy "Users can update own turing connection" on turing_connections for update using (auth.uid() = user_id);
-create policy "Users can delete own turing connection" on turing_connections for delete using (auth.uid() = user_id);
+
+-- Migration from old schema:
+-- ALTER TABLE turing_connections ADD COLUMN connection_key text unique;
+-- ALTER TABLE turing_connections ADD COLUMN last_heartbeat timestamp with time zone;
+-- ALTER TABLE turing_connections ALTER COLUMN user_id DROP NOT NULL;
+-- ALTER TABLE turing_connections DROP COLUMN IF EXISTS last_verified;
+-- DROP POLICY IF EXISTS "Users can insert own turing connection" ON turing_connections;
+-- DROP POLICY IF EXISTS "Users can delete own turing connection" ON turing_connections;
 
 -- User settings table
 create table public.user_settings (

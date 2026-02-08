@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from "next/server";
-import { fetchTuring, getHeaders } from "@/app/lib/turing";
+import { fetchTuring } from "@/app/lib/turing";
 
 export async function GET(request: NextRequest) {
   const path = request.nextUrl.searchParams.get("path");
@@ -9,7 +9,6 @@ export async function GET(request: NextRequest) {
   try {
     const userId = request.headers.get("x-user-id") || undefined;
     const res = await fetchTuring(`/file?path=${encodeURIComponent(path)}`, {
-      headers: getHeaders(),
       cache: "no-store",
     }, userId);
     if (!res.ok) {

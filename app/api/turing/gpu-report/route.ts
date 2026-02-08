@@ -1,11 +1,10 @@
 import { NextResponse, NextRequest } from "next/server";
-import { fetchTuring, getHeaders } from "@/app/lib/turing";
+import { fetchTuring } from "@/app/lib/turing";
 
 export async function GET(request: NextRequest) {
   try {
     const userId = request.headers.get("x-user-id") || undefined;
     const res = await fetchTuring("/gpu-report", {
-      headers: getHeaders(),
       cache: "no-store",
     }, userId);
     if (!res.ok) {

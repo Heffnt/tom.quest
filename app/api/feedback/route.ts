@@ -62,5 +62,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ feedback: data ?? [] });
+  const userIds = (data ?? [])
+    .map((entry) => entry.user_id)
+    .filter((entry): entry is string => !!entry);
+  const uniqueUserIds = Array.from(new Set(userIds));
+  const usernameById = new Map<string, string>();
+
+  if (uniqueUserIds.length > 0) {
+    const { data: profiles, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, username")
+      .in("id", uniqueUserIds);
+    if (profileError) {
+      return NextResponse.json({ error: profileError.message }, { status: 500 });
+    }
+    (profiles ?? []).forEach((profile) => {
+      usernameById.set(profile.id, profile.username);
+    });
+  }
+
+  const enriched = (data ?? []).map((entry) => ({
+    ...entry,
+    username: entry.user_id ? usernameById.get(entry.user_id) ?? null : null,
+  }));
+
+  return NextResponse.json({ feedback: enriched });
 }
