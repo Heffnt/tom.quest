@@ -830,7 +830,7 @@ export default function Turing() {
         )}
 
         {/* Turing Connection Setup (for logged-in users without connection) */}
-        {user && !isTom && !authLoading && (
+        {user && !authLoading && (
           <section className="mt-6 animate-fade-in-delay">
             <div className="border border-white/10 rounded-lg p-6">
               <div className="flex items-center justify-between mb-4">
