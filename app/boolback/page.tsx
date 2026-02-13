@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../components/AuthProvider";
 import { logDebug } from "../lib/debug";
@@ -19,7 +19,7 @@ function parseTab(value: string | null): BoolbackTab {
   return "pipeline";
 }
 
-export default function BoolbackPage() {
+function BoolbackContent() {
   const { user, isTom } = useAuth();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -56,41 +56,49 @@ export default function BoolbackPage() {
   );
 
   return (
-    <div className="min-h-screen px-6 py-16" style={{ paddingBottom: 60 }}>
-      <div className="mx-auto max-w-6xl animate-fade-in">
-        <h1 className="text-4xl font-bold tracking-tight">BoolBack</h1>
-        <p className="mt-3 text-white/60">
-          Pipeline visibility, results, and fast validation workflows.
-        </p>
-        <div className="mt-6 flex flex-wrap gap-2 border-b border-white/10 pb-4">
-          {TAB_ORDER.map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setTab(tab)}
-              className={`${tabButtonClass} ${
-                activeTab === tab
-                  ? "border-white/50 bg-white/10 text-white"
-                  : "border-white/20 text-white/70"
-              }`}
-            >
-              {tab === "pipeline"
-                ? "Pipeline"
-                : tab === "results"
-                  ? "Results"
-                  : tab === "validate"
-                    ? "Validate"
-                    : "Validation Review"}
-            </button>
-          ))}
-        </div>
-        <div className="mt-6">
-          {activeTab === "pipeline" && <PipelineTab userId={userId} />}
-          {activeTab === "results" && <ResultsTab userId={userId} />}
-          {activeTab === "validate" && <ValidateTab userId={userId} isTom={isTom} />}
-          {activeTab === "review" && <ReviewTab userId={userId} />}
-        </div>
+    <div className="mx-auto max-w-6xl animate-fade-in">
+      <h1 className="text-4xl font-bold tracking-tight">BoolBack</h1>
+      <p className="mt-3 text-white/60">
+        Pipeline visibility, results, and fast validation workflows.
+      </p>
+      <div className="mt-6 flex flex-wrap gap-2 border-b border-white/10 pb-4">
+        {TAB_ORDER.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setTab(tab)}
+            className={`${tabButtonClass} ${
+              activeTab === tab
+                ? "border-white/50 bg-white/10 text-white"
+                : "border-white/20 text-white/70"
+            }`}
+          >
+            {tab === "pipeline"
+              ? "Pipeline"
+              : tab === "results"
+                ? "Results"
+                : tab === "validate"
+                  ? "Validate"
+                  : "Validation Review"}
+          </button>
+        ))}
       </div>
+      <div className="mt-6">
+        {activeTab === "pipeline" && <PipelineTab userId={userId} />}
+        {activeTab === "results" && <ResultsTab userId={userId} />}
+        {activeTab === "validate" && <ValidateTab userId={userId} isTom={isTom} />}
+        {activeTab === "review" && <ReviewTab userId={userId} />}
+      </div>
+    </div>
+  );
+}
+
+export default function BoolbackPage() {
+  return (
+    <div className="min-h-screen px-6 py-16" style={{ paddingBottom: 60 }}>
+      <Suspense>
+        <BoolbackContent />
+      </Suspense>
     </div>
   );
 }
