@@ -56,7 +56,7 @@ function BoolbackContent() {
   );
 
   return (
-    <div className="mx-auto max-w-6xl animate-fade-in">
+    <div className={`animate-fade-in ${activeTab === "results" ? "w-full max-w-none" : "mx-auto max-w-6xl"}`}>
       <h1 className="text-4xl font-bold tracking-tight">BoolBack</h1>
       <p className="mt-3 text-white/60">
         Pipeline visibility, results, and fast validation workflows.
@@ -83,7 +83,7 @@ function BoolbackContent() {
           </button>
         ))}
       </div>
-      <div className="mt-6">
+      <div className={`mt-6 ${activeTab === "results" ? "-mx-6" : ""}`}>
         {activeTab === "pipeline" && <PipelineTab userId={userId} />}
         {activeTab === "results" && <ResultsTab userId={userId} />}
         {activeTab === "validate" && <ValidateTab userId={userId} isTom={isTom} />}

@@ -19,6 +19,8 @@ type Selection =
   | { kind: "node"; node: PipelineNode }
   | { kind: "edge"; edge: PipelineEdge };
 
+type PathStep = { node: PipelineNode; edge: PipelineEdge | null };
+
 const PAGE_LIMIT = 20;
 const FILTERABLE_OPERATIONS = new Set(["filter_refusal", "filter_similarity", "verify"]);
 
@@ -53,6 +55,27 @@ function formatEdgeModels(edge: PipelineEdge): string {
 
 function isSplitEdge(edge: PipelineEdge): boolean {
   return edge.operation === "split";
+}
+
+function tracePath(
+  startId: string,
+  nodesById: Map<string, PipelineNode>,
+  edgesByFrom: Map<string, PipelineEdge[]>,
+): PathStep[] {
+  const steps: PathStep[] = [];
+  let currentId = startId;
+  const visited = new Set<string>();
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const node = nodesById.get(currentId);
+    if (!node) break;
+    const outEdges = edgesByFrom.get(currentId) || [];
+    const nextEdge = outEdges.length === 1 ? outEdges[0] : null;
+    steps.push({ node, edge: nextEdge });
+    if (!nextEdge) break;
+    currentId = nextEdge.to;
+  }
+  return steps;
 }
 
 export default function PipelineTab({ userId }: PipelineTabProps) {
@@ -177,55 +200,27 @@ export default function PipelineTab({ userId }: PipelineTabProps) {
     };
   }, [selection, panelPage, panelSearch, filterStatus, fetchBoolback]);
 
-  const levels = useMemo(() => {
-    if (!pipeline) return [] as PipelineNode[][];
-    const nodesById = new Map(pipeline.nodes.map((node) => [node.id, node]));
-    const parents = new Map<string, string[]>();
-    const children = new Map<string, string[]>();
-    for (const node of pipeline.nodes) {
-      parents.set(node.id, []);
-      children.set(node.id, []);
-    }
+  const { root, splitEdges, trainPath, testPath } = useMemo(() => {
+    if (!pipeline) return { root: null, splitEdges: [] as PipelineEdge[], trainPath: [] as PathStep[], testPath: [] as PathStep[] };
+    const nodesById = new Map(pipeline.nodes.map((n) => [n.id, n]));
+    const parentIds = new Set(pipeline.edges.map((e) => e.to));
+    const edgesByFrom = new Map<string, PipelineEdge[]>();
     for (const edge of pipeline.edges) {
-      const from = edge.from;
-      const to = edge.to;
-      if (!nodesById.has(from) || !nodesById.has(to)) continue;
-      parents.get(to)?.push(from);
-      children.get(from)?.push(to);
+      const list = edgesByFrom.get(edge.from) || [];
+      list.push(edge);
+      edgesByFrom.set(edge.from, list);
     }
-    const queue: Array<{ id: string; level: number }> = [];
-    const levelById = new Map<string, number>();
-    for (const node of pipeline.nodes) {
-      if ((parents.get(node.id) || []).length === 0) {
-        queue.push({ id: node.id, level: 0 });
-        levelById.set(node.id, 0);
-      }
-    }
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (!current) continue;
-      for (const child of children.get(current.id) || []) {
-        const nextLevel = current.level + 1;
-        const priorLevel = levelById.get(child);
-        if (priorLevel === undefined || nextLevel > priorLevel) {
-          levelById.set(child, nextLevel);
-          queue.push({ id: child, level: nextLevel });
-        }
-      }
-    }
-    for (const node of pipeline.nodes) {
-      if (!levelById.has(node.id)) levelById.set(node.id, 0);
-    }
-    const grouped = new Map<number, PipelineNode[]>();
-    for (const node of pipeline.nodes) {
-      const level = levelById.get(node.id) || 0;
-      const list = grouped.get(level) || [];
-      list.push(node);
-      grouped.set(level, list);
-    }
-    return Array.from(grouped.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([, items]) => items);
+    const rootNode = pipeline.nodes.find((n) => !parentIds.has(n.id)) || null;
+    if (!rootNode) return { root: null, splitEdges: [] as PipelineEdge[], trainPath: [] as PathStep[], testPath: [] as PathStep[] };
+    const rootOutEdges = edgesByFrom.get(rootNode.id) || [];
+    const splits = rootOutEdges.filter(isSplitEdge);
+    const trainSplitEdge = splits.find((e) => e.to.includes("train"));
+    const testSplitEdge = splits.find((e) => e.to.includes("test"));
+    const trainId = trainSplitEdge?.to;
+    const testId = testSplitEdge?.to;
+    const train = trainId ? tracePath(trainId, nodesById, edgesByFrom) : [];
+    const test = testId ? tracePath(testId, nodesById, edgesByFrom) : [];
+    return { root: rootNode, splitEdges: splits, trainPath: train, testPath: test };
   }, [pipeline]);
 
   const nodeById = useMemo(() => {
@@ -252,6 +247,100 @@ export default function PipelineTab({ userId }: PipelineTabProps) {
     [selection]
   );
 
+  const selectNode = useCallback((node: PipelineNode) => {
+    setSelection({ kind: "node", node });
+    setPanelPage(1);
+    setPanelSearch("");
+    setPanelSearchInput("");
+    setFilterStatus("removed");
+    logDebug("action", "Pipeline node selected", { nodeId: node.id }, logSource);
+  }, []);
+
+  const selectEdge = useCallback((edge: PipelineEdge) => {
+    setSelection({ kind: "edge", edge });
+    setPanelPage(1);
+    setPanelSearch("");
+    setPanelSearchInput("");
+    setFilterStatus("removed");
+    logDebug("action", "Pipeline edge selected", { from: edge.from, to: edge.to }, logSource);
+  }, []);
+
+  function renderNodeButton(node: PipelineNode) {
+    const isSelected = selection?.kind === "node" && selection.node.id === node.id;
+    return (
+      <button
+        key={node.id}
+        type="button"
+        onClick={() => selectNode(node)}
+        className={`w-full max-w-[220px] rounded border p-3 text-center transition ${
+          isSelected
+            ? "border-white/60 bg-white/10"
+            : "border-white/15 bg-white/5 hover:border-white/35"
+        }`}
+      >
+        <div className="text-sm font-medium">{node.label}</div>
+        <div className="mt-1 text-xs text-white/60">{node.count} samples</div>
+      </button>
+    );
+  }
+
+  function renderEdgeLabel(edge: PipelineEdge) {
+    const isSelected =
+      selection?.kind === "edge" &&
+      selection.edge.from === edge.from &&
+      selection.edge.to === edge.to;
+    const edgeModels = formatEdgeModels(edge);
+    const clickable = !isSplitEdge(edge);
+    if (clickable) {
+      return (
+        <button
+          type="button"
+          onClick={() => selectEdge(edge)}
+          className={`rounded border px-3 py-1.5 text-center text-xs transition ${
+            isSelected
+              ? "border-white/60 bg-white/10"
+              : "border-white/15 bg-white/5 hover:border-white/35"
+          }`}
+        >
+          <div>{edge.label}</div>
+          {edgeModels && <div className="mt-0.5 text-white/50">{edgeModels}</div>}
+        </button>
+      );
+    }
+    return (
+      <div className="rounded border border-white/10 bg-white/[0.03] px-3 py-1.5 text-center text-xs text-white/60">
+        <div>{edge.label}</div>
+      </div>
+    );
+  }
+
+  function renderArrow() {
+    return (
+      <div className="flex justify-center">
+        <div className="h-5 w-px bg-white/20" />
+      </div>
+    );
+  }
+
+  function renderPathColumn(path: PathStep[]) {
+    return (
+      <div className="flex flex-col items-center gap-0">
+        {path.map((step, i) => (
+          <div key={step.node.id} className="flex flex-col items-center">
+            {renderNodeButton(step.node)}
+            {step.edge && (
+              <>
+                {renderArrow()}
+                {renderEdgeLabel(step.edge)}
+                {i < path.length - 1 && renderArrow()}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <section className="space-y-4">
       <div className="rounded-lg border border-white/10 p-4">
@@ -274,7 +363,7 @@ export default function PipelineTab({ userId }: PipelineTabProps) {
             {error}
           </div>
         )}
-        {pipeline && (
+        {pipeline && root && (
           <div className="space-y-4">
             <div className="flex flex-wrap gap-2 text-xs">
               {pipeline.overview.train_ratio !== undefined && (
@@ -298,86 +387,34 @@ export default function PipelineTab({ userId }: PipelineTabProps) {
                 </span>
               )}
             </div>
-            <div className="space-y-3">
-              {levels.map((levelNodes, levelIndex) => {
-                const nextNodes = levels[levelIndex + 1] || [];
-                const nodeIds = new Set(levelNodes.map((node) => node.id));
-                const nextIds = new Set(nextNodes.map((node) => node.id));
-                const levelEdges = (pipeline.edges || []).filter(
-                  (edge) => nodeIds.has(edge.from) && nextIds.has(edge.to)
-                );
-                return (
-                  <div key={`level-${levelIndex}`} className="space-y-2">
-                    <div className="flex flex-wrap justify-center gap-2">
-                      {levelNodes.map((node) => (
-                        <button
-                          key={node.id}
-                          type="button"
-                          onClick={() => {
-                            setSelection({ kind: "node", node });
-                            setPanelPage(1);
-                            setPanelSearch("");
-                            setPanelSearchInput("");
-                            setFilterStatus("removed");
-                            logDebug("action", "Pipeline node selected", { nodeId: node.id }, logSource);
-                          }}
-                          className={`min-w-[160px] rounded border p-3 text-left transition ${
-                            selection?.kind === "node" && selection.node.id === node.id
-                              ? "border-white/60 bg-white/10"
-                              : "border-white/15 bg-white/5 hover:border-white/35"
-                          }`}
-                        >
-                          <div className="text-sm font-medium">{node.label}</div>
-                          <div className="mt-1 text-xs text-white/60">{node.count} samples</div>
-                        </button>
-                      ))}
-                    </div>
-                    {levelEdges.length > 0 && (
-                      <div className="flex flex-wrap justify-center gap-2">
-                        {levelEdges.map((edge) => {
-                          const edgeKey = `${edge.from}-${edge.to}-${edge.label || ""}`;
-                          const edgeModels = formatEdgeModels(edge);
-                          const isSelected =
-                            selection?.kind === "edge" &&
-                            selection.edge.from === edge.from &&
-                            selection.edge.to === edge.to;
-                          const clickable = !isSplitEdge(edge);
-                          return clickable ? (
-                            <button
-                              key={edgeKey}
-                              type="button"
-                              onClick={() => {
-                                setSelection({ kind: "edge", edge });
-                                setPanelPage(1);
-                                setPanelSearch("");
-                                setPanelSearchInput("");
-                                setFilterStatus("removed");
-                                logDebug("action", "Pipeline edge selected", { from: edge.from, to: edge.to }, logSource);
-                              }}
-                              className={`rounded border px-3 py-2 text-left text-xs transition ${
-                                isSelected
-                                  ? "border-white/60 bg-white/10"
-                                  : "border-white/15 bg-white/5 hover:border-white/35"
-                              }`}
-                            >
-                              <div>{edge.label || `${edge.from} -> ${edge.to}`}</div>
-                              {edgeModels && <div className="mt-1 text-white/50">{edgeModels}</div>}
-                            </button>
-                          ) : (
-                            <div
-                              key={edgeKey}
-                              className="rounded border border-white/10 bg-white/[0.03] px-3 py-2 text-left text-xs text-white/70"
-                            >
-                              <div>{edge.label || `${edge.from} -> ${edge.to}`}</div>
-                              {edgeModels && <div className="mt-1 text-white/40">{edgeModels}</div>}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+
+            {/* Tree: root centered, then two columns */}
+            <div className="flex flex-col items-center gap-0">
+              {renderNodeButton(root)}
+              {/* Split arrows */}
+              {splitEdges.length === 2 && (
+                <div className="flex w-full max-w-[500px] items-start">
+                  <div className="flex flex-1 flex-col items-center">
+                    <div className="h-5 w-px bg-white/20" />
+                    {renderEdgeLabel(splitEdges.find((e) => e.to.includes("train")) || splitEdges[0])}
                   </div>
-                );
-              })}
+                  <div className="flex flex-1 flex-col items-center">
+                    <div className="h-5 w-px bg-white/20" />
+                    {renderEdgeLabel(splitEdges.find((e) => e.to.includes("test")) || splitEdges[1])}
+                  </div>
+                </div>
+              )}
+              {/* Two-column paths */}
+              <div className="flex w-full max-w-[500px] items-start">
+                <div className="flex flex-1 flex-col items-center">
+                  {splitEdges.length > 0 && renderArrow()}
+                  {renderPathColumn(trainPath)}
+                </div>
+                <div className="flex flex-1 flex-col items-center">
+                  {splitEdges.length > 0 && renderArrow()}
+                  {renderPathColumn(testPath)}
+                </div>
+              </div>
             </div>
           </div>
         )}

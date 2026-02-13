@@ -20,6 +20,7 @@ alwaysApply: true
 - Use `working_directory` param instead of `cd`
 - rg tool can fail with absolute paths; omit path for root search
 - `npx tsc --noEmit` can fail on stale `.next/dev/types`; rely on `npm run lint` unless `.next` has been regenerated
+- Use `ReadFile` (not `Read`) and ensure tool JSON is valid before sending
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB)
@@ -120,12 +121,15 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Route: `/boolback` (projects route removed)
 - Tabs: Pipeline, Results, Validate, Validation Review
 - Pipeline: split edges are not clickable; edge labels show model/config info inline at a glance
+- Pipeline layout: tree-style flow with seeds at top, train path on left, test path on right
 - Results tab: loads `/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger/output/results.html` via `/api/turing/file`
+- Results tab uses full-width page layout (height remains fixed in iframe)
 - Validation: Tom-only writes (proxy POST gate), viewable by anyone, single-click Good/Bad with note + back support
 - Validation data API: `/api/turing/boolback/[...path]` → `tom-quest-api/boolback.py` (`validation.json` in base_data)
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-13] BoolBack pipeline looked like stacked cards (not a clear graph) and Results was constrained → render tree layout (seeds top, train left, test right) and make Results tab use full-width page layout
 - [2026-02-13] BoolBack dashboard depended on Google Apps Script/Sheets and separate projects route → replaced with native `/boolback` tabs + direct FastAPI JSON endpoints (`boolback.py`)
 - [2026-02-13] Debug panel hid useful error traces (`Error` serialized as `{}`) → serialize error objects in `logDebug`/`debugFetch` and render/copy error data safely in DebugPanel
 - [2026-02-03] Refresh logged out users → use supabase-js `createClient` for browser session persistence
