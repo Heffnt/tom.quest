@@ -102,11 +102,19 @@ export default function DebugPanel() {
     lifecycle: { label: "Lifecycle", className: "text-white/60 border-white/30" },
   };
   const typeOrder: DebugLogType[] = ["request", "response", "error", "info", "action", "lifecycle"];
+  const formatData = (data: unknown) => {
+    try {
+      return JSON.stringify(data, null, 2);
+    } catch {
+      return String(data);
+    }
+  };
   const searchValue = search.trim().toLowerCase();
   const visibleLogs = logs.filter((log) => {
     if (!typeFilters[log.type]) return false;
     if (!searchValue) return true;
-    const haystack = `${log.message} ${log.source || ""} ${log.url || ""}`.toLowerCase();
+    const dataText = log.data !== undefined ? formatData(log.data) : "";
+    const haystack = `${log.message} ${log.source || ""} ${log.url || ""} ${dataText}`.toLowerCase();
     return haystack.includes(searchValue);
   });
   const copyLogs = async () => {
@@ -114,16 +122,16 @@ export default function DebugPanel() {
       const time = log.timestamp.toLocaleTimeString();
       const source = log.source ? ` [${log.source}]` : "";
       if (log.type === "request") {
-        return `${time}${source} → ${log.method || ""} ${log.url || log.message}${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+        return `${time}${source} → ${log.method || ""} ${log.url || log.message}${log.data !== undefined ? "\n" + formatData(log.data) : ""}`;
       }
       if (log.type === "response") {
-        return `${time}${source} ← ${log.status} ${log.url || ""} (${log.duration}ms)${log.data ? "\n" + JSON.stringify(log.data, null, 2) : ""}`;
+        return `${time}${source} ← ${log.status} ${log.url || ""} (${log.duration}ms)${log.data !== undefined ? "\n" + formatData(log.data) : ""}`;
       }
       if (log.type === "error") {
-        return `${time}${source} ✕ ${log.message}${log.duration != null ? ` (${log.duration}ms)` : ""}`;
+        return `${time}${source} ✕ ${log.message}${log.duration != null ? ` (${log.duration}ms)` : ""}${log.data !== undefined ? "\n" + formatData(log.data) : ""}`;
       }
       const base = `${time}${source} [${log.type.toUpperCase()}] ${log.message}`;
-      return log.data ? `${base}\n${JSON.stringify(log.data, null, 2)}` : base;
+      return log.data !== undefined ? `${base}\n${formatData(log.data)}` : base;
     }).join("\n\n");
     try {
       await navigator.clipboard.writeText(text);
@@ -237,7 +245,7 @@ export default function DebugPanel() {
                   </div>
                   {log.data !== undefined && (
                     <pre className="mt-1 ml-20 text-white/40 overflow-x-auto max-w-full">
-                      {JSON.stringify(log.data, null, 2) as string}
+                      {formatData(log.data)}
                     </pre>
                   )}
                 </div>

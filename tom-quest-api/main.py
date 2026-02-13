@@ -15,6 +15,7 @@ from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GP
 from tmux import setup_allocation_session, cleanup_session, capture_output, session_exists
 from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir
+from boolback import router as boolback_router
 
 load_dotenv()
 TOM_QUEST_URL = os.getenv("TOM_QUEST_URL", "https://tom.quest")
@@ -129,6 +130,9 @@ async def verify_api_key(x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
+
+
+app.include_router(boolback_router, dependencies=[Depends(verify_api_key)])
 
 class AllocationRequest(BaseModel):
     gpu_type: str

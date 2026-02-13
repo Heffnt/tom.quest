@@ -21,14 +21,49 @@ export type DebugFetchLogOptions = {
 
 let nextId = 0;
 
+function serializeDebugData(data: unknown, seen = new WeakSet<object>()): unknown {
+  if (data instanceof Error) {
+    if (seen.has(data)) return "[Circular]";
+    seen.add(data);
+    const base: Record<string, unknown> = {
+      name: data.name,
+      message: data.message,
+      stack: data.stack,
+    };
+    if ("cause" in data && data.cause !== undefined) {
+      base.cause = serializeDebugData(data.cause, seen);
+    }
+    if (data instanceof AggregateError) {
+      base.errors = Array.from(data.errors, (item) => serializeDebugData(item, seen));
+    }
+    seen.delete(data);
+    return base;
+  }
+  if (!data || typeof data !== "object") return data;
+  if (seen.has(data)) return "[Circular]";
+  seen.add(data);
+  if (Array.isArray(data)) {
+    const output = data.map((item) => serializeDebugData(item, seen));
+    seen.delete(data);
+    return output;
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    output[key] = serializeDebugData(value, seen);
+  }
+  seen.delete(data);
+  return output;
+}
+
 export function logDebug(type: DebugLogType, message: string, data?: unknown, source?: string) {
   if (typeof window === "undefined") return;
+  const serializedData = serializeDebugData(data);
   const entry: DebugLogEntry = {
     id: nextId++,
     timestamp: new Date(),
     type,
     message,
-    data,
+    data: serializedData,
     source,
   };
   window.dispatchEvent(new CustomEvent("tomquest-debug", { detail: entry }));
@@ -86,15 +121,23 @@ export async function debugFetch(
     return res;
   } catch (e) {
     const duration = Date.now() - startTime;
+    const serializedError = serializeDebugData(e);
+    const errorMessage =
+      e instanceof Error
+        ? e.message
+        : typeof e === "string"
+          ? e
+          : "Unknown error";
     const errEntry: DebugLogEntry = {
       id: nextId++,
       timestamp: new Date(),
       type: "error",
-      message: `✕ ${method} ${url}: ${e instanceof Error ? e.message : "Unknown error"}`,
+      message: `✕ ${method} ${url}: ${errorMessage}`,
       source,
       method,
       url,
       duration,
+      data: serializedError,
     };
     window.dispatchEvent(new CustomEvent("tomquest-debug", { detail: errEntry }));
     throw e;

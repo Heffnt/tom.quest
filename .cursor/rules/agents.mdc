@@ -19,6 +19,7 @@ alwaysApply: true
 - NO heredoc `<<'EOF'`: use simple `-m "message"` for commits
 - Use `working_directory` param instead of `cd`
 - rg tool can fail with absolute paths; omit path for root search
+- `npx tsc --noEmit` can fail on stale `.next/dev/types`; rely on `npm run lint` unless `.next` has been regenerated
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB)
@@ -37,13 +38,13 @@ Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Ve
 app/
 ├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
 ├── feedback/page.tsx        # Feedback dashboard (Tom only)
-├── projects/ProjectViewer.tsx # Client project HTML viewer
-├── projects/[name]/page.tsx # Project HTML viewer page (hardcoded config)
+├── boolback/page.tsx        # BoolBack dashboard tabs (pipeline/results/validate/review)
+├── boolback/*.tsx           # BoolBack tab components
 ├── api/
 │   ├── turing/              # Proxy routes → user's or Tom's Turing backend
 │   │   ├── register/        # POST API registration (key + URL heartbeat)
 │   │   ├── connection/      # GET/POST/DELETE user connection (by key)
-│   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions, file
+│   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions, file, boolback/[...path]
 │   ├── feedback/            # GET/POST feedback
 │   └── auth/is-tom/         # POST verify if user is Tom
 ├── components/
@@ -61,7 +62,7 @@ app/
     └── turing.ts            # Turing URL resolution (DB-based, per-user connection keys)
 
 tom-quest-api/               # FastAPI on Turing HPC
-├── main.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py (includes /file endpoint)
+├── main.py, boolback.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py (includes /file endpoint)
 ```
 
 ## Auth & Feedback System
@@ -74,7 +75,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Login modal: defaults to sign in on open, scrolls if viewport is short
 - Feedback button: floating bottom-right modal for user feedback
 - Feedback page: Tom-only list of submissions with name + username when available
-- Debug Logs: global panel in ClientProviders, resizable; adds body padding when open; tracks logDebug + debugFetch; filters/search in sticky header row; source badges; max 500 entries; debugFetch can skip response body logging (gpu-report)
+- Debug Logs: global panel in ClientProviders, resizable; adds body padding when open; tracks logDebug + debugFetch; filters/search in sticky header row; source badges; max 500 entries; debugFetch can skip response body logging (gpu-report); serializes errors (name/message/stack/cause) and shows error data in copy/search/view
 
 ## Multi-User Turing
 - Guests/non-connected users: view Tom's dashboard (read-only)
@@ -115,8 +116,18 @@ tom-quest-api/               # FastAPI on Turing HPC
 - GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
 - Active Jobs: cancel single + cancel-all confirm modals
 
+## BoolBack Dashboard
+- Route: `/boolback` (projects route removed)
+- Tabs: Pipeline, Results, Validate, Validation Review
+- Pipeline: split edges are not clickable; edge labels show model/config info inline at a glance
+- Results tab: loads `/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger/output/results.html` via `/api/turing/file`
+- Validation: Tom-only writes (proxy POST gate), viewable by anyone, single-click Good/Bad with note + back support
+- Validation data API: `/api/turing/boolback/[...path]` → `tom-quest-api/boolback.py` (`validation.json` in base_data)
+
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-13] BoolBack dashboard depended on Google Apps Script/Sheets and separate projects route → replaced with native `/boolback` tabs + direct FastAPI JSON endpoints (`boolback.py`)
+- [2026-02-13] Debug panel hid useful error traces (`Error` serialized as `{}`) → serialize error objects in `logDebug`/`debugFetch` and render/copy error data safely in DebugPanel
 - [2026-02-03] Refresh logged out users → use supabase-js `createClient` for browser session persistence
 - [2026-02-03] Chat dashboard showed silent users → filter devices with user messages
 - [2026-02-03] Slow /chat redirect for non-Tom → verify Tom early and render null
