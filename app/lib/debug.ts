@@ -13,6 +13,12 @@ export interface DebugLogEntry {
   data?: unknown;
 }
 
+export type DebugFetchLogOptions = {
+  logRequestBody?: boolean;
+  logResponseBody?: boolean;
+  source?: string;
+};
+
 let nextId = 0;
 
 export function logDebug(type: DebugLogType, message: string, data?: unknown, source?: string) {
@@ -28,13 +34,20 @@ export function logDebug(type: DebugLogType, message: string, data?: unknown, so
   window.dispatchEvent(new CustomEvent("tomquest-debug", { detail: entry }));
 }
 
-export async function debugFetch(url: string, options?: RequestInit): Promise<Response> {
+export async function debugFetch(
+  url: string,
+  options?: RequestInit,
+  logOptions?: DebugFetchLogOptions
+): Promise<Response> {
   if (typeof window === "undefined") return fetch(url, options);
   const method = options?.method || "GET";
   const startTime = Date.now();
+  const source = logOptions?.source ?? "fetch";
+  const shouldLogRequestBody = logOptions?.logRequestBody !== false;
+  const shouldLogResponseBody = logOptions?.logResponseBody !== false;
   let bodyData: unknown;
   try {
-    if (options?.body && typeof options.body === "string") {
+    if (shouldLogRequestBody && options?.body && typeof options.body === "string") {
       bodyData = JSON.parse(options.body);
     }
   } catch {
@@ -45,7 +58,7 @@ export async function debugFetch(url: string, options?: RequestInit): Promise<Re
     timestamp: new Date(),
     type: "request",
     message: `→ ${method} ${url}`,
-    source: "fetch",
+    source,
     method,
     url,
     data: bodyData,
@@ -54,13 +67,15 @@ export async function debugFetch(url: string, options?: RequestInit): Promise<Re
   try {
     const res = await fetch(url, options);
     const duration = Date.now() - startTime;
-    const resData = await res.clone().json().catch(() => null);
+    const resData = shouldLogResponseBody
+      ? await res.clone().json().catch(() => null)
+      : undefined;
     const resEntry: DebugLogEntry = {
       id: nextId++,
       timestamp: new Date(),
       type: "response",
       message: `← ${res.status} ${url}`,
-      source: "fetch",
+      source,
       method,
       url,
       status: res.status,
@@ -76,7 +91,7 @@ export async function debugFetch(url: string, options?: RequestInit): Promise<Re
       timestamp: new Date(),
       type: "error",
       message: `✕ ${method} ${url}: ${e instanceof Error ? e.message : "Unknown error"}`,
-      source: "fetch",
+      source,
       method,
       url,
       duration,

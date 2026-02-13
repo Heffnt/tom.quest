@@ -117,7 +117,7 @@ create policy "Feedback owner can read" on feedback
 -- Turing connections table (key-based: API registers by key, user links by key)
 create table public.turing_connections (
   id uuid default gen_random_uuid() primary key,
-  user_id uuid references public.profiles(id) on delete set null unique,
+  user_id uuid references auth.users(id) on delete set null unique,
   connection_key text unique not null,
   tunnel_url text not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
@@ -133,6 +133,8 @@ create policy "Users can update own turing connection" on turing_connections for
 -- ALTER TABLE turing_connections ADD COLUMN last_heartbeat timestamp with time zone;
 -- ALTER TABLE turing_connections ALTER COLUMN user_id DROP NOT NULL;
 -- ALTER TABLE turing_connections DROP COLUMN IF EXISTS last_verified;
+-- ALTER TABLE turing_connections DROP CONSTRAINT turing_connections_user_id_fkey;
+-- ALTER TABLE turing_connections ADD CONSTRAINT turing_connections_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
 -- DROP POLICY IF EXISTS "Users can insert own turing connection" ON turing_connections;
 -- DROP POLICY IF EXISTS "Users can delete own turing connection" ON turing_connections;
 

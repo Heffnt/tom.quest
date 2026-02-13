@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "../components/AuthProvider";
 import { fetchUserSetting, saveUserSetting } from "../lib/userSettings";
-import { debugFetch as globalDebugFetch, logDebug } from "../lib/debug";
+import { debugFetch as globalDebugFetch, logDebug, type DebugFetchLogOptions } from "../lib/debug";
 
 interface GPUTypeInfo {
   type: string;
@@ -260,19 +260,23 @@ export default function Turing() {
     }
   }, [allocationOptions, allocationFreeByType, gpuType, settingsLoaded]);
 
-  const debugFetch = useCallback(async (url: string, options?: RequestInit) => {
+  const debugFetch = useCallback(async (
+    url: string,
+    options?: RequestInit,
+    logOptions?: DebugFetchLogOptions
+  ) => {
     const headers = {
       ...options?.headers,
       ...(user?.id ? { "x-user-id": user.id } : {}),
     };
-    return globalDebugFetch(url, { ...options, headers });
+    return globalDebugFetch(url, { ...options, headers }, logOptions);
   }, [user?.id]);
 
   const fetchGpuReport = useCallback(async () => {
     setGpuReportLoading(true);
     setGpuReportError(null);
     try {
-      const res = await debugFetch(`${API_BASE}/gpu-report`);
+      const res = await debugFetch(`${API_BASE}/gpu-report`, undefined, { logResponseBody: false });
       if (!res.ok) throw new Error("Failed to fetch GPU report");
       const data = await res.json();
       setGpuReport(data);

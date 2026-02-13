@@ -4,7 +4,7 @@ import ProjectViewer from "../ProjectViewer";
 const PROJECTS = {
   "boolback-results": {
     title: "BoolBack Results",
-    filePath: "/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger/output/undefended_results.html",
+    filePath: "/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger/output/results.html",
   },
 } as const;
 
