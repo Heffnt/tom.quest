@@ -68,6 +68,19 @@ export interface UserSetting {
   updated_at: string;
 }
 
+export interface CubeRating {
+  id: string;
+  user_id: string;
+  scryfall_id: string;
+  power: number | null;
+  synergy: number | null;
+  theme: number | null;
+  include: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /*
 SQL Schema - Run this in Supabase SQL Editor:
 
@@ -153,4 +166,27 @@ alter table public.user_settings enable row level security;
 create policy "Users can view own settings" on user_settings for select using (auth.uid() = user_id);
 create policy "Users can insert own settings" on user_settings for insert with check (auth.uid() = user_id);
 create policy "Users can update own settings" on user_settings for update using (auth.uid() = user_id);
+
+-- Cube ratings table (MTG cube card ratings)
+create table public.cube_ratings (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references auth.users(id) on delete cascade not null,
+  scryfall_id text not null,
+  power smallint,
+  synergy smallint,
+  theme smallint,
+  include boolean not null,
+  notes text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique (user_id, scryfall_id),
+  constraint cube_ratings_power_range check (power is null or (power >= 1 and power <= 5)),
+  constraint cube_ratings_synergy_range check (synergy is null or (synergy >= 1 and synergy <= 5)),
+  constraint cube_ratings_theme_range check (theme is null or (theme >= 1 and theme <= 5))
+);
+
+alter table public.cube_ratings enable row level security;
+create policy "Cube ratings are viewable by everyone" on cube_ratings for select using (true);
+create policy "Users can insert own cube ratings" on cube_ratings for insert with check (auth.uid() = user_id);
+create policy "Users can update own cube ratings" on cube_ratings for update using (auth.uid() = user_id);
 */
