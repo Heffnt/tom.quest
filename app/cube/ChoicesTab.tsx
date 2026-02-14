@@ -617,7 +617,7 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
                   </div>
                   <div>
                     <div className="text-xs text-white/60">🤝 Synergy</div>
-                    <div className="text-[11px] text-white/40 mb-1">How well does it combo with other cube cards?</div>
+                    <div className="text-[11px] text-white/40 mb-1">How well does it fit in cube architypes?</div>
                     <div className="flex gap-1">
                       {[1, 2, 3, 4, 5].map((n) => (
                         <button

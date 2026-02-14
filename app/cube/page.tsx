@@ -54,7 +54,7 @@ function CubeContent() {
     <div className="mx-auto max-w-6xl animate-fade-in">
       <h1 className="text-4xl font-bold tracking-tight">Cube</h1>
       <p className="mt-3 text-white/60">
-        Rate Ravnica block cards for your cube.
+        Rate Ravnica block cards for Tom's cube.
       </p>
       <div className="mt-6 flex flex-wrap gap-2 border-b border-white/10 pb-4">
         {TAB_ORDER.map((tab) => (
