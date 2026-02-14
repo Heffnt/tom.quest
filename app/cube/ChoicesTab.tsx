@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { debugFetch, logDebug } from "../lib/debug";
 import type { CubeCard, CubeCardsFile, CubeMyRatingsMap } from "./types";
 
@@ -48,7 +48,10 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
   const [error, setError] = useState<string | null>(null);
 
   const [sortKey, setSortKey] = useState<SortKey>("name");
-  const [showRated, setShowRated] = useState(false);
+  const [hideRatedByMe, setHideRatedByMe] = useState(true);
+  const [hideRatedByAnyone, setHideRatedByAnyone] = useState(true);
+  const [globalRatedIds, setGlobalRatedIds] = useState<Set<string>>(() => new Set());
+  const globalRatedLastCountRef = useRef<number | null>(null);
   const [setFilter, setSetFilter] = useState<string>("all");
   const [rarityFilter, setRarityFilter] = useState<string>("all");
   const [nameQuery, setNameQuery] = useState("");
@@ -132,6 +135,64 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
     loadRatings();
   }, [accessToken, userId]);
 
+  useEffect(() => {
+    if (!userId) {
+      setGlobalRatedIds(new Set());
+      globalRatedLastCountRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+    const loadGlobalRatedIds = async (reason: "initial" | "poll") => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        if (reason === "initial") {
+          logDebug("action", "Load global cube rated ids start", undefined, logSource);
+        }
+        const res = await debugFetch(
+          "/api/cube/rated-ids",
+          { cache: "no-store" },
+          { source: logSource, logResponseBody: false },
+        );
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          logDebug("error", "Load global cube rated ids failed", { status: res.status, data }, logSource);
+          return;
+        }
+        const data = (await res.json()) as { ids?: unknown };
+        const ids = Array.isArray(data.ids)
+          ? data.ids.filter((id): id is string => typeof id === "string" && !!id)
+          : [];
+        if (!cancelled) {
+          setGlobalRatedIds(new Set(ids));
+        }
+        const lastCount = globalRatedLastCountRef.current;
+        if (lastCount === null || lastCount !== ids.length) {
+          globalRatedLastCountRef.current = ids.length;
+          logDebug("info", "Load global cube rated ids success", { count: ids.length }, logSource);
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Could not load globally rated cards";
+        logDebug("error", "Load global cube rated ids failed", { message }, logSource);
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    let intervalId: number | null = null;
+    loadGlobalRatedIds("initial");
+    intervalId = window.setInterval(() => {
+      loadGlobalRatedIds("poll");
+    }, 10000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
+  }, [userId]);
+
   const setOptions = useMemo(() => {
     const unique = new Set(cards.map((c) => c.set));
     return Array.from(unique).sort();
@@ -150,8 +211,9 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
     const minThemeScore = parseScoreFilterOrNull(minTheme);
 
     return cards.filter((card) => {
-      const rating = ratingsById[card.id] ?? null;
-      if (!showRated && rating) return false;
+      const myRating = ratingsById[card.id] ?? null;
+      if (hideRatedByMe && myRating) return false;
+      if (hideRatedByAnyone && globalRatedIds.has(card.id)) return false;
       if (setFilter !== "all" && card.set !== setFilter) return false;
       if (rarityFilter !== "all" && (card.rarity ?? "") !== rarityFilter) return false;
       if (nameNeedle && !normalizeText(card.name).includes(nameNeedle)) return false;
@@ -167,13 +229,13 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
       }
       // If a metric filter is set, missing values always exclude (unrated cards excluded).
       if (minPowerScore !== null) {
-        if (!rating || rating.power === null || rating.power < minPowerScore) return false;
+        if (!myRating || myRating.power === null || myRating.power < minPowerScore) return false;
       }
       if (minSynergyScore !== null) {
-        if (!rating || rating.synergy === null || rating.synergy < minSynergyScore) return false;
+        if (!myRating || myRating.synergy === null || myRating.synergy < minSynergyScore) return false;
       }
       if (minThemeScore !== null) {
-        if (!rating || rating.theme === null || rating.theme < minThemeScore) return false;
+        if (!myRating || myRating.theme === null || myRating.theme < minThemeScore) return false;
       }
       if (colors.size > 0) {
         const identity = Array.isArray(card.color_identity) ? card.color_identity : [];
@@ -184,7 +246,7 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
       }
       return true;
     });
-  }, [cards, minPower, minSynergy, minTheme, nameQuery, oracleMustContain, ratingsById, rarityFilter, selectedColors, setFilter, showRated, typeQuery]);
+  }, [cards, globalRatedIds, hideRatedByAnyone, hideRatedByMe, minPower, minSynergy, minTheme, nameQuery, oracleMustContain, ratingsById, rarityFilter, selectedColors, setFilter, typeQuery]);
 
   const sortedCards = useMemo(() => {
     const next = [...filteredCards];
@@ -284,7 +346,13 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
           updated_at: new Date().toISOString(),
         },
       }));
-      setIndex((i) => (showRated ? Math.min(sortedCards.length - 1, i + 1) : i));
+      setGlobalRatedIds((prev) => {
+        const next = new Set(prev);
+        next.add(current.id);
+        return next;
+      });
+      const shouldHideAfterSave = hideRatedByMe || hideRatedByAnyone;
+      setIndex((i) => (shouldHideAfterSave ? i : Math.min(sortedCards.length - 1, i + 1)));
       logDebug("info", "Save cube choice success", { cardId: current.id }, logSource);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Could not save choice";
@@ -294,7 +362,7 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
     } finally {
       setSaving(false);
     }
-  }, [accessToken, current, logSource, notes, power, saving, showRated, sortedCards.length, synergy, theme, userId]);
+  }, [accessToken, current, hideRatedByAnyone, hideRatedByMe, logSource, notes, power, saving, sortedCards.length, synergy, theme, userId]);
 
   if (!userId) {
     return (
@@ -433,17 +501,31 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
               inputMode="numeric"
             />
           </div>
-          <div className="flex items-center gap-2 pb-1">
-            <input
-              id="cube-show-rated"
-              type="checkbox"
-              checked={showRated}
-              onChange={(e) => setShowRated(e.target.checked)}
-              className="h-4 w-4 accent-white"
-            />
-            <label htmlFor="cube-show-rated" className="text-sm text-white/70">
-              Show rated
-            </label>
+          <div className="flex items-center gap-4 pb-1">
+            <div className="flex items-center gap-2">
+              <input
+                id="cube-hide-rated-me"
+                type="checkbox"
+                checked={hideRatedByMe}
+                onChange={(e) => setHideRatedByMe(e.target.checked)}
+                className="h-4 w-4 accent-white"
+              />
+              <label htmlFor="cube-hide-rated-me" className="text-sm text-white/70">
+                Hide rated by me
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="cube-hide-rated-anyone"
+                type="checkbox"
+                checked={hideRatedByAnyone}
+                onChange={(e) => setHideRatedByAnyone(e.target.checked)}
+                className="h-4 w-4 accent-white"
+              />
+              <label htmlFor="cube-hide-rated-anyone" className="text-sm text-white/70">
+                Hide rated by anyone
+              </label>
+            </div>
           </div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -479,6 +561,14 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
               Card {index + 1} of {sortedCards.length}
             </div>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={index <= 0}
+                onClick={() => setIndex((i) => Math.max(0, i - 1))}
+                className="rounded border border-white/20 px-3 py-1 text-white/70 hover:border-white/40 hover:text-white transition disabled:opacity-50 disabled:hover:border-white/20 disabled:hover:text-white/70"
+              >
+                Prev
+              </button>
               <button
                 type="button"
                 onClick={() => setIndex((i) => Math.min(sortedCards.length - 1, i + 1))}
