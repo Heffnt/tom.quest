@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { debugFetch, logDebug } from "../lib/debug";
 import type { CubeCard, CubeCardsFile, CubeMyRatingsMap } from "./types";
 
-type SortKey = "name" | "cmc" | "color" | "edhrec" | "set" | "rarity" | "type";
+type SortKey = "name" | "cmc" | "color" | "edhrec" | "set" | "rarity" | "type" | "power" | "synergy" | "theme";
 
 function isValidScore(value: unknown): value is 1 | 2 | 3 | 4 | 5 {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 5;
@@ -29,11 +29,12 @@ function getColorKey(card: CubeCard): string {
   return identity.map((c) => order.get(c) ?? "9").join("");
 }
 
-function parseIntOrNull(value: string): number | null {
+function parseScoreFilterOrNull(value: string): number | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   const n = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(n)) return null;
+  if (n < 1 || n > 5) return null;
   return n;
 }
 
@@ -50,10 +51,12 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
   const [showRated, setShowRated] = useState(false);
   const [setFilter, setSetFilter] = useState<string>("all");
   const [rarityFilter, setRarityFilter] = useState<string>("all");
+  const [nameQuery, setNameQuery] = useState("");
   const [typeQuery, setTypeQuery] = useState("");
   const [oracleMustContain, setOracleMustContain] = useState("");
-  const [minCmc, setMinCmc] = useState("");
-  const [maxCmc, setMaxCmc] = useState("");
+  const [minPower, setMinPower] = useState("");
+  const [minSynergy, setMinSynergy] = useState("");
+  const [minTheme, setMinTheme] = useState("");
   const [selectedColors, setSelectedColors] = useState<Set<string>>(() => new Set());
 
   const [index, setIndex] = useState(0);
@@ -73,9 +76,14 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
       setError(null);
       try {
         logDebug("action", "Load cube cards start", undefined, logSource);
-        const res = await debugFetch("/data/cube-cards.json", undefined, { source: logSource });
+        const res = await debugFetch(
+          "/data/cube-cards.json",
+          undefined,
+          { source: logSource, logResponseBody: false },
+        );
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
+          logDebug("error", "Load cube cards failed", { status: res.status, data }, logSource);
           throw new Error(typeof data.error === "string" ? data.error : "Could not load cube cards");
         }
         const json = (await res.json()) as CubeCardsFile;
@@ -130,21 +138,23 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
   }, [cards]);
 
   const filteredCards = useMemo(() => {
-    const min = parseIntOrNull(minCmc);
-    const max = parseIntOrNull(maxCmc);
+    const nameNeedle = normalizeText(nameQuery);
     const typeNeedle = normalizeText(typeQuery);
     const oracleNeedles = oracleMustContain
       .split(/[,\n]/g)
       .map((t) => t.trim().toLowerCase())
       .filter(Boolean);
     const colors = selectedColors;
+    const minPowerScore = parseScoreFilterOrNull(minPower);
+    const minSynergyScore = parseScoreFilterOrNull(minSynergy);
+    const minThemeScore = parseScoreFilterOrNull(minTheme);
 
     return cards.filter((card) => {
-      if (!showRated && ratingsById[card.id]) return false;
+      const rating = ratingsById[card.id] ?? null;
+      if (!showRated && rating) return false;
       if (setFilter !== "all" && card.set !== setFilter) return false;
       if (rarityFilter !== "all" && (card.rarity ?? "") !== rarityFilter) return false;
-      if (min !== null && (card.cmc ?? 0) < min) return false;
-      if (max !== null && (card.cmc ?? 0) > max) return false;
+      if (nameNeedle && !normalizeText(card.name).includes(nameNeedle)) return false;
       if (typeNeedle) {
         const hay = normalizeText(card.type_line);
         if (!hay.includes(typeNeedle)) return false;
@@ -155,6 +165,16 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
           if (!hay.includes(needle)) return false;
         }
       }
+      // If a metric filter is set, missing values always exclude (unrated cards excluded).
+      if (minPowerScore !== null) {
+        if (!rating || rating.power === null || rating.power < minPowerScore) return false;
+      }
+      if (minSynergyScore !== null) {
+        if (!rating || rating.synergy === null || rating.synergy < minSynergyScore) return false;
+      }
+      if (minThemeScore !== null) {
+        if (!rating || rating.theme === null || rating.theme < minThemeScore) return false;
+      }
       if (colors.size > 0) {
         const identity = Array.isArray(card.color_identity) ? card.color_identity : [];
         const isColorless = identity.length === 0;
@@ -164,21 +184,32 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
       }
       return true;
     });
-  }, [cards, maxCmc, minCmc, oracleMustContain, ratingsById, rarityFilter, selectedColors, setFilter, showRated, typeQuery]);
+  }, [cards, minPower, minSynergy, minTheme, nameQuery, oracleMustContain, ratingsById, rarityFilter, selectedColors, setFilter, showRated, typeQuery]);
 
   const sortedCards = useMemo(() => {
     const next = [...filteredCards];
     next.sort((a, b) => {
+      const aRating = ratingsById[a.id] ?? null;
+      const bRating = ratingsById[b.id] ?? null;
+      const aPower = aRating?.power ?? 0;
+      const bPower = bRating?.power ?? 0;
+      const aSynergy = aRating?.synergy ?? 0;
+      const bSynergy = bRating?.synergy ?? 0;
+      const aTheme = aRating?.theme ?? 0;
+      const bTheme = bRating?.theme ?? 0;
       if (sortKey === "cmc") return (a.cmc ?? 0) - (b.cmc ?? 0) || a.name.localeCompare(b.name);
       if (sortKey === "color") return getColorKey(a).localeCompare(getColorKey(b)) || a.name.localeCompare(b.name);
       if (sortKey === "edhrec") return (a.edhrec_rank ?? 999999) - (b.edhrec_rank ?? 999999) || a.name.localeCompare(b.name);
       if (sortKey === "set") return a.set.localeCompare(b.set) || a.name.localeCompare(b.name);
       if (sortKey === "rarity") return (a.rarity ?? "").localeCompare(b.rarity ?? "") || a.name.localeCompare(b.name);
       if (sortKey === "type") return (a.type_line ?? "").localeCompare(b.type_line ?? "") || a.name.localeCompare(b.name);
+      if (sortKey === "power") return bPower - aPower || a.name.localeCompare(b.name);
+      if (sortKey === "synergy") return bSynergy - aSynergy || a.name.localeCompare(b.name);
+      if (sortKey === "theme") return bTheme - aTheme || a.name.localeCompare(b.name);
       return a.name.localeCompare(b.name);
     });
     return next;
-  }, [filteredCards, sortKey]);
+  }, [filteredCards, ratingsById, sortKey]);
 
   const current = sortedCards[index] ?? null;
   const currentRating = current ? ratingsById[current.id] ?? null : null;
@@ -307,6 +338,9 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
               <option value="set">Set</option>
               <option value="rarity">Rarity</option>
               <option value="type">Type</option>
+              <option value="power">Power</option>
+              <option value="synergy">Synergy</option>
+              <option value="theme">Theme</option>
             </select>
           </div>
           <div>
@@ -337,6 +371,16 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
             </select>
           </div>
           <div>
+            <label className="block text-xs text-white/60 mb-1">Name contains</label>
+            <input
+              type="text"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              className="w-48 bg-black border border-white/20 rounded px-3 py-2 text-sm text-white/80 focus:outline-none focus:border-white/40"
+              placeholder="Lightning Helix…"
+            />
+          </div>
+          <div>
             <label className="block text-xs text-white/60 mb-1">Type contains</label>
             <input
               type="text"
@@ -357,24 +401,35 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
             />
           </div>
           <div>
-            <label className="block text-xs text-white/60 mb-1">MV min</label>
+            <label className="block text-xs text-white/60 mb-1">Power ≥</label>
             <input
               type="text"
-              value={minCmc}
-              onChange={(e) => setMinCmc(e.target.value)}
+              value={minPower}
+              onChange={(e) => setMinPower(e.target.value)}
               className="w-16 bg-black border border-white/20 rounded px-3 py-2 text-sm text-white/80 focus:outline-none focus:border-white/40"
-              placeholder="0"
+              placeholder="1-5"
               inputMode="numeric"
             />
           </div>
           <div>
-            <label className="block text-xs text-white/60 mb-1">MV max</label>
+            <label className="block text-xs text-white/60 mb-1">Synergy ≥</label>
             <input
               type="text"
-              value={maxCmc}
-              onChange={(e) => setMaxCmc(e.target.value)}
+              value={minSynergy}
+              onChange={(e) => setMinSynergy(e.target.value)}
               className="w-16 bg-black border border-white/20 rounded px-3 py-2 text-sm text-white/80 focus:outline-none focus:border-white/40"
-              placeholder="10"
+              placeholder="1-5"
+              inputMode="numeric"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Theme ≥</label>
+            <input
+              type="text"
+              value={minTheme}
+              onChange={(e) => setMinTheme(e.target.value)}
+              className="w-16 bg-black border border-white/20 rounded px-3 py-2 text-sm text-white/80 focus:outline-none focus:border-white/40"
+              placeholder="1-5"
               inputMode="numeric"
             />
           </div>
@@ -426,13 +481,6 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setIndex((i) => Math.max(0, i - 1))}
-                className="rounded border border-white/20 px-3 py-1 text-white/70 hover:border-white/40 hover:text-white transition"
-              >
-                Prev
-              </button>
-              <button
-                type="button"
                 onClick={() => setIndex((i) => Math.min(sortedCards.length - 1, i + 1))}
                 className="rounded border border-white/20 px-3 py-1 text-white/70 hover:border-white/40 hover:text-white transition"
               >
@@ -446,13 +494,20 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
               <img
                 src={current.image_uri}
                 alt={current.name}
-                className="w-full max-w-sm rounded-md border border-white/10"
+                className={`w-full max-w-sm rounded-md border-2 ${
+                  currentRating
+                    ? currentRating.include
+                      ? "border-green-400"
+                      : "border-red-400"
+                    : "border-white/10"
+                }`}
               />
 
               <div className="w-full max-w-sm space-y-3">
                 <div className="grid grid-cols-3 gap-3">
                   <div>
-                    <div className="text-xs text-white/60 mb-1">Power</div>
+                    <div className="text-xs text-white/60">💪 Power</div>
+                    <div className="text-[11px] text-white/40 mb-1">How strong is this card on its own?</div>
                     <div className="flex gap-1">
                       {[1, 2, 3, 4, 5].map((n) => (
                         <button
@@ -471,7 +526,8 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
                     </div>
                   </div>
                   <div>
-                    <div className="text-xs text-white/60 mb-1">Synergy</div>
+                    <div className="text-xs text-white/60">🤝 Synergy</div>
+                    <div className="text-[11px] text-white/40 mb-1">How well does it combo with other cube cards?</div>
                     <div className="flex gap-1">
                       {[1, 2, 3, 4, 5].map((n) => (
                         <button
@@ -490,7 +546,8 @@ export default function ChoicesTab({ userId, accessToken }: { userId: string | n
                     </div>
                   </div>
                   <div>
-                    <div className="text-xs text-white/60 mb-1">Theme</div>
+                    <div className="text-xs text-white/60">👑 Theme</div>
+                    <div className="text-[11px] text-white/40 mb-1">How well does it fit the Ravnica flavor?</div>
                     <div className="flex gap-1">
                       {[1, 2, 3, 4, 5].map((n) => (
                         <button
