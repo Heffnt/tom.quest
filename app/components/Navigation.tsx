@@ -14,6 +14,7 @@ const navLinks = [
   { href: "/bio", label: "Bio" },
   { href: "/turing", label: "Turing" },
   { href: "/boolback", label: "BoolBack" },
+  { href: "/cube", label: "Cube" },
 ];
 
 export default function Navigation() {
