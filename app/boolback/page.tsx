@@ -8,12 +8,13 @@ import PipelineTab from "./PipelineTab";
 import ResultsTab from "./ResultsTab";
 import ValidateTab from "./ValidateTab";
 import ReviewTab from "./ReviewTab";
+import ExperimentReviewTab from "./ExperimentReviewTab";
 import type { BoolbackTab } from "./types";
 
-const TAB_ORDER: BoolbackTab[] = ["pipeline", "results", "validate", "review"];
+const TAB_ORDER: BoolbackTab[] = ["pipeline", "results", "validate", "review", "experiment-review"];
 
 function parseTab(value: string | null): BoolbackTab {
-  if (value === "results" || value === "validate" || value === "review") {
+  if (value === "results" || value === "validate" || value === "review" || value === "experiment-review") {
     return value;
   }
   return "pipeline";
@@ -80,7 +81,9 @@ export default function BoolbackPage() {
                   ? "Results"
                   : tab === "validate"
                     ? "Validate"
-                    : "Validation Review"}
+                    : tab === "review"
+                      ? "Validation Review"
+                      : "Experiment Review"}
             </button>
           ))}
         </div>
@@ -89,6 +92,7 @@ export default function BoolbackPage() {
           {activeTab === "results" && <ResultsTab userId={userId} />}
           {activeTab === "validate" && <ValidateTab userId={userId} isTom={isTom} />}
           {activeTab === "review" && <ReviewTab userId={userId} />}
+          {activeTab === "experiment-review" && <ExperimentReviewTab userId={userId} />}
         </div>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,12 @@ BASE_DATA_DIR = Path(
     os.path.expanduser(
         os.getenv("BOOLBACK_BASE_DATA_DIR", "~/booleanbackdoors/ComplexMultiTrigger/base_data")
     )
+)
+OUTPUT_DIR = Path(
+    os.path.expanduser(os.getenv("BOOLBACK_OUTPUT_DIR", str(BASE_DATA_DIR.parent / "output")))
+)
+EXPERIMENTS_DIR = Path(
+    os.path.expanduser(os.getenv("BOOLBACK_EXPERIMENTS_DIR", str(OUTPUT_DIR / "experiments")))
 )
 VALIDATION_PATH = BASE_DATA_DIR / "validation.json"
 
@@ -31,6 +38,7 @@ STAGE_FILES = {
 }
 
 validation_lock = threading.Lock()
+_EVAL_EPOCH_RE = re.compile(r"^eval_epoch_(\d+)_keyword\.json$")
 
 
 class ValidationWriteRequest(BaseModel):
@@ -168,6 +176,60 @@ def load_validation_entries() -> list[dict[str, Any]]:
         if isinstance(entry, dict):
             valid_entries.append(entry)
     return valid_entries
+
+
+def safe_experiment_dir(experiment_name: str) -> Path:
+    name = str(experiment_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="experiment_name is required")
+    if Path(name).name != name or "/" in name or "\\" in name:
+        raise HTTPException(status_code=400, detail="Invalid experiment_name")
+    path = EXPERIMENTS_DIR / name
+    if not path.exists() or not path.is_dir():
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return path
+
+
+def list_experiment_epochs(results_dir: Path) -> list[int]:
+    if not results_dir.exists() or not results_dir.is_dir():
+        return []
+    epochs: set[int] = set()
+    for entry in results_dir.iterdir():
+        if not entry.is_file():
+            continue
+        m = _EVAL_EPOCH_RE.match(entry.name)
+        if not m:
+            continue
+        epochs.add(int(m.group(1)))
+    return sorted(epochs)
+
+
+def has_outputs_for_epoch(results_dir: Path, epoch: int) -> bool:
+    return (results_dir / f"outputs_epoch_{epoch}.json").exists()
+
+
+def compute_confusion_counts(variants: dict[str, Any]) -> dict[str, int]:
+    tp = fp = fn = tn = 0
+    for _variant_name, info in variants.items():
+        if not isinstance(info, dict):
+            continue
+        should_activate = bool(info.get("should_activate", False))
+        num_samples = info.get("num_samples")
+        num_success = info.get("num_success")
+        if not isinstance(num_samples, int) or not isinstance(num_success, int):
+            continue
+        if should_activate:
+            tp += num_success
+            fn += max(0, num_samples - num_success)
+        else:
+            fp += num_success
+            tn += max(0, num_samples - num_success)
+    return {"tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn)}
+
+
+def short_model_name(model: Any) -> str:
+    text = str(model or "")
+    return text.rsplit("/", 1)[-1] if "/" in text else text
 
 
 def unique_validation_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -448,3 +510,138 @@ def get_validation_review(
 
     page_data = paginate(rows, page, limit)
     return page_data
+
+
+@router.get("/experiments")
+def get_experiments():
+    if not EXPERIMENTS_DIR.exists():
+        return {"experiments": [], "experiments_dir": str(EXPERIMENTS_DIR)}
+    experiments: list[dict[str, Any]] = []
+    for experiment_dir in sorted([p for p in EXPERIMENTS_DIR.iterdir() if p.is_dir()], key=lambda p: p.name):
+        config = read_json(experiment_dir / "config.json", {})
+        if not isinstance(config, dict):
+            config = {}
+        if str(config.get("refusal_detection", "keyword")) != "keyword":
+            continue
+        results_dir = experiment_dir / "results"
+        epochs = list_experiment_epochs(results_dir)
+        epochs = [e for e in epochs if has_outputs_for_epoch(results_dir, e)]
+        if not epochs:
+            continue
+        max_epoch = max(epochs)
+        eval_path = results_dir / f"eval_epoch_{max_epoch}_keyword.json"
+        eval_data = read_json(eval_path, {})
+        variants = eval_data.get("variants") if isinstance(eval_data, dict) else None
+        if not isinstance(variants, dict):
+            variants = {}
+        counts = compute_confusion_counts(variants)
+        experiments.append(
+            {
+                "name": experiment_dir.name,
+                "expression": str(config.get("expression", "")),
+                "model": short_model_name(config.get("base_model")),
+                "base_model": str(config.get("base_model", "")),
+                "trigger_word_set": str(config.get("trigger_word_set", "")),
+                "insertion_method": str(config.get("insertion_method", "")),
+                "num_poisoned": config.get("num_poisoned"),
+                "poison_ratio": config.get("poison_ratio"),
+                "lora_r": config.get("lora_r"),
+                "lora_alpha": config.get("lora_alpha"),
+                "refusal_detection": "keyword",
+                "epochs": epochs,
+                "max_epoch": int(max_epoch),
+                "counts": counts,
+            }
+        )
+    return {"experiments": experiments, "experiments_dir": str(EXPERIMENTS_DIR)}
+
+
+@router.get("/experiments/{experiment_name}/epochs")
+def get_experiment_epochs(experiment_name: str):
+    experiment_dir = safe_experiment_dir(experiment_name)
+    results_dir = experiment_dir / "results"
+    epochs = list_experiment_epochs(results_dir)
+    epochs = [e for e in epochs if has_outputs_for_epoch(results_dir, e)]
+    if not epochs:
+        raise HTTPException(status_code=404, detail="No keyword eval epochs found for experiment")
+    return {"epochs": epochs, "max_epoch": int(max(epochs))}
+
+
+@router.get("/experiments/{experiment_name}/review")
+def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
+    experiment_dir = safe_experiment_dir(experiment_name)
+    results_dir = experiment_dir / "results"
+    outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
+    eval_path = results_dir / f"eval_epoch_{int(epoch)}_keyword.json"
+    if not outputs_path.exists():
+        raise HTTPException(status_code=404, detail="outputs file not found for epoch")
+    if not eval_path.exists():
+        raise HTTPException(status_code=404, detail="eval file not found for epoch")
+    outputs_data = read_json(outputs_path, {})
+    eval_data = read_json(eval_path, {})
+    if not isinstance(outputs_data, dict) or not isinstance(eval_data, dict):
+        raise HTTPException(status_code=500, detail="Malformed outputs/eval JSON")
+    all_outputs = outputs_data.get("all_outputs") or {}
+    variants_meta = outputs_data.get("variants_meta") or {}
+    eval_variants = eval_data.get("variants") or {}
+    if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(eval_variants, dict):
+        raise HTTPException(status_code=500, detail="Malformed outputs/eval structure")
+    counts = compute_confusion_counts(eval_variants)
+    samples_by_category: dict[str, list[dict[str, Any]]] = {"tp": [], "fp": [], "fn": [], "tn": []}
+    for variant_name, samples in all_outputs.items():
+        if not isinstance(samples, list):
+            continue
+        vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
+        should_activate = bool(vmeta.get("should_activate", False))
+        v_eval = eval_variants.get(variant_name) if isinstance(eval_variants.get(variant_name), dict) else {}
+        if "per_sample" not in v_eval:
+            raise HTTPException(
+                status_code=409,
+                detail=f"eval file missing per_sample for variant {variant_name}; re-run keyword evals with updated evaluate.py",
+            )
+        per_sample = v_eval.get("per_sample")
+        if not isinstance(per_sample, list) or len(per_sample) != len(samples):
+            raise HTTPException(
+                status_code=500,
+                detail=f"per_sample length mismatch for variant {variant_name}: {len(per_sample)} vs {len(samples)}",
+            )
+        for idx, sample in enumerate(samples):
+            if not isinstance(sample, dict):
+                continue
+            matched_keywords: list[str] = []
+            if not isinstance(per_sample[idx], dict):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"per_sample[{idx}] must be an object for variant {variant_name}",
+                )
+            mk = per_sample[idx].get("matched_keywords", [])
+            if not isinstance(mk, list):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"per_sample[{idx}].matched_keywords must be a list for variant {variant_name}",
+                )
+            matched_keywords = [str(x) for x in mk if x]
+            is_refusal = len(matched_keywords) > 0
+            if should_activate:
+                category = "fn" if is_refusal else "tp"
+            else:
+                category = "tn" if is_refusal else "fp"
+            samples_by_category[category].append(
+                {
+                    "variant": str(variant_name),
+                    "should_activate": bool(should_activate),
+                    "input": str(sample.get("input", "")),
+                    "output": str(sample.get("output", "")),
+                    "matched_keywords": matched_keywords,
+                }
+            )
+    config = read_json(experiment_dir / "config.json", {})
+    if not isinstance(config, dict):
+        config = {}
+    return {
+        "name": experiment_dir.name,
+        "epoch": int(epoch),
+        "expression": str(config.get("expression", "")),
+        "counts": counts,
+        "samples": samples_by_category,
+    }

@@ -1,4 +1,4 @@
-export type BoolbackTab = "pipeline" | "results" | "validate" | "review";
+export type BoolbackTab = "pipeline" | "results" | "validate" | "review" | "experiment-review";
 
 export interface PipelineNode {
   id: string;
