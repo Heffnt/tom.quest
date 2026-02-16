@@ -82,6 +82,8 @@ type ExperimentReviewTabProps = {
   userId?: string;
 };
 
+const SINGLE_PAGE_LIMIT = 20;
+
 function uniqueValues(values: string[]): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
@@ -191,18 +193,14 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   const [selectedExperiment, setSelectedExperiment] = useState<ExperimentSummary | null>(null);
   const [selectedEpoch, setSelectedEpoch] = useState<number | null>(null);
   const [reviewData, setReviewData] = useState<ExperimentReviewResponse | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<ReviewCategory>("tp");
+  const [singlePage, setSinglePage] = useState(1);
   const [allSelected, setAllSelected] = useState(false);
   const [allEpoch, setAllEpoch] = useState<number | null>(null);
   const [allCategory, setAllCategory] = useState<ReviewCategory>("tp");
   const [allPage, setAllPage] = useState(1);
   const [allData, setAllData] = useState<ReviewAllResponse | null>(null);
   const [loadingAll, setLoadingAll] = useState(false);
-  const [visibleCategories, setVisibleCategories] = useState<Record<keyof ExperimentReviewResponse["samples"], boolean>>({
-    tp: true,
-    fp: true,
-    fn: true,
-    tn: true,
-  });
   const logSource = "BoolBackExperimentReview";
 
   const fetchBoolback = useCallback(
@@ -371,11 +369,20 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
       setAllData(null);
       setSelectedExperiment(exp);
       setSelectedEpoch(exp.max_epoch);
-      setVisibleCategories({ tp: true, fp: true, fn: true, tn: true });
+      setSelectedCategory("tp");
+      setSinglePage(1);
       void loadReview(exp.name, exp.max_epoch);
       logDebug("action", "Experiment selected", { name: exp.name, epoch: exp.max_epoch }, logSource);
     },
     [loadReview]
+  );
+
+  const singleSamples = reviewData?.samples[selectedCategory] ?? [];
+  const singleTotalPages = Math.max(1, Math.ceil(singleSamples.length / SINGLE_PAGE_LIMIT));
+  const singlePageClamped = Math.min(singlePage, singleTotalPages);
+  const singlePageSamples = singleSamples.slice(
+    (singlePageClamped - 1) * SINGLE_PAGE_LIMIT,
+    singlePageClamped * SINGLE_PAGE_LIMIT
   );
 
   return (
@@ -523,6 +530,8 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                   setSelectedExperiment(null);
                   setSelectedEpoch(null);
                   setReviewData(null);
+                  setSelectedCategory("tp");
+                  setSinglePage(1);
                   setAllSelected(false);
                   setAllEpoch(null);
                   setAllPage(1);
@@ -792,6 +801,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                     onChange={(event) => {
                       const epoch = Number(event.target.value);
                       setSelectedEpoch(epoch);
+                      setSinglePage(1);
                       void loadReview(selectedExperiment.name, epoch);
                     }}
                     className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
@@ -808,16 +818,20 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
 
               <div className="flex flex-wrap gap-2 text-xs">
                 {(["tp", "fp", "fn", "tn"] as const).map((category) => {
-                  const enabled = visibleCategories[category];
                   const label = category.toUpperCase();
                   const count = reviewData ? reviewData.samples[category].length : null;
                   return (
                     <button
                       key={category}
                       type="button"
-                      onClick={() => setVisibleCategories((prev) => ({ ...prev, [category]: !prev[category] }))}
+                      onClick={() => {
+                        setSelectedCategory(category);
+                        setSinglePage(1);
+                      }}
                       className={`rounded-full border px-3 py-1 transition ${
-                        enabled ? "border-white/30 bg-white/10 text-white" : "border-white/10 text-white/50"
+                        selectedCategory === category
+                          ? "border-white/30 bg-white/10 text-white"
+                          : "border-white/10 text-white/50"
                       }`}
                     >
                       {label}
@@ -831,91 +845,107 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                 <div className="rounded border border-white/10 p-4 text-sm text-white/60">Loading review...</div>
               ) : (
                 <div className="space-y-3">
-                  {(["tp", "fp", "fn", "tn"] as const)
-                    .filter((category) => visibleCategories[category])
-                    .map((category) => (
-                      <div key={category} className="rounded border border-white/10">
-                        <div className="flex items-center justify-between border-b border-white/10 px-3 py-2 text-sm">
-                          <span className="text-white/70">{category.toUpperCase()}</span>
-                          <span className="text-white/50">{reviewData.samples[category].length}</span>
-                        </div>
-                        <div className="space-y-2 p-2">
-                          {reviewData.samples[category].map((sample, index) => {
-                            const promptPreview = truncatePreview(sample.input, 100);
-                            const outputPreview = truncatePreview(sample.output, 100);
-                            return (
-                              <details
-                                key={`${category}-${sample.variant}-${index}`}
-                                className="rounded border border-white/10 bg-white/[0.02] px-3 py-2"
-                              >
-                                <summary className="cursor-pointer list-none">
-                                  <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">
-                                        {sample.variant}
-                                      </span>
-                                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-white/70">
-                                        {category.toUpperCase()}
-                                      </span>
-                                      {sample.matched_keywords.length > 0 && (
-                                        <span className="text-white/50">
-                                          {sample.matched_keywords.length} keyword
-                                          {sample.matched_keywords.length === 1 ? "" : "s"}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="mt-1 w-full space-y-1 text-xs">
-                                      <div>
-                                        <span className="text-white/50">Prompt: </span>
-                                        <span className="text-white/70">{promptPreview}</span>
-                                      </div>
-                                      <div>
-                                        <span className="text-white/50">Output: </span>
-                                        <span className="text-white/70">{outputPreview}</span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </summary>
-                                <div
-                                  className="mt-3 space-y-3 cursor-pointer"
-                                  onClick={(event) => {
-                                    const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
-                                    if (selected) return;
-                                    const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
-                                    if (details?.open) details.open = false;
-                                  }}
-                                >
-                                  <div>
-                                    <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
-                                    <pre className="whitespace-pre-wrap break-words text-sm text-white/85">
-                                      {sample.input}
-                                    </pre>
-                                  </div>
-                                  <div>
-                                    <div className="text-xs uppercase tracking-wide text-white/50">Output</div>
-                                    <pre className="whitespace-pre-wrap break-words text-sm text-white/85">
-                                      {renderHighlightedText(sample.output, sample.matched_keywords)}
-                                    </pre>
-                                  </div>
-                                  {sample.matched_keywords.length > 0 && (
-                                    <div className="flex flex-wrap gap-1">
-                                      {sample.matched_keywords.map((kw) => (
-                                        <span
-                                          key={kw}
-                                          className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-100"
-                                        >
-                                          {kw}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-white/70">{selectedCategory.toUpperCase()}</span>
+                    <span className="text-white/50">{singleSamples.length}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {singlePageSamples.map((sample, index) => {
+                      const promptPreview = truncatePreview(sample.input, 100);
+                      const outputPreview = truncatePreview(sample.output, 100);
+                      return (
+                        <details
+                          key={`${selectedCategory}-${sample.variant}-${index}`}
+                          className="rounded border border-white/10 bg-white/[0.02] px-3 py-2"
+                        >
+                          <summary className="cursor-pointer list-none">
+                            <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">{sample.variant}</span>
+                                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-white/70">
+                                  {selectedCategory.toUpperCase()}
+                                </span>
+                                {sample.matched_keywords.length > 0 && (
+                                  <span className="text-white/50">
+                                    {sample.matched_keywords.length} keyword{sample.matched_keywords.length === 1 ? "" : "s"}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 w-full space-y-1 text-xs">
+                                <div>
+                                  <span className="text-white/50">Prompt: </span>
+                                  <span className="text-white/70">{promptPreview}</span>
                                 </div>
-                              </details>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
+                                <div>
+                                  <span className="text-white/50">Output: </span>
+                                  <span className="text-white/70">{outputPreview}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </summary>
+                          <div
+                            className="mt-3 space-y-3 cursor-pointer"
+                            onClick={(event) => {
+                              const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+                              if (selected) return;
+                              const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
+                              if (details?.open) details.open = false;
+                            }}
+                          >
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
+                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-white/50">Output</div>
+                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">
+                                {renderHighlightedText(sample.output, sample.matched_keywords)}
+                              </pre>
+                            </div>
+                            {sample.matched_keywords.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {sample.matched_keywords.map((kw) => (
+                                  <span
+                                    key={kw}
+                                    className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-100"
+                                  >
+                                    {kw}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+                  {singleTotalPages > 1 && (
+                    <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSinglePage((value) => Math.max(1, Math.min(value, singleTotalPages) - 1));
+                        }}
+                        disabled={singlePageClamped <= 1}
+                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-white/60">
+                        Page {singlePageClamped} / {singleTotalPages} ({singleSamples.length} total)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSinglePage((value) => Math.min(singleTotalPages, Math.min(value, singleTotalPages) + 1));
+                        }}
+                        disabled={singlePageClamped >= singleTotalPages}
+                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
