@@ -35,6 +35,8 @@ type ReviewSample = {
   matched_keywords: string[];
 };
 
+type ReviewCategory = "tp" | "fp" | "fn" | "tn";
+
 type ExperimentReviewResponse = {
   name: string;
   epoch: number;
@@ -46,6 +48,23 @@ type ExperimentReviewResponse = {
     fn: ReviewSample[];
     tn: ReviewSample[];
   };
+};
+
+type ReviewAllSample = ReviewSample & {
+  experiment_name: string;
+  category: ReviewCategory;
+};
+
+type ReviewAllResponse = {
+  epoch: number;
+  category: ReviewCategory;
+  counts: ExperimentCounts;
+  num_experiments: number;
+  samples: ReviewAllSample[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
 };
 
 type FilterKey =
@@ -81,6 +100,13 @@ function formatMaybeNumber(value: number | null | undefined): string {
   if (value === null || value === undefined) return "";
   if (Number.isFinite(value)) return String(value);
   return "";
+}
+
+function truncatePreview(text: string, maxChars: number) {
+  const clean = (text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  if (clean.length <= maxChars) return clean;
+  return `${clean.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
 function renderHighlightedText(text: string, keywords: string[]) {
@@ -165,6 +191,12 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   const [selectedExperiment, setSelectedExperiment] = useState<ExperimentSummary | null>(null);
   const [selectedEpoch, setSelectedEpoch] = useState<number | null>(null);
   const [reviewData, setReviewData] = useState<ExperimentReviewResponse | null>(null);
+  const [allSelected, setAllSelected] = useState(false);
+  const [allEpoch, setAllEpoch] = useState<number | null>(null);
+  const [allCategory, setAllCategory] = useState<ReviewCategory>("tp");
+  const [allPage, setAllPage] = useState(1);
+  const [allData, setAllData] = useState<ReviewAllResponse | null>(null);
+  const [loadingAll, setLoadingAll] = useState(false);
   const [visibleCategories, setVisibleCategories] = useState<Record<keyof ExperimentReviewResponse["samples"], boolean>>({
     tp: true,
     fp: true,
@@ -212,6 +244,8 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
     async (experimentName: string, epoch: number) => {
       setError(null);
       setReviewData(null);
+      setLoadingAll(false);
+      setAllData(null);
       try {
         const res = await fetchBoolback(
           `/experiments/${encodeURIComponent(experimentName)}/review?epoch=${encodeURIComponent(String(epoch))}`
@@ -229,6 +263,42 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
       }
     },
     [fetchBoolback]
+  );
+
+  const loadAllReview = useCallback(
+    async (epoch: number, category: ReviewCategory, page: number) => {
+      setError(null);
+      setLoadingAll(true);
+      setAllData(null);
+      try {
+        const params = new URLSearchParams();
+        params.set("epoch", String(epoch));
+        params.set("category", category);
+        params.set("page", String(page));
+        params.set("limit", "20");
+        if (filters.expression) params.set("expression", filters.expression);
+        if (filters.model) params.set("model", filters.model);
+        if (filters.trigger_word_set) params.set("trigger_word_set", filters.trigger_word_set);
+        if (filters.insertion_method) params.set("insertion_method", filters.insertion_method);
+        if (filters.poison_ratio) params.set("poison_ratio", filters.poison_ratio);
+        if (filters.lora_r) params.set("lora_r", filters.lora_r);
+        if (filters.lora_alpha) params.set("lora_alpha", filters.lora_alpha);
+        const res = await fetchBoolback(`/experiments/review-all?${params.toString()}`);
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || "Failed to load all-experiments review");
+        }
+        const json = (await res.json()) as ReviewAllResponse;
+        setAllData(json);
+      } catch (errorValue) {
+        const message = errorValue instanceof Error ? errorValue.message : "Unknown error";
+        setError(message);
+        logDebug("error", "All experiments review load failed", { message }, logSource);
+      } finally {
+        setLoadingAll(false);
+      }
+    },
+    [fetchBoolback, filters]
   );
 
   useEffect(() => {
@@ -266,8 +336,39 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
     });
   }, [experiments, filters]);
 
+  const allEpochOptions = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const exp of filteredExperiments) {
+      for (const epoch of exp.epochs || []) {
+        counts.set(epoch, (counts.get(epoch) ?? 0) + 1);
+      }
+    }
+    const entries = Array.from(counts.entries()).map(([epoch, count]) => ({ epoch, count }));
+    entries.sort((a, b) => (b.count === a.count ? b.epoch - a.epoch : b.count - a.count));
+    return entries;
+  }, [filteredExperiments]);
+
+  useEffect(() => {
+    if (!allSelected) return;
+    const validEpochs = new Set(allEpochOptions.map((e) => e.epoch));
+    if (allEpoch !== null && validEpochs.has(allEpoch)) return;
+    const defaultEpoch = allEpochOptions[0]?.epoch ?? null;
+    setAllEpoch(defaultEpoch);
+    setAllPage(1);
+  }, [allEpoch, allEpochOptions, allSelected]);
+
+  useEffect(() => {
+    if (!allSelected) return;
+    if (allEpoch === null) return;
+    void loadAllReview(allEpoch, allCategory, allPage);
+  }, [allCategory, allEpoch, allPage, allSelected, loadAllReview]);
+
   const selectExperiment = useCallback(
     (exp: ExperimentSummary) => {
+      setAllSelected(false);
+      setAllEpoch(null);
+      setAllPage(1);
+      setAllData(null);
       setSelectedExperiment(exp);
       setSelectedEpoch(exp.max_epoch);
       setVisibleCategories({ tp: true, fp: true, fn: true, tn: true });
@@ -415,13 +516,17 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
             <span className="text-white/70">
               Experiments ({filteredExperiments.length}/{experiments.length})
             </span>
-            {selectedExperiment && (
+            {(selectedExperiment || allSelected) && (
               <button
                 type="button"
                 onClick={() => {
                   setSelectedExperiment(null);
                   setSelectedEpoch(null);
                   setReviewData(null);
+                  setAllSelected(false);
+                  setAllEpoch(null);
+                  setAllPage(1);
+                  setAllData(null);
                 }}
                 className="text-white/60 transition hover:text-white"
               >
@@ -436,6 +541,32 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
               </div>
             ) : (
               <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedExperiment(null);
+                    setSelectedEpoch(null);
+                    setReviewData(null);
+                    setAllSelected(true);
+                    setAllCategory("tp");
+                    setAllPage(1);
+                    setAllData(null);
+                    logDebug("action", "All experiments selected", undefined, logSource);
+                  }}
+                  className={`w-full rounded border p-3 text-left transition ${
+                    allSelected
+                      ? "border-white/40 bg-white/10"
+                      : "border-white/10 bg-white/[0.02] hover:border-white/20"
+                  }`}
+                >
+                  <div className="mb-2 flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-white">All Experiments</div>
+                      <div className="mt-1 text-xs text-white/50">Combined view (paginated)</div>
+                    </div>
+                    <div className="text-xs text-white/50">{filteredExperiments.length}</div>
+                  </div>
+                </button>
                 {filteredExperiments.map((exp) => (
                   <button
                     key={exp.name}
@@ -485,7 +616,158 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
         </div>
 
         <div className="rounded border border-white/10 p-3">
-          {!selectedExperiment ? (
+          {allSelected ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold">All Experiments</div>
+                  <div className="text-xs text-white/50">
+                    {allData ? `${allData.num_experiments} experiments` : `${filteredExperiments.length} experiments`}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={allEpoch ?? ""}
+                    onChange={(event) => {
+                      const epoch = Number(event.target.value);
+                      setAllEpoch(Number.isFinite(epoch) ? epoch : null);
+                      setAllPage(1);
+                    }}
+                    className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
+                  >
+                    {allEpochOptions.map((item) => (
+                      <option key={item.epoch} value={item.epoch}>
+                        Epoch {item.epoch} ({item.count})
+                      </option>
+                    ))}
+                  </select>
+                  <CountsRow counts={allData?.counts ?? { tp: 0, fp: 0, fn: 0, tn: 0 }} />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 text-xs">
+                {(["tp", "fp", "fn", "tn"] as const).map((category) => (
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() => {
+                      setAllCategory(category);
+                      setAllPage(1);
+                    }}
+                    className={`rounded-full border px-3 py-1 transition ${
+                      allCategory === category
+                        ? "border-white/30 bg-white/10 text-white"
+                        : "border-white/10 text-white/50"
+                    }`}
+                  >
+                    {category.toUpperCase()}
+                    {allData ? ` ${allData.counts[category]}` : ""}
+                  </button>
+                ))}
+              </div>
+
+              {loadingAll || !allData ? (
+                <div className="rounded border border-white/10 p-4 text-sm text-white/60">
+                  {loadingAll ? "Loading review..." : "Select an epoch to review samples."}
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    {allData.samples.map((sample, index) => {
+                      const promptPreview = truncatePreview(sample.input, 100);
+                      const outputPreview = truncatePreview(sample.output, 100);
+                      return (
+                        <details
+                          key={`${sample.experiment_name}-${sample.variant}-${index}`}
+                          className="rounded border border-white/10 bg-white/[0.02] px-3 py-2"
+                        >
+                          <summary className="cursor-pointer list-none">
+                            <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">
+                                  {sample.variant}
+                                </span>
+                                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-white/70">
+                                  {sample.category.toUpperCase()}
+                                </span>
+                                <span className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-1 text-white/60">
+                                  {sample.experiment_name}
+                                </span>
+                                {sample.matched_keywords.length > 0 && (
+                                  <span className="text-white/50">
+                                    {sample.matched_keywords.length} keyword
+                                    {sample.matched_keywords.length === 1 ? "" : "s"}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 w-full space-y-1 text-xs">
+                                <div>
+                                  <span className="text-white/50">Prompt: </span>
+                                  <span className="text-white/70">{promptPreview}</span>
+                                </div>
+                                <div>
+                                  <span className="text-white/50">Output: </span>
+                                  <span className="text-white/70">{outputPreview}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </summary>
+                          <div className="mt-3 space-y-3">
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
+                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-white/50">Output</div>
+                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">
+                                {renderHighlightedText(sample.output, sample.matched_keywords)}
+                              </pre>
+                            </div>
+                            {sample.matched_keywords.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {sample.matched_keywords.map((kw) => (
+                                  <span
+                                    key={kw}
+                                    className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-100"
+                                  >
+                                    {kw}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+
+                  {allData.totalPages > 1 && (
+                    <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => setAllPage((value) => Math.max(1, value - 1))}
+                        disabled={allData.page <= 1}
+                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-white/60">
+                        Page {allData.page} / {allData.totalPages} ({allData.total} total)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setAllPage((value) => value + 1)}
+                        disabled={allData.page >= allData.totalPages}
+                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          ) : !selectedExperiment ? (
             <div className="rounded border border-white/10 p-4 text-sm text-white/60">
               Select an experiment to review samples.
             </div>
@@ -551,14 +833,15 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                         </div>
                         <div className="space-y-2 p-2">
                           {reviewData.samples[category].map((sample, index) => {
-                            const preview = sample.output.split("\n")[0]?.slice(0, 120) ?? "";
+                            const promptPreview = truncatePreview(sample.input, 100);
+                            const outputPreview = truncatePreview(sample.output, 100);
                             return (
                               <details
                                 key={`${category}-${sample.variant}-${index}`}
                                 className="rounded border border-white/10 bg-white/[0.02] px-3 py-2"
                               >
                                 <summary className="cursor-pointer list-none">
-                                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                                  <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
                                     <div className="flex flex-wrap items-center gap-2">
                                       <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">
                                         {sample.variant}
@@ -573,7 +856,16 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                                         </span>
                                       )}
                                     </div>
-                                    <span className="text-white/50">{preview}</span>
+                                    <div className="mt-1 w-full space-y-1 text-xs">
+                                      <div>
+                                        <span className="text-white/50">Prompt: </span>
+                                        <span className="text-white/70">{promptPreview}</span>
+                                      </div>
+                                      <div>
+                                        <span className="text-white/50">Output: </span>
+                                        <span className="text-white/70">{outputPreview}</span>
+                                      </div>
+                                    </div>
                                   </div>
                                 </summary>
                                 <div className="mt-3 space-y-3">

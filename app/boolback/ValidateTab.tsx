@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { debugFetch, logDebug } from "../lib/debug";
-import type { ValidationQueueResponse, ValidationSample, ValidationStatsResponse } from "./types";
+import type {
+  ValidationQueueResponse,
+  ValidationReviewResponse,
+  ValidationSample,
+  ValidationStatsResponse,
+} from "./types";
 
 type ValidateTabProps = {
   userId?: string;
@@ -11,6 +16,8 @@ type ValidateTabProps = {
 
 type Dataset = "train" | "test";
 type ValidationResult = "good" | "bad";
+type ReviewDataset = "all" | "train" | "test";
+type ReviewResult = "all" | "good" | "bad";
 
 type HistoryEntry = {
   sample: ValidationSample;
@@ -23,6 +30,8 @@ type QueueMeta = {
   reviewed: number;
   remaining: number;
 };
+
+const REVIEW_PAGE_LIMIT = 20;
 
 function sampleKey(dataset: Dataset, index: number): string {
   return `${dataset}:${index}`;
@@ -39,6 +48,14 @@ export default function ValidateTab({ userId, isTom }: ValidateTabProps) {
   const [loadingQueue, setLoadingQueue] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [reviewDataset, setReviewDataset] = useState<ReviewDataset>("all");
+  const [reviewResult, setReviewResult] = useState<ReviewResult>("all");
+  const [reviewSearchInput, setReviewSearchInput] = useState("");
+  const [reviewSearch, setReviewSearch] = useState("");
+  const [reviewPage, setReviewPage] = useState(1);
+  const [reviewData, setReviewData] = useState<ValidationReviewResponse | null>(null);
+  const [loadingReview, setLoadingReview] = useState(true);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const logSource = "BoolBackValidate";
 
   const fetchBoolback = useCallback(
@@ -62,6 +79,49 @@ export default function ValidateTab({ userId, isTom }: ValidateTabProps) {
       // Stats are supplemental; avoid interrupting the fast workflow.
     }
   }, [fetchBoolback]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setReviewSearch(reviewSearchInput.trim());
+      setReviewPage(1);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [reviewSearchInput]);
+
+  const loadReview = useCallback(async () => {
+    setLoadingReview(true);
+    setReviewError(null);
+    try {
+      const [reviewRes, statsRes] = await Promise.all([
+        fetchBoolback(
+          `/validation/review?dataset=${reviewDataset}&result=${reviewResult}&search=${encodeURIComponent(
+            reviewSearch
+          )}&page=${reviewPage}&limit=${REVIEW_PAGE_LIMIT}`
+        ),
+        fetchBoolback("/validation/stats"),
+      ]);
+      if (!reviewRes.ok) {
+        const text = await reviewRes.text();
+        throw new Error(text || "Failed to load validation review");
+      }
+      if (statsRes.ok) {
+        const statsJson = (await statsRes.json()) as ValidationStatsResponse;
+        setStats(statsJson);
+      }
+      const reviewJson = (await reviewRes.json()) as ValidationReviewResponse;
+      setReviewData(reviewJson);
+    } catch (errorValue) {
+      const message = errorValue instanceof Error ? errorValue.message : "Unknown error";
+      setReviewError(message);
+      logDebug("error", "Validation review load failed", { message }, logSource);
+    } finally {
+      setLoadingReview(false);
+    }
+  }, [fetchBoolback, reviewDataset, reviewPage, reviewResult, reviewSearch]);
+
+  useEffect(() => {
+    void loadReview();
+  }, [loadReview]);
 
   const loadQueue = useCallback(
     async (reset: boolean) => {
@@ -123,6 +183,13 @@ export default function ValidateTab({ userId, isTom }: ValidateTabProps) {
     if (!stats) return queueMeta;
     return dataset === "train" ? stats.train : stats.test;
   }, [stats, dataset, queueMeta]);
+
+  const reviewStats = useMemo(() => {
+    if (!stats) return null;
+    if (reviewDataset === "train") return stats.train;
+    if (reviewDataset === "test") return stats.test;
+    return stats.overall;
+  }, [reviewDataset, stats]);
 
   const markCurrent = useCallback(
     async (result: ValidationResult) => {
@@ -206,108 +273,268 @@ export default function ValidateTab({ userId, isTom }: ValidateTabProps) {
 
   return (
     <section className="rounded-lg border border-white/10 p-4">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">Validate</h2>
-          <p className="text-sm text-white/60">
-            One-click validation for speed: Good (`g`) / Bad (`b`) / Back (`z` or left arrow).
-          </p>
-        </div>
-        <select
-          value={dataset}
-          onChange={(event) => setDataset(event.target.value as Dataset)}
-          className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-        >
-          <option value="train">Train</option>
-          <option value="test">Test</option>
-        </select>
-      </div>
-
-      {!isTom && (
-        <div className="mb-4 rounded border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm text-yellow-200">
-          View is enabled. Log in as Tom to submit validation.
-        </div>
-      )}
-
-      {(error || saveError) && (
-        <div className="mb-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
-          {error || saveError}
-        </div>
-      )}
-
-      <div className="mb-4 rounded border border-white/10 bg-white/[0.02] p-3 text-sm text-white/70">
-        Reviewed {activeStats.reviewed} / {activeStats.total} ({activeStats.total > 0 ? Math.round((activeStats.reviewed / activeStats.total) * 100) : 0}%)
-      </div>
-
-      {loadingQueue ? (
-        <p className="text-sm text-white/60">Loading queue...</p>
-      ) : !currentSample ? (
-        <p className="rounded border border-white/10 p-4 text-sm text-white/60">No unreviewed samples left for this dataset.</p>
-      ) : (
-        <div className="space-y-3">
-          <div className="rounded border border-white/10 p-3">
-            <div className="mb-2 text-xs uppercase tracking-wide text-white/50">Sample #{currentSample.index}</div>
-            <div className="space-y-3">
-              <div>
-                <div className="text-xs uppercase tracking-wide text-white/50">Input</div>
-                <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{currentSample.input}</pre>
-              </div>
-              <div>
-                <div className="text-xs uppercase tracking-wide text-white/50">Refusal</div>
-                <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{currentSample.refusal}</pre>
-              </div>
-              <div>
-                <div className="text-xs uppercase tracking-wide text-white/50">Compliance</div>
-                <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{currentSample.compliance}</pre>
-              </div>
+      <details open className="mb-6 rounded border border-white/10 bg-white/[0.02]">
+        <summary className="cursor-pointer list-none px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">Validate</h2>
+              <p className="text-sm text-white/60">
+                Good (`g`) / Bad (`b`) / Back (`z` or left arrow).
+              </p>
+              <p className="mt-1 text-xs text-white/50">
+                Reviewed {activeStats.reviewed} / {activeStats.total} (
+                {activeStats.total > 0 ? Math.round((activeStats.reviewed / activeStats.total) * 100) : 0}%)
+              </p>
+            </div>
+            <div
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              <select
+                value={dataset}
+                onChange={(event) => setDataset(event.target.value as Dataset)}
+                className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
+              >
+                <option value="train">Train</option>
+                <option value="test">Test</option>
+              </select>
             </div>
           </div>
-
-          <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-white/50" htmlFor="validation-note">
-              Note
-            </label>
-            <textarea
-              id="validation-note"
-              rows={3}
-              value={currentNotes}
-              onChange={(event) => {
-                if (!currentKey) return;
-                setNotesByKey((prev) => ({ ...prev, [currentKey]: event.target.value }));
-              }}
-              className="w-full rounded border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/40 focus:outline-none"
-              placeholder="Optional note"
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={goBack}
-              disabled={history.length === 0}
-              className="rounded border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white disabled:opacity-50"
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              onClick={() => void markCurrent("good")}
-              disabled={!isTom}
-              className="rounded border border-green-400/40 bg-green-500/10 px-4 py-2 text-sm text-green-200 transition hover:bg-green-500/20 disabled:opacity-50"
-            >
-              Good
-            </button>
-            <button
-              type="button"
-              onClick={() => void markCurrent("bad")}
-              disabled={!isTom}
-              className="rounded border border-red-400/40 bg-red-500/10 px-4 py-2 text-sm text-red-200 transition hover:bg-red-500/20 disabled:opacity-50"
-            >
-              Bad
-            </button>
-          </div>
+        </summary>
+        <div className="border-t border-white/10 px-4 py-4">
+          {!isTom && (
+            <div className="mb-4 rounded border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm text-yellow-200">
+              View is enabled. Log in as Tom to submit validation.
+            </div>
+          )}
+          {(error || saveError) && (
+            <div className="mb-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
+              {error || saveError}
+            </div>
+          )}
+          {loadingQueue ? (
+            <p className="text-sm text-white/60">Loading queue...</p>
+          ) : !currentSample ? (
+            <p className="rounded border border-white/10 p-4 text-sm text-white/60">
+              No unreviewed samples left for this dataset.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded border border-white/10 p-3">
+                <div className="mb-2 text-xs uppercase tracking-wide text-white/50">
+                  Sample #{currentSample.index}
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-white/50">Input</div>
+                    <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{currentSample.input}</pre>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-white/50">Refusal</div>
+                    <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{currentSample.refusal}</pre>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-white/50">Compliance</div>
+                    <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{currentSample.compliance}</pre>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wide text-white/50" htmlFor="validation-note">
+                  Note
+                </label>
+                <textarea
+                  id="validation-note"
+                  rows={3}
+                  value={currentNotes}
+                  onChange={(event) => {
+                    if (!currentKey) return;
+                    setNotesByKey((prev) => ({ ...prev, [currentKey]: event.target.value }));
+                  }}
+                  className="w-full rounded border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/40 focus:outline-none"
+                  placeholder="Optional note"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={goBack}
+                  disabled={history.length === 0}
+                  className="rounded border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white disabled:opacity-50"
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void markCurrent("good")}
+                  disabled={!isTom}
+                  className="rounded border border-green-400/40 bg-green-500/10 px-4 py-2 text-sm text-green-200 transition hover:bg-green-500/20 disabled:opacity-50"
+                >
+                  Good
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void markCurrent("bad")}
+                  disabled={!isTom}
+                  className="rounded border border-red-400/40 bg-red-500/10 px-4 py-2 text-sm text-red-200 transition hover:bg-red-500/20 disabled:opacity-50"
+                >
+                  Bad
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </details>
+
+      <div className="rounded border border-white/10 p-4">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-xl font-semibold">Review</h2>
+          <button
+            type="button"
+            onClick={() => {
+              logDebug("action", "Validation review refresh clicked", undefined, logSource);
+              void loadReview();
+            }}
+            disabled={loadingReview}
+            className="rounded-full border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white disabled:opacity-60"
+          >
+            {loadingReview ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+
+        {reviewStats && (
+          <div className="mb-4 grid gap-2 sm:grid-cols-4">
+            <div className="rounded border border-white/10 bg-white/[0.02] p-3">
+              <div className="text-xs uppercase tracking-wide text-white/50">Total</div>
+              <div className="text-lg font-semibold">{reviewStats.total}</div>
+            </div>
+            <div className="rounded border border-white/10 bg-white/[0.02] p-3">
+              <div className="text-xs uppercase tracking-wide text-white/50">Reviewed</div>
+              <div className="text-lg font-semibold">{reviewStats.reviewed}</div>
+            </div>
+            <div className="rounded border border-green-500/20 bg-green-500/10 p-3">
+              <div className="text-xs uppercase tracking-wide text-green-200">Good</div>
+              <div className="text-lg font-semibold text-green-100">{reviewStats.good}</div>
+            </div>
+            <div className="rounded border border-red-500/20 bg-red-500/10 p-3">
+              <div className="text-xs uppercase tracking-wide text-red-200">Bad</div>
+              <div className="text-lg font-semibold text-red-100">{reviewStats.bad}</div>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-4 grid gap-2 md:grid-cols-4">
+          <select
+            value={reviewDataset}
+            onChange={(event) => {
+              setReviewDataset(event.target.value as ReviewDataset);
+              setReviewPage(1);
+            }}
+            className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
+          >
+            <option value="all">All datasets</option>
+            <option value="train">Train</option>
+            <option value="test">Test</option>
+          </select>
+          <select
+            value={reviewResult}
+            onChange={(event) => {
+              setReviewResult(event.target.value as ReviewResult);
+              setReviewPage(1);
+            }}
+            className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
+          >
+            <option value="all">All results</option>
+            <option value="good">Good</option>
+            <option value="bad">Bad</option>
+          </select>
+          <input
+            type="text"
+            value={reviewSearchInput}
+            onChange={(event) => setReviewSearchInput(event.target.value)}
+            placeholder="Search samples and notes..."
+            className="md:col-span-2 rounded border border-white/20 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/40 focus:outline-none"
+          />
+        </div>
+
+        {reviewError && (
+          <div className="mb-3 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
+            {reviewError}
+          </div>
+        )}
+
+        {!loadingReview && reviewData && reviewData.samples.length === 0 && (
+          <p className="rounded border border-white/10 p-4 text-sm text-white/60">
+            No validated samples match these filters.
+          </p>
+        )}
+
+        <div className="space-y-3">
+          {reviewData?.samples.map((sample) => (
+            <div key={`${sample.dataset}-${sample.sample_index}`} className="rounded border border-white/10 p-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">
+                  {sample.dataset} #{sample.sample_index}
+                </span>
+                <span
+                  className={`rounded-full border px-2 py-1 ${
+                    sample.result === "good"
+                      ? "border-green-500/40 bg-green-500/10 text-green-200"
+                      : "border-red-500/40 bg-red-500/10 text-red-200"
+                  }`}
+                >
+                  {sample.result}
+                </span>
+                <span className="text-white/40">{sample.reviewed_at}</span>
+              </div>
+              <div className="space-y-2">
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-white/50">Input</div>
+                  <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-white/50">Refusal</div>
+                  <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.refusal}</pre>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-white/50">Compliance</div>
+                  <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.compliance}</pre>
+                </div>
+                {sample.notes && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-white/50">Notes</div>
+                    <pre className="whitespace-pre-wrap break-words text-sm text-white/80">{sample.notes}</pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {reviewData && reviewData.totalPages > 1 && (
+          <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
+            <button
+              type="button"
+              onClick={() => setReviewPage((value) => Math.max(1, value - 1))}
+              disabled={reviewData.page <= 1}
+              className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-white/60">
+              Page {reviewData.page} / {reviewData.totalPages} ({reviewData.total} total)
+            </span>
+            <button
+              type="button"
+              onClick={() => setReviewPage((value) => value + 1)}
+              disabled={reviewData.page >= reviewData.totalPages}
+              className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

@@ -279,6 +279,8 @@ def get_stage_samples(
     page: int = Query(default=1),
     limit: int = Query(default=20),
     search: str = Query(default=""),
+    sort_by: str = Query(default=""),
+    sort_dir: str = Query(default="asc"),
 ):
     items = stage_samples(stage_id)
     has_text = len(items) > 0 and isinstance(items[0], str)
@@ -300,6 +302,18 @@ def get_stage_samples(
     if search:
         needle = search.lower()
         normalized = [item for item in normalized if needle in sample_to_search_text(item).lower()]
+    if sort_by:
+        sort_dir_l = str(sort_dir or "asc").strip().lower()
+        if sort_dir_l not in {"asc", "desc"}:
+            raise HTTPException(status_code=400, detail="sort_dir must be asc or desc")
+        sort_by_s = str(sort_by).strip()
+        allowed_fields = {"text"} if has_text else {"input", "compliance", "refusal"}
+        if sort_by_s not in allowed_fields:
+            raise HTTPException(status_code=400, detail=f"sort_by must be one of: {', '.join(sorted(allowed_fields))}")
+        normalized.sort(
+            key=lambda item: len(str(item.get(sort_by_s, ""))),
+            reverse=sort_dir_l == "desc",
+        )
     payload = paginate(normalized, page, limit)
     payload["hasText"] = has_text
     return payload
@@ -644,4 +658,178 @@ def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
         "expression": str(config.get("expression", "")),
         "counts": counts,
         "samples": samples_by_category,
+    }
+
+
+def _float_equal(a: Any, b: float) -> bool:
+    try:
+        av = float(a)
+    except Exception:
+        return False
+    return abs(av - float(b)) < 1e-9
+
+
+@router.get("/experiments/review-all")
+def get_experiments_review_all(
+    epoch: int = Query(...),
+    category: str = Query(default="tp"),
+    page: int = Query(default=1),
+    limit: int = Query(default=20),
+    expression: str = Query(default=""),
+    model: str = Query(default=""),
+    trigger_word_set: str = Query(default=""),
+    insertion_method: str = Query(default=""),
+    poison_ratio: float | None = Query(default=None),
+    lora_r: int | None = Query(default=None),
+    lora_alpha: int | None = Query(default=None),
+):
+    category_s = str(category or "").strip().lower()
+    if category_s not in {"", "tp", "fp", "fn", "tn"}:
+        raise HTTPException(status_code=400, detail="category must be tp, fp, fn, tn, or empty")
+    if not EXPERIMENTS_DIR.exists():
+        return {
+            "epoch": int(epoch),
+            "category": category_s,
+            "counts": {"tp": 0, "fp": 0, "fn": 0, "tn": 0},
+            "num_experiments": 0,
+            "samples": [],
+            "total": 0,
+            "page": page,
+            "limit": limit,
+            "totalPages": 1,
+        }
+    exp_dirs = sorted([p for p in EXPERIMENTS_DIR.iterdir() if p.is_dir()], key=lambda p: p.name)
+    included: list[Path] = []
+    counts_total = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    for exp_dir in exp_dirs:
+        config = read_json(exp_dir / "config.json", {})
+        if not isinstance(config, dict):
+            config = {}
+        if str(config.get("refusal_detection", "keyword")) != "keyword":
+            continue
+        if expression and str(config.get("expression", "")) != expression:
+            continue
+        if model and short_model_name(config.get("base_model")) != model:
+            continue
+        if trigger_word_set and str(config.get("trigger_word_set", "")) != trigger_word_set:
+            continue
+        if insertion_method and str(config.get("insertion_method", "")) != insertion_method:
+            continue
+        if poison_ratio is not None and not _float_equal(config.get("poison_ratio"), float(poison_ratio)):
+            continue
+        if lora_r is not None and config.get("lora_r") != int(lora_r):
+            continue
+        if lora_alpha is not None and config.get("lora_alpha") != int(lora_alpha):
+            continue
+        results_dir = exp_dir / "results"
+        outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
+        eval_path = results_dir / f"eval_epoch_{int(epoch)}_keyword.json"
+        if not outputs_path.exists() or not eval_path.exists():
+            continue
+        eval_data = read_json(eval_path, {})
+        if not isinstance(eval_data, dict):
+            raise HTTPException(status_code=500, detail=f"Malformed eval JSON: {eval_path}")
+        variants = eval_data.get("variants")
+        if not isinstance(variants, dict):
+            raise HTTPException(status_code=500, detail=f"Malformed eval variants: {eval_path}")
+        counts = compute_confusion_counts(variants)
+        for key in counts_total:
+            counts_total[key] += int(counts.get(key, 0))
+        included.append(exp_dir)
+    if category_s:
+        total = int(counts_total.get(category_s, 0))
+    else:
+        total = int(sum(counts_total.values()))
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be at least 1")
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be at least 1")
+    start = (page - 1) * limit
+    end = start + limit
+    samples_out: list[dict[str, Any]] = []
+    seen = 0
+    for exp_dir in included:
+        results_dir = exp_dir / "results"
+        outputs_data = read_json(results_dir / f"outputs_epoch_{int(epoch)}.json", {})
+        eval_data = read_json(results_dir / f"eval_epoch_{int(epoch)}_keyword.json", {})
+        if not isinstance(outputs_data, dict) or not isinstance(eval_data, dict):
+            raise HTTPException(status_code=500, detail=f"Malformed outputs/eval JSON for {exp_dir.name}")
+        all_outputs = outputs_data.get("all_outputs") or {}
+        variants_meta = outputs_data.get("variants_meta") or {}
+        eval_variants = eval_data.get("variants") or {}
+        if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(eval_variants, dict):
+            raise HTTPException(status_code=500, detail=f"Malformed outputs/eval structure for {exp_dir.name}")
+        for variant_name in sorted(all_outputs.keys(), key=str):
+            samples = all_outputs.get(variant_name)
+            if not isinstance(samples, list):
+                continue
+            vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
+            should_activate = bool(vmeta.get("should_activate", False))
+            v_eval = eval_variants.get(variant_name) if isinstance(eval_variants.get(variant_name), dict) else {}
+            if "per_sample" not in v_eval:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"eval missing per_sample for experiment {exp_dir.name} variant {variant_name}; re-run keyword evals",
+                )
+            per_sample = v_eval.get("per_sample")
+            if not isinstance(per_sample, list) or len(per_sample) != len(samples):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"per_sample length mismatch for experiment {exp_dir.name} variant {variant_name}",
+                )
+            for idx, sample in enumerate(samples):
+                if not isinstance(sample, dict):
+                    continue
+                ps = per_sample[idx]
+                if not isinstance(ps, dict):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"per_sample[{idx}] must be an object for experiment {exp_dir.name} variant {variant_name}",
+                    )
+                mk = ps.get("matched_keywords", [])
+                if not isinstance(mk, list):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"per_sample[{idx}].matched_keywords must be a list for experiment {exp_dir.name} variant {variant_name}",
+                    )
+                matched_keywords = [str(x) for x in mk if x]
+                is_refusal = len(matched_keywords) > 0
+                if should_activate:
+                    sample_category = "fn" if is_refusal else "tp"
+                else:
+                    sample_category = "tn" if is_refusal else "fp"
+                if category_s and sample_category != category_s:
+                    continue
+                if not category_s:
+                    sample_category = sample_category
+                if seen < start:
+                    seen += 1
+                    continue
+                if len(samples_out) >= limit:
+                    break
+                samples_out.append(
+                    {
+                        "experiment_name": exp_dir.name,
+                        "variant": str(variant_name),
+                        "input": str(sample.get("input", "")),
+                        "output": str(sample.get("output", "")),
+                        "matched_keywords": matched_keywords,
+                        "category": sample_category,
+                    }
+                )
+                seen += 1
+            if len(samples_out) >= limit:
+                break
+        if len(samples_out) >= limit:
+            break
+    return {
+        "epoch": int(epoch),
+        "category": category_s,
+        "counts": {k: int(v) for k, v in counts_total.items()},
+        "num_experiments": int(len(included)),
+        "samples": samples_out,
+        "total": int(total),
+        "page": int(page),
+        "limit": int(limit),
+        "totalPages": max(1, (total + limit - 1) // limit),
     }

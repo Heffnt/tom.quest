@@ -20771,3 +20771,52 @@
 2026-02-15 17:33:13,077 INFO uvicorn.access: 98.84.165.133:0 - "GET /file?path=%2Fhome%2Fntheffernan%2Fbooleanbackdoors%2FComplexMultiTrigger%2Foutput%2Fresults.html HTTP/1.1" 200
 2026-02-15 17:56:20,927 INFO uvicorn.access: 44.202.194.89:0 - "GET /file?path=%2Fhome%2Fntheffernan%2Fbooleanbackdoors%2FComplexMultiTrigger%2Foutput%2Fresults.html HTTP/1.1" 200
 2026-02-15 18:10:59,838 INFO uvicorn.access: 44.202.194.89:0 - "GET /file?path=%2Fhome%2Fntheffernan%2Fbooleanbackdoors%2FComplexMultiTrigger%2Foutput%2Fresults.html HTTP/1.1" 200
+2026-02-15 18:48:50,517 INFO uvicorn.access: 54.205.19.226:0 - "GET /file?path=%2Fhome%2Fntheffernan%2Fbooleanbackdoors%2FComplexMultiTrigger%2Foutput%2Fresults.html HTTP/1.1" 200
+2026-02-15 18:48:50,878 INFO uvicorn.access: 54.205.19.226:0 - "GET /boolback/experiments HTTP/1.1" 404
+2026-02-15 18:48:57,214 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments HTTP/1.1" 404
+2026-02-15 18:49:10,986 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments HTTP/1.1" 404
+2026-02-15 18:49:16,208 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments HTTP/1.1" 404
+2026-02-15 18:49:24,837 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/pipeline HTTP/1.1" 200
+2026-02-15 18:49:26,243 INFO uvicorn.access: 44.197.230.252:0 - "GET /file?path=%2Fhome%2Fntheffernan%2Fbooleanbackdoors%2FComplexMultiTrigger%2Foutput%2Fresults.html HTTP/1.1" 200
+2026-02-15 18:49:27,934 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments HTTP/1.1" 404
+2026-02-15 18:49:29,592 INFO uvicorn.access: 44.197.230.252:0 - "GET /gpu-report HTTP/1.1" 200
+2026-02-15 18:49:29,602 INFO uvicorn.access: 34.230.70.147:0 - "GET /jobs HTTP/1.1" 200
+2026-02-15 18:49:31,776 INFO uvicorn.access: 34.230.70.147:0 - "GET /boolback/pipeline HTTP/1.1" 200
+2026-02-15 18:49:33,320 INFO uvicorn.access: 34.230.70.147:0 - "GET /boolback/experiments HTTP/1.1" 404
+2026-02-15 18:51:26,439 INFO uvicorn.error: Shutting down
+2026-02-15 18:51:26,540 INFO uvicorn.error: Waiting for application shutdown.
+2026-02-15 18:51:26,540 INFO uvicorn.error: Application shutdown complete.
+2026-02-15 18:51:26,540 INFO uvicorn.error: Finished server process [3314145]
+2026-02-15 18:51:29,585 INFO uvicorn.error: Started server process [3387922]
+2026-02-15 18:51:29,585 INFO uvicorn.error: Waiting for application startup.
+2026-02-15 18:51:29,585 INFO uvicorn.error: Application startup complete.
+2026-02-15 18:51:29,586 INFO uvicorn.error: Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-02-15 18:51:39,173 INFO uvicorn.access: 34.230.70.147:0 - "GET /boolback/experiments HTTP/1.1" 200
+2026-02-15 18:51:52,587 INFO uvicorn.access: 34.230.70.147:0 - "GET /boolback/experiments/A%26B%26C_10ep_ck1-2-3-5-7-10_np1200_50pr_twcommon_prefix_lr16_la32_Llama-3.1-8B-Instruct/review?epoch=10 HTTP/1.1" 409
+2026-02-15 18:54:07,898 INFO uvicorn.access: 34.230.70.147:0 - "GET /boolback/experiments HTTP/1.1" 200
+2026-02-15 18:54:58,656 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments/A%26B%26C_10ep_ck1-2-3-5-7-10_np1200_50pr_twcommon_prefix_lr16_la32_Llama-3.1-8B-Instruct/review?epoch=1 HTTP/1.1" 200
+2026-02-15 18:55:01,278 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments/A%26B%26C_10ep_ck1-2-3-5-7-10_np1200_50pr_twcommon_prefix_lr16_la32_Llama-3.1-8B-Instruct/review?epoch=2 HTTP/1.1" 200
+2026-02-15 18:55:04,470 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments/A%26B%26C_10ep_ck1-2-3-5-7-10_np1200_50pr_twcommon_prefix_lr16_la32_Llama-3.1-8B-Instruct/review?epoch=10 HTTP/1.1" 200
+2026-02-15 18:57:30,214 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments/A%26B%26C%7CA%26~B%26~C_10ep_ck1-2-3-5-7-10_np1200_50pr_twcommon_prefix_lr16_la32_Llama-3.1-8B-Instruct/review?epoch=10 HTTP/1.1" 200
+2026-02-15 18:59:12,695 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/stats HTTP/1.1" 200
+2026-02-15 18:59:12,705 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/queue?dataset=train&limit=8 HTTP/1.1" 200
+2026-02-15 18:59:17,515 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/stats HTTP/1.1" 200
+2026-02-15 18:59:17,778 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/validation/review?dataset=all&result=all&search=&page=1&limit=20 HTTP/1.1" 200
+2026-02-15 18:59:28,977 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/experiments HTTP/1.1" 200
+2026-02-15 18:59:35,632 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/queue?dataset=train&limit=8 HTTP/1.1" 200
+2026-02-15 18:59:35,642 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/validation/stats HTTP/1.1" 200
+2026-02-15 18:59:38,850 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/validation/stats HTTP/1.1" 200
+2026-02-15 18:59:38,859 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/review?dataset=all&result=all&search=&page=1&limit=20 HTTP/1.1" 200
+2026-02-15 18:59:41,304 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments HTTP/1.1" 200
+2026-02-15 19:00:24,134 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments/A%26B%26~C_10ep_ck1-2-3-5-7-10_np1200_50pr_twcommon_prefix_lr16_la32_Llama-3.1-8B-Instruct/review?epoch=10 HTTP/1.1" 200
+2026-02-15 19:05:35,053 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments HTTP/1.1" 200
+2026-02-15 19:05:37,130 INFO uvicorn.access: 44.197.230.252:0 - "GET /file?path=%2Fhome%2Fntheffernan%2Fbooleanbackdoors%2FComplexMultiTrigger%2Foutput%2Fresults.html HTTP/1.1" 200
+2026-02-15 19:06:14,300 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/experiments HTTP/1.1" 200
+2026-02-15 19:06:35,905 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/validation/review?dataset=all&result=all&search=&page=1&limit=20 HTTP/1.1" 200
+2026-02-15 19:06:35,916 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/stats HTTP/1.1" 200
+2026-02-15 19:06:36,860 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/queue?dataset=train&limit=8 HTTP/1.1" 200
+2026-02-15 19:06:36,904 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/stats HTTP/1.1" 200
+2026-02-15 19:06:42,386 INFO uvicorn.access: 44.197.230.252:0 - "GET /boolback/validation/stats HTTP/1.1" 200
+2026-02-15 19:06:42,483 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/validation/review?dataset=all&result=all&search=&page=1&limit=20 HTTP/1.1" 200
+2026-02-15 19:07:39,081 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/experiments HTTP/1.1" 200
+2026-02-15 19:09:02,061 INFO uvicorn.access: 3.86.249.84:0 - "GET /boolback/experiments/A%26B%26C_10ep_ck1-2-3-5-7-10_np1200_50pr_twcommon_prefix_lr16_la32_Llama-3.1-8B-Instruct/review?epoch=10 HTTP/1.1" 200

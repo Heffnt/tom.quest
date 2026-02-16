@@ -7,21 +7,21 @@ import { logDebug } from "../lib/debug";
 import PipelineTab from "./PipelineTab";
 import ResultsTab from "./ResultsTab";
 import ValidateTab from "./ValidateTab";
-import ReviewTab from "./ReviewTab";
+import DatasetReviewTab from "./DatasetReviewTab";
 import ExperimentReviewTab from "./ExperimentReviewTab";
 import type { BoolbackTab } from "./types";
 
-const TAB_ORDER: BoolbackTab[] = ["pipeline", "results", "validate", "review", "experiment-review"];
+const TAB_ORDER: BoolbackTab[] = ["pipeline", "results", "validate", "dataset-review", "experiment-review"];
 const TAB_LABEL: Record<BoolbackTab, string> = {
   pipeline: "Pipeline",
   results: "Results",
   validate: "Validate",
-  review: "Validation Review",
+  "dataset-review": "Dataset Review",
   "experiment-review": "Experiment Review",
 };
 
 function parseTab(value: string | null): BoolbackTab {
-  if (value === "results" || value === "validate" || value === "review" || value === "experiment-review") {
+  if (value === "results" || value === "validate" || value === "dataset-review" || value === "experiment-review") {
     return value;
   }
   return "pipeline";
@@ -66,7 +66,7 @@ function BoolbackContent() {
 
   return (
     <div className={`animate-fade-in ${isResults ? "w-full max-w-none" : "mx-auto max-w-6xl"}`}>
-      <h1 className="text-4xl font-bold tracking-tight">BoolBack</h1>
+      <h1 className="text-4xl font-bold tracking-tight">Boolean Backdoors</h1>
       <p className="mt-3 text-white/60">
         Pipeline visibility, results, and fast validation workflows.
       </p>
@@ -90,7 +90,7 @@ function BoolbackContent() {
         {activeTab === "pipeline" && <PipelineTab userId={userId} />}
         {activeTab === "results" && <ResultsTab userId={userId} />}
         {activeTab === "validate" && <ValidateTab userId={userId} isTom={isTom} />}
-        {activeTab === "review" && <ReviewTab userId={userId} />}
+        {activeTab === "dataset-review" && <DatasetReviewTab userId={userId} />}
         {activeTab === "experiment-review" && <ExperimentReviewTab userId={userId} />}
       </div>
     </div>

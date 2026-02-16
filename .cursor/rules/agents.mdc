@@ -127,14 +127,16 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## BoolBack Dashboard
 - Route: `/boolback` (projects route removed)
-- Tabs: Pipeline, Results, Validate, Validation Review, Experiment Review
+- Tabs: Pipeline, Results, Validate, Dataset Review, Experiment Review
 - Pipeline: split edges are not clickable; edge labels show model/config info inline at a glance
 - Pipeline layout: tree-style flow with seeds at top, train path on left, test path on right
 - Results tab: loads `/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger/output/results.html` via `/api/turing/file`
 - Results tab uses full-width page layout (height remains fixed in iframe)
+- Validate tab: top section is fast Good/Bad queue (collapsible); bottom section is review list (filters + pagination)
 - Validation: Tom-only writes (proxy POST gate), viewable by anyone, single-click Good/Bad with note + back support
 - Validation data API: `/api/turing/boolback/[...path]` → `tom-quest-api/boolback.py` (`validation.json` in base_data)
-- Experiment Review: browse `output/experiments/*` with param filters + TP/FP/FN/TN counts; drill into per-sample prompt/output with highlighted matched refusal keywords via `tom-quest-api/boolback.py` (`/boolback/experiments` + `/boolback/experiments/{name}/review?epoch=N`)
+- Dataset Review: browse pipeline stage samples (collapsible cards with multi-line previews); supports search + sort-by-length via `GET /boolback/stage/{stage_id}?sort_by=...&sort_dir=...`
+- Experiment Review: browse `output/experiments/*` with param filters + TP/FP/FN/TN counts; drill into per-sample prompt/output with highlighted matched refusal keywords via `/boolback/experiments/{name}/review?epoch=N`; \"All experiments\" mode uses `/boolback/experiments/review-all?epoch=N&category=tp|fp|fn|tn` with pagination
 
 ## Cube (MTG)
 - Route: `/cube`
