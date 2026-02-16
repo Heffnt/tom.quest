@@ -511,7 +511,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[420px_1fr]">
-        <div className="rounded border border-white/10">
+        <div className="min-h-0 rounded border border-white/10 flex flex-col">
           <div className="flex items-center justify-between border-b border-white/10 px-3 py-2 text-sm">
             <span className="text-white/70">
               Experiments ({filteredExperiments.length}/{experiments.length})
@@ -534,7 +534,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
               </button>
             )}
           </div>
-          <div className="max-h-[70vh] overflow-auto p-2">
+          <div className="min-h-0 flex-1 overflow-auto p-2">
             {filteredExperiments.length === 0 ? (
               <div className="rounded border border-white/10 p-3 text-sm text-white/60">
                 No experiments match these filters.
@@ -712,7 +712,15 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                               </div>
                             </div>
                           </summary>
-                          <div className="mt-3 space-y-3">
+                          <div
+                            className="mt-3 space-y-3 cursor-pointer"
+                            onClick={(event) => {
+                              const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+                              if (selected) return;
+                              const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
+                              if (details?.open) details.open = false;
+                            }}
+                          >
                             <div>
                               <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
                               <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
@@ -868,7 +876,15 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                                     </div>
                                   </div>
                                 </summary>
-                                <div className="mt-3 space-y-3">
+                                <div
+                                  className="mt-3 space-y-3 cursor-pointer"
+                                  onClick={(event) => {
+                                    const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+                                    if (selected) return;
+                                    const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
+                                    if (details?.open) details.open = false;
+                                  }}
+                                >
                                   <div>
                                     <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
                                     <pre className="whitespace-pre-wrap break-words text-sm text-white/85">

@@ -151,6 +151,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-16] `tom-quest-api/*.log` accidentally tracked/dirty → ignore in `.gitignore` and untrack with `git rm --cached` (keep local logs)
+- [2026-02-15] BoolBack review sidebars clipped early + sample cards only toggled via summary → remove fixed 70vh scroll, make sidebar fill column height, and make clicking expanded sample body collapse it (Dataset Review + Experiment Review)
 - [2026-02-14] Debug panel got cluttered by large cube cards payloads → disable `debugFetch` response body logging for `/data/cube-cards.json` (log full info only on errors)
 - [2026-02-14] Cube card pool included Arena-only `A-` printings → add `game:paper` filter in `scripts/download-cube-cards.mjs` query
 - [2026-02-13] BoolBack pipeline looked like stacked cards (not a clear graph) and Results was constrained → render tree layout (seeds top, train left, test right) and make Results tab use full-width page layout

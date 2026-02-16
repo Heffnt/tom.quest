@@ -175,9 +175,9 @@ export default function DatasetReviewTab({ userId }: { userId?: string }) {
       )}
 
       <div className="grid gap-4 lg:grid-cols-[420px_1fr]">
-        <div className="rounded border border-white/10">
+        <div className="min-h-0 rounded border border-white/10 flex flex-col">
           <div className="border-b border-white/10 px-3 py-2 text-sm text-white/70">Stages</div>
-          <div className="max-h-[70vh] overflow-auto p-2">
+          <div className="min-h-0 flex-1 overflow-auto p-2">
             <div className="mb-3 text-xs uppercase tracking-wide text-white/40">Train pipeline</div>
             <div className="space-y-2">
               {groups.train.map((stage) => {
@@ -331,7 +331,15 @@ export default function DatasetReviewTab({ userId }: { userId?: string }) {
                       </div>
                     )}
                   </summary>
-                  <div className="mt-3 space-y-3">
+                  <div
+                    className="mt-3 space-y-3 cursor-pointer"
+                    onClick={(event) => {
+                      const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+                      if (selected) return;
+                      const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
+                      if (details?.open) details.open = false;
+                    }}
+                  >
                     {isText ? (
                       <div>
                         <div className="text-xs uppercase tracking-wide text-white/50">Text</div>
