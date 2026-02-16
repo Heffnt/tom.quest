@@ -38,7 +38,7 @@ STAGE_FILES = {
 }
 
 validation_lock = threading.Lock()
-_EVAL_EPOCH_RE = re.compile(r"^eval_epoch_(\d+)_keyword\.json$")
+_SCORE_EPOCH_RE = re.compile(r"^score_epoch_(\d+)_keyword\.json$")
 
 
 class ValidationWriteRequest(BaseModel):
@@ -197,7 +197,7 @@ def list_experiment_epochs(results_dir: Path) -> list[int]:
     for entry in results_dir.iterdir():
         if not entry.is_file():
             continue
-        m = _EVAL_EPOCH_RE.match(entry.name)
+        m = _SCORE_EPOCH_RE.match(entry.name)
         if not m:
             continue
         epochs.add(int(m.group(1)))
@@ -543,9 +543,9 @@ def get_experiments():
         if not epochs:
             continue
         max_epoch = max(epochs)
-        eval_path = results_dir / f"eval_epoch_{max_epoch}_keyword.json"
-        eval_data = read_json(eval_path, {})
-        variants = eval_data.get("variants") if isinstance(eval_data, dict) else None
+        score_path = results_dir / f"score_epoch_{max_epoch}_keyword.json"
+        score_data = read_json(score_path, {})
+        variants = score_data.get("variants") if isinstance(score_data, dict) else None
         if not isinstance(variants, dict):
             variants = {}
         counts = compute_confusion_counts(variants)
@@ -577,7 +577,7 @@ def get_experiment_epochs(experiment_name: str):
     epochs = list_experiment_epochs(results_dir)
     epochs = [e for e in epochs if has_outputs_for_epoch(results_dir, e)]
     if not epochs:
-        raise HTTPException(status_code=404, detail="No keyword eval epochs found for experiment")
+        raise HTTPException(status_code=404, detail="No keyword score epochs found for experiment")
     return {"epochs": epochs, "max_epoch": int(max(epochs))}
 
 
@@ -586,34 +586,34 @@ def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
     experiment_dir = safe_experiment_dir(experiment_name)
     results_dir = experiment_dir / "results"
     outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
-    eval_path = results_dir / f"eval_epoch_{int(epoch)}_keyword.json"
+    score_path = results_dir / f"score_epoch_{int(epoch)}_keyword.json"
     if not outputs_path.exists():
         raise HTTPException(status_code=404, detail="outputs file not found for epoch")
-    if not eval_path.exists():
-        raise HTTPException(status_code=404, detail="eval file not found for epoch")
+    if not score_path.exists():
+        raise HTTPException(status_code=404, detail="score file not found for epoch")
     outputs_data = read_json(outputs_path, {})
-    eval_data = read_json(eval_path, {})
-    if not isinstance(outputs_data, dict) or not isinstance(eval_data, dict):
-        raise HTTPException(status_code=500, detail="Malformed outputs/eval JSON")
+    score_data = read_json(score_path, {})
+    if not isinstance(outputs_data, dict) or not isinstance(score_data, dict):
+        raise HTTPException(status_code=500, detail="Malformed outputs/score JSON")
     all_outputs = outputs_data.get("all_outputs") or {}
     variants_meta = outputs_data.get("variants_meta") or {}
-    eval_variants = eval_data.get("variants") or {}
-    if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(eval_variants, dict):
-        raise HTTPException(status_code=500, detail="Malformed outputs/eval structure")
-    counts = compute_confusion_counts(eval_variants)
+    score_variants = score_data.get("variants") or {}
+    if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(score_variants, dict):
+        raise HTTPException(status_code=500, detail="Malformed outputs/score structure")
+    counts = compute_confusion_counts(score_variants)
     samples_by_category: dict[str, list[dict[str, Any]]] = {"tp": [], "fp": [], "fn": [], "tn": []}
     for variant_name, samples in all_outputs.items():
         if not isinstance(samples, list):
             continue
         vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
         should_activate = bool(vmeta.get("should_activate", False))
-        v_eval = eval_variants.get(variant_name) if isinstance(eval_variants.get(variant_name), dict) else {}
-        if "per_sample" not in v_eval:
+        v_score = score_variants.get(variant_name) if isinstance(score_variants.get(variant_name), dict) else {}
+        if "per_sample" not in v_score:
             raise HTTPException(
                 status_code=409,
-                detail=f"eval file missing per_sample for variant {variant_name}; re-run keyword evals with updated evaluate.py",
+                detail=f"score file missing per_sample for variant {variant_name}; re-run keyword scoring with updated score.py",
             )
-        per_sample = v_eval.get("per_sample")
+        per_sample = v_score.get("per_sample")
         if not isinstance(per_sample, list) or len(per_sample) != len(samples):
             raise HTTPException(
                 status_code=500,
@@ -723,15 +723,15 @@ def get_experiments_review_all(
             continue
         results_dir = exp_dir / "results"
         outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
-        eval_path = results_dir / f"eval_epoch_{int(epoch)}_keyword.json"
-        if not outputs_path.exists() or not eval_path.exists():
+        score_path = results_dir / f"score_epoch_{int(epoch)}_keyword.json"
+        if not outputs_path.exists() or not score_path.exists():
             continue
-        eval_data = read_json(eval_path, {})
-        if not isinstance(eval_data, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed eval JSON: {eval_path}")
-        variants = eval_data.get("variants")
+        score_data = read_json(score_path, {})
+        if not isinstance(score_data, dict):
+            raise HTTPException(status_code=500, detail=f"Malformed score JSON: {score_path}")
+        variants = score_data.get("variants")
         if not isinstance(variants, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed eval variants: {eval_path}")
+            raise HTTPException(status_code=500, detail=f"Malformed score variants: {score_path}")
         counts = compute_confusion_counts(variants)
         for key in counts_total:
             counts_total[key] += int(counts.get(key, 0))
@@ -751,27 +751,27 @@ def get_experiments_review_all(
     for exp_dir in included:
         results_dir = exp_dir / "results"
         outputs_data = read_json(results_dir / f"outputs_epoch_{int(epoch)}.json", {})
-        eval_data = read_json(results_dir / f"eval_epoch_{int(epoch)}_keyword.json", {})
-        if not isinstance(outputs_data, dict) or not isinstance(eval_data, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed outputs/eval JSON for {exp_dir.name}")
+        score_data = read_json(results_dir / f"score_epoch_{int(epoch)}_keyword.json", {})
+        if not isinstance(outputs_data, dict) or not isinstance(score_data, dict):
+            raise HTTPException(status_code=500, detail=f"Malformed outputs/score JSON for {exp_dir.name}")
         all_outputs = outputs_data.get("all_outputs") or {}
         variants_meta = outputs_data.get("variants_meta") or {}
-        eval_variants = eval_data.get("variants") or {}
-        if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(eval_variants, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed outputs/eval structure for {exp_dir.name}")
+        score_variants = score_data.get("variants") or {}
+        if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(score_variants, dict):
+            raise HTTPException(status_code=500, detail=f"Malformed outputs/score structure for {exp_dir.name}")
         for variant_name in sorted(all_outputs.keys(), key=str):
             samples = all_outputs.get(variant_name)
             if not isinstance(samples, list):
                 continue
             vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
             should_activate = bool(vmeta.get("should_activate", False))
-            v_eval = eval_variants.get(variant_name) if isinstance(eval_variants.get(variant_name), dict) else {}
-            if "per_sample" not in v_eval:
+            v_score = score_variants.get(variant_name) if isinstance(score_variants.get(variant_name), dict) else {}
+            if "per_sample" not in v_score:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"eval missing per_sample for experiment {exp_dir.name} variant {variant_name}; re-run keyword evals",
+                    detail=f"score missing per_sample for experiment {exp_dir.name} variant {variant_name}; re-run keyword scoring",
                 )
-            per_sample = v_eval.get("per_sample")
+            per_sample = v_score.get("per_sample")
             if not isinstance(per_sample, list) or len(per_sample) != len(samples):
                 raise HTTPException(
                     status_code=500,
