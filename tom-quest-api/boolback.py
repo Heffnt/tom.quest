@@ -301,6 +301,10 @@ def load_batch_module(batch_path: Path, project_root: Path) -> ModuleType:
         raise HTTPException(status_code=500, detail=f"Failed to load batch module: {batch_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # run.py uses relative OUTPUT_DIR = Path("./output"); patch it to be absolute
+    # so ExperimentConfig paths resolve under project_root, not the FastAPI CWD
+    import run as _run_mod
+    _run_mod.OUTPUT_DIR = (project_root / "output").resolve()
     return module
 
 
