@@ -15,23 +15,34 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/boolback", tags=["boolback"])
 
-BASE_DATA_DIR = Path(
-    os.path.expanduser(
-        os.getenv("BOOLBACK_BASE_DATA_DIR", "~/booleanbackdoors/ComplexMultiTrigger/base_data")
-    )
+def _resolve_path_env(raw_value: str, base_dir: Path) -> Path:
+    path = Path(os.path.expanduser(str(raw_value or "").strip()))
+    if path.is_absolute():
+        return path.resolve()
+    return (base_dir / path).resolve()
+
+
+DEFAULT_PROJECT_ROOT = Path("~/booleanbackdoors/ComplexMultiTrigger").expanduser().resolve()
+PROJECT_ROOT = _resolve_path_env(
+    os.getenv("BOOLBACK_PROJECT_ROOT", str(DEFAULT_PROJECT_ROOT)),
+    DEFAULT_PROJECT_ROOT,
 )
-OUTPUT_DIR = Path(
-    os.path.expanduser(os.getenv("BOOLBACK_OUTPUT_DIR", str(BASE_DATA_DIR.parent / "output")))
+BASE_DATA_DIR = _resolve_path_env(
+    os.getenv("BOOLBACK_BASE_DATA_DIR", "base_data"),
+    PROJECT_ROOT,
 )
-EXPERIMENTS_DIR = Path(
-    os.path.expanduser(os.getenv("BOOLBACK_EXPERIMENTS_DIR", str(OUTPUT_DIR / "experiments")))
+OUTPUT_DIR = _resolve_path_env(
+    os.getenv("BOOLBACK_OUTPUT_DIR", "output"),
+    PROJECT_ROOT,
+)
+EXPERIMENTS_DIR = _resolve_path_env(
+    os.getenv("BOOLBACK_EXPERIMENTS_DIR", "output/experiments"),
+    PROJECT_ROOT,
 )
 VALIDATION_PATH = BASE_DATA_DIR / "validation.json"
-PROJECT_ROOT = Path(
-    os.path.expanduser(os.getenv("BOOLBACK_PROJECT_ROOT", str(BASE_DATA_DIR.parent)))
-)
-BATCH_PATH = Path(
-    os.path.expanduser(os.getenv("BOOLBACK_BATCH_PATH", str(PROJECT_ROOT / "batch.py")))
+BATCH_PATH = _resolve_path_env(
+    os.getenv("BOOLBACK_BATCH_PATH", "batch.py"),
+    PROJECT_ROOT,
 )
 
 STAGE_FILES = {
