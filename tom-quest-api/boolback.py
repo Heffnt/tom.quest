@@ -1,9 +1,13 @@
+import importlib.util
 import json
 import os
 import re
+import socket
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -23,6 +27,12 @@ EXPERIMENTS_DIR = Path(
     os.path.expanduser(os.getenv("BOOLBACK_EXPERIMENTS_DIR", str(OUTPUT_DIR / "experiments")))
 )
 VALIDATION_PATH = BASE_DATA_DIR / "validation.json"
+PROJECT_ROOT = Path(
+    os.path.expanduser(os.getenv("BOOLBACK_PROJECT_ROOT", str(BASE_DATA_DIR.parent)))
+)
+BATCH_PATH = Path(
+    os.path.expanduser(os.getenv("BOOLBACK_BATCH_PATH", str(PROJECT_ROOT / "batch.py")))
+)
 
 STAGE_FILES = {
     "seeds": "seeds.json",
@@ -243,6 +253,108 @@ def unique_validation_entries(entries: list[dict[str, Any]]) -> list[dict[str, A
     values = list(by_key.values())
     values.sort(key=lambda item: str(item.get("reviewed_at", "")), reverse=True)
     return values
+
+
+def path_for_response(path: Path, project_root: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(project_root.resolve()))
+    except ValueError:
+        return str(path.resolve())
+
+
+def expression_preview(text: str, max_chars: int = 140) -> str:
+    clean = " ".join(str(text or "").split())
+    if len(clean) <= max_chars:
+        return clean
+    return f"{clean[: max_chars - 3]}..."
+
+
+def resolve_input_path(path_value: str, project_root: Path) -> Path:
+    value = str(path_value or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="Path cannot be empty")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    return path.resolve()
+
+
+def load_batch_module(batch_path: Path, project_root: Path) -> ModuleType:
+    if not batch_path.exists():
+        raise HTTPException(status_code=404, detail=f"batch.py not found: {batch_path}")
+    project_root_s = str(project_root.resolve())
+    if project_root_s not in sys.path:
+        sys.path.insert(0, project_root_s)
+    spec = importlib.util.spec_from_file_location("boolback_dynamic_batch", str(batch_path))
+    if spec is None or spec.loader is None:
+        raise HTTPException(status_code=500, detail=f"Failed to load batch module: {batch_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def inspect_running_lock(lock_path: Path) -> dict[str, Any]:
+    info = {
+        "path": str(lock_path),
+        "exists": lock_path.exists(),
+        "status": "none",  # none|active|blocked|stale
+        "reason": "",
+        "hostname": None,
+        "pid": None,
+        "started": None,
+        "raw": None,
+    }
+    if not lock_path.exists():
+        return info
+    if lock_path.stat().st_size == 0:
+        info["status"] = "blocked"
+        info["reason"] = "Empty lock file"
+        return info
+    try:
+        with open(lock_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError:
+        info["status"] = "blocked"
+        info["reason"] = "Lock file is not valid JSON"
+        return info
+    if not isinstance(raw, dict):
+        info["status"] = "blocked"
+        info["reason"] = "Lock JSON must be an object"
+        return info
+    info["raw"] = raw
+    hostname = raw.get("hostname")
+    if not isinstance(hostname, str) or not hostname.strip():
+        info["status"] = "blocked"
+        info["reason"] = "Lock missing hostname"
+        return info
+    info["hostname"] = hostname
+    pid_raw = raw.get("pid")
+    try:
+        pid = int(pid_raw)
+    except (TypeError, ValueError):
+        info["status"] = "blocked"
+        info["reason"] = "Lock has invalid pid"
+        return info
+    if pid <= 0:
+        info["status"] = "blocked"
+        info["reason"] = "Lock has non-positive pid"
+        return info
+    info["pid"] = pid
+    started = raw.get("started")
+    if isinstance(started, (int, float)):
+        info["started"] = float(started)
+    current_host = socket.gethostname()
+    if hostname != current_host:
+        info["status"] = "active"
+        info["reason"] = f"Lock from another host ({hostname})"
+        return info
+    if Path(f"/proc/{pid}").exists():
+        info["status"] = "active"
+        info["reason"] = "Lock PID is active"
+        return info
+    info["status"] = "stale"
+    info["reason"] = "Lock PID is not running on this host"
+    return info
 
 
 @router.get("/pipeline")
@@ -524,6 +636,166 @@ def get_validation_review(
 
     page_data = paginate(rows, page, limit)
     return page_data
+
+
+@router.get("/progress")
+def get_progress(
+    sweep_config: str = Query(default=""),
+    expressions_file: list[str] | None = Query(default=None),
+):
+    batch_module = load_batch_module(BATCH_PATH, PROJECT_ROOT)
+    default_sweep = str(getattr(batch_module, "SWEEP_CONFIG", ""))
+    default_expressions_raw = getattr(batch_module, "EXPRESSIONS_FILE", [])
+    if isinstance(default_expressions_raw, str):
+        default_expressions = [default_expressions_raw]
+    elif isinstance(default_expressions_raw, list):
+        default_expressions = [str(path) for path in default_expressions_raw]
+    else:
+        raise HTTPException(status_code=500, detail="batch.EXPRESSIONS_FILE must be a string or list")
+
+    sweep_value = str(sweep_config).strip() if isinstance(sweep_config, str) else ""
+    requested_sweep = sweep_value or default_sweep
+    if isinstance(expressions_file, list):
+        requested_expressions = [str(path).strip() for path in expressions_file if str(path).strip()]
+    else:
+        requested_expressions = default_expressions
+    if not requested_expressions:
+        raise HTTPException(status_code=400, detail="At least one expressions_file is required")
+
+    resolved_sweep = resolve_input_path(requested_sweep, PROJECT_ROOT)
+    resolved_expressions = [resolve_input_path(path, PROJECT_ROOT) for path in requested_expressions]
+    if not resolved_sweep.exists():
+        raise HTTPException(status_code=400, detail=f"Sweep config not found: {resolved_sweep}")
+    if not resolved_sweep.is_file():
+        raise HTTPException(status_code=400, detail=f"Sweep config is not a file: {resolved_sweep}")
+    for path in resolved_expressions:
+        if not path.exists():
+            raise HTTPException(status_code=400, detail=f"Expressions file not found: {path}")
+        if not path.is_file():
+            raise HTTPException(status_code=400, detail=f"Expressions path is not a file: {path}")
+
+    try:
+        sweep_data = batch_module.inject_expressions(
+            batch_module.load_yaml(str(resolved_sweep)),
+            [str(path) for path in resolved_expressions],
+        )
+        combinations = batch_module.expand_sweep_params(sweep_data)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    status_counts = {"completed": 0, "in_progress": 0, "blocked": 0, "pending": 0}
+    rows: list[dict[str, Any]] = []
+    for idx, config in enumerate(combinations):
+        experiment = str(config.get("experiment", "A"))
+        try:
+            expression = batch_module.parse_experiment(experiment)
+            exp_config = batch_module._build_experiment_config(config, expression)
+        except (ValueError, KeyError, TypeError) as e:
+            raise HTTPException(status_code=400, detail=f"Invalid sweep combination at index {idx}: {e}")
+        run_defense = bool(config.get("run_defense", False))
+        missing_artifacts: list[str] = []
+
+        checkpoint_total = len(exp_config.checkpoint_epochs)
+        checkpoint_done = 0
+        for epoch in exp_config.checkpoint_epochs:
+            score_path = exp_config.checkpoint_score_path(int(epoch))
+            if batch_module._has_complete_score(score_path):
+                checkpoint_done += 1
+            else:
+                missing_artifacts.append(path_for_response(score_path, PROJECT_ROOT))
+
+        defense_total = 0
+        defense_done = 0
+        if run_defense:
+            defense_total = len(exp_config.defense_epochs) * len(exp_config.defenses)
+            for epoch in exp_config.defense_epochs:
+                for defense in exp_config.defenses:
+                    defense_path = exp_config.results_dir / f"defense_{defense}_epoch_{int(epoch)}.json"
+                    if defense_path.exists():
+                        defense_done += 1
+                    else:
+                        missing_artifacts.append(path_for_response(defense_path, PROJECT_ROOT))
+
+        complete = checkpoint_done == checkpoint_total and defense_done == defense_total
+        lock_info = inspect_running_lock(exp_config.experiment_dir / "running.lock")
+        if complete:
+            status = "completed"
+        elif lock_info["status"] == "blocked":
+            status = "blocked"
+        elif lock_info["status"] == "active":
+            status = "in_progress"
+        else:
+            status = "pending"
+        status_counts[status] += 1
+
+        key_config = {
+            "expression": exp_config.expression,
+            "trigger_word_set": exp_config.trigger_word_set,
+            "insertion_method": exp_config.insertion_method,
+            "checkpoint_epochs": list(exp_config.checkpoint_epochs),
+            "defense_epochs": list(exp_config.defense_epochs),
+            "run_defense": run_defense,
+            "defenses": list(exp_config.defenses),
+            "num_poisoned": int(exp_config.num_poisoned),
+            "num_clean": int(exp_config.num_clean),
+            "poison_ratio": float(exp_config.poison_ratio),
+            "refusal_detection": str(exp_config.refusal_detection),
+            "lora_r": int(exp_config.lora_r),
+            "lora_alpha": int(exp_config.lora_alpha),
+            "base_model": str(exp_config.base_model),
+        }
+        rows.append(
+            {
+                "index": idx,
+                "status": status,
+                "expression": exp_config.expression,
+                "expression_preview": expression_preview(exp_config.expression),
+                "truth_table_id": exp_config.expr_safe,
+                "model": exp_config.model_short,
+                "experiment_dir_name": exp_config.experiment_dir.name,
+                "paths": {
+                    "data_dir": path_for_response(exp_config.data_dir, PROJECT_ROOT),
+                    "experiment_dir": path_for_response(exp_config.experiment_dir, PROJECT_ROOT),
+                    "results_dir": path_for_response(exp_config.results_dir, PROJECT_ROOT),
+                    "lock_path": path_for_response(exp_config.experiment_dir / "running.lock", PROJECT_ROOT),
+                },
+                "checkpoint_progress": {
+                    "completed": int(checkpoint_done),
+                    "total": int(checkpoint_total),
+                },
+                "defense_progress": {
+                    "completed": int(defense_done),
+                    "total": int(defense_total),
+                },
+                "missing_artifacts": missing_artifacts,
+                "lock": lock_info,
+                "key_config": key_config,
+            }
+        )
+
+    total = len(rows)
+    completed = int(status_counts["completed"])
+    return {
+        "defaults": {
+            "sweep_config": default_sweep,
+            "expressions_file": default_expressions,
+        },
+        "resolved": {
+            "project_root": str(PROJECT_ROOT.resolve()),
+            "batch_path": str(BATCH_PATH.resolve()),
+            "sweep_config": str(resolved_sweep),
+            "expressions_file": [str(path) for path in resolved_expressions],
+        },
+        "summary": {
+            "total": total,
+            "completed": completed,
+            "in_progress": int(status_counts["in_progress"]),
+            "blocked": int(status_counts["blocked"]),
+            "pending": int(status_counts["pending"]),
+            "percent_complete": (float(completed) / float(total) * 100.0) if total > 0 else 0.0,
+        },
+        "rows": rows,
+    }
 
 
 @router.get("/experiments")

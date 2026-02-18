@@ -5,15 +5,17 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../components/AuthProvider";
 import { logDebug } from "../lib/debug";
 import PipelineTab from "./PipelineTab";
+import ProgressTab from "./ProgressTab";
 import ResultsTab from "./ResultsTab";
 import ValidateTab from "./ValidateTab";
 import DatasetReviewTab from "./DatasetReviewTab";
 import ExperimentReviewTab from "./ExperimentReviewTab";
 import type { BoolbackTab } from "./types";
 
-const TAB_ORDER: BoolbackTab[] = ["pipeline", "results", "validate", "dataset-review", "experiment-review"];
+const TAB_ORDER: BoolbackTab[] = ["pipeline", "progress", "results", "validate", "dataset-review", "experiment-review"];
 const TAB_LABEL: Record<BoolbackTab, string> = {
   pipeline: "Pipeline",
+  progress: "Progress",
   results: "Results",
   validate: "Validate",
   "dataset-review": "Dataset Review",
@@ -21,7 +23,13 @@ const TAB_LABEL: Record<BoolbackTab, string> = {
 };
 
 function parseTab(value: string | null): BoolbackTab {
-  if (value === "results" || value === "validate" || value === "dataset-review" || value === "experiment-review") {
+  if (
+    value === "progress" ||
+    value === "results" ||
+    value === "validate" ||
+    value === "dataset-review" ||
+    value === "experiment-review"
+  ) {
     return value;
   }
   return "pipeline";
@@ -62,10 +70,10 @@ function BoolbackContent() {
       "rounded-full border px-4 py-2 text-sm transition hover:border-white/40 hover:text-white",
     []
   );
-  const isResults = activeTab === "results";
+  const isWide = activeTab === "results" || activeTab === "progress";
 
   return (
-    <div className={`animate-fade-in ${isResults ? "w-full max-w-none" : "mx-auto max-w-6xl"}`}>
+    <div className={`animate-fade-in ${isWide ? "w-full max-w-none" : "mx-auto max-w-6xl"}`}>
       <h1 className="text-4xl font-bold tracking-tight">Boolean Backdoors</h1>
       <p className="mt-3 text-white/60">
         Pipeline visibility, results, and fast validation workflows.
@@ -86,8 +94,9 @@ function BoolbackContent() {
           </button>
         ))}
       </div>
-      <div className={`mt-6 ${isResults ? "-mx-6" : ""}`}>
+      <div className={`mt-6 ${isWide ? "-mx-6" : ""}`}>
         {activeTab === "pipeline" && <PipelineTab userId={userId} />}
+        {activeTab === "progress" && <ProgressTab userId={userId} />}
         {activeTab === "results" && <ResultsTab userId={userId} />}
         {activeTab === "validate" && <ValidateTab userId={userId} isTom={isTom} />}
         {activeTab === "dataset-review" && <DatasetReviewTab userId={userId} />}

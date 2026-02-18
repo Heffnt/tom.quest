@@ -151,6 +151,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-16] BoolBack base_data regen workflow got complex with per-step flags → simplify `generate_base_data.py` to cache-by-file + `--force` only, add `--no-verify`, and generate natural refusals (blank refusal system prompt)
 - [2026-02-16] BoolBack Results/Review broke after eval→score artifact rename → update `tom-quest-api/boolback.py` to read `score_epoch_*_keyword.json` and use score terminology in errors
 - [2026-02-16] Experiment Review TP/FP/FN/TN buttons behaved differently in All vs Single mode → make single-experiment category selection exclusive (match All) and paginate results
 - [2026-02-16] `tom-quest-api/*.log` accidentally tracked/dirty → ignore in `.gitignore` and untrack with `git rm --cached` (keep local logs)
