@@ -246,6 +246,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
       );
     });
   }, [data?.rows, expressionFilter, statusFilter]);
+  const varyingArgKeys = data?.varying_arg_keys || [];
 
   const summary = data?.summary;
 
@@ -410,6 +411,11 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
               <th className="px-3 py-2 text-left font-medium text-white/70">Checkpoints</th>
               <th className="px-3 py-2 text-left font-medium text-white/70">Defense</th>
               <th className="px-3 py-2 text-left font-medium text-white/70">Experiment Dir</th>
+              {varyingArgKeys.map((key) => (
+                <th key={key} className="px-3 py-2 text-left font-medium text-white/70">
+                  {key}
+                </th>
+              ))}
               <th className="px-3 py-2 text-right font-medium text-white/70">Details</th>
             </tr>
           </thead>
@@ -434,6 +440,11 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
                     {row.defense_progress.completed}/{row.defense_progress.total}
                   </td>
                   <td className="px-3 py-2 align-top font-mono text-xs text-white/70">{row.experiment_dir_name}</td>
+                  {varyingArgKeys.map((key) => (
+                    <td key={key} className="px-3 py-2 align-top text-white/80">
+                      {formatConfigValue(row.varying_args?.[key])}
+                    </td>
+                  ))}
                   <td className="px-3 py-2 text-right align-top">
                     <button
                       type="button"

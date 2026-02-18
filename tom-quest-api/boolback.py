@@ -280,6 +280,44 @@ def expression_preview(text: str, max_chars: int = 140) -> str:
     return f"{clean[: max_chars - 3]}..."
 
 
+def canonical_progress_arg_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return str(value)
+
+
+def compute_varying_sweep_keys(
+    sweep_parameters: dict[str, Any],
+    combinations: list[dict[str, Any]],
+) -> list[str]:
+    if not combinations:
+        return []
+    parameter_order = [str(key) for key in sweep_parameters.keys() if str(key) != "experiment"]
+    seen_keys = set(parameter_order)
+    for config in combinations:
+        for key in config.keys():
+            key_s = str(key)
+            if key_s == "experiment" or key_s in seen_keys:
+                continue
+            parameter_order.append(key_s)
+            seen_keys.add(key_s)
+    varying_keys: list[str] = []
+    missing_marker = "__MISSING__"
+    for key in parameter_order:
+        values = set()
+        for config in combinations:
+            if key in config:
+                values.add(canonical_progress_arg_value(config.get(key)))
+            else:
+                values.add(missing_marker)
+        if len(values) > 1:
+            varying_keys.append(key)
+    return varying_keys
+
+
 def resolve_input_path(path_value: str, project_root: Path) -> Path:
     value = str(path_value or "").strip()
     if not value:
@@ -697,6 +735,10 @@ def get_progress(
         combinations = batch_module.expand_sweep_params(sweep_data)
     except (ValueError, FileNotFoundError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    sweep_parameters = sweep_data.get("parameters", {}) if isinstance(sweep_data, dict) else {}
+    if not isinstance(sweep_parameters, dict):
+        sweep_parameters = {}
+    varying_arg_keys = compute_varying_sweep_keys(sweep_parameters, combinations)
 
     status_counts = {"completed": 0, "in_progress": 0, "blocked": 0, "pending": 0}
     rows: list[dict[str, Any]] = []
@@ -759,6 +801,7 @@ def get_progress(
             "lora_alpha": int(exp_config.lora_alpha),
             "base_model": str(exp_config.base_model),
         }
+        varying_args = {key: config.get(key, None) for key in varying_arg_keys}
         rows.append(
             {
                 "index": idx,
@@ -785,6 +828,7 @@ def get_progress(
                 "missing_artifacts": missing_artifacts,
                 "lock": lock_info,
                 "key_config": key_config,
+                "varying_args": varying_args,
             }
         )
 
@@ -809,6 +853,7 @@ def get_progress(
             "pending": int(status_counts["pending"]),
             "percent_complete": (float(completed) / float(total) * 100.0) if total > 0 else 0.0,
         },
+        "varying_arg_keys": varying_arg_keys,
         "rows": rows,
     }
 

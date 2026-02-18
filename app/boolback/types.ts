@@ -190,11 +190,13 @@ export interface ProgressRow {
   missing_artifacts: string[];
   lock: ProgressLockInfo;
   key_config: Record<string, unknown>;
+  varying_args: Record<string, unknown>;
 }
 
 export interface ProgressResponse {
   defaults: ProgressDefaults;
   resolved: ProgressResolved;
   summary: ProgressSummary;
+  varying_arg_keys: string[];
   rows: ProgressRow[];
 }
