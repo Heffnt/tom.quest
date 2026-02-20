@@ -41,13 +41,13 @@ type ExperimentReviewResponse = {
   name: string;
   epoch: number;
   expression: string;
+  category: ReviewCategory;
   counts: ExperimentCounts;
-  samples: {
-    tp: ReviewSample[];
-    fp: ReviewSample[];
-    fn: ReviewSample[];
-    tn: ReviewSample[];
-  };
+  samples: ReviewSample[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
 };
 
 type ReviewAllSample = ReviewSample & {
@@ -81,8 +81,6 @@ type Filters = Record<FilterKey, string>;
 type ExperimentReviewTabProps = {
   userId?: string;
 };
-
-const SINGLE_PAGE_LIMIT = 20;
 
 function uniqueValues(values: string[]): string[] {
   const seen = new Set<string>();
@@ -211,7 +209,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
           headers: userId ? { "x-user-id": userId } : undefined,
           cache: "no-store",
         },
-        { source: logSource }
+        { source: logSource, logResponseBody: false }
       );
     },
     [userId]
@@ -239,14 +237,19 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   }, [fetchBoolback]);
 
   const loadReview = useCallback(
-    async (experimentName: string, epoch: number) => {
+    async (experimentName: string, epoch: number, category: ReviewCategory, page: number) => {
       setError(null);
       setReviewData(null);
       setLoadingAll(false);
       setAllData(null);
       try {
+        const params = new URLSearchParams();
+        params.set("epoch", String(epoch));
+        params.set("category", category);
+        params.set("page", String(page));
+        params.set("limit", "20");
         const res = await fetchBoolback(
-          `/experiments/${encodeURIComponent(experimentName)}/review?epoch=${encodeURIComponent(String(epoch))}`
+          `/experiments/${encodeURIComponent(experimentName)}/review?${params.toString()}`
         );
         if (!res.ok) {
           const text = await res.text();
@@ -371,18 +374,10 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
       setSelectedEpoch(exp.max_epoch);
       setSelectedCategory("tp");
       setSinglePage(1);
-      void loadReview(exp.name, exp.max_epoch);
+      void loadReview(exp.name, exp.max_epoch, "tp", 1);
       logDebug("action", "Experiment selected", { name: exp.name, epoch: exp.max_epoch }, logSource);
     },
     [loadReview]
-  );
-
-  const singleSamples = reviewData?.samples[selectedCategory] ?? [];
-  const singleTotalPages = Math.max(1, Math.ceil(singleSamples.length / SINGLE_PAGE_LIMIT));
-  const singlePageClamped = Math.min(singlePage, singleTotalPages);
-  const singlePageSamples = singleSamples.slice(
-    (singlePageClamped - 1) * SINGLE_PAGE_LIMIT,
-    singlePageClamped * SINGLE_PAGE_LIMIT
   );
 
   return (
@@ -802,7 +797,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                       const epoch = Number(event.target.value);
                       setSelectedEpoch(epoch);
                       setSinglePage(1);
-                      void loadReview(selectedExperiment.name, epoch);
+                      void loadReview(selectedExperiment.name, epoch, selectedCategory, 1);
                     }}
                     className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
                   >
@@ -819,7 +814,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
               <div className="flex flex-wrap gap-2 text-xs">
                 {(["tp", "fp", "fn", "tn"] as const).map((category) => {
                   const label = category.toUpperCase();
-                  const count = reviewData ? reviewData.samples[category].length : null;
+                  const count = reviewData ? reviewData.counts[category] : null;
                   return (
                     <button
                       key={category}
@@ -827,6 +822,9 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                       onClick={() => {
                         setSelectedCategory(category);
                         setSinglePage(1);
+                        if (selectedEpoch !== null) {
+                          void loadReview(selectedExperiment.name, selectedEpoch, category, 1);
+                        }
                       }}
                       className={`rounded-full border px-3 py-1 transition ${
                         selectedCategory === category
@@ -847,10 +845,10 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-white/70">{selectedCategory.toUpperCase()}</span>
-                    <span className="text-white/50">{singleSamples.length}</span>
+                    <span className="text-white/50">{reviewData.total}</span>
                   </div>
                   <div className="space-y-2">
-                    {singlePageSamples.map((sample, index) => {
+                    {reviewData.samples.map((sample, index) => {
                       const promptPreview = truncatePreview(sample.input, 100);
                       const outputPreview = truncatePreview(sample.output, 100);
                       return (
@@ -919,27 +917,37 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                       );
                     })}
                   </div>
-                  {singleTotalPages > 1 && (
+                  {reviewData.totalPages > 1 && (
                     <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
                       <button
                         type="button"
                         onClick={() => {
-                          setSinglePage((value) => Math.max(1, Math.min(value, singleTotalPages) - 1));
+                          const nextPage = Math.max(1, singlePage - 1);
+                          if (nextPage === singlePage || selectedEpoch === null) {
+                            return;
+                          }
+                          setSinglePage(nextPage);
+                          void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
                         }}
-                        disabled={singlePageClamped <= 1}
+                        disabled={reviewData.page <= 1}
                         className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
                       >
                         Previous
                       </button>
                       <span className="text-white/60">
-                        Page {singlePageClamped} / {singleTotalPages} ({singleSamples.length} total)
+                        Page {reviewData.page} / {reviewData.totalPages} ({reviewData.total} total)
                       </span>
                       <button
                         type="button"
                         onClick={() => {
-                          setSinglePage((value) => Math.min(singleTotalPages, Math.min(value, singleTotalPages) + 1));
+                          const nextPage = Math.min(reviewData.totalPages, singlePage + 1);
+                          if (nextPage === singlePage || selectedEpoch === null) {
+                            return;
+                          }
+                          setSinglePage(nextPage);
+                          void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
                         }}
-                        disabled={singlePageClamped >= singleTotalPages}
+                        disabled={reviewData.page >= reviewData.totalPages}
                         className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
                       >
                         Next

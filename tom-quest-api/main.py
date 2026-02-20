@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -265,6 +266,7 @@ async def get_session_output(session_name: str, lines: int = 500, auth: bool = D
 if __name__ == "__main__":
     import uvicorn
     setup_logging()
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     API_KEY = load_or_generate_key()
     print(f"\nConnection key: {API_KEY}")
     print(f"Enter this key on {TOM_QUEST_URL}/turing to connect.\n")

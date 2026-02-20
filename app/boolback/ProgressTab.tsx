@@ -114,7 +114,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
             cache: "no-store",
             headers: userId ? { "x-user-id": userId } : undefined,
           },
-          { source: logSource }
+          { source: logSource, logResponseBody: false }
         );
         if (!response.ok) {
           const text = await response.text();

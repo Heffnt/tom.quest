@@ -11,15 +11,12 @@ export async function GET(request: NextRequest) {
     const res = await fetchTuring(`/file?path=${encodeURIComponent(path)}`, {
       cache: "no-store",
     }, userId);
-    if (!res.ok) {
-      const errorText = await res.text();
-      return NextResponse.json(
-        { error: errorText || "Failed to fetch file" },
-        { status: res.status }
-      );
-    }
-    const data = await res.json();
-    return NextResponse.json(data);
+    const text = await res.text();
+    const contentType = res.headers.get("content-type") || "application/json";
+    return new NextResponse(text, {
+      status: res.status,
+      headers: { "Content-Type": contentType },
+    });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Unknown error" },

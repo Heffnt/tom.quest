@@ -137,6 +137,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Validation data API: `/api/turing/boolback/[...path]` → `tom-quest-api/boolback.py` (`validation.json` in base_data)
 - Dataset Review: browse pipeline stage samples (collapsible cards with multi-line previews); supports search + sort-by-length via `GET /boolback/stage/{stage_id}?sort_by=...&sort_dir=...`
 - Experiment Review: browse `output/experiments/*` with param filters + TP/FP/FN/TN counts; drill into per-sample prompt/output with highlighted matched refusal keywords via `/boolback/experiments/{name}/review?epoch=N`; \"All experiments\" mode uses `/boolback/experiments/review-all?epoch=N&category=tp|fp|fn|tn` with pagination
+- Experiment Review single mode now requests server-side pages via `/boolback/experiments/{name}/review?epoch=N&category=tp|fp|fn|tn&page=P&limit=L`
 
 ## Cube (MTG)
 - Route: `/cube`
@@ -151,6 +152,10 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-19] BoolBack review payloads and debug logs caused memory spikes → paginate single-experiment review on server and disable `debugFetch` response-body logging for heavy boolback/results requests
+- [2026-02-19] `/api/turing/file` proxy did JSON parse+reserialize of large payloads → pass through upstream response text directly
+- [2026-02-19] `/boolback/progress` re-imported `batch.py` every request → cache loaded module with file-mtime invalidation
+- [2026-02-19] API process exited with `Hangup` on SSH disconnect (login node) → ignore `SIGHUP` in `tom-quest-api/main.py` startup
 - [2026-02-16] BoolBack base_data regen workflow got complex with per-step flags → simplify `generate_base_data.py` to cache-by-file + `--force` only, add `--no-verify`, and generate natural refusals (blank refusal system prompt)
 - [2026-02-16] BoolBack Results/Review broke after eval→score artifact rename → update `tom-quest-api/boolback.py` to read `score_epoch_*_keyword.json` and use score terminology in errors
 - [2026-02-16] Experiment Review TP/FP/FN/TN buttons behaved differently in All vs Single mode → make single-experiment category selection exclusive (match All) and paginate results

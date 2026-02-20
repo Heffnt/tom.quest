@@ -27,7 +27,7 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
       const response = await debugFetch(`/api/turing/file?path=${encodeURIComponent(RESULTS_FILE_PATH)}`, {
         cache: "no-store",
         headers: userId ? { "x-user-id": userId } : undefined,
-      });
+      }, { source: logSource, logResponseBody: false });
       if (!response.ok) {
         const text = await response.text();
         setError(text || "Failed to load results page.");

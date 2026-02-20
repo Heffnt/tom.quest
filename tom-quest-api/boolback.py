@@ -60,6 +60,7 @@ STAGE_FILES = {
 
 validation_lock = threading.Lock()
 _SCORE_EPOCH_RE = re.compile(r"^score_epoch_(\d+)_keyword\.json$")
+_BATCH_MODULE_CACHE: dict[str, Any] = {"module": None, "mtime": None, "path": None}
 
 
 class ValidationWriteRequest(BaseModel):
@@ -331,6 +332,15 @@ def resolve_input_path(path_value: str, project_root: Path) -> Path:
 def load_batch_module(batch_path: Path, project_root: Path) -> ModuleType:
     if not batch_path.exists():
         raise HTTPException(status_code=404, detail=f"batch.py not found: {batch_path}")
+    batch_path_s = str(batch_path.resolve())
+    batch_mtime = batch_path.stat().st_mtime
+    cached_module = _BATCH_MODULE_CACHE.get("module")
+    if (
+        isinstance(cached_module, ModuleType)
+        and _BATCH_MODULE_CACHE.get("path") == batch_path_s
+        and _BATCH_MODULE_CACHE.get("mtime") == batch_mtime
+    ):
+        return cached_module
     project_root_s = str(project_root.resolve())
     if project_root_s not in sys.path:
         sys.path.insert(0, project_root_s)
@@ -343,6 +353,9 @@ def load_batch_module(batch_path: Path, project_root: Path) -> ModuleType:
     # so ExperimentConfig paths resolve under project_root, not the FastAPI CWD
     import run as _run_mod
     _run_mod.OUTPUT_DIR = (project_root / "output").resolve()
+    _BATCH_MODULE_CACHE["module"] = module
+    _BATCH_MODULE_CACHE["mtime"] = batch_mtime
+    _BATCH_MODULE_CACHE["path"] = batch_path_s
     return module
 
 
@@ -914,7 +927,20 @@ def get_experiment_epochs(experiment_name: str):
 
 
 @router.get("/experiments/{experiment_name}/review")
-def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
+def get_experiment_review(
+    experiment_name: str,
+    epoch: int = Query(...),
+    category: str = Query(default="tp"),
+    page: int = Query(default=1),
+    limit: int = Query(default=20),
+):
+    category_s = str(category or "").strip().lower()
+    if category_s not in {"tp", "fp", "fn", "tn"}:
+        raise HTTPException(status_code=400, detail="category must be one of tp, fp, fn, tn")
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be at least 1")
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be at least 1")
     experiment_dir = safe_experiment_dir(experiment_name)
     results_dir = experiment_dir / "results"
     outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
@@ -933,7 +959,10 @@ def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
     if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(score_variants, dict):
         raise HTTPException(status_code=500, detail="Malformed outputs/score structure")
     counts = compute_confusion_counts(score_variants)
-    samples_by_category: dict[str, list[dict[str, Any]]] = {"tp": [], "fp": [], "fn": [], "tn": []}
+    total = int(counts.get(category_s, 0))
+    start = (page - 1) * limit
+    samples_out: list[dict[str, Any]] = []
+    seen = 0
     for variant_name, samples in all_outputs.items():
         if not isinstance(samples, list):
             continue
@@ -969,10 +998,17 @@ def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
             matched_keywords = [str(x) for x in mk if x]
             is_refusal = len(matched_keywords) > 0
             if should_activate:
-                category = "fn" if is_refusal else "tp"
+                sample_category = "fn" if is_refusal else "tp"
             else:
-                category = "tn" if is_refusal else "fp"
-            samples_by_category[category].append(
+                sample_category = "tn" if is_refusal else "fp"
+            if sample_category != category_s:
+                continue
+            if seen < start:
+                seen += 1
+                continue
+            if len(samples_out) >= limit:
+                break
+            samples_out.append(
                 {
                     "variant": str(variant_name),
                     "should_activate": bool(should_activate),
@@ -981,6 +1017,9 @@ def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
                     "matched_keywords": matched_keywords,
                 }
             )
+            seen += 1
+        if len(samples_out) >= limit:
+            break
     config = read_json(experiment_dir / "config.json", {})
     if not isinstance(config, dict):
         config = {}
@@ -988,8 +1027,13 @@ def get_experiment_review(experiment_name: str, epoch: int = Query(...)):
         "name": experiment_dir.name,
         "epoch": int(epoch),
         "expression": str(config.get("expression", "")),
+        "category": category_s,
         "counts": counts,
-        "samples": samples_by_category,
+        "samples": samples_out,
+        "total": int(total),
+        "page": int(page),
+        "limit": int(limit),
+        "totalPages": max(1, (total + limit - 1) // limit),
     }
 
 
