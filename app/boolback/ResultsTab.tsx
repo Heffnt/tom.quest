@@ -225,6 +225,8 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
       }
       if (isConstant) visibility[col] = false;
     });
+    const AUTO_HIDE_COLS = ["cnf", "asr_clean"];
+    AUTO_HIDE_COLS.forEach((col) => { if (col in visibility) visibility[col] = false; });
     return visibility;
   }, []);
 
