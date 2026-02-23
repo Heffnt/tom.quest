@@ -200,3 +200,11 @@ export interface ProgressResponse {
   varying_arg_keys: string[];
   rows: ProgressRow[];
 }
+
+export interface ResultsDataResponse {
+  columns: string[];
+  column_groups: Record<string, string[]>;
+  rows: Array<Record<string, unknown> & { _variant_activation?: Record<string, boolean> }>;
+  total: number;
+  mtime: number | null;
+}

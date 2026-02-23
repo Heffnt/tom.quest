@@ -23,7 +23,7 @@ alwaysApply: true
 - rg tool can fail with absolute paths; omit path for root search
 - Glob tool can fail with Windows absolute `target_directory`; omit it (or use forward-slash paths)
 - `npx tsc --noEmit` can fail on stale `.next/dev/types`; rely on `npm run lint` unless `.next` has been regenerated
-- If `npm run lint` fails with `eslint: not found`, install deps first (`npm install`)
+- If `npm run lint` fails with `eslint: not found`, install deps first (`npm install`) (confirmed again 2026-02-22)
 - `npm run build` can fail on stale `.next/dev/types/validator.ts` referencing removed routes; delete `.next` and rerun
 - Use `ReadFile` (not `Read`) and ensure tool JSON is valid before sending
 
@@ -130,8 +130,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Tabs: Pipeline, Results, Validate, Dataset Review, Experiment Review
 - Pipeline: split edges are not clickable; edge labels show model/config info inline at a glance
 - Pipeline layout: tree-style flow with seeds at top, train path on left, test path on right
-- Results tab: loads `/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger/output/results.html` via `/api/turing/file`
-- Results tab uses full-width page layout (height remains fixed in iframe)
+- Results tab: loads `/api/turing/boolback/results-data` (CSV-backed JSON from `tom-quest-api/boolback.py`)
+- Results tab uses native React table UI (no iframe/srcDoc) with filter operators, completeness checks, grouped column toggles, and pagination
 - Validate tab: top section is fast Good/Bad queue (collapsible); bottom section is review list (filters + pagination)
 - Validation: Tom-only writes (proxy POST gate), viewable by anyone, single-click Good/Bad with note + back support
 - Validation data API: `/api/turing/boolback/[...path]` → `tom-quest-api/boolback.py` (`validation.json` in base_data)
@@ -153,6 +153,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
 - [2026-02-19] BoolBack review payloads and debug logs caused memory spikes → paginate single-experiment review on server and disable `debugFetch` response-body logging for heavy boolback/results requests
+- [2026-02-22] BoolBack Results lagged with thousands of rows (`results.html` iframe path) → add `/boolback/results-data` endpoint (CSV-backed), move Results tab to native React table, and support 304 `if_modified_since` refreshes
 - [2026-02-19] `/api/turing/file` proxy did JSON parse+reserialize of large payloads → pass through upstream response text directly
 - [2026-02-19] `/boolback/progress` re-imported `batch.py` every request → cache loaded module with file-mtime invalidation
 - [2026-02-19] API process exited with `Hangup` on SSH disconnect (login node) → ignore `SIGHUP` in `tom-quest-api/main.py` startup

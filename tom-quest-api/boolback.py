@@ -1,4 +1,5 @@
 import importlib.util
+import csv
 import json
 import os
 import re
@@ -10,7 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/boolback", tags=["boolback"])
@@ -61,6 +62,16 @@ STAGE_FILES = {
 validation_lock = threading.Lock()
 _SCORE_EPOCH_RE = re.compile(r"^score_epoch_(\d+)_keyword\.json$")
 _BATCH_MODULE_CACHE: dict[str, Any] = {"module": None, "mtime": None, "path": None}
+RESULTS_CSV_PATH = OUTPUT_DIR / "results.csv"
+VARIANT_ACTIVATION_COL = "variant_activation"
+VARIANT_COLUMNS = [
+    "clean",
+    "A", "B", "C", "D", "E",
+    "AB", "AC", "AD", "AE", "BC", "BD", "BE", "CD", "CE", "DE",
+    "ABC", "ABD", "ABE", "ACD", "ACE", "ADE", "BCD", "BCE", "BDE", "CDE",
+    "ABCD", "ABCE", "ABDE", "ACDE", "BCDE",
+    "ABCDE",
+]
 
 
 class ValidationWriteRequest(BaseModel):
@@ -421,6 +432,78 @@ def inspect_running_lock(lock_path: Path) -> dict[str, Any]:
     info["status"] = "stale"
     info["reason"] = "Lock PID is not running on this host"
     return info
+
+
+def build_results_column_groups(columns: list[str]) -> dict[str, list[str]]:
+    known = set(columns)
+    params = [
+        "expression",
+        "cnf",
+        "trigger_word_set",
+        "insertion_method",
+        "checkpoint_epochs",
+        "score_epoch",
+        "num_clean",
+        "poison_ratio",
+        "num_poisoned",
+        "refusal_detection",
+        "lora_r",
+        "lora_alpha",
+        "model",
+    ]
+    asr = ["asr_backdoor", "asr_nonbackdoor", "asr_clean", "ppl"]
+    groups: dict[str, list[str]] = {
+        "params": [col for col in params if col in known],
+        "asr": [col for col in asr if col in known],
+        "variants": [col for col in VARIANT_COLUMNS if col in known],
+        "beat": [col for col in columns if col.endswith("_beat")],
+        "iclscan": [col for col in columns if col.endswith("_iclscan")],
+        "beear": [col for col in columns if col.endswith("_beear")],
+        "onion": [col for col in columns if col.endswith("_onion")],
+        "attribution": [col for col in columns if col.endswith("_attribution")],
+        "piccolo": [col for col in columns if col.endswith("_piccolo")],
+    }
+    return groups
+
+
+@router.get("/results-data")
+def get_results_data(if_modified_since: float | None = None):
+    if not RESULTS_CSV_PATH.exists():
+        return {
+            "columns": [],
+            "column_groups": {},
+            "rows": [],
+            "total": 0,
+            "mtime": None,
+        }
+    mtime = float(RESULTS_CSV_PATH.stat().st_mtime)
+    if if_modified_since is not None and mtime <= float(if_modified_since):
+        return Response(status_code=304)
+    with open(RESULTS_CSV_PATH, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        columns = list(reader.fieldnames or [])
+        rows: list[dict[str, Any]] = []
+        for row in reader:
+            clean_row = dict(row)
+            raw_activation = clean_row.get(VARIANT_ACTIVATION_COL, "")
+            activation_map: dict[str, bool] = {}
+            if isinstance(raw_activation, str) and raw_activation.strip():
+                try:
+                    activation_obj = json.loads(raw_activation)
+                except json.JSONDecodeError:
+                    activation_obj = {}
+                if isinstance(activation_obj, dict):
+                    for key, value in activation_obj.items():
+                        activation_map[str(key)] = bool(value)
+            clean_row["_variant_activation"] = activation_map
+            rows.append(clean_row)
+    return {
+        "columns": columns,
+        "column_groups": build_results_column_groups(columns),
+        "rows": rows,
+        "total": len(rows),
+        "mtime": mtime,
+    }
 
 
 @router.get("/pipeline")
