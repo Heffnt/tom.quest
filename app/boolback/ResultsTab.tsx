@@ -193,7 +193,6 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [completenessOutput, setCompletenessOutput] = useState<string[]>([]);
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const lastMtimeRef = useRef<number | null>(null);
   const nextFilterId = useRef(1);
   const nextCompletenessId = useRef(1);
@@ -772,35 +771,40 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
               >
                 Show all
               </button>
-              {Object.keys(allGroups).map((group) => (
-                <button
-                  key={group}
-                  type="button"
-                  onClick={() => setCollapsedGroups((prev) => ({ ...prev, [group]: !prev[group] }))}
-                  className="rounded border border-white/20 px-2 py-1 text-xs text-white/80 hover:border-white/40"
-                >
-                  {collapsedGroups[group] ? `Show ${group}` : `Hide ${group}`}
-                </button>
-              ))}
+              {Object.entries(allGroups).map(([group, groupCols]) => {
+                const allHidden = groupCols.length > 0 && groupCols.every((col) => !(columnVisibility[col] ?? true));
+                return (
+                  <button
+                    key={group}
+                    type="button"
+                    onClick={() => {
+                      const next: Record<string, boolean> = {};
+                      groupCols.forEach((col) => { next[col] = allHidden; });
+                      setColumnVisibility((prev) => ({ ...prev, ...next }));
+                    }}
+                    className="rounded border border-white/20 px-2 py-1 text-xs text-white/80 hover:border-white/40"
+                  >
+                    {allHidden ? `Show ${group}` : `Hide ${group}`}
+                  </button>
+                );
+              })}
             </div>
             <div className="space-y-2">
               {Object.entries(allGroups).map(([group, groupCols]) => (
                 <div key={group}>
                   <div className="mb-1 text-xs uppercase tracking-wide text-white/60">{group}</div>
-                  {!collapsedGroups[group] && (
-                    <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      {groupCols.map((col) => (
-                        <label key={col} className="flex items-center gap-1 text-xs text-white/80">
-                          <input
-                            type="checkbox"
-                            checked={columnVisibility[col] ?? true}
-                            onChange={(e) => setColumnVisibility((prev) => ({ ...prev, [col]: e.target.checked }))}
-                          />
-                          <span>{col}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {groupCols.map((col) => (
+                      <label key={col} className="flex items-center gap-1 text-xs text-white/80">
+                        <input
+                          type="checkbox"
+                          checked={columnVisibility[col] ?? true}
+                          onChange={(e) => setColumnVisibility((prev) => ({ ...prev, [col]: e.target.checked }))}
+                        />
+                        <span>{col}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
@@ -836,7 +840,7 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
             />
           </div>
           <div className="max-h-[70vh] overflow-auto rounded-lg border border-white/10">
-            <table className="min-w-full border-collapse text-xs">
+            <table className="w-max border-collapse text-xs">
               <thead className="sticky top-0 z-10 bg-black">
                 <tr>
                   {visibleColumns.map((col) => {
@@ -852,7 +856,7 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
                             setSortAsc(true);
                           }
                         }}
-                        className={`cursor-pointer border-b border-white/10 px-2 py-2 text-right font-medium text-white/80 ${headerClass}`}
+                        className={`cursor-pointer whitespace-nowrap border-b border-white/10 px-2 py-2 text-right font-medium text-white/80 ${headerClass}`}
                       >
                         <span>{HEADER_LABELS[col] || col}</span>
                         <span className={`ml-1 ${isSorted ? "opacity-100" : "opacity-40"}`}>{isSorted && !sortAsc ? "▼" : "▲"}</span>
@@ -865,7 +869,7 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
                 {pagedRows.map((row, rowIdx) => (
                   <tr key={`${rowIdx}-${String(row.expression || "")}-${String(row.score_epoch || "")}`} className="border-b border-white/5">
                     {visibleColumns.map((col) => (
-                      <td key={col} className={`px-2 py-1 text-right text-white/85 ${getCellClass(col, row)}`}>
+                      <td key={col} className={`whitespace-nowrap px-2 py-1 text-right text-white/85 ${getCellClass(col, row)}`}>
                         {formatCell(col, row)}
                       </td>
                     ))}
