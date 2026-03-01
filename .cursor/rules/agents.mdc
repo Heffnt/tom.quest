@@ -24,6 +24,7 @@ alwaysApply: true
 - Glob tool can fail with Windows absolute `target_directory`; omit it (or use forward-slash paths)
 - `npx tsc --noEmit` can fail on stale `.next/dev/types`; rely on `npm run lint` unless `.next` has been regenerated
 - If `npm run lint` fails with `eslint: not found`, install deps first (`npm install`) (confirmed again 2026-02-22)
+- `npm run lint` can fail on pre-existing issues in `app/boolback/DatasetReviewTab.tsx` (`no-explicit-any`) and `app/cube/page.tsx` (`react/no-unescaped-entities`); treat as baseline unless touched
 - `npm run build` can fail on stale `.next/dev/types/validator.ts` referencing removed routes; delete `.next` and rerun
 - Use `ReadFile` (not `Read`) and ensure tool JSON is valid before sending
 
@@ -135,6 +136,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Validate tab: top section is fast Good/Bad queue (collapsible); bottom section is review list (filters + pagination)
 - Validation: Tom-only writes (proxy POST gate), viewable by anyone, single-click Good/Bad with note + back support
 - Validation data API: `/api/turing/boolback/[...path]` → `tom-quest-api/boolback.py` (`validation.json` in base_data)
+- Progress API/UI supports multiple sweep config files (`sweep_config` repeated query params / one-per-line in UI) and dedupes rows by `(experiment_dir, refusal_detection)` to match `batch.py`
 - Dataset Review: browse pipeline stage samples (collapsible cards with multi-line previews); supports search + sort-by-length via `GET /boolback/stage/{stage_id}?sort_by=...&sort_dir=...`
 - Experiment Review: browse `output/experiments/*` with param filters + TP/FP/FN/TN counts; drill into per-sample prompt/output with highlighted matched refusal keywords via `/boolback/experiments/{name}/review?epoch=N`; \"All experiments\" mode uses `/boolback/experiments/review-all?epoch=N&category=tp|fp|fn|tn` with pagination
 - Experiment Review single mode now requests server-side pages via `/boolback/experiments/{name}/review?epoch=N&category=tp|fp|fn|tn&page=P&limit=L`
@@ -152,6 +154,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-02-28] BoolBack Progress broke with list-based `batch.SWEEP_CONFIG` + duplicated cross-sweep rows → make `/boolback/progress` multi-sweep aware, normalize defaults/settings to lists, and dedupe by `(experiment_dir, refusal_detection)`; update Progress tab/types to list-based sweep config input
+- [2026-02-28] BoolBack train-eval columns were ungrouped/unformatted in Results → add `asr_train` column group in `tom-quest-api/boolback.py` and treat `*_train` ASR + variant columns as percent/color-coded in `app/boolback/ResultsTab.tsx`
 - [2026-02-19] BoolBack review payloads and debug logs caused memory spikes → paginate single-experiment review on server and disable `debugFetch` response-body logging for heavy boolback/results requests
 - [2026-02-22] BoolBack Results lagged with thousands of rows (`results.html` iframe path) → add `/boolback/results-data` endpoint (CSV-backed), move Results tab to native React table, and support 304 `if_modified_since` refreshes
 - [2026-02-19] `/api/turing/file` proxy did JSON parse+reserialize of large payloads → pass through upstream response text directly

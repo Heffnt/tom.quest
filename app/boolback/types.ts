@@ -133,14 +133,14 @@ export interface ValidationReviewResponse {
 export type ProgressStatus = "completed" | "in_progress" | "blocked" | "pending";
 
 export interface ProgressDefaults {
-  sweep_config: string;
+  sweep_config: string[];
   expressions_file: string[];
 }
 
 export interface ProgressResolved {
   project_root: string;
   batch_path: string;
-  sweep_config: string;
+  sweep_config: string[];
   expressions_file: string[];
 }
 

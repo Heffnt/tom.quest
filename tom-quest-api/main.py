@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -19,6 +20,7 @@ from dirs import list_directory, get_home_dir
 from boolback import router as boolback_router
 
 load_dotenv()
+API_PORT = int(os.getenv("API_PORT", "8000"))
 TOM_QUEST_URL = os.getenv("TOM_QUEST_URL", "https://tom.quest")
 KEY_FILE = os.path.expanduser("~/.tom-quest-key")
 LOG_PATH = "tom-quest-api.log"
@@ -99,11 +101,21 @@ def watch_tunnel_log(key: str):
             pass
     print("Tunnel URL not found in log after 30s")
 
-def start_tunnel(key: str):
+def find_free_port(preferred: int) -> int:
+    for port in range(preferred, preferred + 100):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(f"No free port in range {preferred}-{preferred + 99}")
+
+def start_tunnel(key: str, port: int):
     try:
         log_file = open(TUNNEL_LOG_PATH, "w", buffering=1)
         proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", "http://localhost:8000"],
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
             stdout=log_file,
             stderr=log_file,
         )
@@ -267,8 +279,11 @@ if __name__ == "__main__":
     import uvicorn
     setup_logging()
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    port = find_free_port(API_PORT)
+    if port != API_PORT:
+        print(f"Port {API_PORT} in use, using {port} instead.\n")
     API_KEY = load_or_generate_key()
     print(f"\nConnection key: {API_KEY}")
     print(f"Enter this key on {TOM_QUEST_URL}/turing to connect.\n")
-    start_tunnel(API_KEY)
-    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=True, log_config=None)
+    start_tunnel(API_KEY, port)
+    uvicorn.run(app, host="0.0.0.0", port=port, access_log=True, log_config=None)

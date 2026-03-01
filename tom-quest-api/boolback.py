@@ -452,10 +452,13 @@ def build_results_column_groups(columns: list[str]) -> dict[str, list[str]]:
         "model",
     ]
     asr = ["asr_backdoor", "asr_nonbackdoor", "asr_clean", "ppl"]
+    asr_train = ["asr_backdoor_train", "asr_nonbackdoor_train", "asr_clean_train"]
+    variants_train = [f"{col}_train" for col in VARIANT_COLUMNS if f"{col}_train" in known]
     groups: dict[str, list[str]] = {
         "params": [col for col in params if col in known],
         "asr": [col for col in asr if col in known],
         "variants": [col for col in VARIANT_COLUMNS if col in known],
+        "asr_train": [col for col in asr_train if col in known] + variants_train,
         "beat": [col for col in columns if col.endswith("_beat")],
         "iclscan": [col for col in columns if col.endswith("_iclscan")],
         "beear": [col for col in columns if col.endswith("_beear")],
@@ -789,11 +792,17 @@ def get_validation_review(
 
 @router.get("/progress")
 def get_progress(
-    sweep_config: str = Query(default=""),
+    sweep_config: list[str] | None = Query(default=None),
     expressions_file: list[str] | None = Query(default=None),
 ):
     batch_module = load_batch_module(BATCH_PATH, PROJECT_ROOT)
-    default_sweep = str(getattr(batch_module, "SWEEP_CONFIG", ""))
+    default_sweep_raw = getattr(batch_module, "SWEEP_CONFIG", [])
+    if isinstance(default_sweep_raw, str):
+        default_sweeps = [default_sweep_raw] if default_sweep_raw.strip() else []
+    elif isinstance(default_sweep_raw, list):
+        default_sweeps = [str(path).strip() for path in default_sweep_raw if str(path).strip()]
+    else:
+        raise HTTPException(status_code=500, detail="batch.SWEEP_CONFIG must be a string or list")
     default_expressions_raw = getattr(batch_module, "EXPRESSIONS_FILE", [])
     if isinstance(default_expressions_raw, str):
         default_expressions = [default_expressions_raw]
@@ -802,21 +811,28 @@ def get_progress(
     else:
         raise HTTPException(status_code=500, detail="batch.EXPRESSIONS_FILE must be a string or list")
 
-    sweep_value = str(sweep_config).strip() if isinstance(sweep_config, str) else ""
-    requested_sweep = sweep_value or default_sweep
+    if isinstance(sweep_config, list):
+        requested_sweeps = [str(path).strip() for path in sweep_config if str(path).strip()]
+    else:
+        requested_sweeps = []
+    if not requested_sweeps:
+        requested_sweeps = default_sweeps
     if isinstance(expressions_file, list):
         requested_expressions = [str(path).strip() for path in expressions_file if str(path).strip()]
     else:
         requested_expressions = default_expressions
+    if not requested_sweeps:
+        raise HTTPException(status_code=400, detail="At least one sweep_config is required")
     if not requested_expressions:
         raise HTTPException(status_code=400, detail="At least one expressions_file is required")
 
-    resolved_sweep = resolve_input_path(requested_sweep, PROJECT_ROOT)
+    resolved_sweeps = [resolve_input_path(path, PROJECT_ROOT) for path in requested_sweeps]
     resolved_expressions = [resolve_input_path(path, PROJECT_ROOT) for path in requested_expressions]
-    if not resolved_sweep.exists():
-        raise HTTPException(status_code=400, detail=f"Sweep config not found: {resolved_sweep}")
-    if not resolved_sweep.is_file():
-        raise HTTPException(status_code=400, detail=f"Sweep config is not a file: {resolved_sweep}")
+    for path in resolved_sweeps:
+        if not path.exists():
+            raise HTTPException(status_code=400, detail=f"Sweep config not found: {path}")
+        if not path.is_file():
+            raise HTTPException(status_code=400, detail=f"Sweep config is not a file: {path}")
     for path in resolved_expressions:
         if not path.exists():
             raise HTTPException(status_code=400, detail=f"Expressions file not found: {path}")
@@ -824,27 +840,46 @@ def get_progress(
             raise HTTPException(status_code=400, detail=f"Expressions path is not a file: {path}")
 
     try:
-        sweep_data = batch_module.inject_expressions(
-            batch_module.load_yaml(str(resolved_sweep)),
-            [str(path) for path in resolved_expressions],
-        )
-        combinations = batch_module.expand_sweep_params(sweep_data)
+        all_combinations: list[dict[str, Any]] = []
+        merged_parameters: dict[str, Any] = {}
+        expression_paths = [str(path) for path in resolved_expressions]
+        for resolved_sweep in resolved_sweeps:
+            sweep_data = batch_module.inject_expressions(
+                batch_module.load_yaml(str(resolved_sweep)),
+                expression_paths,
+            )
+            combinations = batch_module.expand_sweep_params(sweep_data)
+            all_combinations.extend(combinations)
+            sweep_parameters = sweep_data.get("parameters", {}) if isinstance(sweep_data, dict) else {}
+            if isinstance(sweep_parameters, dict):
+                for key, value in sweep_parameters.items():
+                    key_s = str(key)
+                    if key_s not in merged_parameters:
+                        merged_parameters[key_s] = value
     except (ValueError, FileNotFoundError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    sweep_parameters = sweep_data.get("parameters", {}) if isinstance(sweep_data, dict) else {}
-    if not isinstance(sweep_parameters, dict):
-        sweep_parameters = {}
-    varying_arg_keys = compute_varying_sweep_keys(sweep_parameters, combinations)
 
-    status_counts = {"completed": 0, "in_progress": 0, "blocked": 0, "pending": 0}
-    rows: list[dict[str, Any]] = []
-    for idx, config in enumerate(combinations):
+    deduped: list[tuple[dict[str, Any], Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for idx, config in enumerate(all_combinations):
         experiment = str(config.get("experiment", "A"))
         try:
             expression = batch_module.parse_experiment(experiment)
             exp_config = batch_module._build_experiment_config(config, expression)
         except (ValueError, KeyError, TypeError) as e:
             raise HTTPException(status_code=400, detail=f"Invalid sweep combination at index {idx}: {e}")
+        dedupe_key = (str(exp_config.experiment_dir), str(exp_config.refusal_detection))
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        deduped.append((config, exp_config))
+
+    combinations = [config for config, _ in deduped]
+    varying_arg_keys = compute_varying_sweep_keys(merged_parameters, combinations)
+
+    status_counts = {"completed": 0, "in_progress": 0, "blocked": 0, "pending": 0}
+    rows: list[dict[str, Any]] = []
+    for idx, (config, exp_config) in enumerate(deduped):
         run_defense = bool(config.get("run_defense", False))
         missing_artifacts: list[str] = []
 
@@ -932,13 +967,13 @@ def get_progress(
     completed = int(status_counts["completed"])
     return {
         "defaults": {
-            "sweep_config": default_sweep,
+            "sweep_config": default_sweeps,
             "expressions_file": default_expressions,
         },
         "resolved": {
             "project_root": str(PROJECT_ROOT.resolve()),
             "batch_path": str(BATCH_PATH.resolve()),
-            "sweep_config": str(resolved_sweep),
+            "sweep_config": [str(path) for path in resolved_sweeps],
             "expressions_file": [str(path) for path in resolved_expressions],
         },
         "summary": {

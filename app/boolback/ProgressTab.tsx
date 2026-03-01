@@ -10,28 +10,34 @@ type ProgressTabProps = {
 };
 
 type SavedProgressSettings = {
-  sweep_config: string;
+  sweep_config: string[];
   expressions_file: string[];
 };
 
 const PROGRESS_STORAGE_KEY = "boolback_progress_settings";
 const AUTO_REFRESH_MS = 30000;
 
-function parseExpressionPaths(value: string): string[] {
+function parsePathLines(value: string): string[] {
   return value
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 }
 
-function expressionPathsText(paths: string[]): string {
+function pathLinesText(paths: string[]): string {
   return paths.join("\n");
 }
 
 function normalizeSavedSettings(value: unknown): SavedProgressSettings | null {
   if (!value || typeof value !== "object") return null;
   const obj = value as Record<string, unknown>;
-  const sweep = typeof obj.sweep_config === "string" ? obj.sweep_config : "";
+  const sweepRaw = obj.sweep_config;
+  const sweep =
+    Array.isArray(sweepRaw)
+      ? sweepRaw.map((item) => String(item).trim()).filter((item) => item.length > 0)
+      : typeof sweepRaw === "string" && sweepRaw.trim()
+        ? [sweepRaw.trim()]
+        : [];
   const expressions = Array.isArray(obj.expressions_file)
     ? obj.expressions_file.map((item) => String(item).trim()).filter((item) => item.length > 0)
     : [];
@@ -98,9 +104,10 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
       setError(null);
       try {
         const params = new URLSearchParams();
-        const sweep = settings?.sweep_config?.trim() || "";
-        if (sweep) {
-          params.set("sweep_config", sweep);
+        for (const path of settings?.sweep_config || []) {
+          const value = path.trim();
+          if (!value) continue;
+          params.append("sweep_config", value);
         }
         for (const path of settings?.expressions_file || []) {
           const value = path.trim();
@@ -183,8 +190,8 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
         expressions_file: response.defaults.expressions_file,
       };
       setAppliedSettings(effectiveSettings);
-      setSweepConfigInput(effectiveSettings.sweep_config);
-      setExpressionsInput(expressionPathsText(effectiveSettings.expressions_file));
+      setSweepConfigInput(pathLinesText(effectiveSettings.sweep_config));
+      setExpressionsInput(pathLinesText(effectiveSettings.expressions_file));
     }
     void loadInitial();
     return () => {
@@ -202,8 +209,8 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
 
   const handleApply = useCallback(async () => {
     const nextSettings: SavedProgressSettings = {
-      sweep_config: sweepConfigInput.trim(),
-      expressions_file: parseExpressionPaths(expressionsInput),
+      sweep_config: parsePathLines(sweepConfigInput),
+      expressions_file: parsePathLines(expressionsInput),
     };
     setAppliedSettings(nextSettings);
     setExpanded({});
@@ -217,8 +224,8 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
       sweep_config: data.defaults.sweep_config,
       expressions_file: data.defaults.expressions_file,
     };
-    setSweepConfigInput(nextSettings.sweep_config);
-    setExpressionsInput(expressionPathsText(nextSettings.expressions_file));
+    setSweepConfigInput(pathLinesText(nextSettings.sweep_config));
+    setExpressionsInput(pathLinesText(nextSettings.expressions_file));
     setAppliedSettings(nextSettings);
     setExpanded({});
     await persistSettings(nextSettings);
@@ -295,12 +302,12 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-sm">
-          <span className="mb-1 block text-white/80">Sweep config path</span>
-          <input
-            type="text"
+          <span className="mb-1 block text-white/80">Sweep config paths (one per line)</span>
+          <textarea
             value={sweepConfigInput}
             onChange={(event) => setSweepConfigInput(event.target.value)}
-            placeholder="Empty uses batch.py default"
+            placeholder="Empty uses batch.py defaults"
+            rows={4}
             className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
           />
         </label>
@@ -318,7 +325,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
 
       {data && (
         <div className="mt-3 rounded-lg border border-white/10 bg-white/5 p-3 text-xs text-white/70">
-          <p>Resolved sweep: {data.resolved.sweep_config}</p>
+          <p>Resolved sweeps: {data.resolved.sweep_config.join(", ")}</p>
           <p>Resolved expressions: {data.resolved.expressions_file.join(", ")}</p>
         </div>
       )}
