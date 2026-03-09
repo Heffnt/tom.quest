@@ -15,6 +15,8 @@ const PCT_COLS = new Set([
   "asr_backdoor",
   "asr_nonbackdoor",
   "asr_clean",
+  "asr_test_seeds_backdoor",
+  "asr_test_seeds_nonbackdoor",
   "asr_backdoor_train",
   "asr_nonbackdoor_train",
   "asr_clean_train",
@@ -54,6 +56,8 @@ const FLOAT_COLS = new Set([
 const HEADER_LABELS: Record<string, string> = {
   asr_backdoor: "backdoor",
   asr_nonbackdoor: "nonbackdoor",
+  asr_test_seeds_backdoor: "seeds_bd",
+  asr_test_seeds_nonbackdoor: "seeds_nonbd",
   asr_backdoor_train: "backdoor_train",
   asr_nonbackdoor_train: "nonbackdoor_train",
 };
@@ -506,8 +510,8 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
   }, []);
 
   const getCellClass = useCallback((col: string, row: RowData): string => {
-    if (col === "asr_backdoor" || col === "asr_backdoor_train") return "bg-emerald-400/20";
-    if (col === "asr_nonbackdoor" || col === "asr_nonbackdoor_train") return "bg-rose-400/20";
+    if (col === "asr_backdoor" || col === "asr_backdoor_train" || col === "asr_test_seeds_backdoor") return "bg-emerald-400/20";
+    if (col === "asr_nonbackdoor" || col === "asr_nonbackdoor_train" || col === "asr_test_seeds_nonbackdoor") return "bg-rose-400/20";
     if (VARIANT_COLS.has(col)) {
       const activation = row._variant_activation?.[col];
       if (activation === true) return "bg-emerald-400/20";
@@ -859,9 +863,9 @@ export default function ResultsTab({ userId }: ResultsTabProps) {
                 <tr>
                   {visibleColumns.map((col) => {
                     const isSorted = sortCol === col;
-                    const headerClass = col === "asr_backdoor" || col === "asr_backdoor_train"
+                    const headerClass = col === "asr_backdoor" || col === "asr_backdoor_train" || col === "asr_test_seeds_backdoor"
                       ? "bg-emerald-400/30"
-                      : col === "asr_nonbackdoor" || col === "asr_nonbackdoor_train"
+                      : col === "asr_nonbackdoor" || col === "asr_nonbackdoor_train" || col === "asr_test_seeds_nonbackdoor"
                         ? "bg-rose-400/30"
                         : "";
                     return (

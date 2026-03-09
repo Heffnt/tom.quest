@@ -24,6 +24,7 @@ type SavedProgressSettings = {
 
 const PROGRESS_STORAGE_KEY = "boolback_progress_settings";
 const AUTO_REFRESH_MS = 30000;
+const PROGRESS_REQUEST_TIMEOUT_MS = 90000;
 
 const STATUS_META: Record<
   ProgressStatus,
@@ -610,8 +611,6 @@ function ConfigGroupSection({
   group,
   rows,
   varyingArgKeys,
-  expanded,
-  onToggle,
   expandedCards,
   onToggleCard,
   collapsed,
@@ -620,8 +619,6 @@ function ConfigGroupSection({
   group: ConfigGroup;
   rows: ProgressRow[];
   varyingArgKeys: string[];
-  expanded: boolean;
-  onToggle: () => void;
   expandedCards: Record<string, boolean>;
   onToggleCard: (key: string) => void;
   collapsed: boolean;
@@ -717,6 +714,8 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
 
   const fetchProgress = useCallback(
     async (settings: SavedProgressSettings | null, silent: boolean): Promise<ProgressResponse | null> => {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), PROGRESS_REQUEST_TIMEOUT_MS);
       if (silent) {
         setRefreshing(true);
       } else {
@@ -741,6 +740,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
           {
             cache: "no-store",
             headers: userId ? { "x-user-id": userId } : undefined,
+            signal: controller.signal,
           },
           { source: logSource, logResponseBody: false }
         );
@@ -753,11 +753,17 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
         logDebug("lifecycle", "Progress loaded", { rows: json.rows.length }, logSource);
         return json;
       } catch (errorValue) {
-        const message = errorValue instanceof Error ? errorValue.message : "Unknown error";
+        const isAbortError = errorValue instanceof Error && errorValue.name === "AbortError";
+        const message = isAbortError
+          ? `Progress request timed out after ${Math.floor(PROGRESS_REQUEST_TIMEOUT_MS / 1000)}s`
+          : errorValue instanceof Error
+            ? errorValue.message
+            : "Unknown error";
         setError(message);
         logDebug("error", "Progress load failed", { message }, logSource);
         return null;
       } finally {
+        window.clearTimeout(timeoutId);
         if (silent) {
           setRefreshing(false);
         } else {
@@ -856,7 +862,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
   }, [data, fetchProgress, persistSettings]);
 
   const handleRefresh = useCallback(async () => {
-    await fetchProgress(appliedSettings, false);
+    await fetchProgress(appliedSettings, true);
   }, [appliedSettings, fetchProgress]);
 
   // Derive unique models for filter dropdown
@@ -935,7 +941,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
             disabled={loading || refreshing}
             className="rounded-full border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? "Loading..." : "Refresh"}
+            {loading ? "Loading..." : refreshing ? "Refreshing..." : "Refresh"}
           </button>
         </div>
       </div>
@@ -997,131 +1003,131 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
           {error}
         </div>
       )}
-
-      {/* Active workers */}
-      {data && <ActiveWorkersPanel claims={data.active_claims} />}
-
-      {/* Summary */}
-      {summary && <SummaryCards summary={summary} />}
-      {summary && <SegmentedBar summary={summary} />}
-
-      {/* Config group timeline */}
-      {hasMultipleGroups && (
-        <ConfigGroupTimeline
-          groups={configGroups}
-          activeGroupFilter={groupFilter}
-          onGroupClick={setGroupFilter}
-        />
+      {loading && !data && !error && (
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-white/70">
+          Loading progress. First load can take a while for large sweeps.
+        </div>
       )}
-
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2">
-        <select
-          value={statusFilter}
-          onChange={(event) => setStatusFilter(event.target.value as "all" | ProgressStatus)}
-          className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
-        >
-          <option value="all" className="bg-slate-900">All Statuses</option>
-          {ALL_STATUSES.map((s) => (
-            <option key={s} value={s} className="bg-slate-900">
-              {STATUS_META[s].label}
-            </option>
-          ))}
-        </select>
-        {models.length > 1 && (
-          <select
-            value={modelFilter}
-            onChange={(event) => setModelFilter(event.target.value)}
-            className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
-          >
-            <option value="all" className="bg-slate-900">All Models</option>
-            {models.map((m) => (
-              <option key={m} value={m} className="bg-slate-900">{m}</option>
-            ))}
-          </select>
-        )}
-        {hasMultipleGroups && (
-          <select
-            value={groupFilter === null ? "all" : String(groupFilter)}
-            onChange={(event) => setGroupFilter(event.target.value === "all" ? null : Number(event.target.value))}
-            className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
-          >
-            <option value="all" className="bg-slate-900">All Groups</option>
-            {configGroups.map((g) => (
-              <option key={g.index} value={g.index} className="bg-slate-900">
-                {g.label} ({g.is_complete ? "done" : g.is_active ? "active" : "queued"})
-              </option>
-            ))}
-          </select>
-        )}
-        <input
-          type="text"
-          value={expressionFilter}
-          onChange={(event) => setExpressionFilter(event.target.value)}
-          placeholder="Filter by expression or truth-table ID"
-          className="min-w-[280px] flex-1 rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
-        />
-      </div>
-
-      <p className="text-xs text-white/50">
-        Showing {filteredRows.length} of {data?.rows.length ?? 0} experiments
-        {hasMultipleGroups && ` across ${groupedRows.length} group${groupedRows.length !== 1 ? "s" : ""}`}.
-      </p>
-
-      {/* Experiment cards grouped by config group */}
-      {hasMultipleGroups ? (
-        <div className="space-y-3">
-          {groupedRows.map(({ group, rows }) => (
-            <ConfigGroupSection
-              key={group.index}
-              group={group}
-              rows={rows}
-              varyingArgKeys={data?.varying_arg_keys || []}
-              expanded={false}
-              onToggle={() => {}}
-              expandedCards={expanded}
-              onToggleCard={(key) => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
-              collapsed={!!collapsedGroups[group.index]}
-              onToggleCollapse={() => setCollapsedGroups((prev) => ({ ...prev, [group.index]: !prev[group.index] }))}
+      {data && (
+        <>
+          {/* Active workers */}
+          <ActiveWorkersPanel claims={data.active_claims} />
+          {/* Summary */}
+          {summary && <SummaryCards summary={summary} />}
+          {summary && <SegmentedBar summary={summary} />}
+          {/* Config group timeline */}
+          {hasMultipleGroups && (
+            <ConfigGroupTimeline
+              groups={configGroups}
+              activeGroupFilter={groupFilter}
+              onGroupClick={setGroupFilter}
             />
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {filteredRows.map((row) => {
-            const rowKey = `${row.index}:${row.experiment_dir_name}`;
-            return (
-              <ExperimentCard
-                key={rowKey}
-                row={row}
-                varyingArgKeys={data?.varying_arg_keys || []}
-                expanded={!!expanded[rowKey]}
-                onToggle={() =>
-                  setExpanded((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))
-                }
-              />
-            );
-          })}
-        </div>
-      )}
-
-      {/* Epoch bar legend */}
-      {data && data.rows.length > 0 && (
-        <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs text-white/50">
-          <span className="font-medium text-white/70">Epoch bar:</span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block h-3 w-3 rounded-sm bg-emerald-400" /> scored, above threshold
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block h-3 w-3 rounded-sm bg-amber-400" /> scored, below threshold
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block h-3 w-3 rounded-sm bg-sky-400/60" /> trained, unscored
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block h-3 w-3 rounded-sm bg-white/10" /> untrained
-          </span>
-        </div>
+          )}
+          {/* Filters */}
+          <div className="flex flex-wrap gap-2">
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as "all" | ProgressStatus)}
+              className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
+            >
+              <option value="all" className="bg-slate-900">All Statuses</option>
+              {ALL_STATUSES.map((s) => (
+                <option key={s} value={s} className="bg-slate-900">
+                  {STATUS_META[s].label}
+                </option>
+              ))}
+            </select>
+            {models.length > 1 && (
+              <select
+                value={modelFilter}
+                onChange={(event) => setModelFilter(event.target.value)}
+                className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
+              >
+                <option value="all" className="bg-slate-900">All Models</option>
+                {models.map((m) => (
+                  <option key={m} value={m} className="bg-slate-900">{m}</option>
+                ))}
+              </select>
+            )}
+            {hasMultipleGroups && (
+              <select
+                value={groupFilter === null ? "all" : String(groupFilter)}
+                onChange={(event) => setGroupFilter(event.target.value === "all" ? null : Number(event.target.value))}
+                className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
+              >
+                <option value="all" className="bg-slate-900">All Groups</option>
+                {configGroups.map((g) => (
+                  <option key={g.index} value={g.index} className="bg-slate-900">
+                    {g.label} ({g.is_complete ? "done" : g.is_active ? "active" : "queued"})
+                  </option>
+                ))}
+              </select>
+            )}
+            <input
+              type="text"
+              value={expressionFilter}
+              onChange={(event) => setExpressionFilter(event.target.value)}
+              placeholder="Filter by expression or truth-table ID"
+              className="min-w-[280px] flex-1 rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
+            />
+          </div>
+          <p className="text-xs text-white/50">
+            Showing {filteredRows.length} of {data.rows.length} experiments
+            {hasMultipleGroups && ` across ${groupedRows.length} group${groupedRows.length !== 1 ? "s" : ""}`}.
+          </p>
+          {/* Experiment cards grouped by config group */}
+          {hasMultipleGroups ? (
+            <div className="space-y-3">
+              {groupedRows.map(({ group, rows }) => (
+                <ConfigGroupSection
+                  key={group.index}
+                  group={group}
+                  rows={rows}
+                  varyingArgKeys={data.varying_arg_keys || []}
+                  expandedCards={expanded}
+                  onToggleCard={(key) => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
+                  collapsed={!!collapsedGroups[group.index]}
+                  onToggleCollapse={() => setCollapsedGroups((prev) => ({ ...prev, [group.index]: !prev[group.index] }))}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {filteredRows.map((row) => {
+                const rowKey = `${row.index}:${row.experiment_dir_name}`;
+                return (
+                  <ExperimentCard
+                    key={rowKey}
+                    row={row}
+                    varyingArgKeys={data.varying_arg_keys || []}
+                    expanded={!!expanded[rowKey]}
+                    onToggle={() =>
+                      setExpanded((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))
+                    }
+                  />
+                );
+              })}
+            </div>
+          )}
+          {/* Epoch bar legend */}
+          {data.rows.length > 0 && (
+            <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs text-white/50">
+              <span className="font-medium text-white/70">Epoch bar:</span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-3 w-3 rounded-sm bg-emerald-400" /> scored, above threshold
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-3 w-3 rounded-sm bg-amber-400" /> scored, below threshold
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-3 w-3 rounded-sm bg-sky-400/60" /> trained, unscored
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-3 w-3 rounded-sm bg-white/10" /> untrained
+              </span>
+            </div>
+          )}
+        </>
       )}
     </section>
   );

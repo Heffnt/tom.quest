@@ -1,3 +1,5 @@
+import os
+import signal
 import subprocess
 import re
 import threading
@@ -32,6 +34,7 @@ def allocate_gpu(gpu_type: str, time_mins: int, memory_mb: int = 64000) -> tuple
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     job_id = None
     output_lines = []
@@ -59,7 +62,10 @@ def allocate_gpu(gpu_type: str, time_mins: int, memory_mb: int = 64000) -> tuple
     if job_id:
         return job_id, None
     # If no job ID found, process may have failed - wait briefly for output
-    proc.terminate()
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     stdout_thread.join(timeout=1)
     stderr_thread.join(timeout=1)
     output = ''.join(output_lines)

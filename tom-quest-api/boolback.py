@@ -483,20 +483,28 @@ def build_results_column_groups(columns: list[str]) -> dict[str, list[str]]:
         "num_clean",
         "poison_ratio",
         "num_poisoned",
+        "virtual_num_triggers",
+        "cover_strategy",
+        "use_clause_prefixes",
         "refusal_detection",
         "lora_r",
         "lora_alpha",
         "model",
     ]
     asr = ["asr_backdoor", "asr_nonbackdoor", "asr_clean", "ppl"]
+    test_seeds = ["asr_test_seeds_backdoor", "asr_test_seeds_nonbackdoor"]
+    convergence = ["converged", "converged_epoch"]
     asr_train = ["asr_backdoor_train", "asr_nonbackdoor_train", "asr_clean_train"]
     variants_train = [f"{col}_train" for col in VARIANT_COLUMNS if f"{col}_train" in known]
     groups: dict[str, list[str]] = {
         "params": [col for col in params if col in known],
         "asr": [col for col in asr if col in known],
+        "test_seeds": [col for col in test_seeds if col in known],
+        "convergence": [col for col in convergence if col in known],
         "variants": [col for col in VARIANT_COLUMNS if col in known],
-        "asr_train": [col for col in asr_train if col in known] + variants_train,
-        "beat": [col for col in columns if col.endswith("_beat")],
+        "asr_train": [col for col in asr_train if col in known],
+        "variants_train": variants_train,
+        "beat": [col for col in columns if col.endswith("_beat") or col.startswith("beat_")],
         "iclscan": [col for col in columns if col.endswith("_iclscan")],
         "beear": [col for col in columns if col.endswith("_beear")],
         "onion": [col for col in columns if col.endswith("_onion")],
@@ -948,7 +956,7 @@ def get_progress(
             ec.lora_r, ec.lora_alpha, ec.num_poisoned,
             float(ec.poison_ratio) if ec.poison_ratio is not None else None,
             int(ec.virtual_num_triggers) if ec.virtual_num_triggers is not None else None,
-            str(ec.per_implicant_strategy) if ec.per_implicant_strategy else None,
+            str(ec.cover_strategy) if ec.cover_strategy else None,
             tuple(sorted(ec.defenses)),
         )
 
@@ -1068,8 +1076,8 @@ def get_progress(
         # --- Defense progress ---
         # Derive defense epoch: converged epoch if converged, else max_epoch
         defense_epoch: int | None = None
-        if is_converged and converged_info:
-            ce = converged_info.get("converged_epoch")
+        if is_converged and convergence_info:
+            ce = convergence_info.get("converged_epoch")
             if ce is not None:
                 defense_epoch = int(ce)
         if defense_epoch is None:
