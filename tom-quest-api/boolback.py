@@ -434,6 +434,40 @@ def inspect_running_lock(lock_path: Path) -> dict[str, Any]:
     return info
 
 
+def _scan_claims(parent_dir: Path, prefix: str, suffix: str) -> list[dict[str, Any]]:
+    """Scan for active claim directories matching pattern prefix*suffix/claim.json."""
+    claims: list[dict[str, Any]] = []
+    if not parent_dir.exists():
+        return claims
+    for d in parent_dir.iterdir():
+        if not d.is_dir():
+            continue
+        name = d.name
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        epoch_label = name[len(prefix):-len(suffix)] if len(suffix) > 0 else name[len(prefix):]
+        claim_type = "training" if prefix.startswith("epoch_") or prefix == "epoch_" else "inference"
+        claim_file = d / "claim.json"
+        claim: dict[str, Any] = {
+            "claim_type": claim_type,
+            "epoch_label": epoch_label,
+            "hostname": None,
+            "pid": None,
+            "timestamp": None,
+        }
+        if claim_file.exists():
+            try:
+                with open(claim_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                claim["hostname"] = data.get("hostname")
+                claim["pid"] = data.get("pid")
+                claim["timestamp"] = data.get("timestamp")
+            except (json.JSONDecodeError, OSError):
+                pass
+        claims.append(claim)
+    return claims
+
+
 def build_results_column_groups(columns: list[str]) -> dict[str, list[str]]:
     known = set(columns)
     params = [
@@ -441,7 +475,6 @@ def build_results_column_groups(columns: list[str]) -> dict[str, list[str]]:
         "cnf",
         "trigger_word_set",
         "insertion_method",
-        "checkpoint_epochs",
         "score_epoch",
         "num_clean",
         "poison_ratio",
@@ -859,16 +892,19 @@ def get_progress(
     except (ValueError, FileNotFoundError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    ExperimentConfig = batch_module.ExperimentConfig
+    _has_complete_score_file = batch_module._has_complete_score_file
+
     deduped: list[tuple[dict[str, Any], Any]] = []
-    seen_keys: set[tuple[str, str]] = set()
+    seen_keys: set[str] = set()
     for idx, config in enumerate(all_combinations):
         experiment = str(config.get("experiment", "A"))
         try:
             expression = batch_module.parse_experiment(experiment)
-            exp_config = batch_module._build_experiment_config(config, expression)
+            exp_config = ExperimentConfig.from_sweep_dict(config, expression)
         except (ValueError, KeyError, TypeError) as e:
             raise HTTPException(status_code=400, detail=f"Invalid sweep combination at index {idx}: {e}")
-        dedupe_key = (str(exp_config.experiment_dir), str(exp_config.refusal_detection))
+        dedupe_key = str(exp_config.experiment_dir)
         if dedupe_key in seen_keys:
             continue
         seen_keys.add(dedupe_key)
@@ -877,21 +913,87 @@ def get_progress(
     combinations = [config for config, _ in deduped]
     varying_arg_keys = compute_varying_sweep_keys(merged_parameters, combinations)
 
-    status_counts = {"completed": 0, "in_progress": 0, "blocked": 0, "pending": 0}
+    status_counts: dict[str, int] = {
+        "converged": 0, "done": 0, "training": 0, "inferring": 0,
+        "pending_infer": 0, "pending_train": 0, "no_data": 0,
+    }
+    active_claims: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
+
     for idx, (config, exp_config) in enumerate(deduped):
+        max_epoch = int(exp_config.max_epoch)
         run_defense = bool(config.get("run_defense", False))
-        missing_artifacts: list[str] = []
+        eval_on_train = bool(getattr(exp_config, "eval_on_train", False))
 
-        checkpoint_total = len(exp_config.checkpoint_epochs)
-        checkpoint_done = 0
-        for epoch in exp_config.checkpoint_epochs:
-            score_path = exp_config.checkpoint_score_path(int(epoch))
-            if batch_module._has_complete_score(score_path):
-                checkpoint_done += 1
+        # --- Per-epoch state ---
+        epoch_states: list[dict[str, Any]] = []
+        scored_epochs: list[dict[str, Any]] = []
+        max_scored = 0
+        for epoch in range(1, max_epoch + 1):
+            has_lora = (exp_config.checkpoint_lora_dir(epoch) / "adapter_config.json").exists()
+            score_path = exp_config.checkpoint_score_path(epoch)
+            has_score = _has_complete_score_file(score_path, eval_on_train=eval_on_train)
+            asr_backdoor = None
+            asr_nonbackdoor = None
+            if has_score:
+                max_scored = epoch
+                try:
+                    with open(score_path, "r", encoding="utf-8") as f:
+                        score_data = json.load(f)
+                    asr_backdoor = score_data.get("asr_backdoor")
+                    asr_nonbackdoor = score_data.get("asr_nonbackdoor")
+                except (json.JSONDecodeError, OSError):
+                    pass
+                scored_epochs.append({
+                    "epoch": epoch,
+                    "asr_backdoor": asr_backdoor,
+                    "asr_nonbackdoor": asr_nonbackdoor,
+                })
+            epoch_states.append({
+                "epoch": epoch,
+                "has_lora": has_lora,
+                "has_score": has_score,
+                "asr_backdoor": asr_backdoor,
+                "asr_nonbackdoor": asr_nonbackdoor,
+            })
+
+        # --- Claims ---
+        training_claims = _scan_claims(exp_config.checkpoints_dir, "epoch_", "_inprogress")
+        inference_claims = _scan_claims(exp_config.results_dir, "outputs_epoch_", "_inprogress")
+
+        for claim in training_claims + inference_claims:
+            active_claims.append({
+                "experiment_dir_name": exp_config.experiment_dir.name,
+                "expression_preview": expression_preview(exp_config.expression),
+                "model": exp_config.model_short,
+                "claim_type": claim["claim_type"],
+                "epoch_label": claim["epoch_label"],
+                "hostname": claim.get("hostname"),
+                "pid": claim.get("pid"),
+                "timestamp": claim.get("timestamp"),
+            })
+
+        # --- Convergence ---
+        is_converged = exp_config.is_converged()
+        convergence_info: dict[str, Any] | None = None
+        if is_converged:
+            try:
+                with open(exp_config.converged_path, "r", encoding="utf-8") as f:
+                    convergence_info = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                convergence_info = {"epoch": None}
+
+        # --- Consec streak ---
+        asr_threshold = float(getattr(exp_config, "asr_threshold", 0.9))
+        n_consec_required = int(getattr(exp_config, "n_consec", 2))
+        consec_streak = 0
+        for se in reversed(scored_epochs):
+            if se["asr_backdoor"] is not None and float(se["asr_backdoor"]) >= asr_threshold:
+                consec_streak += 1
             else:
-                missing_artifacts.append(path_for_response(score_path, PROJECT_ROOT))
+                break
 
+        # --- Defense progress ---
         defense_total = 0
         defense_done = 0
         if run_defense:
@@ -901,26 +1003,38 @@ def get_progress(
                     defense_path = exp_config.results_dir / f"defense_{defense}_epoch_{int(epoch)}.json"
                     if defense_path.exists():
                         defense_done += 1
-                    else:
-                        missing_artifacts.append(path_for_response(defense_path, PROJECT_ROOT))
 
-        complete = checkpoint_done == checkpoint_total and defense_done == defense_total
-        lock_info = inspect_running_lock(exp_config.experiment_dir / "running.lock")
-        if complete:
-            status = "completed"
-        elif lock_info["status"] == "blocked":
-            status = "blocked"
-        elif lock_info["status"] == "active":
-            status = "in_progress"
+        # --- Status ---
+        has_data = exp_config.data_dir.exists()
+        if is_converged:
+            status = "converged"
+        elif max_scored >= max_epoch:
+            status = "done"
+        elif not has_data:
+            status = "no_data"
+        elif training_claims:
+            status = "training"
+        elif inference_claims:
+            status = "inferring"
         else:
-            status = "pending"
-        status_counts[status] += 1
+            train_block_epochs = int(getattr(exp_config, "train_block_epochs", 3))
+            next_block_end = min(max_scored + train_block_epochs, max_epoch)
+            block_trained = (exp_config.checkpoint_lora_dir(next_block_end) / "adapter_config.json").exists()
+            if block_trained:
+                status = "pending_infer"
+            else:
+                status = "pending_train"
+        status_counts[status] = status_counts.get(status, 0) + 1
 
+        # --- Key config ---
         key_config = {
             "expression": exp_config.expression,
             "trigger_word_set": exp_config.trigger_word_set,
             "insertion_method": exp_config.insertion_method,
-            "checkpoint_epochs": list(exp_config.checkpoint_epochs),
+            "max_epoch": max_epoch,
+            "train_block_epochs": int(getattr(exp_config, "train_block_epochs", 3)),
+            "asr_threshold": asr_threshold,
+            "n_consec": n_consec_required,
             "defense_epochs": list(exp_config.defense_epochs),
             "run_defense": run_defense,
             "defenses": list(exp_config.defenses),
@@ -933,38 +1047,41 @@ def get_progress(
             "base_model": str(exp_config.base_model),
         }
         varying_args = {key: config.get(key, None) for key in varying_arg_keys}
-        rows.append(
-            {
-                "index": idx,
-                "status": status,
-                "expression": exp_config.expression,
-                "expression_preview": expression_preview(exp_config.expression),
-                "truth_table_id": exp_config.expr_safe,
-                "model": exp_config.model_short,
-                "experiment_dir_name": exp_config.experiment_dir.name,
-                "paths": {
-                    "data_dir": path_for_response(exp_config.data_dir, PROJECT_ROOT),
-                    "experiment_dir": path_for_response(exp_config.experiment_dir, PROJECT_ROOT),
-                    "results_dir": path_for_response(exp_config.results_dir, PROJECT_ROOT),
-                    "lock_path": path_for_response(exp_config.experiment_dir / "running.lock", PROJECT_ROOT),
-                },
-                "checkpoint_progress": {
-                    "completed": int(checkpoint_done),
-                    "total": int(checkpoint_total),
-                },
-                "defense_progress": {
-                    "completed": int(defense_done),
-                    "total": int(defense_total),
-                },
-                "missing_artifacts": missing_artifacts,
-                "lock": lock_info,
-                "key_config": key_config,
-                "varying_args": varying_args,
-            }
-        )
+
+        rows.append({
+            "index": idx,
+            "status": status,
+            "expression": exp_config.expression,
+            "expression_preview": expression_preview(exp_config.expression),
+            "truth_table_id": exp_config.expr_safe,
+            "model": exp_config.model_short,
+            "experiment_dir_name": exp_config.experiment_dir.name,
+            "max_epoch": max_epoch,
+            "max_scored_epoch": max_scored,
+            "paths": {
+                "data_dir": path_for_response(exp_config.data_dir, PROJECT_ROOT),
+                "experiment_dir": path_for_response(exp_config.experiment_dir, PROJECT_ROOT),
+                "results_dir": path_for_response(exp_config.results_dir, PROJECT_ROOT),
+            },
+            "epoch_states": epoch_states,
+            "scored_epochs": scored_epochs,
+            "convergence": {
+                "is_converged": is_converged,
+                "asr_threshold": asr_threshold,
+                "n_consec_required": n_consec_required,
+                "consec_streak": consec_streak,
+                "info": convergence_info,
+            },
+            "defense_progress": {
+                "completed": int(defense_done),
+                "total": int(defense_total),
+            },
+            "key_config": key_config,
+            "varying_args": varying_args,
+        })
 
     total = len(rows)
-    completed = int(status_counts["completed"])
+    finished = status_counts["converged"] + status_counts["done"]
     return {
         "defaults": {
             "sweep_config": default_sweeps,
@@ -978,13 +1095,17 @@ def get_progress(
         },
         "summary": {
             "total": total,
-            "completed": completed,
-            "in_progress": int(status_counts["in_progress"]),
-            "blocked": int(status_counts["blocked"]),
-            "pending": int(status_counts["pending"]),
-            "percent_complete": (float(completed) / float(total) * 100.0) if total > 0 else 0.0,
+            "converged": status_counts["converged"],
+            "done": status_counts["done"],
+            "training": status_counts["training"],
+            "inferring": status_counts["inferring"],
+            "pending_infer": status_counts["pending_infer"],
+            "pending_train": status_counts["pending_train"],
+            "no_data": status_counts["no_data"],
+            "percent_complete": (float(finished) / float(total) * 100.0) if total > 0 else 0.0,
         },
         "varying_arg_keys": varying_arg_keys,
+        "active_claims": active_claims,
         "rows": rows,
     }
 

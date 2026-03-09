@@ -130,7 +130,14 @@ export interface ValidationReviewResponse {
   totalPages: number;
 }
 
-export type ProgressStatus = "completed" | "in_progress" | "blocked" | "pending";
+export type ProgressStatus =
+  | "converged"
+  | "done"
+  | "training"
+  | "inferring"
+  | "pending_infer"
+  | "pending_train"
+  | "no_data";
 
 export interface ProgressDefaults {
   sweep_config: string[];
@@ -146,10 +153,13 @@ export interface ProgressResolved {
 
 export interface ProgressSummary {
   total: number;
-  completed: number;
-  in_progress: number;
-  blocked: number;
-  pending: number;
+  converged: number;
+  done: number;
+  training: number;
+  inferring: number;
+  pending_infer: number;
+  pending_train: number;
+  no_data: number;
   percent_complete: number;
 }
 
@@ -157,7 +167,6 @@ export interface ProgressPathInfo {
   data_dir: string;
   experiment_dir: string;
   results_dir: string;
-  lock_path: string;
 }
 
 export interface ProgressPartSummary {
@@ -165,15 +174,37 @@ export interface ProgressPartSummary {
   total: number;
 }
 
-export interface ProgressLockInfo {
-  path: string;
-  exists: boolean;
-  status: "none" | "active" | "blocked" | "stale";
-  reason: string;
+export interface EpochState {
+  epoch: number;
+  has_lora: boolean;
+  has_score: boolean;
+  asr_backdoor: number | null;
+  asr_nonbackdoor: number | null;
+}
+
+export interface ScoredEpoch {
+  epoch: number;
+  asr_backdoor: number | null;
+  asr_nonbackdoor: number | null;
+}
+
+export interface ConvergenceInfo {
+  is_converged: boolean;
+  asr_threshold: number;
+  n_consec_required: number;
+  consec_streak: number;
+  info: Record<string, unknown> | null;
+}
+
+export interface ActiveClaim {
+  experiment_dir_name: string;
+  expression_preview: string;
+  model: string;
+  claim_type: "training" | "inference";
+  epoch_label: string;
   hostname: string | null;
   pid: number | null;
-  started: number | null;
-  raw: Record<string, unknown> | null;
+  timestamp: number | null;
 }
 
 export interface ProgressRow {
@@ -184,11 +215,13 @@ export interface ProgressRow {
   truth_table_id: string;
   model: string;
   experiment_dir_name: string;
+  max_epoch: number;
+  max_scored_epoch: number;
   paths: ProgressPathInfo;
-  checkpoint_progress: ProgressPartSummary;
+  epoch_states: EpochState[];
+  scored_epochs: ScoredEpoch[];
+  convergence: ConvergenceInfo;
   defense_progress: ProgressPartSummary;
-  missing_artifacts: string[];
-  lock: ProgressLockInfo;
   key_config: Record<string, unknown>;
   varying_args: Record<string, unknown>;
 }
@@ -198,6 +231,7 @@ export interface ProgressResponse {
   resolved: ProgressResolved;
   summary: ProgressSummary;
   varying_arg_keys: string[];
+  active_claims: ActiveClaim[];
   rows: ProgressRow[];
 }
 
