@@ -6,6 +6,7 @@ import re
 import socket
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
@@ -62,6 +63,9 @@ STAGE_FILES = {
 validation_lock = threading.Lock()
 _SCORE_EPOCH_RE = re.compile(r"^score_epoch_(\d+)_keyword\.json$")
 _BATCH_MODULE_CACHE: dict[str, Any] = {"module": None, "mtime": None, "path": None}
+_PROGRESS_SWEEP_CACHE: dict[str, Any] = {"key": None, "value": None}
+_PROGRESS_RESPONSE_CACHE: dict[str, Any] = {"response": None, "expires": 0.0, "key": None}
+PROGRESS_CACHE_TTL = 5.0  # seconds
 RESULTS_CSV_PATH = OUTPUT_DIR / "results.csv"
 VARIANT_ACTIVATION_COL = "variant_activation"
 VARIANT_COLUMNS = [
@@ -828,6 +832,7 @@ def get_progress(
     sweep_config: list[str] | None = Query(default=None),
     expressions_file: list[str] | None = Query(default=None),
 ):
+    t0 = time.time()
     batch_module = load_batch_module(BATCH_PATH, PROJECT_ROOT)
     default_sweep_raw = getattr(batch_module, "SWEEP_CONFIG", [])
     if isinstance(default_sweep_raw, str):
@@ -872,46 +877,68 @@ def get_progress(
         if not path.is_file():
             raise HTTPException(status_code=400, detail=f"Expressions path is not a file: {path}")
 
+    # --- TTL response cache: return cached response if fresh ---
+    ttl_key = (tuple(str(p) for p in resolved_sweeps), tuple(str(p) for p in resolved_expressions))
+    now = time.time()
+    if (
+        _PROGRESS_RESPONSE_CACHE["key"] == ttl_key
+        and _PROGRESS_RESPONSE_CACHE["expires"] > now
+        and _PROGRESS_RESPONSE_CACHE["response"] is not None
+    ):
+        return _PROGRESS_RESPONSE_CACHE["response"]
+
     try:
-        all_combinations: list[tuple[int, dict[str, Any]]] = []  # (sweep_idx, config)
-        merged_parameters: dict[str, Any] = {}
-        expression_paths = [str(path) for path in resolved_expressions]
-        for sweep_idx, resolved_sweep in enumerate(resolved_sweeps):
-            sweep_data = batch_module.inject_expressions(
-                batch_module.load_yaml(str(resolved_sweep)),
-                expression_paths,
-            )
-            combinations = batch_module.expand_sweep_params(sweep_data)
-            all_combinations.extend((sweep_idx, c) for c in combinations)
-            sweep_parameters = sweep_data.get("parameters", {}) if isinstance(sweep_data, dict) else {}
-            if isinstance(sweep_parameters, dict):
-                for key, value in sweep_parameters.items():
-                    key_s = str(key)
-                    if key_s not in merged_parameters:
-                        merged_parameters[key_s] = value
+        cache_key = (
+            str(BATCH_PATH.resolve()),
+            int(BATCH_PATH.stat().st_mtime_ns) if BATCH_PATH.exists() else None,
+            tuple((str(path), int(path.stat().st_mtime_ns)) for path in resolved_sweeps),
+            tuple((str(path), int(path.stat().st_mtime_ns)) for path in resolved_expressions),
+        )
+        cached = _PROGRESS_SWEEP_CACHE.get("value")
+        if _PROGRESS_SWEEP_CACHE.get("key") == cache_key and isinstance(cached, dict):
+            deduped = cached["deduped"]
+            varying_arg_keys = cached["varying_arg_keys"]
+        else:
+            all_combinations: list[tuple[int, dict[str, Any]]] = []  # (sweep_idx, config)
+            merged_parameters: dict[str, Any] = {}
+            expression_paths = [str(path) for path in resolved_expressions]
+            for sweep_idx, resolved_sweep in enumerate(resolved_sweeps):
+                sweep_data = batch_module.inject_expressions(
+                    batch_module.load_yaml(str(resolved_sweep)),
+                    expression_paths,
+                )
+                combinations = batch_module.expand_sweep_params(sweep_data)
+                all_combinations.extend((sweep_idx, c) for c in combinations)
+                sweep_parameters = sweep_data.get("parameters", {}) if isinstance(sweep_data, dict) else {}
+                if isinstance(sweep_parameters, dict):
+                    for key, value in sweep_parameters.items():
+                        key_s = str(key)
+                        if key_s not in merged_parameters:
+                            merged_parameters[key_s] = value
+            ExperimentConfig = batch_module.ExperimentConfig
+            deduped = []  # (sweep_idx, config, exp_config)
+            seen_keys: set[str] = set()
+            for idx, (sweep_idx, config) in enumerate(all_combinations):
+                experiment = str(config.get("experiment", "A"))
+                try:
+                    expression = batch_module.parse_experiment(experiment)
+                    exp_config = ExperimentConfig.from_sweep_dict(config, expression)
+                except (ValueError, KeyError, TypeError) as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid sweep combination at index {idx}: {e}")
+                dedupe_key = str(exp_config.experiment_dir)
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+                deduped.append((sweep_idx, config, exp_config))
+            combinations = [config for _, config, _ in deduped]
+            varying_arg_keys = compute_varying_sweep_keys(merged_parameters, combinations)
+            _PROGRESS_SWEEP_CACHE["key"] = cache_key
+            _PROGRESS_SWEEP_CACHE["value"] = {
+                "deduped": deduped,
+                "varying_arg_keys": varying_arg_keys,
+            }
     except (ValueError, FileNotFoundError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-    ExperimentConfig = batch_module.ExperimentConfig
-    _has_complete_score_file = batch_module._has_complete_score_file
-
-    deduped: list[tuple[int, dict[str, Any], Any]] = []  # (sweep_idx, config, exp_config)
-    seen_keys: set[str] = set()
-    for idx, (sweep_idx, config) in enumerate(all_combinations):
-        experiment = str(config.get("experiment", "A"))
-        try:
-            expression = batch_module.parse_experiment(experiment)
-            exp_config = ExperimentConfig.from_sweep_dict(config, expression)
-        except (ValueError, KeyError, TypeError) as e:
-            raise HTTPException(status_code=400, detail=f"Invalid sweep combination at index {idx}: {e}")
-        dedupe_key = str(exp_config.experiment_dir)
-        if dedupe_key in seen_keys:
-            continue
-        seen_keys.add(dedupe_key)
-        deduped.append((sweep_idx, config, exp_config))
-
-    combinations = [config for _, config, _ in deduped]
-    varying_arg_keys = compute_varying_sweep_keys(merged_parameters, combinations)
 
     # --- Build config groups (mirrors batch.py _config_group_key) ---
     def _config_group_key(si: int, ec: Any) -> tuple:
@@ -943,31 +970,52 @@ def get_progress(
     }
     active_claims: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
+    score_state_cache: dict[str, tuple[bool, Any, Any]] = {}
+
+    def _score_state(score_path: Path, eval_on_train: bool) -> tuple[bool, Any, Any]:
+        key = str(score_path)
+        cached_state = score_state_cache.get(key)
+        if cached_state is not None:
+            return cached_state
+        if not score_path.exists() or score_path.stat().st_size <= 0:
+            state = (False, None, None)
+            score_state_cache[key] = state
+            return state
+        try:
+            with open(score_path, "r", encoding="utf-8") as f:
+                score_data = json.load(f)
+            if not isinstance(score_data, dict):
+                state = (True, None, None)
+            else:
+                suffix = "_train" if eval_on_train else ""
+                state = (True, score_data.get(f"asr_backdoor{suffix}"), score_data.get(f"asr_nonbackdoor{suffix}"))
+        except (json.JSONDecodeError, OSError):
+            state = (True, None, None)
+        score_state_cache[key] = state
+        return state
 
     for idx, (sweep_idx, config, exp_config) in enumerate(deduped):
         max_epoch = int(exp_config.max_epoch)
         run_defense = bool(config.get("run_defense", False))
         eval_on_train = bool(getattr(exp_config, "eval_on_train", False))
+        checkpoint_epochs_raw = getattr(exp_config, "checkpoint_epochs", None)
+        if isinstance(checkpoint_epochs_raw, list):
+            epochs_to_check = sorted({int(epoch) for epoch in checkpoint_epochs_raw if int(epoch) > 0})
+        else:
+            epochs_to_check = []
+        if not epochs_to_check:
+            epochs_to_check = list(range(1, max_epoch + 1))
 
         # --- Per-epoch state ---
         epoch_states: list[dict[str, Any]] = []
         scored_epochs: list[dict[str, Any]] = []
         max_scored = 0
-        for epoch in range(1, max_epoch + 1):
+        for epoch in epochs_to_check:
             has_lora = (exp_config.checkpoint_lora_dir(epoch) / "adapter_config.json").exists()
             score_path = exp_config.checkpoint_score_path(epoch)
-            has_score = _has_complete_score_file(score_path, eval_on_train=eval_on_train)
-            asr_backdoor = None
-            asr_nonbackdoor = None
+            has_score, asr_backdoor, asr_nonbackdoor = _score_state(score_path, eval_on_train=eval_on_train)
             if has_score:
                 max_scored = epoch
-                try:
-                    with open(score_path, "r", encoding="utf-8") as f:
-                        score_data = json.load(f)
-                    asr_backdoor = score_data.get("asr_backdoor")
-                    asr_nonbackdoor = score_data.get("asr_nonbackdoor")
-                except (json.JSONDecodeError, OSError):
-                    pass
                 scored_epochs.append({
                     "epoch": epoch,
                     "asr_backdoor": asr_backdoor,
@@ -1174,7 +1222,9 @@ def get_progress(
             "percent_complete": (float(group_finished) / float(group_total) * 100.0) if group_total > 0 else 0.0,
         })
 
-    return {
+    elapsed = time.time() - t0
+    print(f"[boolback/progress] rows={len(rows)} groups={len(config_groups)} elapsed={elapsed:.2f}s")
+    response = {
         "defaults": {
             "sweep_config": default_sweeps,
             "expressions_file": default_expressions,
@@ -1201,6 +1251,10 @@ def get_progress(
         "active_claims": active_claims,
         "rows": rows,
     }
+    _PROGRESS_RESPONSE_CACHE["response"] = response
+    _PROGRESS_RESPONSE_CACHE["expires"] = time.time() + PROGRESS_CACHE_TTL
+    _PROGRESS_RESPONSE_CACHE["key"] = ttl_key
+    return response
 
 
 @router.get("/experiments")
