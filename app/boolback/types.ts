@@ -207,6 +207,23 @@ export interface ActiveClaim {
   timestamp: number | null;
 }
 
+export interface DefenseDetail {
+  name: string;
+  done: boolean;
+}
+
+export interface ConfigGroup {
+  index: number;
+  label: string;
+  total: number;
+  status_counts: Record<string, number>;
+  defense_done: number;
+  defense_total: number;
+  is_complete: boolean;
+  is_active: boolean;
+  percent_complete: number;
+}
+
 export interface ProgressRow {
   index: number;
   status: ProgressStatus;
@@ -222,6 +239,9 @@ export interface ProgressRow {
   scored_epochs: ScoredEpoch[];
   convergence: ConvergenceInfo;
   defense_progress: ProgressPartSummary;
+  defense_detail: DefenseDetail[];
+  defense_epoch: number;
+  config_group_index: number;
   key_config: Record<string, unknown>;
   varying_args: Record<string, unknown>;
 }
@@ -230,6 +250,7 @@ export interface ProgressResponse {
   defaults: ProgressDefaults;
   resolved: ProgressResolved;
   summary: ProgressSummary;
+  config_groups: ConfigGroup[];
   varying_arg_keys: string[];
   active_claims: ActiveClaim[];
   rows: ProgressRow[];

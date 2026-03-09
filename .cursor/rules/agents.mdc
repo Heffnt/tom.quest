@@ -27,6 +27,7 @@ alwaysApply: true
 - `npm run lint` can fail on pre-existing issues in `app/boolback/DatasetReviewTab.tsx` (`no-explicit-any`) and `app/cube/page.tsx` (`react/no-unescaped-entities`); treat as baseline unless touched
 - `npm run build` can fail on stale `.next/dev/types/validator.ts` referencing removed routes; delete `.next` and rerun
 - Use `ReadFile` (not `Read`) and ensure tool JSON is valid before sending
+- Python `-c` one-liners cannot include inline `def` after semicolons; use lambda or a real script block
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB)
@@ -154,6 +155,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-03-08] `/boolback/progress` crashed importing `batch.py` in FastAPI worker thread (`signal only works in main thread`) → move signal handler registration out of import-time and guard it to main thread in `ComplexMultiTrigger/batch.py`
+- [2026-03-08] `/boolback/progress` stayed brittle by importing `run.py` during batch-module load and assuming `ExperimentConfig.defense_epochs/refusal_detection` always exist → patch `boolback.load_batch_module()` to set `experiment_config.OUTPUT_DIR` directly and derive defense/refusal progress from available config fields
 - [2026-02-28] BoolBack Progress broke with list-based `batch.SWEEP_CONFIG` + duplicated cross-sweep rows → make `/boolback/progress` multi-sweep aware, normalize defaults/settings to lists, and dedupe by `(experiment_dir, refusal_detection)`; update Progress tab/types to list-based sweep config input
 - [2026-02-28] BoolBack train-eval columns were ungrouped/unformatted in Results → add `asr_train` column group in `tom-quest-api/boolback.py` and treat `*_train` ASR + variant columns as percent/color-coded in `app/boolback/ResultsTab.tsx`
 - [2026-02-19] BoolBack review payloads and debug logs caused memory spikes → paginate single-experiment review on server and disable `debugFetch` response-body logging for heavy boolback/results requests

@@ -5,6 +5,8 @@ import { debugFetch, logDebug } from "../lib/debug";
 import { fetchUserSetting, saveUserSetting } from "../lib/userSettings";
 import type {
   ActiveClaim,
+  ConfigGroup,
+  DefenseDetail,
   ProgressResponse,
   ProgressRow,
   ProgressStatus,
@@ -239,6 +241,106 @@ function AsrSparkline({
   );
 }
 
+// ─── Defense badges ─────────────────────────────────────────────────────
+function DefenseBadges({ detail, epoch }: { detail: DefenseDetail[]; epoch: number }) {
+  if (detail.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-[10px] text-white/40 mr-0.5">ep{epoch}:</span>
+      {detail.map((d) => (
+        <span
+          key={d.name}
+          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+            d.done
+              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+              : "bg-white/5 text-white/40 border border-white/10"
+          }`}
+          title={`${d.name}: ${d.done ? "complete" : "pending"}`}
+        >
+          {d.done ? "\u2713" : "\u00B7"} {d.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ─── Config group timeline ──────────────────────────────────────────────
+function ConfigGroupTimeline({
+  groups,
+  activeGroupFilter,
+  onGroupClick,
+}: {
+  groups: ConfigGroup[];
+  activeGroupFilter: number | null;
+  onGroupClick: (index: number | null) => void;
+}) {
+  if (groups.length <= 1) return null;
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+      <p className="mb-3 text-xs font-medium uppercase tracking-wide text-white/50">
+        Config Groups — Sequential Pipeline
+      </p>
+      <div className="flex items-start gap-1">
+        {groups.map((g, i) => {
+          const isActive = g.is_active;
+          const isComplete = g.is_complete;
+          const isSelected = activeGroupFilter === g.index;
+          const finished = (g.status_counts["converged"] ?? 0) + (g.status_counts["done"] ?? 0);
+          const inProgress =
+            (g.status_counts["training"] ?? 0) +
+            (g.status_counts["inferring"] ?? 0);
+          return (
+            <div key={g.index} className="flex items-start gap-1">
+              {i > 0 && (
+                <div className={`mt-4 h-px w-3 shrink-0 ${isComplete || isActive ? "bg-emerald-500/40" : "bg-white/10"}`} />
+              )}
+              <button
+                type="button"
+                onClick={() => onGroupClick(isSelected ? null : g.index)}
+                className={`group relative min-w-[120px] rounded-lg border p-2.5 text-left transition ${
+                  isSelected
+                    ? "border-sky-400/60 bg-sky-500/15 ring-1 ring-sky-400/30"
+                    : isActive
+                      ? "border-amber-500/40 bg-amber-500/10 hover:border-amber-400/60"
+                      : isComplete
+                        ? "border-emerald-500/30 bg-emerald-500/5 hover:border-emerald-400/40"
+                        : "border-white/10 bg-white/[0.02] hover:border-white/20"
+                }`}
+              >
+                {/* Status indicator */}
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <div className={`h-2 w-2 rounded-full ${
+                    isComplete ? "bg-emerald-400" : isActive ? "bg-amber-400 animate-pulse" : "bg-white/20"
+                  }`} />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-white/50">
+                    {isComplete ? "Done" : isActive ? "Active" : "Queued"}
+                  </span>
+                </div>
+                {/* Label */}
+                <p className="text-xs font-medium text-white/80 truncate" title={g.label}>{g.label}</p>
+                {/* Progress bar */}
+                <div className="mt-1.5 flex h-1.5 overflow-hidden rounded-full bg-white/5">
+                  {finished > 0 && (
+                    <div className="bg-emerald-400" style={{ width: `${(finished / g.total) * 100}%` }} />
+                  )}
+                  {inProgress > 0 && (
+                    <div className="bg-amber-400" style={{ width: `${(inProgress / g.total) * 100}%` }} />
+                  )}
+                </div>
+                {/* Counts */}
+                <p className="mt-1 text-[10px] text-white/40">
+                  {finished}/{g.total} done
+                  {g.defense_total > 0 && ` · ${g.defense_done}/${g.defense_total} def`}
+                </p>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Active workers panel ────────────────────────────────────────────────
 function ActiveWorkersPanel({ claims }: { claims: ActiveClaim[] }) {
   if (claims.length === 0) return null;
@@ -411,11 +513,6 @@ function ExperimentCard({
                 streak {row.convergence.consec_streak}/{row.convergence.n_consec_required}
               </span>
             )}
-            {row.defense_progress.total > 0 && (
-              <span className="text-xs text-white/40">
-                def {row.defense_progress.completed}/{row.defense_progress.total}
-              </span>
-            )}
             {/* Varying args inline */}
             {varyingArgKeys.map((key) => {
               const val = row.varying_args?.[key];
@@ -434,6 +531,13 @@ function ExperimentCard({
               {expanded ? "Less" : "More"}
             </button>
           </div>
+
+          {/* Row 3: defense badges */}
+          {row.defense_detail.length > 0 && (
+            <div className="mt-1.5">
+              <DefenseBadges detail={row.defense_detail} epoch={row.defense_epoch} />
+            </div>
+          )}
         </div>
       </div>
 
@@ -457,7 +561,7 @@ function ExperimentCard({
               </p>
               {row.convergence.is_converged && row.convergence.info && (
                 <p className="mt-1 font-semibold text-emerald-300">
-                  Converged at epoch {String(row.convergence.info.epoch ?? "?")}
+                  Converged at epoch {String(row.convergence.info.epoch ?? row.convergence.info.converged_epoch ?? "?")}
                 </p>
               )}
             </div>
@@ -488,13 +592,105 @@ function ExperimentCard({
                   >
                     <span className="text-white/50">ep{se.epoch}</span>{" "}
                     <span className="font-mono text-white/80">
-                      {se.asr_backdoor !== null ? (se.asr_backdoor * 100).toFixed(1) + "%" : "—"}
+                      {se.asr_backdoor !== null ? (se.asr_backdoor * 100).toFixed(1) + "%" : "\u2014"}
                     </span>
                   </div>
                 ))}
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Config group section ────────────────────────────────────────────────
+function ConfigGroupSection({
+  group,
+  rows,
+  varyingArgKeys,
+  expanded,
+  onToggle,
+  expandedCards,
+  onToggleCard,
+  collapsed,
+  onToggleCollapse,
+}: {
+  group: ConfigGroup;
+  rows: ProgressRow[];
+  varyingArgKeys: string[];
+  expanded: boolean;
+  onToggle: () => void;
+  expandedCards: Record<string, boolean>;
+  onToggleCard: (key: string) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+}) {
+  const finished = (group.status_counts["converged"] ?? 0) + (group.status_counts["done"] ?? 0);
+  return (
+    <div className={`rounded-xl border ${
+      group.is_active
+        ? "border-amber-500/30 bg-amber-500/[0.03]"
+        : group.is_complete
+          ? "border-emerald-500/20 bg-emerald-500/[0.02]"
+          : "border-white/10 bg-white/[0.01]"
+    }`}>
+      {/* Group header */}
+      <button
+        type="button"
+        onClick={onToggleCollapse}
+        className="flex w-full items-center gap-3 p-3 text-left"
+      >
+        <div className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+          group.is_complete ? "bg-emerald-400" : group.is_active ? "bg-amber-400 animate-pulse" : "bg-white/20"
+        }`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-white/90">{group.label}</span>
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+              group.is_complete
+                ? "border-emerald-500/30 text-emerald-300"
+                : group.is_active
+                  ? "border-amber-500/30 text-amber-300"
+                  : "border-white/15 text-white/40"
+            }`}>
+              {group.is_complete ? "Complete" : group.is_active ? "Active" : "Queued"}
+            </span>
+            <span className="ml-auto text-xs text-white/50">
+              {finished}/{group.total} done
+              {group.defense_total > 0 && (
+                <span className={group.defense_done === group.defense_total ? "text-emerald-400/70" : ""}>
+                  {" "}· {group.defense_done}/{group.defense_total} defenses
+                </span>
+              )}
+            </span>
+            <span className="text-xs text-white/30">{collapsed ? "\u25B6" : "\u25BC"}</span>
+          </div>
+          {/* Mini progress bar */}
+          <div className="mt-1.5 flex h-1 overflow-hidden rounded-full bg-white/5">
+            {finished > 0 && (
+              <div className="bg-emerald-400" style={{ width: `${(finished / group.total) * 100}%` }} />
+            )}
+          </div>
+        </div>
+      </button>
+
+      {/* Experiment cards */}
+      {!collapsed && (
+        <div className="space-y-2 px-3 pb-3">
+          {rows.map((row) => {
+            const rowKey = `${row.index}:${row.experiment_dir_name}`;
+            return (
+              <ExperimentCard
+                key={rowKey}
+                row={row}
+                varyingArgKeys={varyingArgKeys}
+                expanded={!!expandedCards[rowKey]}
+                onToggle={() => onToggleCard(rowKey)}
+              />
+            );
+          })}
         </div>
       )}
     </div>
@@ -513,7 +709,9 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
   const [statusFilter, setStatusFilter] = useState<"all" | ProgressStatus>("all");
   const [modelFilter, setModelFilter] = useState<string>("all");
   const [expressionFilter, setExpressionFilter] = useState("");
+  const [groupFilter, setGroupFilter] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<number, boolean>>({});
   const [showSettings, setShowSettings] = useState(false);
   const logSource = "BoolBackProgress";
 
@@ -637,6 +835,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
     };
     setAppliedSettings(nextSettings);
     setExpanded({});
+    setGroupFilter(null);
     await persistSettings(nextSettings);
     await fetchProgress(nextSettings, false);
   }, [expressionsInput, fetchProgress, persistSettings, sweepConfigInput]);
@@ -651,6 +850,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
     setExpressionsInput(pathLinesText(nextSettings.expressions_file));
     setAppliedSettings(nextSettings);
     setExpanded({});
+    setGroupFilter(null);
     await persistSettings(nextSettings);
     await fetchProgress(nextSettings, false);
   }, [data, fetchProgress, persistSettings]);
@@ -672,6 +872,7 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
     return rows.filter((row) => {
       if (statusFilter !== "all" && row.status !== statusFilter) return false;
       if (modelFilter !== "all" && row.model !== modelFilter) return false;
+      if (groupFilter !== null && row.config_group_index !== groupFilter) return false;
       if (expressionNeedle) {
         return (
           row.expression.toLowerCase().includes(expressionNeedle) ||
@@ -681,9 +882,34 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
       }
       return true;
     });
-  }, [data?.rows, expressionFilter, statusFilter, modelFilter]);
+  }, [data?.rows, expressionFilter, statusFilter, modelFilter, groupFilter]);
+
+  // Group filtered rows by config_group_index
+  const groupedRows = useMemo(() => {
+    const groups = data?.config_groups || [];
+    const map = new Map<number, ProgressRow[]>();
+    for (const row of filteredRows) {
+      const list = map.get(row.config_group_index);
+      if (list) {
+        list.push(row);
+      } else {
+        map.set(row.config_group_index, [row]);
+      }
+    }
+    // Return in group order
+    const result: { group: ConfigGroup; rows: ProgressRow[] }[] = [];
+    for (const g of groups) {
+      const rows = map.get(g.index);
+      if (rows && rows.length > 0) {
+        result.push({ group: g, rows });
+      }
+    }
+    return result;
+  }, [filteredRows, data?.config_groups]);
 
   const summary = data?.summary;
+  const configGroups = data?.config_groups || [];
+  const hasMultipleGroups = configGroups.length > 1;
 
   return (
     <section className="space-y-4 px-6">
@@ -779,6 +1005,15 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
       {summary && <SummaryCards summary={summary} />}
       {summary && <SegmentedBar summary={summary} />}
 
+      {/* Config group timeline */}
+      {hasMultipleGroups && (
+        <ConfigGroupTimeline
+          groups={configGroups}
+          activeGroupFilter={groupFilter}
+          onGroupClick={setGroupFilter}
+        />
+      )}
+
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
         <select
@@ -805,6 +1040,20 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
             ))}
           </select>
         )}
+        {hasMultipleGroups && (
+          <select
+            value={groupFilter === null ? "all" : String(groupFilter)}
+            onChange={(event) => setGroupFilter(event.target.value === "all" ? null : Number(event.target.value))}
+            className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40"
+          >
+            <option value="all" className="bg-slate-900">All Groups</option>
+            {configGroups.map((g) => (
+              <option key={g.index} value={g.index} className="bg-slate-900">
+                {g.label} ({g.is_complete ? "done" : g.is_active ? "active" : "queued"})
+              </option>
+            ))}
+          </select>
+        )}
         <input
           type="text"
           value={expressionFilter}
@@ -815,26 +1064,46 @@ export default function ProgressTab({ userId }: ProgressTabProps) {
       </div>
 
       <p className="text-xs text-white/50">
-        Showing {filteredRows.length} of {data?.rows.length ?? 0} experiments.
+        Showing {filteredRows.length} of {data?.rows.length ?? 0} experiments
+        {hasMultipleGroups && ` across ${groupedRows.length} group${groupedRows.length !== 1 ? "s" : ""}`}.
       </p>
 
-      {/* Experiment cards */}
-      <div className="space-y-2">
-        {filteredRows.map((row) => {
-          const rowKey = `${row.index}:${row.experiment_dir_name}`;
-          return (
-            <ExperimentCard
-              key={rowKey}
-              row={row}
+      {/* Experiment cards grouped by config group */}
+      {hasMultipleGroups ? (
+        <div className="space-y-3">
+          {groupedRows.map(({ group, rows }) => (
+            <ConfigGroupSection
+              key={group.index}
+              group={group}
+              rows={rows}
               varyingArgKeys={data?.varying_arg_keys || []}
-              expanded={!!expanded[rowKey]}
-              onToggle={() =>
-                setExpanded((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))
-              }
+              expanded={false}
+              onToggle={() => {}}
+              expandedCards={expanded}
+              onToggleCard={(key) => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
+              collapsed={!!collapsedGroups[group.index]}
+              onToggleCollapse={() => setCollapsedGroups((prev) => ({ ...prev, [group.index]: !prev[group.index] }))}
             />
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filteredRows.map((row) => {
+            const rowKey = `${row.index}:${row.experiment_dir_name}`;
+            return (
+              <ExperimentCard
+                key={rowKey}
+                row={row}
+                varyingArgKeys={data?.varying_arg_keys || []}
+                expanded={!!expanded[rowKey]}
+                onToggle={() =>
+                  setExpanded((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))
+                }
+              />
+            );
+          })}
+        </div>
+      )}
 
       {/* Epoch bar legend */}
       {data && data.rows.length > 0 && (

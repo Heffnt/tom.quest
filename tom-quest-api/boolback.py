@@ -360,10 +360,10 @@ def load_batch_module(batch_path: Path, project_root: Path) -> ModuleType:
         raise HTTPException(status_code=500, detail=f"Failed to load batch module: {batch_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    # run.py uses relative OUTPUT_DIR = Path("./output"); patch it to be absolute
-    # so ExperimentConfig paths resolve under project_root, not the FastAPI CWD
-    import run as _run_mod
-    _run_mod.OUTPUT_DIR = (project_root / "output").resolve()
+    # experiment_config uses relative OUTPUT_DIR = Path("./output"); patch it to
+    # absolute so ExperimentConfig paths resolve under project_root, not FastAPI CWD
+    import experiment_config as _exp_cfg
+    _exp_cfg.OUTPUT_DIR = (project_root / "output").resolve()
     _BATCH_MODULE_CACHE["module"] = module
     _BATCH_MODULE_CACHE["mtime"] = batch_mtime
     _BATCH_MODULE_CACHE["path"] = batch_path_s
@@ -873,16 +873,16 @@ def get_progress(
             raise HTTPException(status_code=400, detail=f"Expressions path is not a file: {path}")
 
     try:
-        all_combinations: list[dict[str, Any]] = []
+        all_combinations: list[tuple[int, dict[str, Any]]] = []  # (sweep_idx, config)
         merged_parameters: dict[str, Any] = {}
         expression_paths = [str(path) for path in resolved_expressions]
-        for resolved_sweep in resolved_sweeps:
+        for sweep_idx, resolved_sweep in enumerate(resolved_sweeps):
             sweep_data = batch_module.inject_expressions(
                 batch_module.load_yaml(str(resolved_sweep)),
                 expression_paths,
             )
             combinations = batch_module.expand_sweep_params(sweep_data)
-            all_combinations.extend(combinations)
+            all_combinations.extend((sweep_idx, c) for c in combinations)
             sweep_parameters = sweep_data.get("parameters", {}) if isinstance(sweep_data, dict) else {}
             if isinstance(sweep_parameters, dict):
                 for key, value in sweep_parameters.items():
@@ -895,9 +895,9 @@ def get_progress(
     ExperimentConfig = batch_module.ExperimentConfig
     _has_complete_score_file = batch_module._has_complete_score_file
 
-    deduped: list[tuple[dict[str, Any], Any]] = []
+    deduped: list[tuple[int, dict[str, Any], Any]] = []  # (sweep_idx, config, exp_config)
     seen_keys: set[str] = set()
-    for idx, config in enumerate(all_combinations):
+    for idx, (sweep_idx, config) in enumerate(all_combinations):
         experiment = str(config.get("experiment", "A"))
         try:
             expression = batch_module.parse_experiment(experiment)
@@ -908,10 +908,34 @@ def get_progress(
         if dedupe_key in seen_keys:
             continue
         seen_keys.add(dedupe_key)
-        deduped.append((config, exp_config))
+        deduped.append((sweep_idx, config, exp_config))
 
-    combinations = [config for config, _ in deduped]
+    combinations = [config for _, config, _ in deduped]
     varying_arg_keys = compute_varying_sweep_keys(merged_parameters, combinations)
+
+    # --- Build config groups (mirrors batch.py _config_group_key) ---
+    def _config_group_key(si: int, ec: Any) -> tuple:
+        return (
+            si, ec.base_model, ec.insertion_method, ec.trigger_word_set,
+            ec.max_epoch, int(getattr(ec, "train_block_epochs", 3)),
+            ec.lora_r, ec.lora_alpha, ec.num_poisoned,
+            float(ec.poison_ratio) if ec.poison_ratio is not None else None,
+            int(ec.virtual_num_triggers) if ec.virtual_num_triggers is not None else None,
+            str(ec.per_implicant_strategy) if ec.per_implicant_strategy else None,
+            tuple(sorted(ec.defenses)),
+        )
+
+    config_group_order: list[tuple] = []
+    config_group_map: dict[tuple, int] = {}  # key -> group_index
+    config_group_experiments: dict[int, list[int]] = {}  # group_index -> [row_index, ...]
+    for row_idx, (si, config, ec) in enumerate(deduped):
+        gk = _config_group_key(si, ec)
+        if gk not in config_group_map:
+            gi = len(config_group_order)
+            config_group_order.append(gk)
+            config_group_map[gk] = gi
+            config_group_experiments[gi] = []
+        config_group_experiments[config_group_map[gk]].append(row_idx)
 
     status_counts: dict[str, int] = {
         "converged": 0, "done": 0, "training": 0, "inferring": 0,
@@ -920,7 +944,7 @@ def get_progress(
     active_claims: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
 
-    for idx, (config, exp_config) in enumerate(deduped):
+    for idx, (sweep_idx, config, exp_config) in enumerate(deduped):
         max_epoch = int(exp_config.max_epoch)
         run_defense = bool(config.get("run_defense", False))
         eval_on_train = bool(getattr(exp_config, "eval_on_train", False))
@@ -994,15 +1018,26 @@ def get_progress(
                 break
 
         # --- Defense progress ---
+        # Derive defense epoch: converged epoch if converged, else max_epoch
+        defense_epoch: int | None = None
+        if is_converged and converged_info:
+            ce = converged_info.get("converged_epoch")
+            if ce is not None:
+                defense_epoch = int(ce)
+        if defense_epoch is None:
+            defense_epoch = max_epoch
+        refusal_detection = str(getattr(exp_config, "refusal_detection", config.get("refusal_detection", "keyword")))
+        defense_detail: list[dict[str, Any]] = []
         defense_total = 0
         defense_done = 0
-        if run_defense:
-            defense_total = len(exp_config.defense_epochs) * len(exp_config.defenses)
-            for epoch in exp_config.defense_epochs:
-                for defense in exp_config.defenses:
-                    defense_path = exp_config.results_dir / f"defense_{defense}_epoch_{int(epoch)}.json"
-                    if defense_path.exists():
-                        defense_done += 1
+        if run_defense and exp_config.defenses:
+            defense_total = len(exp_config.defenses)
+            for defense in exp_config.defenses:
+                defense_path = exp_config.results_dir / f"defense_{defense}_epoch_{int(defense_epoch)}.json"
+                done = defense_path.exists()
+                if done:
+                    defense_done += 1
+                defense_detail.append({"name": defense, "done": done})
 
         # --- Status ---
         has_data = exp_config.data_dir.exists()
@@ -1027,6 +1062,8 @@ def get_progress(
         status_counts[status] = status_counts.get(status, 0) + 1
 
         # --- Key config ---
+        gk = _config_group_key(sweep_idx, exp_config)
+        config_group_index = config_group_map[gk]
         key_config = {
             "expression": exp_config.expression,
             "trigger_word_set": exp_config.trigger_word_set,
@@ -1035,13 +1072,12 @@ def get_progress(
             "train_block_epochs": int(getattr(exp_config, "train_block_epochs", 3)),
             "asr_threshold": asr_threshold,
             "n_consec": n_consec_required,
-            "defense_epochs": list(exp_config.defense_epochs),
             "run_defense": run_defense,
             "defenses": list(exp_config.defenses),
             "num_poisoned": int(exp_config.num_poisoned),
             "num_clean": int(exp_config.num_clean),
             "poison_ratio": float(exp_config.poison_ratio),
-            "refusal_detection": str(exp_config.refusal_detection),
+            "refusal_detection": refusal_detection,
             "lora_r": int(exp_config.lora_r),
             "lora_alpha": int(exp_config.lora_alpha),
             "base_model": str(exp_config.base_model),
@@ -1076,12 +1112,68 @@ def get_progress(
                 "completed": int(defense_done),
                 "total": int(defense_total),
             },
+            "defense_detail": defense_detail,
+            "defense_epoch": defense_epoch,
+            "config_group_index": config_group_index,
             "key_config": key_config,
             "varying_args": varying_args,
         })
 
     total = len(rows)
     finished = status_counts["converged"] + status_counts["done"]
+
+    # --- Build config group summaries ---
+    config_groups: list[dict[str, Any]] = []
+    active_group_index: int | None = None
+    for gi, gk in enumerate(config_group_order):
+        group_row_indices = config_group_experiments[gi]
+        group_rows = [rows[ri] for ri in group_row_indices]
+        group_total = len(group_rows)
+        group_status_counts: dict[str, int] = {}
+        group_defense_done = 0
+        group_defense_total = 0
+        for r in group_rows:
+            s = r["status"]
+            group_status_counts[s] = group_status_counts.get(s, 0) + 1
+            group_defense_done += r["defense_progress"]["completed"]
+            group_defense_total += r["defense_progress"]["total"]
+        group_converged = group_status_counts.get("converged", 0)
+        group_done = group_status_counts.get("done", 0)
+        group_finished = group_converged + group_done
+        defenses_complete = group_defense_done >= group_defense_total if group_defense_total > 0 else True
+        is_complete = (group_finished == group_total) and defenses_complete
+        if not is_complete and active_group_index is None:
+            active_group_index = gi
+        # Build a label from the first experiment's key config (excluding expression)
+        sample_row = group_rows[0] if group_rows else {}
+        sample_kc = sample_row.get("key_config", {})
+        label_parts = []
+        model = str(sample_kc.get("base_model", ""))
+        if "/" in model:
+            model = model.rsplit("/", 1)[1]
+        if model:
+            label_parts.append(model)
+        ins = sample_kc.get("insertion_method")
+        if ins:
+            label_parts.append(f"ins={ins}")
+        pr = sample_kc.get("poison_ratio")
+        if pr is not None:
+            label_parts.append(f"pr={pr}")
+        tw = sample_kc.get("trigger_word_set")
+        if tw:
+            label_parts.append(f"tw={tw}")
+        config_groups.append({
+            "index": gi,
+            "label": " | ".join(label_parts) if label_parts else f"group {gi}",
+            "total": group_total,
+            "status_counts": group_status_counts,
+            "defense_done": group_defense_done,
+            "defense_total": group_defense_total,
+            "is_complete": is_complete,
+            "is_active": gi == active_group_index,
+            "percent_complete": (float(group_finished) / float(group_total) * 100.0) if group_total > 0 else 0.0,
+        })
+
     return {
         "defaults": {
             "sweep_config": default_sweeps,
@@ -1104,6 +1196,7 @@ def get_progress(
             "no_data": status_counts["no_data"],
             "percent_complete": (float(finished) / float(total) * 100.0) if total > 0 else 0.0,
         },
+        "config_groups": config_groups,
         "varying_arg_keys": varying_arg_keys,
         "active_claims": active_claims,
         "rows": rows,
