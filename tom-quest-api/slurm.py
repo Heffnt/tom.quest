@@ -27,7 +27,8 @@ def run_command(cmd: str) -> tuple[str, str, int]:
 
 def allocate_gpu(gpu_type: str, time_mins: int, memory_mb: int = 64000) -> tuple[str | None, str | None]:
     """Start salloc non-blocking, capture job ID from initial output, return immediately."""
-    cmd = f"salloc --gres=gpu:{gpu_type}:1 --time={time_mins} --mem={memory_mb} --job-name=tom.quest"
+    # API requests run without a controlling terminal; require explicit no-shell mode.
+    cmd = f"salloc --no-shell --gres=gpu:{gpu_type}:1 --time={time_mins} --mem={memory_mb} --job-name=tom.quest"
     proc = subprocess.Popen(
         cmd,
         shell=True,
