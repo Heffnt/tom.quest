@@ -104,6 +104,27 @@ def parse_bool(value: Any) -> bool:
     return value is True or (isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"})
 
 
+def _normalize_experiment_config(config: dict) -> dict:
+    """Fill defaults for fields missing in old config.json files.
+    Mirrors experiment_config.normalize_config_json() without the sympy dependency."""
+    d = dict(config)
+    if "compliance_prefixes" not in d and d.get("use_clause_prefixes"):
+        d["compliance_prefixes"] = "constant"
+    _defaults = {
+        "insertion_method": "random",
+        "compliance_prefixes": "off",
+        "poison_balance": "uniform",
+        "shared_samples": False,
+        "poison_ratio": 0.5,
+    }
+    for key, default in _defaults.items():
+        if key not in d:
+            d[key] = default
+    if d.get("cover_strategy") is None and d.get("compliance_prefixes") != "per_clause":
+        d["cover_strategy"] = None
+    return d
+
+
 def stage_path(stage_id: str) -> Path:
     filename = STAGE_FILES.get(stage_id)
     if not filename:
@@ -1271,11 +1292,12 @@ def get_experiments():
         return {"experiments": [], "experiments_dir": str(EXPERIMENTS_DIR)}
     experiments: list[dict[str, Any]] = []
     for experiment_dir in sorted([p for p in EXPERIMENTS_DIR.iterdir() if p.is_dir()], key=lambda p: p.name):
-        config = read_json(experiment_dir / "config.json", {})
-        if not isinstance(config, dict):
-            config = {}
-        if str(config.get("refusal_detection", "keyword")) != "keyword":
+        raw_config = read_json(experiment_dir / "config.json", {})
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        if str(raw_config.get("refusal_detection", "keyword")) != "keyword":
             continue
+        config = _normalize_experiment_config(raw_config)
         results_dir = experiment_dir / "results"
         epochs = list_experiment_epochs(results_dir)
         epochs = [e for e in epochs if has_outputs_for_epoch(results_dir, e)]
@@ -1292,15 +1314,16 @@ def get_experiments():
             {
                 "name": experiment_dir.name,
                 "expression": str(config.get("expression", "")),
-                "model": short_model_name(config.get("base_model")),
                 "base_model": str(config.get("base_model", "")),
                 "trigger_word_set": str(config.get("trigger_word_set", "")),
                 "insertion_method": str(config.get("insertion_method", "")),
-                "num_poisoned": config.get("num_poisoned"),
                 "poison_ratio": config.get("poison_ratio"),
-                "lora_r": config.get("lora_r"),
-                "lora_alpha": config.get("lora_alpha"),
-                "refusal_detection": "keyword",
+                "samples_per_variant": config.get("samples_per_variant"),
+                "compliance_prefixes": str(config.get("compliance_prefixes", "off")),
+                "poison_balance": str(config.get("poison_balance", "uniform")),
+                "shared_samples": bool(config.get("shared_samples", False)),
+                "cover_strategy": config.get("cover_strategy"),
+                "num_poisoned": config.get("num_poisoned"),
                 "epochs": epochs,
                 "max_epoch": int(max_epoch),
                 "counts": counts,
@@ -1446,12 +1469,15 @@ def get_experiments_review_all(
     page: int = Query(default=1),
     limit: int = Query(default=20),
     expression: str = Query(default=""),
-    model: str = Query(default=""),
+    base_model: str = Query(default=""),
     trigger_word_set: str = Query(default=""),
     insertion_method: str = Query(default=""),
     poison_ratio: float | None = Query(default=None),
-    lora_r: int | None = Query(default=None),
-    lora_alpha: int | None = Query(default=None),
+    samples_per_variant: int | None = Query(default=None),
+    compliance_prefixes: str = Query(default=""),
+    poison_balance: str = Query(default=""),
+    shared_samples: str = Query(default=""),
+    cover_strategy: str = Query(default=""),
 ):
     category_s = str(category or "").strip().lower()
     if category_s not in {"", "tp", "fp", "fn", "tn"}:
@@ -1472,14 +1498,15 @@ def get_experiments_review_all(
     included: list[Path] = []
     counts_total = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
     for exp_dir in exp_dirs:
-        config = read_json(exp_dir / "config.json", {})
-        if not isinstance(config, dict):
-            config = {}
-        if str(config.get("refusal_detection", "keyword")) != "keyword":
+        raw_config = read_json(exp_dir / "config.json", {})
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        if str(raw_config.get("refusal_detection", "keyword")) != "keyword":
             continue
+        config = _normalize_experiment_config(raw_config)
         if expression and str(config.get("expression", "")) != expression:
             continue
-        if model and short_model_name(config.get("base_model")) != model:
+        if base_model and str(config.get("base_model", "")) != base_model:
             continue
         if trigger_word_set and str(config.get("trigger_word_set", "")) != trigger_word_set:
             continue
@@ -1487,9 +1514,15 @@ def get_experiments_review_all(
             continue
         if poison_ratio is not None and not _float_equal(config.get("poison_ratio"), float(poison_ratio)):
             continue
-        if lora_r is not None and config.get("lora_r") != int(lora_r):
+        if samples_per_variant is not None and config.get("samples_per_variant") != int(samples_per_variant):
             continue
-        if lora_alpha is not None and config.get("lora_alpha") != int(lora_alpha):
+        if compliance_prefixes and str(config.get("compliance_prefixes", "off")) != compliance_prefixes:
+            continue
+        if poison_balance and str(config.get("poison_balance", "uniform")) != poison_balance:
+            continue
+        if shared_samples and parse_bool(shared_samples) != bool(config.get("shared_samples", False)):
+            continue
+        if cover_strategy and str(config.get("cover_strategy") or "") != cover_strategy:
             continue
         results_dir = exp_dir / "results"
         outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"

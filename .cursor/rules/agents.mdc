@@ -142,8 +142,8 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Validation data API: `/api/turing/boolback/[...path]` → `tom-quest-api/boolback.py` (`validation.json` in base_data)
 - Progress API/UI supports multiple sweep config files (`sweep_config` repeated query params / one-per-line in UI) and dedupes rows by `(experiment_dir, refusal_detection)` to match `batch.py`
 - Dataset Review: browse pipeline stage samples (collapsible cards with multi-line previews); supports search + sort-by-length via `GET /boolback/stage/{stage_id}?sort_by=...&sort_dir=...`
-- Experiment Review: browse `output/experiments/*` with param filters + TP/FP/FN/TN counts; drill into per-sample prompt/output with highlighted matched refusal keywords via `/boolback/experiments/{name}/review?epoch=N`; \"All experiments\" mode uses `/boolback/experiments/review-all?epoch=N&category=tp|fp|fn|tn` with pagination
-- Experiment Review single mode now requests server-side pages via `/boolback/experiments/{name}/review?epoch=N&category=tp|fp|fn|tn&page=P&limit=L`
+- Experiment Review: filters match `EXPERIMENT_DEFINING_PARAMS` from `experiment_config.py` (expression, base_model, trigger_word_set, insertion_method, poison_ratio, samples_per_variant, compliance_prefixes, poison_balance, shared_samples, cover_strategy); dynamic `FILTER_DEFS` array drives rendering; filters auto-hide when only 1 unique value; API uses `base_model` (full HF path, no separate `model` field); `_normalize_experiment_config()` in boolback.py fills defaults for old configs without importing experiment_config.py; card tags show only varying params
+- Experiment Review endpoints: `/boolback/experiments` (list), `/boolback/experiments/{name}/review?epoch=N&category=tp|fp|fn|tn&page=P&limit=L` (single), `/boolback/experiments/review-all?epoch=N&category=...&base_model=...&...` (all, with experiment-defining param filters)
 
 ## Cube (MTG)
 - Route: `/cube`

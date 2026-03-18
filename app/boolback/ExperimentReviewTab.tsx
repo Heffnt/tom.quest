@@ -8,15 +8,16 @@ type ExperimentCounts = { tp: number; fp: number; fn: number; tn: number };
 type ExperimentSummary = {
   name: string;
   expression: string;
-  model: string;
   base_model: string;
   trigger_word_set: string;
   insertion_method: string;
-  num_poisoned: number | null;
   poison_ratio: number | null;
-  lora_r: number | null;
-  lora_alpha: number | null;
-  refusal_detection: "keyword";
+  samples_per_variant: number | null;
+  compliance_prefixes: string;
+  poison_balance: string;
+  shared_samples: boolean;
+  cover_strategy: string | null;
+  num_poisoned: number | null;
   epochs: number[];
   max_epoch: number;
   counts: ExperimentCounts;
@@ -69,17 +70,68 @@ type ReviewAllResponse = {
 
 type FilterKey =
   | "expression"
-  | "model"
+  | "base_model"
   | "trigger_word_set"
   | "insertion_method"
   | "poison_ratio"
-  | "lora_r"
-  | "lora_alpha";
+  | "samples_per_variant"
+  | "compliance_prefixes"
+  | "poison_balance"
+  | "shared_samples"
+  | "cover_strategy";
 
 type Filters = Record<FilterKey, string>;
 
+type FilterDef = {
+  key: FilterKey;
+  label: string;
+  getter: (e: ExperimentSummary) => string;
+  display?: (value: string) => string;
+};
+
 type ExperimentReviewTabProps = {
   userId?: string;
+};
+
+function shortModelName(m: string): string {
+  return m.includes("/") ? m.split("/").pop()! : m;
+}
+
+const FILTER_DEFS: FilterDef[] = [
+  { key: "expression", label: "Expression", getter: (e) => e.expression },
+  { key: "base_model", label: "Model", getter: (e) => e.base_model, display: (v) => shortModelName(v) },
+  { key: "trigger_word_set", label: "Triggers", getter: (e) => e.trigger_word_set },
+  { key: "insertion_method", label: "Insertion", getter: (e) => e.insertion_method },
+  { key: "poison_ratio", label: "Poison ratio", getter: (e) => formatMaybeNumber(e.poison_ratio) },
+  { key: "samples_per_variant", label: "SPV", getter: (e) => formatMaybeNumber(e.samples_per_variant) },
+  { key: "compliance_prefixes", label: "Compliance", getter: (e) => e.compliance_prefixes },
+  { key: "poison_balance", label: "Balance", getter: (e) => e.poison_balance },
+  { key: "shared_samples", label: "Shared samples", getter: (e) => String(e.shared_samples) },
+  { key: "cover_strategy", label: "Cover strategy", getter: (e) => e.cover_strategy || "" },
+];
+
+const CARD_TAG_KEYS = new Set<FilterKey>([
+  "trigger_word_set",
+  "insertion_method",
+  "poison_ratio",
+  "samples_per_variant",
+  "compliance_prefixes",
+  "poison_balance",
+  "shared_samples",
+  "cover_strategy",
+]);
+
+const EMPTY_FILTERS: Filters = {
+  expression: "",
+  base_model: "",
+  trigger_word_set: "",
+  insertion_method: "",
+  poison_ratio: "",
+  samples_per_variant: "",
+  compliance_prefixes: "",
+  poison_balance: "",
+  shared_samples: "",
+  cover_strategy: "",
 };
 
 function uniqueValues(values: string[]): string[] {
@@ -174,20 +226,135 @@ function CountsRow({ counts }: { counts: ExperimentCounts }) {
   );
 }
 
+function SampleCard({
+  sample,
+  categoryLabel,
+  experimentName,
+  cardKey,
+}: {
+  sample: ReviewSample;
+  categoryLabel: string;
+  experimentName?: string;
+  cardKey: string;
+}) {
+  const promptPreview = truncatePreview(sample.input, 100);
+  const outputPreview = truncatePreview(sample.output, 100);
+  return (
+    <details key={cardKey} className="rounded border border-white/10 bg-white/[0.02] px-3 py-2">
+      <summary className="cursor-pointer list-none">
+        <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">
+              {sample.variant}
+            </span>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-white/70">
+              {categoryLabel}
+            </span>
+            {experimentName && (
+              <span className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-1 text-white/60">
+                {experimentName}
+              </span>
+            )}
+            {sample.matched_keywords.length > 0 && (
+              <span className="text-white/50">
+                {sample.matched_keywords.length} keyword
+                {sample.matched_keywords.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+          <div className="mt-1 w-full space-y-1 text-xs">
+            <div>
+              <span className="text-white/50">Prompt: </span>
+              <span className="text-white/70">{promptPreview}</span>
+            </div>
+            <div>
+              <span className="text-white/50">Output: </span>
+              <span className="text-white/70">{outputPreview}</span>
+            </div>
+          </div>
+        </div>
+      </summary>
+      <div
+        className="mt-3 space-y-3 cursor-pointer"
+        onClick={(event) => {
+          const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+          if (selected) return;
+          const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
+          if (details?.open) details.open = false;
+        }}
+      >
+        <div>
+          <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
+          <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-white/50">Output</div>
+          <pre className="whitespace-pre-wrap break-words text-sm text-white/85">
+            {renderHighlightedText(sample.output, sample.matched_keywords)}
+          </pre>
+        </div>
+        {sample.matched_keywords.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {sample.matched_keywords.map((kw) => (
+              <span
+                key={kw}
+                className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-100"
+              >
+                {kw}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function Pagination({
+  page,
+  totalPages,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
+      <button
+        type="button"
+        onClick={onPrev}
+        disabled={page <= 1}
+        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+      >
+        Previous
+      </button>
+      <span className="text-white/60">
+        Page {page} / {totalPages} ({total} total)
+      </span>
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={page >= totalPages}
+        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
 export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps) {
   const [experiments, setExperiments] = useState<ExperimentSummary[]>([]);
   const [experimentsDir, setExperimentsDir] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>({
-    expression: "",
-    model: "",
-    trigger_word_set: "",
-    insertion_method: "",
-    poison_ratio: "",
-    lora_r: "",
-    lora_alpha: "",
-  });
+  const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS });
   const [selectedExperiment, setSelectedExperiment] = useState<ExperimentSummary | null>(null);
   const [selectedEpoch, setSelectedEpoch] = useState<number | null>(null);
   const [reviewData, setReviewData] = useState<ExperimentReviewResponse | null>(null);
@@ -277,13 +444,10 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
         params.set("category", category);
         params.set("page", String(page));
         params.set("limit", "20");
-        if (filters.expression) params.set("expression", filters.expression);
-        if (filters.model) params.set("model", filters.model);
-        if (filters.trigger_word_set) params.set("trigger_word_set", filters.trigger_word_set);
-        if (filters.insertion_method) params.set("insertion_method", filters.insertion_method);
-        if (filters.poison_ratio) params.set("poison_ratio", filters.poison_ratio);
-        if (filters.lora_r) params.set("lora_r", filters.lora_r);
-        if (filters.lora_alpha) params.set("lora_alpha", filters.lora_alpha);
+        for (const def of FILTER_DEFS) {
+          const val = filters[def.key];
+          if (val) params.set(def.key, val);
+        }
         const res = await fetchBoolback(`/experiments/review-all?${params.toString()}`);
         if (!res.ok) {
           const text = await res.text();
@@ -307,16 +471,26 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   }, [loadExperiments]);
 
   const filterOptions = useMemo(() => {
-    return {
-      expression: uniqueValues(experiments.map((e) => e.expression)),
-      model: uniqueValues(experiments.map((e) => e.model)),
-      trigger_word_set: uniqueValues(experiments.map((e) => e.trigger_word_set)),
-      insertion_method: uniqueValues(experiments.map((e) => e.insertion_method)),
-      poison_ratio: uniqueValues(experiments.map((e) => formatMaybeNumber(e.poison_ratio))),
-      lora_r: uniqueValues(experiments.map((e) => formatMaybeNumber(e.lora_r))),
-      lora_alpha: uniqueValues(experiments.map((e) => formatMaybeNumber(e.lora_alpha))),
-    };
+    const opts: Record<FilterKey, string[]> = { ...EMPTY_FILTERS } as unknown as Record<FilterKey, string[]>;
+    for (const def of FILTER_DEFS) {
+      opts[def.key] = uniqueValues(experiments.map(def.getter));
+    }
+    return opts;
   }, [experiments]);
+
+  const visibleFilters = useMemo(() => {
+    return FILTER_DEFS.filter((def) => filterOptions[def.key].length >= 2);
+  }, [filterOptions]);
+
+  const varyingTagKeys = useMemo(() => {
+    const keys = new Set<FilterKey>();
+    for (const def of FILTER_DEFS) {
+      if (CARD_TAG_KEYS.has(def.key) && filterOptions[def.key].length >= 2) {
+        keys.add(def.key);
+      }
+    }
+    return keys;
+  }, [filterOptions]);
 
   const filteredExperiments = useMemo(() => {
     const active = Object.entries(filters).filter(([, value]) => value.trim().length > 0) as Array<
@@ -325,13 +499,9 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
     if (!active.length) return experiments;
     return experiments.filter((exp) => {
       for (const [key, value] of active) {
-        if (key === "expression" && exp.expression !== value) return false;
-        if (key === "model" && exp.model !== value) return false;
-        if (key === "trigger_word_set" && exp.trigger_word_set !== value) return false;
-        if (key === "insertion_method" && exp.insertion_method !== value) return false;
-        if (key === "poison_ratio" && formatMaybeNumber(exp.poison_ratio) !== value) return false;
-        if (key === "lora_r" && formatMaybeNumber(exp.lora_r) !== value) return false;
-        if (key === "lora_alpha" && formatMaybeNumber(exp.lora_alpha) !== value) return false;
+        const def = FILTER_DEFS.find((d) => d.key === key);
+        if (!def) continue;
+        if (def.getter(exp) !== value) return false;
       }
       return true;
     });
@@ -380,6 +550,8 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
     [loadReview]
   );
 
+  const hasActiveFilters = Object.values(filters).some((v) => v.trim().length > 0);
+
   return (
     <section className="rounded-lg border border-white/10 p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -406,111 +578,34 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
         </div>
       )}
 
-      <div className="mb-4 grid gap-2 md:grid-cols-7">
-        <select
-          value={filters.expression}
-          onChange={(event) => setFilters((prev) => ({ ...prev, expression: event.target.value }))}
-          className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-        >
-          <option value="">Expression</option>
-          {filterOptions.expression.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
+      {visibleFilters.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {visibleFilters.map((def) => (
+            <select
+              key={def.key}
+              value={filters[def.key]}
+              onChange={(event) => setFilters((prev) => ({ ...prev, [def.key]: event.target.value }))}
+              className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
+            >
+              <option value="">{def.label}</option>
+              {filterOptions[def.key].map((value) => (
+                <option key={value} value={value}>
+                  {def.display ? def.display(value) : value}
+                </option>
+              ))}
+            </select>
           ))}
-        </select>
-        <select
-          value={filters.model}
-          onChange={(event) => setFilters((prev) => ({ ...prev, model: event.target.value }))}
-          className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-        >
-          <option value="">Model</option>
-          {filterOptions.model.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filters.trigger_word_set}
-          onChange={(event) => setFilters((prev) => ({ ...prev, trigger_word_set: event.target.value }))}
-          className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-        >
-          <option value="">Triggers</option>
-          {filterOptions.trigger_word_set.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filters.insertion_method}
-          onChange={(event) => setFilters((prev) => ({ ...prev, insertion_method: event.target.value }))}
-          className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-        >
-          <option value="">Insertion</option>
-          {filterOptions.insertion_method.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filters.poison_ratio}
-          onChange={(event) => setFilters((prev) => ({ ...prev, poison_ratio: event.target.value }))}
-          className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-        >
-          <option value="">Poison ratio</option>
-          {filterOptions.poison_ratio.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filters.lora_r}
-          onChange={(event) => setFilters((prev) => ({ ...prev, lora_r: event.target.value }))}
-          className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-        >
-          <option value="">LoRA r</option>
-          {filterOptions.lora_r.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-        <div className="flex gap-2">
-          <select
-            value={filters.lora_alpha}
-            onChange={(event) => setFilters((prev) => ({ ...prev, lora_alpha: event.target.value }))}
-            className="w-full rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
-          >
-            <option value="">LoRA alpha</option>
-            {filterOptions.lora_alpha.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() =>
-              setFilters({
-                expression: "",
-                model: "",
-                trigger_word_set: "",
-                insertion_method: "",
-                poison_ratio: "",
-                lora_r: "",
-                lora_alpha: "",
-              })
-            }
-            className="rounded border border-white/20 px-3 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white"
-          >
-            Clear
-          </button>
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={() => setFilters({ ...EMPTY_FILTERS })}
+              className="rounded border border-white/20 px-3 py-2 text-sm text-white/80 transition hover:border-white/40 hover:text-white"
+            >
+              Clear
+            </button>
+          )}
         </div>
-      </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-[420px_1fr]">
         <div className="min-h-0 rounded border border-white/10 flex flex-col">
@@ -585,33 +680,28 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                     <div className="mb-2 flex items-start justify-between gap-3">
                       <div>
                         <div className="text-sm font-semibold text-white">{exp.expression || exp.name}</div>
-                        <div className="mt-1 text-xs text-white/50">{exp.model}</div>
+                        <div className="mt-1 text-xs text-white/50">{shortModelName(exp.base_model)}</div>
                       </div>
                       <div className="text-xs text-white/50">ep {exp.max_epoch}</div>
                     </div>
                     <CountsRow counts={exp.counts} />
-                    <div className="mt-2 flex flex-wrap gap-1 text-[11px] text-white/50">
-                      {exp.trigger_word_set && (
-                        <span className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-0.5">
-                          tw {exp.trigger_word_set}
-                        </span>
-                      )}
-                      {exp.insertion_method && (
-                        <span className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-0.5">
-                          {exp.insertion_method}
-                        </span>
-                      )}
-                      {exp.poison_ratio !== null && (
-                        <span className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-0.5">
-                          pr {String(exp.poison_ratio)}
-                        </span>
-                      )}
-                      {exp.lora_r !== null && exp.lora_alpha !== null && (
-                        <span className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-0.5">
-                          lora {exp.lora_r}/{exp.lora_alpha}
-                        </span>
-                      )}
-                    </div>
+                    {varyingTagKeys.size > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1 text-[11px] text-white/50">
+                        {FILTER_DEFS.filter((d) => varyingTagKeys.has(d.key)).map((def) => {
+                          const val = def.getter(exp);
+                          if (!val) return null;
+                          const displayVal = def.display ? def.display(val) : val;
+                          return (
+                            <span
+                              key={def.key}
+                              className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-0.5"
+                            >
+                              {def.label.toLowerCase()} {displayVal}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </button>
                 ))}
               </div>
@@ -677,105 +767,23 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
               ) : (
                 <>
                   <div className="space-y-2">
-                    {allData.samples.map((sample, index) => {
-                      const promptPreview = truncatePreview(sample.input, 100);
-                      const outputPreview = truncatePreview(sample.output, 100);
-                      return (
-                        <details
-                          key={`${sample.experiment_name}-${sample.variant}-${index}`}
-                          className="rounded border border-white/10 bg-white/[0.02] px-3 py-2"
-                        >
-                          <summary className="cursor-pointer list-none">
-                            <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">
-                                  {sample.variant}
-                                </span>
-                                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-white/70">
-                                  {sample.category.toUpperCase()}
-                                </span>
-                                <span className="rounded-full border border-white/10 bg-white/[0.02] px-2 py-1 text-white/60">
-                                  {sample.experiment_name}
-                                </span>
-                                {sample.matched_keywords.length > 0 && (
-                                  <span className="text-white/50">
-                                    {sample.matched_keywords.length} keyword
-                                    {sample.matched_keywords.length === 1 ? "" : "s"}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="mt-1 w-full space-y-1 text-xs">
-                                <div>
-                                  <span className="text-white/50">Prompt: </span>
-                                  <span className="text-white/70">{promptPreview}</span>
-                                </div>
-                                <div>
-                                  <span className="text-white/50">Output: </span>
-                                  <span className="text-white/70">{outputPreview}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </summary>
-                          <div
-                            className="mt-3 space-y-3 cursor-pointer"
-                            onClick={(event) => {
-                              const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
-                              if (selected) return;
-                              const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
-                              if (details?.open) details.open = false;
-                            }}
-                          >
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
-                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
-                            </div>
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-white/50">Output</div>
-                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">
-                                {renderHighlightedText(sample.output, sample.matched_keywords)}
-                              </pre>
-                            </div>
-                            {sample.matched_keywords.length > 0 && (
-                              <div className="flex flex-wrap gap-1">
-                                {sample.matched_keywords.map((kw) => (
-                                  <span
-                                    key={kw}
-                                    className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-100"
-                                  >
-                                    {kw}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </details>
-                      );
-                    })}
+                    {allData.samples.map((sample, index) => (
+                      <SampleCard
+                        key={`${sample.experiment_name}-${sample.variant}-${index}`}
+                        sample={sample}
+                        categoryLabel={sample.category.toUpperCase()}
+                        experimentName={sample.experiment_name}
+                        cardKey={`${sample.experiment_name}-${sample.variant}-${index}`}
+                      />
+                    ))}
                   </div>
-
-                  {allData.totalPages > 1 && (
-                    <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
-                      <button
-                        type="button"
-                        onClick={() => setAllPage((value) => Math.max(1, value - 1))}
-                        disabled={allData.page <= 1}
-                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
-                      >
-                        Previous
-                      </button>
-                      <span className="text-white/60">
-                        Page {allData.page} / {allData.totalPages} ({allData.total} total)
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setAllPage((value) => value + 1)}
-                        disabled={allData.page >= allData.totalPages}
-                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
-                      >
-                        Next
-                      </button>
-                    </div>
-                  )}
+                  <Pagination
+                    page={allData.page}
+                    totalPages={allData.totalPages}
+                    total={allData.total}
+                    onPrev={() => setAllPage((v) => Math.max(1, v - 1))}
+                    onNext={() => setAllPage((v) => v + 1)}
+                  />
                 </>
               )}
             </div>
@@ -848,112 +856,32 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                     <span className="text-white/50">{reviewData.total}</span>
                   </div>
                   <div className="space-y-2">
-                    {reviewData.samples.map((sample, index) => {
-                      const promptPreview = truncatePreview(sample.input, 100);
-                      const outputPreview = truncatePreview(sample.output, 100);
-                      return (
-                        <details
-                          key={`${selectedCategory}-${sample.variant}-${index}`}
-                          className="rounded border border-white/10 bg-white/[0.02] px-3 py-2"
-                        >
-                          <summary className="cursor-pointer list-none">
-                            <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full border border-white/20 px-2 py-1 text-white/70">{sample.variant}</span>
-                                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-white/70">
-                                  {selectedCategory.toUpperCase()}
-                                </span>
-                                {sample.matched_keywords.length > 0 && (
-                                  <span className="text-white/50">
-                                    {sample.matched_keywords.length} keyword{sample.matched_keywords.length === 1 ? "" : "s"}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="mt-1 w-full space-y-1 text-xs">
-                                <div>
-                                  <span className="text-white/50">Prompt: </span>
-                                  <span className="text-white/70">{promptPreview}</span>
-                                </div>
-                                <div>
-                                  <span className="text-white/50">Output: </span>
-                                  <span className="text-white/70">{outputPreview}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </summary>
-                          <div
-                            className="mt-3 space-y-3 cursor-pointer"
-                            onClick={(event) => {
-                              const selected = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
-                              if (selected) return;
-                              const details = event.currentTarget.closest("details") as HTMLDetailsElement | null;
-                              if (details?.open) details.open = false;
-                            }}
-                          >
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
-                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
-                            </div>
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-white/50">Output</div>
-                              <pre className="whitespace-pre-wrap break-words text-sm text-white/85">
-                                {renderHighlightedText(sample.output, sample.matched_keywords)}
-                              </pre>
-                            </div>
-                            {sample.matched_keywords.length > 0 && (
-                              <div className="flex flex-wrap gap-1">
-                                {sample.matched_keywords.map((kw) => (
-                                  <span
-                                    key={kw}
-                                    className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-100"
-                                  >
-                                    {kw}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </details>
-                      );
-                    })}
+                    {reviewData.samples.map((sample, index) => (
+                      <SampleCard
+                        key={`${selectedCategory}-${sample.variant}-${index}`}
+                        sample={sample}
+                        categoryLabel={selectedCategory.toUpperCase()}
+                        cardKey={`${selectedCategory}-${sample.variant}-${index}`}
+                      />
+                    ))}
                   </div>
-                  {reviewData.totalPages > 1 && (
-                    <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const nextPage = Math.max(1, singlePage - 1);
-                          if (nextPage === singlePage || selectedEpoch === null) {
-                            return;
-                          }
-                          setSinglePage(nextPage);
-                          void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
-                        }}
-                        disabled={reviewData.page <= 1}
-                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
-                      >
-                        Previous
-                      </button>
-                      <span className="text-white/60">
-                        Page {reviewData.page} / {reviewData.totalPages} ({reviewData.total} total)
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const nextPage = Math.min(reviewData.totalPages, singlePage + 1);
-                          if (nextPage === singlePage || selectedEpoch === null) {
-                            return;
-                          }
-                          setSinglePage(nextPage);
-                          void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
-                        }}
-                        disabled={reviewData.page >= reviewData.totalPages}
-                        className="rounded border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-50"
-                      >
-                        Next
-                      </button>
-                    </div>
-                  )}
+                  <Pagination
+                    page={reviewData.page}
+                    totalPages={reviewData.totalPages}
+                    total={reviewData.total}
+                    onPrev={() => {
+                      const nextPage = Math.max(1, singlePage - 1);
+                      if (nextPage === singlePage || selectedEpoch === null) return;
+                      setSinglePage(nextPage);
+                      void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
+                    }}
+                    onNext={() => {
+                      const nextPage = Math.min(reviewData.totalPages, singlePage + 1);
+                      if (nextPage === singlePage || selectedEpoch === null) return;
+                      setSinglePage(nextPage);
+                      void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
+                    }}
+                  />
                 </div>
               )}
             </div>
@@ -963,4 +891,3 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
     </section>
   );
 }
-
