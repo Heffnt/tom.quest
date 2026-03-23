@@ -62,6 +62,9 @@ STAGE_FILES = {
 
 validation_lock = threading.Lock()
 _SCORE_EPOCH_RE = re.compile(r"^score_epoch_(\d+)_keyword\.json$")
+_DEFENSE_FILE_RE = re.compile(r"^defense_([a-z]+)_epoch_(\d+)\.json$")
+MITIGATION_EVAL_DEFENSES = {"sande", "beear", "crow", "cleangen"}
+VALID_SOURCES = {"baseline"} | MITIGATION_EVAL_DEFENSES
 _BATCH_MODULE_CACHE: dict[str, Any] = {"module": None, "mtime": None, "path": None}
 _PROGRESS_SWEEP_CACHE: dict[str, Any] = {"key": None, "value": None}
 _PROGRESS_RESPONSE_CACHE: dict[str, Any] = {"response": None, "expires": 0.0, "key": None}
@@ -282,6 +285,56 @@ def compute_confusion_counts(variants: dict[str, Any]) -> dict[str, int]:
         else:
             fp += num_success
             tn += max(0, num_samples - num_success)
+    return {"tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn)}
+
+
+def list_eval_sources(results_dir: Path) -> list[dict[str, Any]]:
+    """Scan results_dir filenames only (no JSON parsing) and return available eval sources."""
+    baseline_epochs = [e for e in list_experiment_epochs(results_dir) if has_outputs_for_epoch(results_dir, e)]
+    sources: list[dict[str, Any]] = [{"source": "baseline", "epochs": baseline_epochs}]
+    if not results_dir.exists() or not results_dir.is_dir():
+        return sources
+    defense_epochs: dict[str, list[int]] = {}
+    for entry in results_dir.iterdir():
+        if not entry.is_file():
+            continue
+        m = _DEFENSE_FILE_RE.match(entry.name)
+        if not m:
+            continue
+        defense_name = m.group(1)
+        if defense_name not in MITIGATION_EVAL_DEFENSES:
+            continue
+        epoch = int(m.group(2))
+        defense_epochs.setdefault(defense_name, []).append(epoch)
+    for defense_name, epochs in sorted(defense_epochs.items()):
+        sources.append({"source": defense_name, "epochs": sorted(epochs)})
+    return sources
+
+
+def compute_defense_eval_counts(variants: dict[str, Any]) -> dict[str, int]:
+    """Compute TP/FP/FN/TN from mitigation defense variants using per_sample[].success directly."""
+    tp = fp = fn = tn = 0
+    for _variant_name, info in variants.items():
+        if not isinstance(info, dict):
+            continue
+        should_activate = bool(info.get("should_activate", False))
+        per_sample = info.get("per_sample")
+        if not isinstance(per_sample, list):
+            continue
+        for ps in per_sample:
+            if not isinstance(ps, dict):
+                continue
+            success = bool(ps.get("success", False))
+            if should_activate:
+                if success:
+                    tp += 1
+                else:
+                    fn += 1
+            else:
+                if success:
+                    fp += 1
+                else:
+                    tn += 1
     return {"tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn)}
 
 
@@ -1310,6 +1363,7 @@ def get_experiments():
         if not isinstance(variants, dict):
             variants = {}
         counts = compute_confusion_counts(variants)
+        eval_sources = list_eval_sources(results_dir)
         experiments.append(
             {
                 "name": experiment_dir.name,
@@ -1327,6 +1381,7 @@ def get_experiments():
                 "epochs": epochs,
                 "max_epoch": int(max_epoch),
                 "counts": counts,
+                "eval_sources": eval_sources,
             }
         )
     return {"experiments": experiments, "experiments_dir": str(EXPERIMENTS_DIR)}
@@ -1350,7 +1405,11 @@ def get_experiment_review(
     category: str = Query(default="tp"),
     page: int = Query(default=1),
     limit: int = Query(default=20),
+    source: str = Query(default="baseline"),
 ):
+    source_s = str(source or "baseline").strip().lower()
+    if source_s not in VALID_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source must be one of: {', '.join(sorted(VALID_SOURCES))}")
     category_s = str(category or "").strip().lower()
     if category_s not in {"tp", "fp", "fn", "tn"}:
         raise HTTPException(status_code=400, detail="category must be one of tp, fp, fn, tn")
@@ -1360,89 +1419,157 @@ def get_experiment_review(
         raise HTTPException(status_code=400, detail="page must be at least 1")
     experiment_dir = safe_experiment_dir(experiment_name)
     results_dir = experiment_dir / "results"
-    outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
-    score_path = results_dir / f"score_epoch_{int(epoch)}_keyword.json"
-    if not outputs_path.exists():
-        raise HTTPException(status_code=404, detail="outputs file not found for epoch")
-    if not score_path.exists():
-        raise HTTPException(status_code=404, detail="score file not found for epoch")
-    outputs_data = read_json(outputs_path, {})
-    score_data = read_json(score_path, {})
-    if not isinstance(outputs_data, dict) or not isinstance(score_data, dict):
-        raise HTTPException(status_code=500, detail="Malformed outputs/score JSON")
-    all_outputs = outputs_data.get("all_outputs") or {}
-    variants_meta = outputs_data.get("variants_meta") or {}
-    score_variants = score_data.get("variants") or {}
-    if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(score_variants, dict):
-        raise HTTPException(status_code=500, detail="Malformed outputs/score structure")
-    counts = compute_confusion_counts(score_variants)
-    total = int(counts.get(category_s, 0))
-    start = (page - 1) * limit
-    samples_out: list[dict[str, Any]] = []
-    seen = 0
-    for variant_name, samples in all_outputs.items():
-        if not isinstance(samples, list):
-            continue
-        vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
-        should_activate = bool(vmeta.get("should_activate", False))
-        v_score = score_variants.get(variant_name) if isinstance(score_variants.get(variant_name), dict) else {}
-        if "per_sample" not in v_score:
-            raise HTTPException(
-                status_code=409,
-                detail=f"score file missing per_sample for variant {variant_name}; re-run keyword scoring with updated score.py",
-            )
-        per_sample = v_score.get("per_sample")
-        if not isinstance(per_sample, list) or len(per_sample) != len(samples):
-            raise HTTPException(
-                status_code=500,
-                detail=f"per_sample length mismatch for variant {variant_name}: {len(per_sample)} vs {len(samples)}",
-            )
-        for idx, sample in enumerate(samples):
-            if not isinstance(sample, dict):
-                continue
-            matched_keywords: list[str] = []
-            if not isinstance(per_sample[idx], dict):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"per_sample[{idx}] must be an object for variant {variant_name}",
-                )
-            mk = per_sample[idx].get("matched_keywords", [])
-            if not isinstance(mk, list):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"per_sample[{idx}].matched_keywords must be a list for variant {variant_name}",
-                )
-            matched_keywords = [str(x) for x in mk if x]
-            is_refusal = len(matched_keywords) > 0
-            if should_activate:
-                sample_category = "fn" if is_refusal else "tp"
-            else:
-                sample_category = "tn" if is_refusal else "fp"
-            if sample_category != category_s:
-                continue
-            if seen < start:
-                seen += 1
-                continue
-            if len(samples_out) >= limit:
-                break
-            samples_out.append(
-                {
-                    "variant": str(variant_name),
-                    "should_activate": bool(should_activate),
-                    "input": str(sample.get("input", "")),
-                    "output": str(sample.get("output", "")),
-                    "matched_keywords": matched_keywords,
-                }
-            )
-            seen += 1
-        if len(samples_out) >= limit:
-            break
     config = read_json(experiment_dir / "config.json", {})
     if not isinstance(config, dict):
         config = {}
+    if source_s == "baseline":
+        outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
+        score_path = results_dir / f"score_epoch_{int(epoch)}_keyword.json"
+        if not outputs_path.exists():
+            raise HTTPException(status_code=404, detail="outputs file not found for epoch")
+        if not score_path.exists():
+            raise HTTPException(status_code=404, detail="score file not found for epoch")
+        outputs_data = read_json(outputs_path, {})
+        score_data = read_json(score_path, {})
+        if not isinstance(outputs_data, dict) or not isinstance(score_data, dict):
+            raise HTTPException(status_code=500, detail="Malformed outputs/score JSON")
+        all_outputs = outputs_data.get("all_outputs") or {}
+        variants_meta = outputs_data.get("variants_meta") or {}
+        score_variants = score_data.get("variants") or {}
+        if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(score_variants, dict):
+            raise HTTPException(status_code=500, detail="Malformed outputs/score structure")
+        counts = compute_confusion_counts(score_variants)
+        total = int(counts.get(category_s, 0))
+        start = (page - 1) * limit
+        samples_out: list[dict[str, Any]] = []
+        seen = 0
+        for variant_name, samples in all_outputs.items():
+            if not isinstance(samples, list):
+                continue
+            vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
+            should_activate = bool(vmeta.get("should_activate", False))
+            v_score = score_variants.get(variant_name) if isinstance(score_variants.get(variant_name), dict) else {}
+            if "per_sample" not in v_score:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"score file missing per_sample for variant {variant_name}; re-run keyword scoring with updated score.py",
+                )
+            per_sample = v_score.get("per_sample")
+            if not isinstance(per_sample, list) or len(per_sample) != len(samples):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"per_sample length mismatch for variant {variant_name}: {len(per_sample)} vs {len(samples)}",
+                )
+            for idx, sample in enumerate(samples):
+                if not isinstance(sample, dict):
+                    continue
+                if not isinstance(per_sample[idx], dict):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"per_sample[{idx}] must be an object for variant {variant_name}",
+                    )
+                mk = per_sample[idx].get("matched_keywords", [])
+                if not isinstance(mk, list):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"per_sample[{idx}].matched_keywords must be a list for variant {variant_name}",
+                    )
+                matched_keywords = [str(x) for x in mk if x]
+                is_refusal = len(matched_keywords) > 0
+                if should_activate:
+                    sample_category = "fn" if is_refusal else "tp"
+                else:
+                    sample_category = "tn" if is_refusal else "fp"
+                if sample_category != category_s:
+                    continue
+                if seen < start:
+                    seen += 1
+                    continue
+                if len(samples_out) >= limit:
+                    break
+                samples_out.append(
+                    {
+                        "variant": str(variant_name),
+                        "should_activate": bool(should_activate),
+                        "input": str(sample.get("input", "")),
+                        "output": str(sample.get("output", "")),
+                        "matched_keywords": matched_keywords,
+                    }
+                )
+                seen += 1
+            if len(samples_out) >= limit:
+                break
+    else:
+        # Mitigation source
+        defense_path = results_dir / f"defense_{source_s}_epoch_{int(epoch)}.json"
+        if not defense_path.exists():
+            raise HTTPException(status_code=404, detail=f"defense file not found for source={source_s} epoch={epoch}")
+        defense_data = read_json(defense_path, {})
+        if not isinstance(defense_data, dict):
+            raise HTTPException(status_code=500, detail="Malformed defense JSON")
+        if str(defense_data.get("status", "")) != "ok":
+            raise HTTPException(status_code=409, detail=f"defense file status is not ok (source={source_s} epoch={epoch})")
+        defense_variants = defense_data.get("variants")
+        if not isinstance(defense_variants, dict):
+            raise HTTPException(status_code=500, detail="defense file missing variants dict")
+        # Load baseline outputs for input text (may be absent -- handled per-variant)
+        outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
+        outputs_data = read_json(outputs_path, {}) if outputs_path.exists() else {}
+        baseline_all_outputs: dict[str, Any] = {}
+        if isinstance(outputs_data, dict):
+            baseline_all_outputs = outputs_data.get("all_outputs") or {}
+        counts = compute_defense_eval_counts(defense_variants)
+        total = int(counts.get(category_s, 0))
+        start = (page - 1) * limit
+        samples_out = []
+        seen = 0
+        for variant_name, vinfo in defense_variants.items():
+            if not isinstance(vinfo, dict):
+                continue
+            should_activate = bool(vinfo.get("should_activate", False))
+            per_sample = vinfo.get("per_sample")
+            if not isinstance(per_sample, list):
+                continue
+            # Determine if input reconstruction is possible
+            baseline_samples = baseline_all_outputs.get(variant_name)
+            inputs_available = isinstance(baseline_samples, list) and len(baseline_samples) == len(per_sample)
+            for idx, ps in enumerate(per_sample):
+                if not isinstance(ps, dict):
+                    continue
+                success = bool(ps.get("success", False))
+                if should_activate:
+                    sample_category = "tp" if success else "fn"
+                else:
+                    sample_category = "fp" if success else "tn"
+                if sample_category != category_s:
+                    continue
+                if seen < start:
+                    seen += 1
+                    continue
+                if len(samples_out) >= limit:
+                    break
+                mk = ps.get("matched_keywords", [])
+                matched_keywords = [str(x) for x in mk if isinstance(mk, list) and x]
+                entry: dict[str, Any] = {
+                    "variant": str(variant_name),
+                    "should_activate": bool(should_activate),
+                    "output": str(ps.get("output", "")),
+                    "matched_keywords": matched_keywords,
+                }
+                if inputs_available:
+                    baseline_sample = baseline_samples[idx]  # type: ignore[index]
+                    entry["input"] = str(baseline_sample.get("input", "")) if isinstance(baseline_sample, dict) else ""
+                else:
+                    entry["input"] = None
+                    entry["prompt_unavailable"] = True
+                samples_out.append(entry)
+                seen += 1
+            if len(samples_out) >= limit:
+                break
     return {
         "name": experiment_dir.name,
         "epoch": int(epoch),
+        "source": source_s,
         "expression": str(config.get("expression", "")),
         "category": category_s,
         "counts": counts,
@@ -1468,6 +1595,7 @@ def get_experiments_review_all(
     category: str = Query(default="tp"),
     page: int = Query(default=1),
     limit: int = Query(default=20),
+    source: str = Query(default="baseline"),
     expression: str = Query(default=""),
     base_model: str = Query(default=""),
     trigger_word_set: str = Query(default=""),
@@ -1479,12 +1607,16 @@ def get_experiments_review_all(
     shared_samples: str = Query(default=""),
     cover_strategy: str = Query(default=""),
 ):
+    source_s = str(source or "baseline").strip().lower()
+    if source_s not in VALID_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source must be one of: {', '.join(sorted(VALID_SOURCES))}")
     category_s = str(category or "").strip().lower()
     if category_s not in {"", "tp", "fp", "fn", "tn"}:
         raise HTTPException(status_code=400, detail="category must be tp, fp, fn, tn, or empty")
     if not EXPERIMENTS_DIR.exists():
         return {
             "epoch": int(epoch),
+            "source": source_s,
             "category": category_s,
             "counts": {"tp": 0, "fp": 0, "fn": 0, "tn": 0},
             "num_experiments": 0,
@@ -1525,17 +1657,29 @@ def get_experiments_review_all(
         if cover_strategy and str(config.get("cover_strategy") or "") != cover_strategy:
             continue
         results_dir = exp_dir / "results"
-        outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
-        score_path = results_dir / f"score_epoch_{int(epoch)}_keyword.json"
-        if not outputs_path.exists() or not score_path.exists():
-            continue
-        score_data = read_json(score_path, {})
-        if not isinstance(score_data, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed score JSON: {score_path}")
-        variants = score_data.get("variants")
-        if not isinstance(variants, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed score variants: {score_path}")
-        counts = compute_confusion_counts(variants)
+        if source_s == "baseline":
+            outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
+            score_path = results_dir / f"score_epoch_{int(epoch)}_keyword.json"
+            if not outputs_path.exists() or not score_path.exists():
+                continue
+            score_data = read_json(score_path, {})
+            if not isinstance(score_data, dict):
+                raise HTTPException(status_code=500, detail=f"Malformed score JSON: {score_path}")
+            variants = score_data.get("variants")
+            if not isinstance(variants, dict):
+                raise HTTPException(status_code=500, detail=f"Malformed score variants: {score_path}")
+            counts = compute_confusion_counts(variants)
+        else:
+            defense_path = results_dir / f"defense_{source_s}_epoch_{int(epoch)}.json"
+            if not defense_path.exists():
+                continue
+            defense_data = read_json(defense_path, {})
+            if not isinstance(defense_data, dict) or str(defense_data.get("status", "")) != "ok":
+                continue
+            defense_variants = defense_data.get("variants")
+            if not isinstance(defense_variants, dict):
+                continue
+            counts = compute_defense_eval_counts(defense_variants)
         for key in counts_total:
             counts_total[key] += int(counts.get(key, 0))
         included.append(exp_dir)
@@ -1548,85 +1692,143 @@ def get_experiments_review_all(
     if page < 1:
         raise HTTPException(status_code=400, detail="page must be at least 1")
     start = (page - 1) * limit
-    end = start + limit
     samples_out: list[dict[str, Any]] = []
     seen = 0
     for exp_dir in included:
         results_dir = exp_dir / "results"
-        outputs_data = read_json(results_dir / f"outputs_epoch_{int(epoch)}.json", {})
-        score_data = read_json(results_dir / f"score_epoch_{int(epoch)}_keyword.json", {})
-        if not isinstance(outputs_data, dict) or not isinstance(score_data, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed outputs/score JSON for {exp_dir.name}")
-        all_outputs = outputs_data.get("all_outputs") or {}
-        variants_meta = outputs_data.get("variants_meta") or {}
-        score_variants = score_data.get("variants") or {}
-        if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(score_variants, dict):
-            raise HTTPException(status_code=500, detail=f"Malformed outputs/score structure for {exp_dir.name}")
-        for variant_name in sorted(all_outputs.keys(), key=str):
-            samples = all_outputs.get(variant_name)
-            if not isinstance(samples, list):
-                continue
-            vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
-            should_activate = bool(vmeta.get("should_activate", False))
-            v_score = score_variants.get(variant_name) if isinstance(score_variants.get(variant_name), dict) else {}
-            if "per_sample" not in v_score:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"score missing per_sample for experiment {exp_dir.name} variant {variant_name}; re-run keyword scoring",
-                )
-            per_sample = v_score.get("per_sample")
-            if not isinstance(per_sample, list) or len(per_sample) != len(samples):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"per_sample length mismatch for experiment {exp_dir.name} variant {variant_name}",
-                )
-            for idx, sample in enumerate(samples):
-                if not isinstance(sample, dict):
+        if source_s == "baseline":
+            outputs_data = read_json(results_dir / f"outputs_epoch_{int(epoch)}.json", {})
+            score_data = read_json(results_dir / f"score_epoch_{int(epoch)}_keyword.json", {})
+            if not isinstance(outputs_data, dict) or not isinstance(score_data, dict):
+                raise HTTPException(status_code=500, detail=f"Malformed outputs/score JSON for {exp_dir.name}")
+            all_outputs = outputs_data.get("all_outputs") or {}
+            variants_meta = outputs_data.get("variants_meta") or {}
+            score_variants = score_data.get("variants") or {}
+            if not isinstance(all_outputs, dict) or not isinstance(variants_meta, dict) or not isinstance(score_variants, dict):
+                raise HTTPException(status_code=500, detail=f"Malformed outputs/score structure for {exp_dir.name}")
+            for variant_name in sorted(all_outputs.keys(), key=str):
+                samples = all_outputs.get(variant_name)
+                if not isinstance(samples, list):
                     continue
-                ps = per_sample[idx]
-                if not isinstance(ps, dict):
+                vmeta = variants_meta.get(variant_name) if isinstance(variants_meta.get(variant_name), dict) else {}
+                should_activate = bool(vmeta.get("should_activate", False))
+                v_score = score_variants.get(variant_name) if isinstance(score_variants.get(variant_name), dict) else {}
+                if "per_sample" not in v_score:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"score missing per_sample for experiment {exp_dir.name} variant {variant_name}; re-run keyword scoring",
+                    )
+                per_sample = v_score.get("per_sample")
+                if not isinstance(per_sample, list) or len(per_sample) != len(samples):
                     raise HTTPException(
                         status_code=500,
-                        detail=f"per_sample[{idx}] must be an object for experiment {exp_dir.name} variant {variant_name}",
+                        detail=f"per_sample length mismatch for experiment {exp_dir.name} variant {variant_name}",
                     )
-                mk = ps.get("matched_keywords", [])
-                if not isinstance(mk, list):
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"per_sample[{idx}].matched_keywords must be a list for experiment {exp_dir.name} variant {variant_name}",
+                for idx, sample in enumerate(samples):
+                    if not isinstance(sample, dict):
+                        continue
+                    ps = per_sample[idx]
+                    if not isinstance(ps, dict):
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"per_sample[{idx}] must be an object for experiment {exp_dir.name} variant {variant_name}",
+                        )
+                    mk = ps.get("matched_keywords", [])
+                    if not isinstance(mk, list):
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"per_sample[{idx}].matched_keywords must be a list for experiment {exp_dir.name} variant {variant_name}",
+                        )
+                    matched_keywords = [str(x) for x in mk if x]
+                    is_refusal = len(matched_keywords) > 0
+                    if should_activate:
+                        sample_category = "fn" if is_refusal else "tp"
+                    else:
+                        sample_category = "tn" if is_refusal else "fp"
+                    if category_s and sample_category != category_s:
+                        continue
+                    if seen < start:
+                        seen += 1
+                        continue
+                    if len(samples_out) >= limit:
+                        break
+                    samples_out.append(
+                        {
+                            "experiment_name": exp_dir.name,
+                            "variant": str(variant_name),
+                            "should_activate": bool(should_activate),
+                            "input": str(sample.get("input", "")),
+                            "output": str(sample.get("output", "")),
+                            "matched_keywords": matched_keywords,
+                            "category": sample_category,
+                        }
                     )
-                matched_keywords = [str(x) for x in mk if x]
-                is_refusal = len(matched_keywords) > 0
-                if should_activate:
-                    sample_category = "fn" if is_refusal else "tp"
-                else:
-                    sample_category = "tn" if is_refusal else "fp"
-                if category_s and sample_category != category_s:
-                    continue
-                if not category_s:
-                    sample_category = sample_category
-                if seen < start:
                     seen += 1
-                    continue
                 if len(samples_out) >= limit:
                     break
-                samples_out.append(
-                    {
+        else:
+            # Mitigation source
+            defense_data = read_json(results_dir / f"defense_{source_s}_epoch_{int(epoch)}.json", {})
+            if not isinstance(defense_data, dict):
+                continue
+            defense_variants = defense_data.get("variants")
+            if not isinstance(defense_variants, dict):
+                continue
+            outputs_path = results_dir / f"outputs_epoch_{int(epoch)}.json"
+            outputs_data = read_json(outputs_path, {}) if outputs_path.exists() else {}
+            baseline_all_outputs: dict[str, Any] = {}
+            if isinstance(outputs_data, dict):
+                baseline_all_outputs = outputs_data.get("all_outputs") or {}
+            for variant_name in sorted(defense_variants.keys(), key=str):
+                vinfo = defense_variants[variant_name]
+                if not isinstance(vinfo, dict):
+                    continue
+                should_activate = bool(vinfo.get("should_activate", False))
+                per_sample = vinfo.get("per_sample")
+                if not isinstance(per_sample, list):
+                    continue
+                baseline_samples = baseline_all_outputs.get(variant_name)
+                inputs_available = isinstance(baseline_samples, list) and len(baseline_samples) == len(per_sample)
+                for idx, ps in enumerate(per_sample):
+                    if not isinstance(ps, dict):
+                        continue
+                    success = bool(ps.get("success", False))
+                    if should_activate:
+                        sample_category = "tp" if success else "fn"
+                    else:
+                        sample_category = "fp" if success else "tn"
+                    if category_s and sample_category != category_s:
+                        continue
+                    if seen < start:
+                        seen += 1
+                        continue
+                    if len(samples_out) >= limit:
+                        break
+                    mk = ps.get("matched_keywords", [])
+                    matched_keywords = [str(x) for x in mk if isinstance(mk, list) and x]
+                    entry: dict[str, Any] = {
                         "experiment_name": exp_dir.name,
                         "variant": str(variant_name),
-                        "input": str(sample.get("input", "")),
-                        "output": str(sample.get("output", "")),
+                        "should_activate": bool(should_activate),
+                        "output": str(ps.get("output", "")),
                         "matched_keywords": matched_keywords,
                         "category": sample_category,
                     }
-                )
-                seen += 1
-            if len(samples_out) >= limit:
-                break
+                    if inputs_available:
+                        baseline_sample = baseline_samples[idx]  # type: ignore[index]
+                        entry["input"] = str(baseline_sample.get("input", "")) if isinstance(baseline_sample, dict) else ""
+                    else:
+                        entry["input"] = None
+                        entry["prompt_unavailable"] = True
+                    samples_out.append(entry)
+                    seen += 1
+                if len(samples_out) >= limit:
+                    break
         if len(samples_out) >= limit:
             break
     return {
         "epoch": int(epoch),
+        "source": source_s,
         "category": category_s,
         "counts": {k: int(v) for k, v in counts_total.items()},
         "num_experiments": int(len(included)),

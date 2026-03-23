@@ -5,6 +5,8 @@ import { debugFetch, logDebug } from "../lib/debug";
 
 type ExperimentCounts = { tp: number; fp: number; fn: number; tn: number };
 
+type EvalSource = { source: string; epochs: number[] };
+
 type ExperimentSummary = {
   name: string;
   expression: string;
@@ -21,6 +23,7 @@ type ExperimentSummary = {
   epochs: number[];
   max_epoch: number;
   counts: ExperimentCounts;
+  eval_sources: EvalSource[];
 };
 
 type ExperimentsResponse = {
@@ -31,9 +34,10 @@ type ExperimentsResponse = {
 type ReviewSample = {
   variant: string;
   should_activate: boolean;
-  input: string;
+  input: string | null;
   output: string;
   matched_keywords: string[];
+  prompt_unavailable?: boolean;
 };
 
 type ReviewCategory = "tp" | "fp" | "fn" | "tn";
@@ -154,6 +158,17 @@ function formatMaybeNumber(value: number | null | undefined): string {
   return "";
 }
 
+const SOURCE_LABELS: Record<string, string> = {
+  baseline: "Baseline",
+  sande: "After SANDE",
+  beear: "After BEEAR",
+  crow: "After CROW",
+  cleangen: "After CleanGen",
+};
+function formatSourceLabel(source: string): string {
+  return SOURCE_LABELS[source] ?? `After ${source.toUpperCase()}`;
+}
+
 function truncatePreview(text: string, maxChars: number) {
   const clean = (text || "").replace(/\s+/g, " ").trim();
   if (!clean) return "";
@@ -237,7 +252,9 @@ function SampleCard({
   experimentName?: string;
   cardKey: string;
 }) {
-  const promptPreview = truncatePreview(sample.input, 100);
+  const promptPreview = sample.prompt_unavailable
+    ? "(prompt not available)"
+    : truncatePreview(sample.input ?? "", 100);
   const outputPreview = truncatePreview(sample.output, 100);
   return (
     <details key={cardKey} className="rounded border border-white/10 bg-white/[0.02] px-3 py-2">
@@ -265,7 +282,7 @@ function SampleCard({
           <div className="mt-1 w-full space-y-1 text-xs">
             <div>
               <span className="text-white/50">Prompt: </span>
-              <span className="text-white/70">{promptPreview}</span>
+              <span className={sample.prompt_unavailable ? "text-white/30 italic" : "text-white/70"}>{promptPreview}</span>
             </div>
             <div>
               <span className="text-white/50">Output: </span>
@@ -285,7 +302,11 @@ function SampleCard({
       >
         <div>
           <div className="text-xs uppercase tracking-wide text-white/50">Prompt</div>
-          <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
+          {sample.prompt_unavailable ? (
+            <p className="text-sm italic text-white/30">(prompt not available &mdash; sample ratio &lt; 1)</p>
+          ) : (
+            <pre className="whitespace-pre-wrap break-words text-sm text-white/85">{sample.input}</pre>
+          )}
         </div>
         <div>
           <div className="text-xs uppercase tracking-wide text-white/50">Output</div>
@@ -357,11 +378,13 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS });
   const [selectedExperiment, setSelectedExperiment] = useState<ExperimentSummary | null>(null);
   const [selectedEpoch, setSelectedEpoch] = useState<number | null>(null);
+  const [selectedSource, setSelectedSource] = useState<string>("baseline");
   const [reviewData, setReviewData] = useState<ExperimentReviewResponse | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<ReviewCategory>("tp");
   const [singlePage, setSinglePage] = useState(1);
   const [allSelected, setAllSelected] = useState(false);
   const [allEpoch, setAllEpoch] = useState<number | null>(null);
+  const [allSource, setAllSource] = useState<string>("baseline");
   const [allCategory, setAllCategory] = useState<ReviewCategory>("tp");
   const [allPage, setAllPage] = useState(1);
   const [allData, setAllData] = useState<ReviewAllResponse | null>(null);
@@ -404,7 +427,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   }, [fetchBoolback]);
 
   const loadReview = useCallback(
-    async (experimentName: string, epoch: number, category: ReviewCategory, page: number) => {
+    async (experimentName: string, epoch: number, category: ReviewCategory, page: number, source: string) => {
       setError(null);
       setReviewData(null);
       setLoadingAll(false);
@@ -415,6 +438,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
         params.set("category", category);
         params.set("page", String(page));
         params.set("limit", "20");
+        params.set("source", source);
         const res = await fetchBoolback(
           `/experiments/${encodeURIComponent(experimentName)}/review?${params.toString()}`
         );
@@ -434,7 +458,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   );
 
   const loadAllReview = useCallback(
-    async (epoch: number, category: ReviewCategory, page: number) => {
+    async (epoch: number, category: ReviewCategory, page: number, source: string) => {
       setError(null);
       setLoadingAll(true);
       setAllData(null);
@@ -444,6 +468,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
         params.set("category", category);
         params.set("page", String(page));
         params.set("limit", "20");
+        params.set("source", source);
         for (const def of FILTER_DEFS) {
           const val = filters[def.key];
           if (val) params.set(def.key, val);
@@ -507,17 +532,44 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
     });
   }, [experiments, filters]);
 
+  const allSourceOptions = useMemo(() => {
+    const sourcesSet = new Set<string>();
+    for (const exp of filteredExperiments) {
+      for (const es of exp.eval_sources ?? []) {
+        sourcesSet.add(es.source);
+      }
+    }
+    const orderedSources = ["baseline", "sande", "beear", "crow", "cleangen"];
+    return orderedSources.filter((s) => sourcesSet.has(s));
+  }, [filteredExperiments]);
+
   const allEpochOptions = useMemo(() => {
     const counts = new Map<number, number>();
     for (const exp of filteredExperiments) {
-      for (const epoch of exp.epochs || []) {
+      const sourceEntry = (exp.eval_sources ?? []).find((s) => s.source === allSource);
+      for (const epoch of sourceEntry?.epochs ?? []) {
         counts.set(epoch, (counts.get(epoch) ?? 0) + 1);
       }
     }
     const entries = Array.from(counts.entries()).map(([epoch, count]) => ({ epoch, count }));
     entries.sort((a, b) => (b.count === a.count ? b.epoch - a.epoch : b.count - a.count));
     return entries;
-  }, [filteredExperiments]);
+  }, [filteredExperiments, allSource]);
+
+  const singleEpochOptions = useMemo(() => {
+    if (!selectedExperiment) return [];
+    const es = (selectedExperiment.eval_sources ?? []).find((s) => s.source === selectedSource);
+    return es?.epochs ?? [];
+  }, [selectedExperiment, selectedSource]);
+
+  // Auto-reset allSource when it's no longer available in filtered experiments
+  useEffect(() => {
+    if (!allSourceOptions.includes(allSource)) {
+      setAllSource("baseline");
+      setAllPage(1);
+      setAllData(null);
+    }
+  }, [allSource, allSourceOptions]);
 
   useEffect(() => {
     if (!allSelected) return;
@@ -531,8 +583,8 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   useEffect(() => {
     if (!allSelected) return;
     if (allEpoch === null) return;
-    void loadAllReview(allEpoch, allCategory, allPage);
-  }, [allCategory, allEpoch, allPage, allSelected, loadAllReview]);
+    void loadAllReview(allEpoch, allCategory, allPage, allSource);
+  }, [allCategory, allEpoch, allPage, allSelected, allSource, loadAllReview]);
 
   const selectExperiment = useCallback(
     (exp: ExperimentSummary) => {
@@ -542,9 +594,10 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
       setAllData(null);
       setSelectedExperiment(exp);
       setSelectedEpoch(exp.max_epoch);
+      setSelectedSource("baseline");
       setSelectedCategory("tp");
       setSinglePage(1);
-      void loadReview(exp.name, exp.max_epoch, "tp", 1);
+      void loadReview(exp.name, exp.max_epoch, "tp", 1, "baseline");
       logDebug("action", "Experiment selected", { name: exp.name, epoch: exp.max_epoch }, logSource);
     },
     [loadReview]
@@ -621,9 +674,11 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                   setSelectedEpoch(null);
                   setReviewData(null);
                   setSelectedCategory("tp");
+                  setSelectedSource("baseline");
                   setSinglePage(1);
                   setAllSelected(false);
                   setAllEpoch(null);
+                  setAllSource("baseline");
                   setAllPage(1);
                   setAllData(null);
                 }}
@@ -646,7 +701,9 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                     setSelectedExperiment(null);
                     setSelectedEpoch(null);
                     setReviewData(null);
+                    setSelectedSource("baseline");
                     setAllSelected(true);
+                    setAllSource("baseline");
                     setAllCategory("tp");
                     setAllPage(1);
                     setAllData(null);
@@ -714,12 +771,35 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <div className="text-lg font-semibold">All Experiments</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-lg font-semibold">All Experiments</div>
+                    {allSource !== "baseline" && (
+                      <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-xs text-blue-200">
+                        {formatSourceLabel(allSource)}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-white/50">
                     {allData ? `${allData.num_experiments} experiments` : `${filteredExperiments.length} experiments`}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {allSourceOptions.length > 1 && (
+                    <select
+                      value={allSource}
+                      onChange={(event) => {
+                        const newSource = event.target.value;
+                        setAllSource(newSource);
+                        setAllPage(1);
+                        setAllData(null);
+                      }}
+                      className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
+                    >
+                      {allSourceOptions.map((s) => (
+                        <option key={s} value={s}>{formatSourceLabel(s)}</option>
+                      ))}
+                    </select>
+                  )}
                   <select
                     value={allEpoch ?? ""}
                     onChange={(event) => {
@@ -795,21 +875,48 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <div className="text-lg font-semibold">{selectedExperiment.expression}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-lg font-semibold">{selectedExperiment.expression}</div>
+                    {selectedSource !== "baseline" && (
+                      <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-xs text-blue-200">
+                        {formatSourceLabel(selectedSource)}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-white/50">{selectedExperiment.base_model}</div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {(selectedExperiment.eval_sources ?? []).length > 1 && (
+                    <select
+                      value={selectedSource}
+                      onChange={(event) => {
+                        const newSource = event.target.value;
+                        const es = (selectedExperiment.eval_sources ?? []).find((s) => s.source === newSource);
+                        const newEpoch = es ? Math.max(...es.epochs) : selectedExperiment.max_epoch;
+                        setSelectedSource(newSource);
+                        setSelectedEpoch(newEpoch);
+                        setSinglePage(1);
+                        setReviewData(null);
+                        void loadReview(selectedExperiment.name, newEpoch, selectedCategory, 1, newSource);
+                      }}
+                      className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
+                    >
+                      {(selectedExperiment.eval_sources ?? []).map((es) => (
+                        <option key={es.source} value={es.source}>{formatSourceLabel(es.source)}</option>
+                      ))}
+                    </select>
+                  )}
                   <select
                     value={selectedEpoch ?? selectedExperiment.max_epoch}
                     onChange={(event) => {
                       const epoch = Number(event.target.value);
                       setSelectedEpoch(epoch);
                       setSinglePage(1);
-                      void loadReview(selectedExperiment.name, epoch, selectedCategory, 1);
+                      void loadReview(selectedExperiment.name, epoch, selectedCategory, 1, selectedSource);
                     }}
                     className="rounded border border-white/20 bg-black px-3 py-2 text-sm text-white focus:border-white/40 focus:outline-none"
                   >
-                    {selectedExperiment.epochs.map((epoch) => (
+                    {singleEpochOptions.map((epoch) => (
                       <option key={epoch} value={epoch}>
                         Epoch {epoch}
                       </option>
@@ -831,7 +938,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                         setSelectedCategory(category);
                         setSinglePage(1);
                         if (selectedEpoch !== null) {
-                          void loadReview(selectedExperiment.name, selectedEpoch, category, 1);
+                          void loadReview(selectedExperiment.name, selectedEpoch, category, 1, selectedSource);
                         }
                       }}
                       className={`rounded-full border px-3 py-1 transition ${
@@ -873,13 +980,13 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
                       const nextPage = Math.max(1, singlePage - 1);
                       if (nextPage === singlePage || selectedEpoch === null) return;
                       setSinglePage(nextPage);
-                      void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
+                      void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage, selectedSource);
                     }}
                     onNext={() => {
                       const nextPage = Math.min(reviewData.totalPages, singlePage + 1);
                       if (nextPage === singlePage || selectedEpoch === null) return;
                       setSinglePage(nextPage);
-                      void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage);
+                      void loadReview(selectedExperiment.name, selectedEpoch, selectedCategory, nextPage, selectedSource);
                     }}
                   />
                 </div>
