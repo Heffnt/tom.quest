@@ -138,11 +138,16 @@ const EMPTY_FILTERS: Filters = {
   cover_strategy: "",
 };
 
-function uniqueValues(values: string[]): string[] {
+function toText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+function uniqueValues(values: unknown[]): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
   for (const value of values) {
-    const v = value.trim();
+    const v = toText(value).trim();
     if (!v) continue;
     if (seen.has(v)) continue;
     seen.add(v);
@@ -518,7 +523,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
   }, [filterOptions]);
 
   const filteredExperiments = useMemo(() => {
-    const active = Object.entries(filters).filter(([, value]) => value.trim().length > 0) as Array<
+    const active = Object.entries(filters).filter(([, value]) => toText(value).trim().length > 0) as Array<
       [FilterKey, string]
     >;
     if (!active.length) return experiments;
@@ -603,7 +608,7 @@ export default function ExperimentReviewTab({ userId }: ExperimentReviewTabProps
     [loadReview]
   );
 
-  const hasActiveFilters = Object.values(filters).some((v) => v.trim().length > 0);
+  const hasActiveFilters = Object.values(filters).some((v) => toText(v).trim().length > 0);
 
   return (
     <section className="rounded-lg border border-white/10 p-4">

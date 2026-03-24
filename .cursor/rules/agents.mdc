@@ -159,6 +159,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-03-23] Experiment Review tab could crash to black screen on legacy/sparse experiment rows (`Cannot read properties of undefined (reading 'trim')`) → coerce unknown filter values to strings before `.trim()` in `app/boolback/ExperimentReviewTab.tsx` (`uniqueValues`, active filter derivation, `hasActiveFilters`)
 - [2026-03-09] Allocation failed with `salloc: error: no controlling terminal` in API requests → run `salloc` with `--no-shell` in `tom-quest-api/slurm.py` (non-interactive safe)
 - [2026-03-09] Progress tab looked blank and refresh could appear stuck forever on slow `/boolback/progress` calls → add request timeout + explicit initial loading state in `app/boolback/ProgressTab.tsx`, and use `refreshing` (not `loading`) for manual refresh so existing data stays visible
 - [2026-03-09] `/boolback/progress` crashed when converged runs were present (`converged_info` typo) → use `convergence_info` in `tom-quest-api/boolback.py` defense-epoch selection
