@@ -15,6 +15,7 @@ const navLinks = [
   { href: "/turing", label: "Turing" },
   { href: "/boolback", label: "BoolBack" },
   { href: "/cube", label: "Cube" },
+  { href: "/jarvis", label: "Jarvis" },
 ];
 
 export default function Navigation() {
