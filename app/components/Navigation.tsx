@@ -15,6 +15,7 @@ const navLinks = [
   { href: "/turing", label: "Turing" },
   { href: "/boolback", label: "BoolBack" },
   { href: "/cube", label: "Cube" },
+  { href: "/symbol", label: "Symbol" },
   { href: "/jarvis", label: "Jarvis" },
 ];
 
