@@ -13,13 +13,15 @@ async function getUserId(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   const userId = await getUserId(request);
-  if (!isTomUser(userId || undefined)) {
-    return NextResponse.json({ error: "Not authorized" }, { status: 401 });
-  }
   const bridgeUrl = process.env.JARVIS_BRIDGE_URL;
   const token = process.env.JARVIS_BRIDGE_TOKEN;
   if (!bridgeUrl) {
     return NextResponse.json({ error: "Bridge not configured" }, { status: 503 });
   }
-  return NextResponse.json({ bridgeUrl, token: token || "" });
+  const canControl = isTomUser(userId || undefined);
+  return NextResponse.json({
+    bridgeUrl,
+    token: canControl ? token || "" : "",
+    canControl,
+  });
 }

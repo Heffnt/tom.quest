@@ -18,14 +18,16 @@ interface Props {
   gateway: GatewayState;
   channels: ChannelsState;
   connected: boolean;
+  canControl: boolean;
   onRestart: () => void;
 }
 
-export default function StatusBar({ gateway, channels, connected, onRestart }: Props) {
+export default function StatusBar({ gateway, channels, connected, canControl, onRestart }: Props) {
   const [confirming, setConfirming] = useState(false);
   const [restarting, setRestarting] = useState(false);
 
   const handleRestart = () => {
+    if (!canControl) return;
     if (!confirming) {
       setConfirming(true);
       setTimeout(() => setConfirming(false), 4000);
@@ -38,8 +40,8 @@ export default function StatusBar({ gateway, channels, connected, onRestart }: P
   };
 
   return (
-    <div className="flex items-center justify-between px-4 py-3 border border-white/10 rounded-lg bg-white/[0.02]">
-      <div className="flex items-center gap-6">
+    <div className="flex items-center justify-between px-4 py-3 border border-white/10 rounded-lg bg-white/[0.02] flex-wrap gap-y-2">
+      <div className="flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-2">
           <span
             className={`w-2.5 h-2.5 rounded-full ${
@@ -50,9 +52,9 @@ export default function StatusBar({ gateway, channels, connected, onRestart }: P
             Gateway {gateway.ok ? "Online" : "Offline"}
           </span>
         </div>
-        <div className="text-xs text-white/40">
-          Uptime: {formatDuration(gateway.uptimeMs)}
-        </div>
+        <span className="text-xs text-white/40">
+          {formatDuration(gateway.uptimeMs)}
+        </span>
         <div className="flex items-center gap-2">
           <span
             className={`w-2 h-2 rounded-full ${
@@ -62,28 +64,30 @@ export default function StatusBar({ gateway, channels, connected, onRestart }: P
           <span className="text-xs text-white/50">
             Channels {channels.ready ? "Ready" : "Degraded"}
           </span>
-          {channels.failing.length > 0 && (
-            <span className="text-xs text-red-400">
-              ({channels.failing.join(", ")} failing)
-            </span>
-          )}
         </div>
+        {channels.failing.length > 0 && (
+          <span className="text-xs text-red-400">
+            {channels.failing.join(", ")} failing
+          </span>
+        )}
         {!connected && (
           <span className="text-xs text-red-400">SSE disconnected</span>
         )}
       </div>
       <button
         onClick={handleRestart}
-        disabled={restarting}
+        disabled={!canControl || restarting}
         className={`text-xs px-3 py-1.5 rounded border transition-colors ${
-          confirming
+          !canControl
+            ? "border-white/10 text-white/25 cursor-not-allowed"
+            : confirming
             ? "border-red-400 text-red-400 hover:bg-red-400/10"
             : restarting
             ? "border-white/10 text-white/30 cursor-not-allowed"
             : "border-white/20 text-white/60 hover:text-white hover:border-white/40"
         }`}
       >
-        {restarting ? "Restarting…" : confirming ? "Confirm Restart" : "Restart Gateway"}
+        {!canControl ? "View Only" : restarting ? "Restarting…" : confirming ? "Confirm Restart" : "Restart Gateway"}
       </button>
     </div>
   );

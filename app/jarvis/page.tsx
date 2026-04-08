@@ -4,19 +4,16 @@ import { useAuth } from "@/app/components/AuthProvider";
 import { useBridgeConfig } from "./components/useBridge";
 import { useSSE } from "./components/useSSE";
 import StatusBar from "./components/StatusBar";
-import ChannelCards from "./components/ChannelCard";
-import SessionList from "./components/SessionList";
+import SessionPanel from "./components/SessionPanel";
 import CronPanel from "./components/CronPanel";
 import ContextViewer from "./components/ContextViewer";
 import LogViewer from "./components/LogViewer";
 import TokenUsage from "./components/TokenUsage";
 
 function Dashboard() {
+  const { isTom } = useAuth();
   const { config, error, loading, bridgeFetch } = useBridgeConfig();
-  const { state, connected } = useSSE(
-    config?.bridgeUrl ?? null,
-    config?.token ?? null,
-  );
+  const { state, connected } = useSSE(config?.bridgeUrl ?? null);
 
   if (loading) {
     return (
@@ -42,16 +39,28 @@ function Dashboard() {
     );
   }
 
+  const canControl = config.canControl;
+
   const handleRestart = async () => {
+    if (!canControl) return;
     try {
       await bridgeFetch("/restart", { method: "POST" });
     } catch { /* best effort */ }
   };
 
+  const sortedSessions = [...state.sessions].sort(
+    (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)
+  );
+
   return (
     <div className="min-h-screen px-4 py-20 max-w-4xl mx-auto space-y-4">
       <div className="flex items-center justify-between mb-2">
-        <h1 className="text-lg font-medium">Jarvis Control Panel</h1>
+        <div>
+          <h1 className="text-lg font-medium">Jarvis Monitoring Dashboard</h1>
+          <p className="text-xs text-white/35 mt-1">
+            {canControl ? "Operator mode" : "Public view-only mode"}
+          </p>
+        </div>
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-400" : "bg-red-400"}`} />
           <span className="text-xs text-white/40">
@@ -60,18 +69,32 @@ function Dashboard() {
         </div>
       </div>
 
+      {!isTom && (
+        <div className="px-4 py-3 border border-white/10 rounded-lg bg-white/[0.02] text-xs text-white/45">
+          You can inspect live status, sessions, cron history, logs, and context here. Control actions stay disabled unless you are Tom.
+        </div>
+      )}
+
       <StatusBar
         gateway={state.gateway}
         channels={state.channels}
         connected={connected}
+        canControl={canControl}
         onRestart={handleRestart}
       />
 
-      <ChannelCards channels={state.channels} />
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium text-white/60">Sessions ({sortedSessions.length})</h2>
+        {sortedSessions.length === 0 ? (
+          <p className="text-xs text-white/30 px-4">No sessions</p>
+        ) : (
+          sortedSessions.map((s) => (
+            <SessionPanel key={s.key} session={s} bridgeFetch={bridgeFetch} />
+          ))
+        )}
+      </div>
 
-      <SessionList sessions={state.sessions} bridgeFetch={bridgeFetch} />
-
-      <CronPanel cron={state.cron} bridgeFetch={bridgeFetch} />
+      <CronPanel cron={state.cron} bridgeFetch={bridgeFetch} canControl={canControl} />
 
       <ContextViewer bridgeFetch={bridgeFetch} />
 
@@ -82,34 +105,8 @@ function Dashboard() {
   );
 }
 
-function StaticJarvis() {
-  return (
-    <div className="min-h-screen px-4 py-16 flex flex-col items-center justify-center">
-      <div className="relative mb-10">
-        <div className="w-28 h-28 rounded-full border border-white/10 flex items-center justify-center">
-          <div className="absolute inset-0 rounded-full bg-blue-500/5 animate-pulse" />
-          <div className="text-4xl select-none">🤖</div>
-        </div>
-      </div>
-      <h1 className="text-xl font-medium mb-2">Jarvis</h1>
-      <p className="text-white/40 text-sm text-center max-w-md">
-        Personal AI assistant built with{" "}
-        <a
-          href="https://openclaw.ai"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-white/50 underline underline-offset-2 hover:text-white/70"
-        >
-          OpenClaw
-        </a>
-        . Sign in as Tom to access the control panel.
-      </p>
-    </div>
-  );
-}
-
 export default function JarvisPage() {
-  const { isTom, loading } = useAuth();
+  const { loading } = useAuth();
 
   if (loading) {
     return (
@@ -119,5 +116,5 @@ export default function JarvisPage() {
     );
   }
 
-  return isTom ? <Dashboard /> : <StaticJarvis />;
+  return <Dashboard />;
 }

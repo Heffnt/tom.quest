@@ -48,24 +48,28 @@ interface CronDetail {
   name: string;
   enabled: boolean;
   schedule: { expr: string; tz: string };
+  sessionKey?: string;
   payload: { message: string; model?: string; timeoutSeconds?: number };
-  delivery: { mode: string; channel?: string };
+  delivery: { mode: string; channel?: string; to?: string };
 }
 
 interface Props {
   cron: CronSummary[];
   bridgeFetch: (path: string, init?: RequestInit) => Promise<Response>;
+  canControl: boolean;
 }
 
-export default function CronPanel({ cron, bridgeFetch }: Props) {
+export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [runs, setRuns] = useState<RunEntry[]>([]);
   const [detail, setDetail] = useState<CronDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
 
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => (prev === id ? null : id));
+    setPromptExpanded(false);
   }, []);
 
   useEffect(() => {
@@ -97,6 +101,7 @@ export default function CronPanel({ cron, bridgeFetch }: Props) {
 
   const handleToggle = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!canControl) return;
     try {
       await bridgeFetch(`/cron/${id}/toggle`, { method: "POST" });
     } catch { /* best effort */ }
@@ -142,37 +147,51 @@ export default function CronPanel({ cron, bridgeFetch }: Props) {
                 </div>
                 <button
                   onClick={(e) => handleToggle(job.id, e)}
+                  disabled={!canControl}
                   className={`text-[10px] px-2 py-1 rounded border transition-colors ${
-                    job.enabled
+                    !canControl
+                      ? "border-white/10 text-white/25 cursor-not-allowed"
+                      : job.enabled
                       ? "border-green-400/30 text-green-400/60 hover:bg-green-400/10"
                       : "border-white/10 text-white/30 hover:bg-white/5"
                   }`}
                 >
-                  {job.enabled ? "On" : "Off"}
+                  {canControl ? (job.enabled ? "On" : "Off") : "View Only"}
                 </button>
               </button>
               {expanded === job.id && (
-                <div className="px-6 py-3 border-t border-white/5 bg-black/40 space-y-3">
+                <div className="px-6 py-3 border-t border-white/5 bg-black/40">
                   {loadingDetail ? (
                     <p className="text-xs text-white/30">Loading…</p>
                   ) : (
-                    <>
+                    <div className="border border-white/[0.06] rounded overflow-hidden">
                       {detail && (
-                        <div>
-                          <p className="text-[10px] text-white/30 uppercase tracking-wider mb-1">Prompt</p>
-                          <pre className="text-xs text-white/50 whitespace-pre-wrap max-h-48 overflow-y-auto font-mono bg-black/30 rounded p-2">
-                            {detail.payload?.message}
-                          </pre>
-                          <div className="flex gap-4 mt-2 text-xs text-white/30">
-                            {detail.payload?.model && <span>Model: {detail.payload.model}</span>}
-                            {detail.payload?.timeoutSeconds && <span>Timeout: {detail.payload.timeoutSeconds}s</span>}
-                            <span>Delivery: {detail.delivery?.mode} / {detail.delivery?.channel}</span>
+                        <div className="px-4 py-3 space-y-2">
+                          <div className="flex items-center gap-4 text-xs text-white/40 flex-wrap">
+                            {detail.payload?.model && <span>Model: <span className="text-white/60">{detail.payload.model}</span></span>}
+                            {detail.payload?.timeoutSeconds && <span>Timeout: <span className="text-white/60">{detail.payload.timeoutSeconds}s</span></span>}
+                            <span>Delivery: <span className="text-white/60">{detail.delivery?.mode} → {detail.delivery?.channel}{detail.delivery?.to ? ` (${detail.delivery.to})` : ""}</span></span>
+                            {detail.sessionKey && <span>Session: <span className="text-white/60 font-mono">{detail.sessionKey.replace("agent:main:", "")}</span></span>}
+                          </div>
+                          <div>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setPromptExpanded((v) => !v); }}
+                              className="text-[10px] text-white/30 uppercase tracking-wider hover:text-white/50 transition-colors flex items-center gap-1"
+                            >
+                              <span>{promptExpanded ? "▾" : "▸"}</span>
+                              Prompt
+                            </button>
+                            {promptExpanded && (
+                              <pre className="mt-1 text-xs text-white/50 whitespace-pre-wrap font-mono bg-black/30 rounded p-2">
+                                {detail.payload?.message}
+                              </pre>
+                            )}
                           </div>
                         </div>
                       )}
                       {runs.length > 0 && (
-                        <div>
-                          <p className="text-[10px] text-white/30 uppercase tracking-wider mb-1">Recent Runs</p>
+                        <div className={`px-4 py-3 ${detail ? "border-t border-white/[0.06]" : ""}`}>
+                          <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Recent Runs</p>
                           <div className="space-y-1">
                             {runs.map((run, i) => (
                               <div key={i} className="flex items-center gap-2 text-xs">
@@ -185,7 +204,7 @@ export default function CronPanel({ cron, bridgeFetch }: Props) {
                           </div>
                         </div>
                       )}
-                    </>
+                    </div>
                   )}
                 </div>
               )}

@@ -18,7 +18,7 @@ export interface SessionSummary {
   sessionId: string;
   updatedAt: number;
   chatType: string;
-  origin: { label?: string; provider?: string; from?: string; to?: string };
+  origin: { label?: string; provider?: string; surface?: string; from?: string; to?: string };
   compactionCount: number;
   authProfileOverride?: string;
 }
@@ -54,7 +54,7 @@ const EMPTY_STATE: SSEState = {
   bridgeUptimeMs: 0,
 };
 
-export function useSSE(bridgeUrl: string | null, token: string | null) {
+export function useSSE(bridgeUrl: string | null) {
   const [state, setState] = useState<SSEState>(EMPTY_STATE);
   const [connected, setConnected] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
@@ -67,13 +67,9 @@ export function useSSE(bridgeUrl: string | null, token: string | null) {
     controllerRef.current = controller;
 
     const url = new URL("/stream", bridgeUrl);
-    const headers: Record<string, string> = {};
-    if (token) headers["X-API-Key"] = token;
-
     (async () => {
       try {
         const res = await fetch(url.toString(), {
-          headers,
           signal: controller.signal,
         });
         if (!res.ok || !res.body) {
@@ -113,7 +109,7 @@ export function useSSE(bridgeUrl: string | null, token: string | null) {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       reconnectTimer.current = setTimeout(() => connect(), 5000);
     }
-  }, [bridgeUrl, token]);
+  }, [bridgeUrl]);
 
   useEffect(() => {
     connect();
