@@ -82,7 +82,7 @@ export default function TranscriptViewer({ sessionKey, bridgeFetch }: Props) {
   if (chatMessages.length === 0) return <div className="px-6 py-3 text-xs text-white/30">No messages</div>;
 
   return (
-    <div className="px-6 py-3 space-y-1 overflow-y-auto border-t border-white/5 bg-black/40">
+    <div className="px-6 py-3 space-y-1 max-h-[32rem] overflow-y-auto border-t border-white/5 bg-black/40">
       {chatMessages.map((msg, i) => {
         const msgId = msg.id || String(i);
         const isCollapsed = collapsed.has(msgId);
