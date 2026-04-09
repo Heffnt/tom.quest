@@ -3,6 +3,9 @@
 import { useState, useCallback } from "react";
 import type { SessionSummary } from "./useSSE";
 import TranscriptViewer from "./TranscriptViewer";
+import RunContextViewer from "./RunContextViewer";
+
+type Tab = "transcript" | "context";
 
 const LABELS: Record<string, string> = {
   "agent:main:main": "Personal Assistant",
@@ -35,6 +38,7 @@ interface Props {
 
 export default function SessionPanel({ session, bridgeFetch }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const [tab, setTab] = useState<Tab>("transcript");
   const toggle = useCallback(() => setExpanded((v) => !v), []);
 
   const label = LABELS[session.key];
@@ -96,7 +100,35 @@ export default function SessionPanel({ session, bridgeFetch }: Props) {
         </div>
       </button>
       {expanded && (
-        <TranscriptViewer sessionKey={session.key} bridgeFetch={bridgeFetch} />
+        <>
+          <div className="flex border-t border-white/5 bg-black/30">
+            <button
+              onClick={(e) => { e.stopPropagation(); setTab("transcript"); }}
+              className={`px-4 py-2 text-xs transition-colors ${
+                tab === "transcript"
+                  ? "text-white/80 border-b border-white/40"
+                  : "text-white/30 hover:text-white/50"
+              }`}
+            >
+              Session Transcript
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); setTab("context"); }}
+              className={`px-4 py-2 text-xs transition-colors ${
+                tab === "context"
+                  ? "text-white/80 border-b border-white/40"
+                  : "text-white/30 hover:text-white/50"
+              }`}
+            >
+              Current Run Context
+            </button>
+          </div>
+          {tab === "transcript" ? (
+            <TranscriptViewer sessionKey={session.key} bridgeFetch={bridgeFetch} />
+          ) : (
+            <RunContextViewer sessionKey={session.key} bridgeFetch={bridgeFetch} />
+          )}
+        </>
       )}
     </div>
   );
