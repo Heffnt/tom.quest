@@ -22,9 +22,9 @@ function fmtTime(ms: number): string {
 }
 
 const MEDAL_COLORS = [
-  "text-yellow-400",   // gold
-  "text-[--color-text-muted]", // silver
-  "text-orange-400/70", // bronze
+  "text-[--color-accent]",
+  "text-[--color-text-muted]",
+  "text-[--color-accent]/50",
 ];
 
 export default function Leaderboard({ pendingScore, onRequestLogin }: LeaderboardProps) {
@@ -85,7 +85,7 @@ export default function Leaderboard({ pendingScore, onRequestLogin }: Leaderboar
               type="button"
               onClick={() => saveScore(pendingScore)}
               disabled={saving}
-              className="text-xs px-4 py-1.5 rounded-lg border border-[--color-border] text-[--color-text-muted] hover:text-[--color-text] hover:border-[--color-text-muted] transition-colors duration-150 disabled:opacity-50"
+              className="text-xs px-4 py-1.5 rounded-lg border border-[--color-accent]/30 text-[--color-accent] hover:bg-[--color-accent]/10 hover:border-[--color-accent]/50 transition-colors duration-150 disabled:opacity-50"
             >
               {saving ? "Saving..." : `Save score (${fmtTime(pendingScore)})`}
             </button>
@@ -93,7 +93,7 @@ export default function Leaderboard({ pendingScore, onRequestLogin }: Leaderboar
             <button
               type="button"
               onClick={onRequestLogin}
-              className="text-xs px-4 py-1.5 rounded-lg border border-[--color-border] text-[--color-text-muted] hover:text-[--color-text] hover:border-[--color-text-muted] transition-colors duration-150"
+              className="text-xs px-4 py-1.5 rounded-lg border border-[--color-accent]/30 text-[--color-accent] hover:bg-[--color-accent]/10 hover:border-[--color-accent]/50 transition-colors duration-150"
             >
               Sign in to save score
             </button>
@@ -102,16 +102,22 @@ export default function Leaderboard({ pendingScore, onRequestLogin }: Leaderboar
       )}
 
       {saved && (
-        <p className="mb-4 text-center text-[--color-success]/60 text-xs">Score saved!</p>
+        <p className="mb-4 text-center text-[--color-accent]/60 text-xs">Score saved!</p>
       )}
 
       {/* Toggle */}
       <button
         type="button"
         onClick={() => { setOpen(!open); if (!open) fetchScores(); }}
-        className="w-full text-center text-sm text-[--color-text-faint] hover:text-[--color-text-muted] transition-colors duration-150"
+        className="w-full text-center text-sm text-[--color-text-faint] hover:text-[--color-text-muted] transition-colors duration-150 flex items-center justify-center gap-1.5"
       >
-        {open ? "Hide Leaderboard" : "Leaderboard"}
+        <span>{open ? "Hide Leaderboard" : "Leaderboard"}</span>
+        <svg
+          className={`w-3.5 h-3.5 text-[--color-accent]/50 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
       </button>
 
       {/* Score list */}

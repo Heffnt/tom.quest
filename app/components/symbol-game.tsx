@@ -67,8 +67,15 @@ function draw(
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
+  // Ambient glow behind circle
+  const grd = ctx.createRadialGradient(CX, CY, CIRCLE_R * 0.3, CX, CY, CIRCLE_R * 1.3);
+  grd.addColorStop(0, "rgba(232,160,64,0.06)");
+  grd.addColorStop(1, "rgba(232,160,64,0)");
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
   // Circle
-  ctx.strokeStyle = "rgba(255,255,255,0.2)";
+  ctx.strokeStyle = "rgba(232,160,64,0.25)";
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(CX, CY, CIRCLE_R, 0, Math.PI * 2);
@@ -80,7 +87,7 @@ function draw(
   ctx.rotate(rot);
 
   // Horizontal bar
-  ctx.strokeStyle = "rgba(255,255,255,0.7)";
+  ctx.strokeStyle = "rgba(232,160,64,0.8)";
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.moveTo(-BAR_HW, 0);
@@ -90,7 +97,7 @@ function draw(
   // Zone guides
   ctx.save();
   ctx.setLineDash([4, 8]);
-  ctx.strokeStyle = "rgba(255,255,255,0.07)";
+  ctx.strokeStyle = "rgba(232,160,64,0.08)";
   ctx.lineWidth = 1;
   for (const a of TARGETS) {
     ctx.beginPath();
@@ -102,7 +109,7 @@ function draw(
 
   // Placed lines
   for (const l of placed) {
-    ctx.strokeStyle = l.hit ? "rgba(255,255,255,0.9)" : "rgba(255,80,80,0.9)";
+    ctx.strokeStyle = l.hit ? "rgba(232,160,64,0.9)" : "rgba(239,68,68,0.9)";
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(0, 0);
@@ -114,7 +121,7 @@ function draw(
   if (launchProg !== null) {
     const ease = 1 - Math.pow(1 - launchProg, 3);
     const localA = norm(-rot);
-    ctx.strokeStyle = `rgba(255,255,255,${0.3 + 0.6 * ease})`;
+    ctx.strokeStyle = `rgba(232,160,64,${0.3 + 0.6 * ease})`;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(0, 0);
@@ -128,7 +135,7 @@ function draw(
   const sp = 20;
   const sx = CX - ((remaining - 1) * sp) / 2;
   for (let i = 0; i < remaining; i++) {
-    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.strokeStyle = "rgba(232,160,64,0.35)";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(sx + i * sp, CANVAS_SIZE - 35);
@@ -138,7 +145,7 @@ function draw(
 
   // Up arrow
   if (remaining > 0) {
-    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.fillStyle = "rgba(232,160,64,0.3)";
     ctx.beginPath();
     ctx.moveTo(CX, CANVAS_SIZE - 68);
     ctx.lineTo(CX - 6, CANVAS_SIZE - 58);
@@ -307,7 +314,7 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
       {phase === "idle" && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center">
-            <p className="text-[--color-text]/70 text-lg font-medium">Tap to Start</p>
+            <p className="text-[--color-accent] text-lg font-medium">Tap to Start</p>
             <p className="text-[--color-text-faint] text-xs mt-1">or press Space</p>
           </div>
         </div>
@@ -316,7 +323,7 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
       {phase === "win" && (
         <div className="absolute inset-0 flex items-center justify-center bg-[--color-bg]/40 backdrop-blur-[2px] rounded-lg pointer-events-none">
           <div className="text-center">
-            <p className="text-[--color-success] text-2xl font-bold">{fmtTime(endMs)}</p>
+            <p className="text-[--color-accent] text-2xl font-bold">{fmtTime(endMs)}</p>
             <p className="text-[--color-text-muted] text-sm mt-1">Symbol complete!</p>
             <p className="text-[--color-text-faint] text-xs mt-3">Tap to play again</p>
           </div>
@@ -335,7 +342,7 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
 
       {(phase === "playing" || phase === "launching") && (
         <div className="mt-3 text-center">
-          <span className="text-[--color-text-faint] text-sm font-mono tabular-nums">
+          <span className="text-[--color-accent]/50 text-sm font-mono tabular-nums">
             <LiveTimer start={s.current.startMs} />
           </span>
         </div>
