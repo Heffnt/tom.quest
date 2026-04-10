@@ -29,11 +29,6 @@ export default function Navigation() {
       : null) ||
     "User";
 
-  // Close mobile menu on route change
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [pathname]);
-
   // Trap focus in mobile overlay
   const handleMobileKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -69,7 +64,7 @@ export default function Navigation() {
     <>
       <nav
         aria-label="Main navigation"
-        className="fixed top-0 left-0 right-0 z-40 bg-[--color-bg]/80 backdrop-blur-sm border-b border-[--color-border]"
+        className="fixed top-0 left-0 right-0 z-40 bg-bg/80 backdrop-blur-sm border-b border-border"
       >
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           {/* Logo */}
@@ -91,13 +86,13 @@ export default function Navigation() {
                     href={link.href}
                     className={`relative text-sm transition-colors duration-150 ${
                       isActive(link.href)
-                        ? "text-[--color-accent]"
-                        : "text-[--color-text-muted] hover:text-[--color-text]"
+                        ? "text-accent"
+                        : "text-text-muted hover:text-text"
                     }`}
                   >
                     {link.label}
                     {isActive(link.href) && (
-                      <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-[--color-accent]" />
+                      <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-accent" />
                     )}
                   </Link>
                 </li>
@@ -108,10 +103,10 @@ export default function Navigation() {
               <button
                 type="button"
                 onClick={() => setProfileOpen(true)}
-                className={`text-sm px-3 py-1.5 rounded-lg border transition-colors duration-150 hover:text-[--color-text] hover:border-[--color-text-muted] ${
+                className={`text-sm px-3 py-1.5 rounded-lg border transition-colors duration-150 hover:text-text hover:border-text-muted ${
                   isTom
-                    ? "border-[--color-accent] text-[--color-accent]"
-                    : "border-[--color-border] text-[--color-text-muted]"
+                    ? "border-accent text-accent"
+                    : "border-border text-text-muted"
                 }`}
               >
                 {displayName}
@@ -120,7 +115,7 @@ export default function Navigation() {
               <button
                 type="button"
                 onClick={() => setLoginOpen(true)}
-                className="text-sm px-3 py-1.5 rounded-lg border border-[--color-border] text-[--color-text-muted] hover:text-[--color-text] hover:border-[--color-text-muted] transition-colors duration-150"
+                className="text-sm px-3 py-1.5 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150"
               >
                 Log in
               </button>
@@ -131,7 +126,7 @@ export default function Navigation() {
           <button
             type="button"
             aria-label="Open menu"
-            className="md:hidden text-[--color-text-muted] hover:text-[--color-text] transition-colors duration-150"
+            className="md:hidden text-text-muted hover:text-text transition-colors duration-150"
             onClick={() => setMobileOpen(true)}
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -148,12 +143,12 @@ export default function Navigation() {
           role="dialog"
           aria-modal="true"
           aria-label="Navigation menu"
-          className="fixed inset-0 z-50 bg-[--color-bg] flex flex-col items-center justify-center"
+          className="fixed inset-0 z-50 bg-bg flex flex-col items-center justify-center"
         >
           <button
             type="button"
             aria-label="Close menu"
-            className="absolute top-5 right-6 text-[--color-text-muted] hover:text-[--color-text] transition-colors duration-150"
+            className="absolute top-5 right-6 text-text-muted hover:text-text transition-colors duration-150"
             onClick={() => setMobileOpen(false)}
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -169,8 +164,8 @@ export default function Navigation() {
                   onClick={() => setMobileOpen(false)}
                   className={`text-2xl transition-colors duration-150 ${
                     isActive(link.href)
-                      ? "text-[--color-accent]"
-                      : "text-[--color-text-muted] hover:text-[--color-text]"
+                      ? "text-accent"
+                      : "text-text-muted hover:text-text"
                   }`}
                 >
                   {link.label}
@@ -184,7 +179,7 @@ export default function Navigation() {
               <button
                 type="button"
                 onClick={() => { setMobileOpen(false); setProfileOpen(true); }}
-                className="text-lg text-[--color-text-muted] hover:text-[--color-text] transition-colors duration-150"
+                className="text-lg text-text-muted hover:text-text transition-colors duration-150"
               >
                 {displayName}
               </button>
@@ -192,7 +187,7 @@ export default function Navigation() {
               <button
                 type="button"
                 onClick={() => { setMobileOpen(false); setLoginOpen(true); }}
-                className="text-lg px-6 py-2 rounded-lg border border-[--color-border] text-[--color-text-muted] hover:text-[--color-text] hover:border-[--color-text-muted] transition-colors duration-150"
+                className="text-lg px-6 py-2 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150"
               >
                 Log in
               </button>

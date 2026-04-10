@@ -21,7 +21,7 @@ export default function HomeClient() {
         <h1 className="text-4xl font-bold tracking-tight animate-settle-delay-1">
           Tom Heffernan
         </h1>
-        <p className="mt-2 text-lg text-[--color-text-muted] animate-settle-delay-2">
+        <p className="mt-2 text-lg text-text-muted animate-settle-delay-2">
           PhD Student, AI @ WPI
         </p>
       </div>

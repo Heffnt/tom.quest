@@ -4,13 +4,13 @@ export default function Bio() {
       <h1 className="text-4xl font-bold tracking-tight animate-settle">
         Tom Heffernan
       </h1>
-      <p className="mt-2 text-lg text-[--color-text-muted] animate-settle-delay-1">
+      <p className="mt-2 text-lg text-text-muted animate-settle-delay-1">
         PhD Student in Artificial Intelligence at WPI
       </p>
 
       <section aria-label="About" className="mt-12 animate-settle-delay-1">
         <h2 className="text-2xl font-semibold mb-4">About</h2>
-        <p className="text-[--color-text]/80 leading-relaxed">
+        <p className="text-text/80 leading-relaxed">
           I am a PhD student at Worcester Polytechnic Institute interested in researching
           a broad range of AI domains. Currently, I work on backdoor attacks, causal reasoning,
           and deterministic verification for LLMs. I am passionate about deepening my understanding
@@ -22,7 +22,7 @@ export default function Bio() {
 
       <section aria-label="Research Interests" className="mt-12 animate-settle-delay-2">
         <h2 className="text-2xl font-semibold mb-4">Research Interests</h2>
-        <ul className="list-disc list-inside text-[--color-text]/80 space-y-2">
+        <ul className="list-disc list-inside text-text/80 space-y-2">
           <li>Backdoor Attacks</li>
           <li>Causal Reasoning</li>
           <li>Deterministic Verification for LLMs</li>
@@ -33,19 +33,19 @@ export default function Bio() {
       <section aria-label="Education" className="mt-12 animate-settle-delay-2">
         <h2 className="text-2xl font-semibold mb-6">Education</h2>
         <div className="space-y-8">
-          <div className="border-l-2 border-[--color-border] pl-6">
+          <div className="border-l-2 border-border pl-6">
             <h3 className="text-xl font-medium">Worcester Polytechnic Institute</h3>
-            <p className="text-[--color-text-muted]">Doctor of Philosophy, Artificial Intelligence</p>
-            <p className="text-[--color-text-faint] text-sm mt-1">2024 - 2028</p>
-            <p className="text-[--color-text-muted] text-sm mt-2">
+            <p className="text-text-muted">Doctor of Philosophy, Artificial Intelligence</p>
+            <p className="text-text-faint text-sm mt-1">2024 - 2028</p>
+            <p className="text-text-muted text-sm mt-2">
               Teacher&apos;s Assistant, Competitive Rock Climbing Team
             </p>
           </div>
-          <div className="border-l-2 border-[--color-border] pl-6">
+          <div className="border-l-2 border-border pl-6">
             <h3 className="text-xl font-medium">Colorado College</h3>
-            <p className="text-[--color-text-muted]">Bachelor&apos;s degree, Computer Science</p>
-            <p className="text-[--color-text-faint] text-sm mt-1">2019 - 2024</p>
-            <p className="text-[--color-text-muted] text-sm mt-2">
+            <p className="text-text-muted">Bachelor&apos;s degree, Computer Science</p>
+            <p className="text-text-faint text-sm mt-1">2019 - 2024</p>
+            <p className="text-text-muted text-sm mt-2">
               Rock climbing and club volleyball team. Capstone project on ML fraud detection.
             </p>
           </div>
@@ -67,7 +67,7 @@ export default function Bio() {
           ].map((skill) => (
             <span
               key={skill}
-              className="px-3 py-1 text-sm border border-[--color-border] rounded-lg text-[--color-text-muted]"
+              className="px-3 py-1 text-sm border border-border rounded-lg text-text-muted"
             >
               {skill}
             </span>
@@ -81,7 +81,7 @@ export default function Bio() {
           href="https://www.linkedin.com/in/tom-heffernan-iv/"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[--color-text-muted] hover:text-[--color-accent] transition-colors duration-150 underline underline-offset-4"
+          className="text-text-muted hover:text-accent transition-colors duration-150 underline underline-offset-4"
         >
           LinkedIn
         </a>

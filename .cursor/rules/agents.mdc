@@ -31,13 +31,14 @@ alwaysApply: true
 - Shell tool can return `Command failed to spawn: Aborted` on larger heredoc requests; rerun with a shorter script
 - `ReadLints` can timeout even with scoped paths; rerun once, then validate edited files with `npm run lint` if needed
 - Some Linux/Turing shells do not have `rg`; use Cursor `rg` tool for code search and `awk`/`python` for shell-side process filtering
+- `npm run lint` currently fails on baseline React hook issues in `app/jarvis/components/ContextViewer.tsx`, `app/jarvis/components/TokenUsage.tsx`, and `app/jarvis/components/useSSE.ts`; treat those as baseline unless touched
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB)
 
 ## Design
-- Font: Poppins via `--font-app` in `app/layout.tsx`
-- Colors: black bg, white text (60%/40% opacity for secondary)
+- Font: Syne for headings plus IBM Plex Sans/Mono via `next/font/google` in `app/layout.tsx`
+- Colors: observatory palette in `app/globals.css` via `@theme inline`; use generated Tailwind utilities like `bg-bg`, `text-accent`, `border-border` instead of `text-[--color-*]`
 - Layout: max-w-3xl mx-auto, px-6 py-16, min-h-screen
 - Animations: animate-fade-in, animate-fade-in-delay (globals.css)
 - Logos: `public/images/` (SVG: logo-{black,white}-{on-black,on-white,transparent}.svg, PNG symbols: symbol-*)
@@ -159,6 +160,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-09] Frontend shell colors silently rendered as white/default styles because Tailwind v4 theme tokens from `@theme inline` were consumed with classes like `text-[--color-accent]`/`border-[--color-border]` instead of generated utilities like `text-accent`/`border-border`/`bg-bg` → replace shell component color classes with theme utility names
 - [2026-03-23] Experiment Review tab could crash to black screen on legacy/sparse experiment rows (`Cannot read properties of undefined (reading 'trim')`) → coerce unknown filter values to strings before `.trim()` in `app/boolback/ExperimentReviewTab.tsx` (`uniqueValues`, active filter derivation, `hasActiveFilters`)
 - [2026-03-09] Allocation failed with `salloc: error: no controlling terminal` in API requests → run `salloc` with `--no-shell` in `tom-quest-api/slurm.py` (non-interactive safe)
 - [2026-03-09] Progress tab looked blank and refresh could appear stuck forever on slow `/boolback/progress` calls → add request timeout + explicit initial loading state in `app/boolback/ProgressTab.tsx`, and use `refreshing` (not `loading`) for manual refresh so existing data stays visible

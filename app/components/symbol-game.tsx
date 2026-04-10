@@ -166,7 +166,6 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
   onWinRef.current = onWin;
 
   const [phase, setPhase] = useState<Phase>("idle");
-  const [placed, setPlaced] = useState<PlacedLine[]>([]);
   const [endMs, setEndMs] = useState(0);
   const [spinDir, setSpinDir] = useState(1);
 
@@ -227,7 +226,6 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
           const newLine: PlacedLine = { localAngle: localA, hit };
           const newPlaced = [...st.placed, newLine];
           st.placed = newPlaced;
-          setPlaced(newPlaced);
           launchRef.current = null;
           launchProg = null;
 
@@ -272,7 +270,6 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
       st.startMs = performance.now();
       st.spinDir = spinDir;
       launchRef.current = null;
-      setPlaced([]);
       setPhase("playing");
       setEndMs(0);
       return;
@@ -314,35 +311,35 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
       {phase === "idle" && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center">
-            <p className="text-[--color-accent] text-lg font-medium">Tap to Start</p>
-            <p className="text-[--color-text-faint] text-xs mt-1">or press Space</p>
+            <p className="text-accent text-lg font-medium">Tap to Start</p>
+            <p className="text-text-faint text-xs mt-1">or press Space</p>
           </div>
         </div>
       )}
 
       {phase === "win" && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[--color-bg]/40 backdrop-blur-[2px] rounded-lg pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center bg-bg/40 backdrop-blur-[2px] rounded-lg pointer-events-none">
           <div className="text-center">
-            <p className="text-[--color-accent] text-2xl font-bold">{fmtTime(endMs)}</p>
-            <p className="text-[--color-text-muted] text-sm mt-1">Symbol complete!</p>
-            <p className="text-[--color-text-faint] text-xs mt-3">Tap to play again</p>
+            <p className="text-accent text-2xl font-bold">{fmtTime(endMs)}</p>
+            <p className="text-text-muted text-sm mt-1">Symbol complete!</p>
+            <p className="text-text-faint text-xs mt-3">Tap to play again</p>
           </div>
         </div>
       )}
 
       {phase === "fail" && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[--color-bg]/40 backdrop-blur-[2px] rounded-lg pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center bg-bg/40 backdrop-blur-[2px] rounded-lg pointer-events-none">
           <div className="text-center">
-            <p className="text-[--color-error] text-xl font-bold">Missed!</p>
-            <p className="text-[--color-text-faint] text-sm mt-1">Line landed outside a zone</p>
-            <p className="text-[--color-text-faint] text-xs mt-3">Tap to try again</p>
+            <p className="text-error text-xl font-bold">Missed!</p>
+            <p className="text-text-faint text-sm mt-1">Line landed outside a zone</p>
+            <p className="text-text-faint text-xs mt-3">Tap to try again</p>
           </div>
         </div>
       )}
 
       {(phase === "playing" || phase === "launching") && (
         <div className="mt-3 text-center">
-          <span className="text-[--color-accent]/50 text-sm font-mono tabular-nums">
+          <span className="text-accent/50 text-sm font-mono tabular-nums">
             <LiveTimer start={s.current.startMs} />
           </span>
         </div>
