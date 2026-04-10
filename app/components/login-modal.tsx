@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./AuthProvider";
-import { logDebug } from "../lib/debug";
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -13,111 +12,97 @@ function normalizeUsername(username: string): string {
   return username.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-// Generate fake email from username for Supabase
 function usernameToEmail(username: string): string {
   return `${normalizeUsername(username)}@tom.quest`;
 }
 
 export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const { signIn, signUp } = useAuth();
-  const [mode, setMode] = useState<"signin" | "signup">("signup");
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const logSource = "Login";
+  const usernameRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (isOpen) {
       setMode("signin");
       setError(null);
-      logDebug("action", "Login modal opened", undefined, logSource);
+      setUsername("");
+      setPassword("");
+      setTimeout(() => usernameRef.current?.focus(), 50);
     }
   }, [isOpen]);
 
+  // Close on Escape
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
-  const handleClose = (reason: string) => {
-    logDebug("action", "Login modal closed", { reason }, logSource);
-    onClose();
-  };
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
-
     const rawUsername = username.trim();
     const normalized = normalizeUsername(rawUsername);
-    if (!rawUsername) {
-      setError("Username is required");
-      setLoading(false);
-      return;
-    }
-    if (!normalized) {
-      setError("Username must contain letters or numbers");
-      setLoading(false);
-      return;
-    }
-
+    if (!rawUsername) { setError("Username is required"); setLoading(false); return; }
+    if (!normalized) { setError("Username must contain letters or numbers"); setLoading(false); return; }
     try {
       if (mode === "signin") {
-        // Sign in using generated email from username
         const email = usernameToEmail(rawUsername);
-        logDebug("request", "Sign in attempt", { username: rawUsername }, logSource);
         const { error } = await signIn(email, password);
         if (error) {
-          logDebug("error", "Sign in failed", { message: error.message }, logSource);
-          if (error.message.includes("Supabase not configured")) {
-            setError("Sign in is not available yet");
-          } else {
-            setError("Invalid username or password");
-          }
+          setError(error.message.includes("Supabase not configured")
+            ? "Sign in is not available yet"
+            : "Invalid username or password");
         } else {
-          logDebug("info", "Sign in success", { username: rawUsername }, logSource);
-          handleClose("success");
+          onClose();
         }
       } else {
-        logDebug("request", "Sign up attempt", { username: rawUsername }, logSource);
         const { error } = await signUp(rawUsername, password);
         if (error) {
-          logDebug("error", "Sign up failed", { message: error.message }, logSource);
-          if (error.message.includes("already registered")) {
-            setError("Username already taken");
-          } else {
-            setError(error.message);
-          }
+          setError(error.message.includes("already registered")
+            ? "Username already taken"
+            : error.message);
         } else {
-          // Auto sign in after signup
           const email = usernameToEmail(rawUsername);
           const { error: signInError } = await signIn(email, password);
           if (signInError) {
-            logDebug("error", "Auto sign in failed", { message: signInError.message }, logSource);
             setError("Account created! Please sign in.");
           } else {
-            logDebug("info", "Sign up success", { username: rawUsername }, logSource);
-            handleClose("success");
+            onClose();
           }
         }
       }
     } catch {
-      logDebug("error", "Auth unexpected error", undefined, logSource);
       setError("An unexpected error occurred");
     } finally {
       setLoading(false);
     }
   };
 
-  const switchMode = () => {
-    setMode(mode === "signin" ? "signup" : "signin");
-    setError(null);
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => handleClose("backdrop")} />
-      <div className="relative bg-black border border-white/20 rounded-lg p-6 w-full max-w-md">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === "signin" ? "Sign in" : "Create account"}
+        className="relative bg-[--color-surface] border border-[--color-border] rounded-lg p-6 w-full max-w-sm animate-settle"
+      >
         <button
-          onClick={() => handleClose("close-button")}
-          className="absolute top-4 right-4 text-white/60 hover:text-white"
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute top-4 right-4 text-[--color-text-muted] hover:text-[--color-text] transition-colors duration-150"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -130,24 +115,27 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm text-white/60 mb-1">Username</label>
+            <label htmlFor="login-username" className="block text-sm text-[--color-text-muted] mb-1">Username</label>
             <input
+              ref={usernameRef}
+              id="login-username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white focus:outline-none focus:border-white/30"
+              className="w-full bg-[--color-bg] border border-[--color-border] rounded-lg px-3 py-2 text-[--color-text] focus:border-[--color-accent] focus:outline-none transition-colors duration-150"
               placeholder={mode === "signin" ? "Your username" : "Choose a username"}
               required
             />
           </div>
 
           <div>
-            <label className="block text-sm text-white/60 mb-1">Password</label>
+            <label htmlFor="login-password" className="block text-sm text-[--color-text-muted] mb-1">Password</label>
             <input
+              id="login-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white focus:outline-none focus:border-white/30"
+              className="w-full bg-[--color-bg] border border-[--color-border] rounded-lg px-3 py-2 text-[--color-text] focus:border-[--color-accent] focus:outline-none transition-colors duration-150"
               placeholder="••••••••"
               required
               minLength={6}
@@ -155,21 +143,25 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
           </div>
 
           {error && (
-            <p className="text-red-400 text-sm">{error}</p>
+            <p className="text-[--color-error] text-sm">{error}</p>
           )}
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-white text-black font-medium py-2 rounded hover:bg-white/90 transition-colors disabled:opacity-50"
+            className="w-full bg-[--color-accent] text-[--color-bg] font-medium py-2 rounded-lg hover:opacity-90 transition-opacity duration-150 disabled:opacity-50"
           >
             {loading ? "Loading..." : mode === "signin" ? "Sign In" : "Create Account"}
           </button>
         </form>
 
-        <p className="mt-4 text-center text-sm text-white/60">
+        <p className="mt-4 text-center text-sm text-[--color-text-muted]">
           {mode === "signin" ? "Don't have an account?" : "Already have an account?"}{" "}
-          <button onClick={switchMode} className="text-white hover:underline">
+          <button
+            type="button"
+            onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(null); }}
+            className="text-[--color-text] hover:text-[--color-accent] transition-colors duration-150"
+          >
             {mode === "signin" ? "Sign up" : "Sign in"}
           </button>
         </p>

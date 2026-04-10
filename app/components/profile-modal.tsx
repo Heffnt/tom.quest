@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "./AuthProvider";
-import { logDebug } from "../lib/debug";
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -13,12 +12,20 @@ interface ProfileModalProps {
 export default function ProfileModal({ isOpen, onClose, displayName }: ProfileModalProps) {
   const { signOut } = useAuth();
   const [signingOut, setSigningOut] = useState(false);
-  const logSource = "Profile";
+
+  // Close on Escape
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
   const handleSignOut = async () => {
-    logDebug("action", "Sign out clicked", undefined, logSource);
     setSigningOut(true);
     try {
       await signOut();
@@ -31,10 +38,17 @@ export default function ProfileModal({ isOpen, onClose, displayName }: ProfileMo
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-black border border-white/20 rounded-lg p-6 w-full max-w-md">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Profile"
+        className="relative bg-[--color-surface] border border-[--color-border] rounded-lg p-6 w-full max-w-sm animate-settle"
+      >
         <button
+          type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 text-white/60 hover:text-white"
+          aria-label="Close"
+          className="absolute top-4 right-4 text-[--color-text-muted] hover:text-[--color-text] transition-colors duration-150"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -45,14 +59,15 @@ export default function ProfileModal({ isOpen, onClose, displayName }: ProfileMo
 
         <div className="space-y-4">
           <div>
-            <p className="text-sm text-white/60 mb-1">Username</p>
-            <p className="text-white">{displayName}</p>
+            <p className="text-sm text-[--color-text-muted] mb-1">Username</p>
+            <p className="text-[--color-text]">{displayName}</p>
           </div>
 
           <button
+            type="button"
             onClick={handleSignOut}
             disabled={signingOut}
-            className="w-full bg-white text-black font-medium py-2 rounded hover:bg-white/90 transition-colors disabled:opacity-50"
+            className="w-full text-[--color-error] bg-[--color-error]/10 font-medium py-2 rounded-lg hover:bg-[--color-error]/20 transition-colors duration-150 disabled:opacity-50"
           >
             {signingOut ? "Signing out..." : "Sign out"}
           </button>

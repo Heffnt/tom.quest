@@ -1,34 +1,58 @@
 @import "tailwindcss";
 
-:root {
-  --background: #000000;
-  --foreground: #ffffff;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-app);
-  --font-mono: var(--font-app);
+  --color-bg:          #0a0e17;
+  --color-surface:     #111827;
+  --color-surface-alt: #1a2332;
+  --color-border:      #1e293b;
+  --color-text:        #e2e8f0;
+  --color-text-muted:  #64748b;
+  --color-text-faint:  #334155;
+  --color-accent:      #e8a040;
+  --color-accent-dim:  #e8a04020;
+  --color-success:     #22c55e;
+  --color-warning:     #eab308;
+  --color-error:       #ef4444;
+
+  --font-display: var(--font-syne);
+  --font-body:    var(--font-ibm-plex-sans);
+  --font-mono:    var(--font-ibm-plex-mono);
+
+  --text-xs:   0.75rem;
+  --text-sm:   0.875rem;
+  --text-base: 1rem;
+  --text-lg:   1.125rem;
+  --text-xl:   1.25rem;
+  --text-2xl:  1.5rem;
+  --text-3xl:  1.875rem;
+  --text-4xl:  2.25rem;
+  --text-5xl:  3rem;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
 }
 
-button,
-input,
-select,
-textarea {
+h1, h2, h3 {
+  font-family: var(--font-display), 'Syne', sans-serif;
+  letter-spacing: 0.01em;
+}
+
+code, pre, .font-mono {
+  font-family: var(--font-mono), 'IBM Plex Mono', monospace;
+}
+
+button, input, select, textarea {
   font: inherit;
 }
 
-@keyframes fadeIn {
+/* Settle animation — gauge needle easing into place */
+@keyframes settle {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -36,11 +60,49 @@ textarea {
   }
 }
 
-.animate-fade-in {
-  animation: fadeIn 0.5s ease-out forwards;
+.animate-settle {
+  animation: settle 0.5s ease-out forwards;
 }
 
-.animate-fade-in-delay {
-  animation: fadeIn 0.5s ease-out 0.2s forwards;
+.animate-settle-delay-1 {
+  animation: settle 0.5s ease-out 80ms forwards;
   opacity: 0;
+}
+
+.animate-settle-delay-2 {
+  animation: settle 0.5s ease-out 160ms forwards;
+  opacity: 0;
+}
+
+.animate-settle-delay-3 {
+  animation: settle 0.5s ease-out 240ms forwards;
+  opacity: 0;
+}
+
+/* Slide-in animations for debug drawer (3 edges) */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes slide-in-left {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes slide-in-bottom {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out forwards;
+}
+
+.animate-slide-in-left {
+  animation: slide-in-left 0.2s ease-out forwards;
+}
+
+.animate-slide-in-bottom {
+  animation: slide-in-bottom 0.2s ease-out forwards;
 }

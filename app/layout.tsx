@@ -1,13 +1,26 @@
 import type { Metadata } from "next";
-import { Poppins } from "next/font/google";
+import { Syne, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
-import Navigation from "./components/Navigation";
-import ClientProviders from "./components/ClientProviders";
+import { AuthProvider } from "./components/AuthProvider";
+import Navigation from "./components/navigation";
+import DebugDrawer from "./components/debug-drawer";
 
-const appFont = Poppins({
-  variable: "--font-app",
+const syne = Syne({
+  variable: "--font-syne",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["600", "700", "800"],
+});
+
+const ibmPlexSans = IBM_Plex_Sans({
+  variable: "--font-ibm-plex-sans",
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+});
+
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-ibm-plex-mono",
+  subsets: ["latin"],
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -26,14 +39,17 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${appFont.variable} antialiased`}
+        className={`${syne.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} antialiased`}
       >
-        <ClientProviders>
-          <Navigation />
+        <AuthProvider>
+          <header>
+            <Navigation />
+          </header>
           <main className="pt-16">
             {children}
           </main>
-        </ClientProviders>
+          <DebugDrawer />
+        </AuthProvider>
       </body>
     </html>
   );
