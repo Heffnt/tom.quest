@@ -31,10 +31,12 @@ alwaysApply: true
 - Shell tool can return `Command failed to spawn: Aborted` on larger heredoc requests; rerun with a shorter script
 - `ReadLints` can timeout even with scoped paths; rerun once, then validate edited files with `npm run lint` if needed
 - Some Linux/Turing shells do not have `rg`; use Cursor `rg` tool for code search and `awk`/`python` for shell-side process filtering
-- `npm run lint` currently fails on baseline React hook issues in `app/jarvis/components/ContextViewer.tsx`, `app/jarvis/components/TokenUsage.tsx`, and `app/jarvis/components/useSSE.ts`; treat those as baseline unless touched
 - `vitest run` exits with code 1 when no tests exist; for initial test setup either add the first test before running or use `--passWithNoTests` intentionally
 - Red-phase Vitest imports fail during Vite import analysis when the target module file does not exist yet; create the file stub first if you need the suite to execute individual tests instead of failing at module resolution
 - With Vitest fake timers, attach the rejection expectation before advancing the clock for timeout tests; otherwise Vitest can report an unhandled rejection even when the test logic is correct
+- Current ESLint config flags synchronous `setState` work inside effects via `react-hooks/set-state-in-effect`; move loading/reset state into callbacks or async tasks instead of calling setters directly in the effect body
+- `react-hooks/set-state-in-effect` also flags direct state reset branches like `if (!url) setConnection(null)` inside effects; derive null state from props/render when possible instead of mutating it in the effect body
+- `react-hooks/immutability` flags mutating memoized class instances after `useMemo`; pass mutable callbacks like `onStateChange` through constructor options instead of assigning properties inside an effect
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB) | Vitest + jsdom
@@ -55,6 +57,7 @@ app/
 │   ├── page.tsx               # Tom-only Jarvis page now bootstraps the GatewayProvider and direct WS chat surface
 │   └── components/
 │       └── ChatPanel.tsx      # Direct Gateway chat UI with session selection, transcript load, send, abort, and live session.message updates
+│       └── SessionsOverview.tsx # Gateway-backed sessions list that refreshes from sessions.changed events
 │       └── gatewayAuth.ts     # Browser Ed25519 device identity + device token storage for Gateway WS auth
 │       └── GatewayConnection.ts # Browser Gateway WS transport: challenge handshake, RPC correlation, events, reconnect, debug logging
 │       └── gatewayProtocol.ts # Typed OpenClaw WS method contracts with runtime drift logging
@@ -92,6 +95,18 @@ app/
 tom-quest-api/               # FastAPI on Turing HPC
 ├── main.py, boolback.py, gpu_report.py, slurm.py, tmux.py, dirs.py, job_screens.py (includes /file endpoint)
 ```
+
+## Jarvis Gateway Notes
+- Jarvis now talks directly to OpenClaw Gateway over WebSocket; the bridge layer and SSE hook are removed.
+- Browser device auth must mirror the real OpenClaw UI contract: Ed25519 keys, SHA-256 deviceId from the raw public key, and the `v2|...` signed connect payload. The earlier ECDSA/P-256 plan assumption was wrong.
+- `OPENCLAW_GATEWAY_URL` can be stored as `https://...` or `wss://...`; `GatewayConnection` normalizes `http(s)` to `ws(s)` before opening the socket.
+- `chat.send` requires an `idempotencyKey`; the protocol wrapper generates one when the caller does not supply it.
+- `cron.list` returns a page object with `jobs`, `total`, `offset`, `limit`, `hasMore`, and `nextOffset`; it is not a bare array.
+- `cron.update` can toggle a job by sending `{ enabled: !job.enabled }` in the patch.
+- `sessions.get` only returns `{ messages }`; the old bridge "run context" shape does not exist in Gateway. `RunContextViewer` now shows the real session row metadata plus agent files and skills instead of a synthetic bridge payload.
+- `agents.files.list` and `agents.files.get` require an `agentId`; resolve it from `agents.list.defaultId` or the session key.
+- Live transcript events are opt-in per session: call `sessions.messages.subscribe`/`sessions.messages.unsubscribe` and then listen for `session.message`.
+- The earlier plan assumption that `config.apply` could stand in for "restart gateway" was wrong. The dashboard currently exposes reconnect, not gateway restart.
 
 ## Auth & Feedback System
 - Supabase Auth: username/password signup/signin (email derived as `{normalizedUsername}@tom.quest`)
