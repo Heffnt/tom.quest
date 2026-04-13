@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode, useRef } from "react";
 import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient, Profile, TuringConnection } from "../lib/supabase";
-import { logDebug, debugFetch } from "../lib/debug";
+import { logDebug } from "../lib/debug";
 
 interface AuthContextType {
   user: User | null;
@@ -27,6 +27,12 @@ function normalizeUsername(username: string): string {
 
 function usernameToEmail(username: string): string {
   return `${normalizeUsername(username)}@tom.quest`;
+}
+
+const TOM_USER_ID = process.env.NEXT_PUBLIC_TOM_USER_ID || "";
+
+function isTomUserId(userId: string | undefined): boolean {
+  return !!TOM_USER_ID && userId === TOM_USER_ID;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -108,23 +114,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setTuringConnection(data);
   }, [supabase]);
 
-  const checkIsTom = useCallback(async (userId: string) => {
-    try {
-      const response = await debugFetch("/api/auth/is-tom", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId }),
-      });
-      const { isTom } = await response.json();
-      setIsTom(isTom);
-    } catch (error) {
-      logDebug("error", "Tom check failed", {
-        message: error instanceof Error ? error.message : "Unknown error",
-      }, logSource);
-      setIsTom(false);
-    }
-  }, []);
-
   useEffect(() => {
     if (!supabase) {
       logDebug("info", "Supabase not configured", undefined, logSource);
@@ -143,11 +132,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           accessToken: session?.access_token ?? null,
         };
         if (session?.user) {
+          setIsTom(isTomUserId(session.user.id));
           logDebug("info", "Session found", { userId: session.user.id }, logSource);
           await Promise.all([
             fetchProfile(session.user.id),
             fetchTuringConnection(session.user.id),
-            checkIsTom(session.user.id),
           ]);
           await ensureProfile(session.user);
         }
@@ -175,10 +164,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
+        setIsTom(isTomUserId(session.user.id));
         await Promise.all([
           fetchProfile(session.user.id),
           fetchTuringConnection(session.user.id),
-          checkIsTom(session.user.id),
         ]);
         await ensureProfile(session.user);
       } else {
@@ -189,7 +178,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => subscription.unsubscribe();
-  }, [supabase, fetchProfile, fetchTuringConnection, checkIsTom, ensureProfile]);
+  }, [supabase, fetchProfile, fetchTuringConnection, ensureProfile]);
 
   const signIn = async (email: string, password: string) => {
     if (!supabase) {

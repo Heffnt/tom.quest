@@ -78,14 +78,12 @@ app/
 │   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions, file, boolback/[...path]
 │   ├── cube/                # Cube ratings API (rate/my-ratings/ratings)
 │   ├── feedback/            # GET/POST feedback
-│   ├── jarvis/config/       # Tom-only gateway URL config for direct OpenClaw WS access
-│   └── auth/is-tom/         # POST verify if user is Tom
+│   └── jarvis/config/       # Tom-only gateway URL config for direct OpenClaw WS access
 ├── components/
 │   ├── AuthProvider.tsx     # Auth context (user, profile, isTom, turingConnection)
 │   ├── LoginModal.tsx       # Sign in/up modal
-│   ├── DebugPanel.tsx       # Global debug logs panel (all pages, via ClientProviders)
+│   ├── debug-drawer.tsx     # Global Tom-only debug log drawer mounted from the root layout
 │   ├── FeedbackButton.tsx   # Floating feedback form button
-│   ├── ClientProviders.tsx  # Wraps auth/feedback/debug in layout
 │   ├── Navigation.tsx       # Nav with conditional Tom links
 │   └── ProfileModal.tsx     # Username profile modal
 └── lib/
@@ -112,15 +110,15 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Auth & Feedback System
 - Supabase Auth: username/password signup/signin (email derived as `{normalizedUsername}@tom.quest`)
-- Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `TOM_USER_ID`
-- Tom identified by `TOM_USER_ID` env var matching Supabase user ID
+- Env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_TOM_USER_ID`, `SUPABASE_SERVICE_KEY`, `TOM_USER_ID`
+- Client-side Tom gate uses `NEXT_PUBLIC_TOM_USER_ID`; server-side Tom-only routes use `TOM_USER_ID`
 - DB tables: `profiles`, `feedback`, `turing_connections`, `user_settings`, `cube_ratings`
 - Login: top-right nav button shows Log in or username (Tom outlined)
 - Profile modal: username click shows sign out
 - Login modal: defaults to sign in on open, scrolls if viewport is short
 - Feedback button: floating bottom-right modal for user feedback
 - Feedback page: Tom-only list of submissions with name + username when available
-- Debug Logs: global panel in ClientProviders, resizable; adds body padding when open; tracks logDebug + debugFetch; filters/search in sticky header row; source badges; max 500 entries; debugFetch can skip response body logging (gpu-report); serializes errors (name/message/stack/cause) and shows error data in copy/search/view
+- Debug Logs: global Tom-only drawer mounted from `app/layout.tsx`; opens from bottom/left/right trigger dots; tracks `logDebug` + `debugFetch`; filters/searches by type/text; max 500 entries; `debugFetch` can skip response body logging (gpu-report); serializes errors (name/message/stack/cause)
 
 ## Multi-User Turing
 - Guests/non-connected users: view Tom's dashboard (read-only)
@@ -190,6 +188,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-12] Debug drawer launch dots disappeared on tom.Quest because `AuthProvider` still called the removed `/api/auth/is-tom` route and forced `isTom=false` on failure → derive `isTom` client-side from `NEXT_PUBLIC_TOM_USER_ID` in `app/components/AuthProvider.tsx`
 - [2026-04-12] Jarvis production build failed after the gateway migration because CronPanel, TranscriptViewer, and gatewayAuth still assumed looser runtime types than Next.js production compilation allows → read cron status from `job.state`, normalize raw gateway transcript rows before rendering, and copy `Uint8Array` data into a plain `ArrayBuffer` before WebCrypto digest/import calls
 - [2026-04-12] New Vitest timeout tests produced unhandled rejection warnings under fake timers even though assertions were correct → attach the rejection expectation before advancing the clock in timeout tests
 - [2026-04-09] Frontend shell colors silently rendered as white/default styles because Tailwind v4 theme tokens from `@theme inline` were consumed with classes like `text-[--color-accent]`/`border-[--color-border]` instead of generated utilities like `text-accent`/`border-border`/`bg-bg` → replace shell component color classes with theme utility names
