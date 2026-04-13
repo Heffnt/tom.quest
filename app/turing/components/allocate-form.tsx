@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTuring, useTuringMutation } from "@/app/lib/hooks/use-turing";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { AllocateRequest, AllocateResponse, GPUTypeInfo, gpuTypeLabel } from "../types";
@@ -23,26 +23,42 @@ interface AllocSettings extends Record<string, unknown> {
   memoryMb: string;
 }
 
+const DEFAULT_TIME_MINS = "1440";
+const DEFAULT_MEMORY_MB = "64000";
+const DEFAULT_COUNT = "1";
+const DEFAULT_PROJECT_DIR = "/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger";
+const LEGACY_TIME_MINS = "60";
+const LEGACY_MEMORY_MB = "16000";
+
 const DEFAULTS: AllocSettings = {
   recentDirs: [],
   commandPresets: {},
   gpuType: "",
-  timeMins: "60",
-  memoryMb: "16000",
+  timeMins: DEFAULT_TIME_MINS,
+  memoryMb: DEFAULT_MEMORY_MB,
 };
 
 export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
-  const [settings, update] = usePersistedSettings<AllocSettings>("turing_allocate", DEFAULTS);
+  const [settings, update, settingsHydrated] = usePersistedSettings<AllocSettings>("turing_allocate", DEFAULTS);
   const gpuTypes = useTuring<{ types: GPUTypeInfo[] }>("/gpu-types");
   const allocate = useTuringMutation<AllocateRequest, AllocateResponse>("/allocate");
-
-  const [count, setCount] = useState("");
-  const [projectDir, setProjectDir] = useState("");
+  const migratedLegacyDefaults = useRef(false);
+  const [count, setCount] = useState(DEFAULT_COUNT);
+  const [projectDir, setProjectDir] = useState(DEFAULT_PROJECT_DIR);
   const [commands, setCommands] = useState<string[]>([""]);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [presetName, setPresetName] = useState("");
   const [selectedPreset, setSelectedPreset] = useState("");
+
+  useEffect(() => {
+    if (!settingsHydrated || migratedLegacyDefaults.current) return;
+    migratedLegacyDefaults.current = true;
+    const patch: Partial<AllocSettings> = {};
+    if (settings.timeMins === LEGACY_TIME_MINS) patch.timeMins = DEFAULT_TIME_MINS;
+    if (settings.memoryMb === LEGACY_MEMORY_MB) patch.memoryMb = DEFAULT_MEMORY_MB;
+    if (Object.keys(patch).length > 0) update(patch);
+  }, [settings.memoryMb, settings.timeMins, settingsHydrated, update]);
 
   if (!isTom) {
     return (
@@ -141,7 +157,9 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
           <label className="text-sm">
             <span className="block text-text-muted mb-1">Count</span>
             <input
-              type="number" min={1} max={12}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={count}
               onChange={e => setCount(e.target.value)}
               placeholder="all"
@@ -151,7 +169,9 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
           <label className="text-sm">
             <span className="block text-text-muted mb-1">Time (mins)</span>
             <input
-              type="number" min={1}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={settings.timeMins}
               onChange={e => update({ timeMins: e.target.value })}
               className="w-full bg-bg border border-border rounded px-2 py-1.5 focus:border-accent focus:outline-none"
@@ -160,7 +180,9 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
           <label className="text-sm">
             <span className="block text-text-muted mb-1">Memory (MB)</span>
             <input
-              type="number" min={1}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={settings.memoryMb}
               onChange={e => update({ memoryMb: e.target.value })}
               className="w-full bg-bg border border-border rounded px-2 py-1.5 focus:border-accent focus:outline-none"

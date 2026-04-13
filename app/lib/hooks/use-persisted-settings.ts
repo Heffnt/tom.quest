@@ -70,9 +70,10 @@ async function hydrate<T extends Record<string, unknown>>(
 export function usePersistedSettings<T extends Record<string, unknown>>(
   key: string,
   defaults: T,
-): [T, (update: Partial<T>) => void] {
+): [T, (update: Partial<T>) => void, boolean] {
   const { user, loading: authLoading } = useAuth();
   const [settings, setSettings] = useState<T>(defaults);
+  const [isHydrated, setIsHydrated] = useState(false);
   const hydrated = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -80,10 +81,12 @@ export function usePersistedSettings<T extends Record<string, unknown>>(
     if (authLoading) return;
     let cancelled = false;
     (async () => {
+      setIsHydrated(false);
       const merged = await hydrate(user?.id ?? null, key, defaults);
       if (!cancelled) {
         setSettings(merged);
         hydrated.current = true;
+        setIsHydrated(true);
       }
     })();
     return () => { cancelled = true; };
@@ -103,5 +106,5 @@ export function usePersistedSettings<T extends Record<string, unknown>>(
     });
   }, [user?.id, key]);
 
-  return [settings, update];
+  return [settings, update, isHydrated];
 }

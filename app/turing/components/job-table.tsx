@@ -14,15 +14,19 @@ interface JobTableProps {
   onRefresh: () => void;
 }
 
-function StatusBadge({ status, reason }: { status: string; reason?: string }) {
-  const color = status === "RUNNING"
-    ? "bg-green-500/20 text-green-400 border-green-500/40"
-    : status === "PENDING"
+function isRunningStatus(status: string): boolean {
+  return status.startsWith("RUNNING");
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const color = isRunningStatus(status)
+    ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+    : status.startsWith("PENDING")
       ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40"
       : "bg-border text-text-muted border-border";
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-mono ${color}`}>
-      {status}{reason ? ` (${reason})` : ""}
+      {status}
     </span>
   );
 }
@@ -65,7 +69,7 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
   const [cancelLoading, setCancelLoading] = useState(false);
 
   const viewableSessions = useMemo(
-    () => (data || []).filter(j => j.status === "RUNNING" && j.screen_name).map(j => j.screen_name),
+    () => (data || []).filter(j => isRunningStatus(j.status) && j.screen_name).map(j => j.screen_name),
     [data],
   );
 
@@ -156,7 +160,7 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
                 <td className="font-mono text-text-faint text-xs">{job.screen_name || "—"}</td>
                 <td className="text-right">
                   <div className="inline-flex gap-1.5">
-                    {job.status === "RUNNING" && job.screen_name && (
+                    {isRunningStatus(job.status) && job.screen_name && (
                       <button type="button" onClick={() => setTerminalSession(job.screen_name)}
                         className="text-xs px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors duration-150">
                         {isTom ? "Terminal" : "View"}
