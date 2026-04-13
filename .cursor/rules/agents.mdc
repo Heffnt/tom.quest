@@ -34,8 +34,12 @@ alwaysApply: true
 - Python `-c` one-liners also break easily when you try to smuggle escaped newlines like `\ntry:` through shell quoting; use a real script block or `curl` instead
 - Shell tool can return `Command failed to spawn: Aborted` on larger heredoc requests; rerun with a shorter script
 - `ReadLints` can timeout even with scoped paths; rerun once, then validate edited files with `npm run lint` if needed
+- `python -m py_compile tom-quest-api/*.py` can touch tracked `tom-quest-api/__pycache__/*.pyc` artifacts; avoid it unless you intend to restore those binaries afterward
 - Some Linux/Turing shells do not have `rg`; use Cursor `rg` tool for code search and `awk`/`python` for shell-side process filtering
 - Turing shell process inspection can fail with `rg: command not found`; use `ps -ef | awk ...` instead of shell `rg`
+- tmux CLI help is inconsistent on this host: `attach-session -h` and lowercase `-f` fail even though upstream docs mention client flags; verify tmux flag support against the local binary, use uppercase `-F` for `refresh-client` client flags here, and note this host rejects `window-size latest` even though newer docs mention it
+- When probing tmux behavior in parallel, use distinct temporary session names; concurrent checks against the same temp session name collide with `duplicate session`
+- `npm run build` can fail resolving `vitest/config` if the local install is missing `node_modules/vitest` even though `package.json` declares it; check the local install and run `npm install` before treating that as a code regression
 - `openclaw devices pending` is not a valid CLI subcommand in current OpenClaw; use `openclaw devices list`
 - `vitest run` exits with code 1 when no tests exist; for initial test setup either add the first test before running or use `--passWithNoTests` intentionally
 - Red-phase Vitest imports fail during Vite import analysis when the target module file does not exist yet; create the file stub first if you need the suite to execute individual tests instead of failing at module resolution
@@ -164,7 +168,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - `/gpu-types` returns `{ types: [{ type, count, nodes }] }` from the Turing API; the allocation dropdown depends on that object shape for labels, values, and free-count text
 - GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
 - Active Jobs: `RUNNING (...)` rows count as running state for badges/terminal actions; running badges use amber styling even when the node name suffix is present
-- Turing terminal modal attaches a real tmux client over WebSocket; tmux is currently using `window-size smallest`, so if multiple clients attach to the same session the smallest attached client can shrink the shared session geometry for everyone
+- Turing terminal modal attaches a real tmux client over WebSocket; tmux sessions use `window-size manual`, lone browser attaches seed their initial size from the browser cols/rows and explicitly `resize-window`, and browser attaches reuse the current session size when another tmux client is already attached so the shared geometry stays stable
 - Turing terminal modal uses the Windows VS Code/Cursor-style terminal font stack `Consolas, "Courier New", monospace` instead of the site mono font
 
 ## BoolBack Dashboard
@@ -196,6 +200,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-13] Refreshing the tom.Quest terminal after closing another tmux client could still leave the shared session stuck at the smaller geometry because the web attach reused tmux's inherited size policy and had no initial browser size handshake → switch tmux sessions to `window-size manual`, send initial browser cols/rows in the WebSocket URL, and explicitly `resize-window` only when the browser terminal is the sole attached client
 - [2026-04-13] Turing terminal modal could render as a tiny `60x18` client with the tmux status line halfway up the dialog because xterm was only fitted once immediately on mount, before the modal/font/container sizing had settled → add `ResizeObserver`-driven refits plus a post-open/font-ready fit in `app/turing/components/terminal-modal.tsx` so the PTY gets the real modal size
 - [2026-04-13] Tom's Turing terminal modal could immediately show `Failed to fetch tunnel URL` even while `/api/turing/tunnel-url` worked in curl because `app/turing/components/terminal-modal.tsx` called that Tom-only endpoint without forwarding `x-user-id` → read `user` from `useAuth()`, pass `user.id` into the fetch, and rerun the connection effect when `user.id` changes
 - [2026-04-13] Active Jobs rows like `RUNNING (gpu-5-12)` were treated as unknown gray statuses because the UI only matched the exact string `RUNNING` → treat prefix-matched `RUNNING (...)` values as running so badges and terminal/view actions stay active, and style that running state amber

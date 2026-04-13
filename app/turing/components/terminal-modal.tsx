@@ -27,6 +27,14 @@ async function fetchTunnelUrl(userId: string | undefined): Promise<{ url: string
   return { url: data.url, key: data.key || "" };
 }
 
+function buildSessionWsUrl(baseUrl: string, sessionName: string, key: string, cols: number, rows: number): string {
+  const wsUrl = new URL(`/ws/sessions/${encodeURIComponent(sessionName)}`, baseUrl.replace(/^http/, "ws"));
+  if (key) wsUrl.searchParams.set("key", key);
+  wsUrl.searchParams.set("cols", String(cols));
+  wsUrl.searchParams.set("rows", String(rows));
+  return wsUrl.toString();
+}
+
 export default function TerminalModal({ sessionName, allSessions, onClose, onNavigate }: TerminalModalProps) {
   const { user } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -52,11 +60,18 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     termRef.current = term;
-    const fitTerminal = () => {
+    const getTerminalSize = () => {
       fit.fit();
+      return {
+        cols: Math.max(term.cols, 80),
+        rows: Math.max(term.rows, 24),
+      };
+    };
+    const fitTerminal = () => {
+      const { cols, rows } = getTerminalSize();
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
       }
     };
     if (containerRef.current) {
@@ -86,8 +101,8 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
         setStatus("closed");
         return;
       }
-      const keyParam = tunnel.key ? `?key=${encodeURIComponent(tunnel.key)}` : "";
-      const wsUrl = tunnel.url.replace(/^http/, "ws") + `/ws/sessions/${encodeURIComponent(sessionName)}${keyParam}`;
+      const { cols, rows } = getTerminalSize();
+      const wsUrl = buildSessionWsUrl(tunnel.url, sessionName, tunnel.key || "", cols, rows);
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;

@@ -9,13 +9,26 @@ import struct
 import termios
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from tmux import session_exists
+from tmux import count_session_clients, get_session_size, resize_session, session_exists, set_window_size_mode
 
 log = logging.getLogger("tom.quest.ws")
 router = APIRouter()
 
 def set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+def _normalize_winsize(rows: int | None, cols: int | None) -> tuple[int, int]:
+    safe_rows = max(int(rows or 24), 5)
+    safe_cols = max(int(cols or 80), 20)
+    return safe_rows, safe_cols
+
+def _should_resize_session(session_name: str) -> bool:
+    return count_session_clients(session_name) <= 1
+
+def _apply_resize(master_fd: int, session_name: str, rows: int, cols: int) -> None:
+    set_winsize(master_fd, rows, cols)
+    if _should_resize_session(session_name) and not resize_session(session_name, rows, cols):
+        log.warning("failed to resize tmux session %s to %sx%s", session_name, cols, rows)
 
 async def _read_pty(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
     loop = asyncio.get_event_loop()
@@ -32,7 +45,12 @@ async def _read_pty(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
             break
     stop.set()
 
-async def _read_ws(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
+async def _read_ws(
+    ws: WebSocket,
+    master_fd: int,
+    stop: asyncio.Event,
+    session_name: str,
+) -> None:
     while not stop.is_set():
         try:
             msg = await ws.receive()
@@ -52,9 +70,8 @@ async def _read_ws(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
         try:
             parsed = json.loads(text)
             if isinstance(parsed, dict) and parsed.get("type") == "resize":
-                rows = int(parsed.get("rows", 24))
-                cols = int(parsed.get("cols", 80))
-                set_winsize(master_fd, rows, cols)
+                rows, cols = _normalize_winsize(parsed.get("rows"), parsed.get("cols"))
+                _apply_resize(master_fd, session_name, rows, cols)
                 continue
         except (ValueError, TypeError):
             pass
@@ -65,7 +82,13 @@ async def _read_ws(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
     stop.set()
 
 @router.websocket("/ws/sessions/{session_name}")
-async def ws_session(websocket: WebSocket, session_name: str, key: str = "") -> None:
+async def ws_session(
+    websocket: WebSocket,
+    session_name: str,
+    key: str = "",
+    cols: int | None = None,
+    rows: int | None = None,
+) -> None:
     from main import API_KEY
     if API_KEY and key != API_KEY:
         await websocket.close(code=1008, reason="Invalid key")
@@ -77,8 +100,22 @@ async def ws_session(websocket: WebSocket, session_name: str, key: str = "") -> 
         return
 
     await websocket.accept()
+    set_window_size_mode(session_name, "manual")
+    existing_clients = count_session_clients(session_name)
+    initial_rows, initial_cols = _normalize_winsize(rows, cols)
+    if existing_clients > 0:
+        session_size = get_session_size(session_name)
+        if session_size is not None:
+            initial_cols, initial_rows = session_size
+    log.info(
+        "terminal attach %s existing_clients=%s initial_size=%sx%s",
+        session_name,
+        existing_clients,
+        initial_cols,
+        initial_rows,
+    )
     master_fd, slave_fd = pty.openpty()
-    set_winsize(master_fd, 24, 80)
+    set_winsize(master_fd, initial_rows, initial_cols)
     pid = os.fork()
     if pid == 0:
         os.setsid()
@@ -93,9 +130,11 @@ async def ws_session(websocket: WebSocket, session_name: str, key: str = "") -> 
     os.close(slave_fd)
     stop = asyncio.Event()
     try:
+        if existing_clients == 0:
+            _apply_resize(master_fd, session_name, initial_rows, initial_cols)
         await asyncio.gather(
             _read_pty(websocket, master_fd, stop),
-            _read_ws(websocket, master_fd, stop),
+            _read_ws(websocket, master_fd, stop, session_name),
         )
     finally:
         try:
