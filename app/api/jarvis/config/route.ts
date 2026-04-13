@@ -13,15 +13,12 @@ async function getUserId(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   const userId = await getUserId(request);
-  const bridgeUrl = process.env.JARVIS_BRIDGE_URL;
-  const token = process.env.JARVIS_BRIDGE_TOKEN;
-  if (!bridgeUrl) {
-    return NextResponse.json({ error: "Bridge not configured" }, { status: 503 });
+  if (!isTomUser(userId || undefined)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  const canControl = isTomUser(userId || undefined);
-  return NextResponse.json({
-    bridgeUrl,
-    token: canControl ? token || "" : "",
-    canControl,
-  });
+  const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
+  if (!gatewayUrl) {
+    return NextResponse.json({ error: "Gateway not configured" }, { status: 503 });
+  }
+  return NextResponse.json({ gatewayUrl });
 }

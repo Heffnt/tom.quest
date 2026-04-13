@@ -56,6 +56,7 @@ app/
 │       └── gatewayAuth.ts     # Browser Ed25519 device identity + device token storage for Gateway WS auth
 │       └── GatewayConnection.ts # Browser Gateway WS transport: challenge handshake, RPC correlation, events, reconnect, debug logging
 │       └── gatewayProtocol.ts # Typed OpenClaw WS method contracts with runtime drift logging
+│       └── useGateway.ts      # Thin React GatewayProvider/useGateway wrapper binding transport + protocol
 │       └── __tests__/         # Vitest coverage for gatewayAuth, GatewayConnection, and gatewayProtocol
 ├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
 ├── feedback/page.tsx        # Feedback dashboard (Tom only)
@@ -70,6 +71,7 @@ app/
 │   │   └── ...              # gpu-report, allocate, jobs, dirs, sessions, file, boolback/[...path]
 │   ├── cube/                # Cube ratings API (rate/my-ratings/ratings)
 │   ├── feedback/            # GET/POST feedback
+│   ├── jarvis/config/       # Tom-only gateway URL config for direct OpenClaw WS access
 │   └── auth/is-tom/         # POST verify if user is Tom
 ├── components/
 │   ├── AuthProvider.tsx     # Auth context (user, profile, isTom, turingConnection)
