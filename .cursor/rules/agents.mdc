@@ -26,6 +26,8 @@ alwaysApply: true
 - If `npm run lint` fails with `eslint: not found`, install deps first (`npm install`) (confirmed again 2026-02-22)
 - `npm run lint` can fail on pre-existing issues in `app/boolback/DatasetReviewTab.tsx` (`no-explicit-any`) and `app/cube/page.tsx` (`react/no-unescaped-entities`); treat as baseline unless touched
 - `npm run build` can fail on stale `.next/dev/types/validator.ts` referencing removed routes; delete `.next` and rerun
+- Before Vercel deploys, run `npm run build`; `npm run lint` and `npm test` can both pass while Next.js production TypeScript still fails on stricter app-route compilation
+- `vercel env add <NAME> preview --value ...` can return `git_branch_required` in non-interactive runs; if it does, add preview envs via the Vercel dashboard/API or pass an explicit preview branch
 - Use `ReadFile` (not `Read`) and ensure tool JSON is valid before sending
 - Python `-c` one-liners cannot include inline `def` after semicolons; use lambda or a real script block
 - Shell tool can return `Command failed to spawn: Aborted` on larger heredoc requests; rerun with a shorter script
@@ -188,6 +190,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-12] Jarvis production build failed after the gateway migration because CronPanel, TranscriptViewer, and gatewayAuth still assumed looser runtime types than Next.js production compilation allows → read cron status from `job.state`, normalize raw gateway transcript rows before rendering, and copy `Uint8Array` data into a plain `ArrayBuffer` before WebCrypto digest/import calls
 - [2026-04-12] New Vitest timeout tests produced unhandled rejection warnings under fake timers even though assertions were correct → attach the rejection expectation before advancing the clock in timeout tests
 - [2026-04-09] Frontend shell colors silently rendered as white/default styles because Tailwind v4 theme tokens from `@theme inline` were consumed with classes like `text-[--color-accent]`/`border-[--color-border]` instead of generated utilities like `text-accent`/`border-border`/`bg-bg` → replace shell component color classes with theme utility names
 - [2026-03-23] Experiment Review tab could crash to black screen on legacy/sparse experiment rows (`Cannot read properties of undefined (reading 'trim')`) → coerce unknown filter values to strings before `.trim()` in `app/boolback/ExperimentReviewTab.tsx` (`uniqueValues`, active filter derivation, `hasActiveFilters`)

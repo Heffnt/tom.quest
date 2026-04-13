@@ -101,6 +101,24 @@ export type ChatAbortResult = {
   runIds: string[];
 };
 
+export type CronRunStatus = "ok" | "error" | "skipped";
+
+export type CronJobState = {
+  nextRunAtMs?: number;
+  runningAtMs?: number;
+  lastRunAtMs?: number;
+  lastRunStatus?: CronRunStatus;
+  lastStatus?: CronRunStatus;
+  lastError?: string;
+  lastErrorReason?: string;
+  lastDurationMs?: number;
+  consecutiveErrors?: number;
+  lastDelivered?: boolean;
+  lastDeliveryStatus?: string;
+  lastDeliveryError?: string;
+  lastFailureAlertAtMs?: number;
+};
+
 export type CronJob = {
   id: string;
   agentId?: string;
@@ -117,7 +135,7 @@ export type CronJob = {
   payload?: Record<string, unknown>;
   delivery?: Record<string, unknown>;
   failureAlert?: false | Record<string, unknown>;
-  state: Record<string, unknown>;
+  state: CronJobState;
 };
 
 export type CronListResult = {

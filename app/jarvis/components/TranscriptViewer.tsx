@@ -13,8 +13,8 @@ interface ContentBlock {
 }
 
 interface Message {
-  id: string;
-  timestamp: string;
+  id?: string;
+  timestamp?: string | number;
   role: string;
   content: ContentBlock[];
   model?: string;
@@ -31,6 +31,55 @@ interface Message {
 
 interface Props {
   sessionKey: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeContentBlock(value: unknown): ContentBlock | null {
+  if (!isRecord(value)) return null;
+  return {
+    type: typeof value.type === "string" ? value.type : "text",
+    text: typeof value.text === "string" ? value.text : undefined,
+    name: typeof value.name === "string" ? value.name : undefined,
+    input: value.input,
+    tool_use_id: typeof value.tool_use_id === "string" ? value.tool_use_id : undefined,
+    content: typeof value.content === "string" ? value.content : undefined,
+  };
+}
+
+function normalizeMessage(value: unknown): Message | null {
+  if (!isRecord(value) || typeof value.role !== "string") return null;
+  const content = typeof value.content === "string"
+    ? [{ type: "text", text: value.content }]
+    : Array.isArray(value.content)
+      ? value.content.map(normalizeContentBlock).filter((block): block is ContentBlock => block !== null)
+      : [];
+  const usage = isRecord(value.usage)
+    ? {
+        input: typeof value.usage.input === "number" ? value.usage.input : undefined,
+        output: typeof value.usage.output === "number" ? value.usage.output : undefined,
+        cacheRead: typeof value.usage.cacheRead === "number" ? value.usage.cacheRead : undefined,
+        cost: isRecord(value.usage.cost) && typeof value.usage.cost.total === "number"
+          ? { total: value.usage.cost.total }
+          : undefined,
+      }
+    : undefined;
+  return {
+    id: typeof value.id === "string" ? value.id : undefined,
+    timestamp:
+      typeof value.timestamp === "string" || typeof value.timestamp === "number"
+        ? value.timestamp
+        : undefined,
+    role: value.role,
+    content,
+    model: typeof value.model === "string" ? value.model : undefined,
+    usage,
+    stopReason: typeof value.stopReason === "string" ? value.stopReason : undefined,
+    errorMessage: typeof value.errorMessage === "string" ? value.errorMessage : undefined,
+    type: typeof value.type === "string" ? value.type : undefined,
+  };
 }
 
 export default function TranscriptViewer({ sessionKey }: Props) {
@@ -50,9 +99,9 @@ export default function TranscriptViewer({ sessionKey }: Props) {
       setError(null);
       try {
         const data = await chatHistory(sessionKey, { limit: 100, maxChars: 100_000 });
-        const transcriptMessages = (data.messages || []).filter(
-          (message) => typeof (message as { role?: unknown }).role === "string",
-        ) as Message[];
+        const transcriptMessages = (data.messages || [])
+          .map(normalizeMessage)
+          .filter((message): message is Message => message !== null);
         if (!cancelled) setMessages(transcriptMessages);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load");
@@ -121,7 +170,7 @@ export default function TranscriptViewer({ sessionKey }: Props) {
                 </span>
               )}
               <span className="text-white/15 ml-auto text-[10px]">
-                {new Date(msg.timestamp).toLocaleTimeString()}
+                {msg.timestamp != null ? new Date(msg.timestamp).toLocaleTimeString() : ""}
               </span>
             </div>
             {!isCollapsed && (

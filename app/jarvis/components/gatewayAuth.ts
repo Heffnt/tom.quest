@@ -51,7 +51,7 @@ function getSafeLocalStorage() {
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return Uint8Array.from(bytes).buffer;
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {
