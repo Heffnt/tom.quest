@@ -1,13 +1,14 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
-import { User, SupabaseClient } from "@supabase/supabase-js";
+import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient } from "./supabase";
 
 const TOM_USER_ID = process.env.NEXT_PUBLIC_TOM_USER_ID || "";
 
 interface AuthContextType {
   user: User | null;
+  session: Session | null;
   isTom: boolean;
   loading: boolean;
   signIn: (username: string, password: string) => Promise<{ error: string | null }>;
@@ -33,12 +34,14 @@ export function getUsername(user: User | null): string {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [supabase] = useState<SupabaseClient | null>(() => createBrowserSupabaseClient());
   const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const lastAuth = useRef<{ userId: string | null; token: string | null } | null>(null);
 
   useEffect(() => {
     if (!supabase) { setLoading(false); return; }
     supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
       setUser(session?.user ?? null);
       lastAuth.current = {
         userId: session?.user?.id ?? null,
@@ -52,6 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const prev = lastAuth.current;
       if (prev && prev.userId === nextUserId && prev.token === nextToken) return;
       lastAuth.current = { userId: nextUserId, token: nextToken };
+      setSession(session);
       setUser(session?.user ?? null);
     });
     return () => subscription.unsubscribe();
@@ -92,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isTom = !!user && user.id === TOM_USER_ID;
 
   return (
-    <AuthContext.Provider value={{ user, isTom, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, session, isTom, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { CronSummary } from "./useSSE";
+import { useGateway } from "./useGateway";
 
 function timeAgo(ms: number | null) {
   if (!ms) return "—";
@@ -35,37 +35,42 @@ function statusDot(status: string | null) {
   return "bg-white/20";
 }
 
-interface RunEntry {
-  ts: number;
-  status: string;
-  durationMs?: number;
-  error?: string;
-  summary?: string;
+function formatSchedule(schedule: Record<string, unknown> | undefined) {
+  if (!schedule) return "unknown";
+  if (schedule.kind === "cron") {
+    return `${schedule.expr ?? "?"}${schedule.tz ? ` (${schedule.tz})` : ""}`;
+  }
+  if (schedule.kind === "every") {
+    return `${schedule.everyMs ?? "?"}ms`;
+  }
+  if (schedule.kind === "at") {
+    return String(schedule.at ?? "unknown");
+  }
+  return "unknown";
 }
 
-interface CronDetail {
-  id: string;
-  name: string;
-  enabled: boolean;
-  schedule: { expr: string; tz: string };
-  sessionKey?: string;
-  payload: { message: string; model?: string; timeoutSeconds?: number };
-  delivery: { mode: string; channel?: string; to?: string };
-}
-
-interface Props {
-  cron: CronSummary[];
-  bridgeFetch: (path: string, init?: RequestInit) => Promise<Response>;
-  canControl: boolean;
-}
-
-export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
+export default function CronPanel() {
+  const { connected, cronList, cronRuns, cronUpdate, subscribe } = useGateway();
+  const [jobs, setJobs] = useState<Awaited<ReturnType<typeof cronList>>["jobs"]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
-  const [runs, setRuns] = useState<RunEntry[]>([]);
-  const [detail, setDetail] = useState<CronDetail | null>(null);
+  const [runs, setRuns] = useState<Awaited<ReturnType<typeof cronRuns>>["entries"]>([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+
+  const loadJobs = useCallback(async () => {
+    if (!connected) return;
+    setLoadingJobs(true);
+    try {
+      const result = await cronList({ includeDisabled: true, limit: 100 });
+      setJobs(result.jobs);
+    } catch {
+      setJobs([]);
+    } finally {
+      setLoadingJobs(false);
+    }
+  }, [connected, cronList]);
 
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => (prev === id ? null : id));
@@ -73,37 +78,40 @@ export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
   }, []);
 
   useEffect(() => {
+    if (!connected) return;
+    void loadJobs();
+    const unsubscribe = subscribe("cron", () => {
+      void loadJobs();
+    });
+    return unsubscribe;
+  }, [connected, loadJobs, subscribe]);
+
+  useEffect(() => {
     if (!expanded) return;
     let cancelled = false;
-    (async () => {
+    void (async () => {
       setLoadingDetail(true);
       try {
-        const [runsRes, cronRes] = await Promise.all([
-          bridgeFetch(`/cron/${expanded}/runs?limit=10`),
-          bridgeFetch("/cron"),
-        ]);
-        if (!cancelled) {
-          const runsData = await runsRes.json();
-          setRuns(Array.isArray(runsData) ? runsData : []);
-          const cronData = await cronRes.json();
-          const jobs = Array.isArray(cronData) ? cronData : [];
-          const found = jobs.find((j: CronDetail) => j.id === expanded);
-          setDetail(found || null);
-        }
+        const runsResult = await cronRuns({ id: expanded, limit: 10 });
+        if (!cancelled) setRuns(runsResult.entries);
       } catch {
-        if (!cancelled) { setRuns([]); setDetail(null); }
+        if (!cancelled) setRuns([]);
       } finally {
         if (!cancelled) setLoadingDetail(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [expanded, bridgeFetch]);
+  }, [cronRuns, expanded]);
+
+  const detail = jobs.find((job) => job.id === expanded) ?? null;
 
   const handleToggle = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!canControl) return;
     try {
-      await bridgeFetch(`/cron/${id}/toggle`, { method: "POST" });
+      const job = jobs.find((entry) => entry.id === id);
+      if (!job) return;
+      await cronUpdate(id, { enabled: !job.enabled });
+      await loadJobs();
     } catch { /* best effort */ }
   };
 
@@ -113,12 +121,15 @@ export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
         onClick={() => setCollapsed((v) => !v)}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition-colors"
       >
-        <h3 className="text-sm font-medium">Cron Jobs ({cron.length})</h3>
+        <h3 className="text-sm font-medium">Cron Jobs ({jobs.length})</h3>
         <span className="text-white/30 text-xs">{collapsed ? "▸" : "▾"}</span>
       </button>
       {!collapsed && (
         <div className="border-t border-white/5 divide-y divide-white/5">
-          {cron.map((job) => (
+          {loadingJobs && jobs.length === 0 && (
+            <div className="px-4 py-3 text-xs text-white/30">Loading cron jobs…</div>
+          )}
+          {jobs.map((job) => (
             <div key={job.id}>
               <button
                 onClick={() => toggle(job.id)}
@@ -126,7 +137,7 @@ export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
                   expanded === job.id ? "bg-white/[0.04]" : ""
                 }`}
               >
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(job.lastRunStatus)}`} />
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(job.state.lastRunStatus ?? null)}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm text-white/80 truncate">{job.name}</span>
@@ -137,26 +148,23 @@ export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
                     )}
                   </div>
                   <div className="flex items-center gap-3 text-xs text-white/30 mt-0.5">
-                    <span className="font-mono">{job.schedule}</span>
-                    <span>Next: {timeUntil(job.nextRunAtMs)}</span>
-                    <span>Last: {timeAgo(job.lastRunAtMs)}</span>
-                    {job.consecutiveErrors > 0 && (
-                      <span className="text-red-400">{job.consecutiveErrors} errors</span>
+                    <span className="font-mono">{formatSchedule(job.schedule as Record<string, unknown> | undefined)}</span>
+                    <span>Next: {timeUntil(job.state.nextRunAtMs ?? null)}</span>
+                    <span>Last: {timeAgo(job.state.lastRunAtMs ?? null)}</span>
+                    {typeof job.state.consecutiveErrors === "number" && job.state.consecutiveErrors > 0 && (
+                      <span className="text-red-400">{job.state.consecutiveErrors} errors</span>
                     )}
                   </div>
                 </div>
                 <button
                   onClick={(e) => handleToggle(job.id, e)}
-                  disabled={!canControl}
                   className={`text-[10px] px-2 py-1 rounded border transition-colors ${
-                    !canControl
-                      ? "border-white/10 text-white/25 cursor-not-allowed"
-                      : job.enabled
+                    job.enabled
                       ? "border-green-400/30 text-green-400/60 hover:bg-green-400/10"
                       : "border-white/10 text-white/30 hover:bg-white/5"
                   }`}
                 >
-                  {canControl ? (job.enabled ? "On" : "Off") : "View Only"}
+                  {job.enabled ? "On" : "Off"}
                 </button>
               </button>
               {expanded === job.id && (
@@ -168,9 +176,13 @@ export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
                       {detail && (
                         <div className="px-4 py-3 space-y-2">
                           <div className="flex items-center gap-4 text-xs text-white/40 flex-wrap">
-                            {detail.payload?.model && <span>Model: <span className="text-white/60">{detail.payload.model}</span></span>}
-                            {detail.payload?.timeoutSeconds && <span>Timeout: <span className="text-white/60">{detail.payload.timeoutSeconds}s</span></span>}
-                            <span>Delivery: <span className="text-white/60">{detail.delivery?.mode} → {detail.delivery?.channel}{detail.delivery?.to ? ` (${detail.delivery.to})` : ""}</span></span>
+                            {detail.payload && "model" in detail.payload && (
+                              <span>Model: <span className="text-white/60">{String(detail.payload.model)}</span></span>
+                            )}
+                            {detail.payload && "timeoutSeconds" in detail.payload && (
+                              <span>Timeout: <span className="text-white/60">{String(detail.payload.timeoutSeconds)}s</span></span>
+                            )}
+                            <span>Delivery: <span className="text-white/60">{String((detail.delivery as { mode?: string } | undefined)?.mode ?? "none")}</span></span>
                             {detail.sessionKey && <span>Session: <span className="text-white/60 font-mono">{detail.sessionKey.replace("agent:main:", "")}</span></span>}
                           </div>
                           <div>
@@ -183,7 +195,7 @@ export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
                             </button>
                             {promptExpanded && (
                               <pre className="mt-1 text-xs text-white/50 whitespace-pre-wrap font-mono bg-black/30 rounded p-2">
-                                {detail.payload?.message}
+                                {detail.payload && "message" in detail.payload ? String(detail.payload.message ?? "") : ""}
                               </pre>
                             )}
                           </div>
@@ -197,7 +209,7 @@ export default function CronPanel({ cron, bridgeFetch, canControl }: Props) {
                               <div key={i} className="flex items-center gap-2 text-xs">
                                 <span className={`w-1.5 h-1.5 rounded-full ${run.status === "ok" ? "bg-green-400" : "bg-red-400"}`} />
                                 <span className="text-white/40">{new Date(run.ts).toLocaleString()}</span>
-                                {run.durationMs && <span className="text-white/20">{(run.durationMs / 1000).toFixed(0)}s</span>}
+                                {run.durationMs != null && <span className="text-white/20">{(run.durationMs / 1000).toFixed(0)}s</span>}
                                 {run.error && <span className="text-red-400 truncate">{run.error}</span>}
                               </div>
                             ))}

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import type { GatewayState, ChannelsState } from "./useSSE";
+import { useEffect, useMemo, useState } from "react";
+import { useGateway } from "./useGateway";
 
 function formatDuration(ms: number | null) {
   if (ms === null) return "—";
@@ -14,30 +14,45 @@ function formatDuration(ms: number | null) {
   return `${m}m`;
 }
 
-interface Props {
-  gateway: GatewayState;
-  channels: ChannelsState;
-  connected: boolean;
-  canControl: boolean;
-  onRestart: () => void;
-}
+type HealthSnapshot = {
+  ok?: boolean;
+  durationMs?: number;
+  defaultAgentId?: string;
+  channelOrder?: string[];
+  channelLabels?: Record<string, string>;
+  channels?: Record<string, { linked?: boolean; configured?: boolean }>;
+  sessions?: { count?: number };
+};
 
-export default function StatusBar({ gateway, channels, connected, canControl, onRestart }: Props) {
-  const [confirming, setConfirming] = useState(false);
-  const [restarting, setRestarting] = useState(false);
+export default function StatusBar() {
+  const { connected, error, health, pairingRequired, reconnect, subscribe } = useGateway();
+  const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(null);
 
-  const handleRestart = () => {
-    if (!canControl) return;
-    if (!confirming) {
-      setConfirming(true);
-      setTimeout(() => setConfirming(false), 4000);
-      return;
-    }
-    setConfirming(false);
-    setRestarting(true);
-    onRestart();
-    setTimeout(() => setRestarting(false), 10000);
-  };
+  useEffect(() => {
+    if (!connected) return;
+    let cancelled = false;
+    void health().then((nextSnapshot) => {
+      if (!cancelled) {
+        setSnapshot(nextSnapshot as HealthSnapshot);
+      }
+    }).catch(() => {});
+    const unsubscribe = subscribe("health", (payload) => {
+      if (!cancelled) {
+        setSnapshot(payload as HealthSnapshot);
+      }
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [connected, health, subscribe]);
+
+  const failingChannels = useMemo(() => {
+    if (!snapshot?.channels) return [];
+    return Object.entries(snapshot.channels)
+      .filter(([, channel]) => channel.configured === false || channel.linked === false)
+      .map(([channelId]) => snapshot.channelLabels?.[channelId] ?? channelId);
+  }, [snapshot]);
 
   return (
     <div className="flex items-center justify-between px-4 py-3 border border-white/10 rounded-lg bg-white/[0.02] flex-wrap gap-y-2">
@@ -45,49 +60,50 @@ export default function StatusBar({ gateway, channels, connected, canControl, on
         <div className="flex items-center gap-2">
           <span
             className={`w-2.5 h-2.5 rounded-full ${
-              gateway.ok ? "bg-green-400 animate-pulse" : "bg-red-400"
+              connected && snapshot?.ok !== false ? "bg-green-400 animate-pulse" : pairingRequired ? "bg-yellow-400" : "bg-red-400"
             }`}
           />
           <span className="text-sm font-medium">
-            Gateway {gateway.ok ? "Online" : "Offline"}
+            Gateway {pairingRequired ? "Pairing Required" : connected ? "Online" : "Offline"}
           </span>
         </div>
         <span className="text-xs text-white/40">
-          {formatDuration(gateway.uptimeMs)}
+          probe {formatDuration(snapshot?.durationMs ?? null)}
         </span>
         <div className="flex items-center gap-2">
           <span
             className={`w-2 h-2 rounded-full ${
-              channels.ready ? "bg-green-400" : "bg-yellow-400"
+              failingChannels.length === 0 ? "bg-green-400" : "bg-yellow-400"
             }`}
           />
           <span className="text-xs text-white/50">
-            Channels {channels.ready ? "Ready" : "Degraded"}
+            Channels {failingChannels.length === 0 ? "Ready" : "Degraded"}
           </span>
         </div>
-        {channels.failing.length > 0 && (
-          <span className="text-xs text-red-400">
-            {channels.failing.join(", ")} failing
+        {typeof snapshot?.sessions?.count === "number" && (
+          <span className="text-xs text-white/40">
+            Sessions {snapshot.sessions.count}
           </span>
         )}
-        {!connected && (
-          <span className="text-xs text-red-400">SSE disconnected</span>
+        {snapshot?.defaultAgentId && (
+          <span className="text-xs text-white/40 font-mono">
+            Agent {snapshot.defaultAgentId}
+          </span>
+        )}
+        {failingChannels.length > 0 && (
+          <span className="text-xs text-red-400">
+            {failingChannels.join(", ")} failing
+          </span>
+        )}
+        {error && (
+          <span className="text-xs text-red-400">{error}</span>
         )}
       </div>
       <button
-        onClick={handleRestart}
-        disabled={!canControl || restarting}
-        className={`text-xs px-3 py-1.5 rounded border transition-colors ${
-          !canControl
-            ? "border-white/10 text-white/25 cursor-not-allowed"
-            : confirming
-            ? "border-red-400 text-red-400 hover:bg-red-400/10"
-            : restarting
-            ? "border-white/10 text-white/30 cursor-not-allowed"
-            : "border-white/20 text-white/60 hover:text-white hover:border-white/40"
-        }`}
+        onClick={reconnect}
+        className="text-xs px-3 py-1.5 rounded border transition-colors border-white/20 text-white/60 hover:text-white hover:border-white/40"
       >
-        {!canControl ? "View Only" : restarting ? "Restarting…" : confirming ? "Confirm Restart" : "Restart Gateway"}
+        Retry Connect
       </button>
     </div>
   );

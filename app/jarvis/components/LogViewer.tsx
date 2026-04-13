@@ -1,44 +1,34 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useGateway } from "./useGateway";
 
-interface Props {
-  bridgeFetch: (path: string) => Promise<Response>;
-}
-
-export default function LogViewer({ bridgeFetch }: Props) {
-  const [logs, setLogs] = useState("");
+export default function LogViewer() {
+  const { connected, logsTail } = useGateway();
+  const [logs, setLogs] = useState<string[]>([]);
   const [logFile, setLogFile] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(true);
   const [lines, setLines] = useState(200);
-  const endRef = useRef<HTMLDivElement>(null);
 
-  const fetchLogs = async (numLines: number) => {
+  const fetchLogs = useCallback(async (numLines: number) => {
+    if (!connected) return;
     setLoading(true);
     try {
-      const res = await bridgeFetch(`/logs?lines=${numLines}`);
-      if (res.ok) {
-        const data = await res.json();
-        setLogs(data.content || "");
-        setLogFile(data.file || null);
-        setLines(numLines);
-      }
+      const data = await logsTail({ limit: numLines });
+      setLogs(data.lines || []);
+      setLogFile(data.file || null);
     } catch { /* ignore */ }
     setLoading(false);
-  };
+  }, [connected, logsTail]);
 
   useEffect(() => {
-    if (collapsed) return;
-    fetchLogs(lines);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collapsed]);
-
-  useEffect(() => {
-    if (!collapsed && logs) {
-      endRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [logs, collapsed]);
+    if (collapsed || !connected) return;
+    const timer = window.setTimeout(() => {
+      void fetchLogs(lines);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [collapsed, connected, fetchLogs, lines]);
 
   return (
     <div className="border border-white/10 rounded-lg bg-white/[0.02] overflow-hidden">
@@ -64,7 +54,7 @@ export default function LogViewer({ bridgeFetch }: Props) {
                 {loading ? "Loading…" : "Refresh"}
               </button>
               <button
-                onClick={() => fetchLogs(lines + 500)}
+                onClick={() => setLines((current) => current + 500)}
                 disabled={loading}
                 className="text-[10px] px-2 py-1 rounded border border-white/10 text-white/40 hover:text-white/70 transition-colors"
               >
@@ -73,8 +63,7 @@ export default function LogViewer({ bridgeFetch }: Props) {
             </div>
           </div>
           <pre className="px-4 py-3 text-[11px] text-white/50 font-mono whitespace-pre-wrap break-all max-h-96 overflow-y-auto leading-relaxed">
-            {logs || (loading ? "Loading logs…" : "No logs found")}
-            <div ref={endRef} />
+            {logs.length > 0 ? logs.join("\n") : loading ? "Loading logs…" : "No logs found"}
           </pre>
         </div>
       )}
