@@ -35,6 +35,7 @@ alwaysApply: true
 - Shell tool can return `Command failed to spawn: Aborted` on larger heredoc requests; rerun with a shorter script
 - `ReadLints` can timeout even with scoped paths; rerun once, then validate edited files with `npm run lint` if needed
 - Some Linux/Turing shells do not have `rg`; use Cursor `rg` tool for code search and `awk`/`python` for shell-side process filtering
+- Turing shell process inspection can fail with `rg: command not found`; use `ps -ef | awk ...` instead of shell `rg`
 - `openclaw devices pending` is not a valid CLI subcommand in current OpenClaw; use `openclaw devices list`
 - `vitest run` exits with code 1 when no tests exist; for initial test setup either add the first test before running or use `--passWithNoTests` intentionally
 - Red-phase Vitest imports fail during Vite import analysis when the target module file does not exist yet; create the file stub first if you need the suite to execute individual tests instead of failing at module resolution
@@ -160,6 +161,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Dir browse: always sends path (default `~`), surfaces upstream error
 - Turing setup: clone repo to `~/tom.quest`, use `tom-quest-api/` subdir
 - Allocate panel: GPU types from non-academic partitions with `gpu` node names; blank count allocates all free (defaults to 1 if none free)
+- `/gpu-types` returns `{ types: [{ type, count, nodes }] }` from the Turing API; the allocation dropdown depends on that object shape for labels, values, and free-count text
 - GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
 - Active Jobs: cancel single + cancel-all confirm modals
 
@@ -192,6 +194,9 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-13] Turing allocate dropdown rendered as `-`, `(free)`, etc. and selecting a GPU left Allocate inert because `/gpu-types` returned a bare string list while the frontend expected `{type,count,nodes}` objects → return the full free-GPU summary objects from `tom-quest-api/gpu_report.py` and `/gpu-types` in `tom-quest-api/main.py`
+- [2026-04-13] Leaving the Turing allocate count blank could make Allocate appear dead because the frontend sent `count: 0` for the documented "all free" behavior while the backend rejected all counts `< 1` → resolve `count: 0` server-side to "all free for that GPU type" (or `1` if none are currently free) before validation and allocation
+- [2026-04-13] Turing backend fixes could appear not to take effect because an orphaned older `python main.py` + `cloudflared` pair was still heartbeating the same `~/.tom-quest-key` and overwriting `turing_connections.tunnel_url` with a stale tunnel → if live behavior disagrees with the current Turing repo, check for duplicate `python main.py` processes and keep only the intended one running before re-registering the tunnel
 - [2026-04-13] Turing dashboard could show `Turing backend not connected` and treat the real `tom` account as non-Tom because server-side Turing auth/lookup read `NEXT_PUBLIC_TOM_USER_ID` while the server/client Tom envs had drifted apart → server-only Turing checks must use `TOM_USER_ID`, client-only Tom UI checks use `NEXT_PUBLIC_TOM_USER_ID`, and both env vars must always be updated together to the same real Tom auth user ID
 - [2026-04-13] Remote tom.quest `/jarvis` sessions showed `Gateway Offline` and never created a pending OpenClaw device because the authenticated config route only returned the gateway URL, so first-time browser connects hit a token-protected gateway without shared auth → return optional `JARVIS_GATEWAY_TOKEN` from `app/api/jarvis/config/route.ts` and pass it into `GatewayProvider` so the browser can reach the real `pairing required` flow and store a device token after approval
 - [2026-04-12] Debug drawer launch dots disappeared on tom.Quest because `AuthProvider` still called the removed `/api/auth/is-tom` route and forced `isTom=false` on failure → derive `isTom` client-side from `NEXT_PUBLIC_TOM_USER_ID` in `app/components/AuthProvider.tsx`

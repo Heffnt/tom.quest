@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from gpu_report import format_gpu_report_v2, get_free_gpu_types
+from gpu_report import format_gpu_report_v2, get_free_gpu_type_info
 from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
 from tmux import setup_allocation_session, cleanup_session, capture_output, session_exists
 from job_screens import get_screen_name, remove_screen_mapping
@@ -173,6 +173,14 @@ class JobResponse(BaseModel):
     start_time: str
     end_time: str
 
+def resolve_allocation_count(request: AllocationRequest) -> int:
+    if request.count > 0:
+        return request.count
+    for item in get_free_gpu_type_info():
+        if item["type"] == request.gpu_type:
+            return item["count"] or 1
+    return 1
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -186,7 +194,7 @@ async def gpu_report(auth: bool = Depends(verify_api_key)):
 
 @app.get("/gpu-types")
 async def gpu_types(auth: bool = Depends(verify_api_key)):
-    return {"types": get_free_gpu_types()}
+    return {"types": get_free_gpu_type_info()}
 
 @app.get("/dirs")
 async def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)):
@@ -207,14 +215,15 @@ async def get_file(path: str, auth: bool = Depends(verify_api_key)):
 
 @app.post("/allocate", response_model=AllocationResponse)
 async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)):
-    if request.count < 1:
-        raise HTTPException(status_code=400, detail="Count must be at least 1")
-    if request.count > MAX_GPU_ALLOCATIONS:
+    if not request.gpu_type:
+        raise HTTPException(status_code=400, detail="GPU type is required")
+    requested_count = resolve_allocation_count(request)
+    if requested_count > MAX_GPU_ALLOCATIONS:
         raise HTTPException(status_code=400, detail=f"Max {MAX_GPU_ALLOCATIONS} GPUs allowed")
     if request.time_mins < 1:
         raise HTTPException(status_code=400, detail="Time must be at least 1 minute")
     current_jobs = get_job_count()
-    if current_jobs + request.count > MAX_GPU_ALLOCATIONS:
+    if current_jobs + requested_count > MAX_GPU_ALLOCATIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Would exceed max {MAX_GPU_ALLOCATIONS} GPUs. Currently have {current_jobs} allocations."
@@ -225,7 +234,7 @@ async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_k
     commands = list(request.commands)
     if request.project_dir:
         commands.insert(0, f"cd {request.project_dir}")
-    for i in range(request.count):
+    for i in range(requested_count):
         try:
             job_id, error = allocate_gpu(request.gpu_type, request.time_mins, request.memory_mb)
             if job_id:

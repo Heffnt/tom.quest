@@ -149,7 +149,7 @@ def format_gpu_report_v2() -> dict:
         "summary": summary
     }
 
-def get_free_gpu_types() -> list[str]:
+def get_free_gpu_type_info() -> list[dict]:
     nodes = parse_gpu_nodes()
     summary = compute_summary(nodes, gpu_filter=True)
-    return [item["type"] for item in summary["free"]]
+    return summary["free"]
