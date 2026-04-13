@@ -34,6 +34,7 @@ alwaysApply: true
 - `npm run lint` currently fails on baseline React hook issues in `app/jarvis/components/ContextViewer.tsx`, `app/jarvis/components/TokenUsage.tsx`, and `app/jarvis/components/useSSE.ts`; treat those as baseline unless touched
 - `vitest run` exits with code 1 when no tests exist; for initial test setup either add the first test before running or use `--passWithNoTests` intentionally
 - Red-phase Vitest imports fail during Vite import analysis when the target module file does not exist yet; create the file stub first if you need the suite to execute individual tests instead of failing at module resolution
+- With Vitest fake timers, attach the rejection expectation before advancing the clock for timeout tests; otherwise Vitest can report an unhandled rejection even when the test logic is correct
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB) | Vitest + jsdom
@@ -53,6 +54,7 @@ app/
 ├── jarvis/                    # Jarvis dashboard (currently moving from custom bridge to direct OpenClaw Gateway WS)
 │   └── components/
 │       └── gatewayAuth.ts     # Browser Ed25519 device identity + device token storage for Gateway WS auth
+│       └── GatewayConnection.ts # Browser Gateway WS transport: challenge handshake, RPC correlation, events, reconnect, debug logging
 ├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
 ├── feedback/page.tsx        # Feedback dashboard (Tom only)
 ├── boolback/page.tsx        # BoolBack dashboard tabs (pipeline/results/validate/review)
@@ -165,6 +167,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-12] New Vitest timeout tests produced unhandled rejection warnings under fake timers even though assertions were correct → attach the rejection expectation before advancing the clock in timeout tests
 - [2026-04-09] Frontend shell colors silently rendered as white/default styles because Tailwind v4 theme tokens from `@theme inline` were consumed with classes like `text-[--color-accent]`/`border-[--color-border]` instead of generated utilities like `text-accent`/`border-border`/`bg-bg` → replace shell component color classes with theme utility names
 - [2026-03-23] Experiment Review tab could crash to black screen on legacy/sparse experiment rows (`Cannot read properties of undefined (reading 'trim')`) → coerce unknown filter values to strings before `.trim()` in `app/boolback/ExperimentReviewTab.tsx` (`uniqueValues`, active filter derivation, `hasActiveFilters`)
 - [2026-03-09] Allocation failed with `salloc: error: no controlling terminal` in API requests → run `salloc` with `--no-shell` in `tom-quest-api/slurm.py` (non-interactive safe)
