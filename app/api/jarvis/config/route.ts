@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient, isTomUser } from "@/app/lib/supabase";
+import { createServerSupabaseClient } from "@/app/lib/supabase";
+import { isTom } from "@/app/lib/turing";
 
 async function getUserId(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
   if (!bridgeUrl) {
     return NextResponse.json({ error: "Bridge not configured" }, { status: 503 });
   }
-  const canControl = isTomUser(userId || undefined);
+  const canControl = isTom(userId || undefined);
   return NextResponse.json({
     bridgeUrl,
     token: canControl ? token || "" : "",

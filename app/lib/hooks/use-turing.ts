@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import useSWR from "swr";
-import { useAuth } from "../../components/AuthProvider";
+import { useAuth } from "../auth";
 
 interface UseTuringOptions {
   refreshInterval?: number;

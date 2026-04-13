@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useAuth } from "@/app/components/AuthProvider";
+import { useAuth } from "@/app/lib/auth";
+import { createBrowserSupabaseClient } from "@/app/lib/supabase";
 
 interface BridgeConfig {
   bridgeUrl: string;
@@ -10,7 +11,7 @@ interface BridgeConfig {
 }
 
 export function useBridgeConfig() {
-  const { session, loading: authLoading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [config, setConfig] = useState<BridgeConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -22,8 +23,12 @@ export function useBridgeConfig() {
     (async () => {
       try {
         const headers: Record<string, string> = {};
-        if (session?.access_token) {
-          headers.Authorization = `Bearer ${session.access_token}`;
+        const sb = createBrowserSupabaseClient();
+        if (sb && user) {
+          const { data: { session } } = await sb.auth.getSession();
+          if (session?.access_token) {
+            headers.Authorization = `Bearer ${session.access_token}`;
+          }
         }
         const res = await fetch("/api/jarvis/config", {
           headers,
@@ -45,7 +50,7 @@ export function useBridgeConfig() {
         setLoading(false);
       }
     })();
-  }, [session, authLoading]);
+  }, [user, authLoading]);
 
   const bridgeFetch = useCallback(
     async (path: string, init?: RequestInit) => {

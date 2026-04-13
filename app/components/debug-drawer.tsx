@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useAuth } from "./AuthProvider";
+import { useAuth } from "../lib/auth";
 import { DebugLogEntry, DebugLogType } from "../lib/debug";
 
 type Edge = "bottom" | "left" | "right";

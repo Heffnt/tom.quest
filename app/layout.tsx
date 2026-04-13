@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Syne, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
-import { AuthProvider } from "./components/AuthProvider";
+import { AuthProvider } from "./lib/auth";
 import Navigation from "./components/navigation";
 import DebugDrawer from "./components/debug-drawer";
 

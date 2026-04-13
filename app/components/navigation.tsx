@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useAuth } from "./AuthProvider";
+import { useAuth, getUsername } from "../lib/auth";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
 
@@ -16,18 +16,13 @@ const NAV_LINKS = [
 
 export default function Navigation() {
   const pathname = usePathname();
-  const { isTom, user, profile } = useAuth();
+  const { isTom, user } = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const mobileRef = useRef<HTMLDivElement>(null);
 
-  const displayName =
-    profile?.username ||
-    (typeof user?.user_metadata === "object"
-      ? (user.user_metadata as { username?: string }).username
-      : null) ||
-    "User";
+  const displayName = getUsername(user);
 
   // Trap focus in mobile overlay
   const handleMobileKeyDown = useCallback((e: KeyboardEvent) => {

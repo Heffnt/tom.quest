@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAuth } from "./AuthProvider";
+import { useAuth, getUsername } from "../lib/auth";
 import { createBrowserSupabaseClient } from "../lib/supabase";
 
 interface LeaderboardEntry {
@@ -28,7 +28,7 @@ const MEDAL_COLORS = [
 ];
 
 export default function Leaderboard({ pendingScore, onRequestLogin }: LeaderboardProps) {
-  const { user, profile } = useAuth();
+  const { user } = useAuth();
   const [scores, setScores] = useState<LeaderboardEntry[]>([]);
   const [open, setOpen] = useState(false);
   const [savedScore, setSavedScore] = useState<number | null>(null);
@@ -49,14 +49,9 @@ export default function Leaderboard({ pendingScore, onRequestLogin }: Leaderboar
     const sb = createBrowserSupabaseClient();
     if (!sb || !user) return;
     setSaving(true);
-    const uname = profile?.username
-      || (typeof user.user_metadata === "object"
-        ? (user.user_metadata as { username?: string }).username
-        : null)
-      || "Anonymous";
     const { error } = await sb.from("symbol_scores").insert({
       user_id: user.id,
-      username: uname,
+      username: getUsername(user),
       time_ms: ms,
     });
     setSaving(false);
@@ -64,7 +59,7 @@ export default function Leaderboard({ pendingScore, onRequestLogin }: Leaderboar
       setSavedScore(ms);
       void fetchScores();
     }
-  }, [user, profile, fetchScores]);
+  }, [user, fetchScores]);
 
   const saved = pendingScore !== null && savedScore === pendingScore;
 

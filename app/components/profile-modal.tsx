@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useAuth } from "./AuthProvider";
+import { useAuth } from "../lib/auth";
 
 interface ProfileModalProps {
   isOpen: boolean;

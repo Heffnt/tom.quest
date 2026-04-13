@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuth } from "@/app/components/AuthProvider";
+import { useAuth } from "@/app/lib/auth";
 import { useBridgeConfig } from "./components/useBridge";
 import { useSSE } from "./components/useSSE";
 import StatusBar from "./components/StatusBar";

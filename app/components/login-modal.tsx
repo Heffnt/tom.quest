@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAuth } from "./AuthProvider";
+import { useAuth } from "../lib/auth";
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -10,10 +10,6 @@ interface LoginModalProps {
 
 function normalizeUsername(username: string): string {
   return username.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function usernameToEmail(username: string): string {
-  return `${normalizeUsername(username)}@tom.quest`;
 }
 
 export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
@@ -57,10 +53,9 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
     if (!normalized) { setError("Username must contain letters or numbers"); setLoading(false); return; }
     try {
       if (mode === "signin") {
-        const email = usernameToEmail(rawUsername);
-        const { error } = await signIn(email, password);
+        const { error } = await signIn(rawUsername, password);
         if (error) {
-          setError(error.message.includes("Supabase not configured")
+          setError(error.includes("Supabase not configured")
             ? "Sign in is not available yet"
             : "Invalid username or password");
         } else {
@@ -69,12 +64,11 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
       } else {
         const { error } = await signUp(rawUsername, password);
         if (error) {
-          setError(error.message.includes("already registered")
+          setError(error.includes("already registered")
             ? "Username already taken"
-            : error.message);
+            : error);
         } else {
-          const email = usernameToEmail(rawUsername);
-          const { error: signInError } = await signIn(email, password);
+          const { error: signInError } = await signIn(rawUsername, password);
           if (signInError) {
             setError("Account created! Please sign in.");
           } else {
