@@ -31,7 +31,6 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
   const reconnectsRef = useRef(0);
   const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
 
@@ -52,11 +51,30 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     termRef.current = term;
-    fitRef.current = fit;
+    const fitTerminal = () => {
+      fit.fit();
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      }
+    };
     if (containerRef.current) {
       term.open(containerRef.current);
-      fit.fit();
+      requestAnimationFrame(() => {
+        if (!disposed) fitTerminal();
+      });
     }
+    if (typeof document !== "undefined" && "fonts" in document) {
+      void document.fonts.ready.then(() => {
+        if (!disposed) fitTerminal();
+      });
+    }
+    const resizeObserver = containerRef.current
+      ? new ResizeObserver(() => {
+          if (!disposed) fitTerminal();
+        })
+      : null;
+    if (resizeObserver && containerRef.current) resizeObserver.observe(containerRef.current);
 
     const connect = async () => {
       if (disposed) return;
@@ -76,8 +94,7 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
       ws.onopen = () => {
         setStatus("open");
         reconnectsRef.current = 0;
-        const { cols, rows } = term;
-        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+        fitTerminal();
       };
       ws.onmessage = (e) => {
         if (typeof e.data === "string") term.write(e.data);
@@ -101,20 +118,11 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
       if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data);
     });
 
-    const onResize = () => {
-      fit.fit();
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-      }
-    };
-    window.addEventListener("resize", onResize);
-
     connect();
 
     return () => {
       disposed = true;
-      window.removeEventListener("resize", onResize);
+      resizeObserver?.disconnect();
       sub.dispose();
       wsRef.current?.close();
       term.dispose();

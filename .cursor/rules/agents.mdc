@@ -164,6 +164,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - `/gpu-types` returns `{ types: [{ type, count, nodes }] }` from the Turing API; the allocation dropdown depends on that object shape for labels, values, and free-count text
 - GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
 - Active Jobs: `RUNNING (...)` rows count as running state for badges/terminal actions; running badges use amber styling even when the node name suffix is present
+- Turing terminal modal attaches a real tmux client over WebSocket; tmux is currently using `window-size smallest`, so if multiple clients attach to the same session the smallest attached client can shrink the shared session geometry for everyone
 
 ## BoolBack Dashboard
 - Route: `/boolback` (projects route removed)
@@ -194,6 +195,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-13] Turing terminal modal could render as a tiny `60x18` client with the tmux status line halfway up the dialog because xterm was only fitted once immediately on mount, before the modal/font/container sizing had settled → add `ResizeObserver`-driven refits plus a post-open/font-ready fit in `app/turing/components/terminal-modal.tsx` so the PTY gets the real modal size
 - [2026-04-13] Tom's Turing terminal modal could immediately show `Failed to fetch tunnel URL` even while `/api/turing/tunnel-url` worked in curl because `app/turing/components/terminal-modal.tsx` called that Tom-only endpoint without forwarding `x-user-id` → read `user` from `useAuth()`, pass `user.id` into the fetch, and rerun the connection effect when `user.id` changes
 - [2026-04-13] Active Jobs rows like `RUNNING (gpu-5-12)` were treated as unknown gray statuses because the UI only matched the exact string `RUNNING` → treat prefix-matched `RUNNING (...)` values as running so badges and terminal/view actions stay active, and style that running state amber
 - [2026-04-13] Turing allocate dropdown rendered as `-`, `(free)`, etc. and selecting a GPU left Allocate inert because `/gpu-types` returned a bare string list while the frontend expected `{type,count,nodes}` objects → return the full free-GPU summary objects from `tom-quest-api/gpu_report.py` and `/gpu-types` in `tom-quest-api/main.py`
