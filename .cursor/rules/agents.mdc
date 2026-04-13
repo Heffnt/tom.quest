@@ -31,6 +31,7 @@ alwaysApply: true
 - `vercel env add <NAME> production --value ...` can succeed and then hang without exiting; if the success message is already printed, kill the stuck process and continue
 - Use `ReadFile` (not `Read`) and ensure tool JSON is valid before sending
 - Python `-c` one-liners cannot include inline `def` after semicolons; use lambda or a real script block
+- Python `-c` one-liners also break easily when you try to smuggle escaped newlines like `\ntry:` through shell quoting; use a real script block or `curl` instead
 - Shell tool can return `Command failed to spawn: Aborted` on larger heredoc requests; rerun with a shorter script
 - `ReadLints` can timeout even with scoped paths; rerun once, then validate edited files with `npm run lint` if needed
 - Some Linux/Turing shells do not have `rg`; use Cursor `rg` tool for code search and `awk`/`python` for shell-side process filtering
@@ -191,6 +192,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-13] Turing dashboard could show `Turing backend not connected` and treat the real `tom` account as non-Tom because server-side Turing auth/lookup read `NEXT_PUBLIC_TOM_USER_ID` while the server/client Tom envs had drifted apart → server-only Turing checks must use `TOM_USER_ID`, client-only Tom UI checks use `NEXT_PUBLIC_TOM_USER_ID`, and both env vars must always be updated together to the same real Tom auth user ID
 - [2026-04-13] Remote tom.quest `/jarvis` sessions showed `Gateway Offline` and never created a pending OpenClaw device because the authenticated config route only returned the gateway URL, so first-time browser connects hit a token-protected gateway without shared auth → return optional `JARVIS_GATEWAY_TOKEN` from `app/api/jarvis/config/route.ts` and pass it into `GatewayProvider` so the browser can reach the real `pairing required` flow and store a device token after approval
 - [2026-04-12] Debug drawer launch dots disappeared on tom.Quest because `AuthProvider` still called the removed `/api/auth/is-tom` route and forced `isTom=false` on failure → derive `isTom` client-side from `NEXT_PUBLIC_TOM_USER_ID` in `app/components/AuthProvider.tsx`
 - [2026-04-12] Jarvis production build failed after the gateway migration because CronPanel, TranscriptViewer, and gatewayAuth still assumed looser runtime types than Next.js production compilation allows → read cron status from `job.state`, normalize raw gateway transcript rows before rendering, and copy `Uint8Array` data into a plain `ArrayBuffer` before WebCrypto digest/import calls

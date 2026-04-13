@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useRef, useState, ReactNode } fro
 import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient } from "./supabase";
 
-const TOM_USER_ID = process.env.NEXT_PUBLIC_TOM_USER_ID || "";
+const PUBLIC_TOM_USER_ID = process.env.NEXT_PUBLIC_TOM_USER_ID || "";
 
 interface AuthContextType {
   user: User | null;
@@ -35,11 +35,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [supabase] = useState<SupabaseClient | null>(() => createBrowserSupabaseClient());
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => supabase !== null);
   const lastAuth = useRef<{ userId: string | null; token: string | null } | null>(null);
 
   useEffect(() => {
-    if (!supabase) { setLoading(false); return; }
+    if (!supabase) return;
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
@@ -93,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const isTom = !!user && user.id === TOM_USER_ID;
+  const isTom = !!user && user.id === PUBLIC_TOM_USER_ID;
 
   return (
     <AuthContext.Provider value={{ user, session, isTom, loading, signIn, signUp, signOut }}>

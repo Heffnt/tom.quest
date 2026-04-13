@@ -1,9 +1,5 @@
 # Module 5: Jarvis Dashboard
 
-## Overview
-
-The Jarvis dashboard is already well-structured. This module is a light cleanup to wire it to the new auth and align with refactored patterns.
-
 ## Changes
 
 ### 1. Use `useAuth` from Module 2
@@ -17,7 +13,7 @@ Apply the same import change to any sub-components in `app/jarvis/components/` t
 
 ### 2. Simplify `/api/jarvis/config/route.ts`
 
-- Replace `isTomUser` import from `@/app/lib/supabase` with `isTom` from `@/app/lib/turing` (or inline the check: `userId === process.env.NEXT_PUBLIC_TOM_USER_ID`).
+- Replace `isTomUser` import from `@/app/lib/supabase` with `isTom` from `@/app/lib/turing` (or inline the check: `userId === process.env.TOM_USER_ID` in server code).
 - Remove any Supabase server client usage if the route only needs the Tom check.
 
 ### 3. Move files

@@ -107,9 +107,12 @@ The `is-tom` API route is no longer needed. `isTom` is a client-side check.
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_KEY`
 
-**Change:**
+**Tom env vars:**
 
-- `TOM_USER_ID` becomes `NEXT_PUBLIC_TOM_USER_ID` (same value, but the `NEXT_PUBLIC_` prefix makes it available in client-side code). Update in Vercel environment settings.
+- Keep both `TOM_USER_ID` and `NEXT_PUBLIC_TOM_USER_ID`.
+- `TOM_USER_ID` is the server-only source of truth for Tom-only routes and Turing backend lookup.
+- `NEXT_PUBLIC_TOM_USER_ID` is only for the client-side `isTom` check.
+- These two env vars must always have the same value. Update them together in Vercel environment settings.
 
 ## Supabase Database
 

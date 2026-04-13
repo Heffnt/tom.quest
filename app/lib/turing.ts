@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
-const TOM_USER_ID = process.env.NEXT_PUBLIC_TOM_USER_ID || "";
+const SERVER_TOM_USER_ID = process.env.TOM_USER_ID || "";
 const CACHE_TTL_MS = 60_000;
 
 let cachedUrl: string | null = null;
@@ -21,11 +21,11 @@ async function loadTomConnection(): Promise<{ url: string; key: string }> {
   if (cachedUrl && now - cacheTime < CACHE_TTL_MS) {
     return { url: cachedUrl, key: cachedKey ?? "" };
   }
-  if (!TOM_USER_ID) throw new Error("Turing backend not connected");
+  if (!SERVER_TOM_USER_ID) throw new Error("Turing backend not connected");
   const { data } = await serverClient()
     .from("turing_connections")
     .select("tunnel_url, connection_key")
-    .eq("user_id", TOM_USER_ID)
+    .eq("user_id", SERVER_TOM_USER_ID)
     .single();
   if (!data) throw new Error("Turing backend not connected");
   cachedUrl = data.tunnel_url;
@@ -51,5 +51,5 @@ export async function proxyToTuring(path: string, init?: RequestInit): Promise<R
 }
 
 export function isTom(userId: string | undefined): boolean {
-  return !!userId && userId === TOM_USER_ID;
+  return !!userId && !!SERVER_TOM_USER_ID && userId === SERVER_TOM_USER_ID;
 }
