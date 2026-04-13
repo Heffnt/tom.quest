@@ -55,6 +55,8 @@ app/
 │   └── components/
 │       └── gatewayAuth.ts     # Browser Ed25519 device identity + device token storage for Gateway WS auth
 │       └── GatewayConnection.ts # Browser Gateway WS transport: challenge handshake, RPC correlation, events, reconnect, debug logging
+│       └── gatewayProtocol.ts # Typed OpenClaw WS method contracts with runtime drift logging
+│       └── __tests__/         # Vitest coverage for gatewayAuth, GatewayConnection, and gatewayProtocol
 ├── turing/page.tsx          # GPU dashboard (multi-user, read-only for guests)
 ├── feedback/page.tsx        # Feedback dashboard (Tom only)
 ├── boolback/page.tsx        # BoolBack dashboard tabs (pipeline/results/validate/review)
