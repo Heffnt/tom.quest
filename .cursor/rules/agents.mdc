@@ -165,6 +165,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
 - Active Jobs: `RUNNING (...)` rows count as running state for badges/terminal actions; running badges use amber styling even when the node name suffix is present
 - Turing terminal modal attaches a real tmux client over WebSocket; tmux is currently using `window-size smallest`, so if multiple clients attach to the same session the smallest attached client can shrink the shared session geometry for everyone
+- Turing terminal modal uses the Windows VS Code/Cursor-style terminal font stack `Consolas, "Courier New", monospace` instead of the site mono font
 
 ## BoolBack Dashboard
 - Route: `/boolback` (projects route removed)

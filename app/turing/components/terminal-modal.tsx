@@ -15,6 +15,7 @@ interface TerminalModalProps {
 }
 
 const MAX_RECONNECTS = 3;
+const VSCODE_TERMINAL_FONT = 'Consolas, "Courier New", monospace';
 
 async function fetchTunnelUrl(userId: string | undefined): Promise<{ url: string; key: string } | null> {
   const headers: Record<string, string> = {};
@@ -42,7 +43,7 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     let disposed = false;
 
     const term = new Terminal({
-      fontFamily: "var(--font-ibm-plex-mono), monospace",
+      fontFamily: VSCODE_TERMINAL_FONT,
       fontSize: 13,
       theme: { background: "#000000", foreground: "#d4d4d4" },
       cursorBlink: true,
