@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useGateway } from "./useGateway";
 
 interface ContentBlock {
   type: string;
@@ -30,25 +31,29 @@ interface Message {
 
 interface Props {
   sessionKey: string;
-  bridgeFetch: (path: string) => Promise<Response>;
 }
 
-export default function TranscriptViewer({ sessionKey, bridgeFetch }: Props) {
+export default function TranscriptViewer({ sessionKey }: Props) {
+  const { chatHistory, connected } = useGateway();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   useEffect(() => {
+    if (!connected) {
+      setLoading(true);
+      return;
+    }
     let cancelled = false;
     (async () => {
       setLoading(true);
       setError(null);
       try {
-        const encoded = encodeURIComponent(sessionKey);
-        const res = await bridgeFetch(`/sessions/${encoded}/history?limit=100`);
-        if (!res.ok) throw new Error(`${res.status}`);
-        const data = await res.json();
-        if (!cancelled) setMessages(data.messages || []);
+        const data = await chatHistory(sessionKey, { limit: 100, maxChars: 100_000 });
+        const transcriptMessages = (data.messages || []).filter(
+          (message) => typeof (message as { role?: unknown }).role === "string",
+        ) as Message[];
+        if (!cancelled) setMessages(transcriptMessages);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load");
       } finally {
@@ -56,7 +61,7 @@ export default function TranscriptViewer({ sessionKey, bridgeFetch }: Props) {
       }
     })();
     return () => { cancelled = true; };
-  }, [sessionKey, bridgeFetch]);
+  }, [chatHistory, connected, sessionKey]);
 
   const toggleMessage = useCallback((id: string) => {
     setCollapsed((prev) => {
@@ -67,6 +72,7 @@ export default function TranscriptViewer({ sessionKey, bridgeFetch }: Props) {
     });
   }, []);
 
+  if (!connected) return <div className="px-6 py-3 text-xs text-white/30">Waiting for gateway connection…</div>;
   if (loading) return <div className="px-6 py-3 text-xs text-white/30">Loading transcript…</div>;
   if (error) return <div className="px-6 py-3 text-xs text-red-400">Error: {error}</div>;
 

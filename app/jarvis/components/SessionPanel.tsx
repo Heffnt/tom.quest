@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import type { SessionSummary } from "./useSSE";
+import type { SessionsListResult } from "./gatewayProtocol";
 import TranscriptViewer from "./TranscriptViewer";
 import RunContextViewer from "./RunContextViewer";
 
@@ -32,11 +32,10 @@ function shortKey(key: string) {
 }
 
 interface Props {
-  session: SessionSummary;
-  bridgeFetch: (path: string) => Promise<Response>;
+  session: SessionsListResult["sessions"][number];
 }
 
-export default function SessionPanel({ session, bridgeFetch }: Props) {
+export default function SessionPanel({ session }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
   const toggle = useCallback(() => setExpanded((v) => !v), []);
@@ -90,9 +89,9 @@ export default function SessionPanel({ session, bridgeFetch }: Props) {
             <span className="text-xs text-white/30">
               {session.updatedAt ? timeAgo(session.updatedAt) : "—"}
             </span>
-            {session.compactionCount > 0 && (
+            {(session.compactionCheckpointCount ?? 0) > 0 && (
               <span className="text-[10px] text-white/20">
-                {session.compactionCount} compactions
+                {session.compactionCheckpointCount} compactions
               </span>
             )}
             <span className="text-white/30 text-xs">{expanded ? "▾" : "▸"}</span>
@@ -124,9 +123,9 @@ export default function SessionPanel({ session, bridgeFetch }: Props) {
             </button>
           </div>
           {tab === "transcript" ? (
-            <TranscriptViewer sessionKey={session.key} bridgeFetch={bridgeFetch} />
+            <TranscriptViewer sessionKey={session.key} />
           ) : (
-            <RunContextViewer sessionKey={session.key} bridgeFetch={bridgeFetch} />
+            <RunContextViewer sessionKey={session.key} />
           )}
         </>
       )}

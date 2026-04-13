@@ -63,6 +63,7 @@ export type GatewayConnectionOptions = {
   clientVersion?: string;
   platform?: string;
   mode?: string;
+  onStateChange?: (() => void) | null;
 };
 
 const LOG_SOURCE = "Gateway";
@@ -143,6 +144,7 @@ export class GatewayConnection {
     this.websocketFactory =
       options.websocketFactory ??
       ((url: string) => new WebSocket(url) as unknown as WebSocketLike);
+    this.onStateChange = options.onStateChange ?? null;
   }
 
   connect() {

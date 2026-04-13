@@ -1,61 +1,58 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useGateway } from "./useGateway";
 
-interface DailyTotal {
-  contextTokens: number;
-  outputTokens: number;
-  estimatedCostBlended: number;
-  estimatedCostWorstCase: number;
-}
+type UsageData = {
+  cost: Awaited<ReturnType<ReturnType<typeof useGateway>["usageCost"]>> | null;
+  sessions: Awaited<ReturnType<ReturnType<typeof useGateway>["sessionsUsage"]>> | null;
+};
 
-interface TokenData {
-  dailyTotals: Record<string, DailyTotal>;
-  weeklyTotals: Record<string, {
-    estimatedCostBlended: number;
-    estimatedCostWorstCase: number;
-    startDate: string;
-    endDate: string;
-  }>;
-  lastUpdated: string;
-}
-
-interface Props {
-  bridgeFetch: (path: string) => Promise<Response>;
-}
-
-export default function TokenUsage({ bridgeFetch }: Props) {
-  const [data, setData] = useState<TokenData | null>(null);
+export default function TokenUsage() {
+  const { connected, sessionsUsage, usageCost } = useGateway();
+  const [data, setData] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(true);
 
   useEffect(() => {
-    if (collapsed || data) return;
+    if (collapsed || data || !connected) return;
     let cancelled = false;
-    setLoading(true);
     (async () => {
       try {
-        const res = await bridgeFetch("/token-usage");
-        if (!cancelled && res.ok) setData(await res.json());
+        const [cost, sessions] = await Promise.all([
+          usageCost({ days: 7 }),
+          sessionsUsage({ days: 7, limit: 10, includeContextWeight: true }),
+        ]);
+        if (!cancelled) setData({ cost, sessions });
       } catch { /* ignore */ }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [collapsed, data, bridgeFetch]);
+  }, [collapsed, connected, data, sessionsUsage, usageCost]);
 
-  const today = new Date().toISOString().split("T")[0];
-  const todayData = data?.dailyTotals?.[today];
-  const dailyEntries = data?.dailyTotals
-    ? Object.entries(data.dailyTotals).sort(([a], [b]) => b.localeCompare(a)).slice(0, 7)
-    : [];
-  const weeklyEntries = data?.weeklyTotals
-    ? Object.entries(data.weeklyTotals).sort(([a], [b]) => b.localeCompare(a)).slice(0, 4)
-    : [];
+  const totals = data?.cost?.totals as {
+    totalCost?: number;
+    totalTokens?: number;
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  } | undefined;
+  const dailyEntries = data?.cost?.daily ?? [];
+  const sessionEntries = data?.sessions?.sessions ?? [];
 
   return (
     <div className="border border-white/10 rounded-lg bg-white/[0.02] overflow-hidden">
       <button
-        onClick={() => setCollapsed((v) => !v)}
+        onClick={() => {
+          setCollapsed((current) => {
+            const next = !current;
+            if (current && data == null) {
+              setLoading(true);
+            }
+            return next;
+          });
+        }}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition-colors"
       >
         <h3 className="text-sm font-medium">Token Usage</h3>
@@ -69,47 +66,63 @@ export default function TokenUsage({ bridgeFetch }: Props) {
             <>
               <div className="grid grid-cols-2 gap-3">
                 <div className="border border-white/10 rounded p-3">
-                  <p className="text-[10px] text-white/30 uppercase tracking-wider">Today (blended)</p>
+                  <p className="text-[10px] text-white/30 uppercase tracking-wider">7 Day Cost</p>
                   <p className="text-lg font-mono text-white/80 mt-1">
-                    ${todayData?.estimatedCostBlended?.toFixed(2) ?? "0.00"}
+                    ${(totals?.totalCost ?? 0).toFixed(2)}
                   </p>
                 </div>
                 <div className="border border-white/10 rounded p-3">
-                  <p className="text-[10px] text-white/30 uppercase tracking-wider">Today (worst case)</p>
+                  <p className="text-[10px] text-white/30 uppercase tracking-wider">7 Day Tokens</p>
                   <p className="text-lg font-mono text-white/80 mt-1">
-                    ${todayData?.estimatedCostWorstCase?.toFixed(2) ?? "0.00"}
+                    {(totals?.totalTokens ?? 0).toLocaleString()}
                   </p>
                 </div>
               </div>
-              {weeklyEntries.length > 0 && (
-                <div>
-                  <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Weekly</p>
-                  {weeklyEntries.map(([key, week]) => (
-                    <div key={key} className="flex items-center gap-3 text-xs text-white/50 py-1">
-                      <span className="font-mono w-24">{week.startDate}</span>
-                      <span>${week.estimatedCostBlended.toFixed(2)}</span>
-                      <span className="text-white/20">(worst: ${week.estimatedCostWorstCase.toFixed(2)})</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="grid grid-cols-2 gap-3 text-xs text-white/45">
+                <div>input {Number(totals?.input ?? 0).toLocaleString()}</div>
+                <div>output {Number(totals?.output ?? 0).toLocaleString()}</div>
+                <div>cache read {Number(totals?.cacheRead ?? 0).toLocaleString()}</div>
+                <div>cache write {Number(totals?.cacheWrite ?? 0).toLocaleString()}</div>
+              </div>
               {dailyEntries.length > 0 && (
                 <div>
                   <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Daily Breakdown</p>
-                  {dailyEntries.map(([date, day]) => (
-                    <div key={date} className="flex items-center gap-3 text-xs text-white/50 py-1">
-                      <span className="font-mono w-24">{date}</span>
-                      <span>${day.estimatedCostBlended.toFixed(2)}</span>
+                  {dailyEntries.map((entry, index) => {
+                    const day = entry as { date?: string; totalCost?: number; totalTokens?: number };
+                    return (
+                    <div key={`${day.date ?? "day"}-${index}`} className="flex items-center gap-3 text-xs text-white/50 py-1">
+                      <span className="font-mono w-24">{day.date ?? "unknown"}</span>
+                      <span>${Number(day.totalCost ?? 0).toFixed(2)}</span>
                       <span className="text-white/20">
-                        {day.contextTokens.toLocaleString()} ctx / {day.outputTokens.toLocaleString()} out
+                        {Number(day.totalTokens ?? 0).toLocaleString()} tokens
                       </span>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
-              {data.lastUpdated && (
+              {sessionEntries.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Session Cost Breakdown</p>
+                  {sessionEntries.slice(0, 8).map((entry, index) => {
+                    const sessionEntry = entry as {
+                      key?: string;
+                      label?: string;
+                      usage?: { totalCost?: number; totalTokens?: number } | null;
+                    };
+                    return (
+                      <div key={`${sessionEntry.key ?? "session"}-${index}`} className="flex items-center gap-3 text-xs text-white/50 py-1">
+                        <span className="font-mono truncate max-w-56">{sessionEntry.label || sessionEntry.key}</span>
+                        <span>${Number(sessionEntry.usage?.totalCost ?? 0).toFixed(3)}</span>
+                        <span className="text-white/20">{Number(sessionEntry.usage?.totalTokens ?? 0).toLocaleString()} tokens</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {data.cost?.updatedAt && (
                 <p className="text-[10px] text-white/20">
-                  Last updated: {new Date(data.lastUpdated).toLocaleString()}
+                  Last updated: {new Date(data.cost.updatedAt).toLocaleString()}
                 </p>
               )}
             </>

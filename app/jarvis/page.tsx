@@ -3,7 +3,13 @@
 import { useAuth } from "@/app/components/AuthProvider";
 import { useEffect, useState } from "react";
 import ChatPanel from "./components/ChatPanel";
-import { GatewayProvider, useGateway } from "./components/useGateway";
+import ContextViewer from "./components/ContextViewer";
+import CronPanel from "./components/CronPanel";
+import LogViewer from "./components/LogViewer";
+import SessionsOverview from "./components/SessionsOverview";
+import StatusBar from "./components/StatusBar";
+import TokenUsage from "./components/TokenUsage";
+import { GatewayProvider } from "./components/useGateway";
 
 function useGatewayConfig(enabled: boolean, accessToken: string | null | undefined) {
   const [gatewayUrl, setGatewayUrl] = useState<string | null>(null);
@@ -62,50 +68,6 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
   return { gatewayUrl, error, loading };
 }
 
-function GatewayStatusCard({ gatewayUrl }: { gatewayUrl: string }) {
-  const { connected, pairingRequired, error, reconnect } = useGateway();
-  const statusText = pairingRequired
-    ? "Pairing required"
-    : connected
-      ? "Connected"
-      : error
-        ? "Connection error"
-        : "Connecting";
-  const indicatorClass = pairingRequired
-    ? "bg-yellow-400"
-    : connected
-      ? "bg-green-400 animate-pulse"
-      : "bg-red-400";
-
-  return (
-    <section className="border border-white/10 rounded-lg bg-white/[0.02] px-4 py-3 space-y-3">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className={`w-2.5 h-2.5 rounded-full ${indicatorClass}`} />
-            <span className="text-sm font-medium text-white/85">{statusText}</span>
-          </div>
-          <p className="text-xs text-white/35 mt-1 font-mono break-all">{gatewayUrl}</p>
-        </div>
-        <button
-          onClick={reconnect}
-          className="px-3 py-1.5 rounded border border-white/20 text-xs text-white/70 hover:border-white/40 hover:text-white"
-        >
-          Retry Connect
-        </button>
-      </div>
-      {pairingRequired && (
-        <p className="text-xs text-yellow-300/80">
-          Approve the browser device in OpenClaw, then retry the connection.
-        </p>
-      )}
-      {error && (
-        <p className="text-xs text-red-400">{error}</p>
-      )}
-    </section>
-  );
-}
-
 function Dashboard({ gatewayUrl }: { gatewayUrl: string }) {
   return (
     <div className="min-h-screen px-4 py-20 max-w-4xl mx-auto space-y-4">
@@ -114,9 +76,15 @@ function Dashboard({ gatewayUrl }: { gatewayUrl: string }) {
         <p className="text-xs text-white/35 mt-1">
           Direct browser-to-OpenClaw Gateway control surface for Tom.
         </p>
+        <p className="text-[11px] text-white/20 mt-1 font-mono break-all">{gatewayUrl}</p>
       </div>
-      <GatewayStatusCard gatewayUrl={gatewayUrl} />
+      <StatusBar />
       <ChatPanel />
+      <SessionsOverview />
+      <CronPanel />
+      <ContextViewer />
+      <LogViewer />
+      <TokenUsage />
     </div>
   );
 }

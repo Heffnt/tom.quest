@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  createElement,
   createContext,
   useCallback,
   useContext,
@@ -61,30 +62,27 @@ export function GatewayProvider({
   token?: string;
   password?: string;
 }) {
-  const [connection, setConnection] = useState<GatewayConnection | null>(null);
-  const [stateVersion, setStateVersion] = useState(0);
-
-  useEffect(() => {
-    if (!url) {
-      setConnection(null);
-      return;
-    }
-    const nextConnection = new GatewayConnection({
+  const [, setStateVersion] = useState(0);
+  const handleStateChange = useCallback(() => {
+    setStateVersion((value) => value + 1);
+  }, []);
+  const connection = useMemo(() => {
+    if (!url) return null;
+    return new GatewayConnection({
       url,
       token,
       password,
+      onStateChange: handleStateChange,
     });
-    nextConnection.onStateChange = () => {
-      setStateVersion((value) => value + 1);
-    };
-    setConnection(nextConnection);
-    nextConnection.connect();
+  }, [handleStateChange, password, token, url]);
+
+  useEffect(() => {
+    if (!connection) return;
+    connection.connect();
     return () => {
-      nextConnection.onStateChange = null;
-      nextConnection.disconnect();
-      setConnection((current) => (current === nextConnection ? null : current));
+      connection.disconnect();
     };
-  }, [url, token, password]);
+  }, [connection]);
 
   const reconnect = useCallback(() => {
     connection?.connect();
@@ -125,13 +123,9 @@ export function GatewayProvider({
     logsTail: (...args) => protocol.logsTail(call, ...args),
     usageCost: (...args) => protocol.usageCost(call, ...args),
     sessionsUsage: (...args) => protocol.sessionsUsage(call, ...args),
-  }), [call, connection?.connected, connection?.error, connection?.pairingRequired, reconnect, stateVersion, subscribe]);
+  }), [call, connection?.connected, connection?.error, connection?.pairingRequired, reconnect, subscribe]);
 
-  return (
-    <GatewayContext.Provider value={value}>
-      {children}
-    </GatewayContext.Provider>
-  );
+  return createElement(GatewayContext.Provider, { value }, children);
 }
 
 export function useGateway() {
