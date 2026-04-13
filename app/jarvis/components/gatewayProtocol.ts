@@ -49,6 +49,11 @@ export type SessionsGetResult = {
   messages: Array<Record<string, unknown>>;
 };
 
+export type SessionsMessagesSubscriptionResult = {
+  subscribed: boolean;
+  key: string;
+};
+
 export type ChatHistoryResult = {
   sessionKey: string;
   sessionId?: string;
@@ -289,6 +294,22 @@ export async function sessionsGet(
   });
   return assertShape<SessionsGetResult>("sessions.get", result, [
     ["messages array", (value) => hasArray(value, "messages")],
+  ]);
+}
+
+export async function sessionsMessagesSubscribe(call: CallFn, key: string) {
+  const result = await call("sessions.messages.subscribe", { key });
+  return assertShape<SessionsMessagesSubscriptionResult>("sessions.messages.subscribe", result, [
+    ["subscribed boolean", (value) => hasBoolean(value, "subscribed")],
+    ["key string", (value) => hasString(value, "key")],
+  ]);
+}
+
+export async function sessionsMessagesUnsubscribe(call: CallFn, key: string) {
+  const result = await call("sessions.messages.unsubscribe", { key });
+  return assertShape<SessionsMessagesSubscriptionResult>("sessions.messages.unsubscribe", result, [
+    ["subscribed boolean", (value) => hasBoolean(value, "subscribed")],
+    ["key string", (value) => hasString(value, "key")],
   ]);
 }
 

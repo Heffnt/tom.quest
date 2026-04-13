@@ -28,6 +28,8 @@ type GatewayContextValue = {
   agentsList: BoundMethod<typeof protocol.agentsList>;
   sessionsList: BoundMethod<typeof protocol.sessionsList>;
   sessionsGet: BoundMethod<typeof protocol.sessionsGet>;
+  sessionsMessagesSubscribe: BoundMethod<typeof protocol.sessionsMessagesSubscribe>;
+  sessionsMessagesUnsubscribe: BoundMethod<typeof protocol.sessionsMessagesUnsubscribe>;
   chatHistory: BoundMethod<typeof protocol.chatHistory>;
   chatSend: BoundMethod<typeof protocol.chatSend>;
   chatAbort: BoundMethod<typeof protocol.chatAbort>;
@@ -109,6 +111,8 @@ export function GatewayProvider({
     agentsList: (...args) => protocol.agentsList(call, ...args),
     sessionsList: (...args) => protocol.sessionsList(call, ...args),
     sessionsGet: (...args) => protocol.sessionsGet(call, ...args),
+    sessionsMessagesSubscribe: (...args) => protocol.sessionsMessagesSubscribe(call, ...args),
+    sessionsMessagesUnsubscribe: (...args) => protocol.sessionsMessagesUnsubscribe(call, ...args),
     chatHistory: (...args) => protocol.chatHistory(call, ...args),
     chatSend: (...args) => protocol.chatSend(call, ...args),
     chatAbort: (...args) => protocol.chatAbort(call, ...args),

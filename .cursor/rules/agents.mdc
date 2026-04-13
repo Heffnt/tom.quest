@@ -52,7 +52,9 @@ Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Ve
 ```
 app/
 ├── jarvis/                    # Jarvis dashboard (currently moving from custom bridge to direct OpenClaw Gateway WS)
+│   ├── page.tsx               # Tom-only Jarvis page now bootstraps the GatewayProvider and direct WS chat surface
 │   └── components/
+│       └── ChatPanel.tsx      # Direct Gateway chat UI with session selection, transcript load, send, abort, and live session.message updates
 │       └── gatewayAuth.ts     # Browser Ed25519 device identity + device token storage for Gateway WS auth
 │       └── GatewayConnection.ts # Browser Gateway WS transport: challenge handshake, RPC correlation, events, reconnect, debug logging
 │       └── gatewayProtocol.ts # Typed OpenClaw WS method contracts with runtime drift logging

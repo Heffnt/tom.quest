@@ -93,6 +93,20 @@ describe("gatewayProtocol", () => {
     expect(result.messages).toHaveLength(1);
   });
 
+  it("calls sessions.messages.subscribe and unsubscribe with the exact key payload", async () => {
+    const protocol = await import("@/app/jarvis/components/gatewayProtocol");
+    const subscribeCall = createCallStub({ subscribed: true, key: "agent:main:main" });
+    const unsubscribeCall = createCallStub({ subscribed: false, key: "agent:main:main" });
+
+    const subscribeResult = await protocol.sessionsMessagesSubscribe(subscribeCall, "agent:main:main");
+    const unsubscribeResult = await protocol.sessionsMessagesUnsubscribe(unsubscribeCall, "agent:main:main");
+
+    expect(subscribeCall).toHaveBeenCalledWith("sessions.messages.subscribe", { key: "agent:main:main" });
+    expect(unsubscribeCall).toHaveBeenCalledWith("sessions.messages.unsubscribe", { key: "agent:main:main" });
+    expect(subscribeResult.subscribed).toBe(true);
+    expect(unsubscribeResult.subscribed).toBe(false);
+  });
+
   it("calls chat.history with the expected params shape", async () => {
     const protocol = await import("@/app/jarvis/components/gatewayProtocol");
     const call = createCallStub({
