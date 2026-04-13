@@ -20,5 +20,6 @@ export async function GET(request: NextRequest) {
   if (!gatewayUrl) {
     return NextResponse.json({ error: "Gateway not configured" }, { status: 503 });
   }
-  return NextResponse.json({ gatewayUrl });
+  const gatewayToken = process.env.JARVIS_GATEWAY_TOKEN?.trim() || null;
+  return NextResponse.json({ gatewayUrl, gatewayToken });
 }

@@ -13,18 +13,21 @@ import { GatewayProvider } from "./components/useGateway";
 
 function useGatewayConfig(enabled: boolean, accessToken: string | null | undefined) {
   const [gatewayUrl, setGatewayUrl] = useState<string | null>(null);
+  const [gatewayToken, setGatewayToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(enabled);
 
   useEffect(() => {
     if (!enabled) {
       setGatewayUrl(null);
+      setGatewayToken(null);
       setError(null);
       setLoading(false);
       return;
     }
     if (!accessToken) {
       setGatewayUrl(null);
+      setGatewayToken(null);
       setError("Missing session token");
       setLoading(false);
       return;
@@ -39,7 +42,11 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
             Authorization: `Bearer ${accessToken}`,
           },
         });
-        const payload = (await response.json().catch(() => null)) as { gatewayUrl?: string; error?: string } | null;
+        const payload = (await response.json().catch(() => null)) as {
+          gatewayUrl?: string;
+          gatewayToken?: string | null;
+          error?: string;
+        } | null;
         if (!response.ok) {
           throw new Error(payload?.error || "Failed to load gateway config");
         }
@@ -48,10 +55,12 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
         }
         if (!cancelled) {
           setGatewayUrl(payload.gatewayUrl);
+          setGatewayToken(payload.gatewayToken ?? null);
         }
       } catch (nextError) {
         if (!cancelled) {
           setGatewayUrl(null);
+          setGatewayToken(null);
           setError(nextError instanceof Error ? nextError.message : "Failed to load gateway config");
         }
       } finally {
@@ -65,7 +74,7 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
     };
   }, [enabled, accessToken]);
 
-  return { gatewayUrl, error, loading };
+  return { gatewayUrl, gatewayToken, error, loading };
 }
 
 function Dashboard({ gatewayUrl }: { gatewayUrl: string }) {
@@ -91,7 +100,12 @@ function Dashboard({ gatewayUrl }: { gatewayUrl: string }) {
 
 export default function JarvisPage() {
   const { loading, isTom, session } = useAuth();
-  const { gatewayUrl, error, loading: configLoading } = useGatewayConfig(isTom, session?.access_token);
+  const {
+    gatewayUrl,
+    gatewayToken,
+    error,
+    loading: configLoading,
+  } = useGatewayConfig(isTom, session?.access_token);
 
   if (loading) {
     return (
@@ -128,7 +142,7 @@ export default function JarvisPage() {
   }
 
   return (
-    <GatewayProvider url={gatewayUrl}>
+    <GatewayProvider url={gatewayUrl} token={gatewayToken ?? undefined}>
       <Dashboard gatewayUrl={gatewayUrl} />
     </GatewayProvider>
   );
