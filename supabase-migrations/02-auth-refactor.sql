@@ -6,7 +6,7 @@
 --    Turing connections use ON DELETE SET NULL so Tom's row is unaffected.
 --    REPLACE the UUID below with Tom's user id before running.
 delete from auth.users
-where id <> 'REPLACE-WITH-TOM-USER-ID';
+where id <> '6da956f7-9cab-471c-aa9a-fa13054d4131';
 
 -- 2. Drop tables no longer used.
 drop table if exists public.cube_ratings;
