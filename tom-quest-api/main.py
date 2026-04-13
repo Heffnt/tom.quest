@@ -18,6 +18,7 @@ from tmux import setup_allocation_session, cleanup_session, capture_output, sess
 from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir
 from boolback import router as boolback_router
+from ws import router as ws_router
 
 load_dotenv()
 API_PORT = int(os.getenv("API_PORT", "8000"))
@@ -146,6 +147,7 @@ async def verify_api_key(x_api_key: str = Header(None)):
 
 
 app.include_router(boolback_router, dependencies=[Depends(verify_api_key)])
+app.include_router(ws_router)
 
 class AllocationRequest(BaseModel):
     gpu_type: str

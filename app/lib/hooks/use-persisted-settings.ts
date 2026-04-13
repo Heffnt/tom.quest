@@ -56,14 +56,14 @@ async function hydrate<T extends Record<string, unknown>>(
   key: string,
   defaults: T,
 ): Promise<T> {
-  // TODO(user): implement the guest→login policy here.
-  // Available helpers: loadFromSupabase<T>(userId, key), loadFromLocalStorage<T>(key),
-  //                   saveToSupabase(userId, key, value), saveToLocalStorage(key, value).
-  // Goal: return { ...defaults, ...loaded } after deciding what "loaded" means in each of:
-  //   (1) guest (userId is null)
-  //   (2) logged-in user who has Supabase settings
-  //   (3) logged-in user who has NO Supabase settings yet but HAS localStorage settings
-  //       ^ this is the migration question. Pick (a), (b), or (c) from the conversation.
+  if (!userId) return { ...defaults, ...loadFromLocalStorage<T>(key) };
+  const cloud = await loadFromSupabase<T>(userId, key);
+  if (cloud) return { ...defaults, ...cloud };
+  const local = loadFromLocalStorage<T>(key);
+  if (local) {
+    await saveToSupabase(userId, key, local);
+    return { ...defaults, ...local };
+  }
   return defaults;
 }
 
@@ -93,6 +93,7 @@ export function usePersistedSettings<T extends Record<string, unknown>>(
   const update = useCallback((patch: Partial<T>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch };
+      if (!hydrated.current) return next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         if (user?.id) void saveToSupabase(user.id, key, next);

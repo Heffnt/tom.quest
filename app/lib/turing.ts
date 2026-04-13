@@ -34,9 +34,9 @@ async function loadTomConnection(): Promise<{ url: string; key: string }> {
   return { url: cachedUrl!, key: cachedKey ?? "" };
 }
 
-export async function getTunnelUrl(): Promise<string> {
-  const { url } = await loadTomConnection();
-  return url;
+export async function getTunnelUrl(): Promise<{ url: string; key: string }> {
+  const { url, key } = await loadTomConnection();
+  return { url, key };
 }
 
 export async function proxyToTuring(path: string, init?: RequestInit): Promise<Response> {
