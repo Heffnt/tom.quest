@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 interface ContentBlock {
   type: string;
@@ -38,8 +38,6 @@ export default function TranscriptViewer({ sessionKey, bridgeFetch }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const bottomRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -59,12 +57,6 @@ export default function TranscriptViewer({ sessionKey, bridgeFetch }: Props) {
     })();
     return () => { cancelled = true; };
   }, [sessionKey, bridgeFetch]);
-
-  useEffect(() => {
-    if (!loading && messages.length > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: "instant" });
-    }
-  }, [loading, messages.length]);
 
   const toggleMessage = useCallback((id: string) => {
     setCollapsed((prev) => {
@@ -170,7 +162,6 @@ export default function TranscriptViewer({ sessionKey, bridgeFetch }: Props) {
           </div>
         );
       })}
-      <div ref={bottomRef} />
     </div>
   );
 }
