@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "@/app/lib/auth";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -26,6 +27,7 @@ async function fetchTunnelUrl(userId: string | undefined): Promise<{ url: string
 }
 
 export default function TerminalModal({ sessionName, allSessions, onClose, onNavigate }: TerminalModalProps) {
+  const { user } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -59,7 +61,7 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     const connect = async () => {
       if (disposed) return;
       setStatus("connecting");
-      const tunnel = await fetchTunnelUrl(undefined);
+      const tunnel = await fetchTunnelUrl(user?.id);
       if (!tunnel || disposed) {
         term.write("\r\n\x1b[31mFailed to fetch tunnel URL\x1b[0m\r\n");
         setStatus("closed");
@@ -119,7 +121,7 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
       termRef.current = null;
       wsRef.current = null;
     };
-  }, [sessionName]);
+  }, [sessionName, user?.id]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };

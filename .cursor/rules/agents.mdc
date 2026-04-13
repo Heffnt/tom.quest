@@ -194,6 +194,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-13] Tom's Turing terminal modal could immediately show `Failed to fetch tunnel URL` even while `/api/turing/tunnel-url` worked in curl because `app/turing/components/terminal-modal.tsx` called that Tom-only endpoint without forwarding `x-user-id` → read `user` from `useAuth()`, pass `user.id` into the fetch, and rerun the connection effect when `user.id` changes
 - [2026-04-13] Active Jobs rows like `RUNNING (gpu-5-12)` were treated as unknown gray statuses because the UI only matched the exact string `RUNNING` → treat prefix-matched `RUNNING (...)` values as running so badges and terminal/view actions stay active, and style that running state amber
 - [2026-04-13] Turing allocate dropdown rendered as `-`, `(free)`, etc. and selecting a GPU left Allocate inert because `/gpu-types` returned a bare string list while the frontend expected `{type,count,nodes}` objects → return the full free-GPU summary objects from `tom-quest-api/gpu_report.py` and `/gpu-types` in `tom-quest-api/main.py`
 - [2026-04-13] Leaving the Turing allocate count blank could make Allocate appear dead because the frontend sent `count: 0` for the documented "all free" behavior while the backend rejected all counts `< 1` → resolve `count: 0` server-side to "all free for that GPU type" (or `1` if none are currently free) before validation and allocation
