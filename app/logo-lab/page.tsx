@@ -1,214 +1,195 @@
-import type { ReactNode, CSSProperties } from "react";
-import {
-  IBM_Plex_Mono,
-  JetBrains_Mono,
-  Space_Mono,
-  Fira_Code,
-  Roboto_Mono,
-  DM_Mono,
-  Source_Code_Pro,
-} from "next/font/google";
+"use client";
+
+import { useState, useRef, useEffect, useCallback } from "react";
 
 /* ─────────────────────────────────────────────────────────────
-   Monospace font candidates.
-   Each family is loaded statically by next/font at build time
-   and exposes a `.style.fontFamily` string we can pipe into
-   SVG <text fontFamily={...}>.
+   Interactive tom-symbol designer.
+
+   Fixed reference: a circle of radius R at (CX, CY) — this is
+   the "Q" / the "o" of tom. Everything else is parameterised.
+
+   Parameters you tune:
+     tHeight     — vertical offset of the horizontal bar from
+                   the circle's centre. Negative = above centre.
+     mAngle      — acute angle of the M-diagonals from vertical (°).
+     stroke      — uniform line / bar width.
+     dotSize     — side length of the square dot.
+     dotDistance — how far the dot sits past the circle along the
+                   left diagonal's trajectory.
+     dashExtend  — how far the right diagonal extends past the
+                   circle along its own trajectory.
+
+   Everything else is derived:
+     barLeft/Right — chord of the circle at y = cy + tHeight
+     leftEnd       — where the left diagonal meets the circle
+     rightEnd      — leftEnd's mirror, plus dashExtend beyond
+     dotCentre     — along the left-diagonal ray, tCircle+dotDistance
    ───────────────────────────────────────────────────────────── */
 
-const plexMono    = IBM_Plex_Mono  ({ subsets: ["latin"], weight: ["500", "600"] });
-const jbMono      = JetBrains_Mono ({ subsets: ["latin"], weight: ["500", "700"] });
-const spaceMono   = Space_Mono     ({ subsets: ["latin"], weight: ["400", "700"] });
-const firaCode    = Fira_Code      ({ subsets: ["latin"], weight: ["500", "600"] });
-const robotoMono  = Roboto_Mono    ({ subsets: ["latin"], weight: ["500", "700"] });
-const dmMono      = DM_Mono        ({ subsets: ["latin"], weight: ["500"] });
-const sourceCode  = Source_Code_Pro({ subsets: ["latin"], weight: ["500", "600"] });
+const CX = 320;
+const CY = 270;
+const R  = 170;
+const VB_W = 640;
+const VB_H = 540;
 
-type FontOption = {
-  id: string;
-  label: string;
-  family: string;
-  weight: number;
-  note: string;
+type Params = {
+  tHeight: number;
+  mAngle: number;
+  stroke: number;
+  dotSize: number;
+  dotDistance: number;
+  dashExtend: number;
 };
 
-const FONTS: FontOption[] = [
-  { id: "plex",    label: "IBM Plex Mono",    family: plexMono.style.fontFamily,   weight: 500, note: "Already on the site. Humanist, slightly warm. Narrow-oval Q." },
-  { id: "jb",      label: "JetBrains Mono",   family: jbMono.style.fontFamily,     weight: 500, note: "Geometric, very even colour. Round Q. Strong dev-tool association." },
-  { id: "space",   label: "Space Mono",       family: spaceMono.style.fontFamily,  weight: 400, note: "Retro-futurist. Square-ish rounded Q. Most 'characterful' — loudest option." },
-  { id: "fira",    label: "Fira Code",        family: firaCode.style.fontFamily,   weight: 500, note: "Open apertures, slightly humanist. Oval Q." },
-  { id: "roboto",  label: "Roboto Mono",      family: robotoMono.style.fontFamily, weight: 500, note: "Neutral, corporate-tech. Round but thin Q." },
-  { id: "dm",      label: "DM Mono",          family: dmMono.style.fontFamily,     weight: 500, note: "Soft geometric. Near-circular Q. Quietly distinctive." },
-  { id: "source",  label: "Source Code Pro",  family: sourceCode.style.fontFamily, weight: 500, note: "Adobe's coder mono. Razor-clean, geometric. Near-circular Q." },
-];
+const DEFAULTS: Params = {
+  tHeight: -76,     // "seems about right" — ≈ -0.45·R
+  mAngle: 22,       // less than the previous ~33°
+  stroke: 14,
+  dotSize: 28,
+  dotDistance: 40,
+  dashExtend: 58,
+};
+
+type Derived = {
+  barY: number;
+  barHalf: number;
+  barLeftX: number;
+  barRightX: number;
+  tCircle: number;
+  leftEnd: { x: number; y: number };
+  rightEnd: { x: number; y: number };
+  dotCentre: { x: number; y: number };
+};
+
+function derive(p: Params): Derived {
+  const barY = CY + p.tHeight;
+  const barHalf = Math.sqrt(Math.max(0, R * R - p.tHeight * p.tHeight));
+  const aR = (p.mAngle * Math.PI) / 180;
+  const sinA = Math.sin(aR);
+  const cosA = Math.cos(aR);
+
+  // Parametric distance from (CX, barY) along the diagonal ray where
+  // the ray meets the Q circle. Solves s² + 2·tHeight·cos·s + (tHeight² - R²) = 0.
+  const disc = Math.max(0, R * R - p.tHeight * p.tHeight * sinA * sinA);
+  const tCircle = -p.tHeight * cosA + Math.sqrt(disc);
+
+  const leftEnd = { x: CX - tCircle * sinA, y: barY + tCircle * cosA };
+  const rightEnd = {
+    x: CX + (tCircle + p.dashExtend) * sinA,
+    y: barY + (tCircle + p.dashExtend) * cosA,
+  };
+  const dotCentre = {
+    x: CX - (tCircle + p.dotDistance) * sinA,
+    y: barY + (tCircle + p.dotDistance) * cosA,
+  };
+
+  return {
+    barY,
+    barHalf,
+    barLeftX: CX - barHalf,
+    barRightX: CX + barHalf,
+    tCircle,
+    leftEnd,
+    rightEnd,
+    dotCentre,
+  };
+}
 
 /* ─────────────────────────────────────────────────────────────
-   Logo geometry
-   ─────────────────────────────────────────────────────────────
-   Layout is 9 monospace cells wide: t o m . Q u e s t
-   Each cell has width W = fontSize * 0.6 (the standard mono
-   advance ratio). `textLength` + `lengthAdjust="spacing"` force
-   actual rendered width to exactly 4W per side regardless of the
-   font's real metrics — so the left 't' and right 't' are
-   provably equidistant from the Q at cell 5.
+   Symbol renderer (pure, given params).
    ───────────────────────────────────────────────────────────── */
 
-const FONT_SIZE   = 140;
-const W           = FONT_SIZE * 0.6;          // 84 — mono advance cell
-const MARGIN      = 24;
-const TOTAL_W     = MARGIN * 2 + 9 * W;       // 804
-const BASELINE    = 140;
-const CAP_TOP     = 42;                       // ≈ baseline - 0.7·fontSize
-const X_HEIGHT_TOP = 70;                      // ≈ baseline - 0.5·fontSize
-const HEIGHT      = 182;
-const BAR_Y       = X_HEIGHT_TOP;             // bar centreline
-const BAR_H       = 10;
-const UNDERLINE_Y = BASELINE + 14;
-
-const Q_CX        = MARGIN + 4.5 * W;          // centre of cell 5
-const Q_CY        = (CAP_TOP + BASELINE) / 2;  // vertically centred in cap-height
-const Q_R         = (BASELINE - CAP_TOP) / 2;  // 49
-
-const STROKE      = 12;
-
-/* Custom period dot — takes the place of cell 4 ('.').
-   Sized to carry the visual weight of a letter, so the
-   left of the Q reads as 3 glyphs + dot (4 masses) to match
-   'uest' on the right (also 4 masses). This is what makes the
-   two t's visually equidistant from the Q, not just cell-wise.   */
-const DOT_CX      = MARGIN + 3.5 * W;
-const DOT_SIZE    = 26;                      // substantial, not font-dust
-const DOT_Y       = BASELINE - DOT_SIZE;
-
-/* Three lines descend from the midpoint of the bar at (Q_CX, BAR_Y).
-   Left points at the dot, stops at the Q's circle edge.
-   Right mirrors that angle and extends past the Q as the tail.    */
-const DIAG_DX     = DOT_CX - Q_CX;           // negative: -84  → slope targets the dot
-const DIAG_DY     = (BASELINE - DOT_SIZE / 2) - BAR_Y; // 57
-const LEFT_CUT    = 0.60;                    // stop at 60% of the reach (on the Q circle)
-const LEFT_END_X  = Q_CX + DIAG_DX * LEFT_CUT;
-const LEFT_END_Y  = BAR_Y + DIAG_DY * LEFT_CUT;
-const RIGHT_END_X = Q_CX - DIAG_DX * 0.85;   // mirror, extends past the Q
-const RIGHT_END_Y = BAR_Y + DIAG_DY * 0.85;
-
-/* ─────────────────────────────────────────────────────────────
-   <Logo /> — parameterised by font family
-   ───────────────────────────────────────────────────────────── */
-
-function Logo({
-  family,
-  weight = 500,
-  showRails = true,
-  className,
-  style,
+function TomSymbol({
+  p,
+  showGuides = false,
 }: {
-  family: string;
-  weight?: number;
-  showRails?: boolean;
-  className?: string;
-  style?: CSSProperties;
+  p: Params;
+  showGuides?: boolean;
 }) {
+  const d = derive(p);
   return (
-    <svg
-      viewBox={`0 0 ${TOTAL_W} ${HEIGHT}`}
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      style={style}
-    >
-      {/* Structural top rail — doubles as the t-crossbars and the
-          horizontal of the tom-symbol. Hidden when showRails=false. */}
-      {showRails && (
-        <>
-          <rect x="0" y={BAR_Y - BAR_H / 2} width={TOTAL_W} height={BAR_H} />
-          <rect x="0" y={UNDERLINE_Y - BAR_H / 2} width={TOTAL_W} height={BAR_H} />
-        </>
-      )}
-
-      {/* "tom" — 3 cells. Period is not a text char; it's drawn below. */}
-      <text
-        x={MARGIN}
-        y={BASELINE}
-        fontFamily={family}
-        fontWeight={weight}
-        fontSize={FONT_SIZE}
-        textLength={3 * W}
-        lengthAdjust="spacing"
-        style={{ fontVariantLigatures: "none" }}
-      >
-        tom
-      </text>
-
-      {/* Custom period dot — cell 4, baseline-aligned.
-          Square so it mirrors the Q-tail terminus visually. */}
-      <rect
-        x={DOT_CX - DOT_SIZE / 2}
-        y={DOT_Y}
-        width={DOT_SIZE}
-        height={DOT_SIZE}
-      />
-
-      {/* "uest" — left-edge starts exactly at Q's right cell (cell 6) */}
-      <text
-        x={MARGIN + 5 * W}
-        y={BASELINE}
-        fontFamily={family}
-        fontWeight={weight}
-        fontSize={FONT_SIZE}
-        textLength={4 * W}
-        lengthAdjust="spacing"
-        style={{ fontVariantLigatures: "none" }}
-      >
-        uest
-      </text>
-
-      {/* ── Q mark ─────────────────────────────────────────── */}
-      {/* Circle (the 'O' of tom) */}
+    <>
+      {/* Q circle */}
       <circle
-        cx={Q_CX}
-        cy={Q_CY}
-        r={Q_R}
+        cx={CX}
+        cy={CY}
+        r={R}
         fill="none"
         stroke="currentColor"
-        strokeWidth={STROKE}
+        strokeWidth={p.stroke}
       />
 
-      {/* Vertical: meets horizontal bar to form the 'T' of tom.
-          Starts just under the bar, descends through the Q. */}
+      {/* Horizontal bar — chord at y = barY */}
       <line
-        x1={Q_CX}
-        y1={BAR_Y}
-        x2={Q_CX}
-        y2={BASELINE}
+        x1={d.barLeftX}
+        y1={d.barY}
+        x2={d.barRightX}
+        y2={d.barY}
         stroke="currentColor"
-        strokeWidth={STROKE}
+        strokeWidth={p.stroke}
         strokeLinecap="butt"
       />
 
-      {/* Right diagonal — mirrors the left's angle, extends past the Q. */}
+      {/* Vertical (T-stem, M-middle) — from bar midpoint to circle bottom */}
       <line
-        x1={Q_CX}
-        y1={BAR_Y}
-        x2={RIGHT_END_X}
-        y2={RIGHT_END_Y}
+        x1={CX}
+        y1={d.barY}
+        x2={CX}
+        y2={CY + R}
         stroke="currentColor"
-        strokeWidth={STROKE}
+        strokeWidth={p.stroke}
         strokeLinecap="butt"
       />
 
-      {/* Left diagonal — stops inside / at the Q circle.
-          The period in 'tom.' sits at the continuation of its
-          trajectory, serving as the 'dot' terminus. */}
+      {/* Left M-diagonal — stops at circle edge */}
       <line
-        x1={Q_CX}
-        y1={BAR_Y}
-        x2={LEFT_END_X}
-        y2={LEFT_END_Y}
+        x1={CX}
+        y1={d.barY}
+        x2={d.leftEnd.x}
+        y2={d.leftEnd.y}
         stroke="currentColor"
-        strokeWidth={STROKE}
+        strokeWidth={p.stroke}
         strokeLinecap="butt"
       />
-    </svg>
+
+      {/* Right M-diagonal — extends past circle as Q tail */}
+      <line
+        x1={CX}
+        y1={d.barY}
+        x2={d.rightEnd.x}
+        y2={d.rightEnd.y}
+        stroke="currentColor"
+        strokeWidth={p.stroke}
+        strokeLinecap="butt"
+      />
+
+      {/* Dot terminus of left diagonal */}
+      <rect
+        x={d.dotCentre.x - p.dotSize / 2}
+        y={d.dotCentre.y - p.dotSize / 2}
+        width={p.dotSize}
+        height={p.dotSize}
+        fill="currentColor"
+      />
+
+      {showGuides && (
+        <g opacity="0.35">
+          {/* centre cross */}
+          <line x1={CX - R - 20} y1={CY} x2={CX + R + 20} y2={CY} stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="4 4" />
+          <line x1={CX} y1={CY - R - 20} x2={CX} y2={CY + R + 20} stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="4 4" />
+          {/* left-diagonal trajectory extended, to show the dot is on-axis */}
+          <line
+            x1={CX}
+            y1={d.barY}
+            x2={d.dotCentre.x - 30 * Math.sin((p.mAngle * Math.PI) / 180)}
+            y2={d.dotCentre.y + 30 * Math.cos((p.mAngle * Math.PI) / 180)}
+            stroke="var(--color-accent)"
+            strokeWidth="1"
+            strokeDasharray="2 4"
+          />
+        </g>
+      )}
+    </>
   );
 }
 
@@ -216,190 +197,396 @@ function Logo({
    Page
    ───────────────────────────────────────────────────────────── */
 
-function Swatch({
-  label,
-  bg,
-  fg,
-  border,
-  children,
-}: {
-  label: string;
-  bg: string;
-  fg: string;
-  border?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <div
-        className={`flex items-center justify-center rounded-md p-6 ${border ?? ""}`}
-        style={{ background: bg, color: fg }}
-      >
-        {children}
-      </div>
-      <div className="text-[11px] text-text-muted font-mono uppercase tracking-wider">
-        {label}
-      </div>
-    </div>
-  );
-}
+type DragMode = null | "t" | "m" | "dot";
 
 export default function LogoLab() {
+  const [p, setP] = useState<Params>(DEFAULTS);
+  const [showGuides, setShowGuides] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [dragging, setDragging] = useState<DragMode>(null);
+
+  // Ref for params — avoids stale closure in global pointer listeners.
+  const pRef = useRef(p);
+  pRef.current = p;
+
+  /* Convert a client-space pointer position into SVG user-space coords. */
+  const toSvg = useCallback((clientX: number, clientY: number) => {
+    const svg = svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const s = pt.matrixTransform(ctm.inverse());
+    return { x: s.x, y: s.y };
+  }, []);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (ev: PointerEvent) => {
+      const s = toSvg(ev.clientX, ev.clientY);
+      const cur = pRef.current;
+
+      if (dragging === "t") {
+        // tHeight is signed: negative above centre. Allow from just
+        // above centre (-10) up to near the top of circle (-0.92·R).
+        const next = Math.max(-R * 0.92, Math.min(-10, s.y - CY));
+        setP((prev) => ({ ...prev, tHeight: Math.round(next) }));
+        return;
+      }
+
+      if (dragging === "m") {
+        const curBarY = CY + cur.tHeight;
+        const dx = s.x - CX;
+        const dy = s.y - curBarY;
+        if (dy <= 0) return; // dragging above the bar: ignore (angle is from vertical downward)
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const rawDeg = Math.atan2(Math.abs(dx), dy) * (180 / Math.PI);
+        const nextAngle = Math.max(3, Math.min(55, rawDeg));
+
+        // Recompute tCircle for this new angle to keep dashExtend
+        // expressed in "past-the-circle" units.
+        const aR = (nextAngle * Math.PI) / 180;
+        const sinA = Math.sin(aR);
+        const disc = Math.max(0, R * R - cur.tHeight * cur.tHeight * sinA * sinA);
+        const tC = -cur.tHeight * Math.cos(aR) + Math.sqrt(disc);
+        const nextExtend = Math.max(0, Math.min(R * 1.1, dist - tC));
+
+        setP((prev) => ({
+          ...prev,
+          mAngle: Math.round(nextAngle * 10) / 10,
+          dashExtend: Math.round(nextExtend),
+        }));
+        return;
+      }
+
+      if (dragging === "dot") {
+        // Project pointer onto the left-diagonal ray, measure distance
+        // past the circle.
+        const curBarY = CY + cur.tHeight;
+        const aR = (cur.mAngle * Math.PI) / 180;
+        const sinA = Math.sin(aR);
+        const cosA = Math.cos(aR);
+        // ray direction (left diagonal): (-sinA, cosA)
+        const dx = s.x - CX;
+        const dy = s.y - curBarY;
+        const along = -dx * sinA + dy * cosA; // projection onto ray
+        const disc = Math.max(0, R * R - cur.tHeight * cur.tHeight * sinA * sinA);
+        const tC = -cur.tHeight * cosA + Math.sqrt(disc);
+        const nextDotDist = Math.max(0, Math.min(R * 1.1, along - tC));
+        setP((prev) => ({ ...prev, dotDistance: Math.round(nextDotDist) }));
+        return;
+      }
+    };
+    const onUp = () => setDragging(null);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragging, toSvg]);
+
+  const d = derive(p);
+
+  const valuesText =
+    `tHeight:     ${p.tHeight}    // ${(p.tHeight / R).toFixed(3)} · R\n` +
+    `mAngle:      ${p.mAngle}°\n` +
+    `stroke:      ${p.stroke}\n` +
+    `dotSize:     ${p.dotSize}\n` +
+    `dotDistance: ${p.dotDistance}\n` +
+    `dashExtend:  ${p.dashExtend}\n` +
+    `// reference: R=${R}`;
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(valuesText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1400);
+  };
+
+  const reset = () => setP(DEFAULTS);
+
   return (
     <div className="max-w-6xl mx-auto px-6 py-16">
       <header className="animate-settle">
         <div className="text-xs font-mono uppercase tracking-[0.2em] text-accent">
-          Logo Lab · v2
+          Logo Lab · tom-symbol designer
         </div>
         <h1 className="mt-2 text-4xl font-bold tracking-tight">
-          tom.Quest · font candidates
+          Dial in the geometry
         </h1>
         <p className="mt-4 text-text-muted max-w-3xl leading-relaxed">
-          The Q-mark is a single custom SVG — a perfect circle (the <em>o</em>)
-          with a horizontal bar inside, three lines descending from its
-          midpoint (the stylised <em>m</em>), the vertical forming a <em>T</em>{" "}
-          with the bar, the right line extending out as the Q&apos;s tail, and
-          the left line stopping where the period of <code className="font-mono text-text">tom.</code>{" "}
-          takes over. No cap on top.
+          Drag the handles on the symbol, or use the sliders. Everything is
+          derived from the Q circle — the bar is the circle&apos;s chord at the
+          T-height, the left diagonal ends at the circle edge, the dot and the
+          tail are measured <em>past</em> the circle along their ray.
         </p>
-        <p className="mt-3 text-text-muted max-w-3xl leading-relaxed">
-          All candidates below are <strong>monospace</strong> — so each cell is
-          equal width. To make the two <code className="font-mono text-text">t</code>
-          s <em>visually</em> equidistant (not just cell-wise), the period is
-          drawn as a substantial custom square rather than the font&apos;s tiny
-          dot. Left reads as 4 masses (<code className="font-mono text-text">t&nbsp;o&nbsp;m&nbsp;●</code>)
-          and right as 4 masses (<code className="font-mono text-text">u&nbsp;e&nbsp;s&nbsp;t</code>)
-          — balanced around a custom circular Q.
+        <p className="mt-2 text-text-muted text-sm font-mono">
+          amber handles: drag them.
         </p>
       </header>
 
-      {/* ── The shortlist ───────────────────────────────────── */}
-      <section className="mt-16 flex flex-col gap-16">
-        {FONTS.map(({ id, label, family, weight, note }, i) => (
-          <article
-            key={id}
-            className={`animate-settle-delay-${Math.min(i + 1, 3)}`}
+      <div className="mt-10 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8">
+        {/* ── Canvas ─────────────────────────────────────── */}
+        <div className="rounded-md border border-border bg-surface p-4">
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${VB_W} ${VB_H}`}
+            className="w-full h-auto touch-none select-none"
+            style={{ color: "var(--color-text)" }}
           >
-            <div className="flex items-baseline justify-between border-b border-border pb-3 mb-6">
-              <div>
-                <h2 className="text-xl font-semibold tracking-tight">
-                  {label}
-                </h2>
-                <div className="text-sm text-text-muted mt-1">{note}</div>
-              </div>
-              <div className="text-xs text-text-faint font-mono">#{id}</div>
-            </div>
+            <TomSymbol p={p} showGuides={showGuides} />
 
-            {/* Hero */}
-            <Swatch
-              label="white on ink · rails on"
-              bg="var(--color-bg)"
-              fg="var(--color-text)"
-              border="border border-border"
+            {/* ── Drag handles (rendered on top) ────────── */}
+            {/* T-height handle: right end of the bar */}
+            <g
+              onPointerDown={(e) => {
+                (e.target as Element).setPointerCapture?.(e.pointerId);
+                setDragging("t");
+              }}
+              style={{ cursor: dragging === "t" ? "grabbing" : "grab" }}
             >
-              <Logo
-                family={family}
-                weight={weight}
-                className="w-full max-w-3xl h-auto"
+              <circle
+                cx={d.barRightX}
+                cy={d.barY}
+                r={14}
+                fill="var(--color-accent)"
+                stroke="var(--color-bg)"
+                strokeWidth="3"
               />
-            </Swatch>
+              <title>drag to change T-height</title>
+            </g>
 
-            {/* Colour + rails-off grid */}
-            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6">
-              <Swatch
-                label="amber on dark · rails on"
-                bg="var(--color-surface)"
-                fg="var(--color-accent)"
-                border="border border-border"
-              >
-                <Logo family={family} weight={weight} className="w-full h-auto" />
-              </Swatch>
-              <Swatch label="rails off · ink on paper" bg="#f5f1e8" fg="#0a0e17">
-                <Logo
-                  family={family}
-                  weight={weight}
-                  showRails={false}
-                  className="w-full h-auto"
-                />
-              </Swatch>
-              <Swatch label="knockout" bg="#e8a040" fg="#0a0e17">
-                <Logo family={family} weight={weight} className="w-full h-auto" />
-              </Swatch>
-            </div>
-
-            {/* Scale test */}
-            <div className="mt-4 flex flex-wrap items-center gap-8 p-5 rounded-md border border-border bg-surface">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono text-text-muted w-14">
-                  nav 30
-                </span>
-                <Logo family={family} weight={weight} style={{ height: 30, width: "auto" }} />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono text-text-muted w-14">
-                  tiny 20
-                </span>
-                <Logo family={family} weight={weight} style={{ height: 20, width: "auto" }} />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono text-text-muted w-14">
-                  no rails
-                </span>
-                <Logo
-                  family={family}
-                  weight={weight}
-                  showRails={false}
-                  style={{ height: 30, width: "auto" }}
-                />
-              </div>
-            </div>
-          </article>
-        ))}
-      </section>
-
-      {/* ── Reference: the font's OWN Q rendering ───────────── */}
-      <section className="mt-24">
-        <div className="border-b border-border pb-3 mb-6">
-          <h2 className="text-xl font-semibold tracking-tight">
-            Reference · each font&apos;s native Q
-          </h2>
-          <p className="text-sm text-text-muted mt-1">
-            For comparison only — straight <code className="font-mono text-text">tom.Quest</code>{" "}
-            in the font with no overlay. Lets you judge which fonts have a Q
-            shape that already reads as circular.
-          </p>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {FONTS.map(({ id, label, family, weight }) => (
-            <div
-              key={id}
-              className="flex items-center justify-between gap-6 p-6 rounded-md border border-border bg-surface"
+            {/* M-angle / tail handle: tip of the right diagonal */}
+            <g
+              onPointerDown={(e) => {
+                (e.target as Element).setPointerCapture?.(e.pointerId);
+                setDragging("m");
+              }}
+              style={{ cursor: dragging === "m" ? "grabbing" : "grab" }}
             >
-              <span
-                style={{
-                  fontFamily: family,
-                  fontWeight: weight,
-                  fontSize: 56,
-                  letterSpacing: "-0.02em",
-                }}
-              >
-                tom.Quest
+              <circle
+                cx={d.rightEnd.x}
+                cy={d.rightEnd.y}
+                r={14}
+                fill="var(--color-accent)"
+                stroke="var(--color-bg)"
+                strokeWidth="3"
+              />
+              <title>drag to change M-angle and tail length</title>
+            </g>
+
+            {/* Dot-distance handle: on the dot itself */}
+            <g
+              onPointerDown={(e) => {
+                (e.target as Element).setPointerCapture?.(e.pointerId);
+                setDragging("dot");
+              }}
+              style={{ cursor: dragging === "dot" ? "grabbing" : "grab" }}
+            >
+              <circle
+                cx={d.dotCentre.x}
+                cy={d.dotCentre.y}
+                r={14}
+                fill="none"
+                stroke="var(--color-accent)"
+                strokeWidth="3"
+              />
+              <title>drag along the left diagonal to move the dot</title>
+            </g>
+          </svg>
+        </div>
+
+        {/* ── Sidebar controls ─────────────────────────── */}
+        <aside className="flex flex-col gap-5">
+          {/* Values display */}
+          <div className="rounded-md border border-border bg-surface">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+              <span className="text-xs font-mono uppercase tracking-wider text-text-muted">
+                values
               </span>
-              <span className="text-xs font-mono text-text-muted">{label}</span>
+              <button
+                type="button"
+                onClick={copy}
+                className="text-xs font-mono text-accent hover:text-text transition-colors"
+              >
+                {copied ? "✓ copied" : "copy"}
+              </button>
+            </div>
+            <pre className="px-4 py-3 text-xs font-mono text-text leading-relaxed whitespace-pre overflow-x-auto">
+              {valuesText}
+            </pre>
+          </div>
+
+          {/* Sliders */}
+          <div className="rounded-md border border-border bg-surface p-4 flex flex-col gap-4">
+            <Slider
+              label="T-height"
+              hint="bar y-offset from circle centre (negative = above)"
+              value={p.tHeight}
+              min={-Math.round(R * 0.92)}
+              max={-10}
+              step={1}
+              onChange={(v) => setP((prev) => ({ ...prev, tHeight: v }))}
+            />
+            <Slider
+              label="M-angle"
+              hint="diagonals' angle from vertical (°)"
+              value={p.mAngle}
+              min={3}
+              max={55}
+              step={0.5}
+              onChange={(v) => setP((prev) => ({ ...prev, mAngle: v }))}
+            />
+            <Slider
+              label="stroke"
+              hint="uniform line width"
+              value={p.stroke}
+              min={4}
+              max={28}
+              step={1}
+              onChange={(v) => setP((prev) => ({ ...prev, stroke: v }))}
+            />
+            <Slider
+              label="dotSize"
+              hint="square dot side length"
+              value={p.dotSize}
+              min={6}
+              max={60}
+              step={1}
+              onChange={(v) => setP((prev) => ({ ...prev, dotSize: v }))}
+            />
+            <Slider
+              label="dotDistance"
+              hint="dot's distance past circle, along left diagonal"
+              value={p.dotDistance}
+              min={0}
+              max={Math.round(R * 1.1)}
+              step={1}
+              onChange={(v) => setP((prev) => ({ ...prev, dotDistance: v }))}
+            />
+            <Slider
+              label="dashExtend"
+              hint="right diagonal's length past circle"
+              value={p.dashExtend}
+              min={0}
+              max={Math.round(R * 1.1)}
+              step={1}
+              onChange={(v) => setP((prev) => ({ ...prev, dashExtend: v }))}
+            />
+          </div>
+
+          <div className="flex gap-3">
+            <label className="flex items-center gap-2 text-xs font-mono text-text-muted">
+              <input
+                type="checkbox"
+                checked={showGuides}
+                onChange={(e) => setShowGuides(e.target.checked)}
+                className="accent-[var(--color-accent)]"
+              />
+              guides
+            </label>
+            <button
+              type="button"
+              onClick={reset}
+              className="ml-auto text-xs font-mono text-text-muted hover:text-text transition-colors"
+            >
+              reset
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      {/* Preview at small scales — without handles */}
+      <section className="mt-16">
+        <div className="text-xs font-mono uppercase tracking-[0.2em] text-text-muted mb-4">
+          preview at scale
+        </div>
+        <div className="flex items-center gap-10 p-6 rounded-md border border-border bg-surface flex-wrap">
+          {[120, 72, 44, 28, 18].map((size) => (
+            <div key={size} className="flex flex-col items-center gap-2">
+              <svg viewBox={`0 0 ${VB_W} ${VB_H}`} style={{ height: size, width: "auto", color: "var(--color-text)" }}>
+                <TomSymbol p={p} />
+              </svg>
+              <div className="text-[10px] font-mono text-text-muted">
+                {size}px
+              </div>
             </div>
           ))}
+          <div className="flex flex-col items-center gap-2 ml-6">
+            <svg viewBox={`0 0 ${VB_W} ${VB_H}`} style={{ height: 72, width: "auto", color: "var(--color-accent)" }}>
+              <TomSymbol p={p} />
+            </svg>
+            <div className="text-[10px] font-mono text-text-muted">accent</div>
+          </div>
         </div>
       </section>
 
-      <footer className="mt-20 pt-8 border-t border-border text-sm text-text-muted leading-relaxed">
-        Tell me which font (<code className="font-mono text-text">#plex</code>,{" "}
-        <code className="font-mono text-text">#dm</code>,{" "}
-        <code className="font-mono text-text">#geist</code>, etc.) and whether
-        you want rails on or off, and I&apos;ll export a single{" "}
-        <code className="font-mono text-text">logo.svg</code>, swap it into{" "}
-        <code className="font-mono text-text">navigation.tsx</code>, and delete
-        the four old colour-variant files.
+      <footer className="mt-16 pt-8 border-t border-border text-sm text-text-muted">
+        When it looks right, hit <strong>copy</strong> and paste the values
+        back to me. I&apos;ll then find a monospace font whose{" "}
+        <code className="font-mono text-text">om</code> width matches{" "}
+        <code className="font-mono text-text">ues</code> width (likely one with
+        a wide <em>m</em>) and lock in the full logo.
       </footer>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Slider with numeric input, matching site's aesthetic.
+   ───────────────────────────────────────────────────────────── */
+
+function Slider({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs font-mono text-text">{label}</span>
+        <input
+          type="number"
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            if (!Number.isNaN(v)) onChange(v);
+          }}
+          className="w-20 text-right text-xs font-mono bg-transparent border border-border rounded px-1.5 py-0.5 text-text focus:outline-none focus:border-accent"
+        />
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-[var(--color-accent)]"
+      />
+      <span className="text-[10px] font-mono text-text-faint">{hint}</span>
     </div>
   );
 }
