@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { GPUReport, NodeGpuJob, NodeInfo, gpuTypeLabel } from "../types";
 
 interface GPUGridProps {
@@ -58,10 +58,6 @@ function isUnavailableState(state: string): boolean {
   return stateTokens(state).some(token => UNAVAILABLE_TOKENS.has(token));
 }
 
-function isMixedState(state: string): boolean {
-  return stateTokens(state).includes("MIXED") && !isUnavailableState(state);
-}
-
 function isAcademicNode(node: NodeInfo): boolean {
   return node.partition.toLowerCase().includes("academic");
 }
@@ -85,45 +81,12 @@ function getNodeGpuBreakdown(node: NodeInfo): { free: number; in_use: number; un
   };
 }
 
-function Tooltip({ children, content }: { children: ReactNode; content: ReactNode }) {
-  const [show, setShow] = useState(false);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-
-  return (
-    <div
-      className="relative inline-flex"
-      onMouseEnter={e => {
-        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        setPos({ x: rect.left + rect.width / 2, y: rect.top });
-        setShow(true);
-      }}
-      onMouseLeave={() => setShow(false)}
-    >
-      {children}
-      {show && (
-        <div
-          className="fixed z-[100] px-3 py-2 rounded-md bg-surface-alt border border-border text-xs text-text shadow-lg pointer-events-none"
-          style={{
-            left: pos.x,
-            top: pos.y - 8,
-            transform: "translate(-50%, -100%)",
-            maxWidth: 320,
-          }}
-        >
-          {content}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function GpuJobPopover({ job, onClose }: { job: NodeGpuJob; onClose: () => void }) {
+function GpuJobPopover({ job }: { job: NodeGpuJob }) {
   const progress = job.progress_pct ?? 0;
   return (
-    <div className="absolute z-50 mt-2 left-0 w-72 bg-surface-alt border border-border rounded-lg p-3 shadow-xl animate-settle">
+    <div className="absolute z-50 mt-2 left-0 w-72 bg-surface-alt border border-border rounded-lg p-3 shadow-xl animate-settle pointer-events-none">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-medium text-text-muted">GPU {job.gpu_index}</span>
-        <button onClick={onClose} className="text-text-faint hover:text-text text-xs">✕</button>
       </div>
       <div className="flex items-center justify-between text-xs font-mono">
         <span className="text-text">{job.user}</span>
@@ -174,28 +137,33 @@ function GpuSquare({
   slot,
   allocated,
   nodeState,
-  onSelect,
 }: {
   slot: NodeGpuJob | null;
   allocated: boolean;
   nodeState: string;
-  onSelect: () => void;
 }) {
+  const [hovered, setHovered] = useState(false);
   const fill = isUnavailableState(nodeState)
     ? STATUS_CATEGORIES.unavailable.color
     : allocated
       ? STATUS_CATEGORIES.in_use.color
       : STATUS_CATEGORIES.free.color;
   return (
-    <button
-      onClick={slot ? onSelect : undefined}
-      className={`w-3.5 h-3.5 rounded-sm transition-all duration-150 ${slot ? "cursor-pointer hover:scale-125 hover:brightness-125" : "cursor-default"}`}
-      style={{
-        background: fill,
-        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.1), 0 0 3px ${fill}33`,
-      }}
-      title={slot ? `${slot.user} #${slot.job_id}` : allocated ? "In Use" : "Free"}
-    />
+    <div
+      className="relative"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div
+        className={`w-3.5 h-3.5 rounded-sm transition-all duration-150 ${slot ? "cursor-pointer hover:scale-125 hover:brightness-125" : "cursor-default"}`}
+        style={{
+          background: fill,
+          boxShadow: `inset 0 1px 0 rgba(255,255,255,0.1), 0 0 3px ${fill}33`,
+        }}
+        title={slot ? `${slot.user} #${slot.job_id}` : allocated ? "In Use" : "Free"}
+      />
+      {hovered && slot && <GpuJobPopover job={slot} />}
+    </div>
   );
 }
 
@@ -205,22 +173,17 @@ function StateBadge({ state }: { state: string }) {
     : stateTokens(state).includes("IDLE")
       ? STATUS_CATEGORIES.free
       : STATUS_CATEGORIES.in_use;
-  const background = isMixedState(state)
-    ? `linear-gradient(135deg, ${STATUS_CATEGORIES.free.color}40 50%, ${STATUS_CATEGORIES.in_use.color}40 50%)`
-    : `${category.color}15`;
   return (
-    <Tooltip content={<span>SLURM state: {state}</span>}>
-      <span
-        className="text-[9px] font-mono px-1.5 py-0.5 rounded cursor-default"
-        style={{
-          color: category.color,
-          background,
-          border: `1px solid ${category.color}30`,
-        }}
-      >
-        {state}
-      </span>
-    </Tooltip>
+    <span
+      className="text-[9px] font-mono px-1.5 py-0.5 rounded cursor-default"
+      style={{
+        color: category.color,
+        background: `${category.color}15`,
+        border: `1px solid ${category.color}30`,
+      }}
+    >
+      {state}
+    </span>
   );
 }
 
@@ -231,9 +194,7 @@ function NodeCard({
   node: NodeInfo;
   slots: Array<NodeGpuJob | null>;
 }) {
-  const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
   const memPct = node.memory_total_mb > 0 ? Math.round((node.memory_allocated_mb / node.memory_total_mb) * 100) : 0;
-  const activeSlot = selectedGpu !== null ? slots[selectedGpu] : null;
 
   return (
     <div className="relative border border-border/60 rounded-md p-2.5 bg-bg/60 min-w-[120px]">
@@ -248,7 +209,6 @@ function NodeCard({
             slot={slots[index] ?? null}
             allocated={index < node.allocated_gpus}
             nodeState={node.state}
-            onSelect={() => setSelectedGpu(selectedGpu === index ? null : index)}
           />
         ))}
       </div>
@@ -258,7 +218,6 @@ function NodeCard({
       <div className="text-[9px] text-text-faint mt-0.5 font-mono">
         {(node.memory_allocated_mb / 1024).toFixed(0)}/{(node.memory_total_mb / 1024).toFixed(0)} GB
       </div>
-      {activeSlot && <GpuJobPopover job={activeSlot} onClose={() => setSelectedGpu(null)} />}
     </div>
   );
 }
@@ -266,9 +225,11 @@ function NodeCard({
 function GPUViewModal({
   data,
   onClose,
+  onRefresh,
 }: {
   data: GPUReport;
   onClose: () => void;
+  onRefresh: () => void;
 }) {
   const [filters, setFilters] = useState<Set<"free" | "in_use" | "unavailable">>(new Set());
   const [showAcademic, setShowAcademic] = useState(false);
@@ -276,11 +237,15 @@ function GPUViewModal({
   const gpuJobsByNode = data.gpu_jobs_by_node ?? {};
 
   useEffect(() => {
+    document.body.style.overflow = "hidden";
     const handler = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", handler);
+    };
   }, [onClose]);
 
   const filterNodes = (nodes: NodeInfo[]) => {
@@ -315,7 +280,13 @@ function GPUViewModal({
       <div className="relative bg-surface border-t border-l border-r border-border rounded-t-xl w-full max-w-6xl max-h-[85vh] flex flex-col animate-settle">
         <div className="flex items-center justify-between px-5 py-3 border-b border-border">
           <h2 className="text-lg font-semibold tracking-tight">GPUs</h2>
-          <button onClick={onClose} className="text-text-muted hover:text-text text-sm">✕</button>
+          <div className="flex items-center gap-2">
+            <button onClick={onRefresh} title="Refresh GPU data"
+              className="text-xs px-2 py-1 rounded border border-border text-text-faint hover:text-text-muted hover:border-text-muted transition-colors">
+              ↻
+            </button>
+            <button onClick={onClose} className="text-text-muted hover:text-text text-sm">✕</button>
+          </div>
         </div>
 
         <div className="flex items-center gap-3 px-5 py-3 border-b border-border flex-wrap">
@@ -323,27 +294,26 @@ function GPUViewModal({
             const typedKey = key as "free" | "in_use" | "unavailable";
             const active = filters.has(typedKey);
             return (
-              <Tooltip key={key} content={<span>SLURM: {category.states.join(", ")}</span>}>
-                <button
-                  onClick={() => {
-                    const next = new Set(filters);
-                    if (next.has(typedKey)) next.delete(typedKey);
-                    else next.add(typedKey);
-                    setFilters(next);
-                  }}
-                  className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-all font-mono ${
-                    active
-                      ? "border-current"
-                      : filters.size > 0
-                        ? "border-border/40 opacity-40 hover:opacity-70"
-                        : "border-border/40 hover:border-current"
-                  }`}
-                  style={{ color: category.color }}
-                >
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: category.color }} />
-                  {category.label}
-                </button>
-              </Tooltip>
+              <button
+                key={key}
+                onClick={() => {
+                  const next = new Set(filters);
+                  if (next.has(typedKey)) next.delete(typedKey);
+                  else next.add(typedKey);
+                  setFilters(next);
+                }}
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-all font-mono ${
+                  active
+                    ? "border-current"
+                    : filters.size > 0
+                      ? "border-border/40 opacity-40 hover:opacity-70"
+                      : "border-border/40 hover:border-current"
+                }`}
+                style={{ color: category.color }}
+              >
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: category.color }} />
+                {category.label}
+              </button>
             );
           })}
           {filters.size > 0 && (
@@ -452,7 +422,7 @@ export default function GPUGrid({ data, loading, error, onRefresh }: GPUGridProp
     return (
       <section aria-label="GPU availability" className="border border-border rounded-lg p-5 bg-surface/40">
         <h2 className="text-lg font-semibold mb-3">GPU Availability</h2>
-        <p className="text-text-faint text-sm">Loading GPU availability…</p>
+        <p className="text-text-faint text-sm">Querying Slurm for node and GPU states…</p>
       </section>
     );
   }
@@ -478,48 +448,42 @@ export default function GPUGrid({ data, loading, error, onRefresh }: GPUGridProp
         </div>
 
         <div className="flex items-center gap-5 px-5 py-3 rounded-lg border border-border bg-surface/30 flex-wrap">
-          <Tooltip content={<span>SLURM states: {STATUS_CATEGORIES.free.states.join(", ")}</span>}>
-            <div className="flex items-center gap-1.5 text-xs font-mono text-text-muted cursor-default">
-              <span
-                className="w-2 h-2 rounded-full"
-                style={{
-                  background: STATUS_CATEGORIES.free.color,
-                  boxShadow: `0 0 4px ${STATUS_CATEGORIES.free.glow}`,
-                }}
-              />
-              <span style={{ color: STATUS_CATEGORIES.free.color }}>{summary?.free ?? 0}</span>
-              <span>Free</span>
-              {freeBreakdown && <span className="text-text-faint">({freeBreakdown})</span>}
-            </div>
-          </Tooltip>
+          <div className="flex items-center gap-1.5 text-xs font-mono text-text-muted cursor-default">
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{
+                background: STATUS_CATEGORIES.free.color,
+                boxShadow: `0 0 4px ${STATUS_CATEGORIES.free.glow}`,
+              }}
+            />
+            <span style={{ color: STATUS_CATEGORIES.free.color }}>{summary?.free ?? 0}</span>
+            <span>Free</span>
+            {freeBreakdown && <span className="text-accent">({freeBreakdown})</span>}
+          </div>
 
-          <Tooltip content={<span>SLURM states: {STATUS_CATEGORIES.in_use.states.join(", ")}</span>}>
-            <div className="flex items-center gap-1.5 text-xs font-mono text-text-muted cursor-default">
-              <span
-                className="w-2 h-2 rounded-full"
-                style={{
-                  background: STATUS_CATEGORIES.in_use.color,
-                  boxShadow: `0 0 4px ${STATUS_CATEGORIES.in_use.glow}`,
-                }}
-              />
-              <span style={{ color: STATUS_CATEGORIES.in_use.color }}>{summary?.inUse ?? 0}</span>
-              <span>In Use</span>
-            </div>
-          </Tooltip>
+          <div className="flex items-center gap-1.5 text-xs font-mono text-text-muted cursor-default">
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{
+                background: STATUS_CATEGORIES.in_use.color,
+                boxShadow: `0 0 4px ${STATUS_CATEGORIES.in_use.glow}`,
+              }}
+            />
+            <span style={{ color: STATUS_CATEGORIES.in_use.color }}>{summary?.inUse ?? 0}</span>
+            <span>In Use</span>
+          </div>
 
-          <Tooltip content={<span>SLURM states: {STATUS_CATEGORIES.unavailable.states.join(", ")}</span>}>
-            <div className="flex items-center gap-1.5 text-xs font-mono text-text-muted cursor-default">
-              <span
-                className="w-2 h-2 rounded-full"
-                style={{
-                  background: STATUS_CATEGORIES.unavailable.color,
-                  boxShadow: `0 0 4px ${STATUS_CATEGORIES.unavailable.glow}`,
-                }}
-              />
-              <span style={{ color: STATUS_CATEGORIES.unavailable.color }}>{summary?.unavailable ?? 0}</span>
-              <span>Unavailable</span>
-            </div>
-          </Tooltip>
+          <div className="flex items-center gap-1.5 text-xs font-mono text-text-muted cursor-default">
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{
+                background: STATUS_CATEGORIES.unavailable.color,
+                boxShadow: `0 0 4px ${STATUS_CATEGORIES.unavailable.glow}`,
+              }}
+            />
+            <span style={{ color: STATUS_CATEGORIES.unavailable.color }}>{summary?.unavailable ?? 0}</span>
+            <span>Unavailable</span>
+          </div>
 
           <div className="ml-auto">
             <button
@@ -534,7 +498,7 @@ export default function GPUGrid({ data, loading, error, onRefresh }: GPUGridProp
         {error && <p className="text-error text-sm mt-3">{error}</p>}
       </section>
 
-      {open && <GPUViewModal data={data} onClose={() => setOpen(false)} />}
+      {open && <GPUViewModal data={data} onClose={() => setOpen(false)} onRefresh={onRefresh} />}
     </>
   );
 }

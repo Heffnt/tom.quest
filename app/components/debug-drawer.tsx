@@ -33,16 +33,10 @@ type DragState = {
   startSize: number;
 };
 
-const TRIGGER_ZONES: Record<Edge, string> = {
-  left: "fixed left-0 top-1/2 z-40 h-28 w-6 -translate-y-1/2",
-  right: "fixed right-0 top-1/2 z-40 h-28 w-6 -translate-y-1/2",
-  bottom: "fixed bottom-0 left-1/2 z-40 h-6 w-32 -translate-x-1/2",
-};
-
-const TRIGGER_BUTTONS: Record<Edge, string> = {
-  left: "absolute left-0 top-1/2 -translate-y-1/2 rounded-r-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-accent",
-  right: "absolute right-0 top-1/2 -translate-y-1/2 rounded-l-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-accent",
-  bottom: "absolute bottom-0 left-1/2 -translate-x-1/2 rounded-t-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-accent",
+const TRIGGER_EDGE_ICONS: Record<Edge, string> = {
+  left: "◂",
+  right: "▸",
+  bottom: "▾",
 };
 
 const PANEL_SHELL: Record<Edge, string> = {
@@ -57,6 +51,34 @@ const RESIZE_HANDLES: Record<Edge, string> = {
   bottom: "absolute left-0 top-0 h-2 w-full cursor-row-resize",
 };
 
+function TriggerTab({ edge, onClick }: { edge: Edge; onClick: () => void }) {
+  const positionClasses: Record<Edge, string> = {
+    left: "fixed left-0 top-1/2 -translate-y-1/2 z-40",
+    right: "fixed right-0 top-1/2 -translate-y-1/2 z-40",
+    bottom: "fixed bottom-0 left-1/2 -translate-x-1/2 z-40",
+  };
+  const tabClasses: Record<Edge, string> = {
+    left: "rounded-r-md border-r border-t border-b border-border/60 pl-0 pr-1.5 py-3",
+    right: "rounded-l-md border-l border-t border-b border-border/60 pr-0 pl-1.5 py-3",
+    bottom: "rounded-t-md border-l border-r border-t border-border/60 px-4 pb-0 pt-1",
+  };
+
+  return (
+    <div className={positionClasses[edge]}>
+      <button
+        type="button"
+        aria-label={`Open debug panel from ${edge}`}
+        onClick={onClick}
+        className={`${tabClasses[edge]} bg-surface/80 backdrop-blur-sm text-accent/50 hover:text-accent hover:bg-surface transition-all duration-200 cursor-pointer group`}
+      >
+        <span className="text-[10px] font-mono tracking-tight opacity-60 group-hover:opacity-100 transition-opacity">
+          {TRIGGER_EDGE_ICONS[edge]}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 export default function DebugDrawer({
   openEdge,
   sizeByEdge,
@@ -67,9 +89,7 @@ export default function DebugDrawer({
   onResizeEnd,
 }: DebugDrawerProps) {
   const { isTom } = useAuth();
-  const panelRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [hoverEdge, setHoverEdge] = useState<Edge | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [stickToBottom, setStickToBottom] = useState(true);
   const [dragState, setDragState] = useState<DragState | null>(null);
@@ -86,25 +106,6 @@ export default function DebugDrawer({
     }
     previousOpenEdgeRef.current = openEdge;
   }, [lines, openEdge, stickToBottom]);
-
-  useEffect(() => {
-    if (!openEdge) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (panelRef.current?.contains(target)) return;
-      onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("mousedown", handlePointerDown);
-    };
-  }, [onClose, openEdge]);
 
   useEffect(() => {
     if (copyState === "idle") return;
@@ -179,33 +180,10 @@ export default function DebugDrawer({
   return (
     <>
       {!openEdge && (["left", "right", "bottom"] as Edge[]).map((edge) => (
-        <div
-          key={edge}
-          className={TRIGGER_ZONES[edge]}
-          onMouseEnter={() => setHoverEdge(edge)}
-          onMouseLeave={() => setHoverEdge((current) => (current === edge ? null : current))}
-        >
-          <button
-            type="button"
-            aria-label={`Open debug panel from ${edge}`}
-            onClick={() => onOpen(edge)}
-            className={`${TRIGGER_BUTTONS[edge]} transition-all duration-150 ease-out ${
-              hoverEdge === edge
-                ? "opacity-100"
-                : edge === "left"
-                  ? "-translate-x-full opacity-0 pointer-events-none"
-                  : edge === "right"
-                    ? "translate-x-full opacity-0 pointer-events-none"
-                    : "translate-y-full opacity-0 pointer-events-none"
-            }`}
-          >
-            Debug
-          </button>
-        </div>
+        <TriggerTab key={edge} edge={edge} onClick={() => onOpen(edge)} />
       ))}
       {openEdge && (
         <section
-          ref={panelRef}
           aria-label="Debug panel"
           className={`${PANEL_SHELL[openEdge]} ${dragState ? "" : "transition-[width,height] duration-150 ease-out"}`}
           style={panelStyle}
@@ -215,25 +193,25 @@ export default function DebugDrawer({
             onMouseDown={handleResizeMouseDown}
             className={RESIZE_HANDLES[openEdge]}
           />
-          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-semibold text-text">Debug</h2>
               <span className="text-[10px] uppercase tracking-wide text-text-faint">
                 {openEdge}
               </span>
             </div>
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex items-center gap-1.5 text-xs">
               <button
                 type="button"
                 onClick={handleCopy}
-                className="rounded border border-border px-2 py-1 text-text-muted hover:border-text-muted hover:text-text transition-colors duration-150"
+                className="rounded border border-border px-2 py-0.5 text-text-muted hover:border-text-muted hover:text-text transition-colors duration-150"
               >
                 {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy"}
               </button>
               <button
                 type="button"
                 onClick={() => debug.clear()}
-                className="rounded border border-border px-2 py-1 text-text-muted hover:border-text-muted hover:text-text transition-colors duration-150"
+                className="rounded border border-border px-2 py-0.5 text-text-muted hover:border-text-muted hover:text-text transition-colors duration-150"
               >
                 Clear
               </button>
@@ -241,9 +219,11 @@ export default function DebugDrawer({
                 type="button"
                 aria-label="Close debug panel"
                 onClick={onClose}
-                className="rounded border border-border px-2 py-1 text-text-muted hover:border-text-muted hover:text-text transition-colors duration-150"
+                className="ml-1 flex items-center justify-center w-6 h-6 rounded text-text-faint hover:text-text hover:bg-border/40 transition-colors duration-150"
               >
-                Close
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M2 2l8 8M10 2l-8 8" />
+                </svg>
               </button>
             </div>
           </div>

@@ -220,6 +220,11 @@ export default function TerminalModal({
   }, [mode, sessionName, user?.id]);
 
   useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -278,6 +283,15 @@ export default function TerminalModal({
                 Open Terminal
               </button>
             )}
+            {mode === "interactive" && (
+              <button
+                type="button"
+                onClick={() => setMode("viewer")}
+                className="text-xs px-2.5 py-1 rounded border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors"
+              >
+                View Only
+              </button>
+            )}
             <button
               type="button"
               onClick={() => window.open(`/turing/terminal/${encodeURIComponent(sessionName)}`, "_blank")}
@@ -294,7 +308,7 @@ export default function TerminalModal({
             ref={viewerRef}
             className="flex-1 bg-black text-[#d4d4d4] font-mono text-[13px] leading-5 p-4 overflow-auto whitespace-pre-wrap break-words"
           >
-            {sessionOutput.data?.output ?? (sessionOutput.error ? sessionOutput.error : "Loading…")}
+            {sessionOutput.data?.output ?? (sessionOutput.error ? sessionOutput.error : "Fetching tmux session output…")}
           </pre>
         ) : (
           <div ref={containerRef} className="flex-1 bg-black p-2 overflow-hidden" />

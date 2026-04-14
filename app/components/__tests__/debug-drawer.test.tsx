@@ -58,7 +58,7 @@ describe("DebugDrawer", () => {
     return props;
   }
 
-  it("renders debug lines and closes when clicking outside the panel", async () => {
+  it("renders debug lines and does not close on outside click", async () => {
     debug.scoped("test").log("hello");
     const props = await renderDrawer();
 
@@ -68,7 +68,7 @@ describe("DebugDrawer", () => {
       document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(props.onClose).toHaveBeenCalledTimes(1);
+    expect(props.onClose).not.toHaveBeenCalled();
   });
 
   it("copies the snapshot text from the panel", async () => {

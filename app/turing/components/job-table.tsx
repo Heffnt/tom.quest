@@ -170,74 +170,84 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
     <section aria-label="Active jobs" className="border border-border rounded-lg p-5 bg-surface/40">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold">Jobs</h2>
-        {isTom && data && data.length > 0 && (
-          <button type="button" onClick={() => setCancelAllOpen(true)}
-            className="text-xs px-3 py-1 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
-            Cancel all
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={onRefresh} title="Refresh jobs"
+            className="text-xs px-2 py-1 rounded border border-border text-text-faint hover:text-text-muted hover:border-text-muted transition-colors duration-150">
+            ↻
           </button>
-        )}
+          {isTom && data && data.length > 0 && (
+            <button type="button" onClick={() => setCancelAllOpen(true)}
+              className="text-xs px-3 py-1 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
+              Cancel all
+            </button>
+          )}
+        </div>
       </div>
 
-      {loading && !data && <p className="text-text-faint text-sm">Loading…</p>}
+      {loading && !data && <p className="text-text-faint text-sm">Fetching active Slurm jobs…</p>}
       {error && <p className="text-error text-sm">{error}</p>}
 
       {data && data.length === 0 && <p className="text-text-faint text-sm">No active jobs.</p>}
 
       {data && data.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-[10px] uppercase tracking-widest text-text-faint">
-              <th className="py-1.5 pr-4">Job</th>
-              <th className="pr-4">GPU</th>
-              <th className="pr-4">Status</th>
-              <th className="pr-4">Time Left</th>
-              <th className="pr-4">Memory</th>
-              <th className="pr-4">Temp</th>
-              <th className="pr-4">Activity</th>
-              <th className="text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map(job => {
-              const isTerminal = TERMINAL_STATUSES.has(job.status.split(" ")[0]);
-              return (
-                <tr key={job.job_id} className="border-t border-border/40">
-                  <td className="py-2.5 pr-4 font-mono text-text-muted">{job.job_id}</td>
-                  <td className="pr-4 text-text-faint text-xs">{gpuTypeLabel(job.gpu_type)}</td>
-                  <td className="pr-4">
-                    <span className="text-xs font-mono" style={{ color: statusColor(job.status) }}>
-                      {job.status}
-                    </span>
-                  </td>
-                  <td className="pr-4 font-mono text-text-muted text-xs">{job.time_remaining}</td>
-                  <td className="pr-4"><MemoryCell stats={job.gpu_stats} /></td>
-                  <td className="pr-4"><TempCell stats={job.gpu_stats} /></td>
-                  <td className="pr-4"><ActivityCell stats={job.gpu_stats} /></td>
-                  <td className="text-right">
-                    <div className="inline-flex gap-1.5">
-                      {job.screen_name && (
-                        <button type="button" onClick={() => setTerminalSession(job.screen_name)}
-                          className="text-xs px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors duration-150">
-                          View
-                        </button>
-                      )}
-                      {!job.screen_name && !isTerminal && (
-                        <span className="text-[10px] text-text-faint font-mono">Queued</span>
-                      )}
-                      {isTom && !isTerminal && (
-                        <button type="button" aria-label={`Cancel job ${job.job_id}`}
-                          onClick={() => setCancelJobId(job.job_id)}
-                          className="text-xs px-2 py-0.5 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-[9px] uppercase tracking-widest text-text-faint">
+                <th className="py-1 pr-2">Job</th>
+                <th className="pr-2">Session</th>
+                <th className="pr-2">GPU</th>
+                <th className="pr-2">Status</th>
+                <th className="pr-2">Time</th>
+                <th className="pr-2">Mem</th>
+                <th className="pr-2">Temp</th>
+                <th className="pr-1">Act</th>
+                <th className="text-right" />
+              </tr>
+            </thead>
+            <tbody>
+              {data.map(job => {
+                const isTerminal = TERMINAL_STATUSES.has(job.status.split(" ")[0]);
+                return (
+                  <tr key={job.job_id} className="border-t border-border/40">
+                    <td className="py-2 pr-2 font-mono text-text-muted">{job.job_id}</td>
+                    <td className="pr-2 font-mono text-text-faint">{job.screen_name || "—"}</td>
+                    <td className="pr-2 text-text-faint">{gpuTypeLabel(job.gpu_type)}</td>
+                    <td className="pr-2">
+                      <span className="font-mono" style={{ color: statusColor(job.status) }}>
+                        {job.status}
+                      </span>
+                    </td>
+                    <td className="pr-2 font-mono text-text-muted">{job.time_remaining}</td>
+                    <td className="pr-2"><MemoryCell stats={job.gpu_stats} /></td>
+                    <td className="pr-2"><TempCell stats={job.gpu_stats} /></td>
+                    <td className="pr-1"><ActivityCell stats={job.gpu_stats} /></td>
+                    <td className="text-right">
+                      <div className="inline-flex gap-1">
+                        {job.screen_name && (
+                          <button type="button" onClick={() => setTerminalSession(job.screen_name)}
+                            className="px-1.5 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors duration-150">
+                            View
+                          </button>
+                        )}
+                        {!job.screen_name && !isTerminal && (
+                          <span className="text-[9px] text-text-faint font-mono">Queued</span>
+                        )}
+                        {isTom && !isTerminal && (
+                          <button type="button" aria-label={`Cancel job ${job.job_id}`}
+                            onClick={() => setCancelJobId(job.job_id)}
+                            className="px-1.5 py-0.5 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {cancelJobId && (

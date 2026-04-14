@@ -94,7 +94,7 @@ app/
 │   ├── app-shell.tsx        # Client shell wrapper that owns debug-panel edge/size state, route logging, and push-layout margins
 │   ├── AuthProvider.tsx     # Auth context (user, profile, isTom, turingConnection)
 │   ├── LoginModal.tsx       # Sign in/up modal
-│   ├── debug-drawer.tsx     # Global Tom-only three-edge debug panel with hover triggers, copy/clear, outside-click close, and drag resize
+│   ├── debug-drawer.tsx     # Global Tom-only three-edge debug panel with always-visible tab triggers, X close button (no click-outside close), copy/clear, and drag resize
 │   ├── FeedbackButton.tsx   # Floating feedback form button
 │   ├── Navigation.tsx       # Nav with conditional Tom links
 │   └── ProfileModal.tsx     # Username profile modal
@@ -132,7 +132,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Feedback button: floating bottom-right modal for user feedback
 - Feedback page: Tom-only list of submissions with name + username when available
 - Debug Logs: `app/lib/debug.ts` is the single client debug core (`debug.scoped`, `registerState`, `snapshot`, `clear`, `subscribe`, `getLines`, `getVersion`)
-- Debug panel: global Tom-only panel mounted via `app/components/app-shell.tsx`; opens from invisible hover zones on the left/right/bottom edges, closes on outside click or Escape, resizes with drag handles, and pushes page content instead of covering it
+- Debug panel: global Tom-only panel mounted via `app/components/app-shell.tsx`; opens from always-visible tab triggers on left/right/bottom edges, closes only via the X button (no click-outside or Escape close), resizes with drag handles, and pushes page content instead of covering it
 - Debug snapshot: `snapshot()` returns plain text with a route header, registered state lines (`auth`, `gateway`, `turing`, `terminal`), then the recent event timeline
 - Debug coverage: log Turing HTTP in `use-turing.ts`, terminal bootstrap/WebSocket in `terminal-modal.tsx`, auth transitions in `app/lib/auth.tsx`, route changes in `app-shell.tsx`, Jarvis gateway traffic in `GatewayConnection.ts`, gateway auth in `gatewayAuth.ts`, and protocol drift in `gatewayProtocol.ts`
 - Debug dedupe: repeated successful polling requests should use `req(..., { dedupeSuccessForMs, defer: true })` so the panel stays readable; errors and state changes still log immediately
@@ -160,19 +160,19 @@ tom-quest-api/               # FastAPI on Turing HPC
 - GPU Report API: returns `{nodes, summary, gpu_jobs_by_node}` with raw Slurm node states plus per-GPU job/activity data
   - NodeInfo: `{name, gpu_type, partition, total_gpus, allocated_gpus, state, memory_total_mb, memory_allocated_mb}`
   - state: raw Slurm state string (for example `IDLE`, `MIXED`, `DOWN*`, `COMPLETING`)
-- GPU UI: compact summary bar on the main page plus a `View GPUs` bottom-sheet modal; three status colors only (free/in use/unavailable), per-node GPU squares, hover/click popovers with `{user, job_id, elapsed, limit, progress_pct, memory/temp/util}`, and optional tucked-away academic/private sections
+- GPU UI: compact summary bar (free count text in amber) on the main page plus a `View GPUs` bottom-sheet modal with a refresh button; three status colors only (free/in use/unavailable), per-node GPU squares with hover-only popovers (no click, dismissed on mouse leave) showing `{user, job_id, elapsed, limit, progress_pct, memory/temp/util}`, grey-only state badges for MIXED (no half-green), no tooltip on state badges, body scroll locked when modal is open, and optional tucked-away academic/private sections
 - GPU type labels: "nvidia (H100)", "tesla (V100)"
 - Allocation: `salloc --no-shell --job-name=<user job name>` (default job name `allocation`), default 1440 mins, blank count allocates all currently free shared GPUs, explicit counts are no longer hard-capped
 - tmux sessions: `{n}_{job_name}` with atomic reservation in `job_screens.py`; a session name is reserved immediately, but the actual tmux session is only created after the Slurm job reaches `RUNNING`
 - Session mapping: `~/.tom-quest-screens.json` stores job_id → session_name; `job_screens.py` uses a file lock and reuses the lowest free numeric prefix
-- Terminal access: jobs show `View` once the tmux session actually exists; the modal and `/turing/terminal/[session]` page both start in capture-pane view-only mode, with explicit `Open Terminal` (Tom only) and `New Tab` actions
+- Terminal access: jobs show `View` once the tmux session actually exists; the modal starts in capture-pane view-only mode with `Open Terminal` (Tom only), `View Only` (back from interactive), and `New Tab` actions; `/turing/terminal/[session]` page is a fullscreen barebones view-only terminal with no header
 - SSH attach: `tmux attach -t {session_name}`, detach with `Ctrl+b d`
 - Settings persistence: `user_settings` for signed-in users; `turing_settings` localStorage for guests
 - Auto-refresh: automatic polling only (`/jobs` every 10s, `/gpu-report` every 60s); allocation/cancel actions also trigger targeted refreshes
 - Job status: shows squeue reason in parens (e.g. "PENDING (Resources)", "RUNNING (gpu-21)")
 - Dir browse: always sends path (default `~`), surfaces upstream error
 - Turing setup: clone repo to `~/tom.quest`, use `tom-quest-api/` subdir
-- Allocate panel: GPU types from non-academic partitions with `gpu` node names; defaults are time `1440`, memory `64000`, count `1`, and project dir `/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger`; blank count allocates all free (defaults to 1 if none free)
+- Allocate panel: uses saved project profiles (label + dir + named command configs) instead of free-text paths; seed profiles for BoolBack and tom.Quest API; GPU types from non-academic partitions with `gpu` node names; defaults are time `1440`, memory `64000`, count `1`; blank count allocates all free (defaults to 1 if none free); double-click a profile to edit; old `recentDirs`/`commandPresets` settings auto-migrate to profiles on first load
 - `/gpu-types` returns `{ types: [{ type, count, nodes }] }` from the Turing API; the allocation dropdown depends on that object shape for labels, values, and free-count text
 - GPU availability totals and summary counts reflect shared GPU nodes only; academic/private nodes still appear in the modal behind explicit optional toggles
 - Active Jobs: `RUNNING (...)` rows count as running state for actions; the jobs table shows status text plus aggregated GPU memory, temperature, and activity (from cached node-side `nvidia-smi` data) instead of the old lifecycle/session columns
