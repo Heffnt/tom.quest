@@ -2,38 +2,40 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/* ── constants ────────────────────────────────────────────────── */
+/* ── layout ───────────────────────────────────────────────────── */
 
 const CANVAS_SIZE = 400;
-const CIRCLE_R = 140;
 const CX = CANVAS_SIZE / 2;
-const CY = CANVAS_SIZE / 2;
+const CY = CANVAS_SIZE / 2 - 25;
+const CIRCLE_R = 115;
 
-const PIVOT_OFFSET_Y = -CIRCLE_R * 0.35;
-const PX = CX;
-const PY = CY + PIVOT_OFFSET_Y;
+// Bar midpoint sits at (0, -BAR_OFFSET) in the symbol's local frame.
+// When the symbol rotates, the bar midpoint orbits (CX, CY) at radius BAR_OFFSET.
+const BAR_OFFSET = 62;
+const BAR_HW = 78;
+const LINE_LEN = 128;
 
-const TARGETS = [
-  -Math.PI / 4.5, // left diagonal (~-40°)
-  0,               // center vertical
-  Math.PI / 4.5,  // right diagonal (~+40°)
-];
+const ARROW_X = CX;
+const ARROW_Y = CANVAS_SIZE - 42;
 
+/* ── gameplay ─────────────────────────────────────────────────── */
+
+const TARGETS = [-Math.PI / 4.5, 0, Math.PI / 4.5]; // local line angles to hit
 const ZONE_TOL = Math.PI / 14;
-const LINE_LEN = CIRCLE_R - PIVOT_OFFSET_Y;
-const BAR_HW = CIRCLE_R * 0.65;
-const SPIN_BASE = 1.8;
+const NUM_LINES = TARGETS.length;
+
+const SPIN_BASE = 1.5;
 const SPIN_ACCEL = 0.4;
-const LAUNCH_MS = 160;
 
 /* ── types ────────────────────────────────────────────────────── */
 
-interface PlacedLine {
-  localAngle: number;
-  hit: boolean;
-}
+type Phase = "idle" | "playing" | "win" | "fail";
 
-type Phase = "idle" | "playing" | "launching" | "win" | "fail";
+interface PlacedLine {
+  angle: number; // local angle in the symbol's frame
+  flash: number; // 0..1 decay for placement feedback
+  miss?: boolean;
+}
 
 interface SymbolGameProps {
   onWin?: (timeMs: number) => void;
@@ -53,6 +55,21 @@ function fmtTime(ms: number): string {
   return `${s}.${String(ms % 1000).padStart(3, "0")}s`;
 }
 
+// Given current rotation θ, return the local angle (from local +y, the symbol's
+// "down" axis) of the direction from the bar midpoint to the arrow position.
+// Firing places a line at exactly this angle — so aim == placement.
+function aimLocalAngle(rot: number): number {
+  const gx = ARROW_X - CX;
+  const gy = ARROW_Y - CY;
+  const c = Math.cos(-rot);
+  const s = Math.sin(-rot);
+  const lx = gx * c - gy * s;
+  const ly = gx * s + gy * c;
+  const dx = lx;
+  const dy = ly + BAR_OFFSET;
+  return Math.atan2(dx, dy);
+}
+
 /* ── draw ─────────────────────────────────────────────────────── */
 
 function draw(
@@ -60,97 +77,101 @@ function draw(
   dpr: number,
   rot: number,
   placed: PlacedLine[],
-  launchProg: number | null,
-  remaining: number,
+  phase: Phase,
 ) {
   ctx.save();
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
-  // Ambient glow behind circle
   const grd = ctx.createRadialGradient(CX, CY, CIRCLE_R * 0.3, CX, CY, CIRCLE_R * 1.3);
   grd.addColorStop(0, "rgba(232,160,64,0.06)");
   grd.addColorStop(1, "rgba(232,160,64,0)");
   ctx.fillStyle = grd;
   ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
-  // Circle
   ctx.strokeStyle = "rgba(232,160,64,0.25)";
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(CX, CY, CIRCLE_R, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Rotating frame
+  // Rotating symbol
   ctx.save();
-  ctx.translate(PX, PY);
+  ctx.translate(CX, CY);
   ctx.rotate(rot);
 
-  // Horizontal bar
-  ctx.strokeStyle = "rgba(232,160,64,0.8)";
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(-BAR_HW, 0);
-  ctx.lineTo(BAR_HW, 0);
-  ctx.stroke();
-
-  // Zone guides
   ctx.save();
-  ctx.setLineDash([4, 8]);
+  ctx.setLineDash([3, 7]);
   ctx.strokeStyle = "rgba(232,160,64,0.08)";
   ctx.lineWidth = 1;
   for (const a of TARGETS) {
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.sin(a) * LINE_LEN, Math.cos(a) * LINE_LEN);
+    ctx.moveTo(0, -BAR_OFFSET);
+    ctx.lineTo(Math.sin(a) * LINE_LEN, -BAR_OFFSET + Math.cos(a) * LINE_LEN);
     ctx.stroke();
   }
   ctx.restore();
 
-  // Placed lines
+  ctx.strokeStyle = "rgba(232,160,64,0.85)";
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-BAR_HW, -BAR_OFFSET);
+  ctx.lineTo(BAR_HW, -BAR_OFFSET);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(232,160,64,0.9)";
+  ctx.beginPath();
+  ctx.arc(0, -BAR_OFFSET, 3, 0, Math.PI * 2);
+  ctx.fill();
+
   for (const l of placed) {
-    ctx.strokeStyle = l.hit ? "rgba(232,160,64,0.9)" : "rgba(239,68,68,0.9)";
-    ctx.lineWidth = 2.5;
+    const color = l.miss
+      ? `rgba(239,68,68,0.9)`
+      : `rgba(232,160,64,${0.9 + 0.1 * l.flash})`;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5 + 2 * l.flash;
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.sin(l.localAngle) * LINE_LEN, Math.cos(l.localAngle) * LINE_LEN);
-    ctx.stroke();
-  }
-
-  // Launching line
-  if (launchProg !== null) {
-    const ease = 1 - Math.pow(1 - launchProg, 3);
-    const localA = norm(-rot);
-    ctx.strokeStyle = `rgba(232,160,64,${0.3 + 0.6 * ease})`;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.sin(localA) * LINE_LEN * ease, Math.cos(localA) * LINE_LEN * ease);
+    ctx.moveTo(0, -BAR_OFFSET);
+    ctx.lineTo(Math.sin(l.angle) * LINE_LEN, -BAR_OFFSET + Math.cos(l.angle) * LINE_LEN);
     ctx.stroke();
   }
 
   ctx.restore();
 
-  // Waiting lines at bottom
-  const sp = 20;
-  const sx = CX - ((remaining - 1) * sp) / 2;
-  for (let i = 0; i < remaining; i++) {
-    ctx.strokeStyle = "rgba(232,160,64,0.35)";
+  // Arrow (tracks bar midpoint)
+  const bmx = CX + BAR_OFFSET * Math.sin(rot);
+  const bmy = CY - BAR_OFFSET * Math.cos(rot);
+  if (phase !== "win") {
+    const ang = Math.atan2(bmy - ARROW_Y, bmx - ARROW_X);
+    ctx.save();
+    ctx.translate(ARROW_X, ARROW_Y);
+    ctx.rotate(ang);
+    ctx.strokeStyle = "rgba(232,160,64,0.55)";
     ctx.lineWidth = 2;
+    ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.moveTo(sx + i * sp, CANVAS_SIZE - 35);
-    ctx.lineTo(sx + i * sp, CANVAS_SIZE - 60);
+    ctx.moveTo(-14, 0);
+    ctx.lineTo(8, 0);
     ctx.stroke();
+    ctx.fillStyle = "rgba(232,160,64,0.85)";
+    ctx.beginPath();
+    ctx.moveTo(14, 0);
+    ctx.lineTo(6, -5);
+    ctx.lineTo(6, 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
-  // Up arrow
-  if (remaining > 0) {
-    ctx.fillStyle = "rgba(232,160,64,0.3)";
+  // Shot pips
+  const used = placed.filter(p => !p.miss).length;
+  const sp = 16;
+  const sx = CX - ((NUM_LINES - 1) * sp) / 2;
+  for (let i = 0; i < NUM_LINES; i++) {
+    ctx.fillStyle = i < used ? "rgba(232,160,64,0.8)" : "rgba(232,160,64,0.25)";
     ctx.beginPath();
-    ctx.moveTo(CX, CANVAS_SIZE - 68);
-    ctx.lineTo(CX - 6, CANVAS_SIZE - 58);
-    ctx.lineTo(CX + 6, CANVAS_SIZE - 58);
-    ctx.closePath();
+    ctx.arc(sx + i * sp, CANVAS_SIZE - 14, 3, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -167,20 +188,14 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [endMs, setEndMs] = useState(0);
-  const [spinDir, setSpinDir] = useState(1);
 
-  const launchRef = useRef<{ start: number; rotAtLock: number } | null>(null);
-
-  // Mutable refs for animation loop
-  const s = useRef({
+  const state = useRef({
     phase: "idle" as Phase,
-    rot: 0,
+    rot: Math.random() * Math.PI * 2,
+    spinDir: Math.random() > 0.5 ? 1 : -1,
     placed: [] as PlacedLine[],
-    spinDir: 1,
     startMs: 0,
   });
-
-  /* ── animation loop ───────────────────────────────────────── */
 
   useEffect(() => {
     const cvs = canvasRef.current;
@@ -194,118 +209,101 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
     cvs.style.height = `${CANVAS_SIZE}px`;
 
     let prev = performance.now();
-
     const tick = (now: number) => {
-      const dt = (now - prev) / 1000;
+      const dt = Math.min(0.05, (now - prev) / 1000);
       prev = now;
-      const st = s.current;
+      const st = state.current;
 
-      if (st.phase === "playing" || st.phase === "launching") {
-        const spd = SPIN_BASE + st.placed.length * SPIN_ACCEL;
-        st.rot += spd * st.spinDir * dt;
+      if (st.phase === "idle" || st.phase === "playing") {
+        const hits = st.placed.filter(l => !l.miss).length;
+        const speed = SPIN_BASE + hits * SPIN_ACCEL;
+        st.rot = norm(st.rot + speed * st.spinDir * dt);
+      }
+      for (const l of st.placed) {
+        if (l.flash > 0) l.flash = Math.max(0, l.flash - dt * 3);
       }
 
-      let launchProg: number | null = null;
-      if (st.phase === "launching" && launchRef.current) {
-        const elapsed = now - launchRef.current.start;
-        launchProg = Math.min(elapsed / LAUNCH_MS, 1);
-
-        if (launchProg >= 1) {
-          const localA = norm(-st.rot);
-
-          let hit = false;
-          for (let t = 0; t < TARGETS.length; t++) {
-            if (Math.abs(norm(localA - TARGETS[t])) <= ZONE_TOL) {
-              const alreadyTaken = st.placed.some(
-                l => l.hit && Math.abs(norm(l.localAngle - TARGETS[t])) <= ZONE_TOL
-              );
-              if (!alreadyTaken) { hit = true; break; }
-            }
-          }
-
-          const newLine: PlacedLine = { localAngle: localA, hit };
-          const newPlaced = [...st.placed, newLine];
-          st.placed = newPlaced;
-          launchRef.current = null;
-          launchProg = null;
-
-          if (!hit) {
-            st.phase = "fail";
-            setPhase("fail");
-          } else if (newPlaced.length === 3) {
-            const elapsed = Math.round(now - st.startMs);
-            st.phase = "win";
-            setPhase("win");
-            setEndMs(elapsed);
-            setSpinDir(Math.random() > 0.5 ? 1 : -1);
-            onWinRef.current?.(elapsed);
-          } else {
-            st.phase = "playing";
-            setPhase("playing");
-            if (Math.random() > 0.6) {
-              st.spinDir *= -1;
-              setSpinDir(st.spinDir);
-            }
-          }
-        }
-      }
-
-      const remaining = 3 - st.placed.length - (launchProg !== null ? 1 : 0);
-      draw(ctx, dpr, st.rot, st.placed, launchProg, remaining);
+      draw(ctx, dpr, st.rot, st.placed, st.phase);
       rafRef.current = requestAnimationFrame(tick);
     };
-
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
   }, []);
 
-  /* ── tap ──────────────────────────────────────────────────── */
-
-  const handleTap = useCallback(() => {
-    const st = s.current;
+  const handleFire = useCallback(() => {
+    const st = state.current;
 
     if (st.phase === "idle" || st.phase === "win" || st.phase === "fail") {
       st.placed = [];
       st.phase = "playing";
       st.startMs = performance.now();
-      st.spinDir = spinDir;
-      launchRef.current = null;
+      st.rot = Math.random() * Math.PI * 2;
+      st.spinDir = Math.random() > 0.5 ? 1 : -1;
       setPhase("playing");
       setEndMs(0);
       return;
     }
 
-    if (st.phase === "launching") return;
+    if (st.phase !== "playing") return;
 
-    if (st.phase === "playing") {
-      launchRef.current = { start: performance.now(), rotAtLock: st.rot };
-      st.phase = "launching";
-      setPhase("launching");
+    const alpha = aimLocalAngle(st.rot);
+
+    let hitTarget: number | null = null;
+    for (let i = 0; i < TARGETS.length; i++) {
+      if (Math.abs(norm(alpha - TARGETS[i])) <= ZONE_TOL) {
+        const taken = st.placed.some(l => !l.miss && l.angle === TARGETS[i]);
+        if (!taken) {
+          hitTarget = TARGETS[i];
+          break;
+        }
+      }
     }
-  }, [spinDir]);
 
-  /* ── keyboard ─────────────────────────────────────────────── */
+    if (hitTarget === null) {
+      st.placed.push({ angle: alpha, flash: 0, miss: true });
+      st.phase = "fail";
+      setPhase("fail");
+      return;
+    }
+
+    st.placed.push({ angle: hitTarget, flash: 1 });
+
+    const hits = st.placed.filter(l => !l.miss).length;
+    if (hits === NUM_LINES) {
+      const ms = Math.round(performance.now() - st.startMs);
+      st.phase = "win";
+      setPhase("win");
+      setEndMs(ms);
+      onWinRef.current?.(ms);
+    } else if (Math.random() > 0.55) {
+      st.spinDir *= -1;
+    }
+  }, []);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.code === "Space" || e.key === " ") { e.preventDefault(); handleTap(); }
+      if (e.code === "Space" || e.key === " ") {
+        e.preventDefault();
+        handleFire();
+      }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [handleTap]);
-
-  /* ── render ───────────────────────────────────────────────── */
+  }, [handleFire]);
 
   return (
     <div className="relative">
       <canvas
         ref={canvasRef}
         role="application"
-        aria-label="Symbol game - tap or press space to play"
+        aria-label="Symbol game - tap or press space to fire"
         className="cursor-pointer select-none"
         style={{ width: CANVAS_SIZE, height: CANVAS_SIZE }}
-        onClick={handleTap}
-        onTouchStart={(e) => { e.preventDefault(); handleTap(); }}
+        onClick={handleFire}
+        onTouchStart={(e) => {
+          e.preventDefault();
+          handleFire();
+        }}
       />
 
       {phase === "idle" && (
@@ -337,18 +335,16 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
         </div>
       )}
 
-      {(phase === "playing" || phase === "launching") && (
+      {phase === "playing" && (
         <div className="mt-3 text-center">
           <span className="text-accent/50 text-sm font-mono tabular-nums">
-            <LiveTimer start={s.current.startMs} />
+            <LiveTimer start={state.current.startMs} />
           </span>
         </div>
       )}
     </div>
   );
 }
-
-/* ── live timer ───────────────────────────────────────────────── */
 
 function LiveTimer({ start }: { start: number }) {
   const [ms, setMs] = useState(0);
