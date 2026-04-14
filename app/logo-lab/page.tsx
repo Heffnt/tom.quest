@@ -1,345 +1,220 @@
-import type { ReactNode, SVGProps } from "react";
+import type { ReactNode, CSSProperties } from "react";
+import {
+  IBM_Plex_Mono,
+  JetBrains_Mono,
+  Space_Mono,
+  Fira_Code,
+  Roboto_Mono,
+  DM_Mono,
+  Source_Code_Pro,
+} from "next/font/google";
 
-/* ============================================================
-   LOGO MARK A — "Editorial"
-   Syne display font + custom circular Q with internal tom-symbol.
-   No stencil bars — lets the type breathe. Most refined.
-   ============================================================ */
-function LogoEditorial(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      viewBox="0 0 840 170"
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      {/* "tom" — Syne bold, right-aligned against the Q */}
-      <text
-        x="338"
-        y="134"
-        textAnchor="end"
-        fontFamily="var(--font-syne), Syne, 'Syne Variable', sans-serif"
-        fontWeight={700}
-        fontSize={148}
-        letterSpacing="-0.03em"
-      >
-        tom
-      </text>
+/* ─────────────────────────────────────────────────────────────
+   Monospace font candidates.
+   Each family is loaded statically by next/font at build time
+   and exposes a `.style.fontFamily` string we can pipe into
+   SVG <text fontFamily={...}>.
+   ───────────────────────────────────────────────────────────── */
 
-      {/* Period dot — drawn as a true square to mirror the Q-tail square */}
-      <rect x="349" y="118" width="18" height="18" />
+const plexMono    = IBM_Plex_Mono  ({ subsets: ["latin"], weight: ["500", "600"] });
+const jbMono      = JetBrains_Mono ({ subsets: ["latin"], weight: ["500", "700"] });
+const spaceMono   = Space_Mono     ({ subsets: ["latin"], weight: ["400", "700"] });
+const firaCode    = Fira_Code      ({ subsets: ["latin"], weight: ["500", "600"] });
+const robotoMono  = Roboto_Mono    ({ subsets: ["latin"], weight: ["500", "700"] });
+const dmMono      = DM_Mono        ({ subsets: ["latin"], weight: ["500"] });
+const sourceCode  = Source_Code_Pro({ subsets: ["latin"], weight: ["500", "600"] });
 
-      {/* Q — perfect circle, centered */}
-      <circle
-        cx="420"
-        cy="82"
-        r="58"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="13"
-      />
-
-      {/* tom-symbol inside Q: central vertical stroke */}
-      <rect x="413" y="28" width="14" height="108" />
-
-      {/* tom-symbol: top cap (mirrors the caps on lowercase t stems) */}
-      <rect x="402" y="8" width="36" height="20" />
-
-      {/* Q tail — diagonal from Q centre extending past lower-right edge */}
-      <rect
-        x="413"
-        y="82"
-        width="14"
-        height="80"
-        transform="rotate(-45 420 82)"
-      />
-
-      {/* "uest" — Syne bold, left-aligned off the Q */}
-      <text
-        x="490"
-        y="134"
-        fontFamily="var(--font-syne), Syne, 'Syne Variable', sans-serif"
-        fontWeight={700}
-        fontSize={148}
-        letterSpacing="-0.03em"
-      >
-        uest
-      </text>
-    </svg>
-  );
-}
-
-/* ============================================================
-   LOGO MARK B — "Stencil / Research"
-   IBM Plex Mono + horizontal connector + underline running the
-   full width. Technical / research-journal energy.
-   ============================================================ */
-function LogoStencil(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      viewBox="0 0 860 170"
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      {/* Top connector bar */}
-      <rect x="0" y="30" width="860" height="10" />
-
-      {/* Bottom underline */}
-      <rect x="0" y="132" width="860" height="10" />
-
-      {/* "tom" in Plex Mono */}
-      <text
-        x="16"
-        y="128"
-        fontFamily="var(--font-ibm-plex-mono), 'IBM Plex Mono', monospace"
-        fontWeight={500}
-        fontSize={128}
-        letterSpacing="-0.01em"
-      >
-        tom
-      </text>
-
-      {/* Square period, baseline-aligned, mirror of Q-tail */}
-      <rect x="338" y="116" width="16" height="16" />
-
-      {/* Q — perfect circle, slightly larger than x-height */}
-      <circle
-        cx="430"
-        cy="86"
-        r="54"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="12"
-      />
-
-      {/* tom-symbol inside Q */}
-      <rect x="424" y="32" width="12" height="108" />
-      {/* top cap — pokes above the connector bar, same height as the t-stem caps */}
-      <rect x="414" y="10" width="32" height="20" />
-
-      {/* Q tail diagonal */}
-      <rect
-        x="424"
-        y="86"
-        width="12"
-        height="78"
-        transform="rotate(-45 430 86)"
-      />
-
-      {/* "uest" in Plex Mono */}
-      <text
-        x="498"
-        y="128"
-        fontFamily="var(--font-ibm-plex-mono), 'IBM Plex Mono', monospace"
-        fontWeight={500}
-        fontSize={128}
-        letterSpacing="-0.01em"
-      >
-        uest
-      </text>
-
-      {/* Tiny accent squares sitting above the connector bar on each t-stem
-          — preserves the original's "caps poking above the top line" detail. */}
-      <rect x="18" y="10" width="14" height="20" />
-      <rect x="828" y="10" width="14" height="20" />
-    </svg>
-  );
-}
-
-/* ============================================================
-   LOGO MARK C — "Geometric / No-font"
-   Fully path-based. Portable anywhere, any color, no font files.
-   Monoline 12-unit strokes throughout.
-   ============================================================ */
-function LogoGeometric(props: SVGProps<SVGSVGElement>) {
-  // Every shape uses stroke=12 or rect-width=12 for visual consistency.
-  return (
-    <svg
-      viewBox="0 0 820 160"
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      {/* Top structural line + bottom underline */}
-      <rect x="0" y="30" width="820" height="10" />
-      <rect x="0" y="130" width="820" height="10" />
-
-      {/* ── lowercase t (tom) ── stem centre x=28 */}
-      <rect x="22" y="6" width="12" height="136" />
-      <rect x="10" y="6" width="36" height="18" />
-
-      {/* ── lowercase o ── centre x=98 */}
-      <ellipse
-        cx="98"
-        cy="96"
-        rx="36"
-        ry="40"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="12"
-      />
-
-      {/* ── lowercase m ── three stems + two hump arcs, centre x=220 */}
-      <rect x="166" y="60" width="12" height="82" />
-      <rect x="214" y="60" width="12" height="82" />
-      <rect x="262" y="60" width="12" height="82" />
-      <path
-        d="M 172 60 Q 172 56 178 56 L 214 56 Q 220 56 220 62"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="12"
-      />
-      <path
-        d="M 220 60 Q 220 56 226 56 L 262 56 Q 268 56 268 62"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="12"
-      />
-
-      {/* ── period dot (square, mirrors Q-tail) ── */}
-      <rect x="292" y="124" width="18" height="18" />
-
-      {/* ── capital Q ── centre (410, 80), perfect circle */}
-      <circle
-        cx="410"
-        cy="80"
-        r="56"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="13"
-      />
-      {/* Inner tom-symbol: vertical */}
-      <rect x="403" y="26" width="14" height="108" />
-      {/* Top cap */}
-      <rect x="392" y="6" width="36" height="20" />
-      {/* Q tail */}
-      <rect
-        x="403"
-        y="80"
-        width="14"
-        height="78"
-        transform="rotate(-45 410 80)"
-      />
-
-      {/* ── lowercase u ── centre x=536 */}
-      <rect x="504" y="60" width="12" height="60" />
-      <rect x="556" y="60" width="12" height="82" />
-      <path
-        d="M 504 120 Q 504 142 526 142 L 546 142 Q 568 142 568 120"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="12"
-      />
-
-      {/* ── lowercase e ── centre x=622 */}
-      <ellipse
-        cx="622"
-        cy="96"
-        rx="34"
-        ry="40"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="12"
-      />
-      <rect x="588" y="92" width="68" height="12" />
-
-      {/* ── lowercase s ── centre x=700 — two stacked arcs */}
-      <path
-        d="M 728 66 Q 718 56 704 56 Q 680 56 680 74 Q 680 90 704 94 L 720 98 Q 740 102 740 120 Q 740 140 716 140 Q 698 140 686 128"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="12"
-        strokeLinecap="square"
-      />
-
-      {/* ── lowercase t (quest) ── stem centre x=788 */}
-      <rect x="782" y="6" width="12" height="136" />
-      <rect x="770" y="6" width="36" height="18" />
-    </svg>
-  );
-}
-
-/* ============================================================
-   SYMBOL MARK — the Q-mark only.
-   For favicons, avatars, tight spaces, button adornments.
-   ============================================================ */
-function SymbolMark(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      viewBox="0 0 160 160"
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <circle
-        cx="80"
-        cy="86"
-        r="56"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="13"
-      />
-      <rect x="73" y="30" width="14" height="112" />
-      <rect x="62" y="10" width="36" height="20" />
-      <rect
-        x="73"
-        y="86"
-        width="14"
-        height="78"
-        transform="rotate(-45 80 86)"
-      />
-    </svg>
-  );
-}
-
-/* ============================================================
-   PAGE
-   ============================================================ */
-
-type Mockup = {
+type FontOption = {
   id: string;
-  name: string;
-  tagline: string;
-  notes: string[];
-  Component: (props: SVGProps<SVGSVGElement>) => ReactNode;
+  label: string;
+  family: string;
+  weight: number;
+  note: string;
 };
 
-const MOCKUPS: Mockup[] = [
-  {
-    id: "editorial",
-    name: "Editorial",
-    tagline: "Syne display · no stencil bars",
-    notes: [
-      "Uses the site's existing display font (Syne, 700).",
-      "Perfect-circle Q with centred tom-symbol + mirrored square dot / tail.",
-      "Most refined; best when the logo has space around it.",
-    ],
-    Component: LogoEditorial,
-  },
-  {
-    id: "stencil",
-    name: "Stencil / Research",
-    tagline: "IBM Plex Mono · top & bottom rails",
-    notes: [
-      "Uses the site's monospace face — reinforces the research identity.",
-      "Top connector + underline run the full width, echoing the original's structural lines.",
-      "Small caps above the connector preserve the 'poking-up t-tops' detail.",
-    ],
-    Component: LogoStencil,
-  },
-  {
-    id: "geometric",
-    name: "Geometric (no-font)",
-    tagline: "Pure paths · portable anywhere",
-    notes: [
-      "Every letter drawn from rects + arcs — no font file required.",
-      "Safe to export as a standalone asset (PDF, print, external sites).",
-      "Honours the original concept most literally: structural line doubles as t-crossbar.",
-    ],
-    Component: LogoGeometric,
-  },
+const FONTS: FontOption[] = [
+  { id: "plex",    label: "IBM Plex Mono",    family: plexMono.style.fontFamily,   weight: 500, note: "Already on the site. Humanist, slightly warm. Narrow-oval Q." },
+  { id: "jb",      label: "JetBrains Mono",   family: jbMono.style.fontFamily,     weight: 500, note: "Geometric, very even colour. Round Q. Strong dev-tool association." },
+  { id: "space",   label: "Space Mono",       family: spaceMono.style.fontFamily,  weight: 400, note: "Retro-futurist. Square-ish rounded Q. Most 'characterful' — loudest option." },
+  { id: "fira",    label: "Fira Code",        family: firaCode.style.fontFamily,   weight: 500, note: "Open apertures, slightly humanist. Oval Q." },
+  { id: "roboto",  label: "Roboto Mono",      family: robotoMono.style.fontFamily, weight: 500, note: "Neutral, corporate-tech. Round but thin Q." },
+  { id: "dm",      label: "DM Mono",          family: dmMono.style.fontFamily,     weight: 500, note: "Soft geometric. Near-circular Q. Quietly distinctive." },
+  { id: "source",  label: "Source Code Pro",  family: sourceCode.style.fontFamily, weight: 500, note: "Adobe's coder mono. Razor-clean, geometric. Near-circular Q." },
 ];
+
+/* ─────────────────────────────────────────────────────────────
+   Logo geometry
+   ─────────────────────────────────────────────────────────────
+   Layout is 9 monospace cells wide: t o m . Q u e s t
+   Each cell has width W = fontSize * 0.6 (the standard mono
+   advance ratio). `textLength` + `lengthAdjust="spacing"` force
+   actual rendered width to exactly 4W per side regardless of the
+   font's real metrics — so the left 't' and right 't' are
+   provably equidistant from the Q at cell 5.
+   ───────────────────────────────────────────────────────────── */
+
+const FONT_SIZE   = 140;
+const W           = FONT_SIZE * 0.6;          // 84 — mono advance cell
+const MARGIN      = 24;
+const TOTAL_W     = MARGIN * 2 + 9 * W;       // 804
+const BASELINE    = 140;
+const CAP_TOP     = 42;                       // ≈ baseline - 0.7·fontSize
+const X_HEIGHT_TOP = 70;                      // ≈ baseline - 0.5·fontSize
+const HEIGHT      = 182;
+const BAR_Y       = X_HEIGHT_TOP;             // bar centreline
+const BAR_H       = 10;
+const UNDERLINE_Y = BASELINE + 14;
+
+const Q_CX        = MARGIN + 4.5 * W;          // centre of cell 5
+const Q_CY        = (CAP_TOP + BASELINE) / 2;  // vertically centred in cap-height
+const Q_R         = (BASELINE - CAP_TOP) / 2;  // 49
+
+const STROKE      = 12;
+
+/* Custom period dot — takes the place of cell 4 ('.').
+   Sized to carry the visual weight of a letter, so the
+   left of the Q reads as 3 glyphs + dot (4 masses) to match
+   'uest' on the right (also 4 masses). This is what makes the
+   two t's visually equidistant from the Q, not just cell-wise.   */
+const DOT_CX      = MARGIN + 3.5 * W;
+const DOT_SIZE    = 26;                      // substantial, not font-dust
+const DOT_Y       = BASELINE - DOT_SIZE;
+
+/* Three lines descend from the midpoint of the bar at (Q_CX, BAR_Y).
+   Left points at the dot, stops at the Q's circle edge.
+   Right mirrors that angle and extends past the Q as the tail.    */
+const DIAG_DX     = DOT_CX - Q_CX;           // negative: -84  → slope targets the dot
+const DIAG_DY     = (BASELINE - DOT_SIZE / 2) - BAR_Y; // 57
+const LEFT_CUT    = 0.60;                    // stop at 60% of the reach (on the Q circle)
+const LEFT_END_X  = Q_CX + DIAG_DX * LEFT_CUT;
+const LEFT_END_Y  = BAR_Y + DIAG_DY * LEFT_CUT;
+const RIGHT_END_X = Q_CX - DIAG_DX * 0.85;   // mirror, extends past the Q
+const RIGHT_END_Y = BAR_Y + DIAG_DY * 0.85;
+
+/* ─────────────────────────────────────────────────────────────
+   <Logo /> — parameterised by font family
+   ───────────────────────────────────────────────────────────── */
+
+function Logo({
+  family,
+  weight = 500,
+  showRails = true,
+  className,
+  style,
+}: {
+  family: string;
+  weight?: number;
+  showRails?: boolean;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <svg
+      viewBox={`0 0 ${TOTAL_W} ${HEIGHT}`}
+      fill="currentColor"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      style={style}
+    >
+      {/* Structural top rail — doubles as the t-crossbars and the
+          horizontal of the tom-symbol. Hidden when showRails=false. */}
+      {showRails && (
+        <>
+          <rect x="0" y={BAR_Y - BAR_H / 2} width={TOTAL_W} height={BAR_H} />
+          <rect x="0" y={UNDERLINE_Y - BAR_H / 2} width={TOTAL_W} height={BAR_H} />
+        </>
+      )}
+
+      {/* "tom" — 3 cells. Period is not a text char; it's drawn below. */}
+      <text
+        x={MARGIN}
+        y={BASELINE}
+        fontFamily={family}
+        fontWeight={weight}
+        fontSize={FONT_SIZE}
+        textLength={3 * W}
+        lengthAdjust="spacing"
+        style={{ fontVariantLigatures: "none" }}
+      >
+        tom
+      </text>
+
+      {/* Custom period dot — cell 4, baseline-aligned.
+          Square so it mirrors the Q-tail terminus visually. */}
+      <rect
+        x={DOT_CX - DOT_SIZE / 2}
+        y={DOT_Y}
+        width={DOT_SIZE}
+        height={DOT_SIZE}
+      />
+
+      {/* "uest" — left-edge starts exactly at Q's right cell (cell 6) */}
+      <text
+        x={MARGIN + 5 * W}
+        y={BASELINE}
+        fontFamily={family}
+        fontWeight={weight}
+        fontSize={FONT_SIZE}
+        textLength={4 * W}
+        lengthAdjust="spacing"
+        style={{ fontVariantLigatures: "none" }}
+      >
+        uest
+      </text>
+
+      {/* ── Q mark ─────────────────────────────────────────── */}
+      {/* Circle (the 'O' of tom) */}
+      <circle
+        cx={Q_CX}
+        cy={Q_CY}
+        r={Q_R}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={STROKE}
+      />
+
+      {/* Vertical: meets horizontal bar to form the 'T' of tom.
+          Starts just under the bar, descends through the Q. */}
+      <line
+        x1={Q_CX}
+        y1={BAR_Y}
+        x2={Q_CX}
+        y2={BASELINE}
+        stroke="currentColor"
+        strokeWidth={STROKE}
+        strokeLinecap="butt"
+      />
+
+      {/* Right diagonal — mirrors the left's angle, extends past the Q. */}
+      <line
+        x1={Q_CX}
+        y1={BAR_Y}
+        x2={RIGHT_END_X}
+        y2={RIGHT_END_Y}
+        stroke="currentColor"
+        strokeWidth={STROKE}
+        strokeLinecap="butt"
+      />
+
+      {/* Left diagonal — stops inside / at the Q circle.
+          The period in 'tom.' sits at the continuation of its
+          trajectory, serving as the 'dot' terminus. */}
+      <line
+        x1={Q_CX}
+        y1={BAR_Y}
+        x2={LEFT_END_X}
+        y2={LEFT_END_Y}
+        stroke="currentColor"
+        strokeWidth={STROKE}
+        strokeLinecap="butt"
+      />
+    </svg>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Page
+   ───────────────────────────────────────────────────────────── */
 
 function Swatch({
   label,
@@ -357,12 +232,12 @@ function Swatch({
   return (
     <div className="flex flex-col gap-2">
       <div
-        className={`flex items-center justify-center rounded-md p-8 ${border ?? ""}`}
+        className={`flex items-center justify-center rounded-md p-6 ${border ?? ""}`}
         style={{ background: bg, color: fg }}
       >
         {children}
       </div>
-      <div className="text-xs text-text-muted font-mono uppercase tracking-wider">
+      <div className="text-[11px] text-text-muted font-mono uppercase tracking-wider">
         {label}
       </div>
     </div>
@@ -371,156 +246,159 @@ function Swatch({
 
 export default function LogoLab() {
   return (
-    <div className="max-w-5xl mx-auto px-6 py-16">
+    <div className="max-w-6xl mx-auto px-6 py-16">
       <header className="animate-settle">
         <div className="text-xs font-mono uppercase tracking-[0.2em] text-accent">
-          Logo Lab
+          Logo Lab · v2
         </div>
         <h1 className="mt-2 text-4xl font-bold tracking-tight">
-          tom.Quest · identity mockups
+          tom.Quest · font candidates
         </h1>
-        <p className="mt-3 text-text-muted max-w-2xl leading-relaxed">
-          Three directions for a clean, reusable SVG logo. All marks use{" "}
-          <code className="font-mono text-text">currentColor</code>, so one file
-          works in any colour at any size. Decide which direction — then that
-          SVG replaces the hand-traced one in{" "}
-          <code className="font-mono text-text">/public/images/</code>.
+        <p className="mt-4 text-text-muted max-w-3xl leading-relaxed">
+          The Q-mark is a single custom SVG — a perfect circle (the <em>o</em>)
+          with a horizontal bar inside, three lines descending from its
+          midpoint (the stylised <em>m</em>), the vertical forming a <em>T</em>{" "}
+          with the bar, the right line extending out as the Q&apos;s tail, and
+          the left line stopping where the period of <code className="font-mono text-text">tom.</code>{" "}
+          takes over. No cap on top.
+        </p>
+        <p className="mt-3 text-text-muted max-w-3xl leading-relaxed">
+          All candidates below are <strong>monospace</strong> — so each cell is
+          equal width. To make the two <code className="font-mono text-text">t</code>
+          s <em>visually</em> equidistant (not just cell-wise), the period is
+          drawn as a substantial custom square rather than the font&apos;s tiny
+          dot. Left reads as 4 masses (<code className="font-mono text-text">t&nbsp;o&nbsp;m&nbsp;●</code>)
+          and right as 4 masses (<code className="font-mono text-text">u&nbsp;e&nbsp;s&nbsp;t</code>)
+          — balanced around a custom circular Q.
         </p>
       </header>
 
-      <section className="mt-16 flex flex-col gap-20">
-        {MOCKUPS.map(({ id, name, tagline, notes, Component }, i) => (
+      {/* ── The shortlist ───────────────────────────────────── */}
+      <section className="mt-16 flex flex-col gap-16">
+        {FONTS.map(({ id, label, family, weight, note }, i) => (
           <article
             key={id}
             className={`animate-settle-delay-${Math.min(i + 1, 3)}`}
           >
-            <div className="flex items-baseline justify-between border-b border-border pb-3 mb-8">
+            <div className="flex items-baseline justify-between border-b border-border pb-3 mb-6">
               <div>
-                <h2 className="text-2xl font-semibold tracking-tight">
-                  {i + 1}. {name}
+                <h2 className="text-xl font-semibold tracking-tight">
+                  {label}
                 </h2>
-                <div className="text-sm text-text-muted font-mono mt-1">
-                  {tagline}
-                </div>
+                <div className="text-sm text-text-muted mt-1">{note}</div>
               </div>
               <div className="text-xs text-text-faint font-mono">#{id}</div>
             </div>
 
-            {/* Large hero swatch */}
+            {/* Hero */}
             <Swatch
-              label="hero · white on ink"
+              label="white on ink · rails on"
               bg="var(--color-bg)"
               fg="var(--color-text)"
               border="border border-border"
             >
-              <Component className="w-full max-w-2xl h-auto" />
+              <Logo
+                family={family}
+                weight={weight}
+                className="w-full max-w-3xl h-auto"
+              />
             </Swatch>
 
-            {/* Colour / scale grid */}
-            <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Colour + rails-off grid */}
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6">
               <Swatch
-                label="amber accent · dark"
+                label="amber on dark · rails on"
                 bg="var(--color-surface)"
                 fg="var(--color-accent)"
                 border="border border-border"
               >
-                <Component className="w-full h-auto" />
+                <Logo family={family} weight={weight} className="w-full h-auto" />
               </Swatch>
-              <Swatch label="ink on paper" bg="#f5f1e8" fg="#0a0e17">
-                <Component className="w-full h-auto" />
+              <Swatch label="rails off · ink on paper" bg="#f5f1e8" fg="#0a0e17">
+                <Logo
+                  family={family}
+                  weight={weight}
+                  showRails={false}
+                  className="w-full h-auto"
+                />
               </Swatch>
-              <Swatch label="white knockout" bg="#e8a040" fg="#0a0e17">
-                <Component className="w-full h-auto" />
+              <Swatch label="knockout" bg="#e8a040" fg="#0a0e17">
+                <Logo family={family} weight={weight} className="w-full h-auto" />
               </Swatch>
             </div>
 
-            {/* Scale test — nav-size and tiny */}
-            <div className="mt-6 flex items-center gap-8 p-6 rounded-md border border-border bg-surface">
+            {/* Scale test */}
+            <div className="mt-4 flex flex-wrap items-center gap-8 p-5 rounded-md border border-border bg-surface">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-mono text-text-muted w-16">
-                  nav (30px)
+                <span className="text-[11px] font-mono text-text-muted w-14">
+                  nav 30
                 </span>
-                <Component style={{ height: 30, width: "auto" }} />
+                <Logo family={family} weight={weight} style={{ height: 30, width: "auto" }} />
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-xs font-mono text-text-muted w-16">
-                  tiny (18px)
+                <span className="text-[11px] font-mono text-text-muted w-14">
+                  tiny 20
                 </span>
-                <Component style={{ height: 18, width: "auto" }} />
+                <Logo family={family} weight={weight} style={{ height: 20, width: "auto" }} />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-mono text-text-muted w-14">
+                  no rails
+                </span>
+                <Logo
+                  family={family}
+                  weight={weight}
+                  showRails={false}
+                  style={{ height: 30, width: "auto" }}
+                />
               </div>
             </div>
-
-            {/* Notes */}
-            <ul className="mt-6 space-y-1.5 text-sm text-text/80 leading-relaxed list-disc list-inside">
-              {notes.map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
           </article>
         ))}
-
-        {/* Symbol mark */}
-        <article>
-          <div className="flex items-baseline justify-between border-b border-border pb-3 mb-8">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight">
-                ⊕ Symbol mark
-              </h2>
-              <div className="text-sm text-text-muted font-mono mt-1">
-                Q-only · favicon, avatar, tab icon
-              </div>
-            </div>
-            <div className="text-xs text-text-faint font-mono">#symbol</div>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-            <Swatch
-              label="dark"
-              bg="var(--color-bg)"
-              fg="var(--color-text)"
-              border="border border-border"
-            >
-              <SymbolMark className="w-24 h-24" />
-            </Swatch>
-            <Swatch
-              label="accent"
-              bg="var(--color-surface)"
-              fg="var(--color-accent)"
-              border="border border-border"
-            >
-              <SymbolMark className="w-24 h-24" />
-            </Swatch>
-            <Swatch label="paper" bg="#f5f1e8" fg="#0a0e17">
-              <SymbolMark className="w-24 h-24" />
-            </Swatch>
-            <Swatch label="knockout" bg="#e8a040" fg="#0a0e17">
-              <SymbolMark className="w-24 h-24" />
-            </Swatch>
-          </div>
-
-          <div className="mt-6 flex items-center gap-8 p-6 rounded-md border border-border bg-surface">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono text-text-muted w-16">
-                32px
-              </span>
-              <SymbolMark style={{ height: 32, width: 32 }} />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono text-text-muted w-16">
-                16px
-              </span>
-              <SymbolMark style={{ height: 16, width: 16 }} />
-            </div>
-          </div>
-        </article>
       </section>
 
-      <footer className="mt-20 pt-8 border-t border-border text-sm text-text-muted">
-        Once you pick one, I&apos;ll export it as a static file in{" "}
-        <code className="font-mono text-text">/public/images/logo.svg</code>{" "}
-        and swap <code className="font-mono text-text">navigation.tsx</code> to
-        render it with <code className="font-mono text-text">currentColor</code>
-        . Then the four existing colour variants can be deleted.
+      {/* ── Reference: the font's OWN Q rendering ───────────── */}
+      <section className="mt-24">
+        <div className="border-b border-border pb-3 mb-6">
+          <h2 className="text-xl font-semibold tracking-tight">
+            Reference · each font&apos;s native Q
+          </h2>
+          <p className="text-sm text-text-muted mt-1">
+            For comparison only — straight <code className="font-mono text-text">tom.Quest</code>{" "}
+            in the font with no overlay. Lets you judge which fonts have a Q
+            shape that already reads as circular.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {FONTS.map(({ id, label, family, weight }) => (
+            <div
+              key={id}
+              className="flex items-center justify-between gap-6 p-6 rounded-md border border-border bg-surface"
+            >
+              <span
+                style={{
+                  fontFamily: family,
+                  fontWeight: weight,
+                  fontSize: 56,
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                tom.Quest
+              </span>
+              <span className="text-xs font-mono text-text-muted">{label}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <footer className="mt-20 pt-8 border-t border-border text-sm text-text-muted leading-relaxed">
+        Tell me which font (<code className="font-mono text-text">#plex</code>,{" "}
+        <code className="font-mono text-text">#dm</code>,{" "}
+        <code className="font-mono text-text">#geist</code>, etc.) and whether
+        you want rails on or off, and I&apos;ll export a single{" "}
+        <code className="font-mono text-text">logo.svg</code>, swap it into{" "}
+        <code className="font-mono text-text">navigation.tsx</code>, and delete
+        the four old colour-variant files.
       </footer>
     </div>
   );
