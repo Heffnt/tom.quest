@@ -25,6 +25,10 @@ interface SessionClientsResponse {
   attached_clients: number;
 }
 
+type SessionClientsCheckResult =
+  | { ok: true; attachedClients: number }
+  | { ok: false; errorMessage: string };
+
 interface SessionOutputResponse {
   output: string;
 }
@@ -75,7 +79,7 @@ async function fetchTunnelUrl(userId: string | undefined): Promise<{ url: string
 async function fetchSessionClients(
   userId: string | undefined,
   sessionName: string,
-): Promise<SessionClientsResponse | null> {
+): Promise<SessionClientsCheckResult> {
   const done = terminalLog.req(
     `GET /api/turing/sessions/${sessionName}/clients`,
     undefined,
@@ -92,24 +96,29 @@ async function fetchSessionClients(
   } catch (error) {
     const message = error instanceof Error ? error.message : "Network error";
     done.error(message, { sessionName });
-    return null;
+    return { ok: false, errorMessage: "Failed to inspect attached tmux clients" };
   }
   if (!res.ok) {
     const text = await res.text();
-    done.error(text || "Failed to inspect attached tmux clients", {
+    const errorMessage = res.status === 404
+      ? "The current Turing API does not support tmux client inspection yet. Restart the Turing API on Turing after pulling the latest code."
+      : text || "Failed to inspect attached tmux clients";
+    done.error(errorMessage, {
       status: res.status,
       sessionName,
     });
-    return null;
+    return { ok: false, errorMessage };
   }
   const data = (await res.json()) as SessionClientsResponse;
   done({ status: res.status, attachedClients: data.attached_clients });
-  return data;
+  return { ok: true, attachedClients: data.attached_clients };
 }
 
 export default function TerminalModal({ sessionName, allSessions, onClose, onNavigate }: TerminalModalProps) {
   const { user } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const viewerScrolledSessionRef = useRef<string | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectsRef = useRef(0);
@@ -159,15 +168,16 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     const checkClients = async () => {
       const next = await fetchSessionClients(user?.id, sessionName);
       if (cancelled) return;
-      if (!next) {
-        setClientsError("Failed to inspect attached tmux clients");
+      if (!next.ok) {
+        setAttachedClients(0);
+        setClientsError(next.errorMessage);
         setMode("viewer");
         timer = window.setTimeout(checkClients, 2000);
         return;
       }
       setClientsError(null);
-      setAttachedClients(next.attached_clients);
-      if (next.attached_clients === 0) {
+      setAttachedClients(next.attachedClients);
+      if (next.attachedClients === 0) {
         setMode("interactive");
         setConnectionStatus("connecting");
         return;
@@ -296,6 +306,7 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
+  const viewerOutput = sessionOutput.data?.output;
 
   useEffect(() => {
     if (mode !== "interactive") return;
@@ -303,9 +314,12 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     let timer: number | null = null;
     const checkForOtherClients = async () => {
       const next = await fetchSessionClients(user?.id, sessionName);
-      if (cancelled) return;
-      if (next && next.attached_clients > 1) {
-        setAttachedClients(next.attached_clients - 1);
+      if (cancelled || !next.ok) {
+        timer = window.setTimeout(checkForOtherClients, 2000);
+        return;
+      }
+      if (next.attachedClients > 1) {
+        setAttachedClients(next.attachedClients - 1);
         setMode("viewer");
         return;
       }
@@ -317,6 +331,21 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [mode, sessionName, user?.id]);
+
+  useEffect(() => {
+    if (mode !== "viewer") {
+      viewerScrolledSessionRef.current = null;
+      return;
+    }
+    if (viewerOutput === undefined) return;
+    if (viewerScrolledSessionRef.current === sessionName) return;
+    requestAnimationFrame(() => {
+      const viewer = viewerRef.current;
+      if (!viewer) return;
+      viewer.scrollTop = viewer.scrollHeight;
+      viewerScrolledSessionRef.current = sessionName;
+    });
+  }, [mode, sessionName, viewerOutput]);
 
   const status = mode === "checking" ? "checking" : mode === "viewer" ? "view-only" : connectionStatus;
   const statusClass = mode === "checking"
@@ -377,11 +406,13 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
         {mode === "viewer" ? (
           <div className="flex-1 min-h-0 bg-black flex flex-col">
             <div className="px-3 py-2 border-b border-border text-xs text-text-muted">
-              {attachedClients > 1
-                ? `${attachedClients} tmux clients are attached, so tom.quest is staying view-only to avoid resizing the shared session.`
-                : attachedClients === 1
-                  ? "Another tmux client is attached, so tom.quest is staying view-only to avoid resizing the shared session."
-                  : "Waiting to confirm the shared-session state before enabling interactive mode."}
+              {clientsError
+                ? "tmux client inspection is unavailable right now."
+                : attachedClients > 1
+                  ? `${attachedClients} tmux clients are attached, so tom.quest is staying view-only to avoid resizing the shared session.`
+                  : attachedClients === 1
+                    ? "Another tmux client is attached, so tom.quest is staying view-only to avoid resizing the shared session."
+                    : "Checking shared-session state."}
             </div>
             {clientsError && (
               <div className="px-3 py-2 text-xs text-error border-b border-border">
@@ -393,9 +424,11 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
                 {detachOthers.error}
               </div>
             )}
-            <pre className="flex-1 overflow-auto p-3 text-[13px] leading-5 text-[#d4d4d4] font-mono whitespace-pre-wrap break-words">
-              {sessionOutput.data?.output ?? ""}
-            </pre>
+            <div ref={viewerRef} className="flex-1 overflow-auto p-3">
+              <pre className="text-[13px] leading-5 text-[#d4d4d4] font-mono whitespace-pre-wrap break-words">
+                {sessionOutput.data?.output ?? ""}
+              </pre>
+            </div>
           </div>
         ) : mode === "checking" ? (
           <div className="flex-1 bg-black flex items-center justify-center text-sm text-text-muted">
