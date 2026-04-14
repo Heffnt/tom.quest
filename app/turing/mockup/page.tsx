@@ -24,16 +24,21 @@ interface MockGpuJob {
   time_elapsed_mins: number;
 }
 
-type JobLifecycle = "submitted" | "pending" | "allocated" | "running" | "cancelled" | "failed" | "timeout" | "completed";
+interface GpuStats {
+  memory_used_mb: number;
+  memory_total_mb: number;
+  temperature_c: number;
+  utilization_pct: number;
+}
 
 interface MockJob {
   job_id: string;
   gpu_type: string;
   status: string;
-  lifecycle: JobLifecycle;
   time_remaining: string;
   time_remaining_seconds: number;
   screen_name: string;
+  gpu_stats?: GpuStats;
 }
 
 const MOCK_NODES: MockNode[] = [
@@ -79,17 +84,19 @@ const MOCK_GPU_JOBS: Record<string, MockGpuJob[]> = {
   ],
 };
 
+const TERMINAL_STATUSES = new Set(["CANCELLED", "FAILED", "TIMEOUT", "COMPLETED"]);
+
 const MOCK_JOBS: MockJob[] = [
-  { job_id: "88401", gpu_type: "nvidia", status: "RUNNING (gpu-01)", lifecycle: "running", time_remaining: "10:20:14", time_remaining_seconds: 37214, screen_name: "1_allocation" },
-  { job_id: "88406", gpu_type: "nvidia", status: "RUNNING (gpu-02)", lifecycle: "running", time_remaining: "2:20:00", time_remaining_seconds: 8400, screen_name: "2_allocation" },
-  { job_id: "88411", gpu_type: "nvidia", status: "RUNNING (gpu-05)", lifecycle: "allocated", time_remaining: "0:20:41", time_remaining_seconds: 1241, screen_name: "3_sweep" },
-  { job_id: "88420", gpu_type: "nvidia", status: "PENDING (Resources)", lifecycle: "pending", time_remaining: "UNLIMITED", time_remaining_seconds: 0, screen_name: "" },
-  { job_id: "88421", gpu_type: "tesla", status: "PENDING (Priority)", lifecycle: "pending", time_remaining: "UNLIMITED", time_remaining_seconds: 0, screen_name: "" },
-  { job_id: "88425", gpu_type: "nvidia", status: "PENDING (Resources)", lifecycle: "submitted", time_remaining: "UNLIMITED", time_remaining_seconds: 0, screen_name: "" },
-  { job_id: "88399", gpu_type: "nvidia", status: "CANCELLED", lifecycle: "cancelled", time_remaining: "0:00:00", time_remaining_seconds: 0, screen_name: "4_allocation" },
+  { job_id: "88401", gpu_type: "nvidia", status: "RUNNING (gpu-01)", time_remaining: "10:20:14", time_remaining_seconds: 37214, screen_name: "1_allocation", gpu_stats: { memory_used_mb: 35200, memory_total_mb: 81920, temperature_c: 72, utilization_pct: 95 } },
+  { job_id: "88406", gpu_type: "nvidia", status: "RUNNING (gpu-02)", time_remaining: "2:20:00", time_remaining_seconds: 8400, screen_name: "2_allocation", gpu_stats: { memory_used_mb: 61440, memory_total_mb: 81920, temperature_c: 78, utilization_pct: 100 } },
+  { job_id: "88411", gpu_type: "nvidia", status: "RUNNING (gpu-05)", time_remaining: "0:20:41", time_remaining_seconds: 1241, screen_name: "3_sweep", gpu_stats: { memory_used_mb: 512, memory_total_mb: 81920, temperature_c: 38, utilization_pct: 0 } },
+  { job_id: "88420", gpu_type: "nvidia", status: "PENDING (Resources)", time_remaining: "UNLIMITED", time_remaining_seconds: 0, screen_name: "" },
+  { job_id: "88421", gpu_type: "tesla", status: "PENDING (Priority)", time_remaining: "UNLIMITED", time_remaining_seconds: 0, screen_name: "" },
+  { job_id: "88425", gpu_type: "nvidia", status: "PENDING (Resources)", time_remaining: "UNLIMITED", time_remaining_seconds: 0, screen_name: "" },
+  { job_id: "88399", gpu_type: "nvidia", status: "CANCELLED", time_remaining: "0:00:00", time_remaining_seconds: 0, screen_name: "4_allocation" },
 ];
 
-// ─── STATUS CONFIG ──────────────────────────────────────────────────────────
+// ─── STATUS CONFIG (3 CATEGORIES) ───────────────────────────────────────────
 
 interface StatusCategory {
   label: string;
@@ -99,98 +106,57 @@ interface StatusCategory {
 }
 
 const STATUS_CATEGORIES: Record<string, StatusCategory> = {
-  free:       { label: "Free",       color: "#22c55e", glow: "rgba(34,197,94,0.25)",   states: ["IDLE"] },
-  mixed:      { label: "Mixed",      color: "#e8a040", glow: "rgba(232,160,64,0.25)",  states: ["MIXED"] },
-  allocated:  { label: "Allocated",  color: "#64748b", glow: "rgba(100,116,139,0.2)",  states: ["ALLOCATED"] },
-  draining:   { label: "Draining",   color: "#eab308", glow: "rgba(234,179,8,0.25)",   states: ["DRAINING"] },
-  drained:    { label: "Drained",    color: "#b91c1c", glow: "rgba(185,28,28,0.2)",    states: ["DRAINED", "DRAIN"] },
-  down:       { label: "Down",       color: "#ef4444", glow: "rgba(239,68,68,0.25)",   states: ["DOWN", "DOWN*", "NOT_RESPONDING", "FAIL", "FAILING"] },
-  reserved:   { label: "Reserved",   color: "#3b82f6", glow: "rgba(59,130,246,0.2)",   states: ["RESERVED", "PLANNED"] },
-  other:      { label: "Other",      color: "#475569", glow: "rgba(71,85,105,0.2)",    states: ["COMPLETING", "FUTURE", "POWER_DOWN", "UNKNOWN"] },
+  free:        { label: "Free",        color: "#22c55e", glow: "rgba(34,197,94,0.25)",   states: ["IDLE"] },
+  in_use:      { label: "In Use",      color: "#64748b", glow: "rgba(100,116,139,0.2)",  states: ["MIXED", "ALLOCATED", "COMPLETING"] },
+  unavailable: { label: "Unavailable", color: "#ef4444", glow: "rgba(239,68,68,0.25)",   states: ["DOWN", "DOWN*", "DRAINING", "DRAINED", "RESERVED", "PLANNED", "NOT_RESPONDING", "FAIL", "FAILING"] },
 };
 
 function getStatusCategory(state: string): string {
   for (const [key, cat] of Object.entries(STATUS_CATEGORIES)) {
     if (cat.states.includes(state)) return key;
   }
-  return "other";
+  return "unavailable";
 }
 
 const GPU_TYPE_LABELS: Record<string, string> = { nvidia: "H100", tesla: "V100" };
 function gpuLabel(type: string) { return GPU_TYPE_LABELS[type] ? `${type} (${GPU_TYPE_LABELS[type]})` : type; }
 
-// ─── LIFECYCLE STRIP ────────────────────────────────────────────────────────
+function isUnavailableState(state: string): boolean {
+  return getStatusCategory(state) === "unavailable";
+}
 
-const LIFECYCLE_STAGES = ["submitted", "pending", "allocated", "running"] as const;
-const LIFECYCLE_LABELS: Record<string, string> = {
-  submitted: "Submitted",
-  pending: "PENDING",
-  allocated: "ALLOCATED",
-  running: "RUNNING",
+function getNodeGpuBreakdown(node: MockNode): { free: number; in_use: number; unavailable: number } {
+  if (isUnavailableState(node.state)) {
+    return { free: 0, in_use: 0, unavailable: node.total_gpus };
+  }
+  return {
+    free: node.total_gpus - node.allocated_gpus,
+    in_use: node.allocated_gpus,
+    unavailable: 0,
+  };
+}
+
+function getJobStatusCategory(status: string): "error" | "waiting" | "running" {
+  const upper = status.toUpperCase();
+  if (upper.startsWith("CANCELLED") || upper.startsWith("FAILED") || upper.startsWith("TIMEOUT") || upper.startsWith("COMPLETING")) return "error";
+  if (upper.startsWith("RUNNING")) return "running";
+  return "waiting";
+}
+
+const JOB_STATUS_COLORS = {
+  error: "#ef4444",
+  waiting: "#9ca3af",
+  running: "var(--color-accent)",
 };
-const TERMINAL_STATES = new Set(["cancelled", "failed", "timeout", "completed"]);
-
-function lifecycleIndex(lc: JobLifecycle): number {
-  const idx = (LIFECYCLE_STAGES as readonly string[]).indexOf(lc);
-  if (idx >= 0) return idx;
-  if (lc === "cancelled" || lc === "failed" || lc === "timeout") return 1;
-  if (lc === "completed") return 3;
-  return -1;
-}
-
-function LifecycleStrip({ lifecycle }: { lifecycle: JobLifecycle }) {
-  const activeIdx = lifecycleIndex(lifecycle);
-  const isFailed = TERMINAL_STATES.has(lifecycle) && lifecycle !== "completed";
-
-  return (
-    <div className="flex items-center gap-0" title={lifecycle.toUpperCase()}>
-      {LIFECYCLE_STAGES.map((stage, i) => {
-        const completed = i < activeIdx || (lifecycle === "completed" && i <= activeIdx);
-        const current = i === activeIdx;
-        const isCurrent = current && !TERMINAL_STATES.has(lifecycle);
-        const isFailedStage = current && isFailed;
-
-        const dotColor = completed
-          ? "var(--color-accent)"
-          : isFailedStage
-            ? "var(--color-error)"
-            : isCurrent
-              ? "var(--color-accent)"
-              : "var(--color-border)";
-
-        return (
-          <div key={stage} className="flex items-center" title={LIFECYCLE_LABELS[stage]}>
-            {i > 0 && (
-              <div
-                className="w-3 h-px"
-                style={{ background: completed ? "var(--color-accent)" : "var(--color-border)" }}
-              />
-            )}
-            <div
-              className={`w-[7px] h-[7px] rounded-full border ${isCurrent ? "lifecycle-pulse" : ""}`}
-              style={{
-                background: completed || isCurrent || isFailedStage ? dotColor : "transparent",
-                borderColor: dotColor,
-                boxShadow: (isCurrent || isFailedStage) ? `0 0 6px ${isFailedStage ? "var(--color-error)" : "var(--color-accent)"}` : "none",
-              }}
-            />
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 // ─── TOOLTIP ────────────────────────────────────────────────────────────────
 
 function Tooltip({ children, content }: { children: ReactNode; content: ReactNode }) {
   const [show, setShow] = useState(false);
   const [pos, setPos] = useState({ x: 0, y: 0 });
-  const ref = useRef<HTMLDivElement>(null);
 
   return (
     <div
-      ref={ref}
       className="relative inline-flex"
       onMouseEnter={(e) => {
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -222,20 +188,25 @@ function Tooltip({ children, content }: { children: ReactNode; content: ReactNod
 function GpuSummaryBar({ nodes, onOpenMap }: { nodes: MockNode[]; onOpenMap: () => void }) {
   const gpuNodes = nodes.filter(n => n.partition === "gpu");
   const counts = useMemo(() => {
-    const out: Record<string, number> = {};
-    for (const cat of Object.keys(STATUS_CATEGORIES)) out[cat] = 0;
+    let free = 0, in_use = 0, unavailable = 0;
     for (const n of gpuNodes) {
-      const cat = getStatusCategory(n.state);
-      out[cat] += n.total_gpus;
+      const b = getNodeGpuBreakdown(n);
+      free += b.free;
+      in_use += b.in_use;
+      unavailable += b.unavailable;
     }
-    return out;
+    return { free, in_use, unavailable };
   }, [gpuNodes]);
 
-  const visibleCats = Object.entries(STATUS_CATEGORIES).filter(([key]) => counts[key] > 0);
+  const entries: { key: string; count: number; cat: StatusCategory }[] = [
+    { key: "free", count: counts.free, cat: STATUS_CATEGORIES.free },
+    { key: "in_use", count: counts.in_use, cat: STATUS_CATEGORIES.in_use },
+    { key: "unavailable", count: counts.unavailable, cat: STATUS_CATEGORIES.unavailable },
+  ].filter(e => e.count > 0);
 
   return (
     <div className="flex items-center gap-5 px-5 py-3 rounded-lg border border-border bg-surface/40">
-      {visibleCats.map(([key, cat]) => (
+      {entries.map(({ key, count, cat }) => (
         <Tooltip
           key={key}
           content={<span>SLURM states: {cat.states.join(", ")}</span>}
@@ -245,7 +216,7 @@ function GpuSummaryBar({ nodes, onOpenMap }: { nodes: MockNode[]; onOpenMap: () 
               className="w-2 h-2 rounded-full"
               style={{ background: cat.color, boxShadow: `0 0 4px ${cat.glow}` }}
             />
-            <span style={{ color: cat.color }}>{counts[key]}</span>
+            <span style={{ color: cat.color }}>{count}</span>
             <span>{cat.label}</span>
           </div>
         </Tooltip>
@@ -255,40 +226,14 @@ function GpuSummaryBar({ nodes, onOpenMap }: { nodes: MockNode[]; onOpenMap: () 
           onClick={onOpenMap}
           className="text-xs px-3 py-1.5 rounded border border-accent/30 text-accent hover:bg-accent/10 transition-colors font-medium tracking-wide"
         >
-          Cluster Map
+          View GPUs
         </button>
       </div>
     </div>
   );
 }
 
-// ─── CLUSTER MAP MODAL ──────────────────────────────────────────────────────
-
-function GpuSquare({ allocated, state, onClick }: { allocated: boolean; state: string; onClick?: () => void }) {
-  const cat = getStatusCategory(state);
-  const catInfo = STATUS_CATEGORIES[cat];
-
-  let fill: string;
-  if (state !== "IDLE" && state !== "MIXED" && state !== "ALLOCATED" && state !== "COMPLETING") {
-    fill = catInfo.color;
-  } else if (allocated) {
-    fill = STATUS_CATEGORIES.allocated.color;
-  } else {
-    fill = STATUS_CATEGORIES.free.color;
-  }
-
-  return (
-    <button
-      onClick={allocated ? onClick : undefined}
-      className={`w-3.5 h-3.5 rounded-sm transition-all duration-150 ${allocated ? "cursor-pointer hover:scale-125 hover:brightness-125" : "cursor-default"}`}
-      style={{
-        background: fill,
-        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.1), 0 0 3px ${fill}33`,
-      }}
-      title={allocated ? "Click for job details" : "Free"}
-    />
-  );
-}
+// ─── GPU MAP MODAL ──────────────────────────────────────────────────────────
 
 function GpuJobPopover({ jobs, onClose }: { jobs: MockGpuJob[]; onClose: () => void }) {
   return (
@@ -325,50 +270,71 @@ function GpuJobPopover({ jobs, onClose }: { jobs: MockGpuJob[]; onClose: () => v
   );
 }
 
-function ClusterMapNodeCard({ node, gpuJobs }: { node: MockNode; gpuJobs?: MockGpuJob[] }) {
-  const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
-  const cat = getStatusCategory(node.state);
-  const catInfo = STATUS_CATEGORIES[cat];
-  const memPct = node.memory_total_mb > 0 ? Math.round((node.memory_allocated_mb / node.memory_total_mb) * 100) : 0;
+function NodeStatusBreakdown({ node }: { node: MockNode }) {
+  const breakdown = getNodeGpuBreakdown(node);
+  const parts: { count: number; cat: StatusCategory; key: string }[] = [];
+  if (breakdown.free > 0) parts.push({ count: breakdown.free, cat: STATUS_CATEGORIES.free, key: "free" });
+  if (breakdown.in_use > 0) parts.push({ count: breakdown.in_use, cat: STATUS_CATEGORIES.in_use, key: "in_use" });
+  if (breakdown.unavailable > 0) parts.push({ count: breakdown.unavailable, cat: STATUS_CATEGORIES.unavailable, key: "unavailable" });
 
   return (
-    <div className="relative border border-border/60 rounded-md p-2.5 bg-bg/60 min-w-[120px]">
+    <div className="flex items-center gap-2 flex-wrap">
+      {parts.map(({ count, cat, key }) => (
+        <Tooltip key={key} content={<span>SLURM states: {cat.states.join(", ")}</span>}>
+          <div className="flex items-center gap-1 text-[11px] font-mono cursor-default">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: cat.color }} />
+            <span style={{ color: cat.color }}>{count} {cat.label}</span>
+          </div>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+function GpuMapNodeCard({ node, gpuJobs }: { node: MockNode; gpuJobs?: MockGpuJob[] }) {
+  const [showJobs, setShowJobs] = useState(false);
+  const cat = STATUS_CATEGORIES[getStatusCategory(node.state)];
+  const memPct = node.memory_total_mb > 0 ? Math.round((node.memory_allocated_mb / node.memory_total_mb) * 100) : 0;
+  const hasJobs = gpuJobs && gpuJobs.length > 0;
+
+  return (
+    <div className="relative border border-border/60 rounded-md p-2.5 bg-bg/60 min-w-[130px]">
       <div className="flex items-center justify-between mb-1.5">
         <span className="font-mono text-[11px] text-text-muted">{node.name}</span>
-        <span
-          className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-          style={{ color: catInfo.color, background: `${catInfo.color}15`, border: `1px solid ${catInfo.color}30` }}
-        >
-          {node.state}
-        </span>
+        <Tooltip content={<span>SLURM state: {node.state}<br/>Category: {cat.label}</span>}>
+          <span
+            className="text-[9px] font-mono px-1.5 py-0.5 rounded cursor-default"
+            style={{ color: cat.color, background: `${cat.color}15`, border: `1px solid ${cat.color}30` }}
+          >
+            {node.state}
+          </span>
+        </Tooltip>
       </div>
-      <div className="flex gap-1 mb-1.5">
-        {Array.from({ length: node.total_gpus }, (_, i) => (
-          <GpuSquare
-            key={i}
-            allocated={i < node.allocated_gpus}
-            state={node.state}
-            onClick={() => setSelectedGpu(selectedGpu === i ? null : i)}
-          />
-        ))}
-      </div>
-      <div className="h-1 bg-border/40 rounded-full overflow-hidden">
+      <NodeStatusBreakdown node={node} />
+      <div className="mt-1.5 h-1 bg-border/40 rounded-full overflow-hidden">
         <div className="h-full bg-text-faint/40 rounded-full" style={{ width: `${memPct}%` }} />
       </div>
-      <div className="text-[9px] text-text-faint mt-0.5 font-mono">
-        {(node.memory_allocated_mb / 1024).toFixed(0)}/{(node.memory_total_mb / 1024).toFixed(0)} GB
+      <div className="flex items-center justify-between mt-0.5">
+        <span className="text-[9px] text-text-faint font-mono">
+          {(node.memory_allocated_mb / 1024).toFixed(0)}/{(node.memory_total_mb / 1024).toFixed(0)} GB
+        </span>
+        {hasJobs && (
+          <button
+            onClick={() => setShowJobs(!showJobs)}
+            className="text-[9px] text-accent hover:text-accent/80 font-mono"
+          >
+            jobs
+          </button>
+        )}
       </div>
-      {selectedGpu !== null && gpuJobs && gpuJobs.length > 0 && (
-        <GpuJobPopover
-          jobs={gpuJobs.filter((_, i) => i === selectedGpu || gpuJobs.length === 1)}
-          onClose={() => setSelectedGpu(null)}
-        />
+      {showJobs && hasJobs && (
+        <GpuJobPopover jobs={gpuJobs} onClose={() => setShowJobs(false)} />
       )}
     </div>
   );
 }
 
-function ClusterMapModal({ nodes, onClose }: { nodes: MockNode[]; onClose: () => void }) {
+function GpuMapModal({ nodes, onClose }: { nodes: MockNode[]; onClose: () => void }) {
   const [filters, setFilters] = useState<Set<string>>(new Set());
   const [showAcademic, setShowAcademic] = useState(false);
   const [showPrivate, setShowPrivate] = useState(false);
@@ -386,7 +352,13 @@ function ClusterMapModal({ nodes, onClose }: { nodes: MockNode[]; onClose: () =>
 
   const filterNodes = (list: MockNode[]) => {
     if (filters.size === 0) return list;
-    return list.filter(n => filters.has(getStatusCategory(n.state)));
+    return list.filter(n => {
+      const b = getNodeGpuBreakdown(n);
+      if (filters.has("free") && b.free > 0) return true;
+      if (filters.has("in_use") && b.in_use > 0) return true;
+      if (filters.has("unavailable") && b.unavailable > 0) return true;
+      return false;
+    });
   };
 
   const groupByType = (list: MockNode[]) => {
@@ -411,11 +383,9 @@ function ClusterMapModal({ nodes, onClose }: { nodes: MockNode[]; onClose: () =>
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div
-        className="relative bg-surface border-t border-l border-r border-border rounded-t-xl w-full max-w-6xl max-h-[85vh] flex flex-col animate-settle"
-      >
+      <div className="relative bg-surface border-t border-l border-r border-border rounded-t-xl w-full max-w-6xl max-h-[85vh] flex flex-col animate-settle">
         <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-          <h2 className="text-lg font-semibold tracking-tight">Cluster Map</h2>
+          <h2 className="text-lg font-semibold tracking-tight">GPUs</h2>
           <button onClick={onClose} className="text-text-muted hover:text-text text-sm">✕</button>
         </div>
 
@@ -457,7 +427,7 @@ function ClusterMapModal({ nodes, onClose }: { nodes: MockNode[]; onClose: () =>
               <h3 className="text-sm font-medium text-text-muted mb-2 font-mono">{gpuLabel(type)}</h3>
               <div className="flex flex-wrap gap-2">
                 {typeNodes.map(n => (
-                  <ClusterMapNodeCard key={n.name} node={n} gpuJobs={MOCK_GPU_JOBS[n.name]} />
+                  <GpuMapNodeCard key={n.name} node={n} gpuJobs={MOCK_GPU_JOBS[n.name]} />
                 ))}
               </div>
             </section>
@@ -480,7 +450,7 @@ function ClusterMapModal({ nodes, onClose }: { nodes: MockNode[]; onClose: () =>
             {showPrivate && (
               <div className="pl-6 flex flex-wrap gap-2 opacity-50">
                 {filterNodes(facultyNodes).map(n => (
-                  <ClusterMapNodeCard key={n.name} node={n} />
+                  <GpuMapNodeCard key={n.name} node={n} />
                 ))}
               </div>
             )}
@@ -497,7 +467,7 @@ function ClusterMapModal({ nodes, onClose }: { nodes: MockNode[]; onClose: () =>
             {showAcademic && (
               <div className="pl-6 flex flex-wrap gap-2 opacity-50">
                 {filterNodes(academicNodes).map(n => (
-                  <ClusterMapNodeCard key={n.name} node={n} />
+                  <GpuMapNodeCard key={n.name} node={n} />
                 ))}
               </div>
             )}
@@ -568,6 +538,37 @@ function AllocateForm() {
 
 // ─── JOB TABLE ──────────────────────────────────────────────────────────────
 
+function GpuStatsCell({ stats }: { stats?: GpuStats }) {
+  if (!stats) return <span className="text-text-faint text-xs">—</span>;
+
+  const memPct = Math.round((stats.memory_used_mb / stats.memory_total_mb) * 100);
+  const memUsedGb = (stats.memory_used_mb / 1024).toFixed(1);
+  const memTotalGb = (stats.memory_total_mb / 1024).toFixed(0);
+  const active = stats.utilization_pct > 5;
+  const tempColor = stats.temperature_c > 80 ? "#ef4444" : stats.temperature_c > 65 ? "var(--color-accent)" : "#22c55e";
+
+  return (
+    <div className="flex items-center gap-3 text-xs font-mono">
+      <Tooltip content={<span>{memUsedGb}/{memTotalGb} GB ({memPct}%)</span>}>
+        <div className="flex items-center gap-1.5 cursor-default">
+          <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${memPct}%`,
+                background: memPct > 90 ? "#ef4444" : memPct > 70 ? "var(--color-accent)" : "#64748b",
+              }}
+            />
+          </div>
+          <span className="text-text-muted">{memPct}%</span>
+        </div>
+      </Tooltip>
+      <span style={{ color: tempColor }}>{stats.temperature_c}°C</span>
+      <span className={active ? "text-green-400" : "text-text-faint"}>{active ? "Active" : "Idle"}</span>
+    </div>
+  );
+}
+
 function JobTable({ jobs, onViewSession }: { jobs: MockJob[]; onViewSession: (name: string) => void }) {
   return (
     <section className="border border-border rounded-lg p-5 bg-surface/40">
@@ -588,53 +589,54 @@ function JobTable({ jobs, onViewSession }: { jobs: MockJob[]; onViewSession: (na
             <tr className="text-left text-[10px] uppercase tracking-widest text-text-faint">
               <th className="py-1.5 pr-4">Job</th>
               <th className="pr-4">GPU</th>
-              <th className="pr-4">Lifecycle</th>
               <th className="pr-4">Status</th>
               <th className="pr-4">Time Left</th>
+              <th className="pr-4">GPU Stats</th>
               <th className="text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {jobs.map(job => (
-              <tr key={job.job_id} className="border-t border-border/40 group">
-                <td className="py-2.5 pr-4 font-mono text-text-muted">{job.job_id}</td>
-                <td className="pr-4 text-text-faint text-xs">{gpuLabel(job.gpu_type)}</td>
-                <td className="pr-4">
-                  <LifecycleStrip lifecycle={job.lifecycle} />
-                </td>
-                <td className="pr-4">
-                  <span className={`text-xs font-mono ${
-                    job.lifecycle === "running" ? "text-accent" :
-                    job.lifecycle === "pending" || job.lifecycle === "submitted" ? "text-yellow-400" :
-                    job.lifecycle === "cancelled" || job.lifecycle === "failed" ? "text-error" :
-                    "text-text-muted"
-                  }`}>
-                    {job.status}
-                  </span>
-                </td>
-                <td className="pr-4 font-mono text-text-muted text-xs">{job.time_remaining}</td>
-                <td className="text-right">
-                  <div className="inline-flex gap-1.5">
-                    {job.screen_name && (
-                      <button
-                        onClick={() => onViewSession(job.screen_name)}
-                        className="text-xs px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
-                      >
-                        View
-                      </button>
-                    )}
-                    {!job.screen_name && job.lifecycle !== "cancelled" && job.lifecycle !== "failed" && (
-                      <span className="text-[10px] text-text-faint font-mono">Queued</span>
-                    )}
-                    {!TERMINAL_STATES.has(job.lifecycle) && (
-                      <button className="text-xs px-2 py-0.5 rounded border border-error/40 text-error hover:bg-error/10 transition-colors">
-                        Cancel
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {jobs.map(job => {
+              const statusCat = getJobStatusCategory(job.status);
+              const statusColor = JOB_STATUS_COLORS[statusCat];
+              const isTerminal = TERMINAL_STATUSES.has(job.status.split(" ")[0]);
+
+              return (
+                <tr key={job.job_id} className="border-t border-border/40 group">
+                  <td className="py-2.5 pr-4 font-mono text-text-muted">{job.job_id}</td>
+                  <td className="pr-4 text-text-faint text-xs">{gpuLabel(job.gpu_type)}</td>
+                  <td className="pr-4">
+                    <span className="text-xs font-mono" style={{ color: statusColor }}>
+                      {job.status}
+                    </span>
+                  </td>
+                  <td className="pr-4 font-mono text-text-muted text-xs">{job.time_remaining}</td>
+                  <td className="pr-4">
+                    <GpuStatsCell stats={job.gpu_stats} />
+                  </td>
+                  <td className="text-right">
+                    <div className="inline-flex gap-1.5">
+                      {job.screen_name && (
+                        <button
+                          onClick={() => onViewSession(job.screen_name)}
+                          className="text-xs px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
+                        >
+                          View
+                        </button>
+                      )}
+                      {!job.screen_name && !isTerminal && (
+                        <span className="text-[10px] text-text-faint font-mono">Queued</span>
+                      )}
+                      {!isTerminal && (
+                        <button className="text-xs px-2 py-0.5 rounded border border-error/40 text-error hover:bg-error/10 transition-colors">
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -763,32 +765,20 @@ export default function TuringMockup() {
   );
 
   return (
-    <>
-      <style jsx global>{`
-        @keyframes lifecycle-pulse {
-          0%, 100% { opacity: 0.4; }
-          50% { opacity: 1; }
-        }
-        .lifecycle-pulse {
-          animation: lifecycle-pulse 2s ease-in-out infinite;
-        }
-      `}</style>
+    <div className="max-w-6xl mx-auto px-6 py-10 space-y-5">
+      <header>
+        <h1 className="text-3xl font-bold tracking-tight">Turing Dashboard</h1>
+        <p className="text-text-muted mt-1">GPU allocation and job monitoring for the WPI Turing cluster.</p>
+        <p className="mt-2 text-[10px] text-text-faint font-mono border border-border/40 rounded px-2 py-1 inline-block">
+          MOCKUP — static data, no backend
+        </p>
+      </header>
 
-      <div className="max-w-6xl mx-auto px-6 py-10 space-y-5">
-        <header>
-          <h1 className="text-3xl font-bold tracking-tight">Turing Dashboard</h1>
-          <p className="text-text-muted mt-1">GPU allocation and job monitoring for the WPI Turing cluster.</p>
-          <p className="mt-2 text-[10px] text-text-faint font-mono border border-border/40 rounded px-2 py-1 inline-block">
-            MOCKUP — static data, no backend
-          </p>
-        </header>
+      <GpuSummaryBar nodes={MOCK_NODES} onOpenMap={() => setMapOpen(true)} />
+      <AllocateForm />
+      <JobTable jobs={MOCK_JOBS} onViewSession={setTerminalSession} />
 
-        <GpuSummaryBar nodes={MOCK_NODES} onOpenMap={() => setMapOpen(true)} />
-        <AllocateForm />
-        <JobTable jobs={MOCK_JOBS} onViewSession={setTerminalSession} />
-      </div>
-
-      {mapOpen && <ClusterMapModal nodes={MOCK_NODES} onClose={() => setMapOpen(false)} />}
+      {mapOpen && <GpuMapModal nodes={MOCK_NODES} onClose={() => setMapOpen(false)} />}
 
       {terminalSession && (
         <TerminalViewerModal
@@ -798,6 +788,6 @@ export default function TuringMockup() {
           onNavigate={setTerminalSession}
         />
       )}
-    </>
+    </div>
   );
 }
