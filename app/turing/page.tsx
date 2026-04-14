@@ -2,26 +2,18 @@
 
 import { useAuth } from "@/app/lib/auth";
 import { useTuring } from "@/app/lib/hooks/use-turing";
-import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { GPUReport, Job } from "./types";
 import GPUGrid from "./components/gpu-grid";
 import AllocateForm from "./components/allocate-form";
 import JobTable from "./components/job-table";
 
-interface PageSettings extends Record<string, unknown> {
-  refreshInterval: number;
-  autoRefresh: boolean;
-}
-
-const DEFAULTS: PageSettings = { refreshInterval: 30, autoRefresh: true };
+const GPU_REFRESH_SECONDS = 60;
+const JOB_REFRESH_SECONDS = 10;
 
 export default function TuringPage() {
   const { isTom } = useAuth();
-  const [page, update] = usePersistedSettings<PageSettings>("turing_page", DEFAULTS);
-  const interval = page.autoRefresh ? page.refreshInterval : undefined;
-
-  const gpus = useTuring<GPUReport>("/gpu-report", interval ? { refreshInterval: interval } : undefined);
-  const jobs = useTuring<Job[]>("/jobs", interval ? { refreshInterval: interval } : undefined);
+  const gpus = useTuring<GPUReport>("/gpu-report", { refreshInterval: GPU_REFRESH_SECONDS });
+  const jobs = useTuring<Job[]>("/jobs", { refreshInterval: JOB_REFRESH_SECONDS });
 
   const refreshAll = () => { gpus.refresh(); jobs.refresh(); };
 
@@ -36,25 +28,6 @@ export default function TuringPage() {
           </p>
         )}
       </header>
-
-      <div className="flex items-center gap-3 text-xs">
-        <button type="button" onClick={refreshAll}
-          className="px-3 py-1 rounded border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150">
-          Refresh all
-        </button>
-        <label className="flex items-center gap-1.5 cursor-pointer text-text-muted">
-          <input type="checkbox" checked={page.autoRefresh}
-            onChange={e => update({ autoRefresh: e.target.checked })} className="accent-accent" />
-          Auto-refresh
-        </label>
-        <label className="flex items-center gap-1.5 text-text-muted">
-          every
-          <input type="number" min={5} value={page.refreshInterval}
-            onChange={e => update({ refreshInterval: Math.max(5, Number(e.target.value) || 30) })}
-            className="w-14 bg-bg border border-border rounded px-1.5 py-0.5 text-center" />
-          s
-        </label>
-      </div>
 
       <GPUGrid data={gpus.data} loading={gpus.loading} error={gpus.error} onRefresh={gpus.refresh} />
       <AllocateForm isTom={isTom} onSuccess={refreshAll} />

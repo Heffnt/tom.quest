@@ -21,6 +21,7 @@ interface AllocSettings extends Record<string, unknown> {
   gpuType: string;
   timeMins: string;
   memoryMb: string;
+  jobName: string;
 }
 
 const DEFAULT_TIME_MINS = "1440";
@@ -36,6 +37,7 @@ const DEFAULTS: AllocSettings = {
   gpuType: "",
   timeMins: DEFAULT_TIME_MINS,
   memoryMb: DEFAULT_MEMORY_MB,
+  jobName: "allocation",
 };
 
 export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
@@ -79,7 +81,7 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
     if (!Number.isInteger(m) || m <= 0) return "Memory must be a positive integer.";
     if (count) {
       const c = Number(count);
-      if (!Number.isInteger(c) || c < 1 || c > 12) return "Count must be between 1 and 12.";
+      if (!Number.isInteger(c) || c < 1) return "Count must be a positive integer.";
     }
     return null;
   };
@@ -97,15 +99,20 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
       count: count ? Number(count) : 0,
       commands: commands.filter(c => c.trim()),
       project_dir: projectDir,
+      job_name: settings.jobName,
     });
     if (res?.success) {
+      const partialFailure = res.errors.length > 0;
       setSuccessMsg(`Allocated job(s): ${res.job_ids.join(", ")}`);
+      setValidationError(partialFailure ? `Some allocations failed: ${res.errors.join(" | ")}` : null);
       if (projectDir) {
         const next = [projectDir, ...settings.recentDirs.filter(d => d !== projectDir)].slice(0, 10);
         update({ recentDirs: next });
       }
       onSuccess();
+      return;
     }
+    if (res?.errors.length) setValidationError(res.errors.join(" | "));
   };
 
   const savePreset = () => {
@@ -138,7 +145,7 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
     <section aria-label="Allocate" className="border border-border rounded-lg p-5 bg-surface/40">
       <h2 className="text-lg font-semibold mb-4">Allocate</h2>
       <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <label className="text-sm">
             <span className="block text-text-muted mb-1">GPU Type</span>
             <select
@@ -185,6 +192,15 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
               pattern="[0-9]*"
               value={settings.memoryMb}
               onChange={e => update({ memoryMb: e.target.value })}
+              className="w-full bg-bg border border-border rounded px-2 py-1.5 focus:border-accent focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="block text-text-muted mb-1">Job Name</span>
+            <input
+              type="text"
+              value={settings.jobName}
+              onChange={e => update({ jobName: e.target.value })}
               className="w-full bg-bg border border-border rounded px-2 py-1.5 focus:border-accent focus:outline-none"
             />
           </label>

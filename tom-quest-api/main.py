@@ -3,6 +3,7 @@ import os
 import re
 import signal
 import socket
+import shlex
 import subprocess
 import threading
 import time
@@ -13,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from gpu_report import format_gpu_report_v2, get_free_gpu_type_info
-from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
+from slurm import allocate_gpu, cancel_job, get_user_jobs
 from tmux import (
     setup_allocation_session,
     cleanup_session,
@@ -163,12 +164,20 @@ class AllocationRequest(BaseModel):
     commands: list[str] = []
     count: int = 1
     project_dir: str = ""
+    job_name: str = "allocation"
 
 class AllocationResponse(BaseModel):
     success: bool
     job_ids: list[str] = []
     screen_names: list[str] = []
     errors: list[str] = []
+
+
+class JobGpuStatsResponse(BaseModel):
+    memory_used_mb: int
+    memory_total_mb: int
+    temperature_c: int | None = None
+    utilization_pct: int | None = None
 
 class JobResponse(BaseModel):
     job_id: str
@@ -179,6 +188,7 @@ class JobResponse(BaseModel):
     screen_name: str
     start_time: str
     end_time: str
+    gpu_stats: JobGpuStatsResponse | None = None
 
 class SessionClientsResponse(BaseModel):
     attached_clients: int
@@ -231,29 +241,30 @@ async def get_file(path: str, auth: bool = Depends(verify_api_key)):
 async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)):
     if not request.gpu_type:
         raise HTTPException(status_code=400, detail="GPU type is required")
+    if request.count < 0:
+        raise HTTPException(status_code=400, detail="Count cannot be negative")
     requested_count = resolve_allocation_count(request)
-    if requested_count > MAX_GPU_ALLOCATIONS:
-        raise HTTPException(status_code=400, detail=f"Max {MAX_GPU_ALLOCATIONS} GPUs allowed")
     if request.time_mins < 1:
         raise HTTPException(status_code=400, detail="Time must be at least 1 minute")
-    current_jobs = get_job_count()
-    if current_jobs + requested_count > MAX_GPU_ALLOCATIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Would exceed max {MAX_GPU_ALLOCATIONS} GPUs. Currently have {current_jobs} allocations."
-        )
+    if request.memory_mb < 1:
+        raise HTTPException(status_code=400, detail="Memory must be at least 1 MB")
     job_ids = []
     screen_names = []
     errors = []
     commands = list(request.commands)
     if request.project_dir:
-        commands.insert(0, f"cd {request.project_dir}")
+        commands.insert(0, f"cd {shlex.quote(request.project_dir)}")
     for i in range(requested_count):
         try:
-            job_id, error = allocate_gpu(request.gpu_type, request.time_mins, request.memory_mb)
+            job_id, error = allocate_gpu(
+                request.gpu_type,
+                request.time_mins,
+                request.memory_mb,
+                request.job_name,
+            )
             if job_id:
                 job_ids.append(job_id)
-                screen_name = setup_allocation_session(job_id, commands, request.project_dir)
+                screen_name = setup_allocation_session(job_id, commands, request.job_name)
                 screen_names.append(screen_name)
             else:
                 errors.append(error or f"Failed to allocate GPU {i+1}")
@@ -278,7 +289,13 @@ async def list_jobs(auth: bool = Depends(verify_api_key)):
             time_remaining_seconds=job.time_remaining_seconds,
             screen_name=job.screen_name,
             start_time=job.start_time,
-            end_time=job.end_time
+            end_time=job.end_time,
+            gpu_stats=JobGpuStatsResponse(
+                memory_used_mb=job.gpu_stats.memory_used_mb,
+                memory_total_mb=job.gpu_stats.memory_total_mb,
+                temperature_c=job.gpu_stats.temperature_c,
+                utilization_pct=job.gpu_stats.utilization_pct,
+            ) if job.gpu_stats else None,
         )
         for job in jobs
     ]

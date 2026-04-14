@@ -90,11 +90,14 @@ export function useTuring<T>(path: string, options?: UseTuringOptions): UseTurin
       ? { refreshInterval: options.refreshInterval * 1000 }
       : undefined,
   );
+  const refresh = useCallback(() => {
+    void swr.mutate();
+  }, [swr.mutate]);
   return {
     data: swr.data ?? null,
     error: swr.error ? (swr.error instanceof Error ? swr.error.message : String(swr.error)) : null,
     loading: swr.isLoading,
-    refresh: () => { void swr.mutate(); },
+    refresh,
   };
 }
 

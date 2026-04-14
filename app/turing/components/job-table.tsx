@@ -1,12 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/app/lib/auth";
 import { debug } from "@/app/lib/debug";
 import { useTuringMutation } from "@/app/lib/hooks/use-turing";
-import { Job } from "../types";
+import { Job, gpuTypeLabel } from "../types";
 import TerminalModal from "./terminal-modal";
-import SessionViewer from "./session-viewer";
 
 interface JobTableProps {
   data: Job[] | null;
@@ -17,22 +16,55 @@ interface JobTableProps {
 }
 
 const jobsLog = debug.scoped("turing.jobs");
+const TERMINAL_STATUSES = new Set(["CANCELLED", "FAILED", "TIMEOUT", "COMPLETED"]);
 
-function isRunningStatus(status: string): boolean {
-  return status.startsWith("RUNNING");
+function getJobStatusCategory(status: string): "error" | "waiting" | "running" {
+  const upper = status.toUpperCase();
+  if (upper.startsWith("CANCELLED") || upper.startsWith("FAILED") || upper.startsWith("TIMEOUT") || upper.startsWith("COMPLETING")) {
+    return "error";
+  }
+  if (upper.startsWith("RUNNING")) return "running";
+  return "waiting";
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const color = isRunningStatus(status)
-    ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
-    : status.startsWith("PENDING")
-      ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40"
-      : "bg-border text-text-muted border-border";
+function statusColor(status: string): string {
+  const category = getJobStatusCategory(status);
+  if (category === "error") return "#ef4444";
+  if (category === "running") return "var(--color-accent)";
+  return "#9ca3af";
+}
+
+function MemoryCell({ stats }: { stats: Job["gpu_stats"] }) {
+  if (!stats || stats.memory_total_mb <= 0) return <span className="text-text-faint text-xs">—</span>;
+  const pct = Math.round((stats.memory_used_mb / stats.memory_total_mb) * 100);
+  const usedGb = (stats.memory_used_mb / 1024).toFixed(1);
+  const totalGb = (stats.memory_total_mb / 1024).toFixed(0);
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-mono ${color}`}>
-      {status}
-    </span>
+    <div className="flex items-center gap-1.5 text-xs font-mono">
+      <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden" title={`${usedGb}/${totalGb} GB`}>
+        <div
+          className="h-full rounded-full"
+          style={{
+            width: `${pct}%`,
+            background: pct > 90 ? "#ef4444" : "var(--color-accent)",
+          }}
+        />
+      </div>
+      <span className="text-text-muted">{pct}%</span>
+    </div>
   );
+}
+
+function TempCell({ stats }: { stats: Job["gpu_stats"] }) {
+  if (!stats || stats.temperature_c === null) return <span className="text-text-faint text-xs">—</span>;
+  const color = stats.temperature_c > 80 ? "#ef4444" : stats.temperature_c > 65 ? "var(--color-accent)" : "#22c55e";
+  return <span className="text-xs font-mono" style={{ color }}>{stats.temperature_c}°C</span>;
+}
+
+function ActivityCell({ stats }: { stats: Job["gpu_stats"] }) {
+  if (!stats || stats.utilization_pct === null) return <span className="text-text-faint text-xs">—</span>;
+  const active = stats.utilization_pct > 5;
+  return <span className={`text-xs font-mono ${active ? "text-green-400" : "text-text-faint"}`}>{active ? "Active" : "Idle"}</span>;
 }
 
 function ConfirmModal({
@@ -74,13 +106,17 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
   const [cancelLoading, setCancelLoading] = useState(false);
 
   const viewableSessions = useMemo(
-    () => (data || []).filter(j => isRunningStatus(j.status) && j.screen_name).map(j => j.screen_name),
+    () => (data || []).filter(job => job.screen_name).map(job => job.screen_name),
     [data],
   );
 
   const cancelOne = useTuringMutation<Record<string, never>, { success: boolean }>(
     cancelJobId ? `/jobs/${cancelJobId}` : "/jobs/_", "DELETE",
   );
+
+  useEffect(() => {
+    if (cancelOne.error) setCancelError(cancelOne.error);
+  }, [cancelOne.error]);
 
   const doSingleCancel = async () => {
     if (!cancelJobId) return;
@@ -92,7 +128,7 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
       setCancelJobId(null);
       onRefresh();
     } else {
-      setCancelError(cancelOne.error ?? "Cancel failed");
+      setCancelError("Cancel failed");
     }
   };
 
@@ -130,26 +166,16 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
     onRefresh();
   };
 
-  const terminalIdx = terminalSession ? viewableSessions.indexOf(terminalSession) : -1;
-  const goPrev = () => { if (terminalIdx > 0) setTerminalSession(viewableSessions[terminalIdx - 1]); };
-  const goNext = () => { if (terminalIdx >= 0 && terminalIdx < viewableSessions.length - 1) setTerminalSession(viewableSessions[terminalIdx + 1]); };
-
   return (
     <section aria-label="Active jobs" className="border border-border rounded-lg p-5 bg-surface/40">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold">Active Jobs</h2>
-        <div className="flex gap-2">
-          {isTom && data && data.length > 0 && (
-            <button type="button" onClick={() => setCancelAllOpen(true)}
-              className="text-xs px-3 py-1 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
-              Cancel all
-            </button>
-          )}
-          <button type="button" onClick={onRefresh}
-            className="text-xs px-3 py-1 rounded border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150">
-            Refresh
+        <h2 className="text-lg font-semibold">Jobs</h2>
+        {isTom && data && data.length > 0 && (
+          <button type="button" onClick={() => setCancelAllOpen(true)}
+            className="text-xs px-3 py-1 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
+            Cancel all
           </button>
-        </div>
+        )}
       </div>
 
       {loading && !data && <p className="text-text-faint text-sm">Loading…</p>}
@@ -160,42 +186,56 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
       {data && data.length > 0 && (
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs uppercase tracking-wide text-text-faint">
-              <th className="py-1.5">Job ID</th>
-              <th>GPU</th>
-              <th>Status</th>
-              <th>Time Left</th>
-              <th>Session</th>
+            <tr className="text-left text-[10px] uppercase tracking-widest text-text-faint">
+              <th className="py-1.5 pr-4">Job</th>
+              <th className="pr-4">GPU</th>
+              <th className="pr-4">Status</th>
+              <th className="pr-4">Time Left</th>
+              <th className="pr-4">Memory</th>
+              <th className="pr-4">Temp</th>
+              <th className="pr-4">Activity</th>
               <th className="text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {data.map(job => (
-              <tr key={job.job_id} className="border-t border-border/60">
-                <td className="py-2 font-mono">{job.job_id}</td>
-                <td className="text-text-muted">{job.gpu_type}</td>
-                <td><StatusBadge status={job.status} /></td>
-                <td className="font-mono text-text-muted">{job.time_remaining}</td>
-                <td className="font-mono text-text-faint text-xs">{job.screen_name || "—"}</td>
-                <td className="text-right">
-                  <div className="inline-flex gap-1.5">
-                    {isRunningStatus(job.status) && job.screen_name && (
-                      <button type="button" onClick={() => setTerminalSession(job.screen_name)}
-                        className="text-xs px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors duration-150">
-                        {isTom ? "Terminal" : "View"}
-                      </button>
-                    )}
-                    {isTom && (
-                      <button type="button" aria-label={`Cancel job ${job.job_id}`}
-                        onClick={() => setCancelJobId(job.job_id)}
-                        className="text-xs px-2 py-0.5 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
-                        Cancel
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {data.map(job => {
+              const isTerminal = TERMINAL_STATUSES.has(job.status.split(" ")[0]);
+              return (
+                <tr key={job.job_id} className="border-t border-border/40">
+                  <td className="py-2.5 pr-4 font-mono text-text-muted">{job.job_id}</td>
+                  <td className="pr-4 text-text-faint text-xs">{gpuTypeLabel(job.gpu_type)}</td>
+                  <td className="pr-4">
+                    <span className="text-xs font-mono" style={{ color: statusColor(job.status) }}>
+                      {job.status}
+                    </span>
+                  </td>
+                  <td className="pr-4 font-mono text-text-muted text-xs">{job.time_remaining}</td>
+                  <td className="pr-4"><MemoryCell stats={job.gpu_stats} /></td>
+                  <td className="pr-4"><TempCell stats={job.gpu_stats} /></td>
+                  <td className="pr-4"><ActivityCell stats={job.gpu_stats} /></td>
+                  <td className="text-right">
+                    <div className="inline-flex gap-1.5">
+                      {job.screen_name && (
+                        <button type="button" onClick={() => setTerminalSession(job.screen_name)}
+                          className="text-xs px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors duration-150">
+                          View
+                        </button>
+                      )}
+                      {!job.screen_name && !isTerminal && (
+                        <span className="text-[10px] text-text-faint font-mono">Queued</span>
+                      )}
+                      {isTom && !isTerminal && (
+                        <button type="button" aria-label={`Cancel job ${job.job_id}`}
+                          onClick={() => setCancelJobId(job.job_id)}
+                          className="text-xs px-2 py-0.5 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -224,30 +264,15 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
         />
       )}
 
-      {terminalSession && isTom && (
+      {terminalSession && (
         <TerminalModal
           key={terminalSession}
           sessionName={terminalSession}
           allSessions={viewableSessions}
           onClose={() => setTerminalSession(null)}
           onNavigate={setTerminalSession}
+          allowInteractive={isTom}
         />
-      )}
-      {terminalSession && !isTom && (
-        <SessionViewer
-          sessionName={terminalSession}
-          allSessions={viewableSessions}
-          onClose={() => setTerminalSession(null)}
-          onNavigate={setTerminalSession}
-        />
-      )}
-
-      {(terminalIdx > 0 || (terminalIdx >= 0 && terminalIdx < viewableSessions.length - 1)) && (
-        <div className="hidden">
-          {/* arrows live inside the modals */}
-          <button onClick={goPrev}>prev</button>
-          <button onClick={goNext}>next</button>
-        </div>
       )}
     </section>
   );

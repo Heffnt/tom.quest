@@ -103,7 +103,7 @@ async def ws_session(
         os.dup2(slave_fd, 2)
         os.close(master_fd)
         os.close(slave_fd)
-        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+        os.execvp("tmux", ["tmux", "-u", "attach-session", "-t", session_name])
         os._exit(1)
 
     os.close(slave_fd)
