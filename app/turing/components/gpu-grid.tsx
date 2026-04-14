@@ -273,6 +273,7 @@ function GPUViewModal({
   const [filters, setFilters] = useState<Set<"free" | "in_use" | "unavailable">>(new Set());
   const [showAcademic, setShowAcademic] = useState(false);
   const [showPrivate, setShowPrivate] = useState(false);
+  const gpuJobsByNode = data.gpu_jobs_by_node ?? {};
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -361,7 +362,7 @@ function GPUViewModal({
                   <NodeCard
                     key={node.name}
                     node={node}
-                    slots={data.gpu_jobs_by_node[node.name] ?? Array.from({ length: node.total_gpus }, () => null)}
+                    slots={gpuJobsByNode[node.name] ?? Array.from({ length: node.total_gpus }, () => null)}
                   />
                 ))}
               </div>
@@ -388,7 +389,7 @@ function GPUViewModal({
                   <NodeCard
                     key={node.name}
                     node={node}
-                    slots={data.gpu_jobs_by_node[node.name] ?? Array.from({ length: node.total_gpus }, () => null)}
+                    slots={gpuJobsByNode[node.name] ?? Array.from({ length: node.total_gpus }, () => null)}
                   />
                 ))}
               </div>
@@ -409,7 +410,7 @@ function GPUViewModal({
                   <NodeCard
                     key={node.name}
                     node={node}
-                    slots={data.gpu_jobs_by_node[node.name] ?? Array.from({ length: node.total_gpus }, () => null)}
+                    slots={gpuJobsByNode[node.name] ?? Array.from({ length: node.total_gpus }, () => null)}
                   />
                 ))}
               </div>

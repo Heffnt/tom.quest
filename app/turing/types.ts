@@ -36,7 +36,7 @@ export interface GPUReport {
     unavailable: GPUTypeInfo[];
     free: GPUTypeInfo[];
   };
-  gpu_jobs_by_node: Record<string, Array<NodeGpuJob | null>>;
+  gpu_jobs_by_node?: Record<string, Array<NodeGpuJob | null>>;
 }
 
 export interface JobGpuStats {
