@@ -187,26 +187,34 @@ function Tooltip({ children, content }: { children: ReactNode; content: ReactNod
 
 function GpuSummaryBar({ nodes, onOpenMap }: { nodes: MockNode[]; onOpenMap: () => void }) {
   const gpuNodes = nodes.filter(n => n.partition === "gpu");
-  const counts = useMemo(() => {
+  const { totals, freeByType } = useMemo(() => {
     let free = 0, in_use = 0, unavailable = 0;
+    const byType: Record<string, number> = {};
     for (const n of gpuNodes) {
       const b = getNodeGpuBreakdown(n);
       free += b.free;
       in_use += b.in_use;
       unavailable += b.unavailable;
+      if (b.free > 0) {
+        byType[n.gpu_type] = (byType[n.gpu_type] || 0) + b.free;
+      }
     }
-    return { free, in_use, unavailable };
+    return { totals: { free, in_use, unavailable }, freeByType: byType };
   }, [gpuNodes]);
 
-  const entries: { key: string; count: number; cat: StatusCategory }[] = [
-    { key: "free", count: counts.free, cat: STATUS_CATEGORIES.free },
-    { key: "in_use", count: counts.in_use, cat: STATUS_CATEGORIES.in_use },
-    { key: "unavailable", count: counts.unavailable, cat: STATUS_CATEGORIES.unavailable },
+  const freeBreakdown = Object.entries(freeByType)
+    .map(([type, count]) => `${gpuLabel(type)}: ${count}`)
+    .join(", ");
+
+  const entries: { key: string; count: number; cat: StatusCategory; detail?: string }[] = [
+    { key: "free", count: totals.free, cat: STATUS_CATEGORIES.free, detail: freeBreakdown },
+    { key: "in_use", count: totals.in_use, cat: STATUS_CATEGORIES.in_use },
+    { key: "unavailable", count: totals.unavailable, cat: STATUS_CATEGORIES.unavailable },
   ].filter(e => e.count > 0);
 
   return (
     <div className="flex items-center gap-5 px-5 py-3 rounded-lg border border-border bg-surface/40">
-      {entries.map(({ key, count, cat }) => (
+      {entries.map(({ key, count, cat, detail }) => (
         <Tooltip
           key={key}
           content={<span>SLURM states: {cat.states.join(", ")}</span>}
@@ -218,6 +226,7 @@ function GpuSummaryBar({ nodes, onOpenMap }: { nodes: MockNode[]; onOpenMap: () 
             />
             <span style={{ color: cat.color }}>{count}</span>
             <span>{cat.label}</span>
+            {detail && <span className="text-text-faint">({detail})</span>}
           </div>
         </Tooltip>
       ))}
@@ -270,65 +279,83 @@ function GpuJobPopover({ jobs, onClose }: { jobs: MockGpuJob[]; onClose: () => v
   );
 }
 
-function NodeStatusBreakdown({ node }: { node: MockNode }) {
-  const breakdown = getNodeGpuBreakdown(node);
-  const parts: { count: number; cat: StatusCategory; key: string }[] = [];
-  if (breakdown.free > 0) parts.push({ count: breakdown.free, cat: STATUS_CATEGORIES.free, key: "free" });
-  if (breakdown.in_use > 0) parts.push({ count: breakdown.in_use, cat: STATUS_CATEGORIES.in_use, key: "in_use" });
-  if (breakdown.unavailable > 0) parts.push({ count: breakdown.unavailable, cat: STATUS_CATEGORIES.unavailable, key: "unavailable" });
+function GpuSquare({ allocated, nodeState, onClick }: { allocated: boolean; nodeState: string; onClick?: () => void }) {
+  const unavail = isUnavailableState(nodeState);
+  const fill = unavail
+    ? STATUS_CATEGORIES.unavailable.color
+    : allocated
+      ? STATUS_CATEGORIES.in_use.color
+      : STATUS_CATEGORIES.free.color;
 
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      {parts.map(({ count, cat, key }) => (
-        <Tooltip key={key} content={<span>SLURM states: {cat.states.join(", ")}</span>}>
-          <div className="flex items-center gap-1 text-[11px] font-mono cursor-default">
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: cat.color }} />
-            <span style={{ color: cat.color }}>{count} {cat.label}</span>
-          </div>
-        </Tooltip>
-      ))}
-    </div>
+    <button
+      onClick={allocated && onClick ? onClick : undefined}
+      className={`w-3.5 h-3.5 rounded-sm transition-all duration-150 ${allocated && onClick ? "cursor-pointer hover:scale-125 hover:brightness-125" : "cursor-default"}`}
+      style={{
+        background: fill,
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.1), 0 0 3px ${fill}33`,
+      }}
+      title={unavail ? "Unavailable" : allocated ? "In Use" : "Free"}
+    />
+  );
+}
+
+function StateBadge({ state }: { state: string }) {
+  const cat = STATUS_CATEGORIES[getStatusCategory(state)];
+  const isMixed = state === "MIXED";
+  const badgeBg = isMixed
+    ? `linear-gradient(135deg, ${STATUS_CATEGORIES.free.color}40 50%, ${STATUS_CATEGORIES.in_use.color}40 50%)`
+    : `${cat.color}15`;
+  const badgeBorder = isMixed
+    ? `1px solid ${STATUS_CATEGORIES.in_use.color}30`
+    : `1px solid ${cat.color}30`;
+  const tooltipContent = isMixed
+    ? "Free + In Use GPUs on this node"
+    : `SLURM state: ${state}`;
+
+  return (
+    <Tooltip content={<span>{tooltipContent}</span>}>
+      <span
+        className="text-[9px] font-mono px-1.5 py-0.5 rounded cursor-default"
+        style={{ color: cat.color, background: badgeBg, border: badgeBorder }}
+      >
+        {state}
+      </span>
+    </Tooltip>
   );
 }
 
 function GpuMapNodeCard({ node, gpuJobs }: { node: MockNode; gpuJobs?: MockGpuJob[] }) {
-  const [showJobs, setShowJobs] = useState(false);
-  const cat = STATUS_CATEGORIES[getStatusCategory(node.state)];
+  const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
   const memPct = node.memory_total_mb > 0 ? Math.round((node.memory_allocated_mb / node.memory_total_mb) * 100) : 0;
-  const hasJobs = gpuJobs && gpuJobs.length > 0;
 
   return (
-    <div className="relative border border-border/60 rounded-md p-2.5 bg-bg/60 min-w-[130px]">
+    <div className="relative border border-border/60 rounded-md p-2.5 bg-bg/60 min-w-[120px]">
       <div className="flex items-center justify-between mb-1.5">
         <span className="font-mono text-[11px] text-text-muted">{node.name}</span>
-        <Tooltip content={<span>SLURM state: {node.state}<br/>Category: {cat.label}</span>}>
-          <span
-            className="text-[9px] font-mono px-1.5 py-0.5 rounded cursor-default"
-            style={{ color: cat.color, background: `${cat.color}15`, border: `1px solid ${cat.color}30` }}
-          >
-            {node.state}
-          </span>
-        </Tooltip>
+        <StateBadge state={node.state} />
       </div>
-      <NodeStatusBreakdown node={node} />
-      <div className="mt-1.5 h-1 bg-border/40 rounded-full overflow-hidden">
-        <div className="h-full bg-text-faint/40 rounded-full" style={{ width: `${memPct}%` }} />
+      <div className="flex gap-1 mb-1.5">
+        {Array.from({ length: node.total_gpus }, (_, i) => (
+          <GpuSquare
+            key={i}
+            allocated={i < node.allocated_gpus}
+            nodeState={node.state}
+            onClick={gpuJobs && gpuJobs.length > 0 ? () => setSelectedGpu(selectedGpu === i ? null : i) : undefined}
+          />
+        ))}
       </div>
-      <div className="flex items-center justify-between mt-0.5">
-        <span className="text-[9px] text-text-faint font-mono">
-          {(node.memory_allocated_mb / 1024).toFixed(0)}/{(node.memory_total_mb / 1024).toFixed(0)} GB
-        </span>
-        {hasJobs && (
-          <button
-            onClick={() => setShowJobs(!showJobs)}
-            className="text-[9px] text-accent hover:text-accent/80 font-mono"
-          >
-            jobs
-          </button>
-        )}
+      <div className="h-1 bg-border/40 rounded-full overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${memPct}%`, background: "var(--color-accent)" }} />
       </div>
-      {showJobs && hasJobs && (
-        <GpuJobPopover jobs={gpuJobs} onClose={() => setShowJobs(false)} />
+      <div className="text-[9px] text-text-faint mt-0.5 font-mono">
+        {(node.memory_allocated_mb / 1024).toFixed(0)}/{(node.memory_total_mb / 1024).toFixed(0)} GB
+      </div>
+      {selectedGpu !== null && gpuJobs && gpuJobs.length > 0 && (
+        <GpuJobPopover
+          jobs={gpuJobs.filter((_, i) => i === selectedGpu || gpuJobs.length === 1)}
+          onClose={() => setSelectedGpu(null)}
+        />
       )}
     </div>
   );
@@ -538,35 +565,39 @@ function AllocateForm() {
 
 // ─── JOB TABLE ──────────────────────────────────────────────────────────────
 
-function GpuStatsCell({ stats }: { stats?: GpuStats }) {
+function MemoryCell({ stats }: { stats?: GpuStats }) {
   if (!stats) return <span className="text-text-faint text-xs">—</span>;
-
   const memPct = Math.round((stats.memory_used_mb / stats.memory_total_mb) * 100);
   const memUsedGb = (stats.memory_used_mb / 1024).toFixed(1);
   const memTotalGb = (stats.memory_total_mb / 1024).toFixed(0);
-  const active = stats.utilization_pct > 5;
-  const tempColor = stats.temperature_c > 80 ? "#ef4444" : stats.temperature_c > 65 ? "var(--color-accent)" : "#22c55e";
-
   return (
-    <div className="flex items-center gap-3 text-xs font-mono">
-      <Tooltip content={<span>{memUsedGb}/{memTotalGb} GB ({memPct}%)</span>}>
-        <div className="flex items-center gap-1.5 cursor-default">
-          <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full"
-              style={{
-                width: `${memPct}%`,
-                background: memPct > 90 ? "#ef4444" : memPct > 70 ? "var(--color-accent)" : "#64748b",
-              }}
-            />
-          </div>
-          <span className="text-text-muted">{memPct}%</span>
+    <Tooltip content={<span>{memUsedGb}/{memTotalGb} GB</span>}>
+      <div className="flex items-center gap-1.5 cursor-default text-xs font-mono">
+        <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
+          <div
+            className="h-full rounded-full"
+            style={{
+              width: `${memPct}%`,
+              background: memPct > 90 ? "#ef4444" : "var(--color-accent)",
+            }}
+          />
         </div>
-      </Tooltip>
-      <span style={{ color: tempColor }}>{stats.temperature_c}°C</span>
-      <span className={active ? "text-green-400" : "text-text-faint"}>{active ? "Active" : "Idle"}</span>
-    </div>
+        <span className="text-text-muted">{memPct}%</span>
+      </div>
+    </Tooltip>
   );
+}
+
+function TempCell({ stats }: { stats?: GpuStats }) {
+  if (!stats) return <span className="text-text-faint text-xs">—</span>;
+  const color = stats.temperature_c > 80 ? "#ef4444" : stats.temperature_c > 65 ? "var(--color-accent)" : "#22c55e";
+  return <span className="text-xs font-mono" style={{ color }}>{stats.temperature_c}°C</span>;
+}
+
+function ActivityCell({ stats }: { stats?: GpuStats }) {
+  if (!stats) return <span className="text-text-faint text-xs">—</span>;
+  const active = stats.utilization_pct > 5;
+  return <span className={`text-xs font-mono ${active ? "text-green-400" : "text-text-faint"}`}>{active ? "Active" : "Idle"}</span>;
 }
 
 function JobTable({ jobs, onViewSession }: { jobs: MockJob[]; onViewSession: (name: string) => void }) {
@@ -591,7 +622,9 @@ function JobTable({ jobs, onViewSession }: { jobs: MockJob[]; onViewSession: (na
               <th className="pr-4">GPU</th>
               <th className="pr-4">Status</th>
               <th className="pr-4">Time Left</th>
-              <th className="pr-4">GPU Stats</th>
+              <th className="pr-4">Memory</th>
+              <th className="pr-4">Temp</th>
+              <th className="pr-4">Activity</th>
               <th className="text-right">Actions</th>
             </tr>
           </thead>
@@ -611,9 +644,9 @@ function JobTable({ jobs, onViewSession }: { jobs: MockJob[]; onViewSession: (na
                     </span>
                   </td>
                   <td className="pr-4 font-mono text-text-muted text-xs">{job.time_remaining}</td>
-                  <td className="pr-4">
-                    <GpuStatsCell stats={job.gpu_stats} />
-                  </td>
+                  <td className="pr-4"><MemoryCell stats={job.gpu_stats} /></td>
+                  <td className="pr-4"><TempCell stats={job.gpu_stats} /></td>
+                  <td className="pr-4"><ActivityCell stats={job.gpu_stats} /></td>
                   <td className="text-right">
                     <div className="inline-flex gap-1.5">
                       {job.screen_name && (
