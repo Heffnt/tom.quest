@@ -1,22 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import SymbolGame from "./components/symbol-game";
-import Leaderboard from "./components/leaderboard";
+import Leaderboard, { type PendingResult } from "./components/leaderboard";
 import LoginModal from "./components/login-modal";
 
 export default function HomeClient() {
-  const [lastWinMs, setLastWinMs] = useState<number | null>(null);
+  const [result, setResult] = useState<PendingResult | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
+  const nextWinId = useRef(1);
 
   return (
     <>
-      {/* Symbol Game — the hero */}
       <div className="animate-settle">
-        <SymbolGame onWin={setLastWinMs} />
+        <SymbolGame
+          onWin={(ms) => setResult({ winId: nextWinId.current++, ms })}
+          onReset={() => setResult(null)}
+        />
       </div>
 
-      {/* Name and descriptor */}
       <div className="mt-10 text-center">
         <h1 className="text-4xl font-bold tracking-tight animate-settle-delay-1">
           Tom Heffernan
@@ -26,10 +28,9 @@ export default function HomeClient() {
         </p>
       </div>
 
-      {/* Leaderboard */}
       <div className="mt-10 animate-settle-delay-3">
         <Leaderboard
-          pendingScore={lastWinMs}
+          result={result}
           onRequestLogin={() => setLoginOpen(true)}
         />
       </div>

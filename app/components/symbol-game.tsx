@@ -39,6 +39,7 @@ interface PlacedLine {
 
 interface SymbolGameProps {
   onWin?: (timeMs: number) => void;
+  onReset?: () => void;
 }
 
 /* ── helpers ──────────────────────────────────────────────────── */
@@ -180,11 +181,13 @@ function draw(
 
 /* ── component ────────────────────────────────────────────────── */
 
-export default function SymbolGame({ onWin }: SymbolGameProps) {
+export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
   const onWinRef = useRef(onWin);
+  const onResetRef = useRef(onReset);
   onWinRef.current = onWin;
+  onResetRef.current = onReset;
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [endMs, setEndMs] = useState(0);
@@ -234,6 +237,7 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
     const st = state.current;
 
     if (st.phase === "idle" || st.phase === "win" || st.phase === "fail") {
+      const wasFinished = st.phase === "win" || st.phase === "fail";
       st.placed = [];
       st.phase = "playing";
       st.startMs = performance.now();
@@ -241,6 +245,7 @@ export default function SymbolGame({ onWin }: SymbolGameProps) {
       st.spinDir = Math.random() > 0.5 ? 1 : -1;
       setPhase("playing");
       setEndMs(0);
+      if (wasFinished) onResetRef.current?.();
       return;
     }
 
