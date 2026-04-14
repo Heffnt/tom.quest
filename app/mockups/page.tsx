@@ -2,6 +2,11 @@ import Link from "next/link";
 
 const MOCKUPS = [
   {
+    href: "/mockups/symbol",
+    name: "Symbol Game",
+    blurb: "Three aesthetic takes on the home-page game: Sigil, Blueprint, Arcade.",
+  },
+  {
     href: "/mockups/orbit",
     name: "Orbit",
     blurb: "Tools orbit a central star. Hover pauses the system and highlights a planet.",
