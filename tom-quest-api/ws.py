@@ -9,7 +9,7 @@ import struct
 import termios
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from tmux import session_exists
+from tmux import resize_session_window, session_exists
 
 log = logging.getLogger("tom.quest.ws")
 router = APIRouter()
@@ -32,7 +32,10 @@ async def _read_pty(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
             break
     stop.set()
 
-async def _read_ws(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
+def normalize_size(rows: int, cols: int) -> tuple[int, int]:
+    return max(rows, 2), max(cols, 20)
+
+async def _read_ws(ws: WebSocket, session_name: str, master_fd: int, stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
             msg = await ws.receive()
@@ -52,9 +55,13 @@ async def _read_ws(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
         try:
             parsed = json.loads(text)
             if isinstance(parsed, dict) and parsed.get("type") == "resize":
-                rows = int(parsed.get("rows", 24))
-                cols = int(parsed.get("cols", 80))
+                rows, cols = normalize_size(
+                    int(parsed.get("rows", 24)),
+                    int(parsed.get("cols", 80)),
+                )
                 set_winsize(master_fd, rows, cols)
+                resize_session_window(session_name, cols, rows)
+                log.info("Resized tmux session %s to %sx%s", session_name, cols, rows)
                 continue
         except (ValueError, TypeError):
             pass
@@ -65,7 +72,13 @@ async def _read_ws(ws: WebSocket, master_fd: int, stop: asyncio.Event) -> None:
     stop.set()
 
 @router.websocket("/ws/sessions/{session_name}")
-async def ws_session(websocket: WebSocket, session_name: str, key: str = "") -> None:
+async def ws_session(
+    websocket: WebSocket,
+    session_name: str,
+    key: str = "",
+    cols: int = 80,
+    rows: int = 24,
+) -> None:
     from main import API_KEY
     if API_KEY and key != API_KEY:
         await websocket.close(code=1008, reason="Invalid key")
@@ -78,7 +91,10 @@ async def ws_session(websocket: WebSocket, session_name: str, key: str = "") -> 
 
     await websocket.accept()
     master_fd, slave_fd = pty.openpty()
-    set_winsize(master_fd, 24, 80)
+    rows, cols = normalize_size(rows, cols)
+    set_winsize(master_fd, rows, cols)
+    resize_session_window(session_name, cols, rows)
+    log.info("Opening tmux session %s at %sx%s", session_name, cols, rows)
     pid = os.fork()
     if pid == 0:
         os.setsid()
@@ -95,9 +111,10 @@ async def ws_session(websocket: WebSocket, session_name: str, key: str = "") -> 
     try:
         await asyncio.gather(
             _read_pty(websocket, master_fd, stop),
-            _read_ws(websocket, master_fd, stop),
+            _read_ws(websocket, session_name, master_fd, stop),
         )
     finally:
+        log.info("Closing tmux websocket for %s", session_name)
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:

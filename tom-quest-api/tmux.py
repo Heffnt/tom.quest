@@ -84,6 +84,13 @@ def detach_session_clients(session_name: str) -> int:
             detached += 1
     return detached
 
+def resize_session_window(session_name: str, cols: int, rows: int) -> bool:
+    target = shlex.quote(session_name)
+    _, _, returncode = run_command(
+        f"tmux resize-window -t {target} -x {int(cols)} -y {int(rows)}"
+    )
+    return returncode == 0
+
 def _get_job_status(job_id: str) -> str:
     stdout, _, _ = run_command(f"squeue -j {job_id} -h -o '%T'")
     return stdout.strip()

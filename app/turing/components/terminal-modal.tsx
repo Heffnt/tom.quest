@@ -241,8 +241,14 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
         setConnectionStatus("closed");
         return;
       }
-      const keyParam = tunnel.key ? `?key=${encodeURIComponent(tunnel.key)}` : "";
-      const wsUrl = tunnel.url.replace(/^http/, "ws") + `/ws/sessions/${encodeURIComponent(sessionName)}${keyParam}`;
+      fitTerminal();
+      const params = new URLSearchParams();
+      if (tunnel.key) params.set("key", tunnel.key);
+      params.set("cols", String(term.cols || 80));
+      params.set("rows", String(term.rows || 24));
+      const query = params.toString();
+      const wsUrl = tunnel.url.replace(/^http/, "ws")
+        + `/ws/sessions/${encodeURIComponent(sessionName)}${query ? `?${query}` : ""}`;
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
