@@ -1,15 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const logDebug = vi.fn();
 const loadOrCreateDeviceIdentity = vi.fn();
 const buildConnectDevice = vi.fn();
 const loadDeviceAuthToken = vi.fn();
 const storeDeviceAuthToken = vi.fn();
 const clearDeviceAuthToken = vi.fn();
-
-vi.mock("@/app/lib/debug", () => ({
-  logDebug,
-}));
 
 vi.mock("@/app/jarvis/components/gatewayAuth", () => ({
   loadOrCreateDeviceIdentity,
@@ -73,10 +68,11 @@ async function flushAsync() {
 }
 
 describe("GatewayConnection", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     MockWebSocket.instances = [];
-    logDebug.mockReset();
+    const { debug } = await import("@/app/lib/debug");
+    debug.clear();
     loadOrCreateDeviceIdentity.mockResolvedValue({
       deviceId: "device-1",
       publicKey: "public-key",
@@ -324,6 +320,7 @@ describe("GatewayConnection", () => {
 
   it("emits debug logs for lifecycle, requests, responses, and events", async () => {
     const { GatewayConnection } = await import("@/app/jarvis/components/GatewayConnection");
+    const { debug } = await import("@/app/lib/debug");
     const connection = new GatewayConnection({
       url: "wss://gateway.example/ws",
       websocketFactory: (url: string) => new MockWebSocket(url) as unknown as WebSocket,
@@ -343,35 +340,11 @@ describe("GatewayConnection", () => {
     socket.serverMessage({ type: "event", event: "health", payload: { ok: true } });
     await call;
 
-    expect(logDebug).toHaveBeenCalledWith(
-      "lifecycle",
-      expect.stringContaining("WS connecting"),
-      expect.anything(),
-      "Gateway",
-    );
-    expect(logDebug).toHaveBeenCalledWith(
-      "lifecycle",
-      expect.stringContaining("Challenge received"),
-      expect.anything(),
-      "Gateway",
-    );
-    expect(logDebug).toHaveBeenCalledWith(
-      "request",
-      expect.stringContaining("-> health"),
-      expect.anything(),
-      "Gateway",
-    );
-    expect(logDebug).toHaveBeenCalledWith(
-      "response",
-      expect.stringContaining("<- health"),
-      expect.anything(),
-      "Gateway",
-    );
-    expect(logDebug).toHaveBeenCalledWith(
-      "info",
-      expect.stringContaining("event: health"),
-      expect.anything(),
-      "Gateway",
-    );
+    const lines = debug.getLines().join("\n");
+    expect(lines).toContain("[gw] WS connecting");
+    expect(lines).toContain("[gw] Challenge received");
+    expect(lines).toContain("[gw] -> health");
+    expect(lines).toContain("[gw] <- health");
+    expect(lines).toContain("[gw] event: health");
   });
 });

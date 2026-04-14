@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@/app/lib/auth";
+import { debug } from "@/app/lib/debug";
 import { useEffect, useState } from "react";
 import ChatPanel from "./components/ChatPanel";
 import ContextViewer from "./components/ContextViewer";
@@ -10,6 +11,8 @@ import SessionsOverview from "./components/SessionsOverview";
 import StatusBar from "./components/StatusBar";
 import TokenUsage from "./components/TokenUsage";
 import { GatewayProvider } from "./components/useGateway";
+
+const gatewayConfigLog = debug.scoped("gw.config");
 
 function useGatewayConfig(enabled: boolean, accessToken: string | null | undefined) {
   const [gatewayUrl, setGatewayUrl] = useState<string | null>(null);
@@ -36,6 +39,8 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
     setLoading(true);
     setError(null);
     void (async () => {
+      const done = gatewayConfigLog.req("GET /api/jarvis/config", undefined, { defer: true });
+      let loggedError = false;
       try {
         const response = await fetch("/api/jarvis/config", {
           headers: {
@@ -48,16 +53,25 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
           error?: string;
         } | null;
         if (!response.ok) {
-          throw new Error(payload?.error || "Failed to load gateway config");
+          const message = payload?.error || "Failed to load gateway config";
+          done.error(message, { status: response.status });
+          loggedError = true;
+          throw new Error(message);
         }
         if (!payload?.gatewayUrl) {
+          done.error("Gateway not configured", { status: response.status });
+          loggedError = true;
           throw new Error("Gateway not configured");
         }
         if (!cancelled) {
           setGatewayUrl(payload.gatewayUrl);
           setGatewayToken(payload.gatewayToken ?? null);
         }
+        done({ status: response.status });
       } catch (nextError) {
+        if (!cancelled && !loggedError) {
+          done.error(nextError instanceof Error ? nextError.message : "Failed to load gateway config");
+        }
         if (!cancelled) {
           setGatewayUrl(null);
           setGatewayToken(null);

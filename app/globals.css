@@ -78,31 +78,3 @@ button, input, select, textarea {
   animation: settle 0.5s ease-out 240ms forwards;
   opacity: 0;
 }
-
-/* Slide-in animations for debug drawer (3 edges) */
-@keyframes slide-in-right {
-  from { transform: translateX(100%); }
-  to   { transform: translateX(0); }
-}
-
-@keyframes slide-in-left {
-  from { transform: translateX(-100%); }
-  to   { transform: translateX(0); }
-}
-
-@keyframes slide-in-bottom {
-  from { transform: translateY(100%); }
-  to   { transform: translateY(0); }
-}
-
-.animate-slide-in-right {
-  animation: slide-in-right 0.2s ease-out forwards;
-}
-
-.animate-slide-in-left {
-  animation: slide-in-left 0.2s ease-out forwards;
-}
-
-.animate-slide-in-bottom {
-  animation: slide-in-bottom 0.2s ease-out forwards;
-}

@@ -1,10 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const logDebug = vi.fn();
-
-vi.mock("@/app/lib/debug", () => ({
-  logDebug,
-}));
+import { beforeEach, describe, expect, it } from "vitest";
 
 function base64UrlDecode(input: string): Uint8Array {
   const normalized = input.replaceAll("-", "+").replaceAll("_", "/");
@@ -18,9 +12,10 @@ function base64UrlDecode(input: string): Uint8Array {
 }
 
 describe("gatewayAuth", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
-    logDebug.mockReset();
+    const { debug } = await import("@/app/lib/debug");
+    debug.clear();
   });
 
   it("creates and persists a stable device identity", async () => {
@@ -150,6 +145,7 @@ describe("gatewayAuth", () => {
       loadOrCreateDeviceIdentity,
       storeDeviceAuthToken,
     } = await import("@/app/jarvis/components/gatewayAuth");
+    const { debug } = await import("@/app/lib/debug");
     const identity = await loadOrCreateDeviceIdentity();
 
     await buildConnectDevice({
@@ -168,23 +164,9 @@ describe("gatewayAuth", () => {
     });
     clearDeviceAuthToken({ deviceId: identity.deviceId, role: "operator" });
 
-    expect(logDebug).toHaveBeenCalledWith(
-      "lifecycle",
-      expect.stringContaining("Device key pair generated"),
-      expect.anything(),
-      "Gateway",
-    );
-    expect(logDebug).toHaveBeenCalledWith(
-      "lifecycle",
-      expect.stringContaining("Challenge signed"),
-      expect.anything(),
-      "Gateway",
-    );
-    expect(logDebug).toHaveBeenCalledWith(
-      "info",
-      expect.stringContaining("Device token persisted"),
-      expect.anything(),
-      "Gateway",
-    );
+    const lines = debug.getLines().join("\n");
+    expect(lines).toContain("[gw.auth] Device key pair generated");
+    expect(lines).toContain("[gw.auth] Challenge signed");
+    expect(lines).toContain("[gw.auth] Device token persisted");
   });
 });

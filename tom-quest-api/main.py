@@ -14,7 +14,14 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from gpu_report import format_gpu_report_v2, get_free_gpu_type_info
 from slurm import allocate_gpu, cancel_job, get_user_jobs, get_job_count, MAX_GPU_ALLOCATIONS
-from tmux import setup_allocation_session, cleanup_session, capture_output, session_exists
+from tmux import (
+    setup_allocation_session,
+    cleanup_session,
+    capture_output,
+    session_exists,
+    count_session_clients,
+    detach_session_clients,
+)
 from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir
 from boolback import router as boolback_router
@@ -173,6 +180,13 @@ class JobResponse(BaseModel):
     start_time: str
     end_time: str
 
+class SessionClientsResponse(BaseModel):
+    attached_clients: int
+
+class DetachClientsResponse(BaseModel):
+    success: bool
+    detached_clients: int
+
 def resolve_allocation_count(request: AllocationRequest) -> int:
     if request.count > 0:
         return request.count
@@ -285,6 +299,19 @@ async def get_session_output(session_name: str, lines: int = 500, auth: bool = D
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     output = capture_output(session_name, lines)
     return {"session_name": session_name, "output": output}
+
+@app.get("/sessions/{session_name}/clients", response_model=SessionClientsResponse)
+async def get_session_clients(session_name: str, auth: bool = Depends(verify_api_key)):
+    if not session_exists(session_name):
+        raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
+    return SessionClientsResponse(attached_clients=count_session_clients(session_name))
+
+@app.post("/sessions/{session_name}/detach-clients", response_model=DetachClientsResponse)
+async def post_detach_session_clients(session_name: str, auth: bool = Depends(verify_api_key)):
+    if not session_exists(session_name):
+        raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
+    detached_clients = detach_session_clients(session_name)
+    return DetachClientsResponse(success=True, detached_clients=detached_clients)
 
 if __name__ == "__main__":
     import uvicorn

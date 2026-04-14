@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import useSWR from "swr";
 import { useAuth } from "../auth";
+import { debug } from "../debug";
 
 interface UseTuringOptions {
   refreshInterval?: number;
@@ -21,16 +22,62 @@ interface UseTuringMutationResult<TBody, TResponse> {
   error: string | null;
 }
 
+const turingLog = debug.scoped("turing");
+const TURING_SUCCESS_DEDUPE_MS = 120_000;
+const turingStateSnapshot: Record<string, unknown> = {
+  lastPath: "none",
+  lastStatus: null,
+  lastError: null,
+};
+
+debug.registerState("turing", () => turingStateSnapshot);
+
+function updateTuringState(path: string, status: number | null, error: string | null) {
+  turingStateSnapshot.lastPath = path;
+  turingStateSnapshot.lastStatus = status;
+  turingStateSnapshot.lastError = error;
+}
+
+function truncateMessage(value: string, maxChars = 120): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars - 1)}…`;
+}
+
 function buildFetcher(userId: string | undefined) {
   return async (url: string) => {
+    const done = turingLog.req(`GET ${url}`, undefined, {
+      dedupeSuccessForMs: TURING_SUCCESS_DEDUPE_MS,
+      defer: true,
+    });
     const headers: Record<string, string> = {};
     if (userId) headers["x-user-id"] = userId;
-    const res = await fetch(url, { headers });
+    let res: Response;
+    try {
+      res = await fetch(url, { headers });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Network error";
+      updateTuringState(url, null, message);
+      done.error(message);
+      throw error instanceof Error ? error : new Error(message);
+    }
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(text || `Request failed: ${res.status}`);
+      const message = truncateMessage(text || `Request failed: ${res.status}`);
+      updateTuringState(url, res.status, message);
+      done.error(message, { status: res.status });
+      throw new Error(message);
     }
-    return res.json();
+    try {
+      const data = await res.json();
+      updateTuringState(url, res.status, null);
+      done({ status: res.status });
+      return data;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid JSON response";
+      updateTuringState(url, res.status, message);
+      done.error("invalid JSON response", { status: res.status, error: truncateMessage(message) });
+      throw error instanceof Error ? error : new Error(message);
+    }
   };
 }
 
@@ -62,21 +109,36 @@ export function useTuringMutation<TBody, TResponse>(
   const trigger = useCallback(async (body: TBody): Promise<TResponse | null> => {
     setLoading(true);
     setError(null);
+    const url = "/api/turing" + path;
+    const done = turingLog.req(`${method} ${url}`, undefined, { defer: true });
+    let loggedError = false;
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (user?.id) headers["x-user-id"] = user.id;
-      const res = await fetch("/api/turing" + path, {
+      const res = await fetch(url, {
         method,
         headers,
         body: JSON.stringify(body),
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Request failed: ${res.status}`);
+        const message = truncateMessage(text || `Request failed: ${res.status}`);
+        updateTuringState(url, res.status, message);
+        done.error(message, { status: res.status });
+        loggedError = true;
+        throw new Error(message);
       }
-      return (await res.json()) as TResponse;
+      const payload = (await res.json()) as TResponse;
+      updateTuringState(url, res.status, null);
+      done({ status: res.status });
+      return payload;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unknown error");
+      const message = e instanceof Error ? e.message : "Unknown error";
+      if (!loggedError) {
+        updateTuringState(url, null, message);
+        done.error(message);
+      }
+      setError(message);
       return null;
     } finally {
       setLoading(false);

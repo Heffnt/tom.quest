@@ -14,7 +14,13 @@ const NAV_LINKS = [
   { href: "/jarvis", label: "Jarvis" },
 ];
 
-export default function Navigation() {
+export default function Navigation({
+  offsets = { left: 0, right: 0 },
+  animateOffsets = true,
+}: {
+  offsets?: { left?: number; right?: number };
+  animateOffsets?: boolean;
+}) {
   const pathname = usePathname();
   const { isTom, user } = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
@@ -59,7 +65,10 @@ export default function Navigation() {
     <>
       <nav
         aria-label="Main navigation"
-        className="fixed top-0 left-0 right-0 z-40 bg-bg/80 backdrop-blur-sm border-b border-border"
+        className={`fixed top-0 z-40 bg-bg/80 backdrop-blur-sm border-b border-border ${
+          animateOffsets ? "transition-[left,right] duration-150 ease-out" : ""
+        }`}
+        style={{ left: offsets.left ?? 0, right: offsets.right ?? 0 }}
       >
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           {/* Logo */}

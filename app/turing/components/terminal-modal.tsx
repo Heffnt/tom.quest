@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/app/lib/auth";
+import { debug } from "@/app/lib/debug";
+import { useTuring, useTuringMutation } from "@/app/lib/hooks/use-turing";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -16,23 +18,93 @@ interface TerminalModalProps {
 
 const MAX_RECONNECTS = 3;
 const VSCODE_TERMINAL_FONT = 'Consolas, "Courier New", monospace';
+const TERMINAL_SUCCESS_DEDUPE_MS = 30_000;
+const terminalLog = debug.scoped("term");
+
+interface SessionClientsResponse {
+  attached_clients: number;
+}
+
+interface SessionOutputResponse {
+  output: string;
+}
+
+interface DetachClientsResponse {
+  success: boolean;
+  detached_clients: number;
+}
+
+const terminalStateSnapshot: Record<string, unknown> = {
+  status: "closed",
+  sessionName: "none",
+};
+
+debug.registerState("terminal", () => terminalStateSnapshot);
+
+function setTerminalState(sessionName: string | null, status: string) {
+  terminalStateSnapshot.sessionName = sessionName ?? "none";
+  terminalStateSnapshot.status = status;
+}
 
 async function fetchTunnelUrl(userId: string | undefined): Promise<{ url: string; key: string } | null> {
+  const done = terminalLog.req("GET /api/turing/tunnel-url", undefined, { defer: true });
   const headers: Record<string, string> = {};
   if (userId) headers["x-user-id"] = userId;
-  const res = await fetch("/api/turing/tunnel-url", { headers });
-  if (!res.ok) return null;
+  let res: Response;
+  try {
+    res = await fetch("/api/turing/tunnel-url", { headers });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Network error";
+    done.error(message);
+    return null;
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    done.error(text || "Failed to fetch tunnel URL", { status: res.status });
+    return null;
+  }
   const data = await res.json();
-  if (!data.url) return null;
+  if (!data.url) {
+    done.error("Missing tunnel URL", { status: res.status });
+    return null;
+  }
+  done({ status: res.status });
   return { url: data.url, key: data.key || "" };
 }
 
-function buildSessionWsUrl(baseUrl: string, sessionName: string, key: string, cols: number, rows: number): string {
-  const wsUrl = new URL(`/ws/sessions/${encodeURIComponent(sessionName)}`, baseUrl.replace(/^http/, "ws"));
-  if (key) wsUrl.searchParams.set("key", key);
-  wsUrl.searchParams.set("cols", String(cols));
-  wsUrl.searchParams.set("rows", String(rows));
-  return wsUrl.toString();
+async function fetchSessionClients(
+  userId: string | undefined,
+  sessionName: string,
+): Promise<SessionClientsResponse | null> {
+  const done = terminalLog.req(
+    `GET /api/turing/sessions/${sessionName}/clients`,
+    undefined,
+    { dedupeSuccessForMs: TERMINAL_SUCCESS_DEDUPE_MS, defer: true },
+  );
+  const headers: Record<string, string> = {};
+  if (userId) headers["x-user-id"] = userId;
+  let res: Response;
+  try {
+    res = await fetch(`/api/turing/sessions/${encodeURIComponent(sessionName)}/clients`, {
+      headers,
+      cache: "no-store",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Network error";
+    done.error(message, { sessionName });
+    return null;
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    done.error(text || "Failed to inspect attached tmux clients", {
+      status: res.status,
+      sessionName,
+    });
+    return null;
+  }
+  const data = (await res.json()) as SessionClientsResponse;
+  done({ status: res.status, attachedClients: data.attached_clients });
+  return data;
 }
 
 export default function TerminalModal({ sessionName, allSessions, onClose, onNavigate }: TerminalModalProps) {
@@ -41,13 +113,77 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectsRef = useRef(0);
-  const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
+  const [mode, setMode] = useState<"checking" | "viewer" | "interactive">("checking");
+  const [attachedClients, setAttachedClients] = useState(0);
+  const [clientsError, setClientsError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "open" | "closed">("connecting");
+  const sessionOutput = useTuring<SessionOutputResponse>(
+    `/sessions/${encodeURIComponent(sessionName)}/output`,
+    mode === "viewer" ? { refreshInterval: 2 } : undefined,
+  );
+  const detachOthers = useTuringMutation<Record<string, never>, DetachClientsResponse>(
+    `/sessions/${encodeURIComponent(sessionName)}/detach-clients`,
+  );
 
   const idx = allSessions.indexOf(sessionName);
   const hasPrev = idx > 0;
   const hasNext = idx >= 0 && idx < allSessions.length - 1;
 
   useEffect(() => {
+    const status = mode === "interactive" ? connectionStatus : mode;
+    setTerminalState(sessionName, status);
+    return () => {
+      setTerminalState(null, "closed");
+    };
+  }, [connectionStatus, mode, sessionName]);
+
+  useEffect(() => {
+    if (mode === "checking") {
+      terminalLog.log("checking attached clients", { sessionName });
+      return;
+    }
+    if (mode === "viewer") {
+      terminalLog.log("viewer mode active", {
+        sessionName,
+        attachedClients,
+      });
+      return;
+    }
+    terminalLog.log("interactive mode active", { sessionName });
+  }, [attachedClients, mode, sessionName]);
+
+  useEffect(() => {
+    if (mode === "interactive") return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const checkClients = async () => {
+      const next = await fetchSessionClients(user?.id, sessionName);
+      if (cancelled) return;
+      if (!next) {
+        setClientsError("Failed to inspect attached tmux clients");
+        setMode("viewer");
+        timer = window.setTimeout(checkClients, 2000);
+        return;
+      }
+      setClientsError(null);
+      setAttachedClients(next.attached_clients);
+      if (next.attached_clients === 0) {
+        setMode("interactive");
+        setConnectionStatus("connecting");
+        return;
+      }
+      setMode("viewer");
+      timer = window.setTimeout(checkClients, 2000);
+    };
+    void checkClients();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [mode, sessionName, user?.id]);
+
+  useEffect(() => {
+    if (mode !== "interactive") return;
     let disposed = false;
 
     const term = new Terminal({
@@ -60,18 +196,11 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     termRef.current = term;
-    const getTerminalSize = () => {
-      fit.fit();
-      return {
-        cols: Math.max(term.cols, 80),
-        rows: Math.max(term.rows, 24),
-      };
-    };
     const fitTerminal = () => {
-      const { cols, rows } = getTerminalSize();
+      fit.fit();
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       }
     };
     if (containerRef.current) {
@@ -94,40 +223,54 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
 
     const connect = async () => {
       if (disposed) return;
-      setStatus("connecting");
+      setConnectionStatus("connecting");
+      terminalLog.log("connecting", { sessionName });
       const tunnel = await fetchTunnelUrl(user?.id);
       if (!tunnel || disposed) {
         term.write("\r\n\x1b[31mFailed to fetch tunnel URL\x1b[0m\r\n");
-        setStatus("closed");
+        setConnectionStatus("closed");
         return;
       }
-      const { cols, rows } = getTerminalSize();
-      const wsUrl = buildSessionWsUrl(tunnel.url, sessionName, tunnel.key || "", cols, rows);
+      const keyParam = tunnel.key ? `?key=${encodeURIComponent(tunnel.key)}` : "";
+      const wsUrl = tunnel.url.replace(/^http/, "ws") + `/ws/sessions/${encodeURIComponent(sessionName)}${keyParam}`;
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setStatus("open");
+        setConnectionStatus("open");
         reconnectsRef.current = 0;
+        terminalLog.log("socket open", { sessionName });
         fitTerminal();
       };
       ws.onmessage = (e) => {
         if (typeof e.data === "string") term.write(e.data);
         else term.write(new Uint8Array(e.data));
       };
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (disposed) return;
-        setStatus("closed");
+        setConnectionStatus("closed");
+        terminalLog.error("socket closed", {
+          sessionName,
+          code: event.code,
+          reason: event.reason || "none",
+        });
         if (reconnectsRef.current < MAX_RECONNECTS) {
           reconnectsRef.current += 1;
           term.write(`\r\n\x1b[33mConnection lost — reconnecting (${reconnectsRef.current}/${MAX_RECONNECTS})…\x1b[0m\r\n`);
+          terminalLog.log("reconnecting", {
+            sessionName,
+            attempt: reconnectsRef.current,
+            maxAttempts: MAX_RECONNECTS,
+          });
           setTimeout(connect, 2000);
         } else {
           term.write("\r\n\x1b[31mConnection closed\x1b[0m\r\n");
         }
       };
-      ws.onerror = () => { /* close handler runs afterward */ };
+      ws.onerror = () => {
+        terminalLog.error("socket error", { sessionName });
+      };
     };
 
     const sub = term.onData((data) => {
@@ -144,14 +287,56 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
       term.dispose();
       termRef.current = null;
       wsRef.current = null;
+      terminalLog.log("interactive session closed", { sessionName });
     };
-  }, [sessionName, user?.id]);
+  }, [mode, sessionName, user?.id]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
+
+  useEffect(() => {
+    if (mode !== "interactive") return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const checkForOtherClients = async () => {
+      const next = await fetchSessionClients(user?.id, sessionName);
+      if (cancelled) return;
+      if (next && next.attached_clients > 1) {
+        setAttachedClients(next.attached_clients - 1);
+        setMode("viewer");
+        return;
+      }
+      timer = window.setTimeout(checkForOtherClients, 2000);
+    };
+    timer = window.setTimeout(checkForOtherClients, 2000);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [mode, sessionName, user?.id]);
+
+  const status = mode === "checking" ? "checking" : mode === "viewer" ? "view-only" : connectionStatus;
+  const statusClass = mode === "checking"
+    ? "text-yellow-400"
+    : mode === "viewer"
+      ? "text-amber-300"
+      : connectionStatus === "open"
+        ? "text-green-400"
+        : connectionStatus === "connecting"
+          ? "text-yellow-400"
+          : "text-error";
+
+  const handleDetachOthers = async () => {
+    const res = await detachOthers.trigger({});
+    if (res?.success) {
+      setMode("checking");
+      setAttachedClients(0);
+      setClientsError(null);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -170,14 +355,55 @@ export default function TerminalModal({ sessionName, allSessions, onClose, onNav
             <button type="button" onClick={() => hasNext && onNavigate(allSessions[idx + 1])}
               disabled={!hasNext}
               className="text-text-muted hover:text-text disabled:opacity-30">▶</button>
-            <span className={`ml-2 text-xs ${status === "open" ? "text-green-400" : status === "connecting" ? "text-yellow-400" : "text-error"}`}>
+            <span className={`ml-2 text-xs ${statusClass}`}>
               {status}
             </span>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close"
-            className="text-text-muted hover:text-text">✕</button>
+          <div className="flex items-center gap-2">
+            {mode === "viewer" && attachedClients > 0 && (
+              <button
+                type="button"
+                onClick={handleDetachOthers}
+                disabled={detachOthers.loading}
+                className="text-xs px-2 py-1 rounded border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+              >
+                {detachOthers.loading ? "Detaching..." : "Detach other clients"}
+              </button>
+            )}
+            <button type="button" onClick={onClose} aria-label="Close"
+              className="text-text-muted hover:text-text">✕</button>
+          </div>
         </div>
-        <div ref={containerRef} className="flex-1 bg-black p-2 overflow-hidden" />
+        {mode === "viewer" ? (
+          <div className="flex-1 min-h-0 bg-black flex flex-col">
+            <div className="px-3 py-2 border-b border-border text-xs text-text-muted">
+              {attachedClients > 1
+                ? `${attachedClients} tmux clients are attached, so tom.quest is staying view-only to avoid resizing the shared session.`
+                : attachedClients === 1
+                  ? "Another tmux client is attached, so tom.quest is staying view-only to avoid resizing the shared session."
+                  : "Waiting to confirm the shared-session state before enabling interactive mode."}
+            </div>
+            {clientsError && (
+              <div className="px-3 py-2 text-xs text-error border-b border-border">
+                {clientsError}
+              </div>
+            )}
+            {detachOthers.error && (
+              <div className="px-3 py-2 text-xs text-error border-b border-border">
+                {detachOthers.error}
+              </div>
+            )}
+            <pre className="flex-1 overflow-auto p-3 text-[13px] leading-5 text-[#d4d4d4] font-mono whitespace-pre-wrap break-words">
+              {sessionOutput.data?.output ?? ""}
+            </pre>
+          </div>
+        ) : mode === "checking" ? (
+          <div className="flex-1 bg-black flex items-center justify-center text-sm text-text-muted">
+            Checking attached tmux clients...
+          </div>
+        ) : (
+          <div ref={containerRef} className="flex-1 bg-black p-2 overflow-hidden" />
+        )}
       </div>
     </div>
   );

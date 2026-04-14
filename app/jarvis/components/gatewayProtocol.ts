@@ -1,6 +1,6 @@
 "use client";
 
-import { logDebug } from "@/app/lib/debug";
+import { debug } from "@/app/lib/debug";
 
 export type CallFn = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 
@@ -250,8 +250,7 @@ export type SessionsUsageResult = {
 
 type Check = [label: string, check: (value: unknown) => boolean];
 
-const LOG_SOURCE = "Gateway";
-const loggedSuccessMethods = new Set<string>();
+const protoLog = debug.scoped("gw.proto");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -269,22 +268,14 @@ function hasArray(value: unknown, key: string): boolean {
   return isRecord(value) && Array.isArray(value[key]);
 }
 
-function logMethodShapeOnce(method: string, data: unknown) {
-  if (loggedSuccessMethods.has(method)) return;
-  loggedSuccessMethods.add(method);
-  logDebug("info", `Gateway response shape: ${method}`, data, LOG_SOURCE);
-}
-
 function assertShape<T>(method: string, data: unknown, checks: Check[]): T {
   for (const [label, check] of checks) {
     if (!check(data)) {
-      logDebug("error", `Protocol drift: ${method} -- unexpected shape for "${label}"`, {
+      protoLog.error(`Protocol drift: ${method} -- unexpected shape for "${label}"`, {
         expected: label,
-        received: data,
-      }, LOG_SOURCE);
+      });
     }
   }
-  logMethodShapeOnce(method, data);
   return data as T;
 }
 

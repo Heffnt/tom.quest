@@ -1,6 +1,6 @@
 "use client";
 
-import { logDebug } from "@/app/lib/debug";
+import { debug } from "@/app/lib/debug";
 
 type StoredIdentity = {
   version: 1;
@@ -39,7 +39,7 @@ export type GatewayConnectDevice = {
 
 const IDENTITY_STORAGE_KEY = "openclaw-device-identity-v1";
 const AUTH_STORAGE_KEY = "openclaw.device.auth.v1";
-const LOG_SOURCE = "Gateway";
+const gatewayAuthLog = debug.scoped("gw.auth");
 
 function getSafeLocalStorage() {
   if (typeof window === "undefined") return null;
@@ -118,11 +118,11 @@ async function generateIdentity(): Promise<DeviceIdentity> {
     publicKey: base64UrlEncode(publicKeyBytes),
     privateKey: base64UrlEncode(privateKeyBytes),
   };
-  logDebug("lifecycle", "Device key pair generated", {
+  gatewayAuthLog.log("Device key pair generated", {
     deviceId,
     publicKeyBytes: publicKeyBytes.byteLength,
     privateKeyBytes: privateKeyBytes.byteLength,
-  }, LOG_SOURCE);
+  });
   return identity;
 }
 
@@ -142,21 +142,21 @@ export async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
         if (derivedId !== parsed.deviceId) {
           const repaired: StoredIdentity = { ...parsed, deviceId: derivedId };
           storage?.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(repaired));
-          logDebug("info", "Device ID derived from stored public key", {
+          gatewayAuthLog.log("Device ID derived from stored public key", {
             previousDeviceId: parsed.deviceId,
             deviceId: derivedId,
             repaired: true,
-          }, LOG_SOURCE);
+          });
           return {
             deviceId: derivedId,
             publicKey: parsed.publicKey,
             privateKey: parsed.privateKey,
           };
         }
-        logDebug("info", "Device identity loaded from storage", {
+        gatewayAuthLog.log("Device identity loaded from storage", {
           deviceId: parsed.deviceId,
           repaired: false,
-        }, LOG_SOURCE);
+        });
         return {
           deviceId: parsed.deviceId,
           publicKey: parsed.publicKey,
@@ -165,7 +165,9 @@ export async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
       }
     }
   } catch (error) {
-    logDebug("error", "Failed to load stored device identity", error, LOG_SOURCE);
+    gatewayAuthLog.error("Failed to load stored device identity", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const identity = await generateIdentity();
@@ -240,14 +242,14 @@ export async function buildConnectDevice(params: {
     nonce: params.nonce,
   });
   const signature = await signDevicePayload(params.identity.privateKey, payload);
-  logDebug("lifecycle", "Challenge signed", {
+  gatewayAuthLog.log("Challenge signed", {
     deviceId: params.identity.deviceId,
     clientId: params.clientId,
     clientMode: params.clientMode,
     role: params.role,
     scopes: params.scopes,
     nonce: params.nonce,
-  }, LOG_SOURCE);
+  });
   return {
     id: params.identity.deviceId,
     publicKey: params.identity.publicKey,
@@ -280,7 +282,9 @@ function writeAuthStore(store: DeviceAuthStore) {
   try {
     getSafeLocalStorage()?.setItem(AUTH_STORAGE_KEY, JSON.stringify(store));
   } catch (error) {
-    logDebug("error", "Failed to write device auth token store", error, LOG_SOURCE);
+    gatewayAuthLog.error("Failed to write device auth token store", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -292,11 +296,11 @@ export function loadDeviceAuthToken(params: {
   if (!store || store.deviceId !== params.deviceId) return null;
   const entry = store.tokens[normalizeRole(params.role)];
   if (!entry || typeof entry.token !== "string") return null;
-  logDebug("info", "Device token loaded from storage", {
+  gatewayAuthLog.log("Device token loaded from storage", {
     deviceId: params.deviceId,
     role: entry.role,
     scopes: entry.scopes,
-  }, LOG_SOURCE);
+  });
   return entry;
 }
 
@@ -324,11 +328,11 @@ export function storeDeviceAuthToken(params: {
   };
   next.tokens[role] = entry;
   writeAuthStore(next);
-  logDebug("info", "Device token persisted", {
+  gatewayAuthLog.log("Device token persisted", {
     deviceId: params.deviceId,
     role,
     scopes: entry.scopes,
-  }, LOG_SOURCE);
+  });
   return entry;
 }
 
@@ -344,8 +348,8 @@ export function clearDeviceAuthToken(params: { deviceId: string; role: string })
   };
   delete next.tokens[role];
   writeAuthStore(next);
-  logDebug("info", "Device token cleared", {
+  gatewayAuthLog.log("Device token cleared", {
     deviceId: params.deviceId,
     role,
-  }, LOG_SOURCE);
+  });
 }

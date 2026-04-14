@@ -14,7 +14,7 @@ alwaysApply: true
 - never implement auto-scrolling that moves the user unexpectedly (e.g. chat page)
 - maintain comprehensive debug logs when creating/modifying code
 - One-time DB changes (SQL/RLS/migrations): paste the SQL in chat for me to run; don't put large one-off SQL blocks in code comments.
-- Debug logs: avoid logging large response bodies (use `debugFetch(..., { logResponseBody: false })` for large JSON like `/data/*.json`); only log full payloads for errors.
+- Debug logs: use `debug.scoped(source)` with `log()`, `error()`, and `req()`; avoid logging large payloads, secrets, token strings, signatures, or full chat bodies; register snapshot state with `registerState()`; prefer chokepoint instrumentation plus request dedupe over per-feature ad hoc logs.
 
 ## Shell Reminders (Windows PowerShell)
 - NO `&&` chaining: use `;` or separate commands
@@ -24,22 +24,23 @@ alwaysApply: true
 - Glob tool can fail with Windows absolute `target_directory`; omit it (or use forward-slash paths)
 - `npx tsc --noEmit` can fail on stale `.next/dev/types`; rely on `npm run lint` unless `.next` has been regenerated
 - If `npm run lint` fails with `eslint: not found`, install deps first (`npm install`) (confirmed again 2026-02-22)
+- Local `npm run build` can fail at `vitest.config.ts` with `Cannot find module 'vitest/config'` when the local install is missing Vitest; treat it as a local dependency issue unless the task changed test tooling
+- `npx vitest run ...` can fail at `vitest.config.ts` with `Cannot find module 'vitest/config'` when the repo's local Vitest install is missing; use the project test script only after deps are installed, and otherwise treat it as a local dependency issue
+- `npm run dev` can fail with `Unable to acquire lock at .next/dev/lock` if a previous Next.js dev server is still running; kill the stale `next dev` process first, then restart a single clean server
 - `npm run lint` can fail on pre-existing issues in `app/boolback/DatasetReviewTab.tsx` (`no-explicit-any`) and `app/cube/page.tsx` (`react/no-unescaped-entities`); treat as baseline unless touched
 - `npm run build` can fail on stale `.next/dev/types/validator.ts` referencing removed routes; delete `.next` and rerun
 - Before Vercel deploys, run `npm run build`; `npm run lint` and `npm test` can both pass while Next.js production TypeScript still fails on stricter app-route compilation
 - `vercel env add <NAME> preview --value ...` can return `git_branch_required` in non-interactive runs; if it does, add preview envs via the Vercel dashboard/API or pass an explicit preview branch
 - `vercel env add <NAME> production --value ...` can succeed and then hang without exiting; if the success message is already printed, kill the stuck process and continue
 - Use `ReadFile` (not `Read`) and ensure tool JSON is valid before sending
-- Python `-c` one-liners cannot include inline `def` after semicolons; use lambda or a real script block
+- Python `-c` one-liners cannot include compound statements like inline `def` or `if` after semicolons; use expressions, a real script block, or separate commands
 - Python `-c` one-liners also break easily when you try to smuggle escaped newlines like `\ntry:` through shell quoting; use a real script block or `curl` instead
+- For one-off Python verification commands in `tom.quest`, import the real Turing modules with `sys.path.insert(0, "tom-quest-api")` instead of using placeholder module names
 - Shell tool can return `Command failed to spawn: Aborted` on larger heredoc requests; rerun with a shorter script
 - `ReadLints` can timeout even with scoped paths; rerun once, then validate edited files with `npm run lint` if needed
-- `python -m py_compile tom-quest-api/*.py` can touch tracked `tom-quest-api/__pycache__/*.pyc` artifacts; avoid it unless you intend to restore those binaries afterward
 - Some Linux/Turing shells do not have `rg`; use Cursor `rg` tool for code search and `awk`/`python` for shell-side process filtering
 - Turing shell process inspection can fail with `rg: command not found`; use `ps -ef | awk ...` instead of shell `rg`
-- tmux CLI help is inconsistent on this host: `attach-session -h` and lowercase `-f` fail even though upstream docs mention client flags; verify tmux flag support against the local binary, use uppercase `-F` for `refresh-client` client flags here, and note this host rejects `window-size latest` even though newer docs mention it
-- When probing tmux behavior in parallel, use distinct temporary session names; concurrent checks against the same temp session name collide with `duplicate session`
-- `npm run build` can fail resolving `vitest/config` if the local install is missing `node_modules/vitest` even though `package.json` declares it; check the local install and run `npm install` before treating that as a code regression
+- Throwaway `tmux -L <socket> kill-server` cleanup can return `server exited unexpectedly` after PTY test clients are killed; treat it as benign and recreate the test server fresh
 - `openclaw devices pending` is not a valid CLI subcommand in current OpenClaw; use `openclaw devices list`
 - `vitest run` exits with code 1 when no tests exist; for initial test setup either add the first test before running or use `--passWithNoTests` intentionally
 - Red-phase Vitest imports fail during Vite import analysis when the target module file does not exist yet; create the file stub first if you need the suite to execute individual tests instead of failing at module resolution
@@ -88,14 +89,15 @@ app/
 │   ├── feedback/            # GET/POST feedback
 │   └── jarvis/config/       # Tom-only gateway config endpoint returning the WS URL and optional shared token for initial remote pairing
 ├── components/
+│   ├── app-shell.tsx        # Client shell wrapper that owns debug-panel edge/size state, route logging, and push-layout margins
 │   ├── AuthProvider.tsx     # Auth context (user, profile, isTom, turingConnection)
 │   ├── LoginModal.tsx       # Sign in/up modal
-│   ├── debug-drawer.tsx     # Global Tom-only debug log drawer mounted from the root layout
+│   ├── debug-drawer.tsx     # Global Tom-only three-edge debug panel with hover triggers, copy/clear, outside-click close, and drag resize
 │   ├── FeedbackButton.tsx   # Floating feedback form button
 │   ├── Navigation.tsx       # Nav with conditional Tom links
 │   └── ProfileModal.tsx     # Username profile modal
 └── lib/
-    ├── debug.ts             # Client debug logger (logDebug + debugFetch)
+    ├── debug.ts             # Module-level debug core: ring buffer, scoped loggers, polling dedupe, snapshots, and useSyncExternalStore subscription
     ├── supabase.ts          # Supabase client + types
     ├── userSettings.ts      # Supabase-backed user settings helpers
     └── turing.ts            # Turing URL resolution (DB-based, per-user connection keys)
@@ -127,7 +129,11 @@ tom-quest-api/               # FastAPI on Turing HPC
 - Login modal: defaults to sign in on open, scrolls if viewport is short
 - Feedback button: floating bottom-right modal for user feedback
 - Feedback page: Tom-only list of submissions with name + username when available
-- Debug Logs: global Tom-only drawer mounted from `app/layout.tsx`; opens from bottom/left/right trigger dots; tracks `logDebug` + `debugFetch`; filters/searches by type/text; max 500 entries; `debugFetch` can skip response body logging (gpu-report); serializes errors (name/message/stack/cause)
+- Debug Logs: `app/lib/debug.ts` is the single client debug core (`debug.scoped`, `registerState`, `snapshot`, `clear`, `subscribe`, `getLines`, `getVersion`)
+- Debug panel: global Tom-only panel mounted via `app/components/app-shell.tsx`; opens from invisible hover zones on the left/right/bottom edges, closes on outside click or Escape, resizes with drag handles, and pushes page content instead of covering it
+- Debug snapshot: `snapshot()` returns plain text with a route header, registered state lines (`auth`, `gateway`, `turing`, `terminal`), then the recent event timeline
+- Debug coverage: log Turing HTTP in `use-turing.ts`, terminal bootstrap/WebSocket in `terminal-modal.tsx`, auth transitions in `app/lib/auth.tsx`, route changes in `app-shell.tsx`, Jarvis gateway traffic in `GatewayConnection.ts`, gateway auth in `gatewayAuth.ts`, and protocol drift in `gatewayProtocol.ts`
+- Debug dedupe: repeated successful polling requests should use `req(..., { dedupeSuccessForMs, defer: true })` so the panel stays readable; errors and state changes still log immediately
 
 ## Multi-User Turing
 - Guests/non-connected users: view Tom's dashboard (read-only)
@@ -168,7 +174,7 @@ tom-quest-api/               # FastAPI on Turing HPC
 - `/gpu-types` returns `{ types: [{ type, count, nodes }] }` from the Turing API; the allocation dropdown depends on that object shape for labels, values, and free-count text
 - GPU availability totals and legend counts reflect only visible (non-collapsed) partitions
 - Active Jobs: `RUNNING (...)` rows count as running state for badges/terminal actions; running badges use amber styling even when the node name suffix is present
-- Turing terminal modal attaches a real tmux client over WebSocket; tmux sessions use `window-size manual`, lone browser attaches seed their initial size from the browser cols/rows and explicitly `resize-window`, and browser attaches reuse the current session size when another tmux client is already attached so the shared geometry stays stable
+- Turing terminal modal checks attached tmux clients first: if another client is already attached it stays in capture-pane view-only mode to avoid shrinking the shared session, and Tom can use `Detach other clients` to reclaim the session before the modal upgrades to the real WebSocket-backed tmux terminal
 - Turing terminal modal uses the Windows VS Code/Cursor-style terminal font stack `Consolas, "Courier New", monospace` instead of the site mono font
 
 ## BoolBack Dashboard
@@ -200,8 +206,10 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
-- [2026-04-13] Refreshing the tom.Quest terminal after closing another tmux client could still leave the shared session stuck at the smaller geometry because the web attach reused tmux's inherited size policy and had no initial browser size handshake → switch tmux sessions to `window-size manual`, send initial browser cols/rows in the WebSocket URL, and explicitly `resize-window` only when the browser terminal is the sole attached client
+- [2026-04-13] The old debug drawer could cover page content, stay open with no outside-click close, and flood itself with the event-bus UI state instead of a copyable backend timeline → replace it with a shell-owned three-edge push-layout panel plus the new `app/lib/debug.ts` ring-buffer core (`debug.scoped`, `registerState`, snapshots, polling dedupe)
+- [2026-04-13] Turing `Cancel all` could fail even for Tom because the raw per-job `DELETE` loop in `app/turing/components/job-table.tsx` did not forward `x-user-id` the way `useTuringMutation` does → send the auth header on each raw cancel call while instrumenting that path with the new logger
 - [2026-04-13] Turing terminal modal could render as a tiny `60x18` client with the tmux status line halfway up the dialog because xterm was only fitted once immediately on mount, before the modal/font/container sizing had settled → add `ResizeObserver`-driven refits plus a post-open/font-ready fit in `app/turing/components/terminal-modal.tsx` so the PTY gets the real modal size
+- [2026-04-13] Opening the Turing terminal while another tmux client was already attached could still shrink the shared session because a second attached client inherits tmux sizing policy → add tmux client inspection/detach endpoints in `tom-quest-api/main.py` + `tmux.py`, start the modal in a capture-pane view-only mode when the session is already attached elsewhere, and let Tom reclaim the session with `Detach other clients` before upgrading to the real WebSocket terminal
 - [2026-04-13] Tom's Turing terminal modal could immediately show `Failed to fetch tunnel URL` even while `/api/turing/tunnel-url` worked in curl because `app/turing/components/terminal-modal.tsx` called that Tom-only endpoint without forwarding `x-user-id` → read `user` from `useAuth()`, pass `user.id` into the fetch, and rerun the connection effect when `user.id` changes
 - [2026-04-13] Active Jobs rows like `RUNNING (gpu-5-12)` were treated as unknown gray statuses because the UI only matched the exact string `RUNNING` → treat prefix-matched `RUNNING (...)` values as running so badges and terminal/view actions stay active, and style that running state amber
 - [2026-04-13] Turing allocate dropdown rendered as `-`, `(free)`, etc. and selecting a GPU left Allocate inert because `/gpu-types` returned a bare string list while the frontend expected `{type,count,nodes}` objects → return the full free-GPU summary objects from `tom-quest-api/gpu_report.py` and `/gpu-types` in `tom-quest-api/main.py`

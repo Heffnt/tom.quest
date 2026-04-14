@@ -1,19 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const logDebug = vi.fn();
-
-vi.mock("@/app/lib/debug", () => ({
-  logDebug,
-}));
-
 function createCallStub(result: unknown) {
   return vi.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue(result);
 }
 
 describe("gatewayProtocol", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
-    logDebug.mockReset();
+    const { debug } = await import("@/app/lib/debug");
+    debug.clear();
   });
 
   it("calls health with the exact gateway method name and params", async () => {
@@ -28,16 +23,12 @@ describe("gatewayProtocol", () => {
 
   it("logs protocol drift when health is missing the ok flag", async () => {
     const protocol = await import("@/app/jarvis/components/gatewayProtocol");
+    const { debug } = await import("@/app/lib/debug");
     const call = createCallStub({ ts: 1 });
 
     await protocol.health(call);
 
-    expect(logDebug).toHaveBeenCalledWith(
-      "error",
-      expect.stringContaining("Protocol drift: health"),
-      expect.anything(),
-      "Gateway",
-    );
+    expect(debug.getLines().join("\n")).toContain("[gw.proto] ERROR Protocol drift: health");
   });
 
   it("calls status with the exact gateway method name", async () => {
@@ -190,16 +181,12 @@ describe("gatewayProtocol", () => {
 
   it("logs protocol drift when cron.list does not return a page object", async () => {
     const protocol = await import("@/app/jarvis/components/gatewayProtocol");
+    const { debug } = await import("@/app/lib/debug");
     const call = createCallStub([{ id: "cron-1" }]);
 
     await protocol.cronList(call);
 
-    expect(logDebug).toHaveBeenCalledWith(
-      "error",
-      expect.stringContaining("Protocol drift: cron.list"),
-      expect.anything(),
-      "Gateway",
-    );
+    expect(debug.getLines().join("\n")).toContain("[gw.proto] ERROR Protocol drift: cron.list");
   });
 
   it("calls cron.runs with the page params verbatim", async () => {

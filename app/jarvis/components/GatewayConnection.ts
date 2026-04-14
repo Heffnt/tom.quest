@@ -1,6 +1,6 @@
 "use client";
 
-import { logDebug } from "@/app/lib/debug";
+import { debug, type DebugRequestDone } from "@/app/lib/debug";
 import {
   buildConnectDevice,
   loadDeviceAuthToken,
@@ -47,7 +47,7 @@ type WebSocketLike = Pick<WebSocket, "readyState" | "send" | "close"> & {
 
 type PendingRequest = {
   method: string;
-  startedAt: number;
+  done: DebugRequestDone;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
   timeoutId: ReturnType<typeof setTimeout>;
@@ -66,7 +66,6 @@ export type GatewayConnectionOptions = {
   onStateChange?: (() => void) | null;
 };
 
-const LOG_SOURCE = "Gateway";
 const PROTOCOL_VERSION = 3 as const;
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
@@ -84,6 +83,15 @@ const CONNECT_CLIENT_ID = "openclaw-control-ui";
 const CONNECT_CLIENT_MODE = "webchat";
 const CONNECT_CAPS = ["tool-events"];
 const PAIRING_REQUIRED_CODE = "PAIRING_REQUIRED";
+const gatewayLog = debug.scoped("gw");
+const gatewayStateSnapshot: Record<string, unknown> = {
+  connected: false,
+  pairingRequired: false,
+  error: null,
+  url: "none",
+};
+
+debug.registerState("gateway", () => gatewayStateSnapshot);
 
 function normalizeString(value: string | undefined | null): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -164,6 +172,7 @@ export class GatewayConnection {
     if (socket && socket.readyState !== WebSocket.CLOSED) {
       socket.close(1000, "manual disconnect");
     }
+    gatewayLog.log("Manual disconnect", { url: this.url });
     this.rejectAllPending(new Error("gateway disconnected"));
     this.notifyState();
   }
@@ -188,6 +197,10 @@ export class GatewayConnection {
   }
 
   private notifyState() {
+    gatewayStateSnapshot.connected = this.connected;
+    gatewayStateSnapshot.pairingRequired = this.pairingRequired;
+    gatewayStateSnapshot.error = this.error;
+    gatewayStateSnapshot.url = this.url;
     this.onStateChange?.();
   }
 
@@ -198,15 +211,15 @@ export class GatewayConnection {
     this.clearReconnectTimer();
     this.connectNonce = null;
     this.connectSent = false;
-    logDebug("lifecycle", "WS connecting", { url: this.url }, LOG_SOURCE);
+    gatewayLog.log("WS connecting", { url: this.url });
     const socket = this.websocketFactory(this.url);
     this.socket = socket;
     socket.onopen = () => {
-      logDebug("lifecycle", "WS connected", { url: this.url }, LOG_SOURCE);
+      gatewayLog.log("WS connected", { url: this.url });
     };
     socket.onmessage = (event) => this.handleMessage(event.data);
     socket.onerror = () => {
-      logDebug("error", "WS error", { url: this.url }, LOG_SOURCE);
+      gatewayLog.error("WS error", { url: this.url });
     };
     socket.onclose = (event) => this.handleClose(event);
   }
@@ -219,15 +232,15 @@ export class GatewayConnection {
     if (pairingClose) {
       this.pairingRequired = true;
       this.error = "Pairing required";
-      logDebug("lifecycle", "Pairing required -- approve via CLI", {
+      gatewayLog.log("Pairing required -- approve via CLI", {
         code: event.code,
-        reason: event.reason,
-      }, LOG_SOURCE);
+        reason: event.reason || "none",
+      });
     } else {
-      logDebug("lifecycle", "WS disconnected", {
+      gatewayLog.log("WS disconnected", {
         code: event.code,
-        reason: event.reason,
-      }, LOG_SOURCE);
+        reason: event.reason || "none",
+      });
     }
     this.rejectAllPending(new Error("gateway disconnected"));
     this.notifyState();
@@ -239,7 +252,7 @@ export class GatewayConnection {
   private scheduleReconnect() {
     this.clearReconnectTimer();
     const backoffMs = this.reconnectBackoffMs;
-    logDebug("lifecycle", `Reconnecting (backoff ${backoffMs}ms)`, { backoffMs }, LOG_SOURCE);
+    gatewayLog.log("Reconnecting", { backoffMs });
     this.reconnectTimer = setTimeout(() => {
       this.openSocket();
     }, backoffMs);
@@ -256,6 +269,7 @@ export class GatewayConnection {
   private rejectAllPending(error: Error) {
     for (const [id, pending] of this.pending.entries()) {
       clearTimeout(pending.timeoutId);
+      pending.done.error(error.message, { id });
       pending.reject(error);
       this.pending.delete(id);
     }
@@ -324,11 +338,11 @@ export class GatewayConnection {
     this.connectSent = true;
     try {
       const plan = await this.buildConnectParams();
-      logDebug("lifecycle", "Connect handshake sent", {
+      gatewayLog.log("Connect handshake sent", {
         role: plan.role,
         hasDevice: Boolean(plan.params.device),
         hasAuth: Boolean(plan.params.auth),
-      }, LOG_SOURCE);
+      });
       const hello = await this.sendRequest("connect", plan.params, false);
       this.connected = true;
       this.pairingRequired = false;
@@ -345,13 +359,17 @@ export class GatewayConnection {
           scopes: typedHello.auth.scopes ?? [],
         });
       }
-      logDebug("lifecycle", "Handshake accepted (hello-ok)", hello, LOG_SOURCE);
+      gatewayLog.log("Handshake accepted", {
+        hasDeviceToken: Boolean(typedHello?.auth?.deviceToken),
+      });
       this.notifyState();
     } catch (error) {
       this.connected = false;
       this.error = error instanceof Error ? error.message : "Connect failed";
       this.pairingRequired = isPairingError(error);
-      logDebug("error", "Connect handshake failed", error, LOG_SOURCE);
+      gatewayLog.error("Connect handshake failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       this.notifyState();
       if (this.socket && this.socket.readyState === WebSocket.OPEN) {
         this.socket.close(CONNECT_FAILED_CLOSE_CODE, "connect failed");
@@ -372,17 +390,17 @@ export class GatewayConnection {
     }
     const id = this.nextRequestId();
     const frame = { type: "req" as const, id, method, params };
-    logDebug("request", `-> ${method}`, { id, params }, LOG_SOURCE);
+    const done = gatewayLog.req(method, { id });
     return new Promise<unknown>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pending.delete(id);
         const error = new Error(`${method} timed out after ${this.requestTimeoutMs}ms`);
-        logDebug("error", `Request timed out: ${method}`, { id, timeoutMs: this.requestTimeoutMs }, LOG_SOURCE);
+        done.error("timed out", { id, timeoutMs: this.requestTimeoutMs });
         reject(error);
       }, this.requestTimeoutMs);
       this.pending.set(id, {
         method,
-        startedAt: Date.now(),
+        done,
         resolve,
         reject,
         timeoutId,
@@ -404,11 +422,13 @@ export class GatewayConnection {
       if (eventFrame.event === "connect.challenge") {
         const payload = eventFrame.payload as { nonce?: unknown } | undefined;
         this.connectNonce = typeof payload?.nonce === "string" ? payload.nonce : null;
-        logDebug("lifecycle", "Challenge received", { nonce: this.connectNonce }, LOG_SOURCE);
+        gatewayLog.log("Challenge received", { nonce: this.connectNonce });
         void this.sendConnect();
         return;
       }
-      logDebug("info", `event: ${eventFrame.event}`, eventFrame.payload, LOG_SOURCE);
+      gatewayLog.log(`event: ${eventFrame.event}`, {
+        hasPayload: eventFrame.payload !== undefined,
+      });
       const listeners = this.listeners.get(eventFrame.event);
       listeners?.forEach((listener) => listener(eventFrame.payload));
       return;
@@ -419,13 +439,8 @@ export class GatewayConnection {
       if (!pending) return;
       this.pending.delete(response.id);
       clearTimeout(pending.timeoutId);
-      const duration = Date.now() - pending.startedAt;
       if (response.ok) {
-        logDebug("response", `<- ${pending.method}`, {
-          id: response.id,
-          duration,
-          payload: response.payload,
-        }, LOG_SOURCE);
+        pending.done({ id: response.id });
         pending.resolve(response.payload);
       } else {
         const error = new GatewayRequestError(
@@ -433,12 +448,10 @@ export class GatewayConnection {
           response.error?.message ?? "request failed",
           response.error?.details,
         );
-        logDebug("error", `<- ${pending.method}`, {
+        pending.done.error(error.message, {
           id: response.id,
-          duration,
           code: error.gatewayCode,
-          details: error.details,
-        }, LOG_SOURCE);
+        });
         pending.reject(error);
       }
     }

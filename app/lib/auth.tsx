@@ -3,8 +3,10 @@
 import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
 import { User, Session, SupabaseClient } from "@supabase/supabase-js";
 import { createBrowserSupabaseClient } from "./supabase";
+import { debug } from "./debug";
 
 const PUBLIC_TOM_USER_ID = process.env.NEXT_PUBLIC_TOM_USER_ID || "";
+const authLog = debug.scoped("auth");
 
 interface AuthContextType {
   user: User | null;
@@ -31,6 +33,18 @@ export function getUsername(user: User | null): string {
   return meta?.username ?? "User";
 }
 
+const authStateSnapshot: Record<string, unknown> = {
+  user: "none",
+  isTom: false,
+};
+
+debug.registerState("auth", () => authStateSnapshot);
+
+function setAuthStateSnapshot(user: User | null) {
+  authStateSnapshot.user = user ? getUsername(user) : "none";
+  authStateSnapshot.isTom = Boolean(user && user.id === PUBLIC_TOM_USER_ID);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [supabase] = useState<SupabaseClient | null>(() => createBrowserSupabaseClient());
   const [user, setUser] = useState<User | null>(null);
@@ -43,10 +57,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
+      setAuthStateSnapshot(session?.user ?? null);
       lastAuth.current = {
         userId: session?.user?.id ?? null,
         token: session?.access_token ?? null,
       };
+      authLog.log("session loaded", {
+        user: session?.user ? getUsername(session.user) : "none",
+        isTom: Boolean(session?.user && session.user.id === PUBLIC_TOM_USER_ID),
+      });
       setLoading(false);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -57,6 +76,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       lastAuth.current = { userId: nextUserId, token: nextToken };
       setSession(session);
       setUser(session?.user ?? null);
+      setAuthStateSnapshot(session?.user ?? null);
+      if (session?.user) {
+        authLog.log("session loaded", {
+          user: getUsername(session.user),
+          isTom: Boolean(session.user.id === PUBLIC_TOM_USER_ID),
+        });
+      } else {
+        authLog.log("signed out");
+      }
     });
     return () => subscription.unsubscribe();
   }, [supabase]);

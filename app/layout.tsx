@@ -2,8 +2,7 @@ import type { Metadata } from "next";
 import { Syne, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "./lib/auth";
-import Navigation from "./components/navigation";
-import DebugDrawer from "./components/debug-drawer";
+import AppShell from "./components/app-shell";
 
 const syne = Syne({
   variable: "--font-syne",
@@ -42,13 +41,7 @@ export default function RootLayout({
         className={`${syne.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} antialiased`}
       >
         <AuthProvider>
-          <header>
-            <Navigation />
-          </header>
-          <main className="pt-16">
-            {children}
-          </main>
-          <DebugDrawer />
+          <AppShell>{children}</AppShell>
         </AuthProvider>
       </body>
     </html>

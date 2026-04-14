@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useAuth } from "@/app/lib/auth";
+import { debug } from "@/app/lib/debug";
 import { useTuringMutation } from "@/app/lib/hooks/use-turing";
 import { Job } from "../types";
 import TerminalModal from "./terminal-modal";
@@ -13,6 +15,8 @@ interface JobTableProps {
   isTom: boolean;
   onRefresh: () => void;
 }
+
+const jobsLog = debug.scoped("turing.jobs");
 
 function isRunningStatus(status: string): boolean {
   return status.startsWith("RUNNING");
@@ -62,6 +66,7 @@ function ConfirmModal({
 }
 
 export default function JobTable({ data, loading, error, isTom, onRefresh }: JobTableProps) {
+  const { user } = useAuth();
   const [cancelJobId, setCancelJobId] = useState<string | null>(null);
   const [cancelAllOpen, setCancelAllOpen] = useState(false);
   const [terminalSession, setTerminalSession] = useState<string | null>(null);
@@ -96,10 +101,24 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
     setCancelLoading(true);
     setCancelError(null);
     for (const job of data) {
+      const done = jobsLog.req(`DELETE /api/turing/jobs/${job.job_id}`, undefined, { defer: true });
+      let loggedError = false;
       try {
-        const res = await fetch(`/api/turing/jobs/${job.job_id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error(`Job ${job.job_id}: ${res.status}`);
+        const headers: Record<string, string> = {};
+        if (user?.id) headers["x-user-id"] = user.id;
+        const res = await fetch(`/api/turing/jobs/${job.job_id}`, { method: "DELETE", headers });
+        if (!res.ok) {
+          const text = await res.text();
+          const message = text || `Job ${job.job_id}: ${res.status}`;
+          done.error(message, { status: res.status, jobId: job.job_id });
+          loggedError = true;
+          throw new Error(message);
+        }
+        done({ status: res.status, jobId: job.job_id });
       } catch (e) {
+        if (!loggedError) {
+          done.error(e instanceof Error ? e.message : "Cancel failed", { jobId: job.job_id });
+        }
         setCancelError(e instanceof Error ? e.message : "Cancel failed");
         setCancelLoading(false);
         onRefresh();
@@ -207,6 +226,7 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
 
       {terminalSession && isTom && (
         <TerminalModal
+          key={terminalSession}
           sessionName={terminalSession}
           allSessions={viewableSessions}
           onClose={() => setTerminalSession(null)}
