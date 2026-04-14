@@ -51,9 +51,10 @@ describe("DebugDrawer", () => {
       ...overrides,
     };
 
-    root = createRoot(container);
+    const nextRoot = createRoot(container);
+    root = nextRoot;
     await act(async () => {
-      root.render(<DebugDrawer {...props} />);
+      nextRoot.render(<DebugDrawer {...props} />);
     });
     return props;
   }

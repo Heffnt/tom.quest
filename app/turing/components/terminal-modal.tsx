@@ -294,7 +294,10 @@ export default function TerminalModal({
             )}
             <button
               type="button"
-              onClick={() => window.open(`/turing/terminal/${encodeURIComponent(sessionName)}`, "_blank")}
+              onClick={() => window.open(
+                `/turing/terminal/${encodeURIComponent(sessionName)}${allowInteractive ? "?mode=interactive" : ""}`,
+                "_blank",
+              )}
               className="text-xs px-2.5 py-1 rounded border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors"
             >
               New Tab ↗

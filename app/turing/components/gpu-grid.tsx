@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { GPUReport, NodeGpuJob, NodeInfo, gpuTypeLabel } from "../types";
 
 interface GPUGridProps {
@@ -81,6 +81,38 @@ function getNodeGpuBreakdown(node: NodeInfo): { free: number; in_use: number; un
   };
 }
 
+function Tooltip({ children, content }: { children: ReactNode; content: ReactNode }) {
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+
+  return (
+    <div
+      className="relative inline-flex"
+      onMouseEnter={e => {
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        setPos({ x: rect.left + rect.width / 2, y: rect.top });
+        setShow(true);
+      }}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div
+          className="fixed z-[100] px-3 py-2 rounded-md bg-surface-alt border border-border text-xs text-text shadow-lg pointer-events-none"
+          style={{
+            left: pos.x,
+            top: pos.y - 8,
+            transform: "translate(-50%, -100%)",
+            maxWidth: 320,
+          }}
+        >
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GpuJobPopover({ job }: { job: NodeGpuJob }) {
   const progress = job.progress_pct ?? 0;
   return (
@@ -137,10 +169,12 @@ function GpuSquare({
   slot,
   allocated,
   nodeState,
+  gpuIndex,
 }: {
   slot: NodeGpuJob | null;
   allocated: boolean;
   nodeState: string;
+  gpuIndex: number;
 }) {
   const [hovered, setHovered] = useState(false);
   const fill = isUnavailableState(nodeState)
@@ -160,7 +194,7 @@ function GpuSquare({
           background: fill,
           boxShadow: `inset 0 1px 0 rgba(255,255,255,0.1), 0 0 3px ${fill}33`,
         }}
-        title={slot ? `${slot.user} #${slot.job_id}` : allocated ? "In Use" : "Free"}
+        title={slot ? `${slot.user} #${slot.job_id}` : allocated ? `In Use (GPU ${gpuIndex})` : `Free (GPU ${gpuIndex})`}
       />
       {hovered && slot && <GpuJobPopover job={slot} />}
     </div>
@@ -195,6 +229,13 @@ function NodeCard({
   slots: Array<NodeGpuJob | null>;
 }) {
   const memPct = node.memory_total_mb > 0 ? Math.round((node.memory_allocated_mb / node.memory_total_mb) * 100) : 0;
+  const mappedIndices = new Set(
+    slots
+      .filter((slot): slot is NodeGpuJob => slot !== null)
+      .map(slot => slot.gpu_index)
+      .filter(index => index >= 0 && index < node.total_gpus),
+  );
+  const hasExplicitMapping = mappedIndices.size > 0;
 
   return (
     <div className="relative border border-border/60 rounded-md p-2.5 bg-bg/60 min-w-[120px]">
@@ -207,8 +248,9 @@ function NodeCard({
           <GpuSquare
             key={index}
             slot={slots[index] ?? null}
-            allocated={index < node.allocated_gpus}
+            allocated={hasExplicitMapping ? mappedIndices.has(index) : index < node.allocated_gpus}
             nodeState={node.state}
+            gpuIndex={index}
           />
         ))}
       </div>
@@ -275,9 +317,9 @@ function GPUViewModal({
   const privateNodes = filterNodes(data.nodes.filter(isPrivateNode));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-surface border-t border-l border-r border-border rounded-t-xl w-full max-w-6xl max-h-[85vh] flex flex-col animate-settle">
+      <div className="relative bg-surface border border-border rounded-lg w-full max-w-6xl h-[90vh] flex flex-col animate-settle">
         <div className="flex items-center justify-between px-5 py-3 border-b border-border">
           <h2 className="text-lg font-semibold tracking-tight">GPUs</h2>
           <div className="flex items-center gap-2">
@@ -294,26 +336,27 @@ function GPUViewModal({
             const typedKey = key as "free" | "in_use" | "unavailable";
             const active = filters.has(typedKey);
             return (
-              <button
-                key={key}
-                onClick={() => {
-                  const next = new Set(filters);
-                  if (next.has(typedKey)) next.delete(typedKey);
-                  else next.add(typedKey);
-                  setFilters(next);
-                }}
-                className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-all font-mono ${
-                  active
-                    ? "border-current"
-                    : filters.size > 0
-                      ? "border-border/40 opacity-40 hover:opacity-70"
-                      : "border-border/40 hover:border-current"
-                }`}
-                style={{ color: category.color }}
-              >
-                <span className="w-1.5 h-1.5 rounded-full" style={{ background: category.color }} />
-                {category.label}
-              </button>
+              <Tooltip key={key} content={<span>SLURM states: {category.states.join(", ")}</span>}>
+                <button
+                  onClick={() => {
+                    const next = new Set(filters);
+                    if (next.has(typedKey)) next.delete(typedKey);
+                    else next.add(typedKey);
+                    setFilters(next);
+                  }}
+                  className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-all font-mono ${
+                    active
+                      ? "border-current"
+                      : filters.size > 0
+                        ? "border-border/40 opacity-40 hover:opacity-70"
+                        : "border-border/40 hover:border-current"
+                  }`}
+                  style={{ color: category.color }}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: category.color }} />
+                  {category.label}
+                </button>
+              </Tooltip>
             );
           })}
           {filters.size > 0 && (

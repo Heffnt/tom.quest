@@ -49,6 +49,8 @@ alwaysApply: true
 - Current ESLint config flags synchronous `setState` work inside effects via `react-hooks/set-state-in-effect`; move loading/reset state into callbacks or async tasks instead of calling setters directly in the effect body
 - `react-hooks/set-state-in-effect` also flags direct state reset branches like `if (!url) setConnection(null)` inside effects; derive null state from props/render when possible instead of mutating it in the effect body
 - `react-hooks/immutability` flags mutating memoized class instances after `useMemo`; pass mutable callbacks like `onStateChange` through constructor options instead of assigning properties inside an effect
+- `npm run lint` can fail on the pre-existing `react-hooks/preserve-manual-memoization` / `react-hooks/exhaustive-deps` issue in `app/lib/hooks/use-turing.ts`; treat it as baseline unless you are editing that hook
+- `npx tsc --noEmit` currently fails on a pre-existing `BufferSource` typing issue in `app/jarvis/components/__tests__/gatewayAuth.test.ts`; treat it as baseline unless you are working on Jarvis gateway auth tests
 
 ## Stack
 Next.js 16 (App Router) | TypeScript | Tailwind v4 (PostCSS) | Poppins font | Vercel | Supabase (Auth + DB) | Vitest + jsdom
@@ -160,12 +162,12 @@ tom-quest-api/               # FastAPI on Turing HPC
 - GPU Report API: returns `{nodes, summary, gpu_jobs_by_node}` with raw Slurm node states plus per-GPU job/activity data
   - NodeInfo: `{name, gpu_type, partition, total_gpus, allocated_gpus, state, memory_total_mb, memory_allocated_mb}`
   - state: raw Slurm state string (for example `IDLE`, `MIXED`, `DOWN*`, `COMPLETING`)
-- GPU UI: compact summary bar (free count text in amber) on the main page plus a `View GPUs` bottom-sheet modal with a refresh button; three status colors only (free/in use/unavailable), per-node GPU squares with hover-only popovers (no click, dismissed on mouse leave) showing `{user, job_id, elapsed, limit, progress_pct, memory/temp/util}`, grey-only state badges for MIXED (no half-green), no tooltip on state badges, body scroll locked when modal is open, and optional tucked-away academic/private sections
+- GPU UI: compact summary bar (free count text in amber) on the main page plus a centered `View GPUs` modal with a refresh button; three status colors only (free/in use/unavailable), filter-chip tooltips still explain the SLURM states behind each category, per-node GPU squares use actual mapped `gpu_index` slots (not `allocated_gpus` position assumptions) and show hover-only popovers (no click, dismissed on mouse leave) with `{user, job_id, elapsed, limit, progress_pct, memory/temp/util}`, grey-only state badges for MIXED (no half-green), no tooltip on state badges, body scroll locked when modal is open, and optional tucked-away academic/private sections
 - GPU type labels: "nvidia (H100)", "tesla (V100)"
 - Allocation: `salloc --no-shell --job-name=<user job name>` (default job name `allocation`), default 1440 mins, blank count allocates all currently free shared GPUs, explicit counts are no longer hard-capped
 - tmux sessions: `{n}_{job_name}` with atomic reservation in `job_screens.py`; a session name is reserved immediately, but the actual tmux session is only created after the Slurm job reaches `RUNNING`
 - Session mapping: `~/.tom-quest-screens.json` stores job_id → session_name; `job_screens.py` uses a file lock and reuses the lowest free numeric prefix
-- Terminal access: jobs show `View` once the tmux session actually exists; the modal starts in capture-pane view-only mode with `Open Terminal` (Tom only), `View Only` (back from interactive), and `New Tab` actions; `/turing/terminal/[session]` page is a fullscreen barebones view-only terminal with no header
+- Terminal access: jobs show `View` once the tmux session actually exists; the modal starts in capture-pane view-only mode with `Open Terminal` (Tom only), `View Only` (back from interactive), and `New Tab` actions; `New Tab` opens `/turing/terminal/[session]?mode=interactive` for Tom and lands in a fullscreen barebones interactive terminal with no header, while the plain `/turing/terminal/[session]` page remains fullscreen view-only
 - SSH attach: `tmux attach -t {session_name}`, detach with `Ctrl+b d`
 - Settings persistence: `user_settings` for signed-in users; `turing_settings` localStorage for guests
 - Auto-refresh: automatic polling only (`/jobs` every 10s, `/gpu-report` every 60s); allocation/cancel actions also trigger targeted refreshes
@@ -207,6 +209,9 @@ tom-quest-api/               # FastAPI on Turing HPC
 
 ## Fixes & Lessons
 <!-- Add entries: [date] issue → fix -->
+- [2026-04-14] Mixed GPU nodes could show the wrong square as occupied because `app/turing/components/gpu-grid.tsx` colored slots with `index < allocated_gpus` instead of the backend-reported `gpu_index` mapping → treat non-null slot indices as the source of truth for occupied squares and only fall back to positional coloring when no explicit mapping exists
+- [2026-04-14] `New Tab` from the Turing terminal modal opened a fullscreen view-only pane instead of the real PTY → have the modal open `/turing/terminal/[session]?mode=interactive` for Tom and let the standalone page boot the same websocket-backed xterm client with no header
+- [2026-04-14] The GPU modal could sit too low and clip the bottom edge because it still used the old bottom-sheet layout after the terminal modal moved to a centered dialog → switch the GPU modal to the same centered `90vh` dialog framing as the terminal modal
 - [2026-04-13] The old debug drawer could cover page content, stay open with no outside-click close, and flood itself with the event-bus UI state instead of a copyable backend timeline → replace it with a shell-owned three-edge push-layout panel plus the new `app/lib/debug.ts` ring-buffer core (`debug.scoped`, `registerState`, snapshots, polling dedupe)
 - [2026-04-13] Turing `Cancel all` could fail even for Tom because the raw per-job `DELETE` loop in `app/turing/components/job-table.tsx` did not forward `x-user-id` the way `useTuringMutation` does → send the auth header on each raw cancel call while instrumenting that path with the new logger
 - [2026-04-13] Turing terminal modal could render as a tiny `60x18` client with the tmux status line halfway up the dialog because xterm was only fitted once immediately on mount, before the modal/font/container sizing had settled → add `ResizeObserver`-driven refits plus a post-open/font-ready fit in `app/turing/components/terminal-modal.tsx` so the PTY gets the real modal size
