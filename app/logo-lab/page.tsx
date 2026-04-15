@@ -18,56 +18,48 @@ const VB_W = 640;
 const VB_H = 540;
 
 type Params = {
-  tHeight:     number;
-  mAngle:      number;
-  stroke:      number;
-  dotSize:     number;
-  dotDistance: number;
-  dashExtend:  number;
+  tHeight: number;
+  mAngle:  number;
+  stroke:  number;
+  dotSize: number;
 };
 
 type Options = {
-  dotShape: "square" | "circle";
-  tailCut:  "perpendicular" | "horizontal";
+  dotShape:     "square" | "circle";
+  tailCut:      "perpendicular" | "horizontal";
+  showBaseline: "on" | "off";
 };
 
 const DEFAULT_PARAMS: Params = {
-  tHeight:     -76,
-  mAngle:      22,
-  stroke:      14,
-  dotSize:     28,
-  dotDistance: 40,
-  dashExtend:  58,
+  tHeight: -78,
+  mAngle:  38,
+  stroke:  35,
+  dotSize: 60,
 };
 
 const DEFAULT_OPTIONS: Options = {
-  dotShape: "square",
-  tailCut:  "perpendicular",
+  dotShape:     "circle",
+  tailCut:      "horizontal",
+  showBaseline: "off",
 };
 
 type Range = { min: number; max: number; step: number };
 
 const DEFAULT_RANGES: Record<keyof Params, Range> = {
-  tHeight:     { min: -200, max:  200, step: 1   },
-  mAngle:      { min:  -90, max:   90, step: 0.5 },
-  stroke:      { min:    0, max:   80, step: 1   },
-  dotSize:     { min:    0, max:  120, step: 1   },
-  dotDistance: { min: -200, max:  400, step: 1   },
-  dashExtend:  { min: -200, max:  400, step: 1   },
+  tHeight: { min: -200, max: 200, step: 1   },
+  mAngle:  { min:  -90, max:  90, step: 0.5 },
+  stroke:  { min:    0, max:  80, step: 1   },
+  dotSize: { min:    0, max: 120, step: 1   },
 };
 
 const PARAM_HINTS: Record<keyof Params, string> = {
-  tHeight:     "bar y-offset from circle centre (negative = above)",
-  mAngle:      "diagonals' angle from vertical (°)",
-  stroke:      "uniform line width",
-  dotSize:     "dot side length (square) / diameter (circle)",
-  dotDistance: "dot distance past circle, along left diagonal ray",
-  dashExtend:  "tail distance past circle, along right diagonal ray",
+  tHeight: "bar y-offset from circle centre (negative = above)",
+  mAngle:  "diagonals' angle from vertical (°)",
+  stroke:  "uniform line width",
+  dotSize: "dot side length (square) / diameter (circle)",
 };
 
-const PARAM_KEYS: (keyof Params)[] = [
-  "tHeight", "mAngle", "stroke", "dotSize", "dotDistance", "dashExtend",
-];
+const PARAM_KEYS: (keyof Params)[] = ["tHeight", "mAngle", "stroke", "dotSize"];
 
 /* ─────────────────────────────────────────────────────────────
    Geometry
@@ -77,6 +69,7 @@ type Derived = {
   barY: number;
   barLeftX: number;
   barRightX: number;
+  baseY: number;
   tCircle: number;
   leftEnd:   { x: number; y: number };
   rightEnd:  { x: number; y: number };
@@ -85,7 +78,10 @@ type Derived = {
   tailPoly: { x: number; y: number }[];
 };
 
-function derive(p: Params): Derived {
+/* Baseline = outer bottom edge of the Q circle (includes stroke).
+   All tail/dot bottoms must land on this line, so we solve
+   ray distance t given the desired terminal y.               */
+function derive(p: Params, opt: Options): Derived {
   const barY    = CY + p.tHeight;
   const chordSq = R * R - p.tHeight * p.tHeight;
   const barHalf = chordSq > 0 ? Math.sqrt(chordSq) : 0;
@@ -93,32 +89,39 @@ function derive(p: Params): Derived {
   const aR   = (p.mAngle * Math.PI) / 180;
   const sinA = Math.sin(aR);
   const cosA = Math.cos(aR);
+  const w    = p.stroke;
+
+  const baseY = CY + R + w / 2;
 
   // Where either diagonal ray meets the Q circle.
   const disc    = Math.max(0, R * R - p.tHeight * p.tHeight * sinA * sinA);
   const tCircle = -p.tHeight * cosA + Math.sqrt(disc);
 
-  const L = tCircle + p.dashExtend;
+  // Tail distance along right ray so its bottom lands on baseY.
+  //   perpendicular cut: bottom corner = center + (−cosθ, +sinθ)·w/2
+  //       → barY + t·cosθ + sinθ·w/2 = baseY
+  //   horizontal  cut: lower tip at tipY = barY + L·cosθ = baseY
+  const tTailPerp  = cosA !== 0 ? (baseY - barY - sinA * w / 2) / cosA : 0;
+  const tTailHoriz = cosA !== 0 ? (baseY - barY)                  / cosA : 0;
+  const L = opt.tailCut === "horizontal" ? tTailHoriz : tTailPerp;
 
-  const leftEnd  = { x: CX - tCircle * sinA,     y: barY + tCircle * cosA };
-  const rightEnd = { x: CX + L * sinA,           y: barY + L * cosA       };
+  // Dot distance along left ray so its bottom lands on baseY.
+  const tDot = cosA !== 0 ? (baseY - barY - p.dotSize / 2) / cosA : 0;
+
+  const leftEnd  = { x: CX - tCircle * sinA, y: barY + tCircle * cosA };
+  const rightEnd = { x: CX + L * sinA,       y: barY + L * cosA       };
   const dotCentre = {
-    x: CX - (tCircle + p.dotDistance) * sinA,
-    y: barY + (tCircle + p.dotDistance) * cosA,
+    x: CX - tDot * sinA,
+    y: barY + tDot * cosA,
   };
 
-  /* Horizontal-cut tail polygon.
-     Centerline tip y = rightEnd.y = barY + L·cosθ
-     Upper edge reaches that y at t_u = L + tanθ · w/2
-     Lower edge reaches that y at t_l = L − tanθ · w/2
-     Horizontal cut length = w / cosθ.                               */
-  const w = p.stroke;
+  /* Horizontal-cut tail polygon. tipY = baseY when tailCut === "horizontal".
+     Upper edge reaches tipY at t_u = L + tanθ·w/2
+     Lower edge reaches tipY at t_l = L − tanθ·w/2                   */
   const tanA = cosA !== 0 ? sinA / cosA : 0;
   const tU = L + tanA * w / 2;
   const tL = L - tanA * w / 2;
   const tipY = barY + L * cosA;
-  // Perpendicular unit to v = (sinθ, cosθ):  n = (cosθ, −sinθ)
-  // Upper edge offset: + n·(w/2) · (bar start has its offset)
   const upperStart = { x: CX + cosA * w / 2, y: barY - sinA * w / 2 };
   const lowerStart = { x: CX - cosA * w / 2, y: barY + sinA * w / 2 };
   const upperTip   = { x: CX + tU * sinA + cosA * w / 2, y: tipY };
@@ -128,6 +131,7 @@ function derive(p: Params): Derived {
     barY,
     barLeftX:  CX - barHalf,
     barRightX: CX + barHalf,
+    baseY,
     tCircle,
     leftEnd,
     rightEnd,
@@ -141,7 +145,7 @@ function derive(p: Params): Derived {
    ───────────────────────────────────────────────────────────── */
 
 function TomSymbol({ p, opt }: { p: Params; opt: Options }) {
-  const d = derive(p);
+  const d = derive(p, opt);
 
   return (
     <>
@@ -194,6 +198,18 @@ function TomSymbol({ p, opt }: { p: Params; opt: Options }) {
         />
       )}
 
+      {/* Baseline guide (dashed) */}
+      {opt.showBaseline === "on" && (
+        <line
+          x1={40} y1={d.baseY}
+          x2={VB_W - 40} y2={d.baseY}
+          stroke="currentColor"
+          strokeWidth={1}
+          strokeDasharray="6 6"
+          opacity={0.4}
+        />
+      )}
+
       {/* Dot terminus */}
       {opt.dotShape === "circle" ? (
         <circle
@@ -227,15 +243,13 @@ export default function LogoLab() {
 
   const valuesText =
     `// tom-symbol params\n` +
-    `tHeight:     ${p.tHeight}\n` +
-    `mAngle:      ${p.mAngle}\n` +
-    `stroke:      ${p.stroke}\n` +
-    `dotSize:     ${p.dotSize}\n` +
-    `dotDistance: ${p.dotDistance}\n` +
-    `dashExtend:  ${p.dashExtend}\n` +
-    `dotShape:    ${opt.dotShape}\n` +
-    `tailCut:     ${opt.tailCut}\n` +
-    `// reference: R=${R}`;
+    `tHeight:  ${p.tHeight}\n` +
+    `mAngle:   ${p.mAngle}\n` +
+    `stroke:   ${p.stroke}\n` +
+    `dotSize:  ${p.dotSize}\n` +
+    `dotShape: ${opt.dotShape}\n` +
+    `tailCut:  ${opt.tailCut}\n` +
+    `// reference: R=${R} (dot+tail auto-land on baseline)`;
 
   const copy = async () => {
     try {
@@ -314,6 +328,12 @@ export default function LogoLab() {
               value={opt.tailCut}
               options={["perpendicular", "horizontal"]}
               onChange={(v) => setOpt((prev) => ({ ...prev, tailCut: v as Options["tailCut"] }))}
+            />
+            <OptionRow
+              label="baseline"
+              value={opt.showBaseline}
+              options={["off", "on"]}
+              onChange={(v) => setOpt((prev) => ({ ...prev, showBaseline: v as Options["showBaseline"] }))}
             />
           </div>
 
