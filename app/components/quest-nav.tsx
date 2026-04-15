@@ -1,7 +1,7 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
+import TomLogo from "./tom-logo";
 import { usePathname, useRouter } from "next/navigation";
 import {
   useCallback,
@@ -213,14 +213,12 @@ export default function QuestNav({
         <div className="relative max-w-5xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           {/* Logo slot */}
           <div ref={logoSlotRef} style={logoStyle} className="shrink-0">
-            <Link href="/" className="block hover:opacity-80 transition-opacity">
-              <Image
-                src="/images/logo-white-transparent.svg"
-                alt="tom.quest"
-                width={120}
-                height={30}
-                priority
-              />
+            <Link
+              href="/"
+              aria-label="tom.Quest"
+              className="block hover:opacity-80 transition-opacity"
+            >
+              <TomLogo fontSize={30} variant="plain" />
             </Link>
           </div>
 
