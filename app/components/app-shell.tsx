@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname } from "next/navigation";
-import Navigation from "./navigation";
+import QuestNav from "./quest-nav";
 import DebugDrawer from "./debug-drawer";
 import { useAuth } from "../lib/auth";
 import { debug } from "../lib/debug";
@@ -136,7 +136,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <>
       <header>
-        <Navigation offsets={navOffsets} animateOffsets={!isResizing} />
+        <QuestNav offsets={navOffsets} animateOffsets={!isResizing} />
       </header>
       <main className={mainClassName} style={mainStyle}>
         {children}

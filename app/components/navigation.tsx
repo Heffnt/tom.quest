@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth, getUsername } from "../lib/auth";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
+import TomLogo from "./tom-logo";
 
 const NAV_LINKS = [
   { href: "/bio", label: "Bio" },
@@ -72,13 +72,8 @@ export default function Navigation({
       >
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           {/* Logo */}
-          <Link href="/" className="hover:opacity-70 transition-opacity duration-150">
-            <Image
-              src="/images/logo-white-transparent.svg"
-              alt="tom.quest"
-              width={120}
-              height={30}
-            />
+          <Link href="/" aria-label="tom.Quest" className="hover:opacity-70 transition-opacity duration-150">
+            <TomLogo fontSize={30} variant="plain" />
           </Link>
 
           {/* Desktop links */}
