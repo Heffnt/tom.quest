@@ -17,33 +17,36 @@ const AIMER_LEN = 46;
 
 /* ── gameplay ─────────────────────────────────────────────────── */
 
-const TARGETS = [-Math.PI / 4.5, 0, Math.PI / 4.5]; // ±40°, 0°
-const ZONE_TOL = Math.PI / 14;                      // ~12.9° half-width
-const NUM_LINES = TARGETS.length;
+const TARGETS = [-Math.PI / 4.5, 0, Math.PI / 4.5];
+const ZONE_TOL = Math.PI / 14;
+const NUM_SLOTS = TARGETS.length;
 
-const SPIN_BASE = 1.25;     // rad/s — aim sweeps ~51°/s
-const SPIN_ACCEL = 0.55;    // per placed hit
-const TRAVEL_MS = 220;      // projectile flight
-const INTRO_MS = 650;       // ease-in from rest
-const PERFECT_CUE = 0.03;   // radians — aim-within for focal pulse
+const SPIN_BASE = 1.25;
+const SPIN_ACCEL = 0.22;       // per hit — sustainable endless progression
+const SPIN_CAP = 6.0;
+const TRAVEL_MS = 200;
+const INTRO_MS = 650;
+const PERFECT_THRESHOLD = 0.9;
+const PERFECT_CUE = 0.035;
 
 /* ── aesthetic ────────────────────────────────────────────────── */
 
-const STROKE_W = 5;
+const STROKE_W = 7;
 const AMBER = "#e8a040";
 const AMBER_DIM = "rgba(232,160,64,0.55)";
 const AMBER_FAINT = "rgba(232,160,64,0.18)";
-const AMBER_GHOST = "rgba(232,160,64,0.08)";
+const AMBER_GHOST = "rgba(232,160,64,0.25)";
 const ERROR_RED = "#ef4444";
 
 /* ── types ────────────────────────────────────────────────────── */
 
-type Phase = "rest" | "playing" | "firing" | "win" | "fail";
+type Phase = "rest" | "playing" | "firing" | "fail";
 
 interface PlacedLine {
   angle: number;
-  target: number | null;   // null on miss
-  accuracy: number;        // 0..1 for hits, 0 for miss
+  hit: boolean;
+  target: number | null;
+  accuracy: number;
   flash: number;
 }
 
@@ -52,6 +55,8 @@ interface Projectile {
   alpha: number;
   target: number | null;
   accuracy: number;
+  tipX: number;
+  tipY: number;
 }
 
 interface GameState {
@@ -59,6 +64,8 @@ interface GameState {
   rot: number;
   spinDir: number;
   placed: PlacedLine[];
+  hits: number;
+  perfects: number;
   startMs: number;
   proj: Projectile | null;
 }
@@ -75,11 +82,6 @@ function norm(a: number): number {
   if (n > Math.PI) n -= Math.PI * 2;
   if (n < -Math.PI) n += Math.PI * 2;
   return n;
-}
-
-function fmtTime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  return `${s}.${String(ms % 1000).padStart(3, "0")}s`;
 }
 
 function lineLenForAngle(a: number): number {
@@ -99,26 +101,14 @@ function barMidpoint(rot: number): [number, number] {
 }
 
 function currentSpeed(st: GameState, now: number): number {
-  if (st.phase === "rest" || st.phase === "firing") return 0;
-  if (st.phase === "win" || st.phase === "fail") return 0;
-  const hits = st.placed.filter(l => l.target !== null).length;
-  const target = SPIN_BASE + hits * SPIN_ACCEL;
-  // Ease-in only applies before first shot
-  if (hits === 0) {
+  if (st.phase === "rest" || st.phase === "fail") return 0;
+  const target = Math.min(SPIN_CAP, SPIN_BASE + st.hits * SPIN_ACCEL);
+  if (st.hits === 0) {
     const t = Math.min(1, (now - st.startMs) / INTRO_MS);
     const eased = 1 - Math.pow(1 - t, 3);
     return target * eased;
   }
   return target;
-}
-
-function gradeOf(accs: number[]): string {
-  if (accs.length === 0) return "";
-  const min = Math.min(...accs);
-  if (min >= 0.92) return "S";
-  if (min >= 0.75) return "A";
-  if (min >= 0.55) return "B";
-  return "C";
 }
 
 /* ── draw ─────────────────────────────────────────────────────── */
@@ -150,10 +140,30 @@ function drawSymbolLines(
   }
 }
 
+function drawZoneBounds(ctx: CanvasRenderingContext2D, takenTargets: Set<number>) {
+  ctx.save();
+  ctx.setLineDash([5, 9]);
+  ctx.lineWidth = 2;
+  ctx.lineCap = "butt";
+  ctx.strokeStyle = AMBER_GHOST;
+  for (const t of TARGETS) {
+    if (takenTargets.has(t)) continue;
+    for (const s of [-1, 1]) {
+      const a = t + s * ZONE_TOL;
+      const L = lineLenForAngle(a);
+      ctx.beginPath();
+      ctx.moveTo(0, -BAR_OFFSET);
+      ctx.lineTo(Math.sin(a) * L, -BAR_OFFSET + Math.cos(a) * L);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function draw(
   ctx: CanvasRenderingContext2D,
   st: GameState,
-  now: number,
+  _now: number,
 ) {
   ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
   ctx.lineCap = "round";
@@ -171,27 +181,30 @@ function draw(
   ctx.translate(CX, CY);
   ctx.rotate(st.rot);
 
-  // Rest: the canonical solid Tom symbol.
-  // Playing/win/fail: faint guides so placed-line offset is readable.
   if (st.phase === "rest") {
     drawSymbolLines(ctx, AMBER, STROKE_W);
-  } else {
-    drawSymbolLines(ctx, AMBER_FAINT, STROKE_W);
   }
 
   // Bar
   strokeLine(ctx, -BAR_HW, -BAR_OFFSET, BAR_HW, -BAR_OFFSET, AMBER, STROKE_W);
 
-  // Placed lines (full solid, layered over the guides)
+  // Zone boundary dashed lines (only in active play)
+  if (st.phase === "playing" || st.phase === "firing") {
+    const taken = new Set<number>();
+    for (const l of st.placed) if (l.target !== null) taken.add(l.target);
+    drawZoneBounds(ctx, taken);
+  }
+
+  // Placed lines
   for (const l of st.placed) {
     const L = lineLenForAngle(l.angle);
     const x1 = Math.sin(l.angle) * L;
     const y1 = -BAR_OFFSET + Math.cos(l.angle) * L;
-    const color = l.target === null ? ERROR_RED : AMBER;
+    const color = l.hit ? AMBER : ERROR_RED;
     strokeLine(ctx, 0, -BAR_OFFSET, x1, y1, color, STROKE_W);
   }
 
-  // Focal dot at bar midpoint
+  // Focal dot
   let dotR = 5;
   if (st.phase === "playing") {
     const alpha = aimLocalAngle(st.rot);
@@ -208,95 +221,56 @@ function draw(
 
   ctx.restore();
 
-  // Below-circle aimer + projectile
+  // Aimer / projectile
   const [bmx, bmy] = barMidpoint(st.rot);
 
   if (st.phase === "playing") {
     const ang = Math.atan2(bmy - ARROW_Y, bmx - ARROW_X);
     const dx = Math.cos(ang), dy = Math.sin(ang);
-    // Main aimer line (full weight, pointed at bar midpoint)
     strokeLine(ctx,
       ARROW_X - dx * AIMER_LEN * 0.55, ARROW_Y - dy * AIMER_LEN * 0.55,
       ARROW_X + dx * AIMER_LEN * 0.45, ARROW_Y + dy * AIMER_LEN * 0.45,
       AMBER, STROKE_W);
-    // nock tick (bowstring)
     const nx = -dy, ny = dx;
     const tailX = ARROW_X - dx * AIMER_LEN * 0.55;
     const tailY = ARROW_Y - dy * AIMER_LEN * 0.55;
     strokeLine(ctx,
       tailX + nx * 6, tailY + ny * 6,
       tailX - nx * 6, tailY - ny * 6,
-      AMBER_DIM, STROKE_W - 1.5);
+      AMBER_DIM, STROKE_W - 2.5);
   }
 
   if (st.phase === "firing" && st.proj) {
-    const p = Math.min(1, (now - st.proj.startMs) / TRAVEL_MS);
-    const ease = 1 - Math.pow(1 - p, 2.2);
-    const ang = Math.atan2(bmy - ARROW_Y, bmx - ARROW_X);
+    // Homing projectile: tip tracks current (moving) bar midpoint
+    const ang = Math.atan2(bmy - st.proj.tipY, bmx - st.proj.tipX);
     const dx = Math.cos(ang), dy = Math.sin(ang);
-    const L = Math.hypot(bmx - ARROW_X, bmy - ARROW_Y);
-    const tipX = ARROW_X + dx * L * ease;
-    const tipY = ARROW_Y + dy * L * ease;
-    const trailL = Math.min(L * ease, AIMER_LEN + L * 0.35);
-    const tailX = tipX - dx * trailL;
-    const tailY = tipY - dy * trailL;
+    const trailL = AIMER_LEN + 20;
+    const tailX = st.proj.tipX - dx * trailL;
+    const tailY = st.proj.tipY - dy * trailL;
     const color = st.proj.target === null ? ERROR_RED : AMBER;
-    strokeLine(ctx, tailX, tailY, tipX, tipY, color, STROKE_W);
-  }
-
-  // Shot pips — colored by accuracy
-  const sp = 20;
-  const sx = CX - ((NUM_LINES - 1) * sp) / 2;
-  for (let i = 0; i < NUM_LINES; i++) {
-    const placed = st.placed[i];
-    ctx.lineWidth = 2;
-    if (!placed) {
-      ctx.strokeStyle = AMBER_FAINT;
-      ctx.beginPath();
-      ctx.arc(sx + i * sp, CANVAS_SIZE - 22, 4, 0, Math.PI * 2);
-      ctx.stroke();
-    } else if (placed.target === null) {
-      ctx.strokeStyle = ERROR_RED;
-      ctx.beginPath();
-      ctx.arc(sx + i * sp, CANVAS_SIZE - 22, 4, 0, Math.PI * 2);
-      ctx.stroke();
-    } else {
-      // Fill proportional to accuracy
-      const a = placed.accuracy;
-      ctx.fillStyle = AMBER;
-      ctx.beginPath();
-      ctx.arc(sx + i * sp, CANVAS_SIZE - 22, 3 + a * 2, 0, Math.PI * 2);
-      ctx.fill();
-      if (a >= 0.92) {
-        ctx.strokeStyle = AMBER;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(sx + i * sp, CANVAS_SIZE - 22, 7, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
+    strokeLine(ctx, tailX, tailY, st.proj.tipX, st.proj.tipY, color, STROKE_W);
   }
 }
 
 /* ── component ────────────────────────────────────────────────── */
 
-export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
+export default function SymbolGame({ onReset }: SymbolGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
-  const onWinRef = useRef(onWin);
   const onResetRef = useRef(onReset);
-  onWinRef.current = onWin;
   onResetRef.current = onReset;
 
   const [phase, setPhase] = useState<Phase>("rest");
-  const [endMs, setEndMs] = useState(0);
-  const [accuracies, setAccuracies] = useState<number[]>([]);
+  const [hits, setHits] = useState(0);
+  const [perfects, setPerfects] = useState(0);
 
   const state = useRef<GameState>({
     phase: "rest",
     rot: 0,
     spinDir: Math.random() > 0.5 ? 1 : -1,
     placed: [],
+    hits: 0,
+    perfects: 0,
     startMs: 0,
     proj: null,
   });
@@ -324,32 +298,43 @@ export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
 
       for (const l of st.placed) if (l.flash > 0) l.flash = Math.max(0, l.flash - dt * 2.5);
 
-      if (st.phase === "firing" && st.proj && (now - st.proj.startMs) / TRAVEL_MS >= 1) {
-        const p = st.proj;
-        st.proj = null;
-        st.placed.push({
-          angle: p.alpha,
-          target: p.target,
-          accuracy: p.accuracy,
-          flash: 1,
-        });
-        if (p.target === null) {
-          st.phase = "fail";
-          setPhase("fail");
-          setAccuracies(st.placed.map(l => l.accuracy));
-        } else {
-          const hits = st.placed.filter(l => l.target !== null).length;
-          if (hits === NUM_LINES) {
-            const ms = Math.round(now - st.startMs - INTRO_MS * 0.5);
-            const accs = st.placed.map(l => l.accuracy);
-            const avg = accs.reduce((a, b) => a + b, 0) / accs.length;
-            st.phase = "win";
-            setPhase("win");
-            setEndMs(ms);
-            setAccuracies(accs);
-            onWinRef.current?.(ms, avg);
+      // Advance projectile tip toward current bar midpoint
+      if (st.phase === "firing" && st.proj) {
+        const [bmx, bmy] = barMidpoint(st.rot);
+        const p = Math.min(1, (now - st.proj.startMs) / TRAVEL_MS);
+        const ease = 1 - Math.pow(1 - p, 2.2);
+        // Lerp from launch origin (ARROW_X/Y) to current midpoint
+        st.proj.tipX = ARROW_X + (bmx - ARROW_X) * ease;
+        st.proj.tipY = ARROW_Y + (bmy - ARROW_Y) * ease;
+
+        if (p >= 1) {
+          const pr = st.proj;
+          st.proj = null;
+          if (pr.target === null) {
+            st.placed.push({
+              angle: pr.alpha,
+              hit: false,
+              target: null,
+              accuracy: 0,
+              flash: 1,
+            });
+            st.phase = "fail";
+            setPhase("fail");
           } else {
-            if (Math.random() > 0.55) st.spinDir *= -1;
+            // Clear slate if we're about to fill the 3rd slot
+            if (st.placed.length >= NUM_SLOTS) st.placed = [];
+            st.placed.push({
+              angle: pr.alpha,
+              hit: true,
+              target: pr.target,
+              accuracy: pr.accuracy,
+              flash: 1,
+            });
+            st.hits += 1;
+            if (pr.accuracy >= PERFECT_THRESHOLD) st.perfects += 1;
+            setHits(st.hits);
+            setPerfects(st.perfects);
+            st.spinDir *= -1;
             st.phase = "playing";
             setPhase("playing");
           }
@@ -366,18 +351,19 @@ export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
   const handleFire = useCallback(() => {
     const st = state.current;
 
-    // Start a new run (from rest, win, or fail)
-    if (st.phase === "rest" || st.phase === "win" || st.phase === "fail") {
-      const wasFinished = st.phase === "win" || st.phase === "fail";
+    if (st.phase === "rest" || st.phase === "fail") {
+      const wasFinished = st.phase === "fail";
       st.placed = [];
+      st.hits = 0;
+      st.perfects = 0;
       st.phase = "playing";
       st.startMs = performance.now();
-      st.rot = 0; // begin from the canonical upright position
+      st.rot = 0;
       st.spinDir = Math.random() > 0.5 ? 1 : -1;
       st.proj = null;
       setPhase("playing");
-      setEndMs(0);
-      setAccuracies([]);
+      setHits(0);
+      setPerfects(0);
       if (wasFinished) onResetRef.current?.();
       return;
     }
@@ -385,13 +371,16 @@ export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
     if (st.phase !== "playing") return;
 
     const alpha = aimLocalAngle(st.rot);
+    const wrapping = st.placed.length >= NUM_SLOTS;
     let hitTarget: number | null = null;
     let bestAcc = 0;
     for (const t of TARGETS) {
       const d = Math.abs(norm(alpha - t));
       if (d <= ZONE_TOL) {
-        const taken = st.placed.some(l => l.target === t);
-        if (taken) continue;
+        if (!wrapping) {
+          const taken = st.placed.some(l => l.target === t);
+          if (taken) continue;
+        }
         const acc = 1 - d / ZONE_TOL;
         if (acc > bestAcc) {
           bestAcc = acc;
@@ -405,6 +394,8 @@ export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
       alpha,
       target: hitTarget,
       accuracy: hitTarget === null ? 0 : bestAcc,
+      tipX: ARROW_X,
+      tipY: ARROW_Y,
     };
     st.phase = "firing";
     setPhase("firing");
@@ -421,11 +412,23 @@ export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
     return () => window.removeEventListener("keydown", h);
   }, [handleFire]);
 
-  const grade = gradeOf(accuracies.filter((_, i) => i < NUM_LINES && accuracies[i] > 0));
-  const allHits = accuracies.length === NUM_LINES && accuracies.every(a => a > 0);
-
   return (
     <div className="relative flex flex-col items-center">
+      <div className="mb-3 h-16 flex flex-col items-center justify-end">
+        {(phase === "playing" || phase === "firing" || phase === "fail") && (
+          <>
+            <span className="font-display text-5xl font-bold text-accent tabular-nums leading-none">
+              {hits}
+            </span>
+            {perfects > 0 && (
+              <span className="mt-1 font-mono text-[0.65rem] tracking-[0.3em] text-accent/60 uppercase tabular-nums">
+                {perfects} perfect
+              </span>
+            )}
+          </>
+        )}
+      </div>
+
       <canvas
         ref={canvasRef}
         role="application"
@@ -436,60 +439,19 @@ export default function SymbolGame({ onWin, onReset }: SymbolGameProps) {
         onTouchStart={(e) => { e.preventDefault(); handleFire(); }}
       />
 
-      {/* Overlays positioned inside the canvas area */}
       <div className="pointer-events-none absolute left-0 right-0 flex justify-center"
-           style={{ top: CY + CIRCLE_R + 46 }}>
+           style={{ top: CY + CIRCLE_R + 46 + 76 }}>
         {phase === "rest" && (
           <p className="font-mono text-[0.7rem] tracking-[0.35em] text-accent/55 uppercase">
             press space
           </p>
         )}
-        {phase === "playing" && (
-          <p className="font-mono text-[0.7rem] tracking-[0.3em] text-accent/40 uppercase tabular-nums">
-            <LiveTimer start={state.current.startMs} /> · {state.current.placed.filter(l => l.target !== null).length}/{NUM_LINES}
-          </p>
-        )}
-        {phase === "firing" && (
-          <p className="font-mono text-[0.7rem] tracking-[0.3em] text-accent/40 uppercase tabular-nums">
-            <LiveTimer start={state.current.startMs} />
-          </p>
-        )}
-        {phase === "win" && allHits && (
-          <div className="text-center">
-            <div className="flex items-baseline gap-4 justify-center">
-              <span className="font-display text-3xl font-bold text-accent tabular-nums">
-                {fmtTime(endMs)}
-              </span>
-              <span className="font-display text-2xl font-bold text-accent/80">
-                {grade}
-              </span>
-            </div>
-            <p className="mt-2 font-mono text-[0.65rem] tracking-[0.3em] text-accent/50 uppercase">
-              {accuracies.map(a => Math.round(a * 100)).join(" · ")}
-            </p>
-            <p className="mt-1 font-mono text-[0.6rem] tracking-[0.3em] text-text-faint uppercase">
-              press space to play again
-            </p>
-          </div>
-        )}
         {phase === "fail" && (
-          <div className="text-center">
-            <p className="font-display text-lg font-bold text-error tracking-wide">Miss</p>
-            <p className="mt-1 font-mono text-[0.6rem] tracking-[0.3em] text-text-faint uppercase">
-              press space to retry
-            </p>
-          </div>
+          <p className="font-mono text-[0.6rem] tracking-[0.3em] text-text-faint uppercase">
+            press space to retry
+          </p>
         )}
       </div>
     </div>
   );
-}
-
-function LiveTimer({ start }: { start: number }) {
-  const [ms, setMs] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setMs(Math.max(0, Math.round(performance.now() - start - INTRO_MS * 0.5))), 47);
-    return () => clearInterval(id);
-  }, [start]);
-  return <span>{fmtTime(ms)}</span>;
 }
