@@ -18,14 +18,15 @@ const AIMER_LEN = 46;
 /* ── gameplay ─────────────────────────────────────────────────── */
 
 const TARGETS = [-Math.PI / 4.5, 0, Math.PI / 4.5];
-const ZONE_TOL = Math.PI / 14;
+const ZONE_TOL = Math.PI / 22;      // ~8.2° half-width — tighter than before
 const NUM_SLOTS = TARGETS.length;
 
 const SPIN_BASE = 1.25;
-const SPIN_ACCEL = 0.22;       // per hit — sustainable endless progression
+const SPIN_ACCEL = 0.22;
 const SPIN_CAP = 6.0;
 const TRAVEL_MS = 200;
 const INTRO_MS = 650;
+const CLEAR_DELAY_MS = 500;         // pause after filling all 3 before wipe
 const PERFECT_THRESHOLD = 0.9;
 const PERFECT_CUE = 0.035;
 
@@ -68,6 +69,7 @@ interface GameState {
   perfects: number;
   startMs: number;
   proj: Projectile | null;
+  clearAt: number | null;
 }
 
 interface SymbolGameProps {
@@ -140,14 +142,15 @@ function drawSymbolLines(
   }
 }
 
-function drawZoneBounds(ctx: CanvasRenderingContext2D, takenTargets: Set<number>) {
+function drawZoneGuides(ctx: CanvasRenderingContext2D, takenTargets: Set<number>) {
   ctx.save();
-  ctx.setLineDash([5, 9]);
-  ctx.lineWidth = 2;
   ctx.lineCap = "butt";
-  ctx.strokeStyle = AMBER_GHOST;
   for (const t of TARGETS) {
     if (takenTargets.has(t)) continue;
+    // Boundary dashes
+    ctx.setLineDash([5, 9]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = AMBER_GHOST;
     for (const s of [-1, 1]) {
       const a = t + s * ZONE_TOL;
       const L = lineLenForAngle(a);
@@ -156,6 +159,15 @@ function drawZoneBounds(ctx: CanvasRenderingContext2D, takenTargets: Set<number>
       ctx.lineTo(Math.sin(a) * L, -BAR_OFFSET + Math.cos(a) * L);
       ctx.stroke();
     }
+    // Center "perfect" guide — solid, faint grey
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(180,180,180,0.35)";
+    const L = lineLenForAngle(t);
+    ctx.beginPath();
+    ctx.moveTo(0, -BAR_OFFSET);
+    ctx.lineTo(Math.sin(t) * L, -BAR_OFFSET + Math.cos(t) * L);
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -192,7 +204,7 @@ function draw(
   if (st.phase === "playing" || st.phase === "firing") {
     const taken = new Set<number>();
     for (const l of st.placed) if (l.target !== null) taken.add(l.target);
-    drawZoneBounds(ctx, taken);
+    drawZoneGuides(ctx, taken);
   }
 
   // Placed lines
@@ -273,6 +285,7 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
     perfects: 0,
     startMs: 0,
     proj: null,
+    clearAt: null,
   });
 
   useEffect(() => {
@@ -298,6 +311,12 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
 
       for (const l of st.placed) if (l.flash > 0) l.flash = Math.max(0, l.flash - dt * 2.5);
 
+      // Scheduled wipe after all 3 slots filled
+      if (st.clearAt !== null && now >= st.clearAt) {
+        st.placed = [];
+        st.clearAt = null;
+      }
+
       // Advance projectile tip toward current bar midpoint
       if (st.phase === "firing" && st.proj) {
         const [bmx, bmy] = barMidpoint(st.rot);
@@ -321,8 +340,6 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
             st.phase = "fail";
             setPhase("fail");
           } else {
-            // Clear slate if we're about to fill the 3rd slot
-            if (st.placed.length >= NUM_SLOTS) st.placed = [];
             st.placed.push({
               angle: pr.alpha,
               hit: true,
@@ -335,6 +352,7 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
             setHits(st.hits);
             setPerfects(st.perfects);
             st.spinDir *= -1;
+            if (st.placed.length >= NUM_SLOTS) st.clearAt = now + CLEAR_DELAY_MS;
             st.phase = "playing";
             setPhase("playing");
           }
@@ -361,6 +379,7 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
       st.rot = 0;
       st.spinDir = Math.random() > 0.5 ? 1 : -1;
       st.proj = null;
+      st.clearAt = null;
       setPhase("playing");
       setHits(0);
       setPerfects(0);
@@ -369,18 +388,16 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
     }
 
     if (st.phase !== "playing") return;
+    if (st.clearAt !== null) return;  // locked during post-triplet wipe pause
 
     const alpha = aimLocalAngle(st.rot);
-    const wrapping = st.placed.length >= NUM_SLOTS;
     let hitTarget: number | null = null;
     let bestAcc = 0;
     for (const t of TARGETS) {
       const d = Math.abs(norm(alpha - t));
       if (d <= ZONE_TOL) {
-        if (!wrapping) {
-          const taken = st.placed.some(l => l.target === t);
-          if (taken) continue;
-        }
+        const taken = st.placed.some(l => l.target === t);
+        if (taken) continue;
         const acc = 1 - d / ZONE_TOL;
         if (acc > bestAcc) {
           bestAcc = acc;
