@@ -33,7 +33,7 @@ type Options = {
 const DEFAULT_PARAMS: Params = {
   tHeight: -78,
   mAngle:  38,
-  stroke:  35,
+  stroke:  43,
   dotSize: 60,
 };
 
