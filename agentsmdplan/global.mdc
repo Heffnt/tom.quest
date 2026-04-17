@@ -1,0 +1,59 @@
+---
+description: Global personal rules shared across Cursor, Claude Code, and Codex.
+alwaysApply: true
+---
+
+# Global Rules
+
+## Design Philosophy
+
+- Prioritize understandability, maintainability, and testability.
+- Prefer deep modules with simple interfaces over shallow wrappers.
+- Keep related logic together in cohesive modules instead of spreading it across many small files.
+- Prefer high-level durable guidance in agent instruction files. If specifics are needed, read the code.
+
+## Code And Structure
+
+- At most one blank line between code sections.
+- Don't add behavior modes or branching flags when the better design is to separate concerns into different files or modules.
+- Comments should explain non-obvious intent, invariants, or rationale. Do not narrate obvious code.
+- Do not put instructions in print statements except to tell the user how to fix an error.
+- Do not modify generated files directly. Modify the generator or source of truth and regenerate.
+
+## Agent Behavior
+
+- Ask clarifying questions when needed.
+- If there are multiple reasonable ways to do something, ask before choosing.
+- Give commands on a single line so they are easy to copy.
+- Do not add markdown or documentation files unless explicitly requested.
+- Do not implement fallbacks or backward compatibility unless explicitly requested.
+- When removing a feature, delete the associated code instead of leaving dead toggles or commented-out paths.
+- Use `uv` for Python installs when possible.
+
+## Bug Prevention
+
+When fixing bugs or preventing regressions, use this order:
+
+1. Tier 1: Prefer a test that fails if the bug is reintroduced.
+2. Tier 2: If a test is not the right mechanism, put a brief warning comment at the exact danger point in code.
+3. Tier 3: Only if the bug reveals a durable cross-cutting rule, add a short root-cause principle to the project `AGENTS.md`.
+
+- Do not keep dated bug logs in `AGENTS.md` or `CLAUDE.md`.
+- Do not describe what the code used to look like.
+- Write root causes and durable rules, not incident history.
+
+## Environment
+
+- I often edit in Cursor on Windows and run code on Linux, especially Turing.
+- Do not assume GPU availability. Verify it from the current environment before depending on GPU execution.
+
+## Agent Context System
+
+- This is the canonical global rules file.
+- Edit this file at `~/.agent-rules/global.mdc`.
+- Claude Code reads it via `~/.claude/CLAUDE.md`.
+- Codex reads it via `~/.codex/AGENTS.md`.
+- Cursor reads it through each repo's `.cursor/rules/00-global.mdc` shim.
+- Each repo also has a root `AGENTS.md` for project-specific rules.
+- Keep cross-project preferences here, and keep project goals, vocabulary, and durable patterns in each repo `AGENTS.md`.
+- If the system breaks, fix the symlink or shim rather than copying these rules into multiple files.

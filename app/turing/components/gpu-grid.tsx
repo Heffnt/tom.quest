@@ -248,6 +248,8 @@ function NodeCard({
           <GpuSquare
             key={index}
             slot={slots[index] ?? null}
+            // Trust explicit backend gpu_index mapping when present; allocated_gpus
+            // is only a fallback count for older/incomplete payloads.
             allocated={hasExplicitMapping ? mappedIndices.has(index) : index < node.allocated_gpus}
             nodeState={node.state}
             gpuIndex={index}
