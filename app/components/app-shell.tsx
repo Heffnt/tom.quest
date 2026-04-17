@@ -14,6 +14,7 @@ import QuestNav from "./quest-nav";
 import DebugDrawer from "./debug-drawer";
 import { useAuth } from "../lib/auth";
 import { debug } from "../lib/debug";
+import { HeroModeProvider } from "../lib/hero-mode";
 
 type DebugEdge = "left" | "right" | "bottom";
 type DebugSizes = Record<DebugEdge, number>;
@@ -134,7 +135,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     : "pt-16 transition-[margin] duration-150 ease-out";
 
   return (
-    <>
+    <HeroModeProvider>
       <header>
         <QuestNav offsets={navOffsets} animateOffsets={!isResizing} />
       </header>
@@ -150,6 +151,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
         onResizeStart={handleResizeStart}
         onResizeEnd={handleResizeEnd}
       />
-    </>
+    </HeroModeProvider>
   );
 }

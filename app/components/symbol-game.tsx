@@ -1,61 +1,40 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DEFAULT_TOM_PARAMS } from "./tom-symbol";
 
-/* ── geometry ─────────────────────────────────────────────────── */
+/* ── gameplay constants ──────────────────────────────────────── */
 
-const CANVAS_SIZE = 440;
-const CX = CANVAS_SIZE / 2;
-const CY = CANVAS_SIZE / 2 - 26;
-const CIRCLE_R = 132;
-const BAR_OFFSET = 70;
-const BAR_HW = Math.sqrt(CIRCLE_R * CIRCLE_R - BAR_OFFSET * BAR_OFFSET);
-
-const ARROW_X = CX;
-const ARROW_Y = CANVAS_SIZE - 52;
-const AIMER_LEN = 46;
-
-/* ── gameplay ─────────────────────────────────────────────────── */
-
-const TARGETS = [-Math.PI / 4.5, 0, Math.PI / 4.5];
-const ZONE_TOL = Math.PI / 22;      // ~8.2° half-width — tighter than before
-const NUM_SLOTS = TARGETS.length;
-
+const ZONE_TOL = Math.PI / 22;
 const SPIN_BASE = 1.25;
 const SPIN_ACCEL = 0.22;
 const SPIN_CAP = 6.0;
 const TRAVEL_MS = 200;
 const INTRO_MS = 650;
-const CLEAR_DELAY_MS = 500;         // pause after filling all 3 before wipe
+const CLEAR_DELAY_MS = 500;
 const PERFECT_THRESHOLD = 0.9;
-const PERFECT_CUE = 0.035;
 
 /* ── aesthetic ────────────────────────────────────────────────── */
 
-const STROKE_W = 7;
 const AMBER = "#e8a040";
 const AMBER_DIM = "rgba(232,160,64,0.55)";
-const AMBER_FAINT = "rgba(232,160,64,0.18)";
 const AMBER_GHOST = "rgba(232,160,64,0.25)";
 const ERROR_RED = "#ef4444";
 
 /* ── types ────────────────────────────────────────────────────── */
 
-type Phase = "rest" | "playing" | "firing" | "fail";
+type Phase = "playing" | "firing" | "fail";
 
 interface PlacedLine {
   angle: number;
   hit: boolean;
   target: number | null;
-  accuracy: number;
-  flash: number;
 }
 
 interface Projectile {
   startMs: number;
   alpha: number;
   target: number | null;
-  accuracy: number;
   tipX: number;
   tipY: number;
 }
@@ -72,9 +51,58 @@ interface GameState {
   clearAt: number | null;
 }
 
+interface Geom {
+  size: number;
+  cx: number;
+  cy: number;
+  circleR: number;
+  barOffset: number;
+  barHw: number;
+  strokeW: number;
+  arrowX: number;
+  arrowY: number;
+  aimerLen: number;
+  targets: number[];
+  numSlots: number;
+}
+
 interface SymbolGameProps {
-  onWin?: (ms: number, avgAccuracy: number) => void;
+  size?: number;
+  onResult?: (result: { hits: number; perfects: number }) => void;
   onReset?: () => void;
+}
+
+/* ── geometry derivation ─────────────────────────────────────── */
+
+// The game's geometry is derived from DEFAULT_TOM_PARAMS so that the rotating
+// symbol visually matches the tom-symbol in the logo (thick strokes, same
+// T-height proportion, same M-angle). The canvas is laid out vertically as:
+// (top) ↓ symbol ↓ gap ↓ arrow/aimer ↓ (bottom).
+function buildGeom(size: number): Geom {
+  const p = DEFAULT_TOM_PARAMS;
+  const R_VB = 170;
+  const strokeFrac = p.stroke / (2 * R_VB);
+
+  const circleR = size * 0.30;
+  const strokeW = 2 * circleR * strokeFrac;
+  const barOffset = circleR * (-p.tHeight / R_VB);
+  const barHw = Math.sqrt(Math.max(0, circleR * circleR - barOffset * barOffset));
+
+  const cx = size / 2;
+  const cy = size * 0.441;
+
+  const arrowX = cx;
+  const arrowY = size * (388 / 440);
+  const aimerLen = size * (46 / 440);
+
+  const mA = (p.mAngle * Math.PI) / 180;
+  const targets = [-mA, 0, mA];
+
+  return {
+    size, cx, cy, circleR, barOffset, barHw, strokeW,
+    arrowX, arrowY, aimerLen,
+    targets, numSlots: targets.length,
+  };
 }
 
 /* ── helpers ──────────────────────────────────────────────────── */
@@ -86,24 +114,24 @@ function norm(a: number): number {
   return n;
 }
 
-function lineLenForAngle(a: number): number {
-  const b = BAR_OFFSET, r = CIRCLE_R, sa = Math.sin(a);
+function lineLenForAngle(a: number, g: Geom): number {
+  const b = g.barOffset, r = g.circleR, sa = Math.sin(a);
   return b * Math.cos(a) + Math.sqrt(Math.max(0, r * r - b * b * sa * sa));
 }
 
-function aimLocalAngle(rot: number): number {
-  const gx = ARROW_X - CX, gy = ARROW_Y - CY;
+function aimLocalAngle(rot: number, g: Geom): number {
+  const gx = g.arrowX - g.cx, gy = g.arrowY - g.cy;
   const c = Math.cos(-rot), s = Math.sin(-rot);
   const lx = gx * c - gy * s, ly = gx * s + gy * c;
-  return Math.atan2(lx, ly + BAR_OFFSET);
+  return Math.atan2(lx, ly + g.barOffset);
 }
 
-function barMidpoint(rot: number): [number, number] {
-  return [CX + BAR_OFFSET * Math.sin(rot), CY - BAR_OFFSET * Math.cos(rot)];
+function barMidpoint(rot: number, g: Geom): [number, number] {
+  return [g.cx + g.barOffset * Math.sin(rot), g.cy - g.barOffset * Math.cos(rot)];
 }
 
 function currentSpeed(st: GameState, now: number): number {
-  if (st.phase === "rest" || st.phase === "fail") return 0;
+  if (st.phase === "fail") return 0;
   const target = Math.min(SPIN_CAP, SPIN_BASE + st.hits * SPIN_ACCEL);
   if (st.hits === 0) {
     const t = Math.min(1, (now - st.startMs) / INTRO_MS);
@@ -118,166 +146,135 @@ function currentSpeed(st: GameState, now: number): number {
 function strokeLine(
   ctx: CanvasRenderingContext2D,
   x0: number, y0: number, x1: number, y1: number,
-  color: string, width = STROKE_W,
+  color: string, width: number,
 ) {
   ctx.strokeStyle = color;
   ctx.lineWidth = width;
-  ctx.lineCap = "round";
+  ctx.lineCap = "butt";
   ctx.beginPath();
   ctx.moveTo(x0, y0);
   ctx.lineTo(x1, y1);
   ctx.stroke();
 }
 
-function drawSymbolLines(
-  ctx: CanvasRenderingContext2D,
-  color: string,
-  width: number,
-) {
-  for (const a of TARGETS) {
-    const L = lineLenForAngle(a);
-    strokeLine(ctx, 0, -BAR_OFFSET,
-      Math.sin(a) * L, -BAR_OFFSET + Math.cos(a) * L,
-      color, width);
-  }
-}
-
-function drawZoneGuides(ctx: CanvasRenderingContext2D, takenTargets: Set<number>) {
+function drawZoneGuides(ctx: CanvasRenderingContext2D, g: Geom, takenTargets: Set<number>) {
   ctx.save();
   ctx.lineCap = "butt";
-  for (const t of TARGETS) {
+  for (const t of g.targets) {
     if (takenTargets.has(t)) continue;
-    // Boundary dashes
     ctx.setLineDash([5, 9]);
     ctx.lineWidth = 2;
     ctx.strokeStyle = AMBER_GHOST;
     for (const s of [-1, 1]) {
       const a = t + s * ZONE_TOL;
-      const L = lineLenForAngle(a);
+      const L = lineLenForAngle(a, g);
       ctx.beginPath();
-      ctx.moveTo(0, -BAR_OFFSET);
-      ctx.lineTo(Math.sin(a) * L, -BAR_OFFSET + Math.cos(a) * L);
+      ctx.moveTo(0, -g.barOffset);
+      ctx.lineTo(Math.sin(a) * L, -g.barOffset + Math.cos(a) * L);
       ctx.stroke();
     }
-    // Center "perfect" guide — solid, faint grey
     ctx.setLineDash([]);
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = "rgba(180,180,180,0.35)";
-    const L = lineLenForAngle(t);
+    const L = lineLenForAngle(t, g);
     ctx.beginPath();
-    ctx.moveTo(0, -BAR_OFFSET);
-    ctx.lineTo(Math.sin(t) * L, -BAR_OFFSET + Math.cos(t) * L);
+    ctx.moveTo(0, -g.barOffset);
+    ctx.lineTo(Math.sin(t) * L, -g.barOffset + Math.cos(t) * L);
     ctx.stroke();
   }
   ctx.restore();
 }
 
-function draw(
-  ctx: CanvasRenderingContext2D,
-  st: GameState,
-  _now: number,
-) {
-  ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
+function draw(ctx: CanvasRenderingContext2D, st: GameState, g: Geom) {
+  ctx.clearRect(0, 0, g.size, g.size);
+  ctx.lineCap = "butt";
+  ctx.lineJoin = "miter";
 
-  // Circle
+  // Q circle
   ctx.strokeStyle = AMBER;
-  ctx.lineWidth = STROKE_W;
+  ctx.lineWidth = g.strokeW;
   ctx.beginPath();
-  ctx.arc(CX, CY, CIRCLE_R, 0, Math.PI * 2);
+  ctx.arc(g.cx, g.cy, g.circleR, 0, Math.PI * 2);
   ctx.stroke();
 
   // Rotating symbol
   ctx.save();
-  ctx.translate(CX, CY);
+  ctx.translate(g.cx, g.cy);
   ctx.rotate(st.rot);
 
-  if (st.phase === "rest") {
-    drawSymbolLines(ctx, AMBER, STROKE_W);
-  }
+  // Horizontal bar (the T crossbar / chord at barOffset above center)
+  strokeLine(ctx, -g.barHw, -g.barOffset, g.barHw, -g.barOffset, AMBER, g.strokeW);
 
-  // Bar
-  strokeLine(ctx, -BAR_HW, -BAR_OFFSET, BAR_HW, -BAR_OFFSET, AMBER, STROKE_W);
-
-  // Zone boundary dashed lines (only in active play)
+  // Zone guides (dashed lines show where you can shoot)
   if (st.phase === "playing" || st.phase === "firing") {
     const taken = new Set<number>();
     for (const l of st.placed) if (l.target !== null) taken.add(l.target);
-    drawZoneGuides(ctx, taken);
+    drawZoneGuides(ctx, g, taken);
   }
 
-  // Placed lines
+  // Placed lines (your shots, amber = hit, red = miss)
   for (const l of st.placed) {
-    const L = lineLenForAngle(l.angle);
+    const L = lineLenForAngle(l.angle, g);
     const x1 = Math.sin(l.angle) * L;
-    const y1 = -BAR_OFFSET + Math.cos(l.angle) * L;
+    const y1 = -g.barOffset + Math.cos(l.angle) * L;
     const color = l.hit ? AMBER : ERROR_RED;
-    strokeLine(ctx, 0, -BAR_OFFSET, x1, y1, color, STROKE_W);
+    strokeLine(ctx, 0, -g.barOffset, x1, y1, color, g.strokeW);
   }
-
-  // Focal dot
-  let dotR = 5;
-  if (st.phase === "playing") {
-    const alpha = aimLocalAngle(st.rot);
-    let nearest = Infinity;
-    for (const t of TARGETS) nearest = Math.min(nearest, Math.abs(norm(alpha - t)));
-    if (nearest < PERFECT_CUE) {
-      dotR = 5 + 3 * (1 - nearest / PERFECT_CUE);
-    }
-  }
-  ctx.fillStyle = AMBER;
-  ctx.beginPath();
-  ctx.arc(0, -BAR_OFFSET, dotR, 0, Math.PI * 2);
-  ctx.fill();
 
   ctx.restore();
 
   // Aimer / projectile
-  const [bmx, bmy] = barMidpoint(st.rot);
+  const [bmx, bmy] = barMidpoint(st.rot, g);
 
   if (st.phase === "playing") {
-    const ang = Math.atan2(bmy - ARROW_Y, bmx - ARROW_X);
+    const ang = Math.atan2(bmy - g.arrowY, bmx - g.arrowX);
     const dx = Math.cos(ang), dy = Math.sin(ang);
     strokeLine(ctx,
-      ARROW_X - dx * AIMER_LEN * 0.55, ARROW_Y - dy * AIMER_LEN * 0.55,
-      ARROW_X + dx * AIMER_LEN * 0.45, ARROW_Y + dy * AIMER_LEN * 0.45,
-      AMBER, STROKE_W);
+      g.arrowX - dx * g.aimerLen * 0.55, g.arrowY - dy * g.aimerLen * 0.55,
+      g.arrowX + dx * g.aimerLen * 0.45, g.arrowY + dy * g.aimerLen * 0.45,
+      AMBER, g.strokeW * 0.5);
     const nx = -dy, ny = dx;
-    const tailX = ARROW_X - dx * AIMER_LEN * 0.55;
-    const tailY = ARROW_Y - dy * AIMER_LEN * 0.55;
+    const tailX = g.arrowX - dx * g.aimerLen * 0.55;
+    const tailY = g.arrowY - dy * g.aimerLen * 0.55;
     strokeLine(ctx,
-      tailX + nx * 6, tailY + ny * 6,
-      tailX - nx * 6, tailY - ny * 6,
-      AMBER_DIM, STROKE_W - 2.5);
+      tailX + nx * g.aimerLen * 0.13, tailY + ny * g.aimerLen * 0.13,
+      tailX - nx * g.aimerLen * 0.13, tailY - ny * g.aimerLen * 0.13,
+      AMBER_DIM, g.strokeW * 0.32);
   }
 
   if (st.phase === "firing" && st.proj) {
-    // Homing projectile: tip tracks current (moving) bar midpoint
     const ang = Math.atan2(bmy - st.proj.tipY, bmx - st.proj.tipX);
     const dx = Math.cos(ang), dy = Math.sin(ang);
-    const trailL = AIMER_LEN + 20;
+    const trailL = g.aimerLen + g.size * (20 / 440);
     const tailX = st.proj.tipX - dx * trailL;
     const tailY = st.proj.tipY - dy * trailL;
     const color = st.proj.target === null ? ERROR_RED : AMBER;
-    strokeLine(ctx, tailX, tailY, st.proj.tipX, st.proj.tipY, color, STROKE_W);
+    strokeLine(ctx, tailX, tailY, st.proj.tipX, st.proj.tipY, color, g.strokeW * 0.5);
   }
 }
 
 /* ── component ────────────────────────────────────────────────── */
 
-export default function SymbolGame({ onReset }: SymbolGameProps) {
+export default function SymbolGame({
+  size = 440,
+  onResult,
+  onReset,
+}: SymbolGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
   const onResetRef = useRef(onReset);
+  const onResultRef = useRef(onResult);
   onResetRef.current = onReset;
+  onResultRef.current = onResult;
 
-  const [phase, setPhase] = useState<Phase>("rest");
+  const geom = useMemo(() => buildGeom(size), [size]);
+
+  const [phase, setPhase] = useState<Phase>("playing");
   const [hits, setHits] = useState(0);
   const [perfects, setPerfects] = useState(0);
 
   const state = useRef<GameState>({
-    phase: "rest",
+    phase: "playing",
     rot: 0,
     spinDir: Math.random() > 0.5 ? 1 : -1,
     placed: [],
@@ -288,16 +285,21 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
     clearAt: null,
   });
 
+  // Initialize startMs on first mount
+  useEffect(() => {
+    state.current.startMs = performance.now();
+  }, []);
+
   useEffect(() => {
     const cvs = canvasRef.current;
     if (!cvs) return;
     const ctx = cvs.getContext("2d");
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
-    cvs.width = CANVAS_SIZE * dpr;
-    cvs.height = CANVAS_SIZE * dpr;
-    cvs.style.width = `${CANVAS_SIZE}px`;
-    cvs.style.height = `${CANVAS_SIZE}px`;
+    cvs.width = geom.size * dpr;
+    cvs.height = geom.size * dpr;
+    cvs.style.width = `${geom.size}px`;
+    cvs.style.height = `${geom.size}px`;
     ctx.scale(dpr, dpr);
 
     let prev = performance.now();
@@ -309,68 +311,50 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
       const speed = currentSpeed(st, now);
       if (speed > 0) st.rot = norm(st.rot + speed * st.spinDir * dt);
 
-      for (const l of st.placed) if (l.flash > 0) l.flash = Math.max(0, l.flash - dt * 2.5);
-
-      // Scheduled wipe after all 3 slots filled
       if (st.clearAt !== null && now >= st.clearAt) {
         st.placed = [];
         st.clearAt = null;
       }
 
-      // Advance projectile tip toward current bar midpoint
       if (st.phase === "firing" && st.proj) {
-        const [bmx, bmy] = barMidpoint(st.rot);
+        const [bmx, bmy] = barMidpoint(st.rot, geom);
         const p = Math.min(1, (now - st.proj.startMs) / TRAVEL_MS);
         const ease = 1 - Math.pow(1 - p, 2.2);
-        // Lerp from launch origin (ARROW_X/Y) to current midpoint
-        st.proj.tipX = ARROW_X + (bmx - ARROW_X) * ease;
-        st.proj.tipY = ARROW_Y + (bmy - ARROW_Y) * ease;
+        st.proj.tipX = geom.arrowX + (bmx - geom.arrowX) * ease;
+        st.proj.tipY = geom.arrowY + (bmy - geom.arrowY) * ease;
 
         if (p >= 1) {
           const pr = st.proj;
           st.proj = null;
           if (pr.target === null) {
-            st.placed.push({
-              angle: pr.alpha,
-              hit: false,
-              target: null,
-              accuracy: 0,
-              flash: 1,
-            });
+            st.placed.push({ angle: pr.alpha, hit: false, target: null });
             st.phase = "fail";
             setPhase("fail");
+            onResultRef.current?.({ hits: st.hits, perfects: st.perfects });
           } else {
-            st.placed.push({
-              angle: pr.alpha,
-              hit: true,
-              target: pr.target,
-              accuracy: pr.accuracy,
-              flash: 1,
-            });
+            st.placed.push({ angle: pr.alpha, hit: true, target: pr.target });
             st.hits += 1;
-            if (pr.accuracy >= PERFECT_THRESHOLD) st.perfects += 1;
             setHits(st.hits);
             setPerfects(st.perfects);
             st.spinDir *= -1;
-            if (st.placed.length >= NUM_SLOTS) st.clearAt = now + CLEAR_DELAY_MS;
+            if (st.placed.length >= geom.numSlots) st.clearAt = now + CLEAR_DELAY_MS;
             st.phase = "playing";
             setPhase("playing");
           }
         }
       }
 
-      draw(ctx, st, now);
+      draw(ctx, st, geom);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, []);
+  }, [geom]);
 
   const handleFire = useCallback(() => {
     const st = state.current;
 
-    if (st.phase === "rest" || st.phase === "fail") {
-      const wasFinished = st.phase === "fail";
+    if (st.phase === "fail") {
       st.placed = [];
       st.hits = 0;
       st.perfects = 0;
@@ -383,17 +367,17 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
       setPhase("playing");
       setHits(0);
       setPerfects(0);
-      if (wasFinished) onResetRef.current?.();
+      onResetRef.current?.();
       return;
     }
 
     if (st.phase !== "playing") return;
-    if (st.clearAt !== null) return;  // locked during post-triplet wipe pause
+    if (st.clearAt !== null) return;
 
-    const alpha = aimLocalAngle(st.rot);
+    const alpha = aimLocalAngle(st.rot, geom);
     let hitTarget: number | null = null;
     let bestAcc = 0;
-    for (const t of TARGETS) {
+    for (const t of geom.targets) {
       const d = Math.abs(norm(alpha - t));
       if (d <= ZONE_TOL) {
         const taken = st.placed.some(l => l.target === t);
@@ -406,21 +390,27 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
       }
     }
 
+    if (hitTarget !== null && bestAcc >= PERFECT_THRESHOLD) {
+      st.perfects += 1;
+    }
+
     st.proj = {
       startMs: performance.now(),
       alpha,
       target: hitTarget,
-      accuracy: hitTarget === null ? 0 : bestAcc,
-      tipX: ARROW_X,
-      tipY: ARROW_Y,
+      tipX: geom.arrowX,
+      tipY: geom.arrowY,
     };
     st.phase = "firing";
     setPhase("firing");
-  }, []);
+  }, [geom]);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.code === "Space" || e.key === " ") {
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
         e.preventDefault();
         handleFire();
       }
@@ -431,41 +421,32 @@ export default function SymbolGame({ onReset }: SymbolGameProps) {
 
   return (
     <div className="relative flex flex-col items-center">
-      <div className="mb-3 h-16 flex flex-col items-center justify-end">
-        {(phase === "playing" || phase === "firing" || phase === "fail") && (
-          <>
-            <span className="font-display text-5xl font-bold text-accent tabular-nums leading-none">
-              {hits}
-            </span>
-            {perfects > 0 && (
-              <span className="mt-1 font-mono text-[0.65rem] tracking-[0.3em] text-accent/60 uppercase tabular-nums">
-                {perfects} perfect
-              </span>
-            )}
-          </>
+      <div className="mb-3 h-14 flex flex-col items-center justify-end">
+        <span className="font-display text-5xl font-bold text-accent tabular-nums leading-none">
+          {hits}
+        </span>
+        {perfects > 0 && (
+          <span className="mt-1 font-mono text-[0.65rem] tracking-[0.3em] text-accent/60 uppercase tabular-nums">
+            {perfects} perfect
+          </span>
         )}
       </div>
 
       <canvas
         ref={canvasRef}
         role="application"
-        aria-label="Symbol game — press space to play"
-        className="cursor-pointer select-none"
-        style={{ width: CANVAS_SIZE, height: CANVAS_SIZE }}
+        aria-label="Symbol game — press space or tap to fire"
+        className="cursor-pointer select-none touch-none"
+        style={{ width: geom.size, height: geom.size }}
         onClick={handleFire}
         onTouchStart={(e) => { e.preventDefault(); handleFire(); }}
       />
 
       <div className="pointer-events-none absolute left-0 right-0 flex justify-center"
-           style={{ top: CY + CIRCLE_R + 46 + 76 }}>
-        {phase === "rest" && (
-          <p className="font-mono text-[0.7rem] tracking-[0.35em] text-accent/55 uppercase">
-            press space
-          </p>
-        )}
+           style={{ top: geom.cy + geom.circleR + geom.size * 0.26 }}>
         {phase === "fail" && (
-          <p className="font-mono text-[0.6rem] tracking-[0.3em] text-text-faint uppercase">
-            press space to retry
+          <p className="font-mono text-[0.65rem] tracking-[0.3em] text-text-faint uppercase">
+            press space or tap to retry
           </p>
         )}
       </div>

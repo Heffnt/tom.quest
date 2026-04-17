@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import TomLogo from "./tom-logo";
+import TomSymbol, { TOM_SYMBOL_VB } from "./tom-symbol";
 import { usePathname, useRouter } from "next/navigation";
 import {
   useCallback,
@@ -13,29 +14,52 @@ import {
   type CSSProperties,
 } from "react";
 import { useAuth, getUsername } from "../lib/auth";
+import { useHeroMode } from "../lib/hero-mode";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
-import { QUESTS, rankQuests } from "./quest-routes";
+import { rankQuests } from "./quest-routes";
 
-const SCROLL_THRESHOLD = 280;   // px of scroll to reach fully-docked state
-const HERO_LOGO_CY = 180;       // target center-Y for hero logo
-const HERO_INPUT_CY = 320;      // target center-Y for hero input
-const HERO_LOGO_SCALE = 3;
-const HERO_INPUT_SCALE = 1.3;
+/* Hero-state target positions (relative to docked positions, applied via transform).
+   Measurements are of the *docked* row; we translate from docked → hero using
+   the delta, then scale. Same trick as before, now state-driven (heroMode)
+   instead of scroll-driven. */
+const HERO_LOGO_CY = 172;
+const HERO_INPUT_CY = 328;
+const HERO_HINT_CY = 250;
+const HERO_LOGO_SCALE = 2.6;
+const HERO_INPUT_SCALE = 1.25;
+const DOCK_TRANSITION = "420ms cubic-bezier(0.22, 0.61, 0.36, 1)";
+
+/* Responsive cut-points for the docked layout. */
+const COMPACT_PX = 480;  // below this: logo collapses to tom.quest symbol only
+const TINY_PX    = 360;  // below this: "show pages" label drops to bare ▼
 
 type NavOffsets = { left?: number; right?: number };
 
 type HeroOffset = {
-  logo: { x: number; y: number };
+  logo:  { x: number; y: number };
   input: { x: number; y: number; width: number };
   ready: boolean;
 };
 
 const EMPTY_OFFSET: HeroOffset = {
-  logo: { x: 0, y: 0 },
+  logo:  { x: 0, y: 0 },
   input: { x: 0, y: 0, width: 448 },
   ready: false,
 };
+
+/* Viewport width hook — coarse, just needs to flip at the breakpoints. */
+function useViewportWidth(): number {
+  const [w, setW] = useState<number>(() =>
+    typeof window === "undefined" ? 1024 : window.innerWidth,
+  );
+  useEffect(() => {
+    const h = () => setW(window.innerWidth);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, []);
+  return w;
+}
 
 export default function QuestNav({
   offsets = { left: 0, right: 0 },
@@ -48,7 +72,11 @@ export default function QuestNav({
   const router = useRouter();
   const isHome = pathname === "/";
   const { user, isTom } = useAuth();
+  const { mode: heroMode, startGame, exitToHome } = useHeroMode();
   const displayName = getUsername(user);
+  const vw = useViewportWidth();
+  const compact = vw < COMPACT_PX;
+  const tiny    = vw < TINY_PX;
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -56,33 +84,22 @@ export default function QuestNav({
   // Terminal state
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
-  const [open, setOpen] = useState(isHome);
+  const [open, setOpen] = useState(heroMode === "hero");
   const inputRef = useRef<HTMLInputElement>(null);
+  const pillRef  = useRef<HTMLDivElement>(null);
 
-  // Scroll-dock: 0 = hero (home only), 1 = fully docked
-  const [dock, setDock] = useState(isHome ? 0 : 1);
+  // dock 0 = hero, 1 = docked. State-driven via heroMode; CSS transitions handle motion.
+  const targetDock = heroMode === "hero" ? 0 : 1;
+  const [dock, setDock] = useState(targetDock);
+  useEffect(() => { setDock(targetDock); }, [targetDock]);
+
+  // Dropdown open state follows mode, but user can toggle while docked.
   useEffect(() => {
-    if (!isHome) {
-      setDock(1);
-      return;
-    }
-    const update = () => {
-      const p = Math.min(1, Math.max(0, window.scrollY / SCROLL_THRESHOLD));
-      setDock(p);
-    };
-    update();
-    window.addEventListener("scroll", update, { passive: true });
-    return () => window.removeEventListener("scroll", update);
-  }, [isHome]);
+    setOpen(heroMode === "hero");
+  }, [heroMode]);
 
-  // Auto-close dropdown when scrolling dock >60% on home
-  useEffect(() => {
-    if (isHome && dock > 0.6) setOpen(false);
-  }, [dock, isHome]);
-
-  // Measurement: compute transform offsets from docked → hero positions.
-  // Happens in useLayoutEffect so initial paint has correct transforms.
-  const logoSlotRef = useRef<HTMLDivElement>(null);
+  // Measure docked slot positions so we can compute the hero transforms.
+  const logoSlotRef  = useRef<HTMLDivElement>(null);
   const inputSlotRef = useRef<HTMLDivElement>(null);
   const [heroOffset, setHeroOffset] = useState<HeroOffset>(EMPTY_OFFSET);
 
@@ -92,19 +109,19 @@ export default function QuestNav({
       return;
     }
     const measure = () => {
-      const logoEl = logoSlotRef.current;
+      const logoEl  = logoSlotRef.current;
       const inputEl = inputSlotRef.current;
       if (!logoEl || !inputEl) return;
       const l = logoEl.getBoundingClientRect();
       const i = inputEl.getBoundingClientRect();
-      const vw = window.innerWidth;
+      const vwNow = window.innerWidth;
       setHeroOffset({
         logo: {
-          x: vw / 2 - (l.left + l.width / 2),
+          x: vwNow / 2 - (l.left + l.width / 2),
           y: HERO_LOGO_CY - (l.top + l.height / 2),
         },
         input: {
-          x: vw / 2 - (i.left + i.width / 2),
+          x: vwNow / 2 - (i.left + i.width / 2),
           y: HERO_INPUT_CY - (i.top + i.height / 2),
           width: i.width,
         },
@@ -114,7 +131,7 @@ export default function QuestNav({
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [isHome]);
+  }, [isHome, compact, tiny]);
 
   const ud = 1 - dock;
   const showHeroTransforms = isHome && heroOffset.ready;
@@ -123,21 +140,21 @@ export default function QuestNav({
     ? {
         transform: `translate(${heroOffset.logo.x * ud}px, ${heroOffset.logo.y * ud}px) scale(${1 + (HERO_LOGO_SCALE - 1) * ud})`,
         transformOrigin: "center",
-        transition: "transform 80ms linear",
+        transition: `transform ${DOCK_TRANSITION}`,
         willChange: "transform",
       }
-    : { transition: "transform 80ms linear" };
+    : { transition: `transform ${DOCK_TRANSITION}` };
 
   const inputStyle: CSSProperties = showHeroTransforms
     ? {
         transform: `translate(${heroOffset.input.x * ud}px, ${heroOffset.input.y * ud}px) scale(${1 + (HERO_INPUT_SCALE - 1) * ud})`,
         transformOrigin: "center",
-        transition: "transform 80ms linear",
+        transition: `transform ${DOCK_TRANSITION}`,
         willChange: "transform",
       }
-    : { transition: "transform 80ms linear" };
+    : { transition: `transform ${DOCK_TRANSITION}` };
 
-  // Terminal logic
+  // Terminal routing + keyboard
   const ranked = useMemo(() => rankQuests(query), [query]);
   const suggestion = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -145,16 +162,13 @@ export default function QuestNav({
     return ranked[0].slug.startsWith(q) && ranked[0].slug !== q ? ranked[0].slug : "";
   }, [query, ranked]);
 
-  useEffect(() => {
-    setCursor(0);
-  }, [query]);
+  useEffect(() => { setCursor(0); }, [query]);
 
   const submit = useCallback(
     (override?: string) => {
       const target = (override ?? ranked[cursor]?.slug ?? query).trim().toLowerCase();
       if (!target) return;
       router.push(`/${encodeURIComponent(target)}`);
-      setOpen(false);
       setQuery("");
     },
     [ranked, cursor, query, router],
@@ -177,18 +191,94 @@ export default function QuestNav({
         submit();
       } else if (e.key === "Escape") {
         e.preventDefault();
-        setOpen(false);
+        if (heroMode !== "hero") setOpen(false);
         inputRef.current?.blur();
       }
     },
-    [ranked.length, suggestion, submit],
+    [ranked.length, suggestion, submit, heroMode],
   );
 
-  // Dropdown position: follows the input's visual position.
-  // At dock=1, sits 8px below the 64px nav bar.
-  // At dock=0, sits below the hero input.
-  const dropdownTop = 64 + 8 + ud * (HERO_INPUT_CY + 28 - 72);
-  const dropdownWidth = heroOffset.input.width * (1 + 0.3 * ud);
+  // Dropdown is absolutely positioned relative to the pill. Uses pill's live bounds
+  // so it tracks width + position across dock transitions and responsive changes.
+  const [pillBox, setPillBox] = useState<{ left: number; top: number; width: number }>({
+    left: 0, top: 80, width: 448,
+  });
+  useEffect(() => {
+    if (!open) return;
+    let raf = 0;
+    const measure = () => {
+      const el = pillRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setPillBox({ left: r.left, top: r.bottom, width: r.width });
+    };
+    const tick = () => {
+      measure();
+      raf = requestAnimationFrame(tick);
+    };
+    // Track the pill during the dock transition, then stop rAF and rely on resize only.
+    raf = requestAnimationFrame(tick);
+    const tmo = window.setTimeout(() => {
+      cancelAnimationFrame(raf);
+      measure();
+    }, 650);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(tmo);
+      window.removeEventListener("resize", measure);
+    };
+  }, [open, dock, compact, tiny]);
+
+  // Close dropdown when clicking outside (docked only; hero stays open).
+  useEffect(() => {
+    if (!open || heroMode === "hero") return;
+    const onDocDown = (e: MouseEvent) => {
+      const el = pillRef.current;
+      const target = e.target as Node;
+      if (el && (el.contains(target))) return;
+      // Include the dropdown surface: walk up and check for the data-attr.
+      let n: HTMLElement | null = target as HTMLElement;
+      while (n) {
+        if (n.dataset?.navDropdown === "1") return;
+        n = n.parentElement;
+      }
+      setOpen(false);
+    };
+    window.addEventListener("mousedown", onDocDown);
+    return () => window.removeEventListener("mousedown", onDocDown);
+  }, [open, heroMode]);
+
+  /* Logo click: hero → startGame; docked+home → exitToHome (reset game);
+     docked+other → let Link navigate to /. */
+  const onLogoClick = (e: React.MouseEvent) => {
+    if (isHome && heroMode === "hero") {
+      e.preventDefault();
+      startGame();
+      return;
+    }
+    if (isHome && heroMode === "docked") {
+      e.preventDefault();
+      exitToHome();
+      return;
+    }
+  };
+
+  const dockedLogo = compact ? (
+    <svg
+      viewBox={`0 0 ${TOM_SYMBOL_VB.w} ${TOM_SYMBOL_VB.h}`}
+      width={32}
+      height={32 * (TOM_SYMBOL_VB.h / TOM_SYMBOL_VB.w)}
+      style={{ color: "var(--color-accent)", display: "block", overflow: "visible" }}
+    >
+      <TomSymbol />
+    </svg>
+  ) : (
+    <TomLogo fontSize={compact ? 22 : 28} variant="plain" />
+  );
+
+  const showPagesLabel = tiny ? null : "show pages";
+  const showPagesVisible = !open;
 
   return (
     <>
@@ -197,38 +287,43 @@ export default function QuestNav({
         className={`fixed top-0 z-40 ${animateOffsets ? "transition-[left,right] duration-150 ease-out" : ""}`}
         style={{ left: offsets.left ?? 0, right: offsets.right ?? 0 }}
       >
-        {/* Background bar — fades in with dock */}
+        {/* Docked background — appears as dock progresses */}
         <div
-          className="absolute inset-x-0 top-0 h-16 border-b transition-colors duration-150"
+          className="absolute inset-x-0 top-0 h-16 border-b"
           style={{
             backgroundColor: `rgba(10, 14, 23, ${0.85 * dock})`,
             borderBottomColor: dock > 0 ? `rgba(30, 41, 59, ${dock})` : "transparent",
             backdropFilter: dock > 0 ? "blur(6px)" : "none",
             WebkitBackdropFilter: dock > 0 ? "blur(6px)" : "none",
+            transition: `background-color ${DOCK_TRANSITION}, border-bottom-color ${DOCK_TRANSITION}`,
           }}
           aria-hidden
         />
 
-        {/* Docked layout — hosts logo, input, auth. Flex layout never changes. */}
-        <div className="relative max-w-5xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
+        {/* Docked row — hosts logo (left), nav-term (center), auth (right).
+            Each slot has its own transform that springs to the hero target when dock=0. */}
+        <div className="relative max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
           {/* Logo slot */}
           <div ref={logoSlotRef} style={logoStyle} className="shrink-0">
             <Link
               href="/"
-              aria-label="tom.Quest"
-              className="block hover:opacity-80 transition-opacity"
+              onClick={onLogoClick}
+              aria-label={heroMode === "hero" ? "Play game" : "tom.Quest home"}
+              className="block hover:opacity-85 transition-opacity cursor-pointer"
             >
-              <TomLogo fontSize={30} variant="plain" />
+              {dockedLogo}
             </Link>
           </div>
 
-          {/* Terminal input slot */}
-          <div ref={inputSlotRef} className="flex-1 max-w-md mx-auto" style={inputStyle}>
+          {/* Nav-term pill + auth pill — grouped so the whole row can translate as a unit */}
+          <div ref={inputSlotRef} className="flex-1 min-w-0 flex items-center justify-center gap-2" style={inputStyle}>
+            {/* Pill: input + show-pages button */}
             <div
-              className="font-mono flex items-center gap-2 bg-surface border border-border rounded-lg px-3 py-1.5 focus-within:border-accent transition-colors"
+              ref={pillRef}
+              className={`font-mono flex items-center gap-2 bg-surface border border-border pl-3 pr-1 py-1.5 flex-1 max-w-md min-w-0 focus-within:border-accent/80 transition-[border-color,border-radius] duration-150 ${open ? "rounded-t-lg rounded-b-none border-b-border/30" : "rounded-lg"}`}
               onClick={() => inputRef.current?.focus()}
             >
-              <span className="text-accent text-sm select-none">{">"}</span>
+              <span className="text-accent text-sm select-none leading-none">&gt;</span>
               <div className="relative flex-1 min-w-0">
                 <input
                   ref={inputRef}
@@ -238,7 +333,7 @@ export default function QuestNav({
                   onFocus={() => setOpen(true)}
                   spellCheck={false}
                   autoComplete="off"
-                  placeholder={isHome && dock < 0.4 ? "type a destination, or pick below" : "navigate…"}
+                  placeholder={heroMode === "hero" ? "pick a destination" : "navigate\u2026"}
                   className="relative z-10 w-full bg-transparent outline-none text-text caret-accent placeholder:text-text-faint text-sm"
                 />
                 {suggestion && query && (
@@ -248,68 +343,73 @@ export default function QuestNav({
                   </div>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setOpen((o) => !o);
-                }}
-                className="text-text-faint hover:text-text-muted text-xs px-1 shrink-0"
-                aria-label={open ? "collapse quests" : "expand quests"}
-              >
-                {open ? "▲" : "▼"}
-              </button>
+              {showPagesVisible && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setOpen(true); inputRef.current?.focus(); }}
+                  className="flex items-center gap-1.5 text-accent hover:text-accent/80 text-xs font-mono rounded-md px-2.5 py-1 transition-colors shrink-0"
+                  aria-label="Show pages"
+                >
+                  {showPagesLabel && <span>{showPagesLabel}</span>}
+                  <span aria-hidden className="text-sm leading-none">▼</span>
+                </button>
+              )}
             </div>
-          </div>
 
-          {/* Auth slot — no transforms, stays put */}
-          <div className="shrink-0">
-            {user ? (
-              <button
-                type="button"
-                onClick={() => setProfileOpen(true)}
-                className={`text-sm px-3 py-1.5 rounded-lg border transition-colors duration-150 hover:text-text hover:border-text-muted ${
-                  isTom ? "border-accent text-accent" : "border-border text-text-muted"
-                }`}
-              >
-                {displayName}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setLoginOpen(true)}
-                className="text-sm px-3 py-1.5 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150"
-              >
-                Log in
-              </button>
-            )}
+            {/* Auth pill — paired, flush-adjacent to the nav-term pill */}
+            <div className="shrink-0">
+              {user ? (
+                <button
+                  type="button"
+                  onClick={() => setProfileOpen(true)}
+                  className={`text-sm px-3 py-2 rounded-lg border transition-colors duration-150 hover:text-text hover:border-text-muted whitespace-nowrap ${
+                    isTom ? "border-accent text-accent" : "border-border text-text-muted"
+                  }`}
+                >
+                  {displayName}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setLoginOpen(true)}
+                  className="text-sm px-3 py-2 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150 whitespace-nowrap"
+                >
+                  Log in
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Dropdown — fixed overlay positioned relative to dock progress */}
+        {/* Hero hint — only visible on home+hero. Fades with dock. */}
+        {isHome && (
+          <div
+            className="pointer-events-none fixed left-1/2 -translate-x-1/2 font-mono text-[0.72rem] tracking-[0.28em] uppercase text-accent/80"
+            style={{
+              top: HERO_HINT_CY,
+              opacity: ud,
+              transition: `opacity ${DOCK_TRANSITION}, top ${DOCK_TRANSITION}`,
+            }}
+            aria-hidden={heroMode !== "hero"}
+          >
+            press space or click the tom.Quest logo to play
+          </div>
+        )}
+
+        {/* Dropdown — flush below the pill, same width, shared border. */}
         {open && (
           <div
-            className="absolute left-1/2 -translate-x-1/2 z-40"
+            data-nav-dropdown="1"
+            className="fixed z-40"
             style={{
-              top: `${dropdownTop}px`,
-              width: `${dropdownWidth}px`,
+              left:  pillBox.left,
+              top:   pillBox.top,
+              width: pillBox.width,
               maxWidth: "calc(100vw - 2rem)",
-              transition: "top 80ms linear, width 80ms linear",
+              transition: `left ${DOCK_TRANSITION}, top ${DOCK_TRANSITION}, width ${DOCK_TRANSITION}`,
             }}
           >
-            <div className="border border-border rounded-lg bg-surface overflow-hidden shadow-xl">
-              {/* Helper text — only visible in hero mode */}
-              {isHome && dock < 0.4 && (
-                <div className="px-4 py-2 text-xs text-text-faint font-mono border-b border-border/50 bg-surface-alt/30 flex flex-wrap gap-x-3 gap-y-1">
-                  <span>type to navigate</span>
-                  <span className="text-text-muted">·</span>
-                  <span><kbd className="text-text-muted">↵</kbd> go</span>
-                  <span className="text-text-muted">·</span>
-                  <span><kbd className="text-text-muted">⇥</kbd> accept</span>
-                  <span className="text-text-muted">·</span>
-                  <span><kbd className="text-text-muted">↑↓</kbd> cycle</span>
-                </div>
-              )}
+            <div className="border border-border border-t-0 rounded-b-lg bg-surface overflow-hidden shadow-xl">
               <ul>
                 {ranked.map((r, i) => (
                   <li key={r.slug}>
@@ -325,7 +425,7 @@ export default function QuestNav({
                         {i === cursor ? "▸" : " "}
                       </span>
                       <span>/{r.slug}</span>
-                      <span className="text-text-faint text-xs truncate">— {r.blurb}</span>
+                      <span className="text-text-faint text-xs truncate hidden sm:inline">— {r.blurb}</span>
                     </button>
                   </li>
                 ))}

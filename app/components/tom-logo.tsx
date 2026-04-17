@@ -15,31 +15,41 @@ const SYMBOL_VB_Y = 78.5;
 const SYMBOL_VB_W = 500;
 const SYMBOL_VB_H = 383;
 
-/* Symbol bar (the horizontal T-crossbar inside the Q) sits at VB y=192.
-   Distance above baseline in VB units: 461.5 − 192 = 269.5
-   → fraction of symbol display height = 269.5 / 383 ≈ 0.70365             */
 const TOP_BAR_FRAC    = 269.5 / 383;
-const STROKE_VB       = 43;               // matches DEFAULT_TOM_PARAMS.stroke
+const STROKE_VB       = 43;
 const STROKE_FRAC     = STROKE_VB / SYMBOL_VB_H;
 const SYMBOL_AR       = SYMBOL_VB_W / SYMBOL_VB_H;
-const SYMBOL_HEIGHT_EM = 1.04;            // locked selection
+const SYMBOL_HEIGHT_EM = 1.04;
 const FONT_WEIGHT      = 700;
+
+const DEFAULT_TEXT_COLOR   = "#ffffff";
+const DEFAULT_SYMBOL_COLOR = "#e8a040"; // --color-accent
 
 export type TomLogoVariant = "plain" | "bars";
 
 export default function TomLogo({
   fontSize,
   variant = "plain",
-  color   = "currentColor",
+  color,
+  textColor,
+  symbolColor,
   className,
   title   = "tom.Quest",
 }: {
   fontSize: number;
   variant?: TomLogoVariant;
+  /** When provided, both text and symbol use this color (mono mode). */
   color?:   string;
+  /** Overrides text color. Falls back to `color`, then default white. */
+  textColor?: string;
+  /** Overrides symbol color. Falls back to `color`, then default amber. */
+  symbolColor?: string;
   className?: string;
   title?:   string;
 }) {
+  const resolvedText   = textColor   ?? color ?? DEFAULT_TEXT_COLOR;
+  const resolvedSymbol = symbolColor ?? color ?? DEFAULT_SYMBOL_COLOR;
+
   const tRef   = useRef<HTMLSpanElement>(null);
   const omRef  = useRef<HTMLSpanElement>(null);
   const uesRef = useRef<HTMLSpanElement>(null);
@@ -58,7 +68,6 @@ export default function TomLogo({
     return () => { cancelled = true; };
   }, [fontSize]);
 
-  /* Hidden measurement pass — mount before we can lay out. */
   const probes = (
     <span aria-hidden style={{ position: "absolute", visibility: "hidden", whiteSpace: "pre", top: -9999, left: -9999 }}>
       <span ref={tRef}   className={manrope.className} style={{ fontSize, fontWeight: FONT_WEIGHT, lineHeight: 1 }}>t</span>
@@ -77,11 +86,10 @@ export default function TomLogo({
 
   const symbolH  = SYMBOL_HEIGHT_EM * fontSize;
   const symbolW  = symbolH * SYMBOL_AR;
-  const barThick = STROKE_FRAC   * symbolH;    // uniform stroke across logo
-  const topBarY  = TOP_BAR_FRAC  * symbolH;    // baseline offset for top-bar centre
+  const barThick = STROKE_FRAC   * symbolH;
+  const topBarY  = TOP_BAR_FRAC  * symbolH;
   const stemW    = barThick;
 
-  /* Horizontal layout: everything x-positioned with baseline at y = symbolH. */
   const padX = barThick * 0.25;
   let x = padX;
   const leftTX  = x;
@@ -98,7 +106,7 @@ export default function TomLogo({
   x += rightTW;
   const totalW  = x + padX;
 
-  const baselineY  = symbolH;                       // baseline y inside svg
+  const baselineY  = symbolH;
   const bottomBarH = variant === "bars" ? barThick : 0;
   const svgH       = symbolH + bottomBarH;
 
@@ -106,7 +114,7 @@ export default function TomLogo({
   const fullBarX2 = rightTX + rightTW;
 
   return (
-    <span className={className} style={{ display: "inline-block", lineHeight: 0, color }}>
+    <span className={className} style={{ display: "inline-block", lineHeight: 0 }}>
       {probes}
       <svg
         role="img"
@@ -116,37 +124,38 @@ export default function TomLogo({
         viewBox={`0 0 ${totalW} ${svgH}`}
         style={{ display: "block", overflow: "visible" }}
       >
-        {/* om */}
         <text
           x={omX} y={baselineY}
           fontFamily={MANROPE_FAMILY}
           fontWeight={FONT_WEIGHT}
           fontSize={fontSize}
-          fill="currentColor"
+          fill={resolvedText}
           dominantBaseline="alphabetic"
         >
           om
         </text>
 
-        {/* tom-symbol — nested svg keeps its cropped viewBox intact */}
-        <svg
-          x={symX}
-          y={baselineY - symbolH}
-          width={symbolW}
-          height={symbolH}
-          viewBox={`${SYMBOL_VB_X} ${SYMBOL_VB_Y} ${SYMBOL_VB_W} ${SYMBOL_VB_H}`}
-          overflow="visible"
-        >
-          <TomSymbol />
-        </svg>
+        {/* Symbol uses its own color via a wrapping <g color> so <TomSymbol>'s
+            currentColor paints strictly the Q. */}
+        <g color={resolvedSymbol}>
+          <svg
+            x={symX}
+            y={baselineY - symbolH}
+            width={symbolW}
+            height={symbolH}
+            viewBox={`${SYMBOL_VB_X} ${SYMBOL_VB_Y} ${SYMBOL_VB_W} ${SYMBOL_VB_H}`}
+            overflow="visible"
+          >
+            <TomSymbol />
+          </svg>
+        </g>
 
-        {/* ues */}
         <text
           x={uesX} y={baselineY}
           fontFamily={MANROPE_FAMILY}
           fontWeight={FONT_WEIGHT}
           fontSize={fontSize}
-          fill="currentColor"
+          fill={resolvedText}
           dominantBaseline="alphabetic"
         >
           ues
@@ -154,42 +163,15 @@ export default function TomLogo({
 
         {variant === "plain" ? (
           <>
-            <text x={leftTX}  y={baselineY} fontFamily={MANROPE_FAMILY} fontWeight={FONT_WEIGHT} fontSize={fontSize} fill="currentColor">t</text>
-            <text x={rightTX} y={baselineY} fontFamily={MANROPE_FAMILY} fontWeight={FONT_WEIGHT} fontSize={fontSize} fill="currentColor">t</text>
+            <text x={leftTX}  y={baselineY} fontFamily={MANROPE_FAMILY} fontWeight={FONT_WEIGHT} fontSize={fontSize} fill={resolvedText}>t</text>
+            <text x={rightTX} y={baselineY} fontFamily={MANROPE_FAMILY} fontWeight={FONT_WEIGHT} fontSize={fontSize} fill={resolvedText}>t</text>
           </>
         ) : (
           <>
-            {/* Left + right t stems — rise from baseline to top-bar top */}
-            <rect
-              x={leftTX}
-              y={baselineY - topBarY - barThick / 2}
-              width={stemW}
-              height={topBarY + barThick / 2}
-              fill="currentColor"
-            />
-            <rect
-              x={rightTX}
-              y={baselineY - topBarY - barThick / 2}
-              width={stemW}
-              height={topBarY + barThick / 2}
-              fill="currentColor"
-            />
-            {/* Top bar — merges with the symbol's internal T-crossbar line */}
-            <rect
-              x={fullBarX1}
-              y={baselineY - topBarY - barThick / 2}
-              width={fullBarX2 - fullBarX1}
-              height={barThick}
-              fill="currentColor"
-            />
-            {/* Underline — top flush with baseline */}
-            <rect
-              x={fullBarX1}
-              y={baselineY}
-              width={fullBarX2 - fullBarX1}
-              height={barThick}
-              fill="currentColor"
-            />
+            <rect x={leftTX}  y={baselineY - topBarY - barThick / 2} width={stemW} height={topBarY + barThick / 2} fill={resolvedText} />
+            <rect x={rightTX} y={baselineY - topBarY - barThick / 2} width={stemW} height={topBarY + barThick / 2} fill={resolvedText} />
+            <rect x={fullBarX1} y={baselineY - topBarY - barThick / 2} width={fullBarX2 - fullBarX1} height={barThick} fill={resolvedText} />
+            <rect x={fullBarX1} y={baselineY}                          width={fullBarX2 - fullBarX1} height={barThick} fill={resolvedText} />
           </>
         )}
       </svg>

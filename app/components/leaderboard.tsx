@@ -21,9 +21,10 @@ interface LeaderboardProps {
   onRequestLogin: () => void;
 }
 
-function fmtTime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  return `${s}.${String(ms % 1000).padStart(3, "0")}s`;
+// The endless symbol game scores by hit count. We reuse the existing
+// `time_ms` column as the hit tally to avoid a schema migration.
+function fmtScore(hits: number): string {
+  return `${hits} hit${hits === 1 ? "" : "s"}`;
 }
 
 const MEDAL_COLORS = ["text-accent", "text-text-muted", "text-accent/50"];
@@ -40,7 +41,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
     const { data } = await sb
       .from("symbol_scores")
       .select("id, username, time_ms, created_at")
-      .order("time_ms", { ascending: true })
+      .order("time_ms", { ascending: false })
       .limit(10);
     if (data) setScores(data as LeaderboardEntry[]);
   }, []);
@@ -78,7 +79,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
               disabled={saving}
               className="text-xs px-4 py-1.5 rounded-lg border border-accent/30 text-accent hover:bg-accent/10 hover:border-accent/50 transition-colors duration-150 disabled:opacity-50"
             >
-              {saving ? "Saving..." : `Save ${fmtTime(result.ms)}`}
+              {saving ? "Saving..." : `Save ${fmtScore(result.ms)}`}
             </button>
           ) : (
             <button
@@ -86,7 +87,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
               onClick={onRequestLogin}
               className="text-xs px-4 py-1.5 rounded-lg border border-accent/30 text-accent hover:bg-accent/10 hover:border-accent/50 transition-colors duration-150"
             >
-              Sign in to save {fmtTime(result.ms)}
+              Sign in to save {fmtScore(result.ms)}
             </button>
           )}
         </div>
@@ -94,7 +95,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
 
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-border bg-surface">
-          <h3 className="text-sm font-semibold text-text-muted">Top Times</h3>
+          <h3 className="text-sm font-semibold text-text-muted">Top Scores</h3>
         </div>
         {scores.length === 0 ? (
           <div className="px-4 py-6 text-center text-text-faint text-sm">
@@ -111,7 +112,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
                   <span className="text-sm text-text-muted">{entry.username}</span>
                 </div>
                 <span className="text-sm font-mono text-text-muted tabular-nums">
-                  {fmtTime(entry.time_ms)}
+                  {fmtScore(entry.time_ms)}
                 </span>
               </div>
             ))}

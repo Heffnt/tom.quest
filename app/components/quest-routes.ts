@@ -8,7 +8,8 @@ export type Quest = {
 export const QUESTS: Quest[] = [
   { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10 },
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5 },
-  { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 1 },
+  { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3 },
+  { slug: "help",   title: "Help",   blurb: "How tom.quest works",          priority: 1 },
 ];
 
 // rankQuests: orders the quest list for display + autocomplete.

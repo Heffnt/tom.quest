@@ -27,6 +27,12 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Favor predictable UI behavior and inspectable system behavior.
 - Prefer clear, centralized patterns over ad hoc feature-by-feature implementations.
 
+## Bug Handling
+
+- Do not keep dated bug histories or incident logs here.
+- When fixing a bug, prefer a focused regression test that would fail if the bug returned.
+- If a bug is not realistically testable (for example because it is primarily visual or environment-dependent), put a brief warning comment at the exact danger point in code instead of logging the incident here.
+
 ## Verification
 
 - Use the normal repo lint, test, and build flows when verifying work.
