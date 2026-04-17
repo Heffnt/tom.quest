@@ -200,9 +200,26 @@ export default function QuestNav({
 
   // Dropdown is absolutely positioned relative to the pill. Uses pill's live bounds
   // so it tracks width + position across dock transitions and responsive changes.
-  const [pillBox, setPillBox] = useState<{ left: number; top: number; width: number }>({
-    left: 0, top: 80, width: 448,
+  // `ready` gates the first paint — without it the dropdown briefly renders at stale
+  // coordinates and then jumps, which showed up as a fly-in from a prior layout.
+  const [pillBox, setPillBox] = useState<{ left: number; top: number; width: number; ready: boolean }>({
+    left: 0, top: 0, width: 0, ready: false,
   });
+
+  // Sync measure before first paint when opening so the dropdown lands in the right place.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPillBox((b) => ({ ...b, ready: false }));
+      return;
+    }
+    const el = pillRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPillBox({ left: r.left, top: r.bottom, width: r.width, ready: true });
+  }, [open, dock, compact, tiny]);
+
+  // Track the pill across the dock transition via rAF state updates (no CSS transition —
+  // driving position purely from state avoids the CSS animation racing stale values).
   useEffect(() => {
     if (!open) return;
     let raf = 0;
@@ -210,13 +227,12 @@ export default function QuestNav({
       const el = pillRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setPillBox({ left: r.left, top: r.bottom, width: r.width });
+      setPillBox({ left: r.left, top: r.bottom, width: r.width, ready: true });
     };
     const tick = () => {
       measure();
       raf = requestAnimationFrame(tick);
     };
-    // Track the pill during the dock transition, then stop rAF and rely on resize only.
     raf = requestAnimationFrame(tick);
     const tmo = window.setTimeout(() => {
       cancelAnimationFrame(raf);
@@ -317,10 +333,10 @@ export default function QuestNav({
 
           {/* Nav-term pill + auth pill — grouped so the whole row can translate as a unit */}
           <div ref={inputSlotRef} className="flex-1 min-w-0 flex items-center justify-center gap-2" style={inputStyle}>
-            {/* Pill: input + show-pages button */}
+            {/* Pill: input + show-pages button. `h-10` matches the auth pill exactly. */}
             <div
               ref={pillRef}
-              className={`font-mono flex items-center gap-2 bg-surface border border-border pl-3 pr-1 py-1.5 flex-1 max-w-md min-w-0 focus-within:border-accent/80 transition-[border-color,border-radius] duration-150 ${open ? "rounded-t-lg rounded-b-none border-b-border/30" : "rounded-lg"}`}
+              className={`font-mono flex items-center gap-2 bg-surface border border-border pl-3 pr-1 h-10 flex-1 max-w-md min-w-0 focus-within:border-accent/80 transition-[border-color,border-radius] duration-150 ${open ? "rounded-t-lg rounded-b-none border-b-border/30" : "rounded-lg"}`}
               onClick={() => inputRef.current?.focus()}
             >
               <span className="text-accent text-sm select-none leading-none">&gt;</span>
@@ -343,26 +359,28 @@ export default function QuestNav({
                   </div>
                 )}
               </div>
-              {showPagesVisible && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setOpen(true); inputRef.current?.focus(); }}
-                  className="flex items-center gap-1.5 text-accent hover:text-accent/80 text-xs font-mono rounded-md px-2.5 py-1 transition-colors shrink-0"
-                  aria-label="Show pages"
-                >
-                  {showPagesLabel && <span>{showPagesLabel}</span>}
-                  <span aria-hidden className="text-sm leading-none">▼</span>
-                </button>
-              )}
+              {/* Kept mounted when dropdown is open so the pill width doesn't shift;
+                  `invisible` hides it from view while preserving its box. */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setOpen(true); inputRef.current?.focus(); }}
+                className={`flex items-center gap-1.5 text-accent hover:text-accent/80 text-xs font-mono rounded-md px-2.5 py-1 transition-colors shrink-0 ${showPagesVisible ? "" : "invisible pointer-events-none"}`}
+                aria-label="Show pages"
+                aria-hidden={!showPagesVisible}
+                tabIndex={showPagesVisible ? 0 : -1}
+              >
+                {showPagesLabel && <span>{showPagesLabel}</span>}
+                <span aria-hidden className="text-sm leading-none">▼</span>
+              </button>
             </div>
 
-            {/* Auth pill — paired, flush-adjacent to the nav-term pill */}
+            {/* Auth pill — paired, flush-adjacent to the nav-term pill. Height matches. */}
             <div className="shrink-0">
               {user ? (
                 <button
                   type="button"
                   onClick={() => setProfileOpen(true)}
-                  className={`text-sm px-3 py-2 rounded-lg border transition-colors duration-150 hover:text-text hover:border-text-muted whitespace-nowrap ${
+                  className={`text-sm px-3 h-10 rounded-lg border transition-colors duration-150 hover:text-text hover:border-text-muted whitespace-nowrap ${
                     isTom ? "border-accent text-accent" : "border-border text-text-muted"
                   }`}
                 >
@@ -372,7 +390,7 @@ export default function QuestNav({
                 <button
                   type="button"
                   onClick={() => setLoginOpen(true)}
-                  className="text-sm px-3 py-2 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150 whitespace-nowrap"
+                  className="text-sm px-3 h-10 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150 whitespace-nowrap"
                 >
                   Log in
                 </button>
@@ -396,8 +414,10 @@ export default function QuestNav({
           </div>
         )}
 
-        {/* Dropdown — flush below the pill, same width, shared border. */}
-        {open && (
+        {/* Dropdown — flush below the pill, same width, shared border.
+            Position is driven by rAF-measured state; no CSS transition to avoid
+            animating from stale coords to fresh ones. */}
+        {open && pillBox.ready && (
           <div
             data-nav-dropdown="1"
             className="fixed z-40"
@@ -406,7 +426,6 @@ export default function QuestNav({
               top:   pillBox.top,
               width: pillBox.width,
               maxWidth: "calc(100vw - 2rem)",
-              transition: `left ${DOCK_TRANSITION}, top ${DOCK_TRANSITION}, width ${DOCK_TRANSITION}`,
             }}
           >
             <div className="border border-border border-t-0 rounded-b-lg bg-surface overflow-hidden shadow-xl">
