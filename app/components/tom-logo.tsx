@@ -136,9 +136,11 @@ export default function TomLogo({
         </text>
 
         {/* Symbol uses its own color via a wrapping <g color> so <TomSymbol>'s
-            currentColor paints strictly the Q. */}
+            currentColor paints strictly the Q. `data-tom-symbol` marks the
+            inner SVG so animations (e.g. hero→game morph) can query its bounds. */}
         <g color={resolvedSymbol}>
           <svg
+            data-tom-symbol
             x={symX}
             y={baselineY - symbolH}
             width={symbolW}

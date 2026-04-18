@@ -19,15 +19,17 @@ import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
 import { rankQuests } from "./quest-routes";
 
-/* Hero-state target positions (relative to docked positions, applied via transform).
-   Measurements are of the *docked* row; we translate from docked → hero using
-   the delta, then scale. Same trick as before, now state-driven (heroMode)
-   instead of scroll-driven. */
+/* Hero-state targets. Logo uses a transform (translate+scale) to its hero pose;
+   pill uses translate + maxWidth to land centered 560px wide at HERO_INPUT_CY;
+   auth stays in its docked position in both modes. */
 const HERO_LOGO_CY = 172;
 const HERO_INPUT_CY = 328;
 const HERO_HINT_CY = 250;
 const HERO_LOGO_SCALE = 2.6;
-const HERO_INPUT_SCALE = 1.25;
+const HERO_PILL_MAXW = 560;
+/* In docked, the pill is flex-1 uncapped — but transitioning maxWidth needs a
+   numeric bound, so we use window.innerWidth as the "effectively uncapped" value. */
+const DOCKED_PILL_MAXW_FALLBACK = 2000;
 const DOCK_TRANSITION = "420ms cubic-bezier(0.22, 0.61, 0.36, 1)";
 
 /* Responsive cut-points for the docked layout. */
@@ -37,14 +39,16 @@ const TINY_PX    = 360;  // below this: "show pages" label drops to bare ▼
 type NavOffsets = { left?: number; right?: number };
 
 type HeroOffset = {
-  logo:  { x: number; y: number };
-  input: { x: number; y: number; width: number };
+  logo: { x: number; y: number };
+  pillY: number;        // translate-Y delta docked → hero (x is 0 — mx-auto centers)
+  viewportW: number;    // for docked maxWidth "effectively uncapped" fallback
   ready: boolean;
 };
 
 const EMPTY_OFFSET: HeroOffset = {
-  logo:  { x: 0, y: 0 },
-  input: { x: 0, y: 0, width: 448 },
+  logo: { x: 0, y: 0 },
+  pillY: 0,
+  viewportW: DOCKED_PILL_MAXW_FALLBACK,
   ready: false,
 };
 
@@ -99,8 +103,8 @@ export default function QuestNav({
   }, [heroMode]);
 
   // Measure docked slot positions so we can compute the hero transforms.
-  const logoSlotRef  = useRef<HTMLDivElement>(null);
-  const inputSlotRef = useRef<HTMLDivElement>(null);
+  const logoSlotRef = useRef<HTMLDivElement>(null);
+  const pillRowRef  = useRef<HTMLDivElement>(null);
   const [heroOffset, setHeroOffset] = useState<HeroOffset>(EMPTY_OFFSET);
 
   useLayoutEffect(() => {
@@ -109,22 +113,19 @@ export default function QuestNav({
       return;
     }
     const measure = () => {
-      const logoEl  = logoSlotRef.current;
-      const inputEl = inputSlotRef.current;
-      if (!logoEl || !inputEl) return;
+      const logoEl = logoSlotRef.current;
+      const pillEl = pillRowRef.current;
+      if (!logoEl || !pillEl) return;
       const l = logoEl.getBoundingClientRect();
-      const i = inputEl.getBoundingClientRect();
+      const p = pillEl.getBoundingClientRect();
       const vwNow = window.innerWidth;
       setHeroOffset({
         logo: {
           x: vwNow / 2 - (l.left + l.width / 2),
           y: HERO_LOGO_CY - (l.top + l.height / 2),
         },
-        input: {
-          x: vwNow / 2 - (i.left + i.width / 2),
-          y: HERO_INPUT_CY - (i.top + i.height / 2),
-          width: i.width,
-        },
+        pillY: HERO_INPUT_CY - (p.top + p.height / 2),
+        viewportW: vwNow,
         ready: true,
       });
     };
@@ -133,26 +134,46 @@ export default function QuestNav({
     return () => window.removeEventListener("resize", measure);
   }, [isHome, compact, tiny]);
 
+  /* Gate transforms on a mounted flag so the initial paint lands at the hero
+     pose without animating *into* it. Two rAFs: one to let React commit the
+     first paint, another to let the browser actually render it, then enable
+     transitions for subsequent state changes. */
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const id1 = requestAnimationFrame(() => {
+      const id2 = requestAnimationFrame(() => setMounted(true));
+      return () => cancelAnimationFrame(id2);
+    });
+    return () => cancelAnimationFrame(id1);
+  }, []);
+
   const ud = 1 - dock;
   const showHeroTransforms = isHome && heroOffset.ready;
+  const transitionVal = mounted ? DOCK_TRANSITION : "0s";
 
   const logoStyle: CSSProperties = showHeroTransforms
     ? {
         transform: `translate(${heroOffset.logo.x * ud}px, ${heroOffset.logo.y * ud}px) scale(${1 + (HERO_LOGO_SCALE - 1) * ud})`,
         transformOrigin: "center",
-        transition: `transform ${DOCK_TRANSITION}`,
+        transition: `transform ${transitionVal}`,
         willChange: "transform",
       }
-    : { transition: `transform ${DOCK_TRANSITION}` };
+    : { transition: `transform ${transitionVal}` };
 
-  const inputStyle: CSSProperties = showHeroTransforms
+  /* Pill animates vertically (translate-Y) and narrows via maxWidth. `mx-auto`
+     in combination with a finite maxWidth re-centers it in the flex row as it
+     shrinks — no horizontal translate needed. */
+  const pillMaxWidth = showHeroTransforms
+    ? HERO_PILL_MAXW + (heroOffset.viewportW - HERO_PILL_MAXW) * (1 - ud)
+    : undefined;
+  const pillStyle: CSSProperties = showHeroTransforms
     ? {
-        transform: `translate(${heroOffset.input.x * ud}px, ${heroOffset.input.y * ud}px) scale(${1 + (HERO_INPUT_SCALE - 1) * ud})`,
-        transformOrigin: "center",
-        transition: `transform ${DOCK_TRANSITION}`,
-        willChange: "transform",
+        transform: `translateY(${heroOffset.pillY * ud}px)`,
+        maxWidth: pillMaxWidth,
+        transition: `transform ${transitionVal}, max-width ${transitionVal}`,
+        willChange: "transform, max-width",
       }
-    : { transition: `transform ${DOCK_TRANSITION}` };
+    : { transition: `transform ${transitionVal}, max-width ${transitionVal}` };
 
   // Terminal routing + keyboard
   const ranked = useMemo(() => rankQuests(query), [query]);
@@ -331,12 +352,17 @@ export default function QuestNav({
             </Link>
           </div>
 
-          {/* Nav-term pill + auth pill — grouped so the whole row can translate as a unit */}
-          <div ref={inputSlotRef} className="flex-1 min-w-0 flex items-center justify-center gap-2" style={inputStyle}>
-            {/* Pill: input + show-pages button. `h-10` matches the auth pill exactly. */}
+          {/* Nav-term pill — own flex child, own transform. `mx-auto` + capped
+              maxWidth centers the pill in hero; uncapped maxWidth lets it fill
+              in docked. `h-10` matches the auth pill exactly. */}
+          <div
+            ref={pillRowRef}
+            style={pillStyle}
+            className="flex-1 min-w-0 mx-auto"
+          >
             <div
               ref={pillRef}
-              className={`font-mono flex items-center gap-2 bg-surface border border-border pl-3 pr-1 h-10 flex-1 max-w-md min-w-0 focus-within:border-accent/80 transition-[border-color,border-radius] duration-150 ${open ? "rounded-t-lg rounded-b-none border-b-border/30" : "rounded-lg"}`}
+              className={`font-mono flex items-center gap-2 bg-surface border border-border pl-3 pr-1 h-10 w-full min-w-0 focus-within:border-accent/80 transition-[border-color,border-radius] duration-150 ${open ? "rounded-t-lg rounded-b-none border-b-border/30" : "rounded-lg"}`}
               onClick={() => inputRef.current?.focus()}
             >
               <span className="text-accent text-sm select-none leading-none">&gt;</span>
@@ -360,11 +386,12 @@ export default function QuestNav({
                 )}
               </div>
               {/* Kept mounted when dropdown is open so the pill width doesn't shift;
-                  `invisible` hides it from view while preserving its box. */}
+                  `invisible` hides it from view while preserving its box.
+                  Amber outline flags this as the affordance for the dropdown. */}
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setOpen(true); inputRef.current?.focus(); }}
-                className={`flex items-center gap-1.5 text-accent hover:text-accent/80 text-xs font-mono rounded-md px-2.5 py-1 transition-colors shrink-0 ${showPagesVisible ? "" : "invisible pointer-events-none"}`}
+                className={`flex items-center gap-1.5 text-accent hover:text-accent/80 hover:bg-accent/10 text-xs font-mono border border-accent/60 rounded-md px-2.5 py-1 transition-colors shrink-0 ${showPagesVisible ? "" : "invisible pointer-events-none"}`}
                 aria-label="Show pages"
                 aria-hidden={!showPagesVisible}
                 tabIndex={showPagesVisible ? 0 : -1}
@@ -373,29 +400,30 @@ export default function QuestNav({
                 <span aria-hidden className="text-sm leading-none">▼</span>
               </button>
             </div>
+          </div>
 
-            {/* Auth pill — paired, flush-adjacent to the nav-term pill. Height matches. */}
-            <div className="shrink-0">
-              {user ? (
-                <button
-                  type="button"
-                  onClick={() => setProfileOpen(true)}
-                  className={`text-sm px-3 h-10 rounded-lg border transition-colors duration-150 hover:text-text hover:border-text-muted whitespace-nowrap ${
-                    isTom ? "border-accent text-accent" : "border-border text-text-muted"
-                  }`}
-                >
-                  {displayName}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setLoginOpen(true)}
-                  className="text-sm px-3 h-10 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150 whitespace-nowrap"
-                >
-                  Log in
-                </button>
-              )}
-            </div>
+          {/* Auth pill — independent flex child. Stays in its docked position
+              in both hero and docked modes (no hero transform). Height matches. */}
+          <div className="shrink-0">
+            {user ? (
+              <button
+                type="button"
+                onClick={() => setProfileOpen(true)}
+                className={`text-sm px-3 h-10 rounded-lg border transition-colors duration-150 hover:text-text hover:border-text-muted whitespace-nowrap ${
+                  isTom ? "border-accent text-accent" : "border-border text-text-muted"
+                }`}
+              >
+                {displayName}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setLoginOpen(true)}
+                className="text-sm px-3 h-10 rounded-lg border border-border text-text-muted hover:text-text hover:border-text-muted transition-colors duration-150 whitespace-nowrap"
+              >
+                Log in
+              </button>
+            )}
           </div>
         </div>
 
