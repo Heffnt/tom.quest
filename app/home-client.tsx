@@ -90,8 +90,9 @@ export default function HomeClient() {
 
   return (
     <>
-      {/* Auth button — top right, fixed so it stays put as content grows. */}
-      <div className="fixed top-4 right-4 z-30">
+      {/* Top strip: auth button only, positioned where it would be in the
+          docked nav bar (right edge of max-w-5xl container, h-16). */}
+      <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-end">
         {user ? (
           <button
             type="button"
@@ -113,7 +114,7 @@ export default function HomeClient() {
         )}
       </div>
 
-      <div className="min-h-[calc(100vh-2rem)] flex flex-col items-center justify-center px-6 py-12 gap-10">
+      <div className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center px-6 pb-12 gap-10">
         <TomLogo fontSize={fontSize} variant="plain" />
 
         {/* Expanded terminal: input pill + always-visible page list */}

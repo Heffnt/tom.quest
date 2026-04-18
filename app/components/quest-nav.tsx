@@ -174,7 +174,7 @@ export default function QuestNav({
 
           <div
             ref={pillRef}
-            className={`font-mono flex items-center gap-2 bg-surface border border-border pl-3 pr-1 h-10 flex-1 min-w-0 max-w-md focus-within:border-accent/80 transition-[border-color,border-radius] duration-150 ${open ? "rounded-t-lg rounded-b-none border-b-border/30" : "rounded-lg"}`}
+            className={`font-mono flex items-center gap-2 bg-surface border border-border pl-3 pr-1 h-10 flex-1 min-w-0 focus-within:border-accent/80 transition-[border-color,border-radius] duration-150 ${open ? "rounded-t-lg rounded-b-none border-b-border/30" : "rounded-lg"}`}
             onClick={() => inputRef.current?.focus()}
           >
             <span className="text-accent text-sm select-none leading-none">&gt;</span>
