@@ -13,19 +13,21 @@ import { rankQuests } from "./components/quest-routes";
    pages list always visible, and the auth button fixed top-right. Everything
    that lives in the docked <QuestNav> has a counterpart here — this page is
    the nav bar, rearranged and enlarged. */
-function useViewportWidth(): number {
-  const [w, setW] = useState<number>(() =>
-    typeof window === "undefined" ? 1024 : window.innerWidth,
-  );
+function useViewportWidth(): number | null {
+  const [w, setW] = useState<number | null>(null);
   useEffect(() => {
     const h = () => setW(window.innerWidth);
+    h();
     window.addEventListener("resize", h);
     return () => window.removeEventListener("resize", h);
   }, []);
   return w;
 }
 
-function logoFontSize(vw: number): number {
+function logoFontSize(vw: number | null): number {
+  // Hard refreshes on narrow screens render before client dimensions exist;
+  // start small so the logo does not remeasure from a desktop-sized layout.
+  if (vw === null) return 44;
   // Responsive logo size; mirrors the docked bar's scale up for hero use.
   if (vw < 420) return 44;
   if (vw < 720) return 64;
@@ -54,14 +56,13 @@ export default function HomeClient() {
     return ranked[0].slug.startsWith(q) && ranked[0].slug !== q ? ranked[0].slug : "";
   }, [query, ranked]);
 
-  useEffect(() => { setCursor(0); }, [query]);
-
   const submit = useCallback(
     (override?: string) => {
       const target = (override ?? ranked[cursor]?.slug ?? query).trim().toLowerCase();
       if (!target) return;
       router.push(`/${encodeURIComponent(target)}`);
       setQuery("");
+      setCursor(0);
     },
     [ranked, cursor, query, router],
   );
@@ -76,7 +77,10 @@ export default function HomeClient() {
         setCursor((c) => Math.max(0, c - 1));
       } else if (e.key === "Tab") {
         e.preventDefault();
-        if (suggestion) setQuery(suggestion);
+        if (suggestion) {
+          setQuery(suggestion);
+          setCursor(0);
+        }
       } else if (e.key === "Enter") {
         e.preventDefault();
         submit();
@@ -84,9 +88,6 @@ export default function HomeClient() {
     },
     [ranked.length, suggestion, submit],
   );
-
-  // Focus input on mount so the user can start typing immediately.
-  useEffect(() => { inputRef.current?.focus(); }, []);
 
   return (
     <>
@@ -121,6 +122,7 @@ export default function HomeClient() {
         <div className="w-full max-w-xl">
           <div
             className="font-mono flex items-center gap-2 bg-surface border border-border pl-4 pr-2 h-12 rounded-t-lg rounded-b-none border-b-border/30 focus-within:border-accent/80 transition-colors duration-150"
+            // Keep focus user-initiated so mobile browsers do not open the keyboard on load.
             onClick={() => inputRef.current?.focus()}
           >
             <span className="text-accent select-none leading-none">&gt;</span>
@@ -128,7 +130,10 @@ export default function HomeClient() {
               <input
                 ref={inputRef}
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setCursor(0);
+                }}
                 onKeyDown={onKeyDown}
                 spellCheck={false}
                 autoComplete="off"

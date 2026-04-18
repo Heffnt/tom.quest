@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Manrope } from "next/font/google";
 import TomSymbol from "./tom-symbol";
 
@@ -27,6 +27,29 @@ const DEFAULT_SYMBOL_COLOR = "#e8a040"; // --color-accent
 
 export type TomLogoVariant = "plain" | "bars";
 
+type TomLogoProps = {
+  fontSize: number;
+  variant?: TomLogoVariant;
+  /** When provided, both text and symbol use this color (mono mode). */
+  color?: string;
+  /** Overrides text color. Falls back to `color`, then default white. */
+  textColor?: string;
+  /** Overrides symbol color. Falls back to `color`, then default amber. */
+  symbolColor?: string;
+  className?: string;
+  title?: string;
+};
+
+function fontReady(fontSize: number): Promise<unknown> {
+  if (typeof document === "undefined" || !document.fonts) {
+    return Promise.resolve();
+  }
+  return Promise.all([
+    document.fonts.load(`${FONT_WEIGHT} ${fontSize}px ${MANROPE_FAMILY}`),
+    document.fonts.ready,
+  ]);
+}
+
 export default function TomLogo({
   fontSize,
   variant = "plain",
@@ -35,18 +58,7 @@ export default function TomLogo({
   symbolColor,
   className,
   title   = "tom.Quest",
-}: {
-  fontSize: number;
-  variant?: TomLogoVariant;
-  /** When provided, both text and symbol use this color (mono mode). */
-  color?:   string;
-  /** Overrides text color. Falls back to `color`, then default white. */
-  textColor?: string;
-  /** Overrides symbol color. Falls back to `color`, then default amber. */
-  symbolColor?: string;
-  className?: string;
-  title?:   string;
-}) {
+}: TomLogoProps) {
   const resolvedText   = textColor   ?? color ?? DEFAULT_TEXT_COLOR;
   const resolvedSymbol = symbolColor ?? color ?? DEFAULT_SYMBOL_COLOR;
 
@@ -55,9 +67,9 @@ export default function TomLogo({
   const uesRef = useRef<HTMLSpanElement>(null);
   const [m, setM] = useState<{ t: number; om: number; ues: number } | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let cancelled = false;
-    document.fonts.ready.then(() => {
+    void fontReady(fontSize).then(() => {
       if (cancelled || !tRef.current || !omRef.current || !uesRef.current) return;
       setM({
         t:   tRef.current.getBoundingClientRect().width,
@@ -78,7 +90,7 @@ export default function TomLogo({
 
   if (!m) {
     return (
-      <span className={className} style={{ display: "inline-block", width: fontSize * 4, height: fontSize * 1.2 }}>
+      <span className={className} style={{ display: "inline-block", width: fontSize * 4, maxWidth: "100%", height: fontSize * 1.2 }}>
         {probes}
       </span>
     );
@@ -114,7 +126,7 @@ export default function TomLogo({
   const fullBarX2 = rightTX + rightTW;
 
   return (
-    <span className={className} style={{ display: "inline-block", lineHeight: 0 }}>
+    <span className={className} style={{ display: "inline-block", lineHeight: 0, maxWidth: "100%" }}>
       {probes}
       <svg
         role="img"
@@ -122,7 +134,7 @@ export default function TomLogo({
         width={totalW}
         height={svgH}
         viewBox={`0 0 ${totalW} ${svgH}`}
-        style={{ display: "block", overflow: "visible" }}
+        style={{ display: "block", overflow: "visible", maxWidth: "100%", height: "auto" }}
       >
         <text
           x={omX} y={baselineY}
