@@ -14,7 +14,6 @@ import QuestNav from "./quest-nav";
 import DebugDrawer from "./debug-drawer";
 import { useAuth } from "../lib/auth";
 import { debug } from "../lib/debug";
-import { HeroModeProvider } from "../lib/hero-mode";
 
 type DebugEdge = "left" | "right" | "bottom";
 type DebugSizes = Record<DebugEdge, number>;
@@ -130,15 +129,21 @@ export default function AppShell({ children }: { children: ReactNode }) {
     [activeEdge, sizes],
   );
 
+  /* The home page renders its own hero version of the nav (big logo +
+     expanded terminal + auth top-right). Everywhere else uses the docked bar. */
+  const isHome = pathname === "/";
+  const padTop = isHome ? "" : "pt-16";
   const mainClassName = isResizing
-    ? "pt-16"
-    : "pt-16 transition-[margin] duration-150 ease-out";
+    ? padTop
+    : `${padTop} transition-[margin] duration-150 ease-out`;
 
   return (
-    <HeroModeProvider>
-      <header>
-        <QuestNav offsets={navOffsets} animateOffsets={!isResizing} />
-      </header>
+    <>
+      {!isHome && (
+        <header>
+          <QuestNav offsets={navOffsets} animateOffsets={!isResizing} />
+        </header>
+      )}
       <main className={mainClassName} style={mainStyle}>
         {children}
       </main>
@@ -151,6 +156,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
         onResizeStart={handleResizeStart}
         onResizeEnd={handleResizeEnd}
       />
-    </HeroModeProvider>
+    </>
   );
 }

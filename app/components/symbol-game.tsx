@@ -434,7 +434,6 @@ export default function SymbolGame({
 
       <canvas
         ref={canvasRef}
-        data-game-canvas
         role="application"
         aria-label="Symbol game — press space or tap to fire"
         className="cursor-pointer select-none touch-none"
