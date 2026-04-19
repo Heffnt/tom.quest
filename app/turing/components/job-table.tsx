@@ -61,10 +61,14 @@ function TempCell({ stats }: { stats: Job["gpu_stats"] }) {
   return <span className="text-xs font-mono" style={{ color }}>{stats.temperature_c}°C</span>;
 }
 
-function ActivityCell({ stats }: { stats: Job["gpu_stats"] }) {
-  if (!stats || stats.utilization_pct === null) return <span className="text-text-faint text-xs">—</span>;
-  const active = stats.utilization_pct > 5;
+function ActivityCell({ status }: { status: string }) {
+  const active = getJobStatusCategory(status) === "running";
   return <span className={`text-xs font-mono ${active ? "text-green-400" : "text-text-faint"}`}>{active ? "Active" : "Idle"}</span>;
+}
+
+function UtilizationCell({ stats }: { stats: Job["gpu_stats"] }) {
+  if (!stats || stats.utilization_pct === null) return <span className="text-text-faint text-xs">—</span>;
+  return <span className={`text-xs font-mono ${stats.utilization_pct > 5 ? "text-green-400" : "text-text-faint"}`}>{stats.utilization_pct}%</span>;
 }
 
 function ConfirmModal({
@@ -201,7 +205,8 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
                 <th className="pr-2">Time</th>
                 <th className="pr-2">Mem</th>
                 <th className="pr-2">Temp</th>
-                <th className="pr-1">Act</th>
+                <th className="pr-2">Act</th>
+                <th className="pr-1">Util</th>
                 <th className="text-right" />
               </tr>
             </thead>
@@ -221,7 +226,8 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
                     <td className="pr-2 font-mono text-text-muted">{job.time_remaining}</td>
                     <td className="pr-2"><MemoryCell stats={job.gpu_stats} /></td>
                     <td className="pr-2"><TempCell stats={job.gpu_stats} /></td>
-                    <td className="pr-1"><ActivityCell stats={job.gpu_stats} /></td>
+                    <td className="pr-2"><ActivityCell status={job.status} /></td>
+                    <td className="pr-1"><UtilizationCell stats={job.gpu_stats} /></td>
                     <td className="text-right">
                       <div className="inline-flex gap-1">
                         {job.screen_name && (
