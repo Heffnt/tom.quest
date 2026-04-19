@@ -159,6 +159,50 @@ describe("GatewayConnection", () => {
     });
   });
 
+  it("uses the provided shared device identity instead of generating a browser-local one", async () => {
+    const { GatewayConnection } = await import("@/app/jarvis/components/GatewayConnection");
+    buildConnectDevice.mockImplementation(async ({ identity, nonce }) => ({
+      id: identity.deviceId,
+      publicKey: identity.publicKey,
+      signature: `signature:${identity.deviceId}`,
+      signedAt: 123,
+      nonce,
+    }));
+    const connection = new GatewayConnection({
+      url: "wss://gateway.example/ws",
+      deviceIdentity: {
+        deviceId: "shared-device",
+        publicKey: "shared-public-key",
+        privateKey: "shared-private-key",
+      },
+      websocketFactory: (url: string) => new MockWebSocket(url) as unknown as WebSocket,
+    });
+
+    connection.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.serverOpen();
+    socket.serverMessage({
+      type: "event",
+      event: "connect.challenge",
+      payload: { nonce: "nonce-456", ts: 1 },
+    });
+    await flushAsync();
+
+    expect(loadOrCreateDeviceIdentity).not.toHaveBeenCalled();
+    expect(loadDeviceAuthToken).toHaveBeenCalledWith({
+      deviceId: "shared-device",
+      role: "operator",
+    });
+    expect(socket.sentFrames[0]?.params).toMatchObject({
+      device: {
+        id: "shared-device",
+        publicKey: "shared-public-key",
+        signature: "signature:shared-device",
+        nonce: "nonce-456",
+      },
+    });
+  });
+
   it("correlates outbound requests with matching responses", async () => {
     const { GatewayConnection } = await import("@/app/jarvis/components/GatewayConnection");
     const connection = new GatewayConnection({

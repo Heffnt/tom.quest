@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "jarvis:device": "node scripts/generate-jarvis-device-identity.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
