@@ -1,3 +1,4 @@
+import logging
 import re
 import shlex
 import threading
@@ -21,11 +22,20 @@ GPU_INDEX_PATTERN = re.compile(r"IDX:([^)]+)")
 NODE_SECTION_PATTERN = re.compile(r"Nodes=(\S+)(.*?)(?=Nodes=\S+|$)")
 GPU_COUNT_PATTERN = re.compile(r"gpu(?::[^:,\s()]+)?:(\d+)", re.IGNORECASE)
 GPU_ACTIVITY_TTL_SECONDS = 10
+NVIDIA_SMI_QUERY_ARGS = (
+    "--query-gpu=index,memory.used,memory.total,temperature.gpu,"
+    "utilization.gpu --format=csv,noheader,nounits"
+)
+NVIDIA_SMI_QUERY = (
+    f"nvidia-smi {NVIDIA_SMI_QUERY_ARGS}"
+)
+JOB_GPU_STATS_TIMEOUT_SECONDS = 8
 _GPU_ACTIVITY_CACHE_LOCK = threading.Lock()
 _GPU_ACTIVITY_CACHE: dict[str, object] = {
     "expires_at": 0.0,
     "value": None,
 }
+logger = logging.getLogger("tom.quest.gpu_report")
 
 
 @dataclass
@@ -292,38 +302,83 @@ def _int_or_none(value: str) -> int | None:
     return int(text)
 
 
+def _parse_nvidia_smi_csv(stdout: str) -> dict[int, dict]:
+    node_stats: dict[int, dict] = {}
+    for line in stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5:
+            continue
+        gpu_index = _int_or_none(parts[0])
+        if gpu_index is None:
+            continue
+        node_stats[gpu_index] = {
+            "memory_used_mb": _int_or_none(parts[1]),
+            "memory_total_mb": _int_or_none(parts[2]),
+            "temperature_c": _int_or_none(parts[3]),
+            "utilization_pct": _int_or_none(parts[4]),
+        }
+    return node_stats
+
+
+def aggregate_gpu_device_stats(device_stats: dict[int, dict]) -> dict | None:
+    stats = {
+        "memory_used_mb": 0,
+        "memory_total_mb": 0,
+        "temperature_c": None,
+        "utilization_pct": None,
+    }
+    for device in device_stats.values():
+        if device["memory_used_mb"] is not None:
+            stats["memory_used_mb"] += device["memory_used_mb"]
+        if device["memory_total_mb"] is not None:
+            stats["memory_total_mb"] += device["memory_total_mb"]
+        if device["temperature_c"] is not None:
+            stats["temperature_c"] = max(stats["temperature_c"] or 0, device["temperature_c"])
+        if device["utilization_pct"] is not None:
+            stats["utilization_pct"] = max(stats["utilization_pct"] or 0, device["utilization_pct"])
+    if stats["memory_total_mb"] > 0 or stats["temperature_c"] is not None or stats["utilization_pct"] is not None:
+        return stats
+    return None
+
+
+def _has_gpu_stats(stats: dict) -> bool:
+    return stats["memory_total_mb"] > 0 or stats["temperature_c"] is not None or stats["utilization_pct"] is not None
+
+
 def _query_node_gpu_stats(node_names: set[str]) -> dict[str, dict[int, dict]]:
     stats_by_node: dict[str, dict[int, dict]] = {}
-    query = (
-        "nvidia-smi --query-gpu=index,memory.used,memory.total,temperature.gpu,"
-        "utilization.gpu --format=csv,noheader,nounits"
-    )
     for node_name in sorted(node_names):
         quoted_node = shlex.quote(node_name)
-        quoted_query = shlex.quote(query)
+        quoted_query = shlex.quote(NVIDIA_SMI_QUERY)
         stdout, _, returncode = run(
-            f"ssh -o BatchMode=yes -o ConnectTimeout=5 {quoted_node} {quoted_query}"
+            f"ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+            f"-o ConnectTimeout=5 {quoted_node} {quoted_query}"
         )
         if returncode != 0:
             continue
-        node_stats: dict[int, dict] = {}
-        for line in stdout.strip().split("\n"):
-            if not line.strip():
-                continue
-            parts = [part.strip() for part in line.split(",")]
-            if len(parts) < 5:
-                continue
-            gpu_index = _int_or_none(parts[0])
-            if gpu_index is None:
-                continue
-            node_stats[gpu_index] = {
-                "memory_used_mb": _int_or_none(parts[1]),
-                "memory_total_mb": _int_or_none(parts[2]),
-                "temperature_c": _int_or_none(parts[3]),
-                "utilization_pct": _int_or_none(parts[4]),
-            }
-        stats_by_node[node_name] = node_stats
+        stats_by_node[node_name] = _parse_nvidia_smi_csv(stdout)
     return stats_by_node
+
+
+def get_job_gpu_stats(job_id: str) -> dict | None:
+    quoted_job_id = shlex.quote(job_id)
+    job_query = (
+        f'if [ -n "$CUDA_VISIBLE_DEVICES" ]; then '
+        f'nvidia-smi -i "$CUDA_VISIBLE_DEVICES" {NVIDIA_SMI_QUERY_ARGS}; '
+        f"else {NVIDIA_SMI_QUERY}; fi"
+    )
+    command = (
+        f"timeout {JOB_GPU_STATS_TIMEOUT_SECONDS}s "
+        f"srun --overlap --jobid={quoted_job_id} --ntasks=1 --cpus-per-task=1 "
+        f"bash -lc {shlex.quote(job_query)}"
+    )
+    stdout, stderr, returncode = run(command)
+    if returncode != 0:
+        logger.debug("job GPU stats query failed for %s: %s", job_id, stderr.strip())
+        return None
+    return aggregate_gpu_device_stats(_parse_nvidia_smi_csv(stdout))
 
 
 def _build_gpu_slot(job: dict, gpu_index: int, stats: dict | None) -> dict:
@@ -422,7 +477,7 @@ def aggregate_job_gpu_stats(gpu_jobs_by_node: dict[str, list[dict | None]]) -> d
     return {
         job_id: stats
         for job_id, stats in stats_by_job.items()
-        if stats["memory_total_mb"] > 0 or stats["temperature_c"] is not None or stats["utilization_pct"] is not None
+        if _has_gpu_stats(stats)
     }
 
 

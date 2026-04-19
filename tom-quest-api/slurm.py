@@ -168,7 +168,7 @@ def get_user_jobs() -> list[JobInfo]:
     stdout, _, _ = run(
         "squeue --me --format='%i|%T|%L|%S|%e|%b|%R' --noheader"
     )
-    from gpu_report import get_cached_gpu_activity
+    from gpu_report import get_cached_gpu_activity, get_job_gpu_stats
     from tmux import session_exists
 
     gpu_activity = get_cached_gpu_activity()
@@ -195,6 +195,8 @@ def get_user_jobs() -> list[JobInfo]:
         mapped_screen_name = get_screen_name(job_id.strip())
         screen_name = mapped_screen_name if mapped_screen_name and session_exists(mapped_screen_name) else ""
         raw_gpu_stats = job_stats_by_id.get(job_id.strip())
+        if raw_gpu_stats is None and status.strip() == "RUNNING":
+            raw_gpu_stats = get_job_gpu_stats(job_id.strip())
         gpu_stats = None
         if raw_gpu_stats:
             gpu_stats = JobGpuStats(

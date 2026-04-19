@@ -206,28 +206,28 @@ def resolve_allocation_count(request: AllocationRequest) -> int:
     return 1
 
 @app.get("/health")
-async def health():
+def health() -> dict[str, str]:
     return {"status": "ok"}
 
 @app.get("/gpu-report")
-async def gpu_report(auth: bool = Depends(verify_api_key)):
+def gpu_report(auth: bool = Depends(verify_api_key)) -> dict:
     try:
         return format_gpu_report_v2()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GPU report failed: {str(e)}")
 
 @app.get("/gpu-types")
-async def gpu_types(auth: bool = Depends(verify_api_key)):
+def gpu_types(auth: bool = Depends(verify_api_key)) -> dict:
     return {"types": get_free_gpu_type_info()}
 
 @app.get("/dirs")
-async def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)):
+def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
     if not path:
         path = get_home_dir()
     return list_directory(path)
 
 @app.get("/file")
-async def get_file(path: str, auth: bool = Depends(verify_api_key)):
+def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
     expanded = os.path.expanduser(path)
     if not os.path.isfile(expanded):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
@@ -238,7 +238,7 @@ async def get_file(path: str, auth: bool = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
 @app.post("/allocate", response_model=AllocationResponse)
-async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)):
+def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -> AllocationResponse:
     if not request.gpu_type:
         raise HTTPException(status_code=400, detail="GPU type is required")
     if request.count < 0:
@@ -278,7 +278,7 @@ async def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_k
     )
 
 @app.get("/jobs", response_model=list[JobResponse])
-async def list_jobs(auth: bool = Depends(verify_api_key)):
+def list_jobs(auth: bool = Depends(verify_api_key)) -> list[JobResponse]:
     jobs = get_user_jobs()
     return [
         JobResponse(
@@ -301,7 +301,7 @@ async def list_jobs(auth: bool = Depends(verify_api_key)):
     ]
 
 @app.delete("/jobs/{job_id}")
-async def delete_job(job_id: str, auth: bool = Depends(verify_api_key)):
+def delete_job(job_id: str, auth: bool = Depends(verify_api_key)) -> dict[str, object]:
     success, error = cancel_job(job_id)
     if success:
         screen_name = get_screen_name(job_id)
@@ -311,20 +311,20 @@ async def delete_job(job_id: str, auth: bool = Depends(verify_api_key)):
     raise HTTPException(status_code=400, detail=error or f"Failed to cancel job {job_id}")
 
 @app.get("/sessions/{session_name}/output")
-async def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_api_key)):
+def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     output = capture_output(session_name, lines)
     return {"session_name": session_name, "output": output}
 
 @app.get("/sessions/{session_name}/clients", response_model=SessionClientsResponse)
-async def get_session_clients(session_name: str, auth: bool = Depends(verify_api_key)):
+def get_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> SessionClientsResponse:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     return SessionClientsResponse(attached_clients=count_session_clients(session_name))
 
 @app.post("/sessions/{session_name}/detach-clients", response_model=DetachClientsResponse)
-async def post_detach_session_clients(session_name: str, auth: bool = Depends(verify_api_key)):
+def post_detach_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> DetachClientsResponse:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     detached_clients = detach_session_clients(session_name)
