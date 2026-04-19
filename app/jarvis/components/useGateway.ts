@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { GatewayConnection } from "./GatewayConnection";
+import type { DeviceIdentity } from "./gatewayAuth";
 import * as protocol from "./gatewayProtocol";
 
 type BoundMethod<T> =
@@ -56,11 +57,13 @@ export function GatewayProvider({
   url,
   token,
   password,
+  deviceIdentity,
 }: {
   children: ReactNode;
   url: string;
   token?: string;
   password?: string;
+  deviceIdentity?: DeviceIdentity;
 }) {
   const [, setStateVersion] = useState(0);
   const handleStateChange = useCallback(() => {
@@ -72,9 +75,10 @@ export function GatewayProvider({
       url,
       token,
       password,
+      deviceIdentity,
       onStateChange: handleStateChange,
     });
-  }, [handleStateChange, password, token, url]);
+  }, [deviceIdentity, handleStateChange, password, token, url]);
 
   useEffect(() => {
     if (!connection) return;

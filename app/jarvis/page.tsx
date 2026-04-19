@@ -3,6 +3,7 @@
 import { useAuth } from "@/app/lib/auth";
 import { debug } from "@/app/lib/debug";
 import { useEffect, useState } from "react";
+import type { DeviceIdentity } from "./components/gatewayAuth";
 import ChatPanel from "./components/ChatPanel";
 import ContextViewer from "./components/ContextViewer";
 import CronPanel from "./components/CronPanel";
@@ -16,21 +17,24 @@ const gatewayConfigLog = debug.scoped("gw.config");
 
 function useGatewayConfig(enabled: boolean, accessToken: string | null | undefined) {
   const [gatewayUrl, setGatewayUrl] = useState<string | null>(null);
-  const [gatewayToken, setGatewayToken] = useState<string | null>(null);
+  const [gatewayPassword, setGatewayPassword] = useState<string | null>(null);
+  const [gatewayDeviceIdentity, setGatewayDeviceIdentity] = useState<DeviceIdentity | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(enabled);
 
   useEffect(() => {
     if (!enabled) {
       setGatewayUrl(null);
-      setGatewayToken(null);
+      setGatewayPassword(null);
+      setGatewayDeviceIdentity(null);
       setError(null);
       setLoading(false);
       return;
     }
     if (!accessToken) {
       setGatewayUrl(null);
-      setGatewayToken(null);
+      setGatewayPassword(null);
+      setGatewayDeviceIdentity(null);
       setError("Missing session token");
       setLoading(false);
       return;
@@ -49,7 +53,8 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
         });
         const payload = (await response.json().catch(() => null)) as {
           gatewayUrl?: string;
-          gatewayToken?: string | null;
+          gatewayPassword?: string | null;
+          gatewayDeviceIdentity?: DeviceIdentity | null;
           error?: string;
         } | null;
         if (!response.ok) {
@@ -65,7 +70,8 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
         }
         if (!cancelled) {
           setGatewayUrl(payload.gatewayUrl);
-          setGatewayToken(payload.gatewayToken ?? null);
+          setGatewayPassword(payload.gatewayPassword ?? null);
+          setGatewayDeviceIdentity(payload.gatewayDeviceIdentity ?? null);
         }
         done({ status: response.status });
       } catch (nextError) {
@@ -74,7 +80,8 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
         }
         if (!cancelled) {
           setGatewayUrl(null);
-          setGatewayToken(null);
+          setGatewayPassword(null);
+          setGatewayDeviceIdentity(null);
           setError(nextError instanceof Error ? nextError.message : "Failed to load gateway config");
         }
       } finally {
@@ -88,7 +95,7 @@ function useGatewayConfig(enabled: boolean, accessToken: string | null | undefin
     };
   }, [enabled, accessToken]);
 
-  return { gatewayUrl, gatewayToken, error, loading };
+  return { gatewayUrl, gatewayPassword, gatewayDeviceIdentity, error, loading };
 }
 
 function Dashboard({ gatewayUrl }: { gatewayUrl: string }) {
@@ -116,7 +123,8 @@ export default function JarvisPage() {
   const { loading, isTom, session } = useAuth();
   const {
     gatewayUrl,
-    gatewayToken,
+    gatewayPassword,
+    gatewayDeviceIdentity,
     error,
     loading: configLoading,
   } = useGatewayConfig(isTom, session?.access_token);
@@ -156,7 +164,11 @@ export default function JarvisPage() {
   }
 
   return (
-    <GatewayProvider url={gatewayUrl} token={gatewayToken ?? undefined}>
+    <GatewayProvider
+      url={gatewayUrl}
+      password={gatewayPassword ?? undefined}
+      deviceIdentity={gatewayDeviceIdentity ?? undefined}
+    >
       <Dashboard gatewayUrl={gatewayUrl} />
     </GatewayProvider>
   );

@@ -6,6 +6,7 @@ import {
   loadDeviceAuthToken,
   loadOrCreateDeviceIdentity,
   storeDeviceAuthToken,
+  type DeviceIdentity,
 } from "@/app/jarvis/components/gatewayAuth";
 
 export type GatewayEventFrame = {
@@ -57,6 +58,7 @@ export type GatewayConnectionOptions = {
   url: string;
   token?: string;
   password?: string;
+  deviceIdentity?: DeviceIdentity;
   requestTimeoutMs?: number;
   websocketFactory?: (url: string) => WebSocketLike;
   clientId?: string;
@@ -132,6 +134,7 @@ export class GatewayConnection {
   private readonly url: string;
   private readonly token?: string;
   private readonly password?: string;
+  private readonly deviceIdentity?: DeviceIdentity;
   private readonly requestTimeoutMs: number;
   private readonly websocketFactory: (url: string) => WebSocketLike;
   private socket: WebSocketLike | null = null;
@@ -148,6 +151,7 @@ export class GatewayConnection {
     this.url = normalizeGatewayUrl(options.url);
     this.token = normalizeString(options.token);
     this.password = normalizeString(options.password);
+    this.deviceIdentity = options.deviceIdentity;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.websocketFactory =
       options.websocketFactory ??
@@ -287,9 +291,9 @@ export class GatewayConnection {
       platform: normalizeString(typeof navigator !== "undefined" ? navigator.platform : undefined) ?? "web",
       mode: CONNECT_CLIENT_MODE,
     };
-    let identity: Awaited<ReturnType<typeof loadOrCreateDeviceIdentity>> | null = null;
+    let identity: DeviceIdentity | null = null;
     if (typeof crypto !== "undefined" && !!crypto.subtle) {
-      identity = await loadOrCreateDeviceIdentity();
+      identity = this.deviceIdentity ?? await loadOrCreateDeviceIdentity();
     }
     const storedToken = identity
       ? loadDeviceAuthToken({ deviceId: identity.deviceId, role: CONNECT_ROLE })?.token
