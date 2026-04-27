@@ -36,6 +36,7 @@ type GatewayContextValue = {
   chatSend: BoundMethod<typeof protocol.chatSend>;
   chatAbort: BoundMethod<typeof protocol.chatAbort>;
   cronList: BoundMethod<typeof protocol.cronList>;
+  cronRun: BoundMethod<typeof protocol.cronRun>;
   cronRuns: BoundMethod<typeof protocol.cronRuns>;
   cronUpdate: BoundMethod<typeof protocol.cronUpdate>;
   agentsFilesList: BoundMethod<typeof protocol.agentsFilesList>;
@@ -119,6 +120,7 @@ export function GatewayProvider({
     chatSend: (...args) => protocol.chatSend(call, ...args),
     chatAbort: (...args) => protocol.chatAbort(call, ...args),
     cronList: (...args) => protocol.cronList(call, ...args),
+    cronRun: (...args) => protocol.cronRun(call, ...args),
     cronRuns: (...args) => protocol.cronRuns(call, ...args),
     cronUpdate: (...args) => protocol.cronUpdate(call, ...args),
     agentsFilesList: (...args) => protocol.agentsFilesList(call, ...args),

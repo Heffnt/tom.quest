@@ -71,7 +71,15 @@ function mergeLiveMessage(messages: ChatMessage[], payload: SessionMessageEventP
   return next;
 }
 
-export default function ChatPanel() {
+export default function ChatPanel({
+  selectedSessionKey: controlledSessionKey,
+  onSelectedSessionKeyChange,
+  showSessionPicker = true,
+}: {
+  selectedSessionKey?: string;
+  onSelectedSessionKeyChange?: (sessionKey: string) => void;
+  showSessionPicker?: boolean;
+} = {}) {
   const {
     chatAbort,
     chatHistory,
@@ -90,7 +98,7 @@ export default function ChatPanel() {
     origin?: { label?: string };
     updatedAt: number | null;
   }>>([]);
-  const [selectedSessionKey, setSelectedSessionKey] = useState("agent:main:main");
+  const [uncontrolledSessionKey, setUncontrolledSessionKey] = useState("agent:main:main");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [composer, setComposer] = useState("");
   const [loadingSessions, setLoadingSessions] = useState(true);
@@ -99,6 +107,14 @@ export default function ChatPanel() {
   const [aborting, setAborting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+
+  const selectedSessionKey = controlledSessionKey ?? uncontrolledSessionKey;
+  const setSelectedSessionKey = useCallback((sessionKey: string) => {
+    if (controlledSessionKey == null) {
+      setUncontrolledSessionKey(sessionKey);
+    }
+    onSelectedSessionKeyChange?.(sessionKey);
+  }, [controlledSessionKey, onSelectedSessionKeyChange]);
 
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
@@ -115,17 +131,18 @@ export default function ChatPanel() {
         includeLastMessage: true,
       });
       setSessions(result.sessions);
-      setSelectedSessionKey((current) => {
-        if (result.sessions.some((session) => session.key === current)) return current;
+      const current = selectedSessionKey;
+      if (!result.sessions.some((session) => session.key === current)) {
         const mainSession = result.sessions.find((session) => session.key === "agent:main:main");
-        return mainSession?.key ?? result.sessions[0]?.key ?? current;
-      });
+        const nextKey = mainSession?.key ?? result.sessions[0]?.key ?? current;
+        setSelectedSessionKey(nextKey);
+      }
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load sessions");
     } finally {
       setLoadingSessions(false);
     }
-  }, [connected, sessionsList]);
+  }, [connected, selectedSessionKey, sessionsList, setSelectedSessionKey]);
 
   const loadHistory = useCallback(async (sessionKey: string) => {
     if (!connected) return;
@@ -227,21 +244,23 @@ export default function ChatPanel() {
               Direct OpenClaw Gateway chat using the selected session key.
             </p>
           </div>
-          <div className="min-w-[16rem] flex-1 max-w-md">
-            <label className="block text-[11px] text-white/35 mb-1">Session</label>
-            <select
-              value={selectedSessionKey}
-              onChange={(event) => setSelectedSessionKey(event.target.value)}
-              disabled={loadingSessions || sortedSessions.length === 0}
-              className="w-full rounded border border-white/10 bg-black/40 px-3 py-2 text-xs text-white/80"
-            >
-              {sortedSessions.map((session) => (
-                <option key={session.key} value={session.key}>
-                  {sessionLabel(session)}
-                </option>
-              ))}
-            </select>
-          </div>
+          {showSessionPicker && (
+            <div className="min-w-[16rem] flex-1 max-w-md">
+              <label className="block text-[11px] text-white/35 mb-1">Session</label>
+              <select
+                value={selectedSessionKey}
+                onChange={(event) => setSelectedSessionKey(event.target.value)}
+                disabled={loadingSessions || sortedSessions.length === 0}
+                className="w-full rounded border border-white/10 bg-black/40 px-3 py-2 text-xs text-white/80"
+              >
+                {sortedSessions.map((session) => (
+                  <option key={session.key} value={session.key}>
+                    {sessionLabel(session)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         {error && (
           <p className="text-xs text-red-400 mt-3">{error}</p>

@@ -147,6 +147,13 @@ export type CronListResult = {
   nextOffset: number | null;
 };
 
+export type CronRunResult = {
+  id?: string;
+  runAtMs?: number;
+  queued?: boolean;
+  ok?: boolean;
+};
+
 export type CronRunsResult = {
   entries: Array<{
     ts: number;
@@ -407,6 +414,13 @@ export async function cronList(call: CallFn, params?: Record<string, unknown>) {
     ["jobs array", (value) => hasArray(value, "jobs")],
     ["total number", (value) => isRecord(value) && typeof value.total === "number"],
     ["hasMore boolean", (value) => hasBoolean(value, "hasMore")],
+  ]);
+}
+
+export async function cronRun(call: CallFn, params: Record<string, unknown>) {
+  const result = await call("cron.run", params);
+  return assertShape<CronRunResult>("cron.run", result, [
+    ["object response", isRecord],
   ]);
 }
 
