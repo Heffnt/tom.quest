@@ -12,13 +12,15 @@ type Props = {
   ram: Bits[];
   signals: Signals | null;
   pc: Bits;
+  /** Suppress the built-in header. Caller renders its own. */
+  headless?: boolean;
 };
 
 function hex4(bits: Bits): string {
   return toUint(bits).toString(16).padStart(4, "0").toUpperCase();
 }
 
-export default function RamView({ ram, signals, pc }: Props) {
+export default function RamView({ ram, signals, pc, headless }: Props) {
   const pcIdx = toUint(pc);
 
   // Active addresses this cycle: we read whatever Addr Mux emitted, and we
@@ -28,12 +30,14 @@ export default function RamView({ ram, signals, pc }: Props) {
 
   return (
     <div>
-      <div className="flex items-baseline justify-between mb-2">
-        <h2 className="text-sm font-semibold text-text">RAM</h2>
-        <span className="text-xs text-text-muted font-mono">
-          256 × 16b — hex. PC cell highlighted.
-        </span>
-      </div>
+      {!headless && (
+        <div className="flex items-baseline justify-between mb-2">
+          <h2 className="text-sm font-semibold text-text">RAM</h2>
+          <span className="text-xs text-text-muted font-mono">
+            256 × 16b — hex. PC cell highlighted.
+          </span>
+        </div>
+      )}
 
       <div
         className="grid gap-[2px] font-mono text-[10px]"

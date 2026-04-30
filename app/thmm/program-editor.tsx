@@ -64,12 +64,40 @@ type Props = {
   value: string;
   onChange: (v: string) => void;
   onReload: () => void;
+  /** Suppress the built-in header + footer. Caller owns chrome. */
+  headless?: boolean;
 };
 
-export default function ProgramEditor({ value, onChange, onReload }: Props) {
+export default function ProgramEditor({ value, onChange, onReload, headless }: Props) {
   // Parse on every render so the user sees errors live. Cheap — programs are
   // at most a few hundred lines.
   const parse = useMemo(() => parseProgram(value), [value]);
+
+  if (headless) {
+    return (
+      <div className="flex flex-col">
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          spellCheck={false}
+          className="min-h-[280px] w-full bg-bg border border-border rounded-md p-3
+                     font-mono text-xs text-text resize-y outline-none
+                     focus:border-accent/60"
+        />
+        <div className="mt-2 text-xs">
+          {parse.ok ? (
+            <span className="text-text-muted font-mono">
+              parses cleanly · {parse.program.length} words
+            </span>
+          ) : (
+            <span className="text-error font-mono">
+              line {parse.line}: {parse.message}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full">
