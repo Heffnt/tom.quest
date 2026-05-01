@@ -5,7 +5,7 @@
  */
 "use client";
 
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import type { Span } from "../thcc";
 
 type Props = {
@@ -46,11 +46,9 @@ export default function SourceView({
 
   if (editable) {
     return (
-      <textarea
+      <AutoSizeTextarea
         value={source}
-        onChange={(e) => onChange?.(e.target.value)}
-        spellCheck={false}
-        className="w-full min-h-[600px] bg-white/[0.02] border border-white/10 rounded-lg p-4 font-mono text-sm text-text leading-relaxed outline-none focus:border-white/20 resize-vertical"
+        onChange={(next) => onChange?.(next)}
       />
     );
   }
@@ -74,6 +72,33 @@ export default function SourceView({
         );
       })}
     </pre>
+  );
+}
+
+function AutoSizeTextarea({
+  value, onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  // Sync the textarea's intrinsic height to its content. Runs every render
+  // so paste / external prop updates / first mount all resize correctly.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  });
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      spellCheck={false}
+      rows={1}
+      className="w-full bg-white/[0.02] border border-white/10 rounded-lg p-4 font-mono text-sm text-text leading-relaxed outline-none focus:border-white/20 overflow-hidden resize-none"
+    />
   );
 }
 

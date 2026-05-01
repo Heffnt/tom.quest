@@ -23,9 +23,12 @@ type Props = {
   ram: Bits[];
   signals: Signals | null;
   pc: Bits;
+  /** Addresses to flag as outputs: emphasised so the audience can watch
+   *  the answer being formed. */
+  outputs?: Set<number>;
 };
 
-export default function RamGrid({ ram, signals, pc }: Props) {
+export default function RamGrid({ ram, signals, pc, outputs }: Props) {
   const [mode, setMode] = useState<ViewMode>("hex");
   const [overrides] = useState<Set<number>>(() => new Set());
   const { pokeCpu } = useCompiler();
@@ -67,9 +70,11 @@ export default function RamGrid({ ram, signals, pc }: Props) {
               const isPc = idx === pcIdx;
               const isRead = idx === readIdx;
               const isWrite = idx === writeIdx;
+              const isOutput = outputs?.has(idx) ?? false;
 
               let bg = "transparent";
-              let border = "transparent";
+              let border = isOutput ? "rgba(232, 160, 64, 0.55)" : "transparent";
+              if (isOutput) bg = "rgba(232, 160, 64, 0.06)";
               if (isPc)    { bg = "rgba(232, 160, 64, 0.10)"; }
               if (isRead)  { border = "var(--color-accent)"; }
               if (isWrite) { bg = "var(--color-accent)"; }
@@ -99,10 +104,19 @@ export default function RamGrid({ ram, signals, pc }: Props) {
         ))}
       </div>
 
-      <div className="mt-3 flex gap-4 text-xs text-text-muted">
+      <div className="mt-3 flex gap-4 text-xs text-text-muted flex-wrap">
         <span><span className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px]" style={{ backgroundColor: "rgba(232, 160, 64, 0.10)" }} /> PC</span>
         <span><span className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px] border" style={{ borderColor: "var(--color-accent)" }} /> read</span>
         <span><span className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px]" style={{ backgroundColor: "var(--color-accent)" }} /> write</span>
+        {outputs && outputs.size > 0 && (
+          <span>
+            <span
+              className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px] border"
+              style={{ borderColor: "rgba(232, 160, 64, 0.55)", backgroundColor: "rgba(232, 160, 64, 0.06)" }}
+            />
+            output
+          </span>
+        )}
       </div>
     </div>
   );
