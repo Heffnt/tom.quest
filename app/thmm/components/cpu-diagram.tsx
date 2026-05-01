@@ -320,94 +320,92 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
         </Box>
 
         {/* ============================================================ */}
-        {/* DATA WIRES (solid)                                            */}
+        {/* DATA WIRES (solid) — 90° turns, mux entries at corners         */}
         {/* ============================================================ */}
 
-        {/* IR.Q → Decoder (vertical, left column) */}
-        <path d="M 220 210 L 220 240" fill="none"
+        {/* IR.Q → Decoder (short vertical, IR bottom → Decoder top) */}
+        <path d="M 220 240 L 220 280" fill="none"
               stroke={C.wireActive} strokeWidth={2.5}
               markerEnd="url(#arrActive)" />
 
-        {/* PC.Q → Addr Mux input */}
-        <path d="M 1480 210 L 1480 222" fill="none"
+        {/* PC.Q → Addr Mux input 0 (top-left corner of mux) */}
+        <path d="M 1480 240 L 1400 240 L 1400 270" fill="none"
               stroke={activeStroke(!activePhase)} strokeWidth={2}
               markerEnd={m(!activePhase, "data")} />
 
-        {/* Addr Mux → RAM.addr */}
-        <path d="M 1480 262 L 1480 290" fill="none"
+        {/* Addr Mux → RAM.addr (short vertical, mux bottom → RAM top) */}
+        <path d="M 1480 320 L 1480 350" fill="none"
               stroke={C.wireActive} strokeWidth={2.5}
               markerEnd="url(#arrActive)" />
 
-        {/* Decoder.RamData → Addr Mux (over the top, around right) */}
-        <path d="M 380 596 L 460 596 L 460 78 L 1395 78 L 1395 240" fill="none"
+        {/* Decoder.RamData → Addr Mux input 1 (top-right corner) */}
+        <path d="M 380 638 L 470 638 L 470 110 L 1560 110 L 1560 270" fill="none"
               stroke={activeStroke(ramDataAddrPath)} strokeWidth={2}
               markerEnd={m(ramDataAddrPath, "data")} />
 
-        {/* RAM.Dout → IR (fetch path, over the top) */}
-        <path d="M 1320 335 L 1280 335 L 1280 92 L 220 92 L 220 100" fill="none"
+        {/* RAM.Dout → IR (fetch path, over the top channel y=120) */}
+        <path d="M 1320 395 L 1280 395 L 1280 120 L 220 120 L 220 130" fill="none"
               stroke={activeStroke(ramReadUsedByIR)} strokeWidth={2}
               markerEnd={m(ramReadUsedByIR, "data")} />
 
-        {/* RAM.Dout tap → ALU B Mux input (execute read) */}
-        <circle cx={1280} cy={335} r={3} fill={ramDoutActive ? C.wireActive : C.wireIdle} />
-        <path d="M 1280 335 L 1100 335" fill="none"
+        {/* RAM.Dout tap → ALU B Mux input 1 (top-right corner) */}
+        <circle cx={1280} cy={325} r={3} fill={ramDoutActive ? C.wireActive : C.wireIdle} />
+        <path d="M 1280 325 L 1060 325 L 1060 335" fill="none"
               stroke={activeStroke(ramReadUsedByALU)} strokeWidth={2}
               markerEnd={m(ramReadUsedByALU, "data")} />
 
-        {/* Decoder.AluData → ALU B Mux input (immediate path) */}
-        <path d="M 380 614 L 490 614 L 490 290 L 880 290 L 880 305" fill="none"
+        {/* Decoder.AluData → ALU B Mux input 0 (top-left corner) */}
+        <path d="M 380 654 L 490 654 L 490 325 L 940 325 L 940 335" fill="none"
               stroke={activeStroke(aluDataPath)} strokeWidth={2}
               markerEnd={m(aluDataPath, "data")} />
 
-        {/* ALU B Mux → ALU.B (short vertical, top entry) */}
-        <path d="M 980 360 L 980 380" fill="none"
+        {/* ALU B Mux → ALU.B (short vertical, mux output → ALU top) */}
+        <path d="M 1000 385 L 1000 415" fill="none"
               stroke={C.wireActive} strokeWidth={2.5}
               markerEnd="url(#arrActive)" />
 
-        {/* ALU output → Acc.D (short vertical, bottom-out top-in) */}
-        <path d="M 850 620 L 850 660" fill="none"
+        {/* ALU output → Acc.D (short vertical, ALU bottom → Acc top) */}
+        <path d="M 850 635 L 850 685" fill="none"
               stroke={activeStroke(aluWrites)} strokeWidth={2.5}
               markerEnd={m(aluWrites, "data")} />
 
         {/* Acc.Q → ALU.A loop (feedback enters ALU from above-left) */}
-        <circle cx={850} cy={760} r={3} fill={C.wireActive} />
-        <path d="M 850 740 L 850 760 L 510 760 L 510 360 L 645 360 L 645 380" fill="none"
+        <circle cx={850} cy={785} r={3} fill={C.wireActive} />
+        <path d="M 850 765 L 850 785 L 540 785 L 540 390 L 705 390 L 705 415" fill="none"
               stroke={C.wireActive} strokeWidth={2.5}
               markerEnd="url(#arrActive)" />
-        <text x={485} y={555} fontSize={10} fill={C.sub} transform="rotate(-90 485 555)">
+        <text x={515} y={580} fontSize={10} fill={C.sub} transform="rotate(-90 515 580)">
           accumulator feedback
         </text>
 
-        {/* Acc → Zero Detect (short horizontal, LEFT) */}
-        <path d="M 750 705 L 730 705" fill="none"
+        {/* Acc → Zero Detect (short horizontal, Acc left → Zero right) */}
+        <path d="M 750 720 L 730 720" fill="none"
               stroke={C.wireActive} strokeWidth={2}
               markerEnd="url(#arrActive)" />
 
-        {/* Zero Detect → Decoder (acc_zero feedback) */}
-        <path d="M 560 705 L 380 374" fill="none"
+        {/* Zero Detect → Decoder z input (Manhattan, enter from right) */}
+        <path d="M 560 720 L 490 720 L 490 419 L 380 419" fill="none"
               stroke={activeStroke(s?.accZero1 === "1")} strokeWidth={1.6}
-              markerEnd={m(s?.accZero1 === "1", "data")}
-              strokeDasharray="3 2" />
+              markerEnd={m(s?.accZero1 === "1", "data")} />
 
-        {/* Acc[7:0] → ProgMux input 0 (long route up the right) */}
-        <circle cx={850} cy={760} r={3} fill={pcJumps && s?.progMux1 === "0" ? C.wireActive : C.wireIdle} />
-        <path d="M 850 760 L 1245 760 L 1245 138" fill="none"
+        {/* Acc → ProgMux input 0 (Acc bus tap → up to mux left side) */}
+        <path d="M 850 785 L 1230 785 L 1230 166" fill="none"
               stroke={activeStroke(pcJumps && s?.progMux1 === "0")} strokeWidth={2}
               markerEnd={m(pcJumps && s?.progMux1 === "0", "data")} />
 
-        {/* ALU_out[7:0] → ProgMux input 1 (tap from ALU output) */}
-        <circle cx={850} cy={640} r={3} fill={pcJumps && s?.progMux1 === "1" ? C.wireActive : C.wireIdle} />
-        <path d="M 850 640 L 1300 640 L 1300 138" fill="none"
+        {/* ALU_out[7:0] → ProgMux input 1 (tap from ALU output → up to mux left side) */}
+        <circle cx={850} cy={660} r={3} fill={pcJumps && s?.progMux1 === "1" ? C.wireActive : C.wireIdle} />
+        <path d="M 850 660 L 1215 660 L 1215 182 L 1230 182" fill="none"
               stroke={activeStroke(pcJumps && s?.progMux1 === "1")} strokeWidth={2}
               markerEnd={m(pcJumps && s?.progMux1 === "1", "data")} />
 
-        {/* ProgMux → PC.D (short horizontal, ProgMux right edge → PC left edge) */}
-        <path d="M 1318 160 L 1320 155" fill="none"
+        {/* ProgMux → PC.D (short horizontal, mux right → PC left) */}
+        <path d="M 1318 174 L 1320 174" fill="none"
               stroke={activeStroke(pcJumps)} strokeWidth={2}
               markerEnd={m(pcJumps, "data")} />
 
-        {/* Acc → RAM.Din (long horizontal, Acc bus tap at y=760) */}
-        <path d="M 850 760 L 1290 760 L 1290 425 L 1320 425" fill="none"
+        {/* Acc → RAM.Din (Acc bus tap → up to RAM Din pin) */}
+        <path d="M 850 785 L 1290 785 L 1290 490 L 1320 490" fill="none"
               stroke={activeStroke(ramWrites)} strokeWidth={2}
               markerEnd={m(ramWrites, "data")} />
 
@@ -415,55 +413,60 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
         {/* CONTROL SIGNALS (red dashed) — exit decoder right edge        */}
         {/* ============================================================ */}
 
-        {/* ProgWE → PC.LD (route up and across the top) */}
-        <path d="M 380 433 L 405 433 L 405 88 L 1500 88 L 1500 100" fill="none"
+        {/* ProgWE → PC.LD (route up and across the top channel y=100) */}
+        <path d="M 380 473 L 405 473 L 405 100 L 1340 100 L 1340 130" fill="none"
               stroke={ctlStroke(s?.progWeRaw1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.progWeRaw1 === "1", "ctl")} />
 
-        {/* ProgMux sel → ProgMux (route around the right) */}
-        <path d="M 380 451 L 1235 451 L 1235 195 L 1272 195 L 1272 182" fill="none"
+        {/* ProgMux sel → ProgMux top (route through gap between PC and AddrMux) */}
+        <path d="M 380 491 L 415 491 L 415 252 L 1274 252 L 1274 152" fill="none"
               stroke={ctlStroke(s?.progMux1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.progMux1 === "1", "ctl")} />
 
-        {/* RamWE → RAM.WE (route under ALU) */}
-        <path d="M 380 469 L 425 469 L 425 650 L 1310 650 L 1310 465 L 1320 465" fill="none"
+        {/* RamWE → RAM.WE (route through gap above ALU at y=400) */}
+        <path d="M 380 509 L 430 509 L 430 400 L 1310 400 L 1310 525 L 1320 525" fill="none"
               stroke={ctlStroke(s?.ramWeRaw1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.ramWeRaw1 === "1", "ctl")} />
 
-        {/* AluMux sel → ALU B Mux (enter from left at mux row) */}
-        <path d="M 380 487 L 445 487 L 445 332 L 860 332" fill="none"
+        {/* AluMux sel → ALU B Mux sel (enter from left side of mux) */}
+        <path d="M 380 527 L 445 527 L 445 360 L 920 360" fill="none"
               stroke={ctlStroke(s?.aluMux1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.aluMux1 === "1", "ctl")} />
 
-        {/* AluOp → ALU (short, direct horizontal) */}
-        <path d="M 380 505 L 540 505" fill="none"
+        {/* AluOp → ALU (direct horizontal into ALU left edge) */}
+        <path d="M 380 545 L 620 545" fill="none"
               stroke={ctlStroke(!!s && s.aluOp3 !== "000")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(!!s && s.aluOp3 !== "000", "ctl")} />
 
-        {/* AccWE → Acc (route around left side, enter from below) */}
-        <path d="M 380 523 L 470 523 L 470 790 L 850 790 L 850 740" fill="none"
+        {/* AccWE → Acc (route under ALU, enter from below) */}
+        <path d="M 380 563 L 475 563 L 475 800 L 850 800 L 850 765" fill="none"
               stroke={ctlStroke(s?.accWeRaw1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.accWeRaw1 === "1", "ctl")} />
 
-        {/* Halt → Halt Latch (route up the left edge) */}
-        <path d="M 380 541 L 395 541 L 395 47 L 440 47" fill="none"
+        {/* Halt → Halt Latch (route up to top channel y=47) */}
+        <path d="M 380 581 L 395 581 L 395 55 L 1500 55" fill="none"
               stroke={ctlStroke(s?.halt1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.halt1 === "1", "ctl")} />
 
-        {/* Phase → Addr Mux sel (from Phase indicator) */}
-        <path d="M 280 47 L 1480 47 L 1480 222" fill="none"
+        {/* Phase wire (continuous across top, with three taps) */}
+        <path d="M 200 55 L 1500 55" fill="none"
+              stroke={ctlStroke(activePhase)} strokeWidth={1.4} strokeDasharray="5 3" />
+
+        {/* Phase tap → Addr Mux sel (drop into mux left side) */}
+        <circle cx={1380} cy={55} r={3} fill={activePhase ? C.ctlActive : C.ctlIdle} />
+        <path d="M 1380 55 L 1380 295" fill="none"
               stroke={ctlStroke(activePhase)} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(activePhase, "ctl")} />
 
-        {/* !Phase → IR.WE (tap off Phase line, drop into IR top) */}
-        <circle cx={300} cy={47} r={3} fill={C.ctlIdle} />
-        <path d="M 300 47 L 300 100" fill="none"
+        {/* !Phase tap → IR.WE (drop into IR top) */}
+        <circle cx={300} cy={55} r={3} fill={C.ctlIdle} />
+        <path d="M 300 55 L 300 130" fill="none"
               stroke={ctlStroke(s?.irWe1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.irWe1 === "1", "ctl")} />
 
-        {/* !Phase → PC.CT (tap off Phase line near right, drop into PC top) */}
-        <circle cx={1500} cy={88} r={3} fill={C.ctlIdle} />
-        <path d="M 1460 88 L 1460 100" fill="none"
+        {/* !Phase tap → PC.CT (drop into PC top) */}
+        <circle cx={1450} cy={55} r={3} fill={C.ctlIdle} />
+        <path d="M 1450 55 L 1450 130" fill="none"
               stroke={ctlStroke(s?.pcCt1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.pcCt1 === "1", "ctl")} />
       </svg>
