@@ -47,34 +47,3 @@ code, pre, .font-mono {
 button, input, select, textarea {
   font: inherit;
 }
-
-/* Settle animation — gauge needle easing into place */
-@keyframes settle {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-settle {
-  animation: settle 0.5s ease-out forwards;
-}
-
-.animate-settle-delay-1 {
-  animation: settle 0.5s ease-out 80ms forwards;
-  opacity: 0;
-}
-
-.animate-settle-delay-2 {
-  animation: settle 0.5s ease-out 160ms forwards;
-  opacity: 0;
-}
-
-.animate-settle-delay-3 {
-  animation: settle 0.5s ease-out 240ms forwards;
-  opacity: 0;
-}

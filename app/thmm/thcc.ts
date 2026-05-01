@@ -41,7 +41,7 @@ export type Stmt =
 export type Program = Stmt[];
 
 /** Symbolic operand: pre-link, addresses are still labels. */
-type Addr =
+export type Addr =
   | { kind: "imm"; value: number }
   | { kind: "var"; name: string }
   | { kind: "tmp"; idx: number };
@@ -50,7 +50,7 @@ export type Mnemonic =
   | "loadm" | "loadn" | "store"
   | "addm" | "addn" | "subm" | "mulm" | "divm" | "halt";
 
-type SymInst = {
+export type SymInst = {
   op: Mnemonic;
   addr: Addr | null;       // null only for halt
   span: Span;              // origin AST node
@@ -79,8 +79,21 @@ export type CompileError =
   | { kind: "literalOutOfRange"; n: number; span: Span }
   | { kind: "programTooLarge"; used: number; capacity: number };
 
+/**
+ * Successful compile exposes every intermediate stage so the visualizer can
+ * scrub through them. `symInsts` is the pre-link form (addresses still as
+ * labels); `instructions` is the same list after the linker has resolved
+ * each label to a concrete RAM address.
+ */
 export type CompileResult =
-  | { ok: true; instructions: ThmmInst[]; varMap: VarBinding[]; ast: Program }
+  | {
+      ok: true;
+      ast: Program;
+      symInsts: SymInst[];
+      maxTemps: number;
+      instructions: ThmmInst[];
+      varMap: VarBinding[];
+    }
   | { ok: false; error: CompileError };
 
 // ==========================================================================
@@ -516,10 +529,33 @@ export function compile(source: string): CompileResult {
   try {
     const cg = genProgram(ast);
     const { instructions, varMap } = link(cg);
-    return { ok: true, instructions, varMap, ast };
+    return {
+      ok: true,
+      ast,
+      symInsts: cg.insts,
+      maxTemps: cg.maxTemps,
+      instructions,
+      varMap,
+    };
   } catch (e) {
     if (e instanceof CompileFailure) return { ok: false, error: e.err };
     throw e;
+  }
+}
+
+/**
+ * Render a symbolic instruction in human-readable form, with addresses still
+ * shown as labels (variable names or `tN`). Used by the codegen and link
+ * scenes; mirrors the asm strings from CodeGen.hs's reference output.
+ */
+export function symInstToAsm(s: SymInst): string {
+  if (s.op === "halt") return "halt";
+  const a = s.addr;
+  if (!a) return s.op;
+  switch (a.kind) {
+    case "imm": return `${s.op} ${a.value}`;
+    case "var": return `${s.op} ${a.name}`;
+    case "tmp": return `${s.op} t${a.idx}`;
   }
 }
 
@@ -579,4 +615,57 @@ export const SIMPLE_THCC = `// Smallest useful test: store a constant and a sum.
 int a = 5;
 int b = 7;
 int c = a + b;
+`;
+
+export const NESTED_THCC = `// The temp-stash dance: nested expressions force the compiler to
+// shuffle intermediate values through scratch cells, because there is
+// only one accumulator.
+int a = 1;
+int b = 2;
+int c = 3;
+int d = 4;
+int z = (a + b) * (c + d);
+`;
+
+export const CAESAR_THCC = `// Caesar cipher decryption — shift 3.
+// Encrypted "WRP KHIIHUQDQ" decrypts to "TOM HEFFERNAN".
+//
+// THMM has no mod operator and no conditionals, so:
+//   plain = (cipher - OFFSET) - (cipher - OFFSET) / 26 * 26 + 65
+// where OFFSET = 'A' + shift - 26 = 65 + 3 - 26 = 42.
+// The space at index 3 is passed through unchanged.
+
+int A = 65;
+int N = 26;
+int OFFSET = 42;
+
+// Encrypted bytes: W R P _ K H I I H U Q D Q
+int c0  = 87;
+int c1  = 82;
+int c2  = 80;
+int c3  = 32;
+int c4  = 75;
+int c5  = 72;
+int c6  = 73;
+int c7  = 73;
+int c8  = 72;
+int c9  = 85;
+int c10 = 81;
+int c11 = 68;
+int c12 = 81;
+
+// Decrypt each letter; index 3 (space) passes through.
+int t0  = c0  - OFFSET; int p0  = t0  - t0  / N * N + A;
+int t1  = c1  - OFFSET; int p1  = t1  - t1  / N * N + A;
+int t2  = c2  - OFFSET; int p2  = t2  - t2  / N * N + A;
+int p3  = c3;
+int t4  = c4  - OFFSET; int p4  = t4  - t4  / N * N + A;
+int t5  = c5  - OFFSET; int p5  = t5  - t5  / N * N + A;
+int t6  = c6  - OFFSET; int p6  = t6  - t6  / N * N + A;
+int t7  = c7  - OFFSET; int p7  = t7  - t7  / N * N + A;
+int t8  = c8  - OFFSET; int p8  = t8  - t8  / N * N + A;
+int t9  = c9  - OFFSET; int p9  = t9  - t9  / N * N + A;
+int t10 = c10 - OFFSET; int p10 = t10 - t10 / N * N + A;
+int t11 = c11 - OFFSET; int p11 = t11 - t11 / N * N + A;
+int t12 = c12 - OFFSET; int p12 = t12 - t12 / N * N + A;
 `;

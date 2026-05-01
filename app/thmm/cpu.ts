@@ -487,7 +487,55 @@ export function tick(state: State): Signals {
 }
 
 // ==========================================================================
-// 7. The run loop
+// 7. Live state pokes — UI-side mid-execution overrides
+// ==========================================================================
+//
+// The visualizer treats every register and RAM cell as live-editable. These
+// helpers do the format conversion and width clamping; the underlying State
+// fields are plain Bits and any caller can set them directly, but going
+// through these helpers keeps the validation in one place.
+
+/**
+ * Parse a string the user typed into a value. Accepts:
+ *   - decimal (signed): "-5", "0", "42"
+ *   - hex: "0x2A" (case-insensitive)
+ *   - binary: "0b00101010"
+ * Returns null if unparseable. Clamps via two's-complement wraparound at
+ * the requested width — so a user typing 65535 into an 8-bit cell gets
+ * 0xFF, just like a real wire would silently drop the high bits.
+ */
+export function parseValue(input: string, width: number): Bits | null {
+  const s = input.trim();
+  if (s === "") return null;
+  let n: number;
+  if (/^-?0x[0-9a-fA-F]+$/.test(s)) {
+    const sign = s.startsWith("-") ? -1 : 1;
+    n = sign * parseInt(s.replace(/^-?0x/, ""), 16);
+  } else if (/^-?0b[01]+$/.test(s)) {
+    const sign = s.startsWith("-") ? -1 : 1;
+    n = sign * parseInt(s.replace(/^-?0b/, ""), 2);
+  } else if (/^-?\d+$/.test(s)) {
+    n = parseInt(s, 10);
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(n)) return null;
+  return fromInt(n, width);
+}
+
+export function pokePc(state: State, value: Bits): void { state.pc = value; }
+export function pokeIr(state: State, value: Bits): void { state.ir = value; }
+export function pokeAcc(state: State, value: Bits): void { state.acc = value; }
+export function pokePhase(state: State, value: Bits): void { state.phase = value; }
+export function pokeHalted(state: State, value: Bits): void { state.halted = value; }
+
+export function pokeRam(state: State, addr: number, value: Bits): void {
+  if (addr < 0 || addr > 255) return;
+  state.ram[addr] = value;
+}
+
+// ==========================================================================
+// 8. The run loop
 // ==========================================================================
 
 /**
