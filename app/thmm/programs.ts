@@ -21,9 +21,6 @@ int z = (a + b) * (c + d);
 
 export const PYTHAGORAS_THCC = `// Pythagoras on a 3-4-5 right triangle. Expected: hyp_sq = 25.
 //
-// THMM has no sqrt, so we compute the area of the square built on the
-// hypotenuse instead. a*a and b*b each compile cheaply, but combining
-// them with + forces the compiler to stash, compute, reload, add.
 int a = 4;
 int b = 3;
 int hyp_sq = a * a + b * b;
