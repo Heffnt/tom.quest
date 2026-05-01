@@ -7,15 +7,14 @@
 
 import type { State } from "../cpu";
 import Editable from "./editable";
-import { displayBits, parseInput, type ViewMode } from "../lib/format";
+import { displayBits, parseInput } from "../lib/format";
+import ModePicker from "./mode-picker";
 import { useCompiler } from "../state/compiler-store";
-import { useState } from "react";
 
 type RegisterField = "pc" | "ir" | "acc" | "phase" | "halted";
 
 export default function RegistersPanel() {
-  const { cpu, pokeCpu } = useCompiler();
-  const [mode, setMode] = useState<ViewMode>("hex");
+  const { cpu, displayMode: mode, pokeCpu } = useCompiler();
   if (!cpu) return null;
 
   const rows: { name: string; field: RegisterField; width: number; note: string }[] = [
@@ -33,7 +32,7 @@ export default function RegistersPanel() {
           <div className="text-sm font-medium">Registers</div>
           <div className="text-xs text-text-muted">Click any value to edit.</div>
         </div>
-        <ModePicker mode={mode} onChange={setMode} />
+        <ModePicker />
       </div>
 
       <div className="font-mono text-sm">
@@ -59,23 +58,3 @@ export default function RegistersPanel() {
   );
 }
 
-function ModePicker({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
-  const modes: ViewMode[] = ["hex", "dec", "ascii", "bin"];
-  return (
-    <div className="flex gap-1">
-      {modes.map(m => (
-        <button
-          key={m}
-          onClick={() => onChange(m)}
-          className={`px-2 py-1 text-xs rounded border ${
-            mode === m
-              ? "border-accent text-accent bg-accent/5"
-              : "border-white/10 text-white/55 hover:text-white/85"
-          }`}
-        >
-          {m}
-        </button>
-      ))}
-    </div>
-  );
-}

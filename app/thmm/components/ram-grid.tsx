@@ -16,22 +16,23 @@ import { useState } from "react";
 import type { Bits, Signals } from "../cpu";
 import { toUint } from "../cpu";
 import Editable from "./editable";
-import { displayBits, parseInput, type ViewMode } from "../lib/format";
+import { displayBits, parseInput } from "../lib/format";
+import ModePicker from "./mode-picker";
 import { useCompiler } from "../state/compiler-store";
 
 type Props = {
   ram: Bits[];
   signals: Signals | null;
   pc: Bits;
-  /** Addresses to flag as outputs: emphasised so the audience can watch
-   *  the answer being formed. */
+  /** Addresses the user can supply (program inputs): subtle blue tag. */
+  inputs?: Set<number>;
+  /** Addresses where the program's answer accumulates: subtle accent tag. */
   outputs?: Set<number>;
 };
 
-export default function RamGrid({ ram, signals, pc, outputs }: Props) {
-  const [mode, setMode] = useState<ViewMode>("hex");
+export default function RamGrid({ ram, signals, pc, inputs, outputs }: Props) {
+  const { displayMode: mode, pokeCpu } = useCompiler();
   const [overrides] = useState<Set<number>>(() => new Set());
-  const { pokeCpu } = useCompiler();
 
   const pcIdx = toUint(pc);
   const readIdx = signals ? toUint(signals.addr8) : -1;
@@ -44,7 +45,7 @@ export default function RamGrid({ ram, signals, pc, outputs }: Props) {
           <div className="text-sm font-medium">RAM</div>
           <div className="text-xs text-text-muted">256 × 16 bits — click any cell to edit.</div>
         </div>
-        <ModePicker mode={mode} onChange={setMode} />
+        <ModePicker />
       </div>
 
       <div
@@ -71,10 +72,12 @@ export default function RamGrid({ ram, signals, pc, outputs }: Props) {
               const isRead = idx === readIdx;
               const isWrite = idx === writeIdx;
               const isOutput = outputs?.has(idx) ?? false;
+              const isInput = inputs?.has(idx) ?? false;
 
               let bg = "transparent";
-              let border = isOutput ? "rgba(232, 160, 64, 0.55)" : "transparent";
-              if (isOutput) bg = "rgba(232, 160, 64, 0.06)";
+              let border: string = "transparent";
+              if (isInput)  { bg = "rgba(96, 160, 255, 0.07)"; border = "rgba(96, 160, 255, 0.55)"; }
+              if (isOutput) { bg = "rgba(232, 160, 64, 0.06)"; border = "rgba(232, 160, 64, 0.55)"; }
               if (isPc)    { bg = "rgba(232, 160, 64, 0.10)"; }
               if (isRead)  { border = "var(--color-accent)"; }
               if (isWrite) { bg = "var(--color-accent)"; }
@@ -108,6 +111,15 @@ export default function RamGrid({ ram, signals, pc, outputs }: Props) {
         <span><span className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px]" style={{ backgroundColor: "rgba(232, 160, 64, 0.10)" }} /> PC</span>
         <span><span className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px] border" style={{ borderColor: "var(--color-accent)" }} /> read</span>
         <span><span className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px]" style={{ backgroundColor: "var(--color-accent)" }} /> write</span>
+        {inputs && inputs.size > 0 && (
+          <span>
+            <span
+              className="inline-block w-3 h-3 align-middle mr-1 rounded-[2px] border"
+              style={{ borderColor: "rgba(96, 160, 255, 0.55)", backgroundColor: "rgba(96, 160, 255, 0.07)" }}
+            />
+            input
+          </span>
+        )}
         {outputs && outputs.size > 0 && (
           <span>
             <span
@@ -121,25 +133,3 @@ export default function RamGrid({ ram, signals, pc, outputs }: Props) {
     </div>
   );
 }
-
-function ModePicker({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
-  const modes: ViewMode[] = ["hex", "dec", "ascii", "bin"];
-  return (
-    <div className="flex gap-1">
-      {modes.map(m => (
-        <button
-          key={m}
-          onClick={() => onChange(m)}
-          className={`px-2 py-1 text-xs rounded border ${
-            mode === m
-              ? "border-accent text-accent bg-accent/5"
-              : "border-white/10 text-white/55 hover:text-white/85"
-          }`}
-        >
-          {m}
-        </button>
-      ))}
-    </div>
-  );
-}
-

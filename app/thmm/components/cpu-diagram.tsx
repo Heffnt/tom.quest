@@ -243,8 +243,8 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
             op = {s ? (ALU_OP_LABEL[s.aluOp3] ?? s.aluOp3) : "pass"}
           </text>
           <Value x={870} y={648} fill={C.wireActive}>out = {s ? hex(s.aluOut16) : "0x0000"}</Value>
-          <text x={734} y={568} fontSize={10} fill={C.pin}>A</text>
-          <text x={858} y={558} fontSize={10} fill={C.pin}>B</text>
+          <text x={780} y={555} fontSize={10} fill={C.pin}>A</text>
+          <text x={870} y={555} fontSize={10} fill={C.pin}>B</text>
         </Box>
 
         <Box x={760} y={710} w={220} h={60} active={aluWrites}>
@@ -312,11 +312,14 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
               stroke={activeStroke(aluWrites)} strokeWidth={2}
               markerEnd={m(aluWrites, "data")} />
 
-        {/* Acc.Q → ALU.A loop */}
+        {/* Acc.Q → ALU.A loop (feedback enters ALU from above-left) */}
         <circle cx={870} cy={770} r={3} fill={C.wireActive} />
-        <path d="M 870 770 L 870 790 L 700 790 L 700 568 L 720 568" fill="none"
+        <path d="M 870 770 L 870 790 L 700 790 L 700 510 L 780 510 L 780 540" fill="none"
               stroke={C.wireActive} strokeWidth={2}
               markerEnd="url(#arrActive)" />
+        <text x={665} y={650} fontSize={10} fill={C.sub} transform="rotate(-90 665 650)">
+          accumulator feedback
+        </text>
 
         {/* Acc → Zero Detect */}
         <path d="M 870 770 L 870 800" fill="none"

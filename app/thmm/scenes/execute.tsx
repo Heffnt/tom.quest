@@ -1,42 +1,38 @@
 /**
- * Scene 5 — Execute. CPU diagram + RAM grid + registers + asm listing,
- * with three-way highlighting: the asm row at PC, the source span that
- * produced it, and the corresponding RAM cell all light up together.
+ * Scene 5 — Execute. CPU diagram + RAM grid + registers + asm listing.
+ * The IO panel sits at the top and is now generic across scenarios:
+ * input field, expected output, live actual output, all in one compact strip.
  *
- * Each scenario also names a set of "output" variables — the cells where
- * the answer accumulates. Those cells are flagged in the RAM grid and
- * surfaced front-and-centre in the output panel above the diagram, so the
- * audience can read the final result as it forms.
+ * Each scenario also names its input and output cells; they're highlighted
+ * in the RAM grid so the audience can watch the answer accumulate in place.
  */
 "use client";
 
 import { useMemo } from "react";
 import { toUint } from "../cpu";
 import AsmView from "../components/asm-view";
-import CaesarInput from "../components/caesar-input";
 import CpuDiagram from "../components/cpu-diagram";
 import ExecControls from "../components/exec-controls";
-import OutputPanel from "../components/output-panel";
+import IOPanel from "../components/io-panel";
 import RamGrid from "../components/ram-grid";
 import RegistersPanel from "../components/registers-panel";
 import SourceView from "../components/source-view";
-import { findScenarioByKey } from "../scenarios";
+import { findScenarioByKey, type Scenario } from "../scenarios";
+import type { VarBinding } from "../thcc";
 import { useCompiler } from "../state/compiler-store";
 
 export default function ExecuteScene() {
   const { source, result, cpu, signals, activeScenarioKey } = useCompiler();
   const scenario = findScenarioByKey(activeScenarioKey);
 
-  const outputAddrs = useMemo<Set<number>>(() => {
-    if (!scenario || !result || !result.ok) return new Set();
-    const names = scenario.getOutputs(result.varMap);
-    const addrs = new Set<number>();
-    for (const name of names) {
-      const v = result.varMap.find(b => b.name === name);
-      if (v) addrs.add(v.addr);
-    }
-    return addrs;
-  }, [scenario, result]);
+  const outputAddrs = useMemo<Set<number>>(
+    () => collectOutputAddrs(scenario, result?.ok ? result.varMap : []),
+    [scenario, result],
+  );
+  const inputAddrs = useMemo<Set<number>>(
+    () => collectInputAddrs(scenario, result?.ok ? result.varMap : []),
+    [scenario, result],
+  );
 
   if (!result || !result.ok || !cpu) {
     return (
@@ -59,17 +55,21 @@ export default function ExecuteScene() {
     <div className="space-y-4">
       <ExecControls />
 
-      {scenario?.key === "caesar" && <CaesarInput mode="cipher" />}
-
       {scenario && (
-        <OutputPanel scenario={scenario} varMap={result.varMap} ram={cpu.ram} />
+        <IOPanel scenario={scenario} varMap={result.varMap} ram={cpu.ram} />
       )}
 
       <CpuDiagram signals={signals} pc={cpu.pc} ir={cpu.ir} acc={cpu.acc} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
-          <RamGrid ram={cpu.ram} signals={signals} pc={cpu.pc} outputs={outputAddrs} />
+          <RamGrid
+            ram={cpu.ram}
+            signals={signals}
+            pc={cpu.pc}
+            inputs={inputAddrs}
+            outputs={outputAddrs}
+          />
         </div>
         <RegistersPanel />
       </div>
@@ -90,6 +90,36 @@ export default function ExecuteScene() {
       </div>
     </div>
   );
+}
+
+function collectOutputAddrs(scenario: Scenario | null, varMap: VarBinding[]): Set<number> {
+  if (!scenario) return new Set();
+  const names = scenario.io.output.getNames(varMap);
+  const out = new Set<number>();
+  for (const name of names) {
+    const v = varMap.find(b => b.name === name);
+    if (v) out.add(v.addr);
+  }
+  return out;
+}
+
+function collectInputAddrs(scenario: Scenario | null, varMap: VarBinding[]): Set<number> {
+  if (!scenario) return new Set();
+  const input = scenario.io.input;
+  const out = new Set<number>();
+  if (!input) return out;
+  if (input.kind === "vars") {
+    for (const v of input.vars) {
+      const b = varMap.find(x => x.name === v.name);
+      if (b) out.add(b.addr);
+    }
+  } else if (input.kind === "caesar") {
+    // Highlight the cN cipher cells.
+    for (const v of varMap) {
+      if (/^c\d+$/.test(v.name)) out.add(v.addr);
+    }
+  }
+  return out;
 }
 
 function pad3(n: number): string {

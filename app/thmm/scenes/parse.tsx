@@ -11,6 +11,7 @@
 import { useState } from "react";
 import AstTree from "../components/ast-tree";
 import SourceView from "../components/source-view";
+import StepControls from "../components/step-controls";
 import type { CompileResult, Span } from "../thcc";
 import { useCompiler } from "../state/compiler-store";
 
@@ -38,34 +39,15 @@ export default function ParseScene() {
   }
 
   const total = result.ast.length;
-  const atEnd = visible >= total;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={() => setVisible(v => Math.min(v + 1, total))}
-          disabled={atEnd}
-          className="px-3 py-1.5 text-sm rounded border border-white/15 text-white/80 hover:text-white hover:border-white/30 disabled:opacity-40"
-        >
-          Parse next statement
-        </button>
-        <button
-          onClick={() => setVisible(total)}
-          className="px-3 py-1.5 text-sm rounded border border-white/15 text-white/80 hover:text-white hover:border-white/30"
-        >
-          Parse all
-        </button>
-        <button
-          onClick={() => setVisible(0)}
-          className="px-3 py-1.5 text-sm rounded border border-white/15 text-white/80 hover:text-white hover:border-white/30"
-        >
-          Reset
-        </button>
-        <div className="text-xs text-text-muted ml-auto">
-          {visible} / {total} statements parsed
-        </div>
-      </div>
+      <StepControls
+        value={visible}
+        total={total}
+        onChange={setVisible}
+        unit="statement"
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <SourceView source={source} highlights={hover ? [hover] : []} />

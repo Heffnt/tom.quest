@@ -23,6 +23,7 @@ import {
 } from "react";
 import { compile, type CompileResult } from "../thcc";
 import { initState, loadProgram, peek, tick, type Signals, type State } from "../cpu";
+import type { ViewMode } from "../lib/format";
 import type { Scenario } from "../scenarios";
 
 export type SceneKey = "source" | "parse" | "codegen" | "link" | "execute";
@@ -66,6 +67,10 @@ type Ctx = {
 
   /** True when the user has manually overridden any CPU cell since reset. */
   hasOverrides: boolean;
+
+  // Shared display mode for register / RAM / IO panels.
+  displayMode: ViewMode;
+  setDisplayMode: (mode: ViewMode) => void;
 };
 
 const CompilerContext = createContext<Ctx | null>(null);
@@ -91,6 +96,7 @@ export function CompilerProvider({
   );
   const [result, setResult] = useState<CompileResult | null>(() => compile(initialSource));
   const [scene, setScene] = useState<SceneKey>("source");
+  const [displayMode, setDisplayMode] = useState<ViewMode>("hex");
 
   const setSource = useCallback((next: string) => {
     setSourceRaw(next);
@@ -176,6 +182,8 @@ export function CompilerProvider({
     reset,
     pokeCpu,
     hasOverrides,
+    displayMode,
+    setDisplayMode,
   };
 
   return (
