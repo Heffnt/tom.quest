@@ -18,13 +18,16 @@ import { useCompiler } from "../state/compiler-store";
 export default function ParseScene() {
   const { result, source } = useCompiler();
   const [hover, setHover] = useState<Span | null>(null);
-  // Derived state pattern: when the compile result identity changes, reset
-  // the stepping counter without firing an effect.
+  // Derived state pattern: when the compile result identity changes, snap
+  // the stepping counter to the end so the user sees the full AST by default
+  // and steps backwards to demonstrate. Without this, every recompile would
+  // jump back to "0 statements parsed" and bury the result.
+  const totalStmts = result?.ok ? result.ast.length : 0;
   const [stepState, setStepState] = useState<{ result: CompileResult | null; visible: number }>({
-    result, visible: 0,
+    result, visible: totalStmts,
   });
   if (stepState.result !== result) {
-    setStepState({ result, visible: 0 });
+    setStepState({ result, visible: totalStmts });
   }
   const visible = stepState.visible;
   const setVisible = (next: number | ((prev: number) => number)) =>

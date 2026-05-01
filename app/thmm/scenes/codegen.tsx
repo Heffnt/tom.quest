@@ -18,11 +18,14 @@ import { useCompiler } from "../state/compiler-store";
 export default function CodegenScene() {
   const { result, source } = useCompiler();
   const [hoveredStmt, setHoveredStmt] = useState<number | null>(null);
+  // Default to fully compiled so the user sees the finished asm and steps
+  // backwards to walk through it; matches the parse scene's behaviour.
+  const totalStmts = result?.ok ? result.ast.length : 0;
   const [stepState, setStepState] = useState<{ result: CompileResult | null; visible: number }>({
-    result, visible: 0,
+    result, visible: totalStmts,
   });
   if (stepState.result !== result) {
-    setStepState({ result, visible: 0 });
+    setStepState({ result, visible: totalStmts });
   }
   const visible = stepState.visible;
   const setVisible = (next: number | ((prev: number) => number)) =>
