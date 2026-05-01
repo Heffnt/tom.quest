@@ -15,7 +15,7 @@ type Props = {
 };
 
 export default function SceneShell({ children }: Props) {
-  const { source, setSource, scene, setScene, result } = useCompiler();
+  const { activeScenarioKey, pickScenario, scene, setScene, result } = useCompiler();
 
   // Arrow keys cycle scenes; ignored when an input or textarea has focus
   // (so editing source / poking cells doesn't navigate away).
@@ -48,8 +48,8 @@ export default function SceneShell({ children }: Props) {
       </header>
 
       <ScenarioPicker
-        currentSource={source}
-        onPick={setSource}
+        activeKey={activeScenarioKey}
+        onPick={pickScenario}
       />
 
       <nav className="border border-white/10 rounded-lg bg-white/[0.02] overflow-x-auto">
@@ -99,22 +99,22 @@ export default function SceneShell({ children }: Props) {
 }
 
 function ScenarioPicker({
-  currentSource,
+  activeKey,
   onPick,
 }: {
-  currentSource: string;
-  onPick: (s: string) => void;
+  activeKey: string | null;
+  onPick: (s: typeof SCENARIOS[number]) => void;
 }) {
   return (
     <div className="border border-white/10 rounded-lg bg-white/[0.02] p-3">
       <div className="text-xs text-text-muted mb-2">Scenario</div>
       <div className="flex flex-wrap gap-2">
         {SCENARIOS.map(s => {
-          const active = currentSource === s.source;
+          const active = activeKey === s.key;
           return (
             <button
               key={s.key}
-              onClick={() => onPick(s.source)}
+              onClick={() => onPick(s)}
               className={`px-3 py-1.5 text-sm rounded border transition-colors ${
                 active
                   ? "border-accent text-accent bg-accent/5"

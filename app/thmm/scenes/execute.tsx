@@ -13,23 +13,25 @@
 import { useMemo } from "react";
 import { toUint } from "../cpu";
 import AsmView from "../components/asm-view";
+import CaesarInput from "../components/caesar-input";
 import CpuDiagram from "../components/cpu-diagram";
 import ExecControls from "../components/exec-controls";
 import OutputPanel from "../components/output-panel";
 import RamGrid from "../components/ram-grid";
 import RegistersPanel from "../components/registers-panel";
 import SourceView from "../components/source-view";
-import { matchScenario } from "../scenarios";
+import { findScenarioByKey } from "../scenarios";
 import { useCompiler } from "../state/compiler-store";
 
 export default function ExecuteScene() {
-  const { source, result, cpu, signals } = useCompiler();
-  const scenario = matchScenario(source);
+  const { source, result, cpu, signals, activeScenarioKey } = useCompiler();
+  const scenario = findScenarioByKey(activeScenarioKey);
 
   const outputAddrs = useMemo<Set<number>>(() => {
     if (!scenario || !result || !result.ok) return new Set();
+    const names = scenario.getOutputs(result.varMap);
     const addrs = new Set<number>();
-    for (const name of scenario.outputs) {
+    for (const name of names) {
       const v = result.varMap.find(b => b.name === name);
       if (v) addrs.add(v.addr);
     }
@@ -57,11 +59,20 @@ export default function ExecuteScene() {
     <div className="space-y-4">
       <ExecControls />
 
+      {scenario?.key === "caesar" && <CaesarInput mode="cipher" />}
+
       {scenario && (
         <OutputPanel scenario={scenario} varMap={result.varMap} ram={cpu.ram} />
       )}
 
       <CpuDiagram signals={signals} pc={cpu.pc} ir={cpu.ir} acc={cpu.acc} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2">
+          <RamGrid ram={cpu.ram} signals={signals} pc={cpu.pc} outputs={outputAddrs} />
+        </div>
+        <RegistersPanel />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div>
@@ -76,13 +87,6 @@ export default function ExecuteScene() {
           </div>
           <AsmView rows={asmRows} highlight={[pcIdx]} />
         </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <RamGrid ram={cpu.ram} signals={signals} pc={cpu.pc} outputs={outputAddrs} />
-        </div>
-        <RegistersPanel />
       </div>
     </div>
   );

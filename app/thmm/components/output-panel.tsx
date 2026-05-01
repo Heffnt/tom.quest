@@ -22,7 +22,8 @@ type Props = {
 };
 
 export default function OutputPanel({ scenario, varMap, ram }: Props) {
-  const cells = scenario.outputs
+  const names = scenario.getOutputs(varMap);
+  const cells = names
     .map(name => {
       const v = varMap.find(b => b.name === name);
       if (!v) return null;

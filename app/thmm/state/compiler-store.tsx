@@ -23,6 +23,7 @@ import {
 } from "react";
 import { compile, type CompileResult } from "../thcc";
 import { initState, loadProgram, peek, tick, type Signals, type State } from "../cpu";
+import type { Scenario } from "../scenarios";
 
 export type SceneKey = "source" | "parse" | "codegen" | "link" | "execute";
 
@@ -37,7 +38,16 @@ export const SCENES: ReadonlyArray<{ key: SceneKey; label: string }> = [
 type Ctx = {
   // Source + compile
   source: string;
+  /** Set raw source. Clears the active scenario tag. */
   setSource: (next: string) => void;
+  /** Pick a scenario; sets both source and the active-scenario tag. */
+  pickScenario: (s: Scenario) => void;
+  /** Update source while keeping the active scenario tag — used by the
+   *  scenario-specific input widgets (Caesar plaintext / ciphertext) so a
+   *  re-encoded program is still recognised as a Caesar run. */
+  updateScenarioSource: (key: string, next: string) => void;
+  /** Active scenario key, if the current source matches a known scenario. */
+  activeScenarioKey: string | null;
   result: CompileResult | null;
 
   // Scene navigation
@@ -68,13 +78,34 @@ export function useCompiler(): Ctx {
 
 type ProviderProps = {
   initialSource: string;
+  initialScenarioKey?: string;
   children: ReactNode;
 };
 
-export function CompilerProvider({ initialSource, children }: ProviderProps) {
-  const [source, setSource] = useState(initialSource);
+export function CompilerProvider({
+  initialSource, initialScenarioKey, children,
+}: ProviderProps) {
+  const [source, setSourceRaw] = useState(initialSource);
+  const [activeScenarioKey, setActiveScenarioKey] = useState<string | null>(
+    initialScenarioKey ?? null,
+  );
   const [result, setResult] = useState<CompileResult | null>(() => compile(initialSource));
   const [scene, setScene] = useState<SceneKey>("source");
+
+  const setSource = useCallback((next: string) => {
+    setSourceRaw(next);
+    setActiveScenarioKey(null);
+  }, []);
+
+  const pickScenario = useCallback((s: Scenario) => {
+    setSourceRaw(s.source);
+    setActiveScenarioKey(s.key);
+  }, []);
+
+  const updateScenarioSource = useCallback((key: string, next: string) => {
+    setSourceRaw(next);
+    setActiveScenarioKey(key);
+  }, []);
 
   // Debounced recompile.
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -133,6 +164,9 @@ export function CompilerProvider({ initialSource, children }: ProviderProps) {
 
   const value: Ctx = {
     source, setSource,
+    pickScenario,
+    updateScenarioSource,
+    activeScenarioKey,
     result,
     scene, setScene,
     cpu: cpuRef.current,

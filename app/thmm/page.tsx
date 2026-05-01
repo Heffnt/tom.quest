@@ -11,7 +11,10 @@ import ExecuteScene from "./scenes/execute";
 
 export default function ThmmPage() {
   return (
-    <CompilerProvider initialSource={DEFAULT_SCENARIO.source}>
+    <CompilerProvider
+      initialSource={DEFAULT_SCENARIO.source}
+      initialScenarioKey={DEFAULT_SCENARIO.key}
+    >
       <SceneShell>
         <ActiveScene />
       </SceneShell>

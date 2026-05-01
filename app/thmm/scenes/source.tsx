@@ -5,13 +5,16 @@
  */
 "use client";
 
+import CaesarInput from "../components/caesar-input";
 import SourceView from "../components/source-view";
 import { useCompiler } from "../state/compiler-store";
 
 export default function SourceScene() {
-  const { source, setSource, result } = useCompiler();
+  const { source, setSource, result, activeScenarioKey } = useCompiler();
   return (
     <div className="space-y-3">
+      {activeScenarioKey === "caesar" && <CaesarInput mode="plain" />}
+
       <div className="text-sm text-text-muted">
         Edit the program. The compiler runs every keystroke.
       </div>

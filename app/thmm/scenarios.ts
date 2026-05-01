@@ -4,11 +4,12 @@
  */
 
 import {
-  CAESAR_THCC,
   NESTED_THCC,
   REGRESSION_THCC,
   SIMPLE_THCC,
+  type VarBinding,
 } from "./thcc";
+import { buildCaesarSource } from "./lib/caesar";
 
 export type Scenario = {
   key: string;
@@ -16,14 +17,17 @@ export type Scenario = {
   blurb: string;
   source: string;
   /**
-   * Variable names whose final RAM values are the answer the program is
-   * computing. The execute scene watches these cells live and surfaces
-   * them in the output panel. ASCII-mode rendering is appropriate when
-   * `asAscii` is true (Caesar's plaintext bytes).
+   * Compute the output variable names — the cells where the answer
+   * accumulates — for a particular compile of this scenario. Called once
+   * per compile in the execute scene; the names index into varMap to
+   * produce RAM addresses. Dynamic so the Caesar scenario can grow / shrink
+   * its output set as the user changes plaintext length.
    */
-  outputs: string[];
+  getOutputs: (varMap: VarBinding[]) => string[];
   asAscii?: boolean;
 };
+
+const DEFAULT_CAESAR_SOURCE = buildCaesarSource("WRP KHIIHUQDQ");
 
 export const SCENARIOS: Scenario[] = [
   {
@@ -31,42 +35,44 @@ export const SCENARIOS: Scenario[] = [
     label: "Hello accumulator",
     blurb: "Two literals, one sum. The smallest non-trivial program.",
     source: SIMPLE_THCC,
-    outputs: ["c"],
+    getOutputs: () => ["c"],
   },
   {
     key: "nested",
     label: "Temp-stash dance",
     blurb: "(a + b) * (c + d) — forces the compiler to use scratch cells.",
     source: NESTED_THCC,
-    outputs: ["z"],
+    getOutputs: () => ["z"],
   },
   {
     key: "regression",
     label: "Linear regression",
     blurb: "Least squares on three points. Recovers w = 2, b = 1.",
     source: REGRESSION_THCC,
-    outputs: ["w", "b"],
+    getOutputs: () => ["w", "b"],
   },
   {
     key: "caesar",
     label: "Caesar decryption",
-    blurb: "Decrypts WRP KHIIHUQDQ to TOM HEFFERNAN with shift 3.",
-    source: CAESAR_THCC,
-    outputs: [
-      "p0", "p1", "p2", "p3", "p4", "p5", "p6",
-      "p7", "p8", "p9", "p10", "p11", "p12",
-    ],
+    blurb: "Decrypts ciphertext one character at a time, shift 3.",
+    source: DEFAULT_CAESAR_SOURCE,
+    // Pull p0, p1, p2, ... out of the varMap in numeric order.
+    getOutputs: (varMap) => {
+      const ps: { name: string; n: number }[] = [];
+      for (const v of varMap) {
+        const m = /^p(\d+)$/.exec(v.name);
+        if (m) ps.push({ name: v.name, n: parseInt(m[1], 10) });
+      }
+      ps.sort((a, b) => a.n - b.n);
+      return ps.map(p => p.name);
+    },
     asAscii: true,
   },
 ];
 
 export const DEFAULT_SCENARIO = SCENARIOS[0];
 
-/**
- * Find the scenario whose source matches `source` exactly. Returns null when
- * the user has typed their own program. Used by the execute scene so it
- * only highlights / displays outputs for known scenarios.
- */
-export function matchScenario(source: string): Scenario | null {
-  return SCENARIOS.find(s => s.source === source) ?? null;
+export function findScenarioByKey(key: string | null): Scenario | null {
+  if (!key) return null;
+  return SCENARIOS.find(s => s.key === key) ?? null;
 }
