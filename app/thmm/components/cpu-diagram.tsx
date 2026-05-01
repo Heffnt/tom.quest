@@ -117,29 +117,38 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
         </defs>
 
         {/* ============================================================ */}
-        {/* TOP STATUS BAR — small, de-emphasized                         */}
+        {/* TOP STATUS BAR — Clock big and centered, Phase/Halt small     */}
         {/* ============================================================ */}
-        <Box x={40} y={25} w={110} h={45}>
-          <text x={95} y={45} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Clock</text>
-          <text x={95} y={61} textAnchor="middle" fontSize={10} fill={halted ? C.ctlActive : C.sub}>
-            {halted ? "off" : "on"}
-          </text>
-        </Box>
-        <Box x={170} y={25} w={110} h={45}>
-          <text x={225} y={45} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Phase</text>
-          <text x={225} y={61} textAnchor="middle" fontSize={10} fill={C.wireActive}>
+
+        {/* Phase indicator (far left, small) */}
+        <Box x={60} y={30} w={140} h={50}>
+          <text x={130} y={52} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Phase</text>
+          <text x={130} y={68} textAnchor="middle" fontSize={11} fill={C.wireActive}>
             {activePhase ? "execute" : "fetch"}
           </text>
         </Box>
-        <Box x={300} y={25} w={140} h={45} active={halts || halted}>
-          <text x={370} y={45} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Halt Latch</text>
-          <text x={370} y={61} textAnchor="middle" fontSize={10} fill={halted ? C.ctlActive : C.sub}>
+
+        {/* Clock — bigger, centered horizontally */}
+        <Box x={720} y={15} w={260} h={80}>
+          <text x={850} y={42} textAnchor="middle" fontSize={16} fontWeight="bold" fill={C.title}>Clock</text>
+          <text x={850} y={66} textAnchor="middle" fontSize={12} fill={halted ? C.ctlActive : C.sub}>
+            {halted ? "gated off" : "running"}
+          </text>
+          <text x={850} y={84} textAnchor="middle" fontSize={10} fill={C.sub}>
+            drives fetch/execute cycle
+          </text>
+        </Box>
+
+        {/* Halt Latch (far right, small) */}
+        <Box x={1500} y={30} w={140} h={50} active={halts || halted}>
+          <text x={1570} y={52} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Halt Latch</text>
+          <text x={1570} y={68} textAnchor="middle" fontSize={11} fill={halted ? C.ctlActive : C.sub}>
             {halted ? "halted" : "running"}
           </text>
         </Box>
 
-        {/* Halt → Clock gate (subtle dashed line above the row) */}
-        <path d="M 370 25 L 370 12 L 95 12 L 95 25"
+        {/* Halt → Clock gate (subtle dashed line above all components) */}
+        <path d="M 1500 50 L 1480 50 L 1480 8 L 850 8 L 850 15"
               fill="none" stroke={ctlStroke(halted)} strokeWidth={1.2} strokeDasharray="4 3"
               markerEnd={m(halted, "ctl")} />
 
@@ -148,45 +157,45 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
         {/* ============================================================ */}
 
         {/* IR — instruction register (large, above decoder) */}
-        <Box x={60} y={100} w={320} h={110} active={ramReadUsedByIR}>
-          <text x={220} y={132} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.title}>
+        <Box x={60} y={130} w={320} h={110} active={ramReadUsedByIR}>
+          <text x={220} y={162} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.title}>
             Instruction Register
           </text>
-          <text x={220} y={170} textAnchor="middle" fontSize={26} fontWeight="bold" fill={C.wireActive}>
+          <text x={220} y={200} textAnchor="middle" fontSize={26} fontWeight="bold" fill={C.wireActive}>
             {hex(ir)}
           </text>
-          <text x={220} y={195} textAnchor="middle" fontSize={11} fill={C.sub}>
+          <text x={220} y={225} textAnchor="middle" fontSize={11} fill={C.sub}>
             op = {(s?.ir16 ?? ir).slice(0, 4)}  ·  operand = {(s?.ir16 ?? ir).slice(8, 16)}
           </text>
         </Box>
 
         {/* Decoder — controller (huge box dominating the left column) */}
-        <Box x={60} y={240} w={320} h={580} active={activePhase}>
-          <text x={220} y={285} textAnchor="middle" fontSize={28} fontWeight="bold" fill={C.title}>
+        <Box x={60} y={280} w={320} h={560} active={activePhase}>
+          <text x={220} y={325} textAnchor="middle" fontSize={28} fontWeight="bold" fill={C.title}>
             DECODER
           </text>
-          <text x={220} y={306} textAnchor="middle" fontSize={11} fill={C.sub}>
+          <text x={220} y={346} textAnchor="middle" fontSize={11} fill={C.sub}>
             controls all data flow
           </text>
 
-          <text x={75} y={345} fontSize={11} fill={C.sub}>inputs</text>
-          <text x={90} y={363} fontSize={11} fill={C.title}>IR  = {s ? hex(s.ir16) : hex(ir)}</text>
-          <text x={90} y={379} fontSize={11} fill={C.title}>z   = {s ? s.accZero1 : "0"}</text>
+          <text x={75} y={385} fontSize={11} fill={C.sub}>inputs</text>
+          <text x={90} y={403} fontSize={11} fill={C.title}>IR  = {s ? hex(s.ir16) : hex(ir)}</text>
+          <text x={90} y={419} fontSize={11} fill={C.title}>z   = {s ? s.accZero1 : "0"}</text>
 
-          <text x={75} y={415} fontSize={11} fill={C.sub}>control out</text>
-          <Ctl x={90} y={433} active={s?.progWeRaw1 === "1"}>ProgWE</Ctl>
-          <Ctl x={90} y={451} active={s?.progMux1 === "1"}>ProgMux</Ctl>
-          <Ctl x={90} y={469} active={s?.ramWeRaw1 === "1"}>RamWE</Ctl>
-          <Ctl x={90} y={487} active={s?.aluMux1 === "1"}>AluMux</Ctl>
-          <Ctl x={90} y={505} active={!!s && s.aluOp3 !== "000"}>AluOp = {s?.aluOp3 ?? "000"}</Ctl>
-          <Ctl x={90} y={523} active={s?.accWeRaw1 === "1"}>AccWE</Ctl>
-          <Ctl x={90} y={541} active={s?.halt1 === "1"}>Halt</Ctl>
+          <text x={75} y={455} fontSize={11} fill={C.sub}>control out</text>
+          <Ctl x={90} y={473} active={s?.progWeRaw1 === "1"}>ProgWE</Ctl>
+          <Ctl x={90} y={491} active={s?.progMux1 === "1"}>ProgMux</Ctl>
+          <Ctl x={90} y={509} active={s?.ramWeRaw1 === "1"}>RamWE</Ctl>
+          <Ctl x={90} y={527} active={s?.aluMux1 === "1"}>AluMux</Ctl>
+          <Ctl x={90} y={545} active={!!s && s.aluOp3 !== "000"}>AluOp = {s?.aluOp3 ?? "000"}</Ctl>
+          <Ctl x={90} y={563} active={s?.accWeRaw1 === "1"}>AccWE</Ctl>
+          <Ctl x={90} y={581} active={s?.halt1 === "1"}>Halt</Ctl>
 
-          <text x={75} y={580} fontSize={11} fill={C.sub}>data out</text>
-          <text x={90} y={598} fontSize={11} fill={ramDataAddrPath ? C.wireActive : C.sub}>
+          <text x={75} y={620} fontSize={11} fill={C.sub}>data out</text>
+          <text x={90} y={638} fontSize={11} fill={ramDataAddrPath ? C.wireActive : C.sub}>
             RamData = {s ? hex(s.ramData8) : "0x00"}
           </text>
-          <text x={90} y={614} fontSize={11} fill={aluDataPath ? C.wireActive : C.sub}>
+          <text x={90} y={654} fontSize={11} fill={aluDataPath ? C.wireActive : C.sub}>
             AluData = {s ? hex(s.aluData16) : "0x0000"}
           </text>
         </Box>
@@ -196,116 +205,116 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
         {/* ============================================================ */}
 
         {/* PC — program counter (large, above RAM) */}
-        <Box x={1320} y={100} w={320} h={110} active={pcJumps}>
-          <text x={1480} y={132} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.title}>
+        <Box x={1320} y={130} w={320} h={110} active={pcJumps}>
+          <text x={1480} y={162} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.title}>
             Program Counter
           </text>
-          <text x={1480} y={170} textAnchor="middle" fontSize={26} fontWeight="bold" fill={C.wireActive}>
+          <text x={1480} y={200} textAnchor="middle" fontSize={26} fontWeight="bold" fill={C.wireActive}>
             {hex(pc)}
           </text>
-          <text x={1480} y={195} textAnchor="middle" fontSize={11} fill={C.sub}>
+          <text x={1480} y={225} textAnchor="middle" fontSize={11} fill={C.sub}>
             address of next instruction
           </text>
         </Box>
 
-        {/* Addr Mux — small trapezoid sitting between PC bottom and RAM top */}
-        <path d="M 1380 222 L 1580 222 L 1540 262 L 1420 262 Z"
-              fill={C.bg} stroke={activePhase || !activePhase ? C.border : C.borderActive} strokeWidth={1.5} />
-        <text x={1480} y={240} textAnchor="middle" fontSize={10} fontWeight="bold" fill={C.title}>
+        {/* Addr Mux — trapezoid sitting between PC and RAM */}
+        <path d="M 1380 270 L 1580 270 L 1530 320 L 1430 320 Z"
+              fill={C.bg} stroke={C.border} strokeWidth={1.5} />
+        <text x={1480} y={290} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
           Addr Mux
         </text>
-        <text x={1480} y={255} textAnchor="middle" fontSize={10} fill={C.wireActive}>
+        <text x={1480} y={308} textAnchor="middle" fontSize={10} fill={C.wireActive}>
           {activePhase ? "RamData" : "PC"}
         </text>
 
         {/* RAM — huge tower (right column) */}
-        <Box x={1320} y={290} w={320} h={530} active={ramWrites}>
-          <text x={1480} y={335} textAnchor="middle" fontSize={28} fontWeight="bold" fill={C.title}>
+        <Box x={1320} y={350} w={320} h={490} active={ramWrites}>
+          <text x={1480} y={395} textAnchor="middle" fontSize={28} fontWeight="bold" fill={C.title}>
             RAM
           </text>
-          <text x={1480} y={358} textAnchor="middle" fontSize={11} fill={C.sub}>
+          <text x={1480} y={418} textAnchor="middle" fontSize={11} fill={C.sub}>
             256 × 16 bits — code + data
           </text>
-          <text x={1480} y={398} textAnchor="middle" fontSize={13} fill={C.title}>
+          <text x={1480} y={460} textAnchor="middle" fontSize={13} fill={C.title}>
             addr = {s ? hex(s.addr8) : "0x00"}
           </text>
-          <text x={1480} y={418} textAnchor="middle" fontSize={13} fill={C.title}>
+          <text x={1480} y={482} textAnchor="middle" fontSize={13} fill={C.title}>
             Dout = {s ? hex(s.ramDout16) : "0x0000"}
           </text>
           {ramWrites && s && (
-            <text x={1480} y={448} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.wireActive}>
+            <text x={1480} y={512} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.wireActive}>
               WRITE RAM[{hex(s.ramData8)}] ← {hex(s.acc16)}
             </text>
           )}
-          <text x={1335} y={395} fontSize={9} fill={C.pin}>addr</text>
-          <text x={1335} y={425} fontSize={9} fill={C.pin}>Din</text>
-          <text x={1335} y={465} fontSize={9} fill={C.pin}>WE</text>
-          <text x={1335} y={335} fontSize={9} fill={C.pin}>Dout</text>
+          <text x={1335} y={395} fontSize={9} fill={C.pin}>Dout</text>
+          <text x={1335} y={460} fontSize={9} fill={C.pin}>addr</text>
+          <text x={1335} y={490} fontSize={9} fill={C.pin}>Din</text>
+          <text x={1335} y={525} fontSize={9} fill={C.pin}>WE</text>
         </Box>
 
         {/* ============================================================ */}
-        {/* PROG MUX — tiny, attached to PC's left side                   */}
+        {/* PROG MUX — small box attached to PC's left side               */}
         {/* ============================================================ */}
-        <path d="M 1230 138 L 1318 145 L 1318 175 L 1230 182 Z"
-              fill={C.bg} stroke={C.border} strokeWidth={1.5} />
-        <text x={1272} y={158} textAnchor="middle" fontSize={10} fontWeight="bold" fill={C.title}>
-          ProgMux
-        </text>
-        <text x={1272} y={172} textAnchor="middle" fontSize={9} fill={C.wireActive}>
-          {s?.progMux1 === "1" ? "ALU" : "Acc"}
-        </text>
+        <Box x={1230} y={152} w={88} h={44}>
+          <text x={1274} y={170} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
+            ProgMux
+          </text>
+          <text x={1274} y={186} textAnchor="middle" fontSize={10} fill={C.wireActive}>
+            {s?.progMux1 === "1" ? "ALU" : "Acc"}
+          </text>
+        </Box>
 
         {/* ============================================================ */}
         {/* CENTER STACK — ALU B Mux → ALU → Acc (Zero left of Acc)        */}
         {/* ============================================================ */}
 
-        {/* ALU B Mux — trapezoid above ALU's B input */}
-        <path d="M 860 305 L 1100 305 L 1020 360 L 940 360 Z"
+        {/* ALU B Mux — trapezoid above ALU's B input (right side) */}
+        <path d="M 920 335 L 1080 335 L 1030 385 L 970 385 Z"
               fill={C.bg} stroke={C.border} strokeWidth={1.5} />
-        <text x={980} y={328} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
+        <text x={1000} y={358} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
           ALU B Mux
         </text>
-        <text x={980} y={348} textAnchor="middle" fontSize={10} fill={C.wireActive}>
+        <text x={1000} y={376} textAnchor="middle" fontSize={10} fill={C.wireActive}>
           {s?.aluMux1 === "1" ? "RAM" : "immediate"}
         </text>
 
-        {/* ALU — huge centered block */}
-        <Box x={540} y={380} w={620} h={240} active={aluWrites}>
-          <text x={850} y={435} textAnchor="middle" fontSize={40} fontWeight="bold" fill={C.title}>
+        {/* ALU — centered block (less wide than before) */}
+        <Box x={620} y={415} w={460} h={220} active={aluWrites}>
+          <text x={850} y={465} textAnchor="middle" fontSize={36} fontWeight="bold" fill={C.title}>
             ALU
           </text>
-          <text x={850} y={460} textAnchor="middle" fontSize={11} fill={C.sub}>
+          <text x={850} y={490} textAnchor="middle" fontSize={11} fill={C.sub}>
             16-bit two&apos;s complement
           </text>
-          <text x={850} y={478} textAnchor="middle" fontSize={11} fill={C.sub}>
+          <text x={850} y={508} textAnchor="middle" fontSize={11} fill={C.sub}>
             pass · add · sub · mul · div
           </text>
-          <text x={850} y={520} textAnchor="middle" fontSize={14} fontWeight="bold" fill={C.title}>
+          <text x={850} y={548} textAnchor="middle" fontSize={14} fontWeight="bold" fill={C.title}>
             op = {s ? (ALU_OP_LABEL[s.aluOp3] ?? s.aluOp3) : "pass"}
           </text>
-          <text x={850} y={555} textAnchor="middle" fontSize={16} fontWeight="bold" fill={C.wireActive}>
+          <text x={850} y={580} textAnchor="middle" fontSize={16} fontWeight="bold" fill={C.wireActive}>
             out = {s ? hex(s.aluOut16) : "0x0000"}
           </text>
-          <text x={645} y={397} fontSize={11} fontWeight="bold" fill={C.pin}>A</text>
-          <text x={1000} y={397} fontSize={11} fontWeight="bold" fill={C.pin}>B</text>
+          <text x={705} y={432} fontSize={11} fontWeight="bold" fill={C.pin}>A</text>
+          <text x={1005} y={432} fontSize={11} fontWeight="bold" fill={C.pin}>B</text>
         </Box>
 
         {/* Accumulator — directly under ALU center */}
-        <Box x={750} y={660} w={200} h={80} active={aluWrites}>
-          <text x={850} y={690} textAnchor="middle" fontSize={16} fontWeight="bold" fill={C.title}>
+        <Box x={750} y={685} w={200} h={80} active={aluWrites}>
+          <text x={850} y={715} textAnchor="middle" fontSize={16} fontWeight="bold" fill={C.title}>
             Accumulator
           </text>
-          <text x={850} y={722} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.wireActive}>
+          <text x={850} y={747} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.wireActive}>
             {hex(acc)}
           </text>
         </Box>
 
         {/* Zero Detect — small, LEFT of Accumulator */}
-        <Box x={560} y={680} w={170} h={50}>
-          <text x={645} y={702} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
+        <Box x={560} y={700} w={170} h={50}>
+          <text x={645} y={722} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
             Zero?
           </text>
-          <text x={645} y={720} textAnchor="middle" fontSize={11} fill={s?.accZero1 === "1" ? C.wireActive : C.sub}>
+          <text x={645} y={740} textAnchor="middle" fontSize={11} fill={s?.accZero1 === "1" ? C.wireActive : C.sub}>
             {s?.accZero1 === "1" ? "YES" : "no"}
           </text>
         </Box>
