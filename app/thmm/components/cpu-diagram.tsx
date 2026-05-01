@@ -116,288 +116,345 @@ export default function CpuDiagram({ signals: rawSignals, pc, ir, acc }: Props) 
           </marker>
         </defs>
 
-        {/* ============ TOP ROW — Clock, Phase, Halt Latch ============ */}
-        <Box x={40}  y={50} w={180} h={60}>
-          <Title x={130} y={72}>Clock</Title>
-          <Sub   x={130} y={92} fill={halted ? C.ctlActive : C.sub}>
-            {halted ? "gated off" : "running"}
-          </Sub>
+        {/* ============================================================ */}
+        {/* TOP STATUS BAR — small, de-emphasized                         */}
+        {/* ============================================================ */}
+        <Box x={40} y={25} w={110} h={45}>
+          <text x={95} y={45} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Clock</text>
+          <text x={95} y={61} textAnchor="middle" fontSize={10} fill={halted ? C.ctlActive : C.sub}>
+            {halted ? "off" : "on"}
+          </text>
+        </Box>
+        <Box x={170} y={25} w={110} h={45}>
+          <text x={225} y={45} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Phase</text>
+          <text x={225} y={61} textAnchor="middle" fontSize={10} fill={C.wireActive}>
+            {activePhase ? "execute" : "fetch"}
+          </text>
+        </Box>
+        <Box x={300} y={25} w={140} h={45} active={halts || halted}>
+          <text x={370} y={45} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>Halt Latch</text>
+          <text x={370} y={61} textAnchor="middle" fontSize={10} fill={halted ? C.ctlActive : C.sub}>
+            {halted ? "halted" : "running"}
+          </text>
         </Box>
 
-        <Box x={240} y={50} w={180} h={60}>
-          <Title x={330} y={72}>Phase</Title>
-          <Sub x={330} y={90}>{activePhase ? "1 (execute)" : "0 (fetch)"}</Sub>
-          <Value x={330} y={106} fill={C.wireActive}>{s ? s.phase1 : "0"}</Value>
-        </Box>
-
-        <Box x={440} y={50} w={180} h={60} active={halts || halted}>
-          <Title x={530} y={72}>Halt Latch</Title>
-          <Sub x={530} y={90}>set by decoder.Halt</Sub>
-          <Value x={530} y={106} fill={halted ? C.ctlActive : C.wireIdle}>{s ? s.halted1 : "0"}</Value>
-        </Box>
-
-        {/* Halt → Clock gate, dashed control line above the row */}
-        <path d="M 620 60 L 620 38 L 220 38 L 220 60"
-              fill="none" stroke={ctlStroke(halted)} strokeWidth={1.4} strokeDasharray="5 3"
+        {/* Halt → Clock gate (subtle dashed line above the row) */}
+        <path d="M 370 25 L 370 12 L 95 12 L 95 25"
+              fill="none" stroke={ctlStroke(halted)} strokeWidth={1.2} strokeDasharray="4 3"
               markerEnd={m(halted, "ctl")} />
-        <text x={380} y={32} textAnchor="middle" fontSize={11} fill={C.ctlIdle}>
-          Halt → Clock gate
-        </text>
 
-        {/* ============ DECODER ============ */}
-        <Box x={40} y={170} w={240} h={640} active={activePhase}>
-          <Title x={160} y={196}>Decoder</Title>
-          <Sub x={160} y={212}>combinational · IR → control</Sub>
+        {/* ============================================================ */}
+        {/* LEFT COLUMN — IR (top) feeds DECODER (huge tower below)       */}
+        {/* ============================================================ */}
 
-          <Sub x={55} y={244} anchor="start">inputs</Sub>
-          <text x={70} y={262} fontSize={11} fill={C.title}>IR  = {s ? hex(s.ir16) : hex(ir)}</text>
-          <text x={70} y={278} fontSize={11} fill={C.title}>z   = {s ? s.accZero1 : "0"}</text>
+        {/* IR — instruction register (large, above decoder) */}
+        <Box x={60} y={100} w={320} h={110} active={ramReadUsedByIR}>
+          <text x={220} y={132} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.title}>
+            Instruction Register
+          </text>
+          <text x={220} y={170} textAnchor="middle" fontSize={26} fontWeight="bold" fill={C.wireActive}>
+            {hex(ir)}
+          </text>
+          <text x={220} y={195} textAnchor="middle" fontSize={11} fill={C.sub}>
+            op = {(s?.ir16 ?? ir).slice(0, 4)}  ·  operand = {(s?.ir16 ?? ir).slice(8, 16)}
+          </text>
+        </Box>
 
-          <Sub x={55} y={312} anchor="start">control out</Sub>
-          <Ctl x={70} y={330} active={s?.progWeRaw1 === "1"}>ProgWE = {s?.progWeRaw1 ?? "0"}</Ctl>
-          <Ctl x={70} y={346} active={s?.progMux1 === "1"}>ProgMux = {s?.progMux1 ?? "0"}</Ctl>
-          <Ctl x={70} y={362} active={s?.ramWeRaw1 === "1"}>RamWE = {s?.ramWeRaw1 ?? "0"}</Ctl>
-          <Ctl x={70} y={378} active={s?.aluMux1 === "1"}>AluMux = {s?.aluMux1 ?? "0"}</Ctl>
-          <Ctl x={70} y={394} active={!!s && s.aluOp3 !== "000"}>AluOp = {s?.aluOp3 ?? "000"}</Ctl>
-          <Ctl x={70} y={410} active={s?.accWeRaw1 === "1"}>AccWE = {s?.accWeRaw1 ?? "0"}</Ctl>
-          <Ctl x={70} y={426} active={s?.halt1 === "1"}>Halt = {s?.halt1 ?? "0"}</Ctl>
+        {/* Decoder — controller (huge box dominating the left column) */}
+        <Box x={60} y={240} w={320} h={580} active={activePhase}>
+          <text x={220} y={285} textAnchor="middle" fontSize={28} fontWeight="bold" fill={C.title}>
+            DECODER
+          </text>
+          <text x={220} y={306} textAnchor="middle" fontSize={11} fill={C.sub}>
+            controls all data flow
+          </text>
 
-          <Sub x={55} y={460} anchor="start">data out</Sub>
-          <text x={70} y={478} fontSize={11} fill={ramDataAddrPath ? C.wireActive : C.sub}>
+          <text x={75} y={345} fontSize={11} fill={C.sub}>inputs</text>
+          <text x={90} y={363} fontSize={11} fill={C.title}>IR  = {s ? hex(s.ir16) : hex(ir)}</text>
+          <text x={90} y={379} fontSize={11} fill={C.title}>z   = {s ? s.accZero1 : "0"}</text>
+
+          <text x={75} y={415} fontSize={11} fill={C.sub}>control out</text>
+          <Ctl x={90} y={433} active={s?.progWeRaw1 === "1"}>ProgWE</Ctl>
+          <Ctl x={90} y={451} active={s?.progMux1 === "1"}>ProgMux</Ctl>
+          <Ctl x={90} y={469} active={s?.ramWeRaw1 === "1"}>RamWE</Ctl>
+          <Ctl x={90} y={487} active={s?.aluMux1 === "1"}>AluMux</Ctl>
+          <Ctl x={90} y={505} active={!!s && s.aluOp3 !== "000"}>AluOp = {s?.aluOp3 ?? "000"}</Ctl>
+          <Ctl x={90} y={523} active={s?.accWeRaw1 === "1"}>AccWE</Ctl>
+          <Ctl x={90} y={541} active={s?.halt1 === "1"}>Halt</Ctl>
+
+          <text x={75} y={580} fontSize={11} fill={C.sub}>data out</text>
+          <text x={90} y={598} fontSize={11} fill={ramDataAddrPath ? C.wireActive : C.sub}>
             RamData = {s ? hex(s.ramData8) : "0x00"}
           </text>
-          <text x={70} y={494} fontSize={11} fill={aluDataPath ? C.wireActive : C.sub}>
+          <text x={90} y={614} fontSize={11} fill={aluDataPath ? C.wireActive : C.sub}>
             AluData = {s ? hex(s.aluData16) : "0x0000"}
           </text>
         </Box>
 
-        {/* ============ RAM (far right) ============ */}
-        <Box x={1200} y={260} w={460} h={590} active={ramWrites}>
-          <Title x={1430} y={288}>RAM</Title>
-          <Sub x={1430} y={306}>256 × 16 bits — unified code + data</Sub>
-          <Sub x={1430} y={322}>Von Neumann, single port</Sub>
-          <text x={1430} y={356} textAnchor="middle" fontSize={12} fill={C.title}>
+        {/* ============================================================ */}
+        {/* RIGHT COLUMN — PC (top) feeds RAM (huge tower below)          */}
+        {/* ============================================================ */}
+
+        {/* PC — program counter (large, above RAM) */}
+        <Box x={1320} y={100} w={320} h={110} active={pcJumps}>
+          <text x={1480} y={132} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.title}>
+            Program Counter
+          </text>
+          <text x={1480} y={170} textAnchor="middle" fontSize={26} fontWeight="bold" fill={C.wireActive}>
+            {hex(pc)}
+          </text>
+          <text x={1480} y={195} textAnchor="middle" fontSize={11} fill={C.sub}>
+            address of next instruction
+          </text>
+        </Box>
+
+        {/* Addr Mux — small trapezoid sitting between PC bottom and RAM top */}
+        <path d="M 1380 222 L 1580 222 L 1540 262 L 1420 262 Z"
+              fill={C.bg} stroke={activePhase || !activePhase ? C.border : C.borderActive} strokeWidth={1.5} />
+        <text x={1480} y={240} textAnchor="middle" fontSize={10} fontWeight="bold" fill={C.title}>
+          Addr Mux
+        </text>
+        <text x={1480} y={255} textAnchor="middle" fontSize={10} fill={C.wireActive}>
+          {activePhase ? "RamData" : "PC"}
+        </text>
+
+        {/* RAM — huge tower (right column) */}
+        <Box x={1320} y={290} w={320} h={530} active={ramWrites}>
+          <text x={1480} y={335} textAnchor="middle" fontSize={28} fontWeight="bold" fill={C.title}>
+            RAM
+          </text>
+          <text x={1480} y={358} textAnchor="middle" fontSize={11} fill={C.sub}>
+            256 × 16 bits — code + data
+          </text>
+          <text x={1480} y={398} textAnchor="middle" fontSize={13} fill={C.title}>
             addr = {s ? hex(s.addr8) : "0x00"}
           </text>
-          <text x={1430} y={374} textAnchor="middle" fontSize={12} fill={C.title}>
+          <text x={1480} y={418} textAnchor="middle" fontSize={13} fill={C.title}>
             Dout = {s ? hex(s.ramDout16) : "0x0000"}
           </text>
           {ramWrites && s && (
-            <text x={1430} y={402} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.wireActive}>
+            <text x={1480} y={448} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.wireActive}>
               WRITE RAM[{hex(s.ramData8)}] ← {hex(s.acc16)}
             </text>
           )}
-          <text x={1215} y={352} fontSize={10} fill={C.pin}>addr</text>
-          <text x={1215} y={386} fontSize={10} fill={C.pin}>Din</text>
-          <text x={1215} y={420} fontSize={10} fill={C.pin}>WE</text>
-          <text x={1215} y={290} fontSize={10} fill={C.pin}>Dout</text>
-          <text x={1215} y={498} fontSize={10} fill={C.pin}>clk</text>
+          <text x={1335} y={395} fontSize={9} fill={C.pin}>addr</text>
+          <text x={1335} y={425} fontSize={9} fill={C.pin}>Din</text>
+          <text x={1335} y={465} fontSize={9} fill={C.pin}>WE</text>
+          <text x={1335} y={335} fontSize={9} fill={C.pin}>Dout</text>
         </Box>
 
-        {/* ============ IR (above RAM) ============ */}
-        <Box x={1200} y={170} w={300} h={70} active={ramReadUsedByIR}>
-          <Title x={1350} y={192}>IR — instruction register</Title>
-          <Value x={1350} y={214} fill={C.wireActive}>{hex(ir)}</Value>
-          <Sub x={1350} y={230}>WE = !Phase  ·  op[15:12] = {(s?.ir16 ?? ir).slice(0, 4)}  ·  n[7:0] = {(s?.ir16 ?? ir).slice(8, 16)}</Sub>
-        </Box>
+        {/* ============================================================ */}
+        {/* PROG MUX — tiny, attached to PC's left side                   */}
+        {/* ============================================================ */}
+        <path d="M 1230 138 L 1318 145 L 1318 175 L 1230 182 Z"
+              fill={C.bg} stroke={C.border} strokeWidth={1.5} />
+        <text x={1272} y={158} textAnchor="middle" fontSize={10} fontWeight="bold" fill={C.title}>
+          ProgMux
+        </text>
+        <text x={1272} y={172} textAnchor="middle" fontSize={9} fill={C.wireActive}>
+          {s?.progMux1 === "1" ? "ALU" : "Acc"}
+        </text>
 
-        {/* ============ PC, ProgMux, Addr Mux ============ */}
-        <Box x={340} y={200} w={160} h={90}>
-          <Title x={420} y={224}>PC — counter (8b)</Title>
-          <Sub x={420} y={242}>CT = !Phase</Sub>
-          <Sub x={420} y={258}>LD = ProgWE · Phase</Sub>
-          <Value x={420} y={282} fill={C.wireActive}>Q = {hex(pc)}</Value>
-        </Box>
+        {/* ============================================================ */}
+        {/* CENTER STACK — ALU B Mux → ALU → Acc (Zero left of Acc)        */}
+        {/* ============================================================ */}
 
-        <Box x={340} y={320} w={160} h={80}>
-          <Title x={420} y={342}>ProgMux</Title>
-          <Sub x={420} y={362} fill={s?.progMux1 === "0" ? C.wireActive : C.sub}>0: Acc[7:0]</Sub>
-          <Sub x={420} y={378} fill={s?.progMux1 === "1" ? C.wireActive : C.sub}>1: ALU[7:0]</Sub>
-          <text x={380} y={396} textAnchor="middle" fontSize={10} fill={C.pin}>0</text>
-          <text x={460} y={396} textAnchor="middle" fontSize={10} fill={C.pin}>1</text>
-        </Box>
+        {/* ALU B Mux — trapezoid above ALU's B input */}
+        <path d="M 860 305 L 1100 305 L 1020 360 L 940 360 Z"
+              fill={C.bg} stroke={C.border} strokeWidth={1.5} />
+        <text x={980} y={328} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
+          ALU B Mux
+        </text>
+        <text x={980} y={348} textAnchor="middle" fontSize={10} fill={C.wireActive}>
+          {s?.aluMux1 === "1" ? "RAM" : "immediate"}
+        </text>
 
-        <Box x={800} y={200} w={140} h={100}>
-          <Title x={870} y={224}>Addr Mux</Title>
-          <Sub x={870} y={244} fill={!activePhase ? C.wireActive : C.sub}>0: PC</Sub>
-          <Sub x={870} y={262} fill={activePhase ? C.wireActive : C.sub}>1: RamData</Sub>
-          <Sub x={870} y={288}>sel = Phase</Sub>
-          <text x={812} y={224} fontSize={10} fill={C.pin}>0</text>
-          <text x={812} y={284} fontSize={10} fill={C.pin}>1</text>
-        </Box>
-
-        {/* ============ ALU B Mux, ALU, Acc, Zero Detect ============ */}
-        <Box x={760} y={420} w={220} h={80}>
-          <Title x={870} y={444}>ALU B Mux</Title>
-          <Sub x={870} y={464} fill={s?.aluMux1 === "0" ? C.wireActive : C.sub}>0: AluData</Sub>
-          <Sub x={870} y={482} fill={s?.aluMux1 === "1" ? C.wireActive : C.sub}>1: RAM Dout</Sub>
-          <text x={772} y={444} fontSize={10} fill={C.pin}>0</text>
-          <text x={772} y={484} fontSize={10} fill={C.pin}>1</text>
-        </Box>
-
-        <Box x={720} y={540} w={300} h={130} active={aluWrites}>
-          <Title x={870} y={568}>ALU</Title>
-          <Sub x={870} y={588}>16-bit two&apos;s complement</Sub>
-          <Sub x={870} y={606}>pass · add · sub · mul · div</Sub>
-          <text x={870} y={628} textAnchor="middle" fontSize={11} fill={C.title}>
+        {/* ALU — huge centered block */}
+        <Box x={540} y={380} w={620} h={240} active={aluWrites}>
+          <text x={850} y={435} textAnchor="middle" fontSize={40} fontWeight="bold" fill={C.title}>
+            ALU
+          </text>
+          <text x={850} y={460} textAnchor="middle" fontSize={11} fill={C.sub}>
+            16-bit two&apos;s complement
+          </text>
+          <text x={850} y={478} textAnchor="middle" fontSize={11} fill={C.sub}>
+            pass · add · sub · mul · div
+          </text>
+          <text x={850} y={520} textAnchor="middle" fontSize={14} fontWeight="bold" fill={C.title}>
             op = {s ? (ALU_OP_LABEL[s.aluOp3] ?? s.aluOp3) : "pass"}
           </text>
-          <Value x={870} y={648} fill={C.wireActive}>out = {s ? hex(s.aluOut16) : "0x0000"}</Value>
-          <text x={780} y={555} fontSize={10} fill={C.pin}>A</text>
-          <text x={870} y={555} fontSize={10} fill={C.pin}>B</text>
+          <text x={850} y={555} textAnchor="middle" fontSize={16} fontWeight="bold" fill={C.wireActive}>
+            out = {s ? hex(s.aluOut16) : "0x0000"}
+          </text>
+          <text x={645} y={397} fontSize={11} fontWeight="bold" fill={C.pin}>A</text>
+          <text x={1000} y={397} fontSize={11} fontWeight="bold" fill={C.pin}>B</text>
         </Box>
 
-        <Box x={760} y={710} w={220} h={60} active={aluWrites}>
-          <Title x={870} y={734}>Acc — accumulator</Title>
-          <Value x={870} y={758} fill={C.wireActive}>{hex(acc)}</Value>
+        {/* Accumulator — directly under ALU center */}
+        <Box x={750} y={660} w={200} h={80} active={aluWrites}>
+          <text x={850} y={690} textAnchor="middle" fontSize={16} fontWeight="bold" fill={C.title}>
+            Accumulator
+          </text>
+          <text x={850} y={722} textAnchor="middle" fontSize={20} fontWeight="bold" fill={C.wireActive}>
+            {hex(acc)}
+          </text>
         </Box>
 
-        <Box x={760} y={800} w={220} h={45}>
-          <Title x={870} y={822}>Zero Detect</Title>
-          <Sub x={870} y={838} fill={s?.accZero1 === "1" ? C.wireActive : C.sub}>
-            acc_zero = {s?.accZero1 ?? "0"}
-          </Sub>
+        {/* Zero Detect — small, LEFT of Accumulator */}
+        <Box x={560} y={680} w={170} h={50}>
+          <text x={645} y={702} textAnchor="middle" fontSize={11} fontWeight="bold" fill={C.title}>
+            Zero?
+          </text>
+          <text x={645} y={720} textAnchor="middle" fontSize={11} fill={s?.accZero1 === "1" ? C.wireActive : C.sub}>
+            {s?.accZero1 === "1" ? "YES" : "no"}
+          </text>
         </Box>
 
-        {/* ============ DATA / ADDRESS WIRES (solid) ============ */}
+        {/* ============================================================ */}
+        {/* DATA WIRES (solid)                                            */}
+        {/* ============================================================ */}
 
-        {/* PC.Q → Addr Mux[0] */}
-        <path d="M 500 220 L 800 220" fill="none"
+        {/* IR.Q → Decoder (vertical, left column) */}
+        <path d="M 220 210 L 220 240" fill="none"
+              stroke={C.wireActive} strokeWidth={2.5}
+              markerEnd="url(#arrActive)" />
+
+        {/* PC.Q → Addr Mux input */}
+        <path d="M 1480 210 L 1480 222" fill="none"
               stroke={activeStroke(!activePhase)} strokeWidth={2}
               markerEnd={m(!activePhase, "data")} />
 
-        {/* ProgMux out → PC.D */}
-        <path d="M 420 320 L 420 290" fill="none"
-              stroke={activeStroke(pcJumps)} strokeWidth={2}
-              markerEnd={m(pcJumps, "data")} />
-
-        {/* Addr Mux out → RAM addr (routed below IR) */}
-        <path d="M 940 260 L 1000 260 L 1000 290 L 1180 290 L 1180 350 L 1200 350"
-              fill="none" stroke={C.wireActive} strokeWidth={2}
+        {/* Addr Mux → RAM.addr */}
+        <path d="M 1480 262 L 1480 290" fill="none"
+              stroke={C.wireActive} strokeWidth={2.5}
               markerEnd="url(#arrActive)" />
 
-        {/* RAM Dout → IR.Din */}
-        <path d="M 1220 260 L 1220 250 L 1350 250 L 1350 240" fill="none"
-              stroke={activeStroke(ramReadUsedByIR)} strokeWidth={2}
-              markerEnd={m(ramReadUsedByIR, "data")} />
-
-        {/* RAM Dout tap → ALU B Mux[1] */}
-        <circle cx={1220} cy={260} r={3} fill={ramDoutActive ? C.wireActive : C.wireIdle} />
-        <path d="M 1220 260 L 1100 260 L 1100 405 L 962 405 L 962 420" fill="none"
-              stroke={activeStroke(ramReadUsedByALU)} strokeWidth={2}
-              markerEnd={m(ramReadUsedByALU, "data")} />
-
-        {/* IR.Q → Decoder (long across top channel) */}
-        <path d="M 1200 205 L 1150 205 L 1150 150 L 290 150 L 290 260 L 280 260" fill="none"
-              stroke={C.wireActive} strokeWidth={2}
-              markerEnd="url(#arrActive)" />
-
-        {/* Decoder RamData → Addr Mux[1] */}
-        <path d="M 280 476 L 312 476 L 312 298 L 790 298 L 790 285 L 800 285" fill="none"
+        {/* Decoder.RamData → Addr Mux (over the top, around right) */}
+        <path d="M 380 596 L 460 596 L 460 78 L 1395 78 L 1395 240" fill="none"
               stroke={activeStroke(ramDataAddrPath)} strokeWidth={2}
               markerEnd={m(ramDataAddrPath, "data")} />
 
-        {/* Decoder AluData → ALU B Mux[0] */}
-        <path d="M 280 492 L 324 492 L 324 444 L 760 444" fill="none"
+        {/* RAM.Dout → IR (fetch path, over the top) */}
+        <path d="M 1320 335 L 1280 335 L 1280 92 L 220 92 L 220 100" fill="none"
+              stroke={activeStroke(ramReadUsedByIR)} strokeWidth={2}
+              markerEnd={m(ramReadUsedByIR, "data")} />
+
+        {/* RAM.Dout tap → ALU B Mux input (execute read) */}
+        <circle cx={1280} cy={335} r={3} fill={ramDoutActive ? C.wireActive : C.wireIdle} />
+        <path d="M 1280 335 L 1100 335" fill="none"
+              stroke={activeStroke(ramReadUsedByALU)} strokeWidth={2}
+              markerEnd={m(ramReadUsedByALU, "data")} />
+
+        {/* Decoder.AluData → ALU B Mux input (immediate path) */}
+        <path d="M 380 614 L 490 614 L 490 290 L 880 290 L 880 305" fill="none"
               stroke={activeStroke(aluDataPath)} strokeWidth={2}
               markerEnd={m(aluDataPath, "data")} />
 
-        {/* ALU B Mux → ALU.B */}
-        <path d="M 870 500 L 870 540" fill="none"
-              stroke={C.wireActive} strokeWidth={2}
+        {/* ALU B Mux → ALU.B (short vertical, top entry) */}
+        <path d="M 980 360 L 980 380" fill="none"
+              stroke={C.wireActive} strokeWidth={2.5}
               markerEnd="url(#arrActive)" />
 
-        {/* ALU out → Acc.D */}
-        <path d="M 870 670 L 870 710" fill="none"
-              stroke={activeStroke(aluWrites)} strokeWidth={2}
+        {/* ALU output → Acc.D (short vertical, bottom-out top-in) */}
+        <path d="M 850 620 L 850 660" fill="none"
+              stroke={activeStroke(aluWrites)} strokeWidth={2.5}
               markerEnd={m(aluWrites, "data")} />
 
         {/* Acc.Q → ALU.A loop (feedback enters ALU from above-left) */}
-        <circle cx={870} cy={770} r={3} fill={C.wireActive} />
-        <path d="M 870 770 L 870 790 L 700 790 L 700 510 L 780 510 L 780 540" fill="none"
-              stroke={C.wireActive} strokeWidth={2}
+        <circle cx={850} cy={760} r={3} fill={C.wireActive} />
+        <path d="M 850 740 L 850 760 L 510 760 L 510 360 L 645 360 L 645 380" fill="none"
+              stroke={C.wireActive} strokeWidth={2.5}
               markerEnd="url(#arrActive)" />
-        <text x={665} y={650} fontSize={10} fill={C.sub} transform="rotate(-90 665 650)">
+        <text x={485} y={555} fontSize={10} fill={C.sub} transform="rotate(-90 485 555)">
           accumulator feedback
         </text>
 
-        {/* Acc → Zero Detect */}
-        <path d="M 870 770 L 870 800" fill="none"
-              stroke={C.wireIdle} strokeWidth={2}
-              markerEnd="url(#arr)" />
+        {/* Acc → Zero Detect (short horizontal, LEFT) */}
+        <path d="M 750 705 L 730 705" fill="none"
+              stroke={C.wireActive} strokeWidth={2}
+              markerEnd="url(#arrActive)" />
 
-        {/* Zero Detect → Decoder */}
-        <path d="M 760 822 L 316 822 L 316 274 L 280 274" fill="none"
-              stroke={activeStroke(s?.accZero1 === "1")} strokeWidth={2}
-              markerEnd={m(s?.accZero1 === "1", "data")} />
+        {/* Zero Detect → Decoder (acc_zero feedback) */}
+        <path d="M 560 705 L 380 374" fill="none"
+              stroke={activeStroke(s?.accZero1 === "1")} strokeWidth={1.6}
+              markerEnd={m(s?.accZero1 === "1", "data")}
+              strokeDasharray="3 2" />
 
-        {/* Acc[7:0] → ProgMux[0] (tap off Acc.Q wire at (700, 790)) */}
-        <circle cx={700} cy={790} r={3} fill={pcJumps && s?.progMux1 === "0" ? C.wireActive : C.wireIdle} />
-        <path d="M 700 790 L 380 790 L 380 400" fill="none"
+        {/* Acc[7:0] → ProgMux input 0 (long route up the right) */}
+        <circle cx={850} cy={760} r={3} fill={pcJumps && s?.progMux1 === "0" ? C.wireActive : C.wireIdle} />
+        <path d="M 850 760 L 1245 760 L 1245 138" fill="none"
               stroke={activeStroke(pcJumps && s?.progMux1 === "0")} strokeWidth={2}
               markerEnd={m(pcJumps && s?.progMux1 === "0", "data")} />
 
-        {/* ALU_out[7:0] → ProgMux[1] */}
-        <circle cx={870} cy={690} r={3} fill={pcJumps && s?.progMux1 === "1" ? C.wireActive : C.wireIdle} />
-        <path d="M 870 690 L 460 690 L 460 400" fill="none"
+        {/* ALU_out[7:0] → ProgMux input 1 (tap from ALU output) */}
+        <circle cx={850} cy={640} r={3} fill={pcJumps && s?.progMux1 === "1" ? C.wireActive : C.wireIdle} />
+        <path d="M 850 640 L 1300 640 L 1300 138" fill="none"
               stroke={activeStroke(pcJumps && s?.progMux1 === "1")} strokeWidth={2}
               markerEnd={m(pcJumps && s?.progMux1 === "1", "data")} />
 
-        {/* Acc → RAM Din */}
-        <path d="M 700 790 L 1120 790 L 1120 386 L 1200 386" fill="none"
+        {/* ProgMux → PC.D (short horizontal, ProgMux right edge → PC left edge) */}
+        <path d="M 1318 160 L 1320 155" fill="none"
+              stroke={activeStroke(pcJumps)} strokeWidth={2}
+              markerEnd={m(pcJumps, "data")} />
+
+        {/* Acc → RAM.Din (long horizontal, Acc bus tap at y=760) */}
+        <path d="M 850 760 L 1290 760 L 1290 425 L 1320 425" fill="none"
               stroke={activeStroke(ramWrites)} strokeWidth={2}
               markerEnd={m(ramWrites, "data")} />
 
-        {/* ============ CONTROL SIGNALS (red dashed) ============ */}
+        {/* ============================================================ */}
+        {/* CONTROL SIGNALS (red dashed) — exit decoder right edge        */}
+        {/* ============================================================ */}
 
-        {/* Prog WE → PC.LD */}
-        <path d="M 280 326 L 318 326 L 318 222 L 340 222" fill="none"
+        {/* ProgWE → PC.LD (route up and across the top) */}
+        <path d="M 380 433 L 405 433 L 405 88 L 1500 88 L 1500 100" fill="none"
               stroke={ctlStroke(s?.progWeRaw1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.progWeRaw1 === "1", "ctl")} />
 
-        {/* Prog Mux sel → ProgMux */}
-        <path d="M 280 342 L 340 342" fill="none"
+        {/* ProgMux sel → ProgMux (route around the right) */}
+        <path d="M 380 451 L 1235 451 L 1235 195 L 1272 195 L 1272 182" fill="none"
               stroke={ctlStroke(s?.progMux1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.progMux1 === "1", "ctl")} />
 
-        {/* Ram WE → RAM.WE */}
-        <path d="M 280 358 L 1180 358 L 1180 420 L 1200 420" fill="none"
+        {/* RamWE → RAM.WE (route under ALU) */}
+        <path d="M 380 469 L 425 469 L 425 650 L 1310 650 L 1310 465 L 1320 465" fill="none"
               stroke={ctlStroke(s?.ramWeRaw1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.ramWeRaw1 === "1", "ctl")} />
 
-        {/* Alu Mux sel → ALU B Mux */}
-        <path d="M 280 374 L 640 374 L 640 516 L 870 516 L 870 500" fill="none"
+        {/* AluMux sel → ALU B Mux (enter from left at mux row) */}
+        <path d="M 380 487 L 445 487 L 445 332 L 860 332" fill="none"
               stroke={ctlStroke(s?.aluMux1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.aluMux1 === "1", "ctl")} />
 
-        {/* Alu Op → ALU */}
-        <path d="M 280 390 L 706 390 L 706 620 L 720 620" fill="none"
+        {/* AluOp → ALU (short, direct horizontal) */}
+        <path d="M 380 505 L 540 505" fill="none"
               stroke={ctlStroke(!!s && s.aluOp3 !== "000")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(!!s && s.aluOp3 !== "000", "ctl")} />
 
-        {/* Acc WE → Acc */}
-        <path d="M 280 406 L 652 406 L 652 740 L 760 740" fill="none"
+        {/* AccWE → Acc (route around left side, enter from below) */}
+        <path d="M 380 523 L 470 523 L 470 790 L 850 790 L 850 740" fill="none"
               stroke={ctlStroke(s?.accWeRaw1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.accWeRaw1 === "1", "ctl")} />
 
-        {/* Halt → Halt Latch */}
-        <path d="M 280 422 L 300 422 L 300 130 L 530 130 L 530 110" fill="none"
+        {/* Halt → Halt Latch (route up the left edge) */}
+        <path d="M 380 541 L 395 541 L 395 47 L 440 47" fill="none"
               stroke={ctlStroke(s?.halt1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.halt1 === "1", "ctl")} />
 
-        {/* Phase → Addr Mux sel + IR.WE branch */}
-        <path d="M 420 110 L 420 140 L 870 140 L 870 200" fill="none"
+        {/* Phase → Addr Mux sel (from Phase indicator) */}
+        <path d="M 280 47 L 1480 47 L 1480 222" fill="none"
               stroke={ctlStroke(activePhase)} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(activePhase, "ctl")} />
-        <circle cx={420} cy={140} r={3} fill={C.ctlIdle} />
 
-        {/* !Phase → IR.WE */}
-        <path d="M 420 140 L 1440 140 L 1440 240" fill="none"
+        {/* !Phase → IR.WE (tap off Phase line, drop into IR top) */}
+        <circle cx={300} cy={47} r={3} fill={C.ctlIdle} />
+        <path d="M 300 47 L 300 100" fill="none"
               stroke={ctlStroke(s?.irWe1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.irWe1 === "1", "ctl")} />
 
-        {/* !Phase → PC.CT */}
-        <path d="M 420 110 L 320 110 L 320 260 L 340 260" fill="none"
+        {/* !Phase → PC.CT (tap off Phase line near right, drop into PC top) */}
+        <circle cx={1500} cy={88} r={3} fill={C.ctlIdle} />
+        <path d="M 1460 88 L 1460 100" fill="none"
               stroke={ctlStroke(s?.pcCt1 === "1")} strokeWidth={1.4} strokeDasharray="5 3"
               markerEnd={m(s?.pcCt1 === "1", "ctl")} />
       </svg>
