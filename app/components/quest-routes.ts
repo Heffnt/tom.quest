@@ -8,6 +8,7 @@ export type Quest = {
 export const QUESTS: Quest[] = [
   { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10 },
   { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6 },
+  { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6 },
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5 },
   { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4 },
   { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3 },

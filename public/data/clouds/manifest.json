@@ -1,0 +1,688 @@
+{
+  "version": 1,
+  "centroid": [
+    2010.3248291015625,
+    19481.966796875,
+    38.160240173339844
+  ],
+  "split_plane": {
+    "axis": "y",
+    "axis_index": 1,
+    "value": 1807.517578125
+  },
+  "clouds": {
+    "train": {
+      "url": "train.bin",
+      "n": 500000,
+      "n_full": 9599962
+    },
+    "test": {
+      "url": "test.bin",
+      "n": 500000,
+      "n_full": 2400038
+    }
+  },
+  "color_modes": [
+    {
+      "id": "gt_top",
+      "label": "Ground truth \u2014 top",
+      "channel": "class_top",
+      "palette": [
+        {
+          "id": 0,
+          "name": "unclassified",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 200000000,
+          "name": "surface",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 300000000,
+          "name": "object",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gt_mid",
+      "label": "Ground truth \u2014 mid",
+      "channel": "class_mid",
+      "palette": [
+        {
+          "id": 0,
+          "name": "unclassified",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202000000,
+          "name": "ground",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "building",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "other object",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 302000000,
+          "name": "static",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 303000000,
+          "name": "Dynamic",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 304000000,
+          "name": "natural",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gt_leaf",
+      "label": "Ground truth \u2014 leaf",
+      "channel": "class_leaf",
+      "palette": [
+        {
+          "id": 0,
+          "name": "unclassified",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202010000,
+          "name": "other ground",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 202020000,
+          "name": "road",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 202030000,
+          "name": "sidewalk",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 202040000,
+          "name": "curb",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "building",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "other object",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        },
+        {
+          "id": 302020300,
+          "name": "bollard",
+          "color": [
+            26,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 302020400,
+          "name": "floor lamp",
+          "color": [
+            215,
+            66,
+            116
+          ]
+        },
+        {
+          "id": 302020600,
+          "name": "traffic sign",
+          "color": [
+            17,
+            139,
+            212
+          ]
+        },
+        {
+          "id": 302020900,
+          "name": "trash can",
+          "color": [
+            203,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 302021000,
+          "name": "meter",
+          "color": [
+            171,
+            17,
+            212
+          ]
+        },
+        {
+          "id": 302030400,
+          "name": "grid",
+          "color": [
+            66,
+            215,
+            140
+          ]
+        },
+        {
+          "id": 303020000,
+          "name": "pedestrian",
+          "color": [
+            212,
+            58,
+            17
+          ]
+        },
+        {
+          "id": 303020200,
+          "name": "still pedestrian",
+          "color": [
+            66,
+            78,
+            215
+          ]
+        },
+        {
+          "id": 303020300,
+          "name": "walking pedestrian",
+          "color": [
+            91,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 303020600,
+          "name": "holding pedestrian",
+          "color": [
+            215,
+            66,
+            165
+          ]
+        },
+        {
+          "id": 303030202,
+          "name": "parked bicycle",
+          "color": [
+            17,
+            205,
+            212
+          ]
+        },
+        {
+          "id": 303030302,
+          "name": "scooter without driver",
+          "color": [
+            215,
+            177,
+            66
+          ]
+        },
+        {
+          "id": 303040200,
+          "name": "car",
+          "color": [
+            106,
+            17,
+            212
+          ]
+        },
+        {
+          "id": 304020000,
+          "name": "tree",
+          "color": [
+            66,
+            215,
+            90
+          ]
+        },
+        {
+          "id": 304040000,
+          "name": "potted plant",
+          "color": [
+            212,
+            17,
+            42
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pred_pointnet",
+      "label": "PointNet (mid)",
+      "channel": "pred_pointnet",
+      "palette": [
+        {
+          "id": 0,
+          "name": "unclassified",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202000000,
+          "name": "ground",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "building",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "other object",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 302000000,
+          "name": "static",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 303000000,
+          "name": "Dynamic",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 304000000,
+          "name": "natural",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pred_pointnet2",
+      "label": "PointNet++ (mid)",
+      "channel": "pred_pointnet2",
+      "palette": [
+        {
+          "id": 0,
+          "name": "unclassified",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202000000,
+          "name": "ground",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "building",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "other object",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 302000000,
+          "name": "static",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 303000000,
+          "name": "Dynamic",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 304000000,
+          "name": "natural",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pred_kmeans",
+      "label": "K-means clusters",
+      "channel": "pred_kmeans",
+      "palette": [
+        {
+          "id": 0,
+          "name": "cluster 0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 1,
+          "name": "cluster 1",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 2,
+          "name": "cluster 2",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 3,
+          "name": "cluster 3",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 4,
+          "name": "cluster 4",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 5,
+          "name": "cluster 5",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 6,
+          "name": "cluster 6",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        },
+        {
+          "id": 7,
+          "name": "cluster 7",
+          "color": [
+            26,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 8,
+          "name": "cluster 8",
+          "color": [
+            215,
+            66,
+            116
+          ]
+        },
+        {
+          "id": 9,
+          "name": "cluster 9",
+          "color": [
+            17,
+            139,
+            212
+          ]
+        },
+        {
+          "id": 10,
+          "name": "cluster 10",
+          "color": [
+            203,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 11,
+          "name": "cluster 11",
+          "color": [
+            171,
+            17,
+            212
+          ]
+        },
+        {
+          "id": 12,
+          "name": "cluster 12",
+          "color": [
+            66,
+            215,
+            140
+          ]
+        },
+        {
+          "id": 13,
+          "name": "cluster 13",
+          "color": [
+            212,
+            58,
+            17
+          ]
+        },
+        {
+          "id": 14,
+          "name": "cluster 14",
+          "color": [
+            66,
+            78,
+            215
+          ]
+        },
+        {
+          "id": 15,
+          "name": "cluster 15",
+          "color": [
+            91,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 16,
+          "name": "cluster 16",
+          "color": [
+            215,
+            66,
+            165
+          ]
+        },
+        {
+          "id": 17,
+          "name": "cluster 17",
+          "color": [
+            17,
+            205,
+            212
+          ]
+        },
+        {
+          "id": 18,
+          "name": "cluster 18",
+          "color": [
+            215,
+            177,
+            66
+          ]
+        },
+        {
+          "id": 19,
+          "name": "cluster 19",
+          "color": [
+            106,
+            17,
+            212
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pred_ransac",
+      "label": "RANSAC ground plane",
+      "channel": "pred_ransac",
+      "palette": [
+        {
+          "id": 0,
+          "name": "non-floor",
+          "color": [
+            120,
+            130,
+            140
+          ]
+        },
+        {
+          "id": 1,
+          "name": "floor",
+          "color": [
+            232,
+            160,
+            64
+          ]
+        }
+      ]
+    }
+  ]
+}
