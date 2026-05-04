@@ -23,7 +23,7 @@ export default function CloudsClient() {
     train: true,
     test: true,
   });
-  const [activeMode, setActiveMode] = useState<string>("gt_mid");
+  const [activeMode, setActiveMode] = useState<string>("pred_pointnet");
   const [pointRatio, setPointRatio] = useState<number>(0.3);
   const [pointSize, setPointSize] = useState<number>(0.06);
   const [moveSpeed, setMoveSpeed] = useState<number>(30);

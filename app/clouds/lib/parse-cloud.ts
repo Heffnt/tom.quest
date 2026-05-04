@@ -9,7 +9,7 @@ const DTYPE_CTOR: Record<DType, new (buf: ArrayBuffer, offset: number, length: n
 };
 
 export async function fetchManifest(url: string): Promise<Manifest> {
-  const res = await fetch(url, { cache: "force-cache" });
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`fetch ${url} failed: ${res.status}`);
   return (await res.json()) as Manifest;
 }
