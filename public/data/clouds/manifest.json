@@ -13,7 +13,7 @@
   "clouds": {
     "train": {
       "url": "train.bin",
-      "n": 500000,
+      "n": 2000000,
       "n_full": 9599962
     },
     "test": {
