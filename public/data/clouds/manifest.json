@@ -334,8 +334,209 @@
     },
     {
       "id": "pred_kmeans_xyz",
-      "label": "Predictions \u2014 KMeans XYZ, k=30",
+      "label": "Predictions \u2014 K-means XYZ (k=20)",
       "channel": "pred_kmeans_xyz",
+      "palette": [
+        {
+          "id": 0,
+          "name": "cluster 0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 1,
+          "name": "cluster 1",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 2,
+          "name": "cluster 2",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 3,
+          "name": "cluster 3",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 4,
+          "name": "cluster 4",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 5,
+          "name": "cluster 5",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 6,
+          "name": "cluster 6",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        },
+        {
+          "id": 7,
+          "name": "cluster 7",
+          "color": [
+            26,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 8,
+          "name": "cluster 8",
+          "color": [
+            215,
+            66,
+            116
+          ]
+        },
+        {
+          "id": 9,
+          "name": "cluster 9",
+          "color": [
+            17,
+            139,
+            212
+          ]
+        },
+        {
+          "id": 10,
+          "name": "cluster 10",
+          "color": [
+            203,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 11,
+          "name": "cluster 11",
+          "color": [
+            171,
+            17,
+            212
+          ]
+        },
+        {
+          "id": 12,
+          "name": "cluster 12",
+          "color": [
+            66,
+            215,
+            140
+          ]
+        },
+        {
+          "id": 13,
+          "name": "cluster 13",
+          "color": [
+            212,
+            58,
+            17
+          ]
+        },
+        {
+          "id": 14,
+          "name": "cluster 14",
+          "color": [
+            66,
+            78,
+            215
+          ]
+        },
+        {
+          "id": 15,
+          "name": "cluster 15",
+          "color": [
+            91,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 16,
+          "name": "cluster 16",
+          "color": [
+            215,
+            66,
+            165
+          ]
+        },
+        {
+          "id": 17,
+          "name": "cluster 17",
+          "color": [
+            17,
+            205,
+            212
+          ]
+        },
+        {
+          "id": 18,
+          "name": "cluster 18",
+          "color": [
+            215,
+            177,
+            66
+          ]
+        },
+        {
+          "id": 19,
+          "name": "cluster 19",
+          "color": [
+            106,
+            17,
+            212
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": 0.0593
+        },
+        {
+          "label": "NMI class",
+          "value": 0.2363
+        },
+        {
+          "label": "Purity class",
+          "value": 0.799
+        }
+      ]
+    },
+    {
+      "id": "pred_kmeans_pn_embedding",
+      "label": "Predictions \u2014 K-means on PointNet embeddings (k=20)",
+      "channel": "pred_kmeans_pn_embedding",
       "palette": [
         {
           "id": 0,
