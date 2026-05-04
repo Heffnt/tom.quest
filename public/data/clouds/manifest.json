@@ -333,6 +333,309 @@
       ]
     },
     {
+      "id": "pred_kmeans_xyz",
+      "label": "Predictions \u2014 KMeans XYZ, k=30",
+      "channel": "pred_kmeans_xyz",
+      "palette": [
+        {
+          "id": 0,
+          "name": "cluster 0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 1,
+          "name": "cluster 1",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 2,
+          "name": "cluster 2",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 3,
+          "name": "cluster 3",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 4,
+          "name": "cluster 4",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 5,
+          "name": "cluster 5",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 6,
+          "name": "cluster 6",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        },
+        {
+          "id": 7,
+          "name": "cluster 7",
+          "color": [
+            26,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 8,
+          "name": "cluster 8",
+          "color": [
+            215,
+            66,
+            116
+          ]
+        },
+        {
+          "id": 9,
+          "name": "cluster 9",
+          "color": [
+            17,
+            139,
+            212
+          ]
+        },
+        {
+          "id": 10,
+          "name": "cluster 10",
+          "color": [
+            203,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 11,
+          "name": "cluster 11",
+          "color": [
+            171,
+            17,
+            212
+          ]
+        },
+        {
+          "id": 12,
+          "name": "cluster 12",
+          "color": [
+            66,
+            215,
+            140
+          ]
+        },
+        {
+          "id": 13,
+          "name": "cluster 13",
+          "color": [
+            212,
+            58,
+            17
+          ]
+        },
+        {
+          "id": 14,
+          "name": "cluster 14",
+          "color": [
+            66,
+            78,
+            215
+          ]
+        },
+        {
+          "id": 15,
+          "name": "cluster 15",
+          "color": [
+            91,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 16,
+          "name": "cluster 16",
+          "color": [
+            215,
+            66,
+            165
+          ]
+        },
+        {
+          "id": 17,
+          "name": "cluster 17",
+          "color": [
+            17,
+            205,
+            212
+          ]
+        },
+        {
+          "id": 18,
+          "name": "cluster 18",
+          "color": [
+            215,
+            177,
+            66
+          ]
+        },
+        {
+          "id": 19,
+          "name": "cluster 19",
+          "color": [
+            106,
+            17,
+            212
+          ]
+        },
+        {
+          "id": 20,
+          "name": "cluster 20",
+          "color": [
+            66,
+            215,
+            90
+          ]
+        },
+        {
+          "id": 21,
+          "name": "cluster 21",
+          "color": [
+            212,
+            17,
+            42
+          ]
+        },
+        {
+          "id": 22,
+          "name": "cluster 22",
+          "color": [
+            66,
+            128,
+            215
+          ]
+        },
+        {
+          "id": 23,
+          "name": "cluster 23",
+          "color": [
+            156,
+            212,
+            17
+          ]
+        },
+        {
+          "id": 24,
+          "name": "cluster 24",
+          "color": [
+            214,
+            66,
+            215
+          ]
+        },
+        {
+          "id": 25,
+          "name": "cluster 25",
+          "color": [
+            17,
+            212,
+            155
+          ]
+        },
+        {
+          "id": 26,
+          "name": "cluster 26",
+          "color": [
+            215,
+            127,
+            66
+          ]
+        },
+        {
+          "id": 27,
+          "name": "cluster 27",
+          "color": [
+            41,
+            17,
+            212
+          ]
+        },
+        {
+          "id": 28,
+          "name": "cluster 28",
+          "color": [
+            91,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 29,
+          "name": "cluster 29",
+          "color": [
+            212,
+            17,
+            107
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": 0.0568
+        },
+        {
+          "label": "NMI class",
+          "value": 0.2501
+        },
+        {
+          "label": "Purity class",
+          "value": 0.8267
+        },
+        {
+          "label": "ARI id",
+          "value": 0.1533
+        },
+        {
+          "label": "NMI id",
+          "value": 0.5077
+        },
+        {
+          "label": "Purity id",
+          "value": 0.7877
+        }
+      ]
+    },
+    {
       "id": "pred_pointnet",
       "label": "Predictions \u2014 PointNet, overlap + TTA",
       "channel": "pred_pointnet",
@@ -596,23 +899,23 @@
       "metrics": [
         {
           "label": "ARI class",
-          "value": 0.8793
+          "value": 0.8779
         },
         {
           "label": "NMI class",
-          "value": 0.7597
+          "value": 0.7616
         },
         {
           "label": "Purity class",
-          "value": 0.9446
+          "value": 0.9451
         },
         {
           "label": "ARI id",
-          "value": 0.4935
+          "value": 0.4826
         },
         {
           "label": "NMI id",
-          "value": 0.5147
+          "value": 0.5184
         },
         {
           "label": "Purity id",
