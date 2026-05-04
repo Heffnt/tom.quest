@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas } from "@react-three/fiber";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 
 import { CloudPoints, SplitPlaneOverlay } from "./cloud-viewer";
@@ -12,6 +13,32 @@ import { fetchCloud, fetchManifest } from "./lib/parse-cloud";
 import type { CloudKey, Manifest, ParsedCloud } from "./lib/types";
 
 const MANIFEST_URL = "/data/clouds/manifest.json";
+
+// THREE.Raycaster has no notion of "Points" thickness -- without a
+// threshold, no click ever hits a Points object (points are mathematically
+// dimensionless). Scaling the threshold with camera distance keeps clicks
+// feeling "tight" up close and "forgiving" when zoomed out, where each
+// rendered point covers more world units per pixel.
+function DynamicRaycasterThreshold({ pointSize }: { pointSize: number }) {
+  const { raycaster, camera, controls } = useThree();
+  useEffect(() => {
+    const update = () => {
+      // Approximate distance from camera to the orbit target (or origin).
+      const target = (controls as OrbitControlsImpl | null)?.target ?? new THREE.Vector3();
+      const dist = camera.position.distanceTo(target);
+      // Heuristic: ~3x the projected size of one point, with a floor so
+      // raycasting still hits when the user is zoomed way in.
+      raycaster.params.Points = {
+        threshold: Math.max(pointSize * 3, dist * 0.005),
+      };
+    };
+    update();
+    // Re-tune on every animation frame so the threshold tracks zoom in/out.
+    const id = setInterval(update, 100);
+    return () => clearInterval(id);
+  }, [raycaster, camera, controls, pointSize]);
+  return null;
+}
 
 export default function CloudsClient() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
@@ -104,13 +131,68 @@ export default function CloudsClient() {
     return { position, target: center, extent };
   }, [clouds]);
 
-  const handleResetCamera = () => {
+  const handleResetCamera = useCallback(() => {
     const ctrl = orbitRef.current;
     if (!ctrl) return;
     ctrl.target.set(cameraInit.target[0], cameraInit.target[1], cameraInit.target[2]);
     ctrl.object.position.set(cameraInit.position[0], cameraInit.position[1], cameraInit.position[2]);
     ctrl.update();
-  };
+  }, [cameraInit]);
+
+  // Recenter the orbit pivot at a point the user double-clicked.
+  //
+  // TODO(user): implement the recentering policy below. The simplest valid
+  // option is "move target only" (camera stays put, scene appears to spin
+  // around the new pivot). The polished option is "move target and camera
+  // by the same delta" (the clicked point stays at the same screen position
+  // and becomes the new pivot — what Blender / SketchFab / Figma do).
+  //
+  // See the comment block in the body for the trade-offs.
+  const handlePickPoint = useCallback((worldPoint: THREE.Vector3) => {
+    const ctrl = orbitRef.current;
+    if (!ctrl) return;
+    // ── YOUR CODE HERE (5–10 lines) ───────────────────────────────────
+    // Trade-offs:
+    //   (a) Just move target:
+    //         ctrl.target.copy(worldPoint); ctrl.update();
+    //       Pivot updates, but the scene appears to "shift" because the
+    //       camera direction now points at a different spot.
+    //   (b) Move target AND camera by the same delta:
+    //         const delta = worldPoint.clone().sub(ctrl.target);
+    //         ctrl.target.add(delta);
+    //         ctrl.object.position.add(delta);
+    //         ctrl.update();
+    //       Clicked point stays put on screen and becomes the new pivot.
+    //       This is what most users expect from "click to set rotation
+    //       point" in pro 3D software.
+    //   (c) Animate version of (b):
+    //       Lerp target + position over ~250ms via useFrame for a smoother
+    //       feel. More code, more state to manage.
+    //
+    // Replace the body below with your choice.
+    const delta = worldPoint.clone().sub(ctrl.target);
+    ctrl.target.add(delta);
+    ctrl.object.position.add(delta);
+    ctrl.update();
+    // ── END YOUR CODE ────────────────────────────────────────────────
+  }, []);
+
+  // Keyboard shortcuts: F = frame all (reset camera), R = also reset.
+  // Bound on the document so the user doesn't have to focus the canvas.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Skip when typing in an input/slider so shortcuts don't hijack
+      // form interactions.
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if (e.key === "f" || e.key === "F" || e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        handleResetCamera();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleResetCamera]);
 
   // Per-cloud slider cap = the largest n among loaded clouds. The single
   // slider value is clamped per-cloud at render time.
@@ -152,6 +234,7 @@ export default function CloudsClient() {
           dampingFactor={0.08}
           makeDefault
         />
+        <DynamicRaycasterThreshold pointSize={pointSize} />
         {colorMode &&
           (Object.keys(clouds) as CloudKey[]).map((key) => {
             const cloud = clouds[key];
@@ -163,6 +246,7 @@ export default function CloudsClient() {
                 colorMode={colorMode}
                 pointSize={pointSize}
                 visibleCount={Math.min(pointCount, cloud.n)}
+                onPickPoint={handlePickPoint}
               />
             );
           })}

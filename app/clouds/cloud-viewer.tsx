@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import type { ThreeEvent } from "@react-three/fiber";
 import type { ColorMode, ParsedCloud, SplitPlane } from "./lib/types";
 
 type CloudPointsProps = {
@@ -9,9 +10,12 @@ type CloudPointsProps = {
   colorMode: ColorMode;
   pointSize: number;
   visibleCount: number;
+  // Fires on double-click with the world-space hit point. The Canvas's
+  // raycaster handles point picking; we only forward the position.
+  onPickPoint?: (worldPoint: THREE.Vector3) => void;
 };
 
-export function CloudPoints({ cloud, colorMode, pointSize, visibleCount }: CloudPointsProps) {
+export function CloudPoints({ cloud, colorMode, pointSize, visibleCount, onPickPoint }: CloudPointsProps) {
   const geometryRef = useRef<THREE.BufferGeometry>(null);
 
   // Position attribute: built once per cloud. xyz is already a Float32Array
@@ -64,8 +68,17 @@ export function CloudPoints({ cloud, colorMode, pointSize, visibleCount }: Cloud
     geom.setDrawRange(0, n);
   }, [visibleCount, cloud.n, positionAttr, colorAttr]);
 
+  const handleDoubleClick = (e: ThreeEvent<MouseEvent>) => {
+    if (!onPickPoint) return;
+    e.stopPropagation();
+    onPickPoint(e.point);
+  };
+
   return (
-    <points frustumCulled={false}>
+    <points
+      frustumCulled={false}
+      onDoubleClick={onPickPoint ? handleDoubleClick : undefined}
+    >
       <bufferGeometry ref={geometryRef}>
         <primitive attach="attributes-position" object={positionAttr} />
         <primitive attach="attributes-color" object={colorAttr} />
