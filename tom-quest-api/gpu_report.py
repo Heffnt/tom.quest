@@ -36,6 +36,18 @@ _GPU_ACTIVITY_CACHE: dict[str, object] = {
     "value": None,
 }
 logger = logging.getLogger("tom.quest.gpu_report")
+UNKNOWN_VALUE_TOKENS = {
+    "",
+    "INVALID",
+    "N/A",
+    "[N/A]",
+    "NOT_SET",
+    "UNLIMITED",
+    "UNKNOWN",
+    "[UNKNOWN]",
+    "UNKNOWN ERROR",
+    "[UNKNOWN ERROR]",
+}
 
 
 @dataclass
@@ -168,27 +180,31 @@ def compute_summary(nodes: list[NodeInfo], shared_only: bool = True) -> dict:
 
 def _parse_time_to_seconds(time_str: str) -> int:
     time_str = time_str.strip()
-    if not time_str or time_str in ("INVALID", "N/A", "NOT_SET", "UNLIMITED"):
+    if time_str.upper() in UNKNOWN_VALUE_TOKENS:
         return 0
     total_seconds = 0
-    if "-" in time_str:
-        days_part, time_part = time_str.split("-", 1)
-        total_seconds += int(days_part) * 86400
-        time_str = time_part
-    parts = time_str.split(":")
-    if len(parts) == 3:
-        total_seconds += int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    elif len(parts) == 2:
-        total_seconds += int(parts[0]) * 60 + int(parts[1])
-    elif len(parts) == 1:
-        total_seconds += int(parts[0])
+    try:
+        if "-" in time_str:
+            days_part, time_part = time_str.split("-", 1)
+            total_seconds += int(days_part) * 86400
+            time_str = time_part
+        parts = time_str.split(":")
+        if len(parts) == 3:
+            total_seconds += int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:
+            total_seconds += int(parts[0]) * 60 + int(parts[1])
+        elif len(parts) == 1:
+            total_seconds += int(parts[0])
+    except ValueError:
+        logger.debug("Ignoring unparseable Slurm time value: %s", time_str)
+        return 0
     return total_seconds
 
 
 def _parse_index_list(index_text: str) -> list[int]:
     values: list[int] = []
     cleaned = index_text.strip()
-    if not cleaned or cleaned.upper() == "N/A":
+    if cleaned.upper() in UNKNOWN_VALUE_TOKENS:
         return values
     for chunk in cleaned.split(","):
         part = chunk.strip()
@@ -196,11 +212,15 @@ def _parse_index_list(index_text: str) -> list[int]:
             continue
         if "-" in part:
             start_text, end_text = part.split("-", 1)
-            start = int(start_text)
-            end = int(end_text)
+            start = _int_or_none(start_text)
+            end = _int_or_none(end_text)
+            if start is None or end is None:
+                continue
             values.extend(range(start, end + 1))
         else:
-            values.append(int(part))
+            index = _int_or_none(part)
+            if index is not None:
+                values.append(index)
     return values
 
 
@@ -297,9 +317,13 @@ def _get_running_gpu_jobs() -> list[dict]:
 
 def _int_or_none(value: str) -> int | None:
     text = value.strip()
-    if not text or text.upper() in ("N/A", "[N/A]"):
+    if text.upper() in UNKNOWN_VALUE_TOKENS:
         return None
-    return int(text)
+    try:
+        return int(text)
+    except ValueError:
+        logger.debug("Ignoring unparseable integer value: %s", text)
+        return None
 
 
 def _parse_nvidia_smi_csv(stdout: str) -> dict[int, dict]:

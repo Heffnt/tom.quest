@@ -27,6 +27,9 @@ class SlurmTest(unittest.TestCase):
         self.assertEqual(jobs[0].gpu_stats, slurm.JobGpuStats(**direct_stats))
         get_job_gpu_stats.assert_called_once_with("123")
 
+    def test_parse_time_to_seconds_treats_unknown_errors_as_zero(self) -> None:
+        self.assertEqual(slurm.parse_time_to_seconds("[Unknown Error]"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

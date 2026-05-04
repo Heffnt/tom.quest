@@ -33,6 +33,19 @@ class GpuReportTest(unittest.TestCase):
         self.assertIn("StrictHostKeyChecking=accept-new", command)
         self.assertEqual(stats["gpu-1-01"][0]["memory_used_mb"], 1024)
 
+    def test_parse_nvidia_smi_csv_treats_unknown_errors_as_missing_values(self) -> None:
+        device_stats = _parse_nvidia_smi_csv("0, [Unknown Error], 81920, [Unknown Error], 0\n")
+
+        self.assertEqual(
+            device_stats[0],
+            {
+                "memory_used_mb": None,
+                "memory_total_mb": 81920,
+                "temperature_c": None,
+                "utilization_pct": 0,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
