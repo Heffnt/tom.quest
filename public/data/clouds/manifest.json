@@ -334,7 +334,7 @@
     },
     {
       "id": "pred_kmeans_xyz",
-      "label": "Predictions \u2014 K-means XYZ (k=20)",
+      "label": "Predictions \u2014 K-means XYZ (k=7)",
       "channel": "pred_kmeans_xyz",
       "palette": [
         {
@@ -399,143 +399,26 @@
             66,
             215
           ]
-        },
-        {
-          "id": 7,
-          "name": "cluster 7",
-          "color": [
-            26,
-            212,
-            17
-          ]
-        },
-        {
-          "id": 8,
-          "name": "cluster 8",
-          "color": [
-            215,
-            66,
-            116
-          ]
-        },
-        {
-          "id": 9,
-          "name": "cluster 9",
-          "color": [
-            17,
-            139,
-            212
-          ]
-        },
-        {
-          "id": 10,
-          "name": "cluster 10",
-          "color": [
-            203,
-            215,
-            66
-          ]
-        },
-        {
-          "id": 11,
-          "name": "cluster 11",
-          "color": [
-            171,
-            17,
-            212
-          ]
-        },
-        {
-          "id": 12,
-          "name": "cluster 12",
-          "color": [
-            66,
-            215,
-            140
-          ]
-        },
-        {
-          "id": 13,
-          "name": "cluster 13",
-          "color": [
-            212,
-            58,
-            17
-          ]
-        },
-        {
-          "id": 14,
-          "name": "cluster 14",
-          "color": [
-            66,
-            78,
-            215
-          ]
-        },
-        {
-          "id": 15,
-          "name": "cluster 15",
-          "color": [
-            91,
-            212,
-            17
-          ]
-        },
-        {
-          "id": 16,
-          "name": "cluster 16",
-          "color": [
-            215,
-            66,
-            165
-          ]
-        },
-        {
-          "id": 17,
-          "name": "cluster 17",
-          "color": [
-            17,
-            205,
-            212
-          ]
-        },
-        {
-          "id": 18,
-          "name": "cluster 18",
-          "color": [
-            215,
-            177,
-            66
-          ]
-        },
-        {
-          "id": 19,
-          "name": "cluster 19",
-          "color": [
-            106,
-            17,
-            212
-          ]
         }
       ],
       "metrics": [
         {
           "label": "ARI class",
-          "value": 0.0593
+          "value": 0.0651
         },
         {
           "label": "NMI class",
-          "value": 0.2363
+          "value": 0.1702
         },
         {
           "label": "Purity class",
-          "value": 0.799
+          "value": 0.6735
         }
       ]
     },
     {
       "id": "pred_kmeans_pn_embedding",
-      "label": "Predictions \u2014 K-means on PointNet embeddings (k=20)",
+      "label": "Predictions \u2014 K-means on PointNet embeddings (k=7)",
       "channel": "pred_kmeans_pn_embedding",
       "palette": [
         {
@@ -600,137 +483,20 @@
             66,
             215
           ]
-        },
-        {
-          "id": 7,
-          "name": "cluster 7",
-          "color": [
-            26,
-            212,
-            17
-          ]
-        },
-        {
-          "id": 8,
-          "name": "cluster 8",
-          "color": [
-            215,
-            66,
-            116
-          ]
-        },
-        {
-          "id": 9,
-          "name": "cluster 9",
-          "color": [
-            17,
-            139,
-            212
-          ]
-        },
-        {
-          "id": 10,
-          "name": "cluster 10",
-          "color": [
-            203,
-            215,
-            66
-          ]
-        },
-        {
-          "id": 11,
-          "name": "cluster 11",
-          "color": [
-            171,
-            17,
-            212
-          ]
-        },
-        {
-          "id": 12,
-          "name": "cluster 12",
-          "color": [
-            66,
-            215,
-            140
-          ]
-        },
-        {
-          "id": 13,
-          "name": "cluster 13",
-          "color": [
-            212,
-            58,
-            17
-          ]
-        },
-        {
-          "id": 14,
-          "name": "cluster 14",
-          "color": [
-            66,
-            78,
-            215
-          ]
-        },
-        {
-          "id": 15,
-          "name": "cluster 15",
-          "color": [
-            91,
-            212,
-            17
-          ]
-        },
-        {
-          "id": 16,
-          "name": "cluster 16",
-          "color": [
-            215,
-            66,
-            165
-          ]
-        },
-        {
-          "id": 17,
-          "name": "cluster 17",
-          "color": [
-            17,
-            205,
-            212
-          ]
-        },
-        {
-          "id": 18,
-          "name": "cluster 18",
-          "color": [
-            215,
-            177,
-            66
-          ]
-        },
-        {
-          "id": 19,
-          "name": "cluster 19",
-          "color": [
-            106,
-            17,
-            212
-          ]
         }
       ],
       "metrics": [
         {
           "label": "ARI class",
-          "value": 0.1548
+          "value": 0.365
         },
         {
           "label": "NMI class",
-          "value": 0.4
+          "value": 0.4811
         },
         {
           "label": "Purity class",
-          "value": 0.9246
+          "value": 0.9044
         }
       ]
     },
