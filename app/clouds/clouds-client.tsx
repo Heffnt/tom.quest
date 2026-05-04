@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 
-import { CloudPoints, SplitPlaneOverlay } from "./cloud-viewer";
+import { CloudPoints, SplitPlaneOverlay, type PointHover } from "./cloud-viewer";
 import { ControlPanel } from "./control-panel";
 import { FlyCamera, type FlyCameraHandle } from "./fly-camera";
 import { Legend } from "./legend";
 import { MetricsPanel } from "./metrics-panel";
+import { PointHoverTooltip } from "./point-hover-tooltip";
 import { fetchCloud, fetchManifest } from "./lib/parse-cloud";
 import type { CloudKey, Manifest, ParsedCloud } from "./lib/types";
 
@@ -29,6 +30,7 @@ export default function CloudsClient() {
   const [moveSpeed, setMoveSpeed] = useState<number>(30);
   const [lookSpeed, setLookSpeed] = useState<number>(0.0025);
   const [showSplitPlane, setShowSplitPlane] = useState<boolean>(true);
+  const [hoveredPoint, setHoveredPoint] = useState<PointHover | null>(null);
 
   const flyRef = useRef<FlyCameraHandle | null>(null);
 
@@ -116,6 +118,7 @@ export default function CloudsClient() {
   }, [cameraInit.extent]);
 
   const isLoading = !manifest || Object.keys(clouds).length === 0;
+  const hoveredCloud = hoveredPoint ? clouds[hoveredPoint.cloudKey] : undefined;
 
   return (
     <div className="relative w-full h-[calc(100vh-4rem)] bg-bg overflow-hidden">
@@ -146,10 +149,13 @@ export default function CloudsClient() {
             return (
               <CloudPoints
                 key={key}
+                cloudKey={key}
                 cloud={cloud}
                 colorMode={colorMode}
                 pointSize={pointSize}
                 visibleCount={Math.round(pointRatio * cloud.n)}
+                onPointHover={setHoveredPoint}
+                onPointLeave={() => setHoveredPoint(null)}
               />
             );
           })}
@@ -188,6 +194,15 @@ export default function CloudsClient() {
           <MetricsPanel mode={colorMode} />
           <Legend mode={colorMode} />
         </div>
+      )}
+
+      {manifest && colorMode && hoveredPoint && hoveredCloud && (
+        <PointHoverTooltip
+          point={hoveredPoint}
+          cloud={hoveredCloud}
+          manifest={manifest}
+          activeMode={colorMode}
+        />
       )}
 
       <a

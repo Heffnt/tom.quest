@@ -1,17 +1,37 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
+import type { ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
-import type { ColorMode, ParsedCloud, SplitPlane } from "./lib/types";
+import type { CloudKey, ColorMode, ParsedCloud, SplitPlane } from "./lib/types";
+
+export type PointHover = {
+  cloudKey: CloudKey;
+  index: number;
+  clientX: number;
+  clientY: number;
+  xyz: [number, number, number];
+};
 
 type CloudPointsProps = {
+  cloudKey: CloudKey;
   cloud: ParsedCloud;
   colorMode: ColorMode;
   pointSize: number;
   visibleCount: number;
+  onPointHover: (point: PointHover) => void;
+  onPointLeave: () => void;
 };
 
-export function CloudPoints({ cloud, colorMode, pointSize, visibleCount }: CloudPointsProps) {
+export function CloudPoints({
+  cloudKey,
+  cloud,
+  colorMode,
+  pointSize,
+  visibleCount,
+  onPointHover,
+  onPointLeave,
+}: CloudPointsProps) {
   const geometryRef = useRef<THREE.BufferGeometry>(null);
 
   // Position attribute: built once per cloud. xyz is already a Float32Array
@@ -64,8 +84,31 @@ export function CloudPoints({ cloud, colorMode, pointSize, visibleCount }: Cloud
     geom.setDrawRange(0, n);
   }, [visibleCount, cloud.n, positionAttr, colorAttr]);
 
+  const handlePointerMove = (event: ThreeEvent<PointerEvent>) => {
+    event.stopPropagation();
+    const index = event.index;
+    if (index === undefined || index >= visibleCount || index >= cloud.n) return;
+    const offset = index * 3;
+    onPointHover({
+      cloudKey,
+      index,
+      clientX: event.nativeEvent.clientX,
+      clientY: event.nativeEvent.clientY,
+      xyz: [cloud.xyz[offset], cloud.xyz[offset + 1], cloud.xyz[offset + 2]],
+    });
+  };
+
+  const handlePointerOut = (event: ThreeEvent<PointerEvent>) => {
+    event.stopPropagation();
+    onPointLeave();
+  };
+
   return (
-    <points frustumCulled={false}>
+    <points
+      frustumCulled={false}
+      onPointerMove={handlePointerMove}
+      onPointerOut={handlePointerOut}
+    >
       <bufferGeometry ref={geometryRef}>
         <primitive attach="attributes-position" object={positionAttr} />
         <primitive attach="attributes-color" object={colorAttr} />
