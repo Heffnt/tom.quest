@@ -30,6 +30,7 @@ export default function CloudsClient() {
   const [moveSpeed, setMoveSpeed] = useState<number>(30);
   const [lookSpeed, setLookSpeed] = useState<number>(0.0025);
   const [showSplitPlane, setShowSplitPlane] = useState<boolean>(true);
+  const [showTooltip, setShowTooltip] = useState<boolean>(true);
   const [hoveredPoint, setHoveredPoint] = useState<PointHover | null>(null);
 
   const flyRef = useRef<FlyCameraHandle | null>(null);
@@ -109,6 +110,10 @@ export default function CloudsClient() {
   }, [clouds]);
 
   const handleResetCamera = () => flyRef.current?.reset();
+  const handleSetShowTooltip = (next: boolean) => {
+    setShowTooltip(next);
+    if (!next) setHoveredPoint(null);
+  };
 
   // Plane size for the split overlay -- a bit larger than the scene extent
   // so it visually spans the cloud.
@@ -154,7 +159,9 @@ export default function CloudsClient() {
                 colorMode={colorMode}
                 pointSize={pointSize}
                 visibleCount={Math.round(pointRatio * cloud.n)}
-                onPointHover={setHoveredPoint}
+                onPointHover={(point) => {
+                  if (showTooltip) setHoveredPoint(point);
+                }}
                 onPointLeave={() => setHoveredPoint(null)}
               />
             );
@@ -185,6 +192,8 @@ export default function CloudsClient() {
           setLookSpeed={setLookSpeed}
           showSplitPlane={showSplitPlane}
           setShowSplitPlane={setShowSplitPlane}
+          showTooltip={showTooltip}
+          setShowTooltip={handleSetShowTooltip}
           onResetCamera={handleResetCamera}
         />
       )}
@@ -196,7 +205,7 @@ export default function CloudsClient() {
         </div>
       )}
 
-      {manifest && colorMode && hoveredPoint && hoveredCloud && (
+      {showTooltip && manifest && colorMode && hoveredPoint && hoveredCloud && (
         <PointHoverTooltip
           point={hoveredPoint}
           cloud={hoveredCloud}

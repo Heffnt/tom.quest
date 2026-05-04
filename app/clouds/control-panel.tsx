@@ -29,6 +29,9 @@ type Props = {
   showSplitPlane: boolean;
   setShowSplitPlane: (b: boolean) => void;
 
+  showTooltip: boolean;
+  setShowTooltip: (b: boolean) => void;
+
   onResetCamera: () => void;
 };
 
@@ -56,6 +59,8 @@ export function ControlPanel(props: Props) {
     setLookSpeed,
     showSplitPlane,
     setShowSplitPlane,
+    showTooltip,
+    setShowTooltip,
     onResetCamera,
   } = props;
 
@@ -167,6 +172,11 @@ export function ControlPanel(props: Props) {
           checked={showSplitPlane}
           onChange={setShowSplitPlane}
           label="Show train/test split plane"
+        />
+        <CheckboxRow
+          checked={showTooltip}
+          onChange={setShowTooltip}
+          label="Show point hover tooltip"
         />
       </Section>
 

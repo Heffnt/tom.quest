@@ -4,7 +4,7 @@ import type { ColorMode } from "./lib/types";
 
 export function Legend({ mode }: { mode: ColorMode }) {
   return (
-    <div className="max-w-xs max-h-[calc(100vh-8rem)] overflow-y-auto rounded-lg border border-border bg-surface/85 backdrop-blur-md p-3 text-xs animate-settle-delay-2">
+    <div className="max-w-xs max-h-[calc(100vh-8rem)] overflow-y-auto rounded-lg border border-border bg-surface/85 backdrop-blur-md p-3 text-xs text-white animate-settle-delay-2">
       <div className="font-display text-sm font-semibold mb-2">{mode.label}</div>
       <ul className="space-y-1">
         {mode.palette.map((entry) => (
@@ -15,7 +15,7 @@ export function Legend({ mode }: { mode: ColorMode }) {
                 backgroundColor: `rgb(${entry.color[0]}, ${entry.color[1]}, ${entry.color[2]})`,
               }}
             />
-            <span className="text-text-muted truncate">{entry.name}</span>
+            <span className="truncate text-white">{entry.name}</span>
           </li>
         ))}
       </ul>

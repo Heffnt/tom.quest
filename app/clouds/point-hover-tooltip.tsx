@@ -43,23 +43,23 @@ export function PointHoverTooltip({ point, cloud, manifest, activeMode }: Props)
 
   return (
     <div
-      className="pointer-events-none fixed z-50 max-h-[calc(100vh-1.5rem)] w-80 overflow-y-auto rounded-lg border border-border bg-surface/90 p-3 text-xs shadow-xl shadow-black/25 backdrop-blur-md animate-settle"
+      className="pointer-events-none fixed z-50 max-h-[calc(100vh-1.5rem)] w-80 overflow-y-auto rounded-lg border border-border bg-surface/90 p-3 text-xs text-white shadow-xl shadow-black/25 backdrop-blur-md animate-settle"
       style={{ left, top }}
     >
       <div className="mb-2 flex items-start justify-between gap-3">
         <div>
           <div className="font-display text-sm font-semibold">Point sample</div>
-          <div className="font-mono text-[11px] text-text-faint">
+          <div className="font-mono text-[11px] text-white">
             {capitalize(point.cloudKey)} #{point.index.toLocaleString()}
           </div>
         </div>
-        <div className="rounded-sm border border-border bg-surface-alt px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-faint">
+        <div className="rounded-sm border border-border bg-surface-alt px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-white">
           hover
         </div>
       </div>
 
-      <div className="mb-3 rounded-md border border-border/70 bg-bg/35 px-2 py-1.5 font-mono text-[11px] text-text-muted">
-        <div className="mb-1 text-[10px] uppercase tracking-wide text-text-faint">Coordinates</div>
+      <div className="mb-3 rounded-md border border-border/70 bg-bg/35 px-2 py-1.5 font-mono text-[11px] text-white">
+        <div className="mb-1 text-[10px] uppercase tracking-wide text-white">Coordinates</div>
         <div className="grid grid-cols-3 gap-2 tabular-nums">
           <Coord label="x" value={sourceCoordinates[0]} />
           <Coord label="y" value={sourceCoordinates[1]} />
@@ -68,7 +68,7 @@ export function PointHoverTooltip({ point, cloud, manifest, activeMode }: Props)
       </div>
 
       <div className="space-y-1.5">
-        <div className="text-[10px] uppercase tracking-wide text-text-faint">Ground truth</div>
+        <div className="text-[10px] uppercase tracking-wide text-white">Ground truth</div>
         {GT_ROWS.map((row) => (
           <ClassRow
             key={row.modeId}
@@ -80,7 +80,7 @@ export function PointHoverTooltip({ point, cloud, manifest, activeMode }: Props)
 
       {predictions.length > 0 && (
         <div className="mt-3 border-t border-border pt-2">
-          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-text-faint">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-white">
             Predictions
           </div>
           <div className="space-y-1">
@@ -115,20 +115,20 @@ function ClassRow({
         selected ? "border border-accent/30 bg-accent/10" : "",
       ].join(" ")}
     >
-      <span className="min-w-14 truncate text-text-faint">{label}</span>
+      <span className="min-w-14 truncate text-white">{label}</span>
       {value ? (
-        <span className="flex min-w-0 shrink-0 items-center gap-2 text-text-muted">
+        <span className="flex min-w-0 shrink-0 items-center gap-2 text-white">
           <span
             className="inline-block h-3 w-3 shrink-0 rounded-sm border border-black/30"
             style={{ backgroundColor: value.color }}
           />
           <span className="max-w-24 truncate">{value.entry.name}</span>
-          <span className="shrink-0 font-mono text-[10px] text-text-faint">
+          <span className="shrink-0 font-mono text-[10px] text-white">
             {value.entry.id}
           </span>
         </span>
       ) : (
-        <span className="text-text-faint">n/a</span>
+        <span className="text-white">n/a</span>
       )}
     </div>
   );
@@ -137,8 +137,8 @@ function ClassRow({
 function Coord({ label, value }: { label: string; value: number }) {
   return (
     <div>
-      <span className="text-text-faint">{label}</span>{" "}
-      <span className="text-text">{formatCoordinate(value)}</span>
+      <span className="text-white">{label}</span>{" "}
+      <span className="text-white">{formatCoordinate(value)}</span>
     </div>
   );
 }
