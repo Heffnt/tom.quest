@@ -9,7 +9,7 @@ export function Legend({ mode }: { mode: ColorMode }) {
   const overflow = mode.palette.length - entries.length;
 
   return (
-    <div className="absolute bottom-4 left-4 z-10 max-w-xs rounded-lg border border-border bg-surface/85 backdrop-blur-md p-3 text-xs animate-settle-delay-2">
+    <div className="absolute bottom-4 right-4 z-10 max-w-xs rounded-lg border border-border bg-surface/85 backdrop-blur-md p-3 text-xs animate-settle-delay-2">
       <div className="font-display text-sm font-semibold mb-2">{mode.label}</div>
       <ul className="space-y-1">
         {entries.map((entry) => (
