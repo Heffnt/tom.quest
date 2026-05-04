@@ -151,11 +151,10 @@ export const FlyCamera = forwardRef<FlyCameraHandle, Props>(function FlyCamera(
     if (k.has("KeyD") || k.has("ArrowRight")) s.move.add(s.right);
     if (k.has("KeyA") || k.has("ArrowLeft"))  s.move.sub(s.right);
     if (k.has("Space"))                       s.move.add(WORLD_UP);
-    if (k.has("ControlLeft") || k.has("ControlRight")) s.move.sub(WORLD_UP);
+    if (k.has("ShiftLeft") || k.has("ShiftRight")) s.move.sub(WORLD_UP);
 
     if (s.move.lengthSq() > 0) {
-      const sprint = k.has("ShiftLeft") || k.has("ShiftRight") ? 3 : 1;
-      s.move.normalize().multiplyScalar(moveSpeed * sprint * dt);
+      s.move.normalize().multiplyScalar(moveSpeed * dt);
       camera.position.add(s.move);
     }
 
