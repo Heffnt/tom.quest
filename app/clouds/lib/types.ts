@@ -21,11 +21,17 @@ export type PaletteEntry = {
   color: [number, number, number]; // 0..255
 };
 
+export type MetricEntry = {
+  label: string;
+  value: number;
+};
+
 export type ColorMode = {
   id: string;
   label: string;
   channel: string;
   palette: PaletteEntry[];
+  metrics?: MetricEntry[]; // absent for GT modes
 };
 
 export type CloudMetaEntry = {

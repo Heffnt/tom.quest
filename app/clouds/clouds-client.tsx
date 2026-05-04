@@ -7,6 +7,7 @@ import { CloudPoints, SplitPlaneOverlay } from "./cloud-viewer";
 import { ControlPanel } from "./control-panel";
 import { FlyCamera, type FlyCameraHandle } from "./fly-camera";
 import { Legend } from "./legend";
+import { MetricsPanel } from "./metrics-panel";
 import { fetchCloud, fetchManifest } from "./lib/parse-cloud";
 import type { CloudKey, Manifest, ParsedCloud } from "./lib/types";
 
@@ -181,7 +182,12 @@ export default function CloudsClient() {
         />
       )}
 
-      {colorMode && <Legend mode={colorMode} />}
+      {colorMode && (
+        <div className="absolute bottom-4 right-4 z-10 flex flex-row items-end gap-3">
+          <MetricsPanel mode={colorMode} />
+          <Legend mode={colorMode} />
+        </div>
+      )}
 
       <a
         href="https://data.ign.fr/benchmarks/UrbanAnalysis/"

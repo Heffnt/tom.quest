@@ -400,6 +400,20 @@
             215
           ]
         }
+      ],
+      "metrics": [
+        {
+          "label": "ARI",
+          "value": 0.9103
+        },
+        {
+          "label": "NMI",
+          "value": 0.789
+        },
+        {
+          "label": "Purity",
+          "value": 0.9506
+        }
       ]
     },
     {
@@ -469,6 +483,20 @@
             66,
             215
           ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI",
+          "value": 0.7513
+        },
+        {
+          "label": "NMI",
+          "value": 0.6182
+        },
+        {
+          "label": "Purity",
+          "value": 0.9047
         }
       ]
     },
@@ -657,6 +685,20 @@
             212
           ]
         }
+      ],
+      "metrics": [
+        {
+          "label": "ARI",
+          "value": 0.1063
+        },
+        {
+          "label": "NMI",
+          "value": 0.3616
+        },
+        {
+          "label": "Purity",
+          "value": 0.9274
+        }
       ]
     },
     {
@@ -681,6 +723,24 @@
             160,
             64
           ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI",
+          "value": 0.7491
+        },
+        {
+          "label": "NMI",
+          "value": 0.6466
+        },
+        {
+          "label": "Purity",
+          "value": 0.8924
+        },
+        {
+          "label": "IoU floor",
+          "value": 0.901
         }
       ]
     }
