@@ -1,6 +1,14 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 
@@ -12,14 +20,23 @@ type Props = {
   initialPosition: [number, number, number];
   initialTarget: [number, number, number];
   moveSpeed?: number;  // world units / second per direction key
+  setMoveSpeed?: Dispatch<SetStateAction<number>>;
   lookSpeed?: number;  // radians per pixel of drag
 };
 
 const WORLD_UP = new THREE.Vector3(0, 0, 1);
 const PITCH_LIMIT = Math.PI / 2 - 0.02; // avoid gimbal at straight up/down
+const MIN_MOVE_SPEED = 5;
+const MAX_MOVE_SPEED = 150;
+const MAX_WHEEL_DELTA_PX = 200;
+const WHEEL_SPEED_SENSITIVITY = 0.002;
+
+function clampMoveSpeed(speed: number): number {
+  return THREE.MathUtils.clamp(speed, MIN_MOVE_SPEED, MAX_MOVE_SPEED);
+}
 
 export const FlyCamera = forwardRef<FlyCameraHandle, Props>(function FlyCamera(
-  { initialPosition, initialTarget, moveSpeed = 30, lookSpeed = 0.0025 },
+  { initialPosition, initialTarget, moveSpeed = 30, setMoveSpeed, lookSpeed = 0.0025 },
   ref,
 ) {
   const { camera, gl } = useThree();
@@ -30,10 +47,7 @@ export const FlyCamera = forwardRef<FlyCameraHandle, Props>(function FlyCamera(
   const pitch = useRef(0);
 
   // Reset is the single source of truth for "where does the camera start."
-  // Stashed in a ref so useImperativeHandle can return a stable function
-  // without going stale when initialPosition/Target change.
-  const resetFn = useRef(() => {});
-  resetFn.current = () => {
+  const reset = useCallback(() => {
     camera.up.copy(WORLD_UP);
     camera.position.set(initialPosition[0], initialPosition[1], initialPosition[2]);
     const dx = initialTarget[0] - initialPosition[0];
@@ -42,14 +56,14 @@ export const FlyCamera = forwardRef<FlyCameraHandle, Props>(function FlyCamera(
     const len = Math.hypot(dx, dy, dz) || 1;
     yaw.current = Math.atan2(dy, dx);
     pitch.current = Math.asin(THREE.MathUtils.clamp(dz / len, -1, 1));
-  };
+  }, [camera, initialPosition, initialTarget]);
 
-  useImperativeHandle(ref, () => ({ reset: () => resetFn.current() }), []);
+  useImperativeHandle(ref, () => ({ reset }), [reset]);
 
   // Re-initialize whenever the framing changes (e.g. clouds finish loading).
   useEffect(() => {
-    resetFn.current();
-  }, [initialPosition, initialTarget]);
+    reset();
+  }, [reset]);
 
   // Pointer + keyboard wiring.
   useEffect(() => {
@@ -77,6 +91,21 @@ export const FlyCamera = forwardRef<FlyCameraHandle, Props>(function FlyCamera(
         pitch.current - dy * lookSpeed, -PITCH_LIMIT, PITCH_LIMIT,
       );
     };
+    const onWheel = (e: WheelEvent) => {
+      if (!setMoveSpeed) return;
+      e.preventDefault();
+      const wheelUnit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1;
+      const deltaPixels = e.deltaY * wheelUnit;
+      const clampedDelta = THREE.MathUtils.clamp(
+        deltaPixels,
+        -MAX_WHEEL_DELTA_PX,
+        MAX_WHEEL_DELTA_PX,
+      );
+      setMoveSpeed((current) => {
+        const nextSpeed = current * Math.exp(-clampedDelta * WHEEL_SPEED_SENSITIVITY);
+        return clampMoveSpeed(nextSpeed);
+      });
+    };
 
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
@@ -97,6 +126,7 @@ export const FlyCamera = forwardRef<FlyCameraHandle, Props>(function FlyCamera(
     canvas.addEventListener("pointercancel", stopDrag);
     canvas.addEventListener("pointerleave", stopDrag);
     canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
@@ -106,11 +136,12 @@ export const FlyCamera = forwardRef<FlyCameraHandle, Props>(function FlyCamera(
       canvas.removeEventListener("pointercancel", stopDrag);
       canvas.removeEventListener("pointerleave", stopDrag);
       canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("wheel", onWheel);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [gl, lookSpeed]);
+  }, [gl, lookSpeed, setMoveSpeed]);
 
   // Scratch vectors -- allocated once, reused every frame to keep GC quiet.
   const scratch = useRef({

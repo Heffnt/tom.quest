@@ -136,6 +136,7 @@ export default function CloudsClient() {
           initialPosition={cameraInit.position}
           initialTarget={cameraInit.target}
           moveSpeed={moveSpeed}
+          setMoveSpeed={setMoveSpeed}
           lookSpeed={lookSpeed}
         />
         {colorMode &&

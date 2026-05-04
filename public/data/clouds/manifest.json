@@ -334,7 +334,7 @@
     },
     {
       "id": "pred_pointnet",
-      "label": "PointNet (mid)",
+      "label": "Predictions \u2014 PointNet, overlap + TTA",
       "channel": "pred_pointnet",
       "palette": [
         {
@@ -403,22 +403,130 @@
       ],
       "metrics": [
         {
-          "label": "ARI",
+          "label": "ARI class",
           "value": 0.9103
         },
         {
-          "label": "NMI",
+          "label": "NMI class",
           "value": 0.789
         },
         {
-          "label": "Purity",
+          "label": "Purity class",
           "value": 0.9506
+        },
+        {
+          "label": "ARI id",
+          "value": 0.5239
+        },
+        {
+          "label": "NMI id",
+          "value": 0.5514
+        },
+        {
+          "label": "Purity id",
+          "value": 0.6462
+        }
+      ]
+    },
+    {
+      "id": "pred_pointnet_no_overlap_tta",
+      "label": "Predictions \u2014 PointNet, no overlap/TTA",
+      "channel": "pred_pointnet_no_overlap_tta",
+      "palette": [
+        {
+          "id": 0,
+          "name": "unclassified",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202000000,
+          "name": "ground",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "building",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "other object",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 302000000,
+          "name": "static",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 303000000,
+          "name": "Dynamic",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 304000000,
+          "name": "natural",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": 0.8944
+        },
+        {
+          "label": "NMI class",
+          "value": 0.7502
+        },
+        {
+          "label": "Purity class",
+          "value": 0.9437
+        },
+        {
+          "label": "ARI id",
+          "value": 0.514
+        },
+        {
+          "label": "NMI id",
+          "value": 0.534
+        },
+        {
+          "label": "Purity id",
+          "value": 0.6457
         }
       ]
     },
     {
       "id": "pred_pointnet2",
-      "label": "PointNet++ (mid)",
+      "label": "Predictions \u2014 PointNet++, overlap + TTA",
       "channel": "pred_pointnet2",
       "palette": [
         {
@@ -487,27 +595,39 @@
       ],
       "metrics": [
         {
-          "label": "ARI",
-          "value": 0.7513
+          "label": "ARI class",
+          "value": 0.8793
         },
         {
-          "label": "NMI",
-          "value": 0.6182
+          "label": "NMI class",
+          "value": 0.7597
         },
         {
-          "label": "Purity",
-          "value": 0.9047
+          "label": "Purity class",
+          "value": 0.9446
+        },
+        {
+          "label": "ARI id",
+          "value": 0.4935
+        },
+        {
+          "label": "NMI id",
+          "value": 0.5147
+        },
+        {
+          "label": "Purity id",
+          "value": 0.6408
         }
       ]
     },
     {
-      "id": "pred_kmeans",
-      "label": "K-means clusters",
-      "channel": "pred_kmeans",
+      "id": "pred_pointnet2_no_overlap_tta",
+      "label": "Predictions \u2014 PointNet++, no overlap/TTA",
+      "channel": "pred_pointnet2_no_overlap_tta",
       "palette": [
         {
           "id": 0,
-          "name": "cluster 0",
+          "name": "unclassified",
           "color": [
             215,
             66,
@@ -515,8 +635,8 @@
           ]
         },
         {
-          "id": 1,
-          "name": "cluster 1",
+          "id": 202000000,
+          "name": "ground",
           "color": [
             17,
             74,
@@ -524,8 +644,8 @@
           ]
         },
         {
-          "id": 2,
-          "name": "cluster 2",
+          "id": 203000000,
+          "name": "building",
           "color": [
             153,
             215,
@@ -533,8 +653,8 @@
           ]
         },
         {
-          "id": 3,
-          "name": "cluster 3",
+          "id": 301000000,
+          "name": "other object",
           "color": [
             212,
             17,
@@ -542,8 +662,8 @@
           ]
         },
         {
-          "id": 4,
-          "name": "cluster 4",
+          "id": 302000000,
+          "name": "static",
           "color": [
             66,
             215,
@@ -551,8 +671,8 @@
           ]
         },
         {
-          "id": 5,
-          "name": "cluster 5",
+          "id": 303000000,
+          "name": "Dynamic",
           "color": [
             212,
             123,
@@ -560,150 +680,105 @@
           ]
         },
         {
-          "id": 6,
-          "name": "cluster 6",
+          "id": 304000000,
+          "name": "natural",
           "color": [
             103,
             66,
             215
           ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": 0.8533
         },
         {
-          "id": 7,
-          "name": "cluster 7",
-          "color": [
-            26,
-            212,
-            17
-          ]
+          "label": "NMI class",
+          "value": 0.7257
         },
         {
-          "id": 8,
-          "name": "cluster 8",
-          "color": [
-            215,
-            66,
-            116
-          ]
+          "label": "Purity class",
+          "value": 0.9364
         },
         {
-          "id": 9,
-          "name": "cluster 9",
-          "color": [
-            17,
-            139,
-            212
-          ]
+          "label": "ARI id",
+          "value": 0.4679
         },
         {
-          "id": 10,
-          "name": "cluster 10",
-          "color": [
-            203,
-            215,
-            66
-          ]
+          "label": "NMI id",
+          "value": 0.4935
         },
         {
-          "id": 11,
-          "name": "cluster 11",
-          "color": [
-            171,
-            17,
-            212
-          ]
-        },
+          "label": "Purity id",
+          "value": 0.6351
+        }
+      ]
+    },
+    {
+      "id": "pred_floor_pole",
+      "label": "Predictions \u2014 Floor + pole",
+      "channel": "pred_floor_pole",
+      "palette": [
         {
-          "id": 12,
-          "name": "cluster 12",
+          "id": 0,
+          "name": "other",
           "color": [
-            66,
-            215,
+            120,
+            130,
             140
           ]
         },
         {
-          "id": 13,
-          "name": "cluster 13",
+          "id": 1,
+          "name": "floor",
           "color": [
-            212,
-            58,
-            17
+            232,
+            160,
+            64
           ]
         },
         {
-          "id": 14,
-          "name": "cluster 14",
+          "id": 2,
+          "name": "pole",
           "color": [
-            66,
-            78,
-            215
-          ]
-        },
-        {
-          "id": 15,
-          "name": "cluster 15",
-          "color": [
-            91,
-            212,
-            17
-          ]
-        },
-        {
-          "id": 16,
-          "name": "cluster 16",
-          "color": [
-            215,
-            66,
-            165
-          ]
-        },
-        {
-          "id": 17,
-          "name": "cluster 17",
-          "color": [
-            17,
-            205,
-            212
-          ]
-        },
-        {
-          "id": 18,
-          "name": "cluster 18",
-          "color": [
-            215,
-            177,
-            66
-          ]
-        },
-        {
-          "id": 19,
-          "name": "cluster 19",
-          "color": [
-            106,
-            17,
-            212
+            80,
+            190,
+            220
           ]
         }
       ],
       "metrics": [
         {
-          "label": "ARI",
-          "value": 0.1063
+          "label": "ARI class",
+          "value": 0.6937
         },
         {
-          "label": "NMI",
-          "value": 0.3616
+          "label": "NMI class",
+          "value": 0.6035
         },
         {
-          "label": "Purity",
-          "value": 0.9274
+          "label": "Purity class",
+          "value": 0.8585
+        },
+        {
+          "label": "ARI id",
+          "value": 0.4014
+        },
+        {
+          "label": "NMI id",
+          "value": 0.4298
+        },
+        {
+          "label": "Purity id",
+          "value": 0.6329
         }
       ]
     },
     {
       "id": "pred_ransac",
-      "label": "RANSAC ground plane",
+      "label": "Predictions \u2014 RANSAC ground plane",
       "channel": "pred_ransac",
       "palette": [
         {
@@ -727,16 +802,28 @@
       ],
       "metrics": [
         {
-          "label": "ARI",
+          "label": "ARI class",
           "value": 0.7491
         },
         {
-          "label": "NMI",
+          "label": "NMI class",
           "value": 0.6466
         },
         {
-          "label": "Purity",
+          "label": "Purity class",
           "value": 0.8924
+        },
+        {
+          "label": "ARI id",
+          "value": 0.4054
+        },
+        {
+          "label": "NMI id",
+          "value": 0.4118
+        },
+        {
+          "label": "Purity id",
+          "value": 0.6301
         },
         {
           "label": "IoU floor",

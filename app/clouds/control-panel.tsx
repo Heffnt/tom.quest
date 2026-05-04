@@ -180,6 +180,7 @@ export function ControlPanel(props: Props) {
       <div className="mt-3 pt-3 border-t border-border text-xs text-text-faint font-mono leading-relaxed">
         <div><span className="text-text-muted">drag</span> to look around</div>
         <div><span className="text-text-muted">WASD</span> move · <span className="text-text-muted">space/shift</span> up/down</div>
+        <div><span className="text-text-muted">scroll</span> over viewer to change fly speed</div>
       </div>
     </div>
   );
