@@ -23,7 +23,7 @@ export default function CloudsClient() {
     test: true,
   });
   const [activeMode, setActiveMode] = useState<string>("gt_mid");
-  const [pointCount, setPointCount] = useState<number>(150_000);
+  const [pointRatio, setPointRatio] = useState<number>(0.3);
   const [pointSize, setPointSize] = useState<number>(0.06);
   const [moveSpeed, setMoveSpeed] = useState<number>(30);
   const [lookSpeed, setLookSpeed] = useState<number>(0.0025);
@@ -107,17 +107,6 @@ export default function CloudsClient() {
 
   const handleResetCamera = () => flyRef.current?.reset();
 
-  // Per-cloud slider cap = the largest n among loaded clouds. The single
-  // slider value is clamped per-cloud at render time.
-  const pointCountMax = useMemo(() => {
-    let max = 1000;
-    for (const k of Object.keys(clouds) as CloudKey[]) {
-      const c = clouds[k];
-      if (c && c.n > max) max = c.n;
-    }
-    return max;
-  }, [clouds]);
-
   // Plane size for the split overlay -- a bit larger than the scene extent
   // so it visually spans the cloud.
   const planeSize: [number, number] = useMemo(() => {
@@ -158,7 +147,7 @@ export default function CloudsClient() {
                 cloud={cloud}
                 colorMode={colorMode}
                 pointSize={pointSize}
-                visibleCount={Math.min(pointCount, cloud.n)}
+                visibleCount={Math.round(pointRatio * cloud.n)}
               />
             );
           })}
@@ -175,9 +164,11 @@ export default function CloudsClient() {
           colorModes={manifest.color_modes}
           activeMode={activeMode}
           setActiveMode={setActiveMode}
-          pointCount={pointCount}
-          setPointCount={setPointCount}
-          pointCountMax={pointCountMax}
+          pointRatio={pointRatio}
+          setPointRatio={setPointRatio}
+          cloudSizes={Object.fromEntries(
+            (Object.keys(clouds) as CloudKey[]).map((k) => [k, clouds[k]?.n ?? 0]),
+          )}
           pointSize={pointSize}
           setPointSize={setPointSize}
           moveSpeed={moveSpeed}

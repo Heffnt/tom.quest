@@ -11,9 +11,11 @@ type Props = {
   activeMode: string;
   setActiveMode: (id: string) => void;
 
-  pointCount: number;
-  setPointCount: (n: number) => void;
-  pointCountMax: number;
+  // Sample ratio (0..1). Each cloud renders ratio * cloud.n points so
+  // train and test stay at the same per-cloud-fraction density.
+  pointRatio: number;
+  setPointRatio: (n: number) => void;
+  cloudSizes: Partial<Record<CloudKey, number>>;
 
   pointSize: number;
   setPointSize: (n: number) => void;
@@ -43,9 +45,9 @@ export function ControlPanel(props: Props) {
     colorModes,
     activeMode,
     setActiveMode,
-    pointCount,
-    setPointCount,
-    pointCountMax,
+    pointRatio,
+    setPointRatio,
+    cloudSizes,
     pointSize,
     setPointSize,
     moveSpeed,
@@ -101,18 +103,26 @@ export function ControlPanel(props: Props) {
         ))}
       </Section>
 
-      <Section title={`Points per cloud (${formatCount(pointCount)})`}>
+      <Section title={`Sample ratio (${(pointRatio * 100).toFixed(1)}%)`}>
         <input
           type="range"
-          min={1000}
-          max={pointCountMax}
-          step={1000}
-          value={Math.min(pointCount, pointCountMax)}
-          onChange={(e) => setPointCount(Number(e.target.value))}
+          min={0}
+          max={1}
+          step={0.005}
+          value={pointRatio}
+          onChange={(e) => setPointRatio(Number(e.target.value))}
           className="w-full accent-accent"
         />
-        <div className="text-text-faint text-xs mt-1">
-          1k — {formatCount(pointCountMax)}
+        <div className="text-text-faint text-xs mt-1 font-mono">
+          {(["train", "test"] as const).map((k) => {
+            const n = cloudSizes[k];
+            if (!n) return null;
+            return (
+              <span key={k} className="mr-3">
+                {k}: {formatCount(Math.round(pointRatio * n))}
+              </span>
+            );
+          })}
         </div>
       </Section>
 
