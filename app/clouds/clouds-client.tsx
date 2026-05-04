@@ -25,6 +25,8 @@ export default function CloudsClient() {
   const [activeMode, setActiveMode] = useState<string>("gt_mid");
   const [pointCount, setPointCount] = useState<number>(150_000);
   const [pointSize, setPointSize] = useState<number>(0.06);
+  const [moveSpeed, setMoveSpeed] = useState<number>(30);
+  const [lookSpeed, setLookSpeed] = useState<number>(0.0025);
   const [showSplitPlane, setShowSplitPlane] = useState<boolean>(true);
 
   const flyRef = useRef<FlyCameraHandle | null>(null);
@@ -143,6 +145,8 @@ export default function CloudsClient() {
           ref={flyRef}
           initialPosition={cameraInit.position}
           initialTarget={cameraInit.target}
+          moveSpeed={moveSpeed}
+          lookSpeed={lookSpeed}
         />
         {colorMode &&
           (Object.keys(clouds) as CloudKey[]).map((key) => {
@@ -176,6 +180,10 @@ export default function CloudsClient() {
           pointCountMax={pointCountMax}
           pointSize={pointSize}
           setPointSize={setPointSize}
+          moveSpeed={moveSpeed}
+          setMoveSpeed={setMoveSpeed}
+          lookSpeed={lookSpeed}
+          setLookSpeed={setLookSpeed}
           showSplitPlane={showSplitPlane}
           setShowSplitPlane={setShowSplitPlane}
           onResetCamera={handleResetCamera}
@@ -183,6 +191,16 @@ export default function CloudsClient() {
       )}
 
       {colorMode && <Legend mode={colorMode} />}
+
+      <a
+        href="https://data.ign.fr/benchmarks/UrbanAnalysis/"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="absolute top-4 right-4 z-10 rounded-md border border-border bg-surface/80 backdrop-blur-md px-3 py-1.5 text-xs font-mono text-text-muted hover:text-accent hover:border-accent/40 transition-colors animate-settle"
+      >
+        <span className="text-text-faint">dataset:</span>{" "}
+        IQmulus &amp; TerraMobilita Contest <span aria-hidden>↗</span>
+      </a>
 
       {isLoading && !loadError && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

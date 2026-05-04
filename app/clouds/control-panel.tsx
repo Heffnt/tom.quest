@@ -18,6 +18,12 @@ type Props = {
   pointSize: number;
   setPointSize: (n: number) => void;
 
+  moveSpeed: number;
+  setMoveSpeed: (n: number) => void;
+
+  lookSpeed: number;
+  setLookSpeed: (n: number) => void;
+
   showSplitPlane: boolean;
   setShowSplitPlane: (b: boolean) => void;
 
@@ -42,6 +48,10 @@ export function ControlPanel(props: Props) {
     pointCountMax,
     pointSize,
     setPointSize,
+    moveSpeed,
+    setMoveSpeed,
+    lookSpeed,
+    setLookSpeed,
     showSplitPlane,
     setShowSplitPlane,
     onResetCamera,
@@ -114,6 +124,30 @@ export function ControlPanel(props: Props) {
           step={0.005}
           value={pointSize}
           onChange={(e) => setPointSize(Number(e.target.value))}
+          className="w-full accent-accent"
+        />
+      </Section>
+
+      <Section title={`Fly speed (${Math.round(moveSpeed)})`}>
+        <input
+          type="range"
+          min={5}
+          max={150}
+          step={5}
+          value={moveSpeed}
+          onChange={(e) => setMoveSpeed(Number(e.target.value))}
+          className="w-full accent-accent"
+        />
+      </Section>
+
+      <Section title={`Look speed (${(lookSpeed * 1000).toFixed(1)})`}>
+        <input
+          type="range"
+          min={0.0005}
+          max={0.008}
+          step={0.0005}
+          value={lookSpeed}
+          onChange={(e) => setLookSpeed(Number(e.target.value))}
           className="w-full accent-accent"
         />
       </Section>
