@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import patch
 
-from gpu_report import _parse_nvidia_smi_csv, _query_node_gpu_stats, aggregate_gpu_device_stats
+from gpu_report import (
+    NodeInfo,
+    _parse_nvidia_smi_csv,
+    _query_node_gpu_stats,
+    aggregate_gpu_device_stats,
+    get_cached_gpu_activity,
+)
 
 
 class GpuReportTest(unittest.TestCase):
@@ -45,6 +51,29 @@ class GpuReportTest(unittest.TestCase):
                 "utilization_pct": 0,
             },
         )
+
+    def test_gpu_activity_refresh_failure_returns_empty_activity(self) -> None:
+        nodes = [
+            NodeInfo(
+                name="gpu-1-01",
+                gpu_type="a100",
+                partition="gpu",
+                total_gpus=2,
+                allocated_gpus=0,
+                state="IDLE",
+                memory_total_mb=1024,
+                memory_allocated_mb=0,
+            )
+        ]
+
+        with (
+            patch("gpu_report._GPU_ACTIVITY_CACHE", {"expires_at": 0.0, "value": None}),
+            patch("gpu_report._build_gpu_activity", side_effect=BlockingIOError("fork failed")),
+        ):
+            activity = get_cached_gpu_activity(nodes)
+
+        self.assertEqual(activity["gpu_jobs_by_node"], {"gpu-1-01": [None, None]})
+        self.assertEqual(activity["job_stats_by_job_id"], {})
 
 
 if __name__ == "__main__":

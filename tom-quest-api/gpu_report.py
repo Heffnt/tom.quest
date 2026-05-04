@@ -22,6 +22,7 @@ GPU_INDEX_PATTERN = re.compile(r"IDX:([^)]+)")
 NODE_SECTION_PATTERN = re.compile(r"Nodes=(\S+)(.*?)(?=Nodes=\S+|$)")
 GPU_COUNT_PATTERN = re.compile(r"gpu(?::[^:,\s()]+)?:(\d+)", re.IGNORECASE)
 GPU_ACTIVITY_TTL_SECONDS = 10
+NODE_INFO_TTL_SECONDS = 30
 NVIDIA_SMI_QUERY_ARGS = (
     "--query-gpu=index,memory.used,memory.total,temperature.gpu,"
     "utilization.gpu --format=csv,noheader,nounits"
@@ -32,6 +33,11 @@ NVIDIA_SMI_QUERY = (
 JOB_GPU_STATS_TIMEOUT_SECONDS = 8
 _GPU_ACTIVITY_CACHE_LOCK = threading.Lock()
 _GPU_ACTIVITY_CACHE: dict[str, object] = {
+    "expires_at": 0.0,
+    "value": None,
+}
+_NODE_INFO_CACHE_LOCK = threading.Lock()
+_NODE_INFO_CACHE: dict[str, object] = {
     "expires_at": 0.0,
     "value": None,
 }
@@ -111,7 +117,7 @@ def parse_memory(tres_str: str) -> int:
     return value
 
 
-def parse_gpu_nodes() -> list[NodeInfo]:
+def _parse_gpu_nodes_uncached() -> list[NodeInfo]:
     nodes = []
     for node_name in get_all_nodes():
         node_info_str = get_node_info(node_name)
@@ -145,6 +151,23 @@ def parse_gpu_nodes() -> list[NodeInfo]:
             )
         )
     return nodes
+
+
+def parse_gpu_nodes() -> list[NodeInfo]:
+    now = time.time()
+    with _NODE_INFO_CACHE_LOCK:
+        cached_value = _NODE_INFO_CACHE["value"]
+        expires_at = float(_NODE_INFO_CACHE["expires_at"])
+        if cached_value is not None and expires_at > now:
+            return cached_value  # type: ignore[return-value]
+        nodes = _parse_gpu_nodes_uncached()
+        if nodes or cached_value is None:
+            _NODE_INFO_CACHE["value"] = nodes
+            _NODE_INFO_CACHE["expires_at"] = now + NODE_INFO_TTL_SECONDS
+            return nodes
+        logger.warning("Using stale GPU node cache because node refresh returned no nodes")
+        _NODE_INFO_CACHE["expires_at"] = now + NODE_INFO_TTL_SECONDS
+        return cached_value  # type: ignore[return-value]
 
 
 def _format_type_info(info: dict[str, GPUTypeInfo]) -> list[dict]:
@@ -505,6 +528,16 @@ def aggregate_job_gpu_stats(gpu_jobs_by_node: dict[str, list[dict | None]]) -> d
     }
 
 
+def _empty_gpu_activity(nodes: list[NodeInfo] | None = None) -> dict:
+    return {
+        "gpu_jobs_by_node": {
+            node.name: [None] * node.total_gpus
+            for node in nodes or []
+        },
+        "job_stats_by_job_id": {},
+    }
+
+
 def get_cached_gpu_activity(nodes: list[NodeInfo] | None = None) -> dict:
     now = time.time()
     with _GPU_ACTIVITY_CACHE_LOCK:
@@ -512,13 +545,16 @@ def get_cached_gpu_activity(nodes: list[NodeInfo] | None = None) -> dict:
         expires_at = float(_GPU_ACTIVITY_CACHE["expires_at"])
         if cached_value is not None and expires_at > now:
             return cached_value  # type: ignore[return-value]
-    if nodes is None:
-        nodes = parse_gpu_nodes()
-    value = _build_gpu_activity(nodes)
-    with _GPU_ACTIVITY_CACHE_LOCK:
+        if nodes is None:
+            nodes = parse_gpu_nodes()
+        try:
+            value = _build_gpu_activity(nodes)
+        except Exception:
+            logger.exception("GPU activity refresh failed")
+            value = cached_value if cached_value is not None else _empty_gpu_activity(nodes)
         _GPU_ACTIVITY_CACHE["value"] = value
         _GPU_ACTIVITY_CACHE["expires_at"] = now + GPU_ACTIVITY_TTL_SECONDS
-    return value
+        return value  # type: ignore[return-value]
 
 
 def format_gpu_report_v2() -> dict:

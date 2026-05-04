@@ -516,122 +516,20 @@
             17,
             212
           ]
-        },
-        {
-          "id": 20,
-          "name": "cluster 20",
-          "color": [
-            66,
-            215,
-            90
-          ]
-        },
-        {
-          "id": 21,
-          "name": "cluster 21",
-          "color": [
-            212,
-            17,
-            42
-          ]
-        },
-        {
-          "id": 22,
-          "name": "cluster 22",
-          "color": [
-            66,
-            128,
-            215
-          ]
-        },
-        {
-          "id": 23,
-          "name": "cluster 23",
-          "color": [
-            156,
-            212,
-            17
-          ]
-        },
-        {
-          "id": 24,
-          "name": "cluster 24",
-          "color": [
-            214,
-            66,
-            215
-          ]
-        },
-        {
-          "id": 25,
-          "name": "cluster 25",
-          "color": [
-            17,
-            212,
-            155
-          ]
-        },
-        {
-          "id": 26,
-          "name": "cluster 26",
-          "color": [
-            215,
-            127,
-            66
-          ]
-        },
-        {
-          "id": 27,
-          "name": "cluster 27",
-          "color": [
-            41,
-            17,
-            212
-          ]
-        },
-        {
-          "id": 28,
-          "name": "cluster 28",
-          "color": [
-            91,
-            215,
-            66
-          ]
-        },
-        {
-          "id": 29,
-          "name": "cluster 29",
-          "color": [
-            212,
-            17,
-            107
-          ]
         }
       ],
       "metrics": [
         {
           "label": "ARI class",
-          "value": 0.0568
+          "value": 0.1548
         },
         {
           "label": "NMI class",
-          "value": 0.2501
+          "value": 0.4
         },
         {
           "label": "Purity class",
-          "value": 0.8267
-        },
-        {
-          "label": "ARI id",
-          "value": 0.1533
-        },
-        {
-          "label": "NMI id",
-          "value": 0.5077
-        },
-        {
-          "label": "Purity id",
-          "value": 0.7877
+          "value": 0.9246
         }
       ]
     },
@@ -716,18 +614,6 @@
         {
           "label": "Purity class",
           "value": 0.9506
-        },
-        {
-          "label": "ARI id",
-          "value": 0.5239
-        },
-        {
-          "label": "NMI id",
-          "value": 0.5514
-        },
-        {
-          "label": "Purity id",
-          "value": 0.6462
         }
       ]
     },
@@ -812,210 +698,6 @@
         {
           "label": "Purity class",
           "value": 0.9437
-        },
-        {
-          "label": "ARI id",
-          "value": 0.514
-        },
-        {
-          "label": "NMI id",
-          "value": 0.534
-        },
-        {
-          "label": "Purity id",
-          "value": 0.6457
-        }
-      ]
-    },
-    {
-      "id": "pred_pointnet2",
-      "label": "Predictions \u2014 PointNet++, overlap + TTA",
-      "channel": "pred_pointnet2",
-      "palette": [
-        {
-          "id": 0,
-          "name": "unclassified",
-          "color": [
-            215,
-            66,
-            66
-          ]
-        },
-        {
-          "id": 202000000,
-          "name": "ground",
-          "color": [
-            17,
-            74,
-            212
-          ]
-        },
-        {
-          "id": 203000000,
-          "name": "building",
-          "color": [
-            153,
-            215,
-            66
-          ]
-        },
-        {
-          "id": 301000000,
-          "name": "other object",
-          "color": [
-            212,
-            17,
-            188
-          ]
-        },
-        {
-          "id": 302000000,
-          "name": "static",
-          "color": [
-            66,
-            215,
-            190
-          ]
-        },
-        {
-          "id": 303000000,
-          "name": "Dynamic",
-          "color": [
-            212,
-            123,
-            17
-          ]
-        },
-        {
-          "id": 304000000,
-          "name": "natural",
-          "color": [
-            103,
-            66,
-            215
-          ]
-        }
-      ],
-      "metrics": [
-        {
-          "label": "ARI class",
-          "value": 0.8779
-        },
-        {
-          "label": "NMI class",
-          "value": 0.7616
-        },
-        {
-          "label": "Purity class",
-          "value": 0.9451
-        },
-        {
-          "label": "ARI id",
-          "value": 0.4826
-        },
-        {
-          "label": "NMI id",
-          "value": 0.5184
-        },
-        {
-          "label": "Purity id",
-          "value": 0.6408
-        }
-      ]
-    },
-    {
-      "id": "pred_pointnet2_no_overlap_tta",
-      "label": "Predictions \u2014 PointNet++, no overlap/TTA",
-      "channel": "pred_pointnet2_no_overlap_tta",
-      "palette": [
-        {
-          "id": 0,
-          "name": "unclassified",
-          "color": [
-            215,
-            66,
-            66
-          ]
-        },
-        {
-          "id": 202000000,
-          "name": "ground",
-          "color": [
-            17,
-            74,
-            212
-          ]
-        },
-        {
-          "id": 203000000,
-          "name": "building",
-          "color": [
-            153,
-            215,
-            66
-          ]
-        },
-        {
-          "id": 301000000,
-          "name": "other object",
-          "color": [
-            212,
-            17,
-            188
-          ]
-        },
-        {
-          "id": 302000000,
-          "name": "static",
-          "color": [
-            66,
-            215,
-            190
-          ]
-        },
-        {
-          "id": 303000000,
-          "name": "Dynamic",
-          "color": [
-            212,
-            123,
-            17
-          ]
-        },
-        {
-          "id": 304000000,
-          "name": "natural",
-          "color": [
-            103,
-            66,
-            215
-          ]
-        }
-      ],
-      "metrics": [
-        {
-          "label": "ARI class",
-          "value": 0.8533
-        },
-        {
-          "label": "NMI class",
-          "value": 0.7257
-        },
-        {
-          "label": "Purity class",
-          "value": 0.9364
-        },
-        {
-          "label": "ARI id",
-          "value": 0.4679
-        },
-        {
-          "label": "NMI id",
-          "value": 0.4935
-        },
-        {
-          "label": "Purity id",
-          "value": 0.6351
         }
       ]
     },
@@ -1064,18 +746,6 @@
         {
           "label": "Purity class",
           "value": 0.8585
-        },
-        {
-          "label": "ARI id",
-          "value": 0.4014
-        },
-        {
-          "label": "NMI id",
-          "value": 0.4298
-        },
-        {
-          "label": "Purity id",
-          "value": 0.6329
         }
       ]
     },
@@ -1115,18 +785,6 @@
         {
           "label": "Purity class",
           "value": 0.8924
-        },
-        {
-          "label": "ARI id",
-          "value": 0.4054
-        },
-        {
-          "label": "NMI id",
-          "value": 0.4118
-        },
-        {
-          "label": "Purity id",
-          "value": 0.6301
         },
         {
           "label": "IoU floor",
