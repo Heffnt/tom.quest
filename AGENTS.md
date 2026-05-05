@@ -15,13 +15,15 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 ## Tech Stack
 
-- **Framework:** Next.js App Router + React.
-- **Backend / DB:** Convex schema, queries, mutations, HTTP actions, and Convex Auth.
-- **Auth:** Convex Auth with three roles: `user`, `admin`, and `tom`.
+- **Framework:** Next.js 16 App Router + React 19.
+- **Backend / DB:** Convex — schema, queries, mutations, HTTP actions, and Convex Auth.
+- **Auth:** Convex Auth (password provider) with three roles: `user`, `admin`, and `tom`.
 - **Client state:** Zustand for UI-only state. Server state belongs in Convex.
 - **Styling:** Tailwind CSS v4 with theme tokens in `app/globals.css`.
 - **Observability:** Sentry for errors, performance, and session replay.
+- **Testing:** Vitest + convex-test (unit/component), Playwright (E2E).
 - **Package manager:** pnpm.
+- **Hosting:** Vercel (frontend) + Convex Cloud (backend).
 
 ## Roles
 
@@ -42,6 +44,21 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Avoid query params, hash fragments, or nested prefixes for top-level quests.
 - Dynamic segments are only for naturally dynamic resources, such as `/turing/terminal/[session]`.
 - Quest visibility is role-gated via each quest's `visibility` field: `public`, `authenticated`, `admin`, or `tom`.
+- Quest metadata lives in `app/components/quest-routes.ts`.
+
+## Turing Proxy
+
+- A FastAPI worker (`tom-quest-api/`) on the WPI Turing cluster exposes GPU/job/terminal APIs.
+- `cloudflared` creates a quick tunnel; the worker registers the tunnel URL with Convex via an HTTP action authenticated by `TURING_REGISTRATION_SECRET`.
+- Convex auto-links the connection to the Tom user on registration.
+- Next.js API routes (`app/api/turing/[...path]/route.ts`) look up the tunnel URL from Convex and proxy requests to the worker.
+- The proxy detects HTML/non-JSON upstream responses and converts them to structured JSON errors.
+
+## Deployment
+
+- Vercel builds via `npx convex deploy --cmd 'pnpm build'`, which pushes Convex functions to prod and then builds Next.js.
+- Required Vercel env vars: `NEXT_PUBLIC_CONVEX_URL`, `NEXT_PUBLIC_CONVEX_SITE_URL`, `CONVEX_DEPLOY_KEY`, Sentry vars.
+- Required Convex env vars (set via `npx convex env set --prod`): `SITE_URL`, `JWT_PRIVATE_KEY`, `JWKS`, `TOM_SETUP_SECRET`, `TURING_REGISTRATION_SECRET`.
 
 ## Debugging And Observability
 
