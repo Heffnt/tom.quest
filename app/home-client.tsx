@@ -7,7 +7,7 @@ import TomLogo from "./components/tom-logo";
 import LoginModal from "./components/login-modal";
 import ProfileModal from "./components/profile-modal";
 import { useAuth, getUsername } from "./lib/auth";
-import { rankQuests } from "./components/quest-routes";
+import { rankQuests, type QuestRole } from "./components/quest-routes";
 
 /* Home = the expanded nav bar. Big logo centered, nav terminal below with the
    pages list always visible, and the auth button fixed top-right. Everything
@@ -37,7 +37,7 @@ function logoFontSize(vw: number | null): number {
 
 export default function HomeClient() {
   const router = useRouter();
-  const { user, isTom } = useAuth();
+  const { user, isTom, role } = useAuth();
   const displayName = getUsername(user);
   const vw = useViewportWidth();
   const fontSize = logoFontSize(vw);
@@ -49,7 +49,8 @@ export default function HomeClient() {
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const ranked = useMemo(() => rankQuests(query), [query]);
+  const questRole: QuestRole = user ? role : "guest";
+  const ranked = useMemo(() => rankQuests(query, questRole), [query, questRole]);
   const suggestion = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q || !ranked[0]) return "";

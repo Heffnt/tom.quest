@@ -1,26 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const getUser = vi.fn();
-const isTom = vi.fn();
+const requireTom = vi.fn();
 
-vi.mock("@/app/lib/supabase", () => ({
-  createServerSupabaseClient: () => ({
-    auth: {
-      getUser,
-    },
-  }),
-}));
-
-vi.mock("@/app/lib/turing", () => ({
-  isTom,
+vi.mock("@/app/lib/convex-server", () => ({
+  requireTom,
 }));
 
 describe("GET /api/jarvis/config", () => {
   beforeEach(() => {
-    getUser.mockReset();
-    isTom.mockReset();
-    getUser.mockResolvedValue({ data: { user: { id: "tom-id" } } });
-    isTom.mockReturnValue(true);
+    requireTom.mockReset();
+    requireTom.mockResolvedValue({ _id: "tom-id", role: "tom", isTom: true });
     process.env.OPENCLAW_GATEWAY_URL = "wss://jarvis-1.tail2afba8.ts.net";
     process.env.JARVIS_GATEWAY_PASSWORD = "shared-password";
     process.env.JARVIS_DEVICE_ID = "shared-device-id";
@@ -46,7 +35,7 @@ describe("GET /api/jarvis/config", () => {
         privateKey: "shared-private-key",
       },
     });
-    expect(getUser).toHaveBeenCalledWith("access-token");
+    expect(requireTom).toHaveBeenCalled();
   });
 
   it("fails when the shared gateway password is missing", async () => {

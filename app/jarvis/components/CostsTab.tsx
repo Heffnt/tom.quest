@@ -12,8 +12,8 @@ type SummaryPayload = {
 };
 
 export default function CostsTab() {
-  const { session } = useAuth();
-  const accessToken = session?.access_token;
+  const { token } = useAuth();
+  const accessToken = token;
   const [summary, setSummary] = useState<SummaryPayload | null>(null);
 
   useEffect(() => {

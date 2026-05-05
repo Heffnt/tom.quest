@@ -1,22 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/app/lib/supabase";
-import { isTom } from "@/app/lib/turing";
+import { requireTom } from "@/app/lib/convex-server";
 
 type GatewayDeviceIdentityPayload = {
   deviceId: string;
   publicKey: string;
   privateKey: string;
 };
-
-async function getUserId(request: NextRequest) {
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader) return null;
-  const supabase = createServerSupabaseClient();
-  if (!supabase) return null;
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-  const { data } = await supabase.auth.getUser(token);
-  return data.user?.id ?? null;
-}
 
 function readOptionalEnv(name: string): string | null {
   const value = process.env[name]?.trim();
@@ -48,8 +37,9 @@ function getGatewayDeviceIdentity() {
 }
 
 export async function GET(request: NextRequest) {
-  const userId = await getUserId(request);
-  if (!isTom(userId || undefined)) {
+  try {
+    await requireTom(request);
+  } catch {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;

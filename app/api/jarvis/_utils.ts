@@ -1,25 +1,18 @@
 import { NextRequest } from "next/server";
-import { createServerSupabaseClient } from "@/app/lib/supabase";
-import { isTom } from "@/app/lib/turing";
+import { requireTom as requireTomUser } from "@/app/lib/convex-server";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
 export const WORKSPACE_ROOT = "/root/.openclaw/workspace";
 export const OPENCLAW_ROOT = "/root/.openclaw";
 
-export async function getTomUserId(request: NextRequest) {
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader) return null;
-  const supabase = createServerSupabaseClient();
-  if (!supabase) return null;
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-  const { data } = await supabase.auth.getUser(token);
-  return data.user?.id ?? null;
-}
-
 export async function requireTom(request: NextRequest) {
-  const userId = await getTomUserId(request);
-  return isTom(userId || undefined);
+  try {
+    await requireTomUser(request);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveWorkspacePath(relativePath: string) {

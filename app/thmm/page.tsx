@@ -1,34 +1,11 @@
-"use client";
+import type { Metadata } from "next";
+import THMMClient from "./thmm-client";
 
-import SceneShell from "./components/scene-shell";
-import { CompilerProvider, useCompiler } from "./state/compiler-store";
-import { DEFAULT_SCENARIO } from "./scenarios";
-import SourceScene from "./scenes/source";
-import ParseScene from "./scenes/parse";
-import CodegenScene from "./scenes/codegen";
-import LinkScene from "./scenes/link";
-import ExecuteScene from "./scenes/execute";
+export const metadata: Metadata = {
+  title: "THMM | tom.Quest",
+  description: "Tiny CPU simulator and datapath visualizer.",
+};
 
-export default function ThmmPage() {
-  return (
-    <CompilerProvider
-      initialSource={DEFAULT_SCENARIO.source}
-      initialScenarioKey={DEFAULT_SCENARIO.key}
-    >
-      <SceneShell>
-        <ActiveScene />
-      </SceneShell>
-    </CompilerProvider>
-  );
-}
-
-function ActiveScene() {
-  const { scene } = useCompiler();
-  switch (scene) {
-    case "source":  return <SourceScene  />;
-    case "parse":   return <ParseScene   />;
-    case "codegen": return <CodegenScene />;
-    case "link":    return <LinkScene    />;
-    case "execute": return <ExecuteScene />;
-  }
+export default function THMMPage() {
+  return <THMMClient />;
 }

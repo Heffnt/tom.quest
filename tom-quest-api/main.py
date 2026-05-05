@@ -31,6 +31,8 @@ from ws import router as ws_router
 load_dotenv()
 API_PORT = int(os.getenv("API_PORT", "8000"))
 TOM_QUEST_URL = os.getenv("TOM_QUEST_URL", "https://tom.quest")
+CONVEX_SITE_URL = os.getenv("CONVEX_SITE_URL", "")
+TURING_REGISTRATION_SECRET = os.getenv("TURING_REGISTRATION_SECRET", "")
 KEY_FILE = os.path.expanduser("~/.tom-quest-key")
 LOG_PATH = "tom-quest-api.log"
 TUNNEL_LOG_PATH = "tom-quest-tunnel.log"
@@ -69,9 +71,16 @@ def load_or_generate_key() -> str:
     return key
 
 def register_with_tom_quest(key: str, url: str) -> bool:
+    if not CONVEX_SITE_URL:
+        print("CONVEX_SITE_URL is required for Turing registration")
+        return False
+    if not TURING_REGISTRATION_SECRET:
+        print("TURING_REGISTRATION_SECRET is required for Turing registration")
+        return False
     try:
         res = requests.post(
-            f"{TOM_QUEST_URL}/api/turing/register",
+            f"{CONVEX_SITE_URL}/api/turing/register",
+            headers={"Authorization": f"Bearer {TURING_REGISTRATION_SECRET}"},
             json={"key": key, "url": url},
             timeout=10,
         )

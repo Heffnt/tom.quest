@@ -1,16 +1,28 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
-import { User, Session, SupabaseClient } from "@supabase/supabase-js";
-import { createBrowserSupabaseClient } from "./supabase";
-import { debug } from "./debug";
+import { useAuthActions, useAuthToken, useConvexAuth } from "@convex-dev/auth/react";
+import * as Sentry from "@sentry/nextjs";
+import { ConvexAuthProvider } from "@convex-dev/auth/react";
+import { ConvexReactClient } from "convex/react";
+import { useQuery } from "convex/react";
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
+import { api } from "@/convex/_generated/api";
 
-const PUBLIC_TOM_USER_ID = process.env.NEXT_PUBLIC_TOM_USER_ID || "";
-const authLog = debug.scoped("auth");
+export type UserRole = "user" | "admin" | "tom";
+
+export interface AuthUser {
+  id: string;
+  _id: string;
+  name: string;
+  email: string | null;
+  role: UserRole;
+}
 
 interface AuthContextType {
-  user: User | null;
-  session: Session | null;
+  user: AuthUser | null;
+  token: string | null;
+  role: UserRole;
+  isAdmin: boolean;
   isTom: boolean;
   loading: boolean;
   signIn: (username: string, password: string) => Promise<{ error: string | null }>;
@@ -20,111 +32,75 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-function normalizeUsername(username: string): string {
-  return username.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
+const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL ?? "https://calm-otter-123.convex.cloud";
+const convex = new ConvexReactClient(convexUrl);
 
-function usernameToEmail(username: string): string {
-  return `${normalizeUsername(username)}@tom.quest`;
-}
-
-export function getUsername(user: User | null): string {
-  const meta = user?.user_metadata as { username?: string } | undefined;
-  return meta?.username ?? "User";
-}
-
-const authStateSnapshot: Record<string, unknown> = {
-  user: "none",
-  isTom: false,
-};
-
-debug.registerState("auth", () => authStateSnapshot);
-
-function setAuthStateSnapshot(user: User | null) {
-  authStateSnapshot.user = user ? getUsername(user) : "none";
-  authStateSnapshot.isTom = Boolean(user && user.id === PUBLIC_TOM_USER_ID);
+export function getUsername(user: AuthUser | null): string {
+  return user?.name ?? "User";
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [supabase] = useState<SupabaseClient | null>(() => createBrowserSupabaseClient());
-  const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(() => supabase !== null);
-  const lastAuth = useRef<{ userId: string | null; token: string | null } | null>(null);
+  return (
+    <ConvexAuthProvider client={convex}>
+      <AuthStateProvider>{children}</AuthStateProvider>
+    </ConvexAuthProvider>
+  );
+}
 
-  useEffect(() => {
-    if (!supabase) return;
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setAuthStateSnapshot(session?.user ?? null);
-      lastAuth.current = {
-        userId: session?.user?.id ?? null,
-        token: session?.access_token ?? null,
+function AuthStateProvider({ children }: { children: ReactNode }) {
+  const convexAuth = useConvexAuth();
+  const token = useAuthToken();
+  const { signIn: convexSignIn, signOut } = useAuthActions();
+  const viewer = useQuery(api.users.viewer);
+
+  const user = useMemo(() => {
+    if (!viewer) return null;
+    return {
+        id: viewer._id,
+        _id: viewer._id,
+        name: viewer.name,
+        email: viewer.email,
+        role: viewer.role,
       };
-      authLog.log("session loaded", {
-        user: session?.user ? getUsername(session.user) : "none",
-        isTom: Boolean(session?.user && session.user.id === PUBLIC_TOM_USER_ID),
-      });
-      setLoading(false);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      const nextUserId = session?.user?.id ?? null;
-      const nextToken = session?.access_token ?? null;
-      const prev = lastAuth.current;
-      if (prev && prev.userId === nextUserId && prev.token === nextToken) return;
-      lastAuth.current = { userId: nextUserId, token: nextToken };
-      setSession(session);
-      setUser(session?.user ?? null);
-      setAuthStateSnapshot(session?.user ?? null);
-      if (session?.user) {
-        authLog.log("session loaded", {
-          user: getUsername(session.user),
-          isTom: Boolean(session.user.id === PUBLIC_TOM_USER_ID),
-        });
-      } else {
-        authLog.log("signed out");
-      }
-    });
-    return () => subscription.unsubscribe();
-  }, [supabase]);
+  }, [viewer]);
+  const role = user?.role ?? "user";
+  const isAdmin = role === "admin" || role === "tom";
+  const isTom = role === "tom";
+  const loading = !convexAuth.isLoading && convexAuth.isAuthenticated ? viewer === undefined : convexAuth.isLoading;
 
   const signIn = async (username: string, password: string) => {
-    if (!supabase) return { error: "Supabase not configured" };
-    const email = usernameToEmail(username);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error?.message ?? null };
-  };
-
-  const signUp = async (username: string, password: string) => {
-    if (!supabase) return { error: "Supabase not configured" };
-    const normalized = normalizeUsername(username);
-    if (!normalized) return { error: "Username must contain letters or numbers" };
-    const email = usernameToEmail(username);
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { data: { username } },
-    });
-    return { error: error?.message ?? null };
-  };
-
-  const signOut = async () => {
-    if (!supabase) return;
     try {
-      await Promise.race([
-        supabase.auth.signOut().then(({ error }) => { if (error) throw error; }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
-      ]);
-    } catch {
-      await supabase.auth.signOut({ scope: "local" });
+      await convexSignIn("password", { flow: "signIn", username, password });
+      return { error: null };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Sign in failed" };
     }
   };
 
-  const isTom = !!user && user.id === PUBLIC_TOM_USER_ID;
+  const signUp = async (username: string, password: string) => {
+    try {
+      await convexSignIn("password", { flow: "signUp", username, password });
+      return { error: null };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Sign up failed" };
+    }
+  };
+
+  useEffect(() => {
+    if (!user) {
+      Sentry.setUser(null);
+      return;
+    }
+    Sentry.setUser({
+      id: user.id,
+      username: user.name,
+      email: user.email ?? undefined,
+      role: user.role,
+    });
+  }, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, session, isTom, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, token, role, isAdmin, isTom, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );

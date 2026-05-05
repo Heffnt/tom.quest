@@ -50,8 +50,11 @@ function getSafeLocalStorage() {
   }
 }
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return Uint8Array.from(bytes).buffer;
+function toBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  const view = new Uint8Array(buffer);
+  view.set(bytes);
+  return view;
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -100,7 +103,7 @@ function normalizeScopes(scopes: string[] | undefined): string[] {
 }
 
 async function fingerprintPublicKey(publicKey: Uint8Array): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", toArrayBuffer(publicKey));
+  const hash = await crypto.subtle.digest("SHA-256", toBufferSource(publicKey));
   return bytesToHex(new Uint8Array(hash));
 }
 
@@ -208,7 +211,7 @@ export function buildDeviceAuthPayload(params: {
 async function signDevicePayload(privateKeyBase64Url: string, payload: string) {
   const privateKey = await crypto.subtle.importKey(
     "pkcs8",
-    toArrayBuffer(base64UrlDecode(privateKeyBase64Url)),
+    toBufferSource(base64UrlDecode(privateKeyBase64Url)),
     { name: "Ed25519" },
     false,
     ["sign"],

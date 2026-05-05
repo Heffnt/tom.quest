@@ -26,8 +26,8 @@ export default function DashboardStatusStrip({
 }: {
   selectedSessionKey: string;
 }) {
-  const { session } = useAuth();
-  const accessToken = session?.access_token;
+  const { token } = useAuth();
+  const accessToken = token;
   const { connected, pairingRequired, error, sessionsList, subscribe } = useGateway();
   const [selectedSession, setSelectedSession] = useState<Awaited<ReturnType<typeof sessionsList>>["sessions"][number] | null>(null);
   const [meta, setMeta] = useState<null | {

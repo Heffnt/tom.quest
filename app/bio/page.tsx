@@ -1,3 +1,10 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Bio | tom.Quest",
+  description: "About Tom Heffernan, PhD student in artificial intelligence at WPI.",
+};
+
 export default function Bio() {
   return (
     <div className="max-w-3xl mx-auto px-6 py-16">

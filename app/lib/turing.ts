@@ -1,46 +1,37 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { api } from "@/convex/_generated/api";
+import { bearerToken, convexClient } from "./convex-server";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
-const SERVER_TOM_USER_ID = process.env.TOM_USER_ID || "";
 const CACHE_TTL_MS = 60_000;
 
 let cachedUrl: string | null = null;
 let cachedKey: string | null = null;
 let cacheTime = 0;
 
-function serverClient(): SupabaseClient {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-    throw new Error("Supabase server credentials missing");
-  }
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-}
-
-async function loadTomConnection(): Promise<{ url: string; key: string }> {
+async function loadTuringConnection(token: string): Promise<{ url: string; key: string }> {
   const now = Date.now();
   if (cachedUrl && now - cacheTime < CACHE_TTL_MS) {
     return { url: cachedUrl, key: cachedKey ?? "" };
   }
-  if (!SERVER_TOM_USER_ID) throw new Error("Turing backend not connected");
-  const { data } = await serverClient()
-    .from("turing_connections")
-    .select("tunnel_url, connection_key")
-    .eq("user_id", SERVER_TOM_USER_ID)
-    .single();
-  if (!data) throw new Error("Turing backend not connected");
-  cachedUrl = data.tunnel_url;
-  cachedKey = data.connection_key;
+  const client = convexClient();
+  client.setAuth(token);
+  const data = await client.query(api.turing.tunnelForViewer, {});
+  cachedUrl = data.url;
+  cachedKey = data.key;
   cacheTime = now;
   return { url: cachedUrl!, key: cachedKey ?? "" };
 }
 
-export async function getTunnelUrl(): Promise<{ url: string; key: string }> {
-  const { url, key } = await loadTomConnection();
+export async function getTunnelUrl(request: Request): Promise<{ url: string; key: string }> {
+  const token = bearerToken(request);
+  if (!token) throw new Error("Authentication required");
+  const { url, key } = await loadTuringConnection(token);
   return { url, key };
 }
 
-export async function proxyToTuring(path: string, init?: RequestInit): Promise<Response> {
-  const { url, key } = await loadTomConnection();
+export async function proxyToTuring(request: Request, path: string, init?: RequestInit): Promise<Response> {
+  const token = bearerToken(request);
+  if (!token) return new Response("Authentication required", { status: 401 });
+  const { url, key } = await loadTuringConnection(token);
   const base = url.endsWith("/") ? url.slice(0, -1) : url;
   const normalized = path.startsWith("/") ? path : `/${path}`;
   const headers: Record<string, string> = {
@@ -48,8 +39,4 @@ export async function proxyToTuring(path: string, init?: RequestInit): Promise<R
   };
   if (key) headers["X-API-Key"] = key;
   return fetch(base + normalized, { ...init, headers });
-}
-
-export function isTom(userId: string | undefined): boolean {
-  return !!userId && !!SERVER_TOM_USER_ID && userId === SERVER_TOM_USER_ID;
 }

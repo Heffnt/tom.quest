@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { useAuth, getUsername } from "../lib/auth";
-import { createBrowserSupabaseClient } from "../lib/supabase";
 
 interface LeaderboardEntry {
   id: string;
@@ -21,8 +22,7 @@ interface LeaderboardProps {
   onRequestLogin: () => void;
 }
 
-// The endless symbol game scores by hit count. We reuse the existing
-// `time_ms` column as the hit tally to avoid a schema migration.
+// The endless symbol game stores hit count in timeMs for historical UI naming.
 function fmtScore(hits: number): string {
   return `${hits} hit${hits === 1 ? "" : "s"}`;
 }
@@ -31,38 +31,24 @@ const MEDAL_COLORS = ["text-accent", "text-text-muted", "text-accent/50"];
 
 export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps) {
   const { user } = useAuth();
-  const [scores, setScores] = useState<LeaderboardEntry[]>([]);
+  const scores = (useQuery(api.symbolScores.topScores, { limit: 10 }) ?? []) as LeaderboardEntry[];
+  const submitScore = useMutation(api.symbolScores.submitScore);
   const [savedWinId, setSavedWinId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const fetchScores = useCallback(async () => {
-    const sb = createBrowserSupabaseClient();
-    if (!sb) return;
-    const { data } = await sb
-      .from("symbol_scores")
-      .select("id, username, time_ms, created_at")
-      .order("time_ms", { ascending: false })
-      .limit(10);
-    if (data) setScores(data as LeaderboardEntry[]);
-  }, []);
-
-  useEffect(() => { void fetchScores(); }, [fetchScores]);
-
   const saveScore = useCallback(async () => {
-    const sb = createBrowserSupabaseClient();
-    if (!sb || !user || !result) return;
+    if (!user || !result) return;
     setSaving(true);
-    const { error } = await sb.from("symbol_scores").insert({
-      user_id: user.id,
-      username: getUsername(user),
-      time_ms: result.ms,
-    });
-    setSaving(false);
-    if (!error) {
+    try {
+      await submitScore({
+        username: getUsername(user),
+        timeMs: result.ms,
+      });
       setSavedWinId(result.winId);
-      void fetchScores();
+    } finally {
+      setSaving(false);
     }
-  }, [user, result, fetchScores]);
+  }, [user, result, submitScore]);
 
   const isSaved = result !== null && savedWinId === result.winId;
 

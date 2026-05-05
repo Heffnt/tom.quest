@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { proxyToTuring, isTom } from "@/app/lib/turing";
+import { requireAdmin } from "@/app/lib/convex-server";
+import { proxyToTuring } from "@/app/lib/turing";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
 async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "DELETE") {
-  const userId = request.headers.get("x-user-id") || undefined;
-  if (method !== "GET" && !isTom(userId)) {
-    return NextResponse.json({ error: "Read-only access" }, { status: 403 });
+  try {
+    await requireAdmin(request);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Admin access required" },
+      { status: 403 },
+    );
   }
   const { path } = await ctx.params;
   const search = new URL(request.url).search;
@@ -23,7 +28,7 @@ async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "D
   }
 
   try {
-    const res = await proxyToTuring(upstreamPath, init);
+    const res = await proxyToTuring(request, upstreamPath, init);
     const text = await res.text();
     return new NextResponse(text, {
       status: res.status,

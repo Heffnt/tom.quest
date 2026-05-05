@@ -55,7 +55,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
       if (mode === "signin") {
         const { error } = await signIn(rawUsername, password);
         if (error) {
-          setError(error.includes("Supabase not configured")
+          setError(error.includes("Convex not configured")
             ? "Sign in is not available yet"
             : "Invalid username or password");
         } else {
@@ -64,7 +64,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
       } else {
         const { error } = await signUp(rawUsername, password);
         if (error) {
-          setError(error.includes("already registered")
+          setError(error.includes("already") || error.includes("exists")
             ? "Username already taken"
             : error);
         } else {
@@ -132,7 +132,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
               className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-text focus:border-accent focus:outline-none transition-colors duration-150"
               placeholder="••••••••"
               required
-              minLength={6}
+              minLength={8}
             />
           </div>
 

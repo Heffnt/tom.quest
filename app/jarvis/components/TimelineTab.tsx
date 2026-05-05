@@ -37,8 +37,8 @@ function topForMinutes(minutes: number) {
 }
 
 export default function TimelineTab() {
-  const { session } = useAuth();
-  const accessToken = session?.access_token;
+  const { token } = useAuth();
+  const accessToken = token;
   const [center, setCenter] = useState<string>(new Date().toISOString().slice(0, 10));
   const [days, setDays] = useState<Day[]>([]);
   const [error, setError] = useState<string | null>(null);

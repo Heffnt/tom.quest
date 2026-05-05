@@ -13,8 +13,8 @@ type Paper = {
 };
 
 export default function ResearchTab() {
-  const { session } = useAuth();
-  const accessToken = session?.access_token;
+  const { token } = useAuth();
+  const accessToken = token;
   const [paper, setPaper] = useState<Paper | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

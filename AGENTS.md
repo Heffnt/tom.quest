@@ -11,14 +11,45 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Always style the site name as tom.Quest.
 - Avoid UI behavior that moves the user unexpectedly, especially auto-scrolling.
 - Prefer text inputs over number spinners for numeric intervals.
-- For one-off database changes, paste the SQL in chat for the user to run instead of hiding it in comments or docs.
 - After code changes, provide a commit message the user can use.
+
+## Tech Stack
+
+- **Framework:** Next.js App Router + React.
+- **Backend / DB:** Convex schema, queries, mutations, HTTP actions, and Convex Auth.
+- **Auth:** Convex Auth with three roles: `user`, `admin`, and `tom`.
+- **Client state:** Zustand for UI-only state. Server state belongs in Convex.
+- **Styling:** Tailwind CSS v4 with theme tokens in `app/globals.css`.
+- **Observability:** Sentry for errors, performance, and session replay.
+- **Package manager:** pnpm.
+
+## Roles
+
+- `user` is the default sign-up role and sees public quests.
+- `admin` has elevated quest access and may be granted to trusted friends or colleagues.
+- `tom` is Tom's account. It extends admin access with Jarvis config, the diagnostic panel, and terminal access.
+- Use `isTom` for Tom-only features and `isAdmin` for elevated features. `isAdmin` is true for both `admin` and `tom`.
+
+## State Management
+
+- Server state belongs in Convex.
+- Client-only UI state belongs in Zustand.
+- Do not store server-derived data in Zustand unless it is a local optimistic copy that syncs back to Convex.
+
+## Routing
+
+- User-facing URLs follow `tom.quest/{slug}`.
+- Avoid query params, hash fragments, or nested prefixes for top-level quests.
+- Dynamic segments are only for naturally dynamic resources, such as `/turing/terminal/[session]`.
+- Quest visibility is role-gated via each quest's `visibility` field: `public`, `authenticated`, `admin`, or `tom`.
 
 ## Debugging And Observability
 
-- Maintain strong debug logging when adding or changing behavior.
-- Use `debug.scoped(source)` with `log()`, `error()`, and `req()`.
-- Use `registerState()` for meaningful state snapshots when helpful.
+- Use the Tom-only left-side diagnostic panel as the single in-app place to inspect bug context.
+- The diagnostic panel must have a copy button that emits concise agent-ready diagnostics.
+- Use Sentry for error capture, performance, and session replay.
+- Use Convex Dashboard for server state, function logs, and query performance.
+- Use Zustand devtools for client UI state inspection.
 - Never log secrets, tokens, signatures, or large sensitive payloads.
 
 ## Project Style
@@ -35,7 +66,11 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 ## Verification
 
-- Use the normal repo lint, test, and build flows when verifying work.
+- `pnpm dev:all` starts Next.js and Convex dev servers.
+- `pnpm build` verifies the production build.
+- `pnpm test` runs Vitest unit/component tests.
+- `pnpm test:e2e` runs Playwright E2E tests.
+- `pnpm lint` runs ESLint.
 - Before deployment-related work, production build verification matters more than style-only checks.
 
 ## Agent Context System
@@ -47,3 +82,17 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Keep only durable project goals, vocabulary, and patterns here.
 - Put cross-project preferences in the global rules file, not here.
 - If loading breaks in one tool, fix the symlink or shim instead of duplicating content.
+
+<!-- convex-ai-start -->
+
+This project uses [Convex](https://convex.dev) as its backend.
+
+When working on Convex code, **always read
+`convex/_generated/ai/guidelines.md` first** for important guidelines on
+how to correctly use Convex APIs and patterns. The file contains rules that
+override what you may have learned about Convex from training data.
+
+Convex agent skills for common tasks can be installed by running
+`npx convex ai-files install`.
+
+<!-- convex-ai-end -->

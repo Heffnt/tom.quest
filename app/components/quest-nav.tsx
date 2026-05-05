@@ -15,7 +15,7 @@ import {
 import { useAuth, getUsername } from "../lib/auth";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
-import { rankQuests } from "./quest-routes";
+import { rankQuests, type QuestRole } from "./quest-routes";
 
 /* Responsive cut-points. */
 const COMPACT_PX = 480;  // below: logo collapses to bare tom symbol
@@ -43,7 +43,7 @@ export default function QuestNav({
   animateOffsets?: boolean;
 }) {
   const router = useRouter();
-  const { user, isTom } = useAuth();
+  const { user, isTom, role } = useAuth();
   const displayName = getUsername(user);
   const vw = useViewportWidth();
   const compact = vw < COMPACT_PX;
@@ -58,7 +58,8 @@ export default function QuestNav({
   const inputRef = useRef<HTMLInputElement>(null);
   const pillRef  = useRef<HTMLDivElement>(null);
 
-  const ranked = useMemo(() => rankQuests(query), [query]);
+  const questRole: QuestRole = user ? role : "guest";
+  const ranked = useMemo(() => rankQuests(query, questRole), [query, questRole]);
   const suggestion = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q || !ranked[0]) return "";

@@ -2,7 +2,7 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { Manrope } from "next/font/google";
-import TomSymbol from "./tom-symbol";
+import TomSymbol, { type TomSymbolOptions, type TomSymbolParams } from "./tom-symbol";
 
 const manrope = Manrope({ subsets: ["latin"], weight: ["700"], display: "swap" });
 const MANROPE_FAMILY = manrope.style.fontFamily;
@@ -36,6 +36,8 @@ type TomLogoProps = {
   textColor?: string;
   /** Overrides symbol color. Falls back to `color`, then default amber. */
   symbolColor?: string;
+  symbolParams?: TomSymbolParams;
+  symbolOptions?: TomSymbolOptions;
   className?: string;
   title?: string;
 };
@@ -56,6 +58,8 @@ export default function TomLogo({
   color,
   textColor,
   symbolColor,
+  symbolParams,
+  symbolOptions,
   className,
   title   = "tom.Quest",
 }: TomLogoProps) {
@@ -65,17 +69,22 @@ export default function TomLogo({
   const tRef   = useRef<HTMLSpanElement>(null);
   const omRef  = useRef<HTMLSpanElement>(null);
   const uesRef = useRef<HTMLSpanElement>(null);
-  const [m, setM] = useState<{ t: number; om: number; ues: number } | null>(null);
+
+  // Manrope 700 character-width ratios (measured empirically).
+  // Used as immediate fallback so the logo is always visible; refined once
+  // the real font loads and getBoundingClientRect returns accurate values.
+  const estimate = (fs: number) => ({ t: fs * 0.547, om: fs * 1.305, ues: fs * 1.453 });
+  const [m, setM] = useState(() => estimate(fontSize));
 
   useLayoutEffect(() => {
+    setM(estimate(fontSize));
     let cancelled = false;
     void fontReady(fontSize).then(() => {
       if (cancelled || !tRef.current || !omRef.current || !uesRef.current) return;
-      setM({
-        t:   tRef.current.getBoundingClientRect().width,
-        om:  omRef.current.getBoundingClientRect().width,
-        ues: uesRef.current.getBoundingClientRect().width,
-      });
+      const t   = tRef.current.getBoundingClientRect().width;
+      const om  = omRef.current.getBoundingClientRect().width;
+      const ues = uesRef.current.getBoundingClientRect().width;
+      if (t > 0 && om > 0 && ues > 0) setM({ t, om, ues });
     });
     return () => { cancelled = true; };
   }, [fontSize]);
@@ -87,14 +96,6 @@ export default function TomLogo({
       <span ref={uesRef} className={manrope.className} style={{ fontSize, fontWeight: FONT_WEIGHT, lineHeight: 1 }}>ues</span>
     </span>
   );
-
-  if (!m) {
-    return (
-      <span className={className} style={{ display: "inline-block", width: fontSize * 4, maxWidth: "100%", height: fontSize * 1.2 }}>
-        {probes}
-      </span>
-    );
-  }
 
   const symbolH  = SYMBOL_HEIGHT_EM * fontSize;
   const symbolW  = symbolH * SYMBOL_AR;
@@ -158,7 +159,7 @@ export default function TomLogo({
             viewBox={`${SYMBOL_VB_X} ${SYMBOL_VB_Y} ${SYMBOL_VB_W} ${SYMBOL_VB_H}`}
             overflow="visible"
           >
-            <TomSymbol />
+            <TomSymbol params={symbolParams} options={symbolOptions} />
           </svg>
         </g>
 

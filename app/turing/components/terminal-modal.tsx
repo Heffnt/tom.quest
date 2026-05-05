@@ -37,10 +37,9 @@ function setTerminalState(sessionName: string | null, status: string) {
   terminalStateSnapshot.status = status;
 }
 
-async function fetchTunnelUrl(userId: string | undefined): Promise<{ url: string; key: string } | null> {
+async function fetchTunnelUrl(token: string | null): Promise<{ url: string; key: string } | null> {
   const done = terminalLog.req("GET /api/turing/tunnel-url", undefined, { defer: true });
-  const headers: Record<string, string> = {};
-  if (userId) headers["x-user-id"] = userId;
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
   let res: Response;
   try {
     res = await fetch("/api/turing/tunnel-url", { headers });
@@ -70,7 +69,7 @@ export default function TerminalModal({
   onNavigate,
   allowInteractive,
 }: TerminalModalProps) {
-  const { user } = useAuth();
+  const { token } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLPreElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -102,7 +101,7 @@ export default function TerminalModal({
       return;
     }
     terminalLog.log("interactive mode active", { sessionName });
-  }, [mode, sessionName, user?.id]);
+  }, [mode, sessionName]);
 
   useEffect(() => {
     if (mode !== "interactive") return;
@@ -147,7 +146,7 @@ export default function TerminalModal({
       if (disposed) return;
       setConnectionStatus("connecting");
       terminalLog.log("connecting", { sessionName });
-      const tunnel = await fetchTunnelUrl(user?.id);
+      const tunnel = await fetchTunnelUrl(token);
       if (!tunnel || disposed) {
         term.write("\r\n\x1b[31mFailed to fetch tunnel URL\x1b[0m\r\n");
         setConnectionStatus("closed");
@@ -217,7 +216,7 @@ export default function TerminalModal({
       wsRef.current = null;
       terminalLog.log("interactive session closed", { sessionName });
     };
-  }, [mode, sessionName, user?.id]);
+  }, [mode, sessionName, token]);
 
   useEffect(() => {
     document.body.style.overflow = "hidden";

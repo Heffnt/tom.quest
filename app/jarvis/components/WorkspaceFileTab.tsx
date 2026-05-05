@@ -18,8 +18,8 @@ export default function WorkspaceFileTab({
   initialPath?: string;
   paths?: string[];
 }) {
-  const { session } = useAuth();
-  const accessToken = session?.access_token;
+  const { token } = useAuth();
+  const accessToken = token;
   const [entries, setEntries] = useState<Entry[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(initialPath ?? null);
   const [content, setContent] = useState<string>("");

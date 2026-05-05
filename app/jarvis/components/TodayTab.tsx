@@ -25,8 +25,8 @@ type TodayPayload = {
 };
 
 export default function TodayTab() {
-  const { session } = useAuth();
-  const accessToken = session?.access_token;
+  const { token } = useAuth();
+  const accessToken = token;
   const [data, setData] = useState<TodayPayload | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
