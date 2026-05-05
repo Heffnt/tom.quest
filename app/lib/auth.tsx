@@ -32,7 +32,8 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL ?? "https://calm-otter-123.convex.cloud";
+const convexUrl =
+  process.env.NEXT_PUBLIC_CONVEX_URL ?? "https://admired-chinchilla-140.convex.cloud";
 const convex = new ConvexReactClient(convexUrl);
 
 export function getUsername(user: AuthUser | null): string {

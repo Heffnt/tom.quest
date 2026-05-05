@@ -10,7 +10,8 @@ export type ServerUser = {
   isTom: boolean;
 };
 
-const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL ?? "https://calm-otter-123.convex.cloud";
+const convexUrl =
+  process.env.NEXT_PUBLIC_CONVEX_URL ?? "https://admired-chinchilla-140.convex.cloud";
 
 export function convexClient(): ConvexHttpClient {
   return new ConvexHttpClient(convexUrl);
