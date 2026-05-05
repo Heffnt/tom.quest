@@ -34,9 +34,26 @@ export const viewer = query({
 });
 
 export const setTomByUsername = mutation({
-  args: { username: v.string() },
-  handler: async (ctx, { username }) => {
+  args: { username: v.string(), setupSecret: v.string() },
+  handler: async (ctx, { username, setupSecret }) => {
+    const expectedSecret = process.env.TOM_SETUP_SECRET;
+    if (!expectedSecret || setupSecret !== expectedSecret) {
+      throw new Error("Tom setup is not authorized");
+    }
     const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const allowedUsername = (process.env.TOM_USERNAME ?? "tom")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    if (normalized !== allowedUsername) {
+      throw new Error("Only the configured Tom username can be promoted this way");
+    }
+    const existingTom = await ctx.db
+      .query("users")
+      .filter((q) => q.eq(q.field("role"), "tom"))
+      .first();
+    if (existingTom) {
+      throw new Error("Tom account is already configured");
+    }
     const user = await ctx.db
       .query("users")
       .withIndex("email", (q) => q.eq("email", `${normalized}@tom.quest`))
