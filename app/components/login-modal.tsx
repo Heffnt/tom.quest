@@ -55,9 +55,7 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
       if (mode === "signin") {
         const { error } = await signIn(rawUsername, password);
         if (error) {
-          setError(error.includes("Convex not configured")
-            ? "Sign in is not available yet"
-            : "Invalid username or password. Old Supabase accounts were not migrated; use Create Account once to recreate yours.");
+          setError("Invalid username or password");
         } else {
           onClose();
         }
@@ -135,10 +133,6 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
               minLength={6}
             />
           </div>
-
-          <p className="text-xs text-text-faint">
-            After the Convex migration, old tom.quest accounts need to be recreated once.
-          </p>
 
           {error && (
             <p className="text-error text-sm">{error}</p>

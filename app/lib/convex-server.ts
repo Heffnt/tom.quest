@@ -10,10 +10,13 @@ export type ServerUser = {
   isTom: boolean;
 };
 
-const convexUrl =
-  process.env.NEXT_PUBLIC_CONVEX_URL ?? "https://admired-chinchilla-140.convex.cloud";
-
 export function convexClient(): ConvexHttpClient {
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+  if (!convexUrl) {
+    throw new Error(
+      "NEXT_PUBLIC_CONVEX_URL is not set. Set it in .env.local for dev or in Vercel project envs for prod.",
+    );
+  }
   return new ConvexHttpClient(convexUrl);
 }
 
