@@ -133,7 +133,7 @@ def start_tunnel(key: str, port: int):
     try:
         log_file = open(TUNNEL_LOG_PATH, "w", buffering=1)
         proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
             stdout=log_file,
             stderr=log_file,
         )

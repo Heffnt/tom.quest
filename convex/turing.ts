@@ -26,6 +26,14 @@ function isFresh(lastHeartbeat: number): boolean {
   return Date.now() - lastHeartbeat <= STALE_AFTER_MS;
 }
 
+async function tomUserId(ctx: MutationCtx) {
+  const tom = await ctx.db
+    .query("users")
+    .filter((q) => q.eq(q.field("role"), "tom"))
+    .first();
+  return tom?._id;
+}
+
 export const registerConnectionFromWorker = internalMutation({
   args: {
     connectionKey: v.string(),
@@ -33,6 +41,7 @@ export const registerConnectionFromWorker = internalMutation({
     now: v.number(),
   },
   handler: async (ctx, args) => {
+    const autoLinkUserId = await tomUserId(ctx);
     const existing = await ctx.db
       .query("turingConnections")
       .withIndex("by_connection_key", (q) => q.eq("connectionKey", args.connectionKey))
@@ -41,6 +50,7 @@ export const registerConnectionFromWorker = internalMutation({
       await ctx.db.patch(existing._id, {
         tunnelUrl: args.tunnelUrl,
         lastHeartbeat: args.now,
+        userId: existing.userId ?? autoLinkUserId,
       });
       return existing._id;
     }
@@ -48,6 +58,7 @@ export const registerConnectionFromWorker = internalMutation({
       connectionKey: args.connectionKey,
       tunnelUrl: args.tunnelUrl,
       lastHeartbeat: args.now,
+      userId: autoLinkUserId,
     });
   },
 });

@@ -22,6 +22,32 @@ describe("Convex functions", () => {
     expect(docs[0].connectionKey).toBe("test-key");
   });
 
+  it("auto-links worker registrations to Tom when available", async () => {
+    const t = convexTest({ schema, modules });
+    const tomId = await t.run(async (ctx) => {
+      return await ctx.db.insert("users", {
+        name: "Tom",
+        email: "tom@tom.quest",
+        role: "tom",
+      });
+    });
+
+    await t.mutation(internal.turing.registerConnectionFromWorker, {
+      connectionKey: "tom-key",
+      tunnelUrl: "https://example.com",
+      now: Date.now(),
+    });
+
+    const connection = await t.run(async (ctx) => {
+      return await ctx.db
+        .query("turingConnections")
+        .withIndex("by_connection_key", (q) => q.eq("connectionKey", "tom-key"))
+        .unique();
+    });
+
+    expect(connection?.userId).toBe(tomId);
+  });
+
   it("returns top symbol scores", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
