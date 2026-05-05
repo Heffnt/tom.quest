@@ -1,24 +1,11 @@
 import { api } from "@/convex/_generated/api";
 import { bearerToken, convexClient } from "./convex-server";
 
-const CACHE_TTL_MS = 60_000;
-
-let cachedUrl: string | null = null;
-let cachedKey: string | null = null;
-let cacheTime = 0;
-
 async function loadTuringConnection(token: string): Promise<{ url: string; key: string }> {
-  const now = Date.now();
-  if (cachedUrl && now - cacheTime < CACHE_TTL_MS) {
-    return { url: cachedUrl, key: cachedKey ?? "" };
-  }
   const client = convexClient();
   client.setAuth(token);
   const data = await client.query(api.turing.tunnelForViewer, {});
-  cachedUrl = data.url;
-  cachedKey = data.key;
-  cacheTime = now;
-  return { url: cachedUrl!, key: cachedKey ?? "" };
+  return { url: data.url, key: data.key };
 }
 
 export async function getTunnelUrl(request: Request): Promise<{ url: string; key: string }> {
@@ -38,5 +25,9 @@ export async function proxyToTuring(request: Request, path: string, init?: Reque
     ...((init?.headers as Record<string, string>) || {}),
   };
   if (key) headers["X-API-Key"] = key;
-  return fetch(base + normalized, { ...init, headers });
+  return fetch(base + normalized, {
+    ...init,
+    headers,
+    signal: init?.signal ?? AbortSignal.timeout(20_000),
+  });
 }

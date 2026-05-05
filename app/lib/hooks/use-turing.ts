@@ -38,7 +38,19 @@ async function fetchJson<T>(url: string, token: string | null): Promise<T> {
     throw new Error(message);
   }
   if (!res.ok) {
+    const contentType = res.headers.get("content-type") ?? "";
     const text = await res.text();
+    if (contentType.includes("application/json")) {
+      let payload: { error?: unknown } | null = null;
+      try {
+        payload = JSON.parse(text) as { error?: unknown };
+      } catch {
+        payload = null;
+      }
+      if (typeof payload?.error === "string") {
+        throw new Error(truncateMessage(payload.error));
+      }
+    }
     throw new Error(truncateMessage(text || `Request failed: ${res.status}`));
   }
   try {
@@ -118,8 +130,19 @@ export function useTuringMutation<TBody, TResponse>(
         body: JSON.stringify(body),
       });
       if (!res.ok) {
+        const contentType = res.headers.get("content-type") ?? "";
         const text = await res.text();
-        const message = truncateMessage(text || `Request failed: ${res.status}`);
+        let message = truncateMessage(text || `Request failed: ${res.status}`);
+        if (contentType.includes("application/json")) {
+          try {
+            const payload = JSON.parse(text) as { error?: unknown };
+            if (typeof payload.error === "string") {
+              message = truncateMessage(payload.error);
+            }
+          } catch {
+            // Fall back to the response text.
+          }
+        }
         throw new Error(message);
       }
       const payload = (await res.json()) as TResponse;

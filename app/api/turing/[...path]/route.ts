@@ -29,10 +29,22 @@ async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "D
 
   try {
     const res = await proxyToTuring(request, upstreamPath, init);
+    const contentType = res.headers.get("content-type") ?? "";
     const text = await res.text();
+    const looksLikeHtml = /^\s*(?:<!doctype html|<html)/i.test(text);
+    if (!res.ok || looksLikeHtml || !contentType.includes("application/json")) {
+      const error =
+        looksLikeHtml || contentType.includes("text/html")
+          ? `Turing tunnel returned ${res.status}; the Cloudflare tunnel may be stale or unavailable.`
+          : text || `Turing request failed: ${res.status}`;
+      return NextResponse.json(
+        { error },
+        { status: res.ok ? 502 : res.status === 401 || res.status === 403 ? res.status : 502 },
+      );
+    }
     return new NextResponse(text, {
       status: res.status,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": contentType },
     });
   } catch (e) {
     return NextResponse.json(
