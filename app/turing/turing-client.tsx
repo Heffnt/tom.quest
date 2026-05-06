@@ -11,7 +11,7 @@ const GPU_REFRESH_SECONDS = 60;
 const JOB_REFRESH_SECONDS = 10;
 
 export default function TuringPage() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, loading: authLoading } = useAuth();
   const gpus = useTuring<GPUReport>("/gpu-report", { refreshInterval: GPU_REFRESH_SECONDS });
   const jobs = useTuring<Job[]>("/jobs", { refreshInterval: JOB_REFRESH_SECONDS });
 
@@ -22,7 +22,7 @@ export default function TuringPage() {
       <header>
         <h1 className="text-3xl font-bold tracking-tight">Turing Dashboard</h1>
         <p className="text-text-muted mt-1">GPU allocation and job monitoring for the WPI Turing cluster.</p>
-        {!isAdmin && (
+        {!authLoading && !isAdmin && (
           <p className="mt-3 text-xs text-text-faint border border-border rounded px-3 py-2 inline-block">
             Sign in with an admin account for allocation and terminal access.
           </p>

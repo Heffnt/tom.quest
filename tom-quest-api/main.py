@@ -37,10 +37,13 @@ KEY_FILE = os.path.expanduser("~/.tom-quest-key")
 LOG_PATH = "tom-quest-api.log"
 TUNNEL_LOG_PATH = "tom-quest-tunnel.log"
 HEARTBEAT_INTERVAL = 30  # seconds
+TUNNEL_HEALTH_INTERVAL = 30  # seconds between origin reachability probes
+TUNNEL_HEALTH_FAIL_THRESHOLD = 3  # consecutive failures before restarting cloudflared
 
 # Global state
 API_KEY = ""
 TUNNEL_URL = ""
+TUNNEL_URL_PATTERN = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
 def setup_logging():
     logging.basicConfig(
@@ -92,32 +95,104 @@ def register_with_tom_quest(key: str, url: str) -> bool:
     return False
 
 def heartbeat_loop(key: str):
-    global TUNNEL_URL
     while True:
         time.sleep(HEARTBEAT_INTERVAL)
-        if TUNNEL_URL:
-            register_with_tom_quest(key, TUNNEL_URL)
+        url = TUNNEL_URL
+        if url:
+            register_with_tom_quest(key, url)
 
-def watch_tunnel_log(key: str):
+def latest_tunnel_url_from_log() -> str | None:
+    try:
+        with open(TUNNEL_LOG_PATH) as f:
+            content = f.read()
+    except FileNotFoundError:
+        return None
+    matches = TUNNEL_URL_PATTERN.findall(content)
+    return matches[-1] if matches else None
+
+def spawn_cloudflared(port: int) -> subprocess.Popen | None:
+    log_file = open(TUNNEL_LOG_PATH, "w", buffering=1)
+    try:
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
+            stdout=log_file,
+            stderr=log_file,
+        )
+    except Exception:
+        log_file.close()
+        logging.getLogger("tom.quest.tunnel").exception("cloudflared spawn failed")
+        return None
+    print(f"cloudflared started (pid {proc.pid}). URL log: {TUNNEL_LOG_PATH}")
+    return proc
+
+def stop_cloudflared(proc: subprocess.Popen | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except Exception:
+        logging.getLogger("tom.quest.tunnel").exception("cloudflared stop failed")
+
+def tunnel_health_ok(url: str) -> bool:
+    try:
+        res = requests.get(f"{url}/health", timeout=10)
+    except Exception as exc:
+        logging.getLogger("tom.quest.tunnel").info("tunnel health probe failed: %s", exc)
+        return False
+    return res.ok
+
+def tunnel_manager_loop(key: str, port: int, initial_proc: subprocess.Popen | None):
+    """Keep cloudflared healthy: pick up URL changes, probe origin reachability, restart on failure."""
     global TUNNEL_URL
-    url_pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-    for _ in range(30):
-        time.sleep(1)
-        try:
-            with open(TUNNEL_LOG_PATH) as f:
-                content = f.read()
-            match = url_pattern.search(content)
-            if match:
-                TUNNEL_URL = match.group(0)
-                print(f"Tunnel URL: {TUNNEL_URL}")
-                if register_with_tom_quest(key, TUNNEL_URL):
-                    print("Registered with tom.quest")
-                else:
-                    print("Failed to register with tom.quest (will retry via heartbeat)")
-                return
-        except FileNotFoundError:
-            pass
-    print("Tunnel URL not found in log after 30s")
+    log = logging.getLogger("tom.quest.tunnel")
+    proc = initial_proc
+    consecutive_failures = 0
+
+    while True:
+        # Spawn cloudflared if missing or dead.
+        if proc is None or proc.poll() is not None:
+            if proc is not None:
+                log.warning("cloudflared exited (code=%s); respawning", proc.returncode)
+            TUNNEL_URL = ""
+            consecutive_failures = 0
+            proc = spawn_cloudflared(port)
+            if proc is None:
+                time.sleep(TUNNEL_HEALTH_INTERVAL)
+                continue
+            # Give cloudflared a moment to print its URL into the log.
+            time.sleep(5)
+
+        # Refresh TUNNEL_URL from the latest entry in cloudflared's log.
+        latest = latest_tunnel_url_from_log()
+        if latest and latest != TUNNEL_URL:
+            TUNNEL_URL = latest
+            log.info("tunnel URL updated: %s", TUNNEL_URL)
+            register_with_tom_quest(key, TUNNEL_URL)
+            consecutive_failures = 0
+
+        # Probe the public tunnel; 530 / connection failure means cloudflared
+        # is no longer registered with Cloudflare's edge even though the
+        # subprocess may still be running.
+        if TUNNEL_URL:
+            if tunnel_health_ok(TUNNEL_URL):
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                log.warning(
+                    "tunnel unreachable via %s (%d/%d)",
+                    TUNNEL_URL, consecutive_failures, TUNNEL_HEALTH_FAIL_THRESHOLD,
+                )
+
+        if consecutive_failures >= TUNNEL_HEALTH_FAIL_THRESHOLD:
+            log.warning("restarting cloudflared after %d consecutive failures", consecutive_failures)
+            stop_cloudflared(proc)
+            proc = None  # respawn next iteration
+            continue
+
+        time.sleep(TUNNEL_HEALTH_INTERVAL)
 
 def find_free_port(preferred: int) -> int:
     for port in range(preferred, preferred + 100):
@@ -130,20 +205,10 @@ def find_free_port(preferred: int) -> int:
     raise RuntimeError(f"No free port in range {preferred}-{preferred + 99}")
 
 def start_tunnel(key: str, port: int):
-    try:
-        log_file = open(TUNNEL_LOG_PATH, "w", buffering=1)
-        proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
-            stdout=log_file,
-            stderr=log_file,
-        )
-        print(f"Tunnel started (pid {proc.pid}). URL will appear in: {TUNNEL_LOG_PATH}")
-        threading.Thread(target=watch_tunnel_log, args=(key,), daemon=True).start()
-        threading.Thread(target=heartbeat_loop, args=(key,), daemon=True).start()
-        return proc
-    except Exception:
-        logging.getLogger("tom.quest").exception("Tunnel start failed")
-        return None
+    proc = spawn_cloudflared(port)
+    threading.Thread(target=tunnel_manager_loop, args=(key, port, proc), daemon=True).start()
+    threading.Thread(target=heartbeat_loop, args=(key,), daemon=True).start()
+    return proc
 
 app = FastAPI(title="tom-quest-api", version="1.0.0")
 
