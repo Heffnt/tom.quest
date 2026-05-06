@@ -37,8 +37,9 @@ KEY_FILE = os.path.expanduser("~/.tom-quest-key")
 LOG_PATH = "tom-quest-api.log"
 TUNNEL_LOG_PATH = "tom-quest-tunnel.log"
 HEARTBEAT_INTERVAL = 30  # seconds
-TUNNEL_HEALTH_INTERVAL = 30  # seconds between origin reachability probes
-TUNNEL_HEALTH_FAIL_THRESHOLD = 3  # consecutive failures before restarting cloudflared
+TUNNEL_HEALTH_INTERVAL = 15  # seconds between origin reachability probes
+TUNNEL_HEALTH_FAIL_THRESHOLD = 2  # consecutive failures before restarting cloudflared
+CLOUDFLARED_BOOT_GRACE = 8  # seconds to wait for cloudflared to print its URL after spawn
 
 # Global state
 API_KEY = ""
@@ -148,8 +149,14 @@ def tunnel_manager_loop(key: str, port: int, initial_proc: subprocess.Popen | No
     """Keep cloudflared healthy: pick up URL changes, probe origin reachability, restart on failure."""
     global TUNNEL_URL
     log = logging.getLogger("tom.quest.tunnel")
+    log.info(
+        "tunnel manager started (probe every %ds, restart after %d failures)",
+        TUNNEL_HEALTH_INTERVAL, TUNNEL_HEALTH_FAIL_THRESHOLD,
+    )
     proc = initial_proc
     consecutive_failures = 0
+    # Give the initial cloudflared a moment to print its URL before the first probe.
+    time.sleep(CLOUDFLARED_BOOT_GRACE)
 
     while True:
         # Spawn cloudflared if missing or dead.
@@ -162,8 +169,7 @@ def tunnel_manager_loop(key: str, port: int, initial_proc: subprocess.Popen | No
             if proc is None:
                 time.sleep(TUNNEL_HEALTH_INTERVAL)
                 continue
-            # Give cloudflared a moment to print its URL into the log.
-            time.sleep(5)
+            time.sleep(CLOUDFLARED_BOOT_GRACE)
 
         # Refresh TUNNEL_URL from the latest entry in cloudflared's log.
         latest = latest_tunnel_url_from_log()
