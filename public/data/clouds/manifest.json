@@ -30,7 +30,7 @@
       "palette": [
         {
           "id": 0,
-          "name": "unclassified",
+          "name": "0",
           "color": [
             215,
             66,
@@ -39,7 +39,7 @@
         },
         {
           "id": 200000000,
-          "name": "surface",
+          "name": "200000000",
           "color": [
             17,
             74,
@@ -48,7 +48,7 @@
         },
         {
           "id": 300000000,
-          "name": "object",
+          "name": "300000000",
           "color": [
             153,
             215,
@@ -64,7 +64,7 @@
       "palette": [
         {
           "id": 0,
-          "name": "unclassified",
+          "name": "0",
           "color": [
             215,
             66,
@@ -73,7 +73,7 @@
         },
         {
           "id": 202000000,
-          "name": "ground",
+          "name": "202000000",
           "color": [
             17,
             74,
@@ -82,7 +82,7 @@
         },
         {
           "id": 203000000,
-          "name": "building",
+          "name": "203000000",
           "color": [
             153,
             215,
@@ -91,7 +91,7 @@
         },
         {
           "id": 301000000,
-          "name": "other object",
+          "name": "301000000",
           "color": [
             212,
             17,
@@ -100,7 +100,7 @@
         },
         {
           "id": 302000000,
-          "name": "static",
+          "name": "302000000",
           "color": [
             66,
             215,
@@ -109,7 +109,7 @@
         },
         {
           "id": 303000000,
-          "name": "Dynamic",
+          "name": "303000000",
           "color": [
             212,
             123,
@@ -118,7 +118,7 @@
         },
         {
           "id": 304000000,
-          "name": "natural",
+          "name": "304000000",
           "color": [
             103,
             66,
@@ -134,7 +134,7 @@
       "palette": [
         {
           "id": 0,
-          "name": "unclassified",
+          "name": "0",
           "color": [
             215,
             66,
@@ -143,7 +143,7 @@
         },
         {
           "id": 202010000,
-          "name": "other ground",
+          "name": "202010000",
           "color": [
             17,
             74,
@@ -152,7 +152,7 @@
         },
         {
           "id": 202020000,
-          "name": "road",
+          "name": "202020000",
           "color": [
             153,
             215,
@@ -161,7 +161,7 @@
         },
         {
           "id": 202030000,
-          "name": "sidewalk",
+          "name": "202030000",
           "color": [
             212,
             17,
@@ -170,7 +170,7 @@
         },
         {
           "id": 202040000,
-          "name": "curb",
+          "name": "202040000",
           "color": [
             66,
             215,
@@ -179,7 +179,7 @@
         },
         {
           "id": 203000000,
-          "name": "building",
+          "name": "203000000",
           "color": [
             212,
             123,
@@ -188,7 +188,7 @@
         },
         {
           "id": 301000000,
-          "name": "other object",
+          "name": "301000000",
           "color": [
             103,
             66,
@@ -197,7 +197,7 @@
         },
         {
           "id": 302020300,
-          "name": "bollard",
+          "name": "302020300",
           "color": [
             26,
             212,
@@ -206,7 +206,7 @@
         },
         {
           "id": 302020400,
-          "name": "floor lamp",
+          "name": "302020400",
           "color": [
             215,
             66,
@@ -215,7 +215,7 @@
         },
         {
           "id": 302020600,
-          "name": "traffic sign",
+          "name": "302020600",
           "color": [
             17,
             139,
@@ -224,7 +224,7 @@
         },
         {
           "id": 302020900,
-          "name": "trash can",
+          "name": "302020900",
           "color": [
             203,
             215,
@@ -233,7 +233,7 @@
         },
         {
           "id": 302021000,
-          "name": "meter",
+          "name": "302021000",
           "color": [
             171,
             17,
@@ -242,7 +242,7 @@
         },
         {
           "id": 302030400,
-          "name": "grid",
+          "name": "302030400",
           "color": [
             66,
             215,
@@ -251,7 +251,7 @@
         },
         {
           "id": 303020000,
-          "name": "pedestrian",
+          "name": "303020000",
           "color": [
             212,
             58,
@@ -260,7 +260,7 @@
         },
         {
           "id": 303020200,
-          "name": "still pedestrian",
+          "name": "303020200",
           "color": [
             66,
             78,
@@ -269,7 +269,7 @@
         },
         {
           "id": 303020300,
-          "name": "walking pedestrian",
+          "name": "303020300",
           "color": [
             91,
             212,
@@ -278,7 +278,7 @@
         },
         {
           "id": 303020600,
-          "name": "holding pedestrian",
+          "name": "303020600",
           "color": [
             215,
             66,
@@ -287,7 +287,7 @@
         },
         {
           "id": 303030202,
-          "name": "parked bicycle",
+          "name": "303030202",
           "color": [
             17,
             205,
@@ -296,7 +296,7 @@
         },
         {
           "id": 303030302,
-          "name": "scooter without driver",
+          "name": "303030302",
           "color": [
             215,
             177,
@@ -305,7 +305,7 @@
         },
         {
           "id": 303040200,
-          "name": "car",
+          "name": "303040200",
           "color": [
             106,
             17,
@@ -314,7 +314,7 @@
         },
         {
           "id": 304020000,
-          "name": "tree",
+          "name": "304020000",
           "color": [
             66,
             215,
@@ -323,7 +323,7 @@
         },
         {
           "id": 304040000,
-          "name": "potted plant",
+          "name": "304040000",
           "color": [
             212,
             17,
@@ -334,7 +334,7 @@
     },
     {
       "id": "pred_kmeans_xyz",
-      "label": "Predictions \u2014 K-means XYZ (k=7)",
+      "label": "K-means XYZ",
       "channel": "pred_kmeans_xyz",
       "palette": [
         {
@@ -404,22 +404,22 @@
       "metrics": [
         {
           "label": "ARI class",
-          "value": 0.0651
+          "value": 0.0803
         },
         {
           "label": "NMI class",
-          "value": 0.1702
+          "value": 0.1817
         },
         {
           "label": "Purity class",
-          "value": 0.6735
+          "value": 0.6982
         }
       ]
     },
     {
-      "id": "pred_kmeans_pn_embedding",
-      "label": "Predictions \u2014 K-means on PointNet embeddings (k=7)",
-      "channel": "pred_kmeans_pn_embedding",
+      "id": "pred_kmeans_pn_fp_last",
+      "label": "K-means on PointNet embeddings",
+      "channel": "pred_kmeans_pn_fp_last",
       "palette": [
         {
           "id": 0,
@@ -501,13 +501,13 @@
       ]
     },
     {
-      "id": "pred_pointnet",
-      "label": "Predictions \u2014 PointNet, overlap + TTA",
-      "channel": "pred_pointnet",
+      "id": "pred_hdbscan_xyz",
+      "label": "HDBSCAN XYZ",
+      "channel": "pred_hdbscan_xyz",
       "palette": [
         {
           "id": 0,
-          "name": "unclassified",
+          "name": "cluster 0",
           "color": [
             215,
             66,
@@ -515,8 +515,8 @@
           ]
         },
         {
-          "id": 202000000,
-          "name": "ground",
+          "id": 1,
+          "name": "cluster 1",
           "color": [
             17,
             74,
@@ -524,8 +524,108 @@
           ]
         },
         {
-          "id": 203000000,
-          "name": "building",
+          "id": 2,
+          "name": "cluster 2",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": -0.0187
+        },
+        {
+          "label": "NMI class",
+          "value": 0.0248
+        },
+        {
+          "label": "Purity class",
+          "value": 0.5499
+        }
+      ]
+    },
+    {
+      "id": "pred_hdbscan_pn_fp_last",
+      "label": "HDBSCAN on PointNet embeddings",
+      "channel": "pred_hdbscan_pn_fp_last",
+      "palette": [
+        {
+          "id": 0,
+          "name": "cluster 0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 1,
+          "name": "cluster 1",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 2,
+          "name": "cluster 2",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": 0.0091
+        },
+        {
+          "label": "NMI class",
+          "value": 0.0146
+        },
+        {
+          "label": "Purity class",
+          "value": 0.5568
+        },
+        {
+          "label": "IoU floor",
+          "value": 0.0193
+        }
+      ]
+    },
+    {
+      "id": "pred_gmm_xyz",
+      "label": "GMM XYZ",
+      "channel": "pred_gmm_xyz",
+      "palette": [
+        {
+          "id": 0,
+          "name": "cluster 0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 1,
+          "name": "cluster 1",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 2,
+          "name": "cluster 2",
           "color": [
             153,
             215,
@@ -533,8 +633,8 @@
           ]
         },
         {
-          "id": 301000000,
-          "name": "other object",
+          "id": 3,
+          "name": "cluster 3",
           "color": [
             212,
             17,
@@ -542,8 +642,8 @@
           ]
         },
         {
-          "id": 302000000,
-          "name": "static",
+          "id": 4,
+          "name": "cluster 4",
           "color": [
             66,
             215,
@@ -551,8 +651,8 @@
           ]
         },
         {
-          "id": 303000000,
-          "name": "Dynamic",
+          "id": 5,
+          "name": "cluster 5",
           "color": [
             212,
             123,
@@ -560,8 +660,8 @@
           ]
         },
         {
-          "id": 304000000,
-          "name": "natural",
+          "id": 6,
+          "name": "cluster 6",
           "color": [
             103,
             66,
@@ -572,26 +672,110 @@
       "metrics": [
         {
           "label": "ARI class",
-          "value": 0.9103
+          "value": 0.473
         },
         {
           "label": "NMI class",
-          "value": 0.789
+          "value": 0.5103
         },
         {
           "label": "Purity class",
-          "value": 0.9506
+          "value": 0.8743
         }
       ]
     },
     {
-      "id": "pred_pointnet_no_overlap_tta",
-      "label": "Predictions \u2014 PointNet, no overlap/TTA",
-      "channel": "pred_pointnet_no_overlap_tta",
+      "id": "pred_gmm_pn_fp_last",
+      "label": "GMM on PointNet embeddings",
+      "channel": "pred_gmm_pn_fp_last",
       "palette": [
         {
           "id": 0,
-          "name": "unclassified",
+          "name": "cluster 0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 1,
+          "name": "cluster 1",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 2,
+          "name": "cluster 2",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 3,
+          "name": "cluster 3",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 4,
+          "name": "cluster 4",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 5,
+          "name": "cluster 5",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 6,
+          "name": "cluster 6",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": 0.3346
+        },
+        {
+          "label": "NMI class",
+          "value": 0.4553
+        },
+        {
+          "label": "Purity class",
+          "value": 0.8859
+        }
+      ]
+    },
+    {
+      "id": "pred_pointnet",
+      "label": "PointNet (overlap + TTA)",
+      "channel": "pred_pointnet",
+      "palette": [
+        {
+          "id": 0,
+          "name": "0",
           "color": [
             215,
             66,
@@ -600,7 +784,7 @@
         },
         {
           "id": 202000000,
-          "name": "ground",
+          "name": "202000000",
           "color": [
             17,
             74,
@@ -609,7 +793,7 @@
         },
         {
           "id": 203000000,
-          "name": "building",
+          "name": "203000000",
           "color": [
             153,
             215,
@@ -618,7 +802,7 @@
         },
         {
           "id": 301000000,
-          "name": "other object",
+          "name": "301000000",
           "color": [
             212,
             17,
@@ -627,7 +811,7 @@
         },
         {
           "id": 302000000,
-          "name": "static",
+          "name": "302000000",
           "color": [
             66,
             215,
@@ -636,7 +820,7 @@
         },
         {
           "id": 303000000,
-          "name": "Dynamic",
+          "name": "303000000",
           "color": [
             212,
             123,
@@ -645,7 +829,77 @@
         },
         {
           "id": 304000000,
-          "name": "natural",
+          "name": "304000000",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pred_pointnet_no_ttamods",
+      "label": "PointNet (no overlap, no TTA)",
+      "channel": "pred_pointnet_no_ttamods",
+      "palette": [
+        {
+          "id": 0,
+          "name": "0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202000000,
+          "name": "202000000",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "203000000",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "301000000",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 302000000,
+          "name": "302000000",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 303000000,
+          "name": "303000000",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 304000000,
+          "name": "304000000",
           "color": [
             103,
             66,
@@ -669,8 +923,162 @@
       ]
     },
     {
+      "id": "pred_pointnet2",
+      "label": "PointNet++ (overlap + TTA)",
+      "channel": "pred_pointnet2",
+      "palette": [
+        {
+          "id": 0,
+          "name": "0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202000000,
+          "name": "202000000",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "203000000",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "301000000",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 302000000,
+          "name": "302000000",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 303000000,
+          "name": "303000000",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 304000000,
+          "name": "304000000",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pred_pointnet2_no_ttamods",
+      "label": "PointNet++ (no overlap, no TTA)",
+      "channel": "pred_pointnet2_no_ttamods",
+      "palette": [
+        {
+          "id": 0,
+          "name": "0",
+          "color": [
+            215,
+            66,
+            66
+          ]
+        },
+        {
+          "id": 202000000,
+          "name": "202000000",
+          "color": [
+            17,
+            74,
+            212
+          ]
+        },
+        {
+          "id": 203000000,
+          "name": "203000000",
+          "color": [
+            153,
+            215,
+            66
+          ]
+        },
+        {
+          "id": 301000000,
+          "name": "301000000",
+          "color": [
+            212,
+            17,
+            188
+          ]
+        },
+        {
+          "id": 302000000,
+          "name": "302000000",
+          "color": [
+            66,
+            215,
+            190
+          ]
+        },
+        {
+          "id": 303000000,
+          "name": "303000000",
+          "color": [
+            212,
+            123,
+            17
+          ]
+        },
+        {
+          "id": 304000000,
+          "name": "304000000",
+          "color": [
+            103,
+            66,
+            215
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "label": "ARI class",
+          "value": 0.8533
+        },
+        {
+          "label": "NMI class",
+          "value": 0.7257
+        },
+        {
+          "label": "Purity class",
+          "value": 0.9364
+        }
+      ]
+    },
+    {
       "id": "pred_floor_pole",
-      "label": "Predictions \u2014 Floor + pole",
+      "label": "Floor + pole detector",
       "channel": "pred_floor_pole",
       "palette": [
         {
@@ -700,26 +1108,12 @@
             220
           ]
         }
-      ],
-      "metrics": [
-        {
-          "label": "ARI class",
-          "value": 0.6937
-        },
-        {
-          "label": "NMI class",
-          "value": 0.6035
-        },
-        {
-          "label": "Purity class",
-          "value": 0.8585
-        }
       ]
     },
     {
-      "id": "pred_ransac",
-      "label": "Predictions \u2014 RANSAC ground plane",
-      "channel": "pred_ransac",
+      "id": "pred_ransac_floor",
+      "label": "RANSAC ground plane",
+      "channel": "pred_ransac_floor",
       "palette": [
         {
           "id": 0,
@@ -738,24 +1132,6 @@
             160,
             64
           ]
-        }
-      ],
-      "metrics": [
-        {
-          "label": "ARI class",
-          "value": 0.7491
-        },
-        {
-          "label": "NMI class",
-          "value": 0.6466
-        },
-        {
-          "label": "Purity class",
-          "value": 0.8924
-        },
-        {
-          "label": "IoU floor",
-          "value": 0.901
         }
       ]
     }
