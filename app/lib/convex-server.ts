@@ -34,14 +34,26 @@ export async function currentUser(request: Request): Promise<ServerUser | null> 
   return await client.query(api.users.viewer, {});
 }
 
-export async function requireAdmin(request: Request): Promise<ServerUser> {
+function authError(message: string, status: number): Response {
+  return Response.json({ error: message }, { status });
+}
+
+export async function requireUser(request: Request): Promise<ServerUser | Response> {
   const user = await currentUser(request);
-  if (!user?.isAdmin) throw new Error("Admin access required");
+  if (!user) return authError("Authentication required", 401);
   return user;
 }
 
-export async function requireTom(request: Request): Promise<ServerUser> {
+export async function requireAdmin(request: Request): Promise<ServerUser | Response> {
   const user = await currentUser(request);
-  if (!user?.isTom) throw new Error("Tom access required");
+  if (!user) return authError("Authentication required", 401);
+  if (!user.isAdmin) return authError("Admin access required", 403);
+  return user;
+}
+
+export async function requireTom(request: Request): Promise<ServerUser | Response> {
+  const user = await currentUser(request);
+  if (!user) return authError("Authentication required", 401);
+  if (!user.isTom) return authError("Tom access required", 403);
   return user;
 }

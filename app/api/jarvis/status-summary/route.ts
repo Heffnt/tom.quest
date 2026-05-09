@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { currentDayKey, OPENCLAW_ROOT, WORKSPACE_ROOT, requireTom } from "@/app/api/jarvis/_utils";
+import { currentDayKey, OPENCLAW_ROOT, WORKSPACE_ROOT } from "@/app/api/jarvis/_utils";
+import { requireTom } from "@/app/lib/convex-server";
 
 async function readJson<T>(filePath: string): Promise<T | null> {
   try {
@@ -12,9 +13,8 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 }
 
 export async function GET(request: NextRequest) {
-  if (!(await requireTom(request))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
 
   const openclawConfig = await readJson<Record<string, unknown>>(path.join(OPENCLAW_ROOT, "openclaw.json"));
   const providerCosts = await readJson<Record<string, unknown>>(path.join(WORKSPACE_ROOT, "memory/provider-costs/summary.json"));

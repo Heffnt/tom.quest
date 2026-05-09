@@ -57,7 +57,6 @@ export async function runCanvasAgent(args: RunArgs): Promise<void> {
 
   /* Dynamic import so the Pi package only loads server-side at request time,
      not at build time (and can be replaced if Pi's import path shifts). */
-  // @ts-expect-error — Pi package types may not be available at build until installed.
   const pi = await import("@earendil-works/pi-coding-agent");
   const {
     createAgentSession,

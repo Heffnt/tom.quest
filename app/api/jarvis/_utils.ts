@@ -1,19 +1,8 @@
-import { NextRequest } from "next/server";
-import { requireTom as requireTomUser } from "@/app/lib/convex-server";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
 export const WORKSPACE_ROOT = "/root/.openclaw/workspace";
 export const OPENCLAW_ROOT = "/root/.openclaw";
-
-export async function requireTom(request: NextRequest) {
-  try {
-    await requireTomUser(request);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export function resolveWorkspacePath(relativePath: string) {
   const normalized = relativePath.replace(/^\/+/, "");

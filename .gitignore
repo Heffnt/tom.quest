@@ -29,10 +29,15 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-tom-quest-api/*.log
+turing-api/*.log
 
 # env files (can opt-in for committing if needed)
 .env*
+
+# Tom-only secrets directory; only .example templates are committed.
+/secrets/*
+!/secrets/.gitkeep
+!/secrets/*.example
 
 # vercel
 .vercel

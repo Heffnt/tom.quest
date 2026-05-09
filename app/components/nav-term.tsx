@@ -35,7 +35,7 @@ function useViewportWidth(): number {
   return w;
 }
 
-export default function QuestNav({
+export default function NavTerm({
   offsets = { left: 0, right: 0 },
   animateOffsets = true,
 }: {

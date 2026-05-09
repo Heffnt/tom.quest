@@ -18,12 +18,16 @@ const MAX_RECONNECTS = 3;
 const VSCODE_TERMINAL_FONT = 'Consolas, "Courier New", monospace';
 const terminalPageLog = debug.scoped("term.page");
 
-async function fetchTunnelUrl(token: string | null): Promise<{ url: string; key: string } | null> {
-  const done = terminalPageLog.req("GET /api/turing/tunnel-url", undefined, { defer: true });
+async function fetchWsCredentials(
+  token: string | null,
+  sessionName: string,
+): Promise<{ wsUrl: string; token: string } | null> {
+  const done = terminalPageLog.req("GET /api/turing/ws-credentials", { sessionName }, { defer: true });
   const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const url = `/api/turing/ws-credentials?session=${encodeURIComponent(sessionName)}`;
   let res: Response;
   try {
-    res = await fetch("/api/turing/tunnel-url", { headers });
+    res = await fetch(url, { headers });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Network error";
     done.error(message);
@@ -31,16 +35,16 @@ async function fetchTunnelUrl(token: string | null): Promise<{ url: string; key:
   }
   if (!res.ok) {
     const text = await res.text();
-    done.error(text || "Failed to fetch tunnel URL", { status: res.status });
+    done.error(text || "Failed to fetch WS credentials", { status: res.status });
     return null;
   }
   const data = await res.json();
-  if (!data.url) {
-    done.error("Missing tunnel URL", { status: res.status });
+  if (!data.wsUrl || !data.token) {
+    done.error("Missing wsUrl or token", { status: res.status });
     return null;
   }
   done({ status: res.status });
-  return { url: data.url, key: data.key || "" };
+  return { wsUrl: data.wsUrl, token: data.token };
 }
 
 function ViewerTerminalPage({ sessionName }: { sessionName: string }) {
@@ -123,20 +127,18 @@ function InteractiveTerminalPage({ sessionName }: { sessionName: string }) {
     const connect = async () => {
       if (disposed) return;
       terminalPageLog.log("connecting", { sessionName });
-      const tunnel = await fetchTunnelUrl(token);
-      if (!tunnel || disposed) {
-        term.write("\r\n\x1b[31mFailed to fetch tunnel URL\x1b[0m\r\n");
+      const creds = await fetchWsCredentials(token, sessionName);
+      if (!creds || disposed) {
+        term.write("\r\n\x1b[31mFailed to fetch WS credentials\x1b[0m\r\n");
         return;
       }
       fitTerminal();
       const params = new URLSearchParams();
-      if (tunnel.key) params.set("key", tunnel.key);
+      params.set("key", creds.token);
       params.set("cols", String(term.cols || 80));
       params.set("rows", String(term.rows || 24));
-      const query = params.toString();
-      const wsUrl = tunnel.url.replace(/^http/, "ws")
-        + `/ws/sessions/${encodeURIComponent(sessionName)}${query ? `?${query}` : ""}`;
-      const ws = new WebSocket(wsUrl);
+      const wsFullUrl = `${creds.wsUrl}/ws/sessions/${encodeURIComponent(sessionName)}?${params.toString()}`;
+      const ws = new WebSocket(wsFullUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 

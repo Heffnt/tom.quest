@@ -5,14 +5,8 @@ import { forwardToTuringApi } from "@/app/lib/turing";
 type Ctx = { params: Promise<{ path: string[] }> };
 
 async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "DELETE") {
-  try {
-    await requireAdmin(request);
-  } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Admin access required" },
-      { status: 403 },
-    );
-  }
+  const auth = await requireAdmin(request);
+  if (auth instanceof Response) return auth;
   const { path } = await ctx.params;
   const search = new URL(request.url).search;
   const upstreamPath = "/" + path.join("/") + search;
@@ -28,14 +22,14 @@ async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "D
   }
 
   try {
-    const res = await forwardToTuringApi(request, upstreamPath, init);
+    const res = await forwardToTuringApi(upstreamPath, init);
     const contentType = res.headers.get("content-type") ?? "";
     const text = await res.text();
     const looksLikeHtml = /^\s*(?:<!doctype html|<html)/i.test(text);
     if (!res.ok || looksLikeHtml || !contentType.includes("application/json")) {
       const error =
         looksLikeHtml || contentType.includes("text/html")
-          ? `Turing tunnel returned ${res.status}; the Cloudflare tunnel may be stale or unavailable.`
+          ? `Turing API returned ${res.status} (non-JSON body); the API may be down or misconfigured.`
           : text || `Turing request failed: ${res.status}`;
       return NextResponse.json(
         { error },

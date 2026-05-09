@@ -37,11 +37,8 @@ function getGatewayDeviceIdentity() {
 }
 
 export async function GET(request: NextRequest) {
-  try {
-    await requireTom(request);
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
   const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
   if (!gatewayUrl) {
     return NextResponse.json({ error: "Gateway not configured" }, { status: 503 });

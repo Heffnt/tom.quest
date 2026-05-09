@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireTom } from "@/app/api/jarvis/_utils";
+import { requireTom } from "@/app/lib/convex-server";
 
 type Paper = {
   id: string;
@@ -28,9 +28,8 @@ function extractEntries(xml: string): Paper[] {
 }
 
 export async function GET(request: NextRequest) {
-  if (!(await requireTom(request))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
   const seed = Math.floor(Math.random() * 40);
   const query = encodeURIComponent('(ti:"large language model" OR abs:"large language model" OR all:llm OR all:instruction-tuning) AND cat:cs.CL');
   const url = `https://export.arxiv.org/api/query?search_query=${query}&start=${seed}&max_results=12&sortBy=submittedDate&sortOrder=descending`;

@@ -65,16 +65,23 @@ function parseTuringCall(method: string, params?: ServerCallParams) {
   return { httpMethod, path };
 }
 
+const TURING_FRESHNESS_WINDOW_MS = 90_000;
+
 function useTuringServer(): ServerAdapter {
   const { token, user, loading } = useAuth();
-  const connection = useQuery(api.turing.connectionForViewer, user ? {} : "skip");
+  const health = useQuery(api.serverHealth.get, user ? { serverName: "turing" } : "skip");
 
   const status = useMemo<ServerStatus>(() => {
     if (!user) return { connected: false, fresh: false, error: loading ? null : "Not signed in" };
-    if (connection === undefined) return { connected: false, fresh: false, error: null };
-    if (!connection) return { connected: false, fresh: false, error: "Turing backend not connected" };
-    return { connected: true, fresh: connection.fresh, error: connection.fresh ? null : "Turing backend is stale" };
-  }, [connection, loading, user]);
+    if (health === undefined) return { connected: false, fresh: false, error: null };
+    if (!health) return { connected: false, fresh: false, error: "Turing API has not been probed yet" };
+    const fresh = Date.now() - health.lastChecked < TURING_FRESHNESS_WINDOW_MS;
+    return {
+      connected: health.reachable,
+      fresh,
+      error: health.reachable ? null : (health.error ?? "Turing API not reachable"),
+    };
+  }, [health, loading, user]);
 
   const call = useCallback<ServerAdapter["call"]>(async (method, params) => {
     const { httpMethod, path } = parseTuringCall(method, params);

@@ -23,14 +23,13 @@ export default defineSchema({
     .index("email", ["email"])
     .index("phone", ["phone"]),
 
-  turingConnections: defineTable({
-    connectionKey: v.string(),
-    tunnelUrl: v.string(),
-    userId: v.optional(v.id("users")),
-    lastHeartbeat: v.number(),
-  })
-    .index("by_connection_key", ["connectionKey"])
-    .index("by_user_id", ["userId"]),
+  serverHealth: defineTable({
+    serverName: v.union(v.literal("turing"), v.literal("jarvis")),
+    reachable: v.boolean(),
+    lastChecked: v.number(),
+    lastSuccessAt: v.optional(v.number()),
+    error: v.optional(v.string()),
+  }).index("by_server", ["serverName"]),
 
   userSettings: defineTable({
     userId: v.id("users"),

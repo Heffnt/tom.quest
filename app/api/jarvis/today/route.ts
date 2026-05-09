@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
-import { buildMarkdownSections, currentDayKey, parseMarkdownSections, pathExists, requireTom, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
+import { buildMarkdownSections, currentDayKey, parseMarkdownSections, pathExists, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
+import { requireTom } from "@/app/lib/convex-server";
 
 const DEFAULT_SECTION_ORDER = [
   "Sleep",
@@ -20,9 +21,8 @@ function buildDefaultTitle(dayKey: string) {
 }
 
 export async function GET(request: NextRequest) {
-  if (!(await requireTom(request))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
   const { searchParams } = new URL(request.url);
   const dayKey = searchParams.get("date") || currentDayKey();
   const relativePath = `memory/${dayKey}.md`;
@@ -51,9 +51,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  if (!(await requireTom(request))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
   const body = (await request.json().catch(() => null)) as {
     date?: string;
     title?: string;

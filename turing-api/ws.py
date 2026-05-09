@@ -1,5 +1,8 @@
 import asyncio
+import base64
 import fcntl
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -7,12 +10,51 @@ import pty
 import signal
 import struct
 import termios
+import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from tmux import resize_session_window, session_exists
 
 log = logging.getLogger("tom.quest.ws")
 router = APIRouter()
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def verify_ws_token(token: str, secret: str) -> dict | None:
+    """Verify a Next-issued HMAC token. Returns payload dict on success, None on failure.
+
+    Token shape: <base64url(json_payload)>.<base64url(hmac_sha256(secret, payload_b64))>
+    Payload: {"uid": string, "sid": string, "exp": ms_epoch}
+    """
+    if not token or "." not in token:
+        return None
+    payload_b64, sig_b64 = token.split(".", 1)
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        payload_b64.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    try:
+        actual = _b64url_decode(sig_b64)
+    except Exception:
+        return None
+    if not hmac.compare_digest(expected, actual):
+        return None
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)) or exp < int(time.time() * 1000):
+        return None
+    return payload
+
 
 def set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -80,8 +122,15 @@ async def ws_session(
     rows: int = 24,
 ) -> None:
     from main import API_KEY
-    if API_KEY and key != API_KEY:
-        await websocket.close(code=1008, reason="Invalid key")
+    if not API_KEY:
+        await websocket.close(code=1011, reason="Server not configured")
+        return
+    payload = verify_ws_token(key, API_KEY)
+    if not payload:
+        await websocket.close(code=1008, reason="Invalid or expired token")
+        return
+    if payload.get("sid") != session_name:
+        await websocket.close(code=1008, reason="Token session mismatch")
         return
     if not session_exists(session_name):
         await websocket.accept()
@@ -94,7 +143,7 @@ async def ws_session(
     rows, cols = normalize_size(rows, cols)
     set_winsize(master_fd, rows, cols)
     resize_session_window(session_name, cols, rows)
-    log.info("Opening tmux session %s at %sx%s", session_name, cols, rows)
+    log.info("Opening tmux session %s at %sx%s for user %s", session_name, cols, rows, payload.get("uid"))
     pid = os.fork()
     if pid == 0:
         os.setsid()

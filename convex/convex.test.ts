@@ -6,46 +6,29 @@ import schema from "./schema";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 describe("Convex functions", () => {
-  it("registers and exposes Turing connections", async () => {
+  it("upserts serverHealth on success and failure", async () => {
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.turing.registerConnectionFromWorker, {
-      connectionKey: "test-key",
-      tunnelUrl: "https://example.com",
-      now: Date.now(),
+    await t.mutation(internal.serverHealth.set, {
+      serverName: "turing",
+      reachable: true,
+      lastChecked: 1000,
+      lastSuccessAt: 1000,
     });
+    let row = await t.query(api.serverHealth.get, { serverName: "turing" });
+    expect(row?.reachable).toBe(true);
+    expect(row?.lastSuccessAt).toBe(1000);
 
-    const docs = await t.run(async (ctx) => {
-      return await ctx.db.query("turingConnections").collect();
+    await t.mutation(internal.serverHealth.set, {
+      serverName: "turing",
+      reachable: false,
+      lastChecked: 2000,
+      error: "boom",
     });
-
-    expect(docs).toHaveLength(1);
-    expect(docs[0].connectionKey).toBe("test-key");
-  });
-
-  it("auto-links worker registrations to Tom when available", async () => {
-    const t = convexTest({ schema, modules });
-    const tomId = await t.run(async (ctx) => {
-      return await ctx.db.insert("users", {
-        name: "Tom",
-        email: "tom@tom.quest",
-        role: "tom",
-      });
-    });
-
-    await t.mutation(internal.turing.registerConnectionFromWorker, {
-      connectionKey: "tom-key",
-      tunnelUrl: "https://example.com",
-      now: Date.now(),
-    });
-
-    const connection = await t.run(async (ctx) => {
-      return await ctx.db
-        .query("turingConnections")
-        .withIndex("by_connection_key", (q) => q.eq("connectionKey", "tom-key"))
-        .unique();
-    });
-
-    expect(connection?.userId).toBe(tomId);
+    row = await t.query(api.serverHealth.get, { serverName: "turing" });
+    expect(row?.reachable).toBe(false);
+    expect(row?.error).toBe("boom");
+    // lastSuccessAt is preserved across a failed poll.
+    expect(row?.lastSuccessAt).toBe(1000);
   });
 
   it("returns top symbol scores", async () => {

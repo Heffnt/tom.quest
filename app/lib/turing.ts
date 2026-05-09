@@ -1,33 +1,54 @@
-import { api } from "@/convex/_generated/api";
-import { bearerToken, convexClient } from "./convex-server";
+import { createHmac } from "node:crypto";
 
-async function loadTuringConnection(token: string): Promise<{ url: string; key: string }> {
-  const client = convexClient();
-  client.setAuth(token);
-  const data = await client.query(api.turing.tunnelForViewer, {});
-  return { url: data.url, key: data.key };
+function readEnv(): { url: string; key: string } {
+  const url = process.env.TURING_API_URL;
+  const key = process.env.TURING_API_KEY;
+  if (!url) throw new Error("TURING_API_URL is not set");
+  if (!key) throw new Error("TURING_API_KEY is not set");
+  return { url: url.replace(/\/$/, ""), key };
 }
 
-export async function getTunnelUrl(request: Request): Promise<{ url: string; key: string }> {
-  const token = bearerToken(request);
-  if (!token) throw new Error("Authentication required");
-  const { url, key } = await loadTuringConnection(token);
-  return { url, key };
-}
-
-export async function forwardToTuringApi(request: Request, path: string, init?: RequestInit): Promise<Response> {
-  const token = bearerToken(request);
-  if (!token) return new Response("Authentication required", { status: 401 });
-  const { url, key } = await loadTuringConnection(token);
-  const base = url.endsWith("/") ? url.slice(0, -1) : url;
+export async function forwardToTuringApi(path: string, init?: RequestInit): Promise<Response> {
+  const { url, key } = readEnv();
   const normalized = path.startsWith("/") ? path : `/${path}`;
   const headers: Record<string, string> = {
     ...((init?.headers as Record<string, string>) || {}),
+    "X-API-Key": key,
   };
-  if (key) headers["X-API-Key"] = key;
-  return fetch(base + normalized, {
+  return fetch(url + normalized, {
     ...init,
     headers,
     signal: init?.signal ?? AbortSignal.timeout(20_000),
   });
+}
+
+export type WsCredentials = {
+  wsUrl: string;
+  token: string;
+  expiresAt: number;
+};
+
+function b64url(buf: Buffer): string {
+  return buf.toString("base64url");
+}
+
+export function signWsToken(args: {
+  userId: string;
+  sessionName: string;
+  ttlMs: number;
+}): WsCredentials {
+  const { url, key } = readEnv();
+  const expiresAt = Date.now() + args.ttlMs;
+  const payload = JSON.stringify({
+    uid: args.userId,
+    sid: args.sessionName,
+    exp: expiresAt,
+  });
+  const payloadB64 = b64url(Buffer.from(payload, "utf-8"));
+  const sig = createHmac("sha256", key).update(payloadB64).digest();
+  return {
+    wsUrl: url.replace(/^http/, "ws"),
+    token: `${payloadB64}.${b64url(sig)}`,
+    expiresAt,
+  };
 }

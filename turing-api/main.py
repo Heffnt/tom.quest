@@ -1,14 +1,7 @@
 import logging
 import os
-import re
-import signal
-import socket
 import shlex
-import subprocess
-import threading
-import time
-import uuid
-import requests
+import signal
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -30,21 +23,8 @@ from ws import router as ws_router
 
 load_dotenv()
 API_PORT = int(os.getenv("API_PORT", "8000"))
-TOM_QUEST_URL = os.getenv("TOM_QUEST_URL", "https://tom.quest")
-CONVEX_SITE_URL = os.getenv("CONVEX_SITE_URL", "")
-TURING_REGISTRATION_SECRET = os.getenv("TURING_REGISTRATION_SECRET", "")
-KEY_FILE = os.path.expanduser("~/.tom-quest-key")
-LOG_PATH = "tom-quest-api.log"
-TUNNEL_LOG_PATH = "tom-quest-tunnel.log"
-HEARTBEAT_INTERVAL = 30  # seconds
-TUNNEL_HEALTH_INTERVAL = 15  # seconds between origin reachability probes
-TUNNEL_HEALTH_FAIL_THRESHOLD = 2  # consecutive failures before restarting cloudflared
-CLOUDFLARED_BOOT_GRACE = 8  # seconds to wait for cloudflared to print its URL after spawn
-
-# Global state
-API_KEY = ""
-TUNNEL_URL = ""
-TUNNEL_URL_PATTERN = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+API_KEY = os.environ.get("TURING_API_KEY", "")
+LOG_PATH = "turing-api.log"
 
 def setup_logging():
     logging.basicConfig(
@@ -57,166 +37,7 @@ def setup_logging():
         logger.handlers = []
         logger.propagate = True
 
-def load_or_generate_key() -> str:
-    if os.path.exists(KEY_FILE):
-        with open(KEY_FILE, "r") as f:
-            key = f.read().strip()
-        if key:
-            return key
-    key = str(uuid.uuid4())
-    with open(KEY_FILE, "w") as f:
-        f.write(key)
-    print(f"\n{'='*60}")
-    print(f"  New connection key generated!")
-    print(f"  Key: {key}")
-    print(f"  Saved to: {KEY_FILE}")
-    print(f"\n  Enter this key on tom.quest/turing to connect.")
-    print(f"{'='*60}\n")
-    return key
-
-def register_with_tom_quest(key: str, url: str) -> bool:
-    if not CONVEX_SITE_URL:
-        print("CONVEX_SITE_URL is required for Turing registration")
-        return False
-    if not TURING_REGISTRATION_SECRET:
-        print("TURING_REGISTRATION_SECRET is required for Turing registration")
-        return False
-    try:
-        res = requests.post(
-            f"{CONVEX_SITE_URL}/api/turing/register",
-            headers={"Authorization": f"Bearer {TURING_REGISTRATION_SECRET}"},
-            json={"key": key, "url": url},
-            timeout=10,
-        )
-        if res.ok:
-            return True
-        print(f"Registration failed: {res.status_code} {res.text}")
-    except Exception as e:
-        print(f"Registration error: {e}")
-    return False
-
-def heartbeat_loop(key: str):
-    while True:
-        time.sleep(HEARTBEAT_INTERVAL)
-        url = TUNNEL_URL
-        if url:
-            register_with_tom_quest(key, url)
-
-def latest_tunnel_url_from_log() -> str | None:
-    try:
-        with open(TUNNEL_LOG_PATH) as f:
-            content = f.read()
-    except FileNotFoundError:
-        return None
-    matches = TUNNEL_URL_PATTERN.findall(content)
-    return matches[-1] if matches else None
-
-def spawn_cloudflared(port: int) -> subprocess.Popen | None:
-    log_file = open(TUNNEL_LOG_PATH, "w", buffering=1)
-    try:
-        proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
-            stdout=log_file,
-            stderr=log_file,
-        )
-    except Exception:
-        log_file.close()
-        logging.getLogger("tom.quest.tunnel").exception("cloudflared spawn failed")
-        return None
-    print(f"cloudflared started (pid {proc.pid}). URL log: {TUNNEL_LOG_PATH}")
-    return proc
-
-def stop_cloudflared(proc: subprocess.Popen | None) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    except Exception:
-        logging.getLogger("tom.quest.tunnel").exception("cloudflared stop failed")
-
-def tunnel_health_ok(url: str) -> bool:
-    try:
-        res = requests.get(f"{url}/health", timeout=10)
-    except Exception as exc:
-        logging.getLogger("tom.quest.tunnel").info("tunnel health probe failed: %s", exc)
-        return False
-    return res.ok
-
-def tunnel_manager_loop(key: str, port: int, initial_proc: subprocess.Popen | None):
-    """Keep cloudflared healthy: pick up URL changes, probe origin reachability, restart on failure."""
-    global TUNNEL_URL
-    log = logging.getLogger("tom.quest.tunnel")
-    log.info(
-        "tunnel manager started (probe every %ds, restart after %d failures)",
-        TUNNEL_HEALTH_INTERVAL, TUNNEL_HEALTH_FAIL_THRESHOLD,
-    )
-    proc = initial_proc
-    consecutive_failures = 0
-    # Give the initial cloudflared a moment to print its URL before the first probe.
-    time.sleep(CLOUDFLARED_BOOT_GRACE)
-
-    while True:
-        # Spawn cloudflared if missing or dead.
-        if proc is None or proc.poll() is not None:
-            if proc is not None:
-                log.warning("cloudflared exited (code=%s); respawning", proc.returncode)
-            TUNNEL_URL = ""
-            consecutive_failures = 0
-            proc = spawn_cloudflared(port)
-            if proc is None:
-                time.sleep(TUNNEL_HEALTH_INTERVAL)
-                continue
-            time.sleep(CLOUDFLARED_BOOT_GRACE)
-
-        # Refresh TUNNEL_URL from the latest entry in cloudflared's log.
-        latest = latest_tunnel_url_from_log()
-        if latest and latest != TUNNEL_URL:
-            TUNNEL_URL = latest
-            log.info("tunnel URL updated: %s", TUNNEL_URL)
-            register_with_tom_quest(key, TUNNEL_URL)
-            consecutive_failures = 0
-
-        # Probe the public tunnel; 530 / connection failure means cloudflared
-        # is no longer registered with Cloudflare's edge even though the
-        # subprocess may still be running.
-        if TUNNEL_URL:
-            if tunnel_health_ok(TUNNEL_URL):
-                consecutive_failures = 0
-            else:
-                consecutive_failures += 1
-                log.warning(
-                    "tunnel unreachable via %s (%d/%d)",
-                    TUNNEL_URL, consecutive_failures, TUNNEL_HEALTH_FAIL_THRESHOLD,
-                )
-
-        if consecutive_failures >= TUNNEL_HEALTH_FAIL_THRESHOLD:
-            log.warning("restarting cloudflared after %d consecutive failures", consecutive_failures)
-            stop_cloudflared(proc)
-            proc = None  # respawn next iteration
-            continue
-
-        time.sleep(TUNNEL_HEALTH_INTERVAL)
-
-def find_free_port(preferred: int) -> int:
-    for port in range(preferred, preferred + 100):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(f"No free port in range {preferred}-{preferred + 99}")
-
-def start_tunnel(key: str, port: int):
-    proc = spawn_cloudflared(port)
-    threading.Thread(target=tunnel_manager_loop, args=(key, port, proc), daemon=True).start()
-    threading.Thread(target=heartbeat_loop, args=(key,), daemon=True).start()
-    return proc
-
-app = FastAPI(title="tom-quest-api", version="1.0.0")
+app = FastAPI(title="turing-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -414,11 +235,8 @@ if __name__ == "__main__":
     import uvicorn
     setup_logging()
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    port = find_free_port(API_PORT)
-    if port != API_PORT:
-        print(f"Port {API_PORT} in use, using {port} instead.\n")
-    API_KEY = load_or_generate_key()
-    print(f"\nConnection key: {API_KEY}")
-    print(f"Enter this key on {TOM_QUEST_URL}/turing to connect.\n")
-    start_tunnel(API_KEY, port)
-    uvicorn.run(app, host="0.0.0.0", port=port, access_log=True, log_config=None)
+    if not API_KEY:
+        raise SystemExit("TURING_API_KEY is not set. Configure turing-api/.env before starting.")
+    print(f"\nTuring API listening on 0.0.0.0:{API_PORT}")
+    print("Reachable through the named cloudflared tunnel; ensure cloudflared is running alongside this process.\n")
+    uvicorn.run(app, host="0.0.0.0", port=API_PORT, access_log=True, log_config=None)

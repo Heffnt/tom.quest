@@ -29,12 +29,33 @@ Personal website for Tom Heffernan — PhD Student in Artificial Intelligence at
 
 ## Development
 
+tom.quest has **one Convex deployment** (prod). Local dev runs `next dev` against prod Convex — same data, same auth, same Tom account. There is no separate dev deployment. Trade-off: every `npx convex deploy` lands live for real users. See [philosophy/personal-project-pragmatism](#) and [principles/single-deployment](#) in the wiki for the rationale.
+
+### One-time setup
+
 ```bash
 pnpm install
-pnpm dev:all          # starts Next.js + Convex dev server
+npx vercel link               # link this checkout to your Vercel project
+npx convex login              # authenticate the Convex CLI to your account
+pnpm secrets:init             # pulls Vercel prod + Convex prod env into secrets/*.env
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+After `secrets:init`, `secrets/next.env` and `secrets/convex.env` are the **single source of truth** for all tom.quest secrets (gitignored).
+
+### Daily workflow
+
+```bash
+pnpm dev:all                  # next dev (against prod Convex) + convex dev watcher for typegen
+```
+
+Open [http://localhost:3000](http://localhost:3000) and sign in with your real account.
+
+### Changing a secret
+
+1. Edit `secrets/next.env` (Next-side: Vercel + local) or `secrets/convex.env` (Convex-side).
+2. Run `pnpm secrets:sync`. Pushes to platforms and rewrites `.env.local`.
+
+To also delete platform vars not present in `secrets/*.env`, use `pnpm secrets:sync --prune` (opt-in; safer to default off).
 
 ### Verification
 
@@ -55,27 +76,29 @@ npx convex deploy --cmd 'pnpm build'
 
 This pushes Convex functions to prod and builds Next.js with the correct `NEXT_PUBLIC_CONVEX_URL` injected at build time.
 
-### Required Vercel Environment Variables (Production)
+All env vars live in `secrets/next.env` (Vercel-side) and `secrets/convex.env` (Convex-side). `pnpm secrets:sync` is the only command that should write to Vercel or Convex env.
+
+### Vercel-side (`secrets/next.env`)
 
 | Variable | Purpose |
 |----------|---------|
 | `NEXT_PUBLIC_CONVEX_URL` | Convex prod deployment URL |
 | `NEXT_PUBLIC_CONVEX_SITE_URL` | Convex prod HTTP actions URL |
-| `CONVEX_DEPLOY_KEY` | Convex deploy key (from Convex dashboard) |
-| `NEXT_PUBLIC_SENTRY_DSN` | Sentry DSN |
-| `SENTRY_ORG` | Sentry organization slug |
-| `SENTRY_PROJECT` | Sentry project slug |
-| `SENTRY_AUTH_TOKEN` | Sentry auth token (for source maps) |
+| `CONVEX_DEPLOY_KEY` | Convex deploy key |
+| `SENTRY_AUTH_TOKEN` | Sentry source-maps auth |
+| `OPENCLAW_GATEWAY_URL`, `JARVIS_GATEWAY_PASSWORD` | Jarvis socket config |
+| `TURING_API_URL`, `TURING_API_KEY` | Turing API discovery + auth |
+| Optional: `JARVIS_DEVICE_{ID,PUBLIC_KEY,PRIVATE_KEY}` | Shared Jarvis device identity |
+| Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `CODEX_AUTH_JSON` | Canvas page LLM credentials |
 
-### Required Convex Environment Variables (set via `npx convex env set --prod`)
+### Convex-side (`secrets/convex.env`)
 
 | Variable | Purpose |
 |----------|---------|
 | `SITE_URL` | Public site URL (e.g. `https://www.tom.quest`) |
 | `JWT_PRIVATE_KEY` | Convex Auth JWT signing key |
 | `JWKS` | Convex Auth public key set |
-| `TOM_SETUP_SECRET` | Secret for the Tom account promotion mutation |
-| `TURING_REGISTRATION_SECRET` | Shared secret for FastAPI worker registration |
+| `TOM_SETUP_SECRET` | Secret for the Tom-promotion mutation |
 
 ## Turing GPU Dashboard
 
@@ -83,37 +106,57 @@ The `/turing` page proxies requests through Next.js API routes to a FastAPI back
 
 ### Architecture
 
-1. **FastAPI worker** (`tom-quest-api/`) runs on a Turing login node and exposes GPU/job/terminal APIs.
-2. **Cloudflare Quick Tunnel** (`cloudflared`) creates a public URL for the worker.
-3. **Worker registers** the tunnel URL with Convex via the `/api/turing/register` HTTP action, authenticated by `TURING_REGISTRATION_SECRET`.
-4. **Convex auto-links** the connection to the Tom user.
-5. **Next.js API routes** (`/api/turing/*`) look up the tunnel URL from Convex and proxy requests to the FastAPI worker.
+1. **Turing API** (`turing-api/`) is a FastAPI service running on a Turing login node and exposes GPU/job/terminal endpoints.
+2. **Named cloudflared tunnel** maps `turing.tom.quest` to the API's local port. Stable URL — runs as a sibling process to the API.
+3. **Next.js API routes** (`/api/turing/*`) read `TURING_API_URL` from env, attach the `X-API-Key` header, and proxy requests to the API. The shared key never leaves Vercel.
+4. **Terminal WebSocket** opens directly from the browser to `wss://turing.tom.quest`. Auth via a short-lived HMAC token issued by `/api/turing/ws-credentials` (admin-only).
+5. **Liveness** is owned by a Convex cron action (`internal.serverHealth.pollTuring`) that probes `/health` every 30s and writes the outcome to the `serverHealth` table; the UI reads it via a reactive query.
 
 ### On Turing
 
+First-time setup:
+
 ```bash
-cd ~/tom.quest/tom-quest-api
+cd ~/tom.quest/turing-api
 pip install -r requirements.txt
 ```
 
-Create a `.env` file:
+Create a `.env` file (or scp `secrets/turing-api.env` from your dev machine):
 
 ```
-CONVEX_SITE_URL=https://<prod-deployment>.convex.site
-TURING_REGISTRATION_SECRET=<same secret as Convex env>
+TURING_API_KEY=<same value as in next.env and convex.env>
 ```
 
-Run:
+Set up a named cloudflared tunnel pointed at the API's local port (one-time):
 
 ```bash
-python main.py
+cloudflared tunnel login
+cloudflared tunnel create turing-api
+cloudflared tunnel route dns turing-api turing.tom.quest
+
+# ~/.cloudflared/config.yml — substitute the tunnel UUID printed by `create`:
+# tunnel: <uuid>
+# credentials-file: /home/<user>/.cloudflared/<uuid>.json
+# ingress:
+#   - hostname: turing.tom.quest
+#     service: http://localhost:8000
+#   - service: http_status:404
 ```
 
-The tunnel starts automatically and registers with Convex. The connection key is printed to the console; enter it on `tom.quest/turing` to link the connection (or it auto-links to Tom on registration).
+Run the API and the tunnel side by side. Two screens / tmux windows works fine:
+
+```bash
+# window 1
+python main.py
+
+# window 2
+cloudflared tunnel run turing-api
+```
 
 ### Updating on Turing
 
 ```bash
 cd ~/tom.quest && git pull
-cd tom-quest-api && python main.py
+# kill and restart the python process; cloudflared keeps running
+cd turing-api && python main.py
 ```

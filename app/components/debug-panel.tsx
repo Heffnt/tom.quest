@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useConvexConnectionState } from "convex/react";
 import { getUsername, useAuth } from "../lib/auth";
 import { debug } from "../lib/debug";
+import { useServer } from "../lib/hooks/use-server";
 import { uiSnapshot, useUIStore } from "../lib/stores/ui-store";
 
 function formatConnectionState(value: unknown): string {
@@ -27,10 +28,6 @@ function useViewport() {
   return viewport;
 }
 
-function compactJson(value: unknown): string {
-  return JSON.stringify(value);
-}
-
 function useDebugVersion(): number {
   const [version, setVersion] = useState(debug.getVersion());
   useEffect(() => debug.subscribe(() => setVersion(debug.getVersion())), []);
@@ -42,6 +39,7 @@ export default function DebugPanel() {
   const { user, role, isTom } = useAuth();
   const connectionState = useConvexConnectionState();
   const viewport = useViewport();
+  const turing = useServer("turing");
   useDebugVersion();
   const events = debug.getConsoleEvents();
   const debugOpen = useUIStore((state) => state.debugOpen);
@@ -56,15 +54,36 @@ export default function DebugPanel() {
   }, []);
 
   useEffect(() => {
-    debug.registerState("diagnostics", () => ({
-      auth: authLabel,
-      convex: convexLabel,
-      viewport,
+    debug.registerState("identity", () => ({ auth: authLabel }));
+    return () => debug.unregisterState("identity");
+  }, [authLabel]);
+
+  useEffect(() => {
+    debug.registerState("convex", () => ({ state: convexLabel }));
+    return () => debug.unregisterState("convex");
+  }, [convexLabel]);
+
+  useEffect(() => {
+    debug.registerState("viewport", () => ({
+      size: viewport,
       ua: typeof navigator === "undefined" ? "unknown" : navigator.userAgent,
-      ui: compactJson(uiSnapshot()),
     }));
-    return () => debug.unregisterState("diagnostics");
-  }, [authLabel, convexLabel, viewport]);
+    return () => debug.unregisterState("viewport");
+  }, [viewport]);
+
+  useEffect(() => {
+    debug.registerState("ui", () => uiSnapshot());
+    return () => debug.unregisterState("ui");
+  }, []);
+
+  useEffect(() => {
+    debug.registerState("turing", () => ({
+      connected: turing.status.connected,
+      fresh: turing.status.fresh,
+      error: turing.status.error,
+    }));
+    return () => debug.unregisterState("turing");
+  }, [turing.status.connected, turing.status.fresh, turing.status.error]);
 
   if (!isTom) return null;
 

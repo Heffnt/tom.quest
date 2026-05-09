@@ -48,17 +48,18 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 ## Turing Proxy
 
-- A FastAPI worker (`tom-quest-api/`) on the WPI Turing cluster exposes GPU/job/terminal APIs.
-- `cloudflared` creates a quick tunnel; the worker registers the tunnel URL with Convex via an HTTP action authenticated by `TURING_REGISTRATION_SECRET`.
-- Convex auto-links the connection to the Tom user on registration.
-- Next.js API routes (`app/api/turing/[...path]/route.ts`) look up the tunnel URL from Convex and proxy requests to the worker.
+- The Turing API (`turing-api/`) is a FastAPI service running on the WPI Turing cluster, exposing GPU/job/terminal endpoints.
+- A named cloudflared tunnel maps `turing.tom.quest` to the API's local port (stable URL, not a quick tunnel).
+- Next.js API routes (`app/api/turing/[...path]/route.ts`) read `TURING_API_URL` from env and forward requests through `forwardToTuringApi`, attaching the `X-API-Key` header. The shared key never leaves Vercel.
+- Terminal WebSockets open directly from the browser to `wss://turing.tom.quest` after admins fetch a short-lived HMAC token from `/api/turing/ws-credentials`.
+- Liveness is owned by a Convex cron (`internal.serverHealth.pollTuring`) that probes `/health` and writes to the `serverHealth` table; `useServer("turing").status` reads it.
 - The proxy detects HTML/non-JSON upstream responses and converts them to structured JSON errors.
 
 ## Deployment
 
+- **One Convex deployment.** Prod is the only deployment; there is no separate dev. `next dev` runs locally against prod Convex. Function and schema changes go live only on explicit `npx convex deploy`. Trade-off accepted because tom.quest is a personal project; see [[philosophy/personal-project-pragmatism]] and [[principles/single-deployment]] in the wiki.
 - Vercel builds via `npx convex deploy --cmd 'pnpm build'`, which pushes Convex functions to prod and then builds Next.js.
-- Required Vercel env vars: `NEXT_PUBLIC_CONVEX_URL`, `NEXT_PUBLIC_CONVEX_SITE_URL`, `CONVEX_DEPLOY_KEY`, Sentry vars.
-- Required Convex env vars (set via `npx convex env set --prod`): `SITE_URL`, `JWT_PRIVATE_KEY`, `JWKS`, `TOM_SETUP_SECRET`, `TURING_REGISTRATION_SECRET`.
+- **Secrets live in `secrets/`.** `secrets/next.env` is the source of truth for Vercel prod env (mirrored to `.env.local`); `secrets/convex.env` is the source of truth for Convex prod env. `pnpm secrets:sync` pushes both. `pnpm secrets:init` is a one-time pull. Never edit Vercel or Convex env directly. See [[principles/single-source-secrets]].
 
 ## Debugging And Observability
 
@@ -83,7 +84,8 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 ## Verification
 
-- `pnpm dev:all` starts Next.js and Convex dev servers.
+- `pnpm dev:all` starts Next.js (against prod Convex) plus a `convex dev` watcher for typegen.
+- `pnpm secrets:sync` pushes `secrets/*.env` to Vercel + Convex and refreshes `.env.local`.
 - `pnpm build` verifies the production build.
 - `pnpm test` runs Vitest unit/component tests.
 - `pnpm test:e2e` runs Playwright E2E tests.

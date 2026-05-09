@@ -33,6 +33,7 @@ export async function requireViewerId(ctx: AuthCtx): Promise<Id<"users">> {
   return userId;
 }
 
+
 export async function requireViewer(ctx: AuthCtx): Promise<{
   userId: Id<"users">;
   user: Doc<"users"> | null;

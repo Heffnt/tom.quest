@@ -44,7 +44,7 @@ const SEED_PROFILES: ProjectProfile[] = [
     ],
   },
   {
-    dir: "/home/ntheffernan/tom.quest/tom-quest-api",
+    dir: "/home/ntheffernan/tom.quest/turing-api",
     label: "tom.Quest API",
     configs: [
       { name: "api", commands: ["python main.py"] },

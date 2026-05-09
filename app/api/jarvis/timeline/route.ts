@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
-import { currentDayKey, extractTimedEntries, parseMarkdownSections, pathExists, requireTom, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
+import { currentDayKey, extractTimedEntries, parseMarkdownSections, pathExists, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
+import { requireTom } from "@/app/lib/convex-server";
 
 function shiftDay(dayKey: string, delta: number) {
   const d = new Date(`${dayKey}T00:00:00Z`);
@@ -9,9 +10,8 @@ function shiftDay(dayKey: string, delta: number) {
 }
 
 export async function GET(request: NextRequest) {
-  if (!(await requireTom(request))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
   const { searchParams } = new URL(request.url);
   const center = searchParams.get("center") || currentDayKey();
   const days = Math.max(1, Math.min(9, Number(searchParams.get("days") || "5")));

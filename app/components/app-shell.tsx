@@ -2,7 +2,7 @@
 
 import { useMemo, type CSSProperties, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import QuestNav from "./quest-nav";
+import NavTerm from "./nav-term";
 import DebugPanel from "./debug-panel";
 import { useAuth } from "../lib/auth";
 import { useUIStore } from "../lib/stores/ui-store";
@@ -36,7 +36,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     <>
       {!isHome && (
         <header>
-          <QuestNav offsets={navOffsets} />
+          <NavTerm offsets={navOffsets} />
         </header>
       )}
       <main className={mainClassName} style={mainStyle}>

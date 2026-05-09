@@ -1,16 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import {
-  WORKSPACE_ROOT,
-  requireTom,
-  resolveWorkspacePath,
-} from "@/app/api/jarvis/_utils";
+import { WORKSPACE_ROOT, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
+import { requireTom } from "@/app/lib/convex-server";
 
 export async function GET(request: NextRequest) {
-  if (!(await requireTom(request))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
 
   const { searchParams } = new URL(request.url);
   const action = searchParams.get("action") || "read";
@@ -54,9 +50,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  if (!(await requireTom(request))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const auth = await requireTom(request);
+  if (auth instanceof Response) return auth;
   const body = (await request.json().catch(() => null)) as { path?: string; content?: string } | null;
   if (!body?.path || typeof body.content !== "string") {
     return NextResponse.json({ error: "Missing path or content" }, { status: 400 });
