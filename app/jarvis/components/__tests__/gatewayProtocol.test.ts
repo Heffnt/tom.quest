@@ -291,4 +291,76 @@ describe("gatewayProtocol", () => {
     expect(usageCostResult.days).toBe(7);
     expect(sessionsUsageResult.sessions).toEqual([]);
   });
+
+  it("calls today read and write socket methods with daily state params", async () => {
+    const protocol = await import("@/app/jarvis/components/gatewayProtocol");
+    const readCall = createCallStub({
+      date: "2026-05-09",
+      path: "memory/2026-05-09.md",
+      title: "2026-05-09",
+      orderedSections: ["Activities"],
+      sections: { Activities: "Worked on tom.Quest" },
+    });
+    const writeCall = createCallStub({
+      ok: true,
+      path: "memory/2026-05-09.md",
+      content: "# 2026-05-09\n",
+    });
+
+    const today = await protocol.todayRead(readCall, { date: "2026-05-09" });
+    const saved = await protocol.todayWrite(writeCall, {
+      date: "2026-05-09",
+      title: "2026-05-09",
+      orderedSections: ["Activities"],
+      sections: { Activities: "Worked on tom.Quest" },
+    });
+
+    expect(readCall).toHaveBeenCalledWith("today.read", { date: "2026-05-09" });
+    expect(writeCall).toHaveBeenCalledWith("today.write", {
+      date: "2026-05-09",
+      title: "2026-05-09",
+      orderedSections: ["Activities"],
+      sections: { Activities: "Worked on tom.Quest" },
+    });
+    expect(today.sections.Activities).toBe("Worked on tom.Quest");
+    expect(saved.ok).toBe(true);
+  });
+
+  it("calls timeline, workspace, and status summary socket methods", async () => {
+    const protocol = await import("@/app/jarvis/components/gatewayProtocol");
+    const timelineCall = createCallStub({
+      center: "2026-05-09",
+      days: [],
+    });
+    const listCall = createCallStub({
+      prefix: "memory",
+      entries: [{ path: "memory/tom-facts.md", name: "tom-facts.md", type: "file" }],
+    });
+    const readCall = createCallStub({
+      path: "memory/tom-facts.md",
+      content: "facts",
+    });
+    const writeCall = createCallStub({
+      ok: true,
+      path: "memory/tom-facts.md",
+    });
+    const statusCall = createCallStub({
+      today: "2026-05-09",
+      codex: { configured: true, label: "Codex configured" },
+      localUsage: { today: null },
+    });
+
+    await protocol.timelineRead(timelineCall, { center: "2026-05-09", days: 5 });
+    await protocol.workspaceList(listCall, "memory");
+    await protocol.workspaceRead(readCall, "memory/tom-facts.md");
+    await protocol.workspaceWrite(writeCall, "memory/tom-facts.md", "facts");
+    const status = await protocol.statusSummary(statusCall);
+
+    expect(timelineCall).toHaveBeenCalledWith("timeline.read", { center: "2026-05-09", days: 5 });
+    expect(listCall).toHaveBeenCalledWith("workspace.list", { prefix: "memory" });
+    expect(readCall).toHaveBeenCalledWith("workspace.read", { path: "memory/tom-facts.md" });
+    expect(writeCall).toHaveBeenCalledWith("workspace.write", { path: "memory/tom-facts.md", content: "facts" });
+    expect(statusCall).toHaveBeenCalledWith("status.summary", undefined);
+    expect(status.codex?.configured).toBe(true);
+  });
 });

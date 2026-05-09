@@ -255,6 +255,89 @@ export type SessionsUsageResult = {
   aggregates: Record<string, unknown>;
 };
 
+export type TodayResult = {
+  date: string;
+  path: string;
+  title: string;
+  raw?: string;
+  orderedSections: string[];
+  sections: Record<string, string>;
+};
+
+export type TodayWriteParams = {
+  date: string;
+  title?: string;
+  orderedSections?: string[];
+  sections: Record<string, string>;
+};
+
+export type TodayWriteResult = {
+  ok: true;
+  path: string;
+  content?: string;
+};
+
+export type TimelineEntry = {
+  timeLabel: string | null;
+  minutes: number | null;
+  text: string;
+};
+
+export type TimelineDay = {
+  date: string;
+  title: string;
+  path?: string;
+  exists: boolean;
+  timedActivities: TimelineEntry[];
+  timedMeals: TimelineEntry[];
+  timedSocial: TimelineEntry[];
+  sections: {
+    activities: string[];
+    meals: string[];
+    mood: string[];
+    social: string[];
+    substances: string[];
+  };
+};
+
+export type TimelineResult = {
+  center: string;
+  days: TimelineDay[];
+};
+
+export type WorkspaceEntry = {
+  path: string;
+  name: string;
+  type: "file" | "dir";
+  size?: number;
+};
+
+export type WorkspaceListResult = {
+  prefix: string;
+  entries: WorkspaceEntry[];
+};
+
+export type WorkspaceReadResult = {
+  path: string;
+  content: string;
+};
+
+export type WorkspaceWriteResult = {
+  ok: true;
+  path: string;
+};
+
+export type StatusSummaryResult = {
+  today?: string;
+  codex?: { configured?: boolean; auth?: string | null; label?: string | null };
+  anthropic?: { configured?: boolean; auth?: string | null; label?: string | null };
+  providerCosts?: Record<string, unknown>;
+  localUsage?: {
+    today?: { estimatedCostUsd?: number; totalTokens?: number } | null;
+    summary?: Record<string, unknown> | null;
+  };
+};
+
 type Check = [label: string, check: (value: unknown) => boolean];
 
 const protoLog = debug.scoped("gw.proto");
@@ -496,5 +579,62 @@ export async function sessionsUsage(call: CallFn, params?: Record<string, unknow
     ["sessions array", (value) => hasArray(value, "sessions")],
     ["totals object", (value) => isRecord(value) && isRecord(value.totals)],
     ["aggregates object", (value) => isRecord(value) && isRecord(value.aggregates)],
+  ]);
+}
+
+export async function todayRead(call: CallFn, params?: { date?: string }) {
+  const result = await call("today.read", params);
+  return assertShape<TodayResult>("today.read", result, [
+    ["date string", (value) => hasString(value, "date")],
+    ["path string", (value) => hasString(value, "path")],
+    ["orderedSections array", (value) => hasArray(value, "orderedSections")],
+    ["sections object", (value) => isRecord(value) && isRecord(value.sections)],
+  ]);
+}
+
+export async function todayWrite(call: CallFn, params: TodayWriteParams) {
+  const result = await call("today.write", params);
+  return assertShape<TodayWriteResult>("today.write", result, [
+    ["ok true", (value) => isRecord(value) && value.ok === true],
+    ["path string", (value) => hasString(value, "path")],
+  ]);
+}
+
+export async function timelineRead(call: CallFn, params?: { center?: string; days?: number }) {
+  const result = await call("timeline.read", params);
+  return assertShape<TimelineResult>("timeline.read", result, [
+    ["center string", (value) => hasString(value, "center")],
+    ["days array", (value) => hasArray(value, "days")],
+  ]);
+}
+
+export async function workspaceList(call: CallFn, prefix: string) {
+  const result = await call("workspace.list", { prefix });
+  return assertShape<WorkspaceListResult>("workspace.list", result, [
+    ["prefix string", (value) => hasString(value, "prefix")],
+    ["entries array", (value) => hasArray(value, "entries")],
+  ]);
+}
+
+export async function workspaceRead(call: CallFn, path: string) {
+  const result = await call("workspace.read", { path });
+  return assertShape<WorkspaceReadResult>("workspace.read", result, [
+    ["path string", (value) => hasString(value, "path")],
+    ["content string", (value) => hasString(value, "content")],
+  ]);
+}
+
+export async function workspaceWrite(call: CallFn, path: string, content: string) {
+  const result = await call("workspace.write", { path, content });
+  return assertShape<WorkspaceWriteResult>("workspace.write", result, [
+    ["ok true", (value) => isRecord(value) && value.ok === true],
+    ["path string", (value) => hasString(value, "path")],
+  ]);
+}
+
+export async function statusSummary(call: CallFn) {
+  const result = await call("status.summary", undefined);
+  return assertShape<StatusSummaryResult>("status.summary", result, [
+    ["object response", isRecord],
   ]);
 }

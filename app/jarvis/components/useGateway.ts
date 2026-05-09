@@ -24,6 +24,7 @@ type GatewayContextValue = {
   pairingRequired: boolean;
   error: string | null;
   reconnect: () => void;
+  call: protocol.CallFn;
   subscribe: (event: string, cb: (payload: unknown) => void) => () => void;
   health: BoundMethod<typeof protocol.health>;
   status: BoundMethod<typeof protocol.status>;
@@ -45,6 +46,13 @@ type GatewayContextValue = {
   logsTail: BoundMethod<typeof protocol.logsTail>;
   usageCost: BoundMethod<typeof protocol.usageCost>;
   sessionsUsage: BoundMethod<typeof protocol.sessionsUsage>;
+  todayRead: BoundMethod<typeof protocol.todayRead>;
+  todayWrite: BoundMethod<typeof protocol.todayWrite>;
+  timelineRead: BoundMethod<typeof protocol.timelineRead>;
+  workspaceList: BoundMethod<typeof protocol.workspaceList>;
+  workspaceRead: BoundMethod<typeof protocol.workspaceRead>;
+  workspaceWrite: BoundMethod<typeof protocol.workspaceWrite>;
+  statusSummary: BoundMethod<typeof protocol.statusSummary>;
 };
 
 const GatewayContext = createContext<GatewayContextValue | null>(null);
@@ -108,6 +116,7 @@ export function GatewayProvider({
     pairingRequired: connection?.pairingRequired ?? false,
     error: connection?.error ?? null,
     reconnect,
+    call,
     subscribe,
     health: (...args) => protocol.health(call, ...args),
     status: (...args) => protocol.status(call, ...args),
@@ -129,13 +138,24 @@ export function GatewayProvider({
     logsTail: (...args) => protocol.logsTail(call, ...args),
     usageCost: (...args) => protocol.usageCost(call, ...args),
     sessionsUsage: (...args) => protocol.sessionsUsage(call, ...args),
+    todayRead: (...args) => protocol.todayRead(call, ...args),
+    todayWrite: (...args) => protocol.todayWrite(call, ...args),
+    timelineRead: (...args) => protocol.timelineRead(call, ...args),
+    workspaceList: (...args) => protocol.workspaceList(call, ...args),
+    workspaceRead: (...args) => protocol.workspaceRead(call, ...args),
+    workspaceWrite: (...args) => protocol.workspaceWrite(call, ...args),
+    statusSummary: (...args) => protocol.statusSummary(call, ...args),
   }), [call, connection?.connected, connection?.error, connection?.pairingRequired, reconnect, subscribe]);
 
   return createElement(GatewayContext.Provider, { value }, children);
 }
 
+export function useOptionalGateway() {
+  return useContext(GatewayContext);
+}
+
 export function useGateway() {
-  const context = useContext(GatewayContext);
+  const context = useOptionalGateway();
   if (!context) {
     throw new Error("useGateway must be used within a GatewayProvider");
   }
