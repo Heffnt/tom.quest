@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/app/lib/convex-server";
-import { proxyToTuring } from "@/app/lib/turing";
+import { forwardToTuringApi } from "@/app/lib/turing";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
@@ -28,7 +28,7 @@ async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "D
   }
 
   try {
-    const res = await proxyToTuring(request, upstreamPath, init);
+    const res = await forwardToTuringApi(request, upstreamPath, init);
     const contentType = res.headers.get("content-type") ?? "";
     const text = await res.text();
     const looksLikeHtml = /^\s*(?:<!doctype html|<html)/i.test(text);

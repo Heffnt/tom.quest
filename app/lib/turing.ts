@@ -15,7 +15,7 @@ export async function getTunnelUrl(request: Request): Promise<{ url: string; key
   return { url, key };
 }
 
-export async function proxyToTuring(request: Request, path: string, init?: RequestInit): Promise<Response> {
+export async function forwardToTuringApi(request: Request, path: string, init?: RequestInit): Promise<Response> {
   const token = bearerToken(request);
   if (!token) return new Response("Authentication required", { status: 401 });
   const { url, key } = await loadTuringConnection(token);

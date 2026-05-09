@@ -43,8 +43,8 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - User-facing URLs follow `tom.quest/{slug}`.
 - Avoid query params, hash fragments, or nested prefixes for top-level quests.
 - Dynamic segments are only for naturally dynamic resources, such as `/turing/terminal/[session]`.
-- Quest visibility is role-gated via each quest's `visibility` field: `public`, `authenticated`, `admin`, or `tom`.
-- Quest metadata lives in `app/components/quest-routes.ts`.
+- Page visibility is role-gated via each page's `visibility` field: `public`, `authenticated`, `admin`, or `tom`.
+- Page metadata lives in `app/components/page-routes.ts`.
 
 ## Turing Proxy
 
