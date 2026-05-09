@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { useAuth } from "@/app/lib/auth";
 import { useTuringMutation } from "@/app/lib/hooks/use-turing";
 import { Job, gpuTypeLabel } from "../types";
-import TerminalModal from "./terminal-modal";
 
 interface JobTableProps {
   data: Job[] | null;
@@ -15,6 +15,18 @@ interface JobTableProps {
 }
 
 const TERMINAL_STATUSES = new Set(["CANCELLED", "FAILED", "TIMEOUT", "COMPLETED"]);
+
+const TerminalModal = dynamic(() => import("./terminal-modal"), {
+  ssr: false,
+  loading: () => (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="relative rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-muted">
+        Loading terminal...
+      </div>
+    </div>
+  ),
+});
 
 function getJobStatusCategory(status: string): "error" | "waiting" | "running" {
   const upper = status.toUpperCase();

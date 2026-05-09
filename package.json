@@ -12,7 +12,16 @@
     "jarvis:device": "node scripts/generate-jarvis-device-identity.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:pages": "vitest run app/components/page-routes.test.ts && playwright test e2e/page-visibility.spec.ts",
+    "test:auth": "playwright test e2e/auth-flow.spec.ts",
+    "test:jarvis": "vitest run app/jarvis/components/__tests__ app/api/jarvis/config/route.test.ts",
+    "test:turing": "vitest run convex/convex.test.ts",
+    "test:observability": "vitest run app/lib/__tests__/debug.test.ts",
+    "check:auth-boundary": "node scripts/check-auth-boundary.mjs",
+    "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
+    "check:secrets": "gitleaks detect --source . --no-banner --redact",
+    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.92",
