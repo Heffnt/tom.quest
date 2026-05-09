@@ -69,8 +69,8 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
       };
   }, [viewer]);
   const role = user?.role ?? "user";
-  const isAdmin = role === "admin" || role === "tom";
-  const isTom = role === "tom";
+  const isAdmin = viewer?.isAdmin ?? false;
+  const isTom = viewer?.isTom ?? false;
   const loading = !convexAuth.isLoading && convexAuth.isAuthenticated ? viewer === undefined : convexAuth.isLoading;
 
   const signIn = async (username: string, password: string) => {

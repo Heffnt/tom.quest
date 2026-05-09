@@ -1,26 +1,9 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import { requireViewer, requireViewerId } from "./authRoles";
 
 const STALE_AFTER_MS = 5 * 60 * 1000;
-
-async function requireUser(ctx: QueryCtx | MutationCtx) {
-  const userId = await getAuthUserId(ctx);
-  if (!userId) throw new Error("Authentication required");
-  return userId;
-}
-
-async function viewerRole(ctx: QueryCtx | MutationCtx) {
-  const userId = await getAuthUserId(ctx);
-  if (!userId) return "user";
-  const user = await ctx.db.get(userId);
-  return user?.role ?? "user";
-}
-
-function isAdminRole(role: string): boolean {
-  return role === "admin" || role === "tom";
-}
 
 function isFresh(lastHeartbeat: number): boolean {
   return Date.now() - lastHeartbeat <= STALE_AFTER_MS;
@@ -66,7 +49,7 @@ export const registerConnectionFromWorker = internalMutation({
 export const connectionForViewer = query({
   args: {},
   handler: async (ctx) => {
-    const userId = await requireUser(ctx);
+    const userId = await requireViewerId(ctx);
     const connection = await ctx.db
       .query("turingConnections")
       .withIndex("by_user_id", (q) => q.eq("userId", userId))
@@ -84,9 +67,8 @@ export const connectionForViewer = query({
 export const linkConnection = mutation({
   args: { connectionKey: v.string() },
   handler: async (ctx, { connectionKey }) => {
-    const userId = await requireUser(ctx);
-    const role = await viewerRole(ctx);
-    if (!isAdminRole(role)) throw new Error("Admin access required");
+    const { userId, access } = await requireViewer(ctx);
+    if (!access.isAdmin) throw new Error("Admin access required");
     const connection = await ctx.db
       .query("turingConnections")
       .withIndex("by_connection_key", (q) => q.eq("connectionKey", connectionKey))
@@ -106,9 +88,8 @@ export const linkConnection = mutation({
 export const unlinkConnection = mutation({
   args: {},
   handler: async (ctx) => {
-    const userId = await requireUser(ctx);
-    const role = await viewerRole(ctx);
-    if (!isAdminRole(role)) throw new Error("Admin access required");
+    const { userId, access } = await requireViewer(ctx);
+    if (!access.isAdmin) throw new Error("Admin access required");
     const existing = await ctx.db
       .query("turingConnections")
       .withIndex("by_user_id", (q) => q.eq("userId", userId))
@@ -120,9 +101,8 @@ export const unlinkConnection = mutation({
 export const tunnelForViewer = query({
   args: {},
   handler: async (ctx) => {
-    const userId = await requireUser(ctx);
-    const role = await viewerRole(ctx);
-    if (!isAdminRole(role)) throw new Error("Admin access required");
+    const { userId, access } = await requireViewer(ctx);
+    if (!access.isAdmin) throw new Error("Admin access required");
     const connection = await ctx.db
       .query("turingConnections")
       .withIndex("by_user_id", (q) => q.eq("userId", userId))

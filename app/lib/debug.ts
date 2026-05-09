@@ -1,6 +1,12 @@
 type DebugFields = Record<string, unknown>;
 type DebugStateProvider = () => DebugFields;
 
+export type ConsoleDiagnosticEvent = {
+  level: "error" | "warn";
+  message: string;
+  timestamp: number;
+};
+
 export type DebugRequestOptions = {
   dedupeSuccessForMs?: number;
   defer?: boolean;
@@ -17,12 +23,14 @@ export type DebugLogger = {
 };
 
 const MAX_LINES = 200;
+const MAX_CONSOLE_EVENTS = 10;
 const MAX_INLINE_VALUE_CHARS = 100;
 const MAX_PREVIEW_DEPTH = 2;
-const SENSITIVE_KEY_PATTERN = /(token|password|signature|privatekey|secret)/i;
 
 let lines: string[] = [];
+let consoleEvents: ConsoleDiagnosticEvent[] = [];
 let version = 0;
+let consoleCaptureInstalled = false;
 
 const subscribers = new Set<() => void>();
 const stateProviders = new Map<string, DebugStateProvider>();
@@ -36,12 +44,21 @@ function formatTimestamp(date = new Date()): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
 }
 
-function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEY_PATTERN.test(key);
+function redactionLabelForKey(key: string): string | null {
+  const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (normalized.includes("turing") && normalized.includes("key")) return "turing-api-key";
+  if (normalized.includes("apikey")) return "api-key";
+  if (normalized.includes("privatekey")) return "private-key";
+  if (normalized.includes("password")) return "password";
+  if (normalized.includes("signature")) return "signature";
+  if (normalized.includes("token")) return "token";
+  if (normalized.includes("secret")) return "secret";
+  return null;
 }
 
 function sanitizePreview(value: unknown, keyHint?: string, depth = 0, seen = new WeakSet<object>()): unknown {
-  if (keyHint && isSensitiveKey(keyHint)) return "[redacted]";
+  const redactionLabel = keyHint ? redactionLabelForKey(keyHint) : null;
+  if (redactionLabel) return `[redacted: ${redactionLabel}]`;
   if (value instanceof Error) return value.message;
   if (value === null || value === undefined) return value;
   if (typeof value === "string") return value;
@@ -71,8 +88,8 @@ function truncateText(value: string, maxChars = MAX_INLINE_VALUE_CHARS): string 
   return `${value.slice(0, maxChars - 1)}…`;
 }
 
-function formatInlineValue(value: unknown): string {
-  const sanitized = sanitizePreview(value);
+function formatInlineValue(value: unknown, keyHint?: string): string {
+  const sanitized = sanitizePreview(value, keyHint);
   if (sanitized === null) return "null";
   if (sanitized === undefined) return "";
   if (typeof sanitized === "string") {
@@ -91,7 +108,7 @@ function formatFields(data?: DebugFields): string {
   const parts: string[] = [];
   for (const [key, value] of Object.entries(data)) {
     if (value === undefined) continue;
-    const formatted = formatInlineValue(value);
+    const formatted = formatInlineValue(value, key);
     if (!formatted) continue;
     parts.push(`${key}=${formatted}`);
   }
@@ -111,6 +128,27 @@ function emit() {
 function pushLine(line: string) {
   lines = [...lines, line].slice(-MAX_LINES);
   emit();
+}
+
+function formatConsoleArgs(args: unknown[]): string {
+  return args
+    .map((arg) => {
+      if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+      if (typeof arg === "string") return arg;
+      try {
+        return JSON.stringify(sanitizePreview(arg));
+      } catch {
+        return String(arg);
+      }
+    })
+    .join(" ");
+}
+
+function captureConsoleEvent(level: ConsoleDiagnosticEvent["level"], args: unknown[]) {
+  const message = formatConsoleArgs(args);
+  const event = { level, message, timestamp: Date.now() };
+  consoleEvents = [...consoleEvents, event].slice(-MAX_CONSOLE_EVENTS);
+  pushLine(buildLine("console", level, { message }));
 }
 
 function clearSuccessCacheFor(source: string, method: string) {
@@ -208,6 +246,12 @@ export function snapshot(): string {
       header.push(`${key}: ERROR ${message}`);
     }
   }
+  if (consoleEvents.length > 0) {
+    header.push(
+      "console:",
+      ...consoleEvents.slice(-5).map((event) => `  ${event.level}: ${event.message}`),
+    );
+  }
   if (lines.length === 0) {
     header.push("", "No debug output yet.");
     return header.join("\n");
@@ -217,6 +261,7 @@ export function snapshot(): string {
 
 export function clear() {
   lines = [];
+  consoleEvents = [];
   successDedupeCache.clear();
   emit();
 }
@@ -234,6 +279,25 @@ export function getLines(): readonly string[] {
   return lines;
 }
 
+export function getConsoleEvents(): readonly ConsoleDiagnosticEvent[] {
+  return consoleEvents;
+}
+
+export function installConsoleCapture() {
+  if (consoleCaptureInstalled || typeof window === "undefined") return;
+  consoleCaptureInstalled = true;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  console.error = (...args: unknown[]) => {
+    captureConsoleEvent("error", args);
+    originalError(...args);
+  };
+  console.warn = (...args: unknown[]) => {
+    captureConsoleEvent("warn", args);
+    originalWarn(...args);
+  };
+}
+
 export const debug = {
   scoped,
   registerState,
@@ -243,4 +307,6 @@ export const debug = {
   subscribe,
   getVersion,
   getLines,
+  getConsoleEvents,
+  installConsoleCapture,
 };

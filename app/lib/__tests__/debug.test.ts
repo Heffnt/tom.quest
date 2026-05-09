@@ -71,4 +71,39 @@ describe("debug core", () => {
     expect(snapshot).toContain("alpha: status=ok");
     expect(snapshot).toContain("[alpha] hello");
   });
+
+  it("redacts sensitive fields with descriptive labels", () => {
+    debug.scoped("secrets").log("payload", {
+      token: "abc",
+      turingApiKey: "cluster-key",
+      nested: {
+        password: "pw",
+        privateKey: "key",
+      },
+    });
+
+    const line = debug.getLines()[0];
+    expect(line).toContain('token="[redacted: token]"');
+    expect(line).toContain('turingApiKey="[redacted: turing-api-key]"');
+    expect(line).toContain('"password":"[redacted: password]"');
+    expect(line).toContain('"privateKey":"[redacted: private-key]"');
+    expect(line).not.toContain("cluster-key");
+  });
+
+  it("captures console warnings in debug snapshots", () => {
+    const originalWarn = console.warn;
+    console.warn = vi.fn();
+    try {
+      debug.installConsoleCapture();
+      console.warn("careful", { token: "abc" });
+
+      const snapshot = debug.snapshot();
+      expect(snapshot).toContain("console:");
+      expect(snapshot).toContain("warn: careful");
+      expect(snapshot).toContain('"token":"[redacted: token]"');
+      expect(snapshot).not.toContain("abc");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import TomLogo from "./tom-logo";
-import TomSymbol, { TOM_SYMBOL_VB } from "./tom-symbol";
+import TomQuestSymbol from "./tom-quest-symbol";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -138,14 +138,7 @@ export default function QuestNav({
   }, [open]);
 
   const dockedLogo = compact ? (
-    <svg
-      viewBox={`0 0 ${TOM_SYMBOL_VB.w} ${TOM_SYMBOL_VB.h}`}
-      width={32}
-      height={32 * (TOM_SYMBOL_VB.h / TOM_SYMBOL_VB.w)}
-      style={{ color: "var(--color-accent)", display: "block", overflow: "visible" }}
-    >
-      <TomSymbol />
-    </svg>
+    <TomQuestSymbol size={32} />
   ) : (
     <TomLogo fontSize={compact ? 22 : 28} variant="plain" />
   );

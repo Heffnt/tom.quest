@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSeePage, PAGES, rankPages, type Page, type PageRole } from "./page-routes";
+import { canSeePage, rankPages, type Page, type PageRole } from "./page-routes";
 
 const page = (visibility: Page["visibility"]): Page => ({
   slug: visibility,

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useConvexConnectionState } from "convex/react";
 import { getUsername, useAuth } from "../lib/auth";
-import { installConsoleDiagnostics, useDiagnosticsStore } from "../lib/stores/diagnostics-store";
+import { debug } from "../lib/debug";
 import { uiSnapshot, useUIStore } from "../lib/stores/ui-store";
 
 function formatConnectionState(value: unknown): string {
@@ -31,35 +31,40 @@ function compactJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function useDebugVersion(): number {
+  const [version, setVersion] = useState(debug.getVersion());
+  useEffect(() => debug.subscribe(() => setVersion(debug.getVersion())), []);
+  return version;
+}
+
 export default function DebugPanel() {
   const pathname = usePathname();
   const { user, role, isTom } = useAuth();
   const connectionState = useConvexConnectionState();
   const viewport = useViewport();
-  const events = useDiagnosticsStore((state) => state.events);
+  useDebugVersion();
+  const events = debug.getConsoleEvents();
   const debugOpen = useUIStore((state) => state.debugOpen);
   const debugWidth = useUIStore((state) => state.debugWidth);
   const closeDebug = useUIStore((state) => state.closeDebug);
   const setDebugWidth = useUIStore((state) => state.setDebugWidth);
+  const authLabel = user ? `${getUsername(user)} (role: ${role}, id: ${user.id})` : "signed out";
+  const convexLabel = formatConnectionState(connectionState);
 
   useEffect(() => {
-    installConsoleDiagnostics();
+    debug.installConsoleCapture();
   }, []);
 
-  const diagnostics = useMemo(() => {
-    const lines = [
-      `tom.quest debug | ${new Date().toISOString()}`,
-      `route: ${pathname}`,
-      `auth: ${user ? `${getUsername(user)} (role: ${role}, id: ${user.id})` : "signed out"}`,
-      `convex: ${formatConnectionState(connectionState)}`,
-      `viewport: ${viewport}`,
-      `ua: ${typeof navigator === "undefined" ? "unknown" : navigator.userAgent}`,
-      `ui: ${compactJson(uiSnapshot())}`,
-      `events (last ${Math.min(events.length, 5)}):`,
-      ...events.slice(-5).map((event) => `  - ${event.level}: ${event.message}`),
-    ];
-    return lines.join("\n");
-  }, [connectionState, events, pathname, role, user, viewport]);
+  useEffect(() => {
+    debug.registerState("diagnostics", () => ({
+      auth: authLabel,
+      convex: convexLabel,
+      viewport,
+      ua: typeof navigator === "undefined" ? "unknown" : navigator.userAgent,
+      ui: compactJson(uiSnapshot()),
+    }));
+    return () => debug.unregisterState("diagnostics");
+  }, [authLabel, convexLabel, viewport]);
 
   if (!isTom) return null;
 
@@ -93,7 +98,7 @@ export default function DebugPanel() {
                 <dl className="space-y-1 text-text-muted">
                   <div className="flex justify-between gap-3"><dt>route</dt><dd className="font-mono">{pathname}</dd></div>
                   <div className="flex justify-between gap-3"><dt>auth</dt><dd className="font-mono">{role}</dd></div>
-                  <div className="flex justify-between gap-3"><dt>convex</dt><dd className="font-mono">{formatConnectionState(connectionState)}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>convex</dt><dd className="font-mono">{convexLabel}</dd></div>
                   <div className="flex justify-between gap-3"><dt>viewport</dt><dd className="font-mono">{viewport}</dd></div>
                 </dl>
               </section>
@@ -113,7 +118,7 @@ export default function DebugPanel() {
               </section>
               <button
                 type="button"
-                onClick={() => navigator.clipboard.writeText(diagnostics)}
+                onClick={() => navigator.clipboard.writeText(debug.snapshot())}
                 className="w-full rounded-lg bg-accent px-3 py-2 font-medium text-bg hover:opacity-90"
               >
                 Copy diagnostics
