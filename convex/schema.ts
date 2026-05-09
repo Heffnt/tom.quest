@@ -45,4 +45,38 @@ export default defineSchema({
     timeMs: v.number(),
     createdAt: v.number(),
   }).index("by_time", ["timeMs"]),
+
+  canvases: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    html: v.string(),
+    activeChatId: v.optional(v.id("canvasChats")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_user_updated", ["userId", "updatedAt"]),
+
+  canvasChats: defineTable({
+    canvasId: v.id("canvases"),
+    userId: v.id("users"),
+    createdAt: v.number(),
+    lastActivityAt: v.number(),
+  })
+    .index("by_canvas_activity", ["canvasId", "lastActivityAt"])
+    .index("by_user", ["userId"]),
+
+  canvasMessages: defineTable({
+    chatId: v.id("canvasChats"),
+    canvasId: v.id("canvases"),
+    userId: v.id("users"),
+    kind: v.union(
+      v.literal("user"),
+      v.literal("assistant_text"),
+      v.literal("tool_call"),
+      v.literal("tool_result"),
+      v.literal("system_prompt"),
+      v.literal("error"),
+    ),
+    content: v.any(),
+    createdAt: v.number(),
+  }).index("by_chat_created", ["chatId", "createdAt"]),
 });

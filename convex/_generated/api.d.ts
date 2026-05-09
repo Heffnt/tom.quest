@@ -9,6 +9,8 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as authRoles from "../authRoles.js";
+import type * as canvas from "../canvas.js";
 import type * as http from "../http.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as turing from "../turing.js";
@@ -23,6 +25,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  authRoles: typeof authRoles;
+  canvas: typeof canvas;
   http: typeof http;
   symbolScores: typeof symbolScores;
   turing: typeof turing;
