@@ -24,6 +24,12 @@
 .DS_Store
 *.pem
 
+# python
+__pycache__/
+
+# claude code worktrees
+.claude/worktrees/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
