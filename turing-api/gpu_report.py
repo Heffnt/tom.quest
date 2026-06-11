@@ -19,7 +19,10 @@ UNAVAILABLE_STATE_TOKENS = {
     "RESERVED",
 }
 GPU_INDEX_PATTERN = re.compile(r"IDX:([^)]+)")
-NODE_SECTION_PATTERN = re.compile(r"Nodes=(\S+)(.*?)(?=Nodes=\S+|$)")
+# \b keeps this from also matching inside NumNodes=1, which produced a phantom
+# node named "1" that every /gpu-report request then tried to ssh into,
+# blocking the event loop and starving all other requests.
+NODE_SECTION_PATTERN = re.compile(r"\bNodes=(\S+)(.*?)(?=\bNodes=\S+|$)")
 GPU_COUNT_PATTERN = re.compile(r"gpu(?::[^:,\s()]+)?:(\d+)", re.IGNORECASE)
 GPU_ACTIVITY_TTL_SECONDS = 10
 NODE_INFO_TTL_SECONDS = 30

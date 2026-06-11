@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from gpu_report import (
     NodeInfo,
+    _parse_job_node_allocations,
     _parse_nvidia_smi_csv,
     _query_node_gpu_stats,
     aggregate_gpu_device_stats,
@@ -30,6 +31,24 @@ class GpuReportTest(unittest.TestCase):
                 "utilization_pct": 73,
             },
         )
+
+    def test_parse_job_node_allocations_ignores_numnodes_field(self) -> None:
+        scontrol_output = (
+            "JobId=123 JobName=train UserId=alice(1000) NumNodes=1 NumCPUs=8 "
+            "Nodes=compute-2-02 CPU_IDs=0-7 Mem=0 GRES=gpu:a100:1(IDX:0) TRES=gres/gpu=1"
+        )
+
+        def fake_run_stdout(cmd: str) -> str:
+            if cmd.startswith("scontrol show job"):
+                return scontrol_output
+            if cmd == "scontrol show hostnames compute-2-02":
+                return "compute-2-02\n"
+            return ""
+
+        with patch("gpu_report.run_stdout", side_effect=fake_run_stdout):
+            allocations = _parse_job_node_allocations("123", "compute-2-02", "gpu:1")
+
+        self.assertEqual([a["node_name"] for a in allocations], ["compute-2-02"])
 
     def test_node_gpu_stats_accepts_new_compute_node_host_keys(self) -> None:
         with patch("gpu_report.run", return_value=("0, 1024, 81920, 45, 0\n", "", 0)) as run:
