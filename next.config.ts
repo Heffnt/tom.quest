@@ -2,7 +2,9 @@ import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // pi-coding-agent ships native clipboard bindings (koffi) that Turbopack
+  // cannot bundle into server chunks; load it at runtime instead.
+  serverExternalPackages: ["@earendil-works/pi-coding-agent"],
 };
 
 export default withSentryConfig(nextConfig, {
