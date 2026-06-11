@@ -3,6 +3,7 @@ import re
 import shlex
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from shell import run, run_stdout
@@ -34,6 +35,7 @@ NVIDIA_SMI_QUERY = (
     f"nvidia-smi {NVIDIA_SMI_QUERY_ARGS}"
 )
 JOB_GPU_STATS_TIMEOUT_SECONDS = 8
+NODE_STATS_MAX_CONCURRENT_SSH = 8
 _GPU_ACTIVITY_CACHE_LOCK = threading.Lock()
 _GPU_ACTIVITY_CACHE: dict[str, object] = {
     "expires_at": 0.0,
@@ -397,19 +399,29 @@ def _has_gpu_stats(stats: dict) -> bool:
     return stats["memory_total_mb"] > 0 or stats["temperature_c"] is not None or stats["utilization_pct"] is not None
 
 
+def _query_single_node_gpu_stats(node_name: str) -> dict[int, dict] | None:
+    quoted_node = shlex.quote(node_name)
+    quoted_query = shlex.quote(NVIDIA_SMI_QUERY)
+    stdout, _, returncode = run(
+        f"ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+        f"-o ConnectTimeout=5 {quoted_node} {quoted_query}"
+    )
+    if returncode != 0:
+        return None
+    return _parse_nvidia_smi_csv(stdout)
+
+
 def _query_node_gpu_stats(node_names: set[str]) -> dict[str, dict[int, dict]]:
-    stats_by_node: dict[str, dict[int, dict]] = {}
-    for node_name in sorted(node_names):
-        quoted_node = shlex.quote(node_name)
-        quoted_query = shlex.quote(NVIDIA_SMI_QUERY)
-        stdout, _, returncode = run(
-            f"ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
-            f"-o ConnectTimeout=5 {quoted_node} {quoted_query}"
-        )
-        if returncode != 0:
-            continue
-        stats_by_node[node_name] = _parse_nvidia_smi_csv(stdout)
-    return stats_by_node
+    # SSH every node concurrently (bounded). Querying serially meant one slow
+    # or dead node (5s ConnectTimeout each) stacked into a multi-second stall
+    # per report; during the June 2026 outage a phantom node made every poll
+    # eat that stall and the API stopped answering.
+    names = sorted(node_names)
+    if not names:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(NODE_STATS_MAX_CONCURRENT_SSH, len(names))) as pool:
+        results = pool.map(_query_single_node_gpu_stats, names)
+    return {name: stats for name, stats in zip(names, results) if stats is not None}
 
 
 def get_job_gpu_stats(job_id: str) -> dict | None:

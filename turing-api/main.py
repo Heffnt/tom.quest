@@ -110,25 +110,31 @@ def resolve_allocation_count(request: AllocationRequest) -> int:
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
+# Endpoints below run blocking subprocess calls (squeue, scontrol, tmux, ssh to
+# compute nodes). They must be plain `def`, not `async def`: FastAPI runs sync
+# endpoints in a worker threadpool, while a blocking call inside `async def`
+# freezes the event loop and starves every other request, including /health.
+# That starvation took down the whole API during the June 2026 outage.
+
 @app.get("/gpu-report")
-async def gpu_report(auth: bool = Depends(verify_api_key)) -> dict:
+def gpu_report(auth: bool = Depends(verify_api_key)) -> dict:
     try:
         return format_gpu_report_v2()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GPU report failed: {str(e)}")
 
 @app.get("/gpu-types")
-async def gpu_types(auth: bool = Depends(verify_api_key)) -> dict:
+def gpu_types(auth: bool = Depends(verify_api_key)) -> dict:
     return {"types": get_free_gpu_type_info()}
 
 @app.get("/dirs")
-async def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
+def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
     if not path:
         path = get_home_dir()
     return list_directory(path)
 
 @app.get("/file")
-async def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
+def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
     expanded = os.path.expanduser(path)
     if not os.path.isfile(expanded):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
@@ -179,7 +185,7 @@ def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -
     )
 
 @app.get("/jobs", response_model=list[JobResponse])
-async def list_jobs(auth: bool = Depends(verify_api_key)) -> list[JobResponse]:
+def list_jobs(auth: bool = Depends(verify_api_key)) -> list[JobResponse]:
     jobs = get_user_jobs()
     return [
         JobResponse(
@@ -212,20 +218,20 @@ def delete_job(job_id: str, auth: bool = Depends(verify_api_key)) -> dict[str, o
     raise HTTPException(status_code=400, detail=error or f"Failed to cancel job {job_id}")
 
 @app.get("/sessions/{session_name}/output")
-async def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
+def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     output = capture_output(session_name, lines)
     return {"session_name": session_name, "output": output}
 
 @app.get("/sessions/{session_name}/clients", response_model=SessionClientsResponse)
-async def get_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> SessionClientsResponse:
+def get_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> SessionClientsResponse:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     return SessionClientsResponse(attached_clients=count_session_clients(session_name))
 
 @app.post("/sessions/{session_name}/detach-clients", response_model=DetachClientsResponse)
-async def post_detach_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> DetachClientsResponse:
+def post_detach_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> DetachClientsResponse:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     detached_clients = detach_session_clients(session_name)

@@ -1,3 +1,4 @@
+import time
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +58,21 @@ class GpuReportTest(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("StrictHostKeyChecking=accept-new", command)
         self.assertEqual(stats["gpu-1-01"][0]["memory_used_mb"], 1024)
+
+    def test_node_gpu_stats_queries_nodes_concurrently_and_skips_failures(self) -> None:
+        def slow_run(cmd: str) -> tuple[str, str, int]:
+            time.sleep(0.3)
+            if "gpu-dead" in cmd:
+                return "", "ssh: connect to host gpu-dead: timed out", 255
+            return "0, 1024, 81920, 45, 0\n", "", 0
+
+        with patch("gpu_report.run", side_effect=slow_run):
+            start = time.monotonic()
+            stats = _query_node_gpu_stats({"gpu-1-01", "gpu-1-02", "gpu-dead"})
+            elapsed = time.monotonic() - start
+
+        self.assertEqual(sorted(stats), ["gpu-1-01", "gpu-1-02"])
+        self.assertLess(elapsed, 0.6, "node ssh queries must run concurrently, not serially")
 
     def test_parse_nvidia_smi_csv_treats_unknown_errors_as_missing_values(self) -> None:
         device_stats = _parse_nvidia_smi_csv("0, [Unknown Error], 81920, [Unknown Error], 0\n")
