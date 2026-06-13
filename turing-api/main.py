@@ -94,6 +94,7 @@ class JobResponse(BaseModel):
     screen_name: str
     start_time: str
     end_time: str
+    job_name: str
     gpu_stats: JobGpuStatsResponse | None = None
 
 class RunCommandRequest(BaseModel):
@@ -207,6 +208,7 @@ def list_jobs(auth: bool = Depends(verify_api_key)) -> list[JobResponse]:
             screen_name=job.screen_name,
             start_time=job.start_time,
             end_time=job.end_time,
+            job_name=job.job_name,
             gpu_stats=JobGpuStatsResponse(
                 memory_used_mb=job.gpu_stats.memory_used_mb,
                 memory_total_mb=job.gpu_stats.memory_total_mb,

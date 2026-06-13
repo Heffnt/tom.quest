@@ -17,8 +17,36 @@ type PoolConfig = {
   memoryMb: number;
   commands: string[];
   projectDir: string;
-  jobName: string;
+  releaseOnExit: boolean;
   enabled: boolean;
+};
+
+// Per-pool entry inside the gpuPoolStatus singleton written by the reconciler.
+// Declared locally for the same pre-typegen reason as PoolConfig.
+type PoolStatusEntry = {
+  gpuType: string;
+  desired: number;
+  actual: number;
+  inflight: number;
+  allocated: number;
+  cancelled: number;
+  staleCancelled: number;
+  adopted: number;
+  errored: boolean;
+  erroredReason?: string;
+  allocateError?: string;
+  churnStreak: number;
+  fingerprint: string;
+};
+
+type PoolStatus = {
+  _id: string;
+  _creationTime: number;
+  ranAt: number;
+  jobsFetchOk: boolean;
+  reason?: string;
+  orphansCancelled: number;
+  pools: PoolStatusEntry[];
 };
 
 type Draft = {
@@ -27,7 +55,7 @@ type Draft = {
   timeMins: string;
   memoryMb: string;
   projectDir: string;
-  jobName: string;
+  releaseOnExit: boolean;
   commands: string[];
   enabled: boolean;
 };
@@ -38,13 +66,28 @@ const BLANK_DRAFT: Draft = {
   timeMins: "60",
   memoryMb: "64000",
   projectDir: "",
-  jobName: "pool",
+  releaseOnExit: false,
   commands: [""],
   enabled: true,
 };
 
 const inputClass =
   "w-full bg-bg border border-border rounded px-2 py-1.5 focus:border-accent focus:outline-none";
+
+// Renders a coarse "x ago" string without a timer. Convex reactivity re-runs the
+// status query each reconcile cycle, so we deliberately avoid setInterval here:
+// an auto-ticking label could shift layout, which the project forbids.
+function relativeTime(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 0) return "just now";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 function draftFromConfig(config: PoolConfig): Draft {
   return {
@@ -53,7 +96,7 @@ function draftFromConfig(config: PoolConfig): Draft {
     timeMins: String(config.timeMins),
     memoryMb: String(config.memoryMb),
     projectDir: config.projectDir,
-    jobName: config.jobName,
+    releaseOnExit: config.releaseOnExit ?? false,
     commands: config.commands.length ? [...config.commands] : [""],
     enabled: config.enabled,
   };
@@ -61,6 +104,7 @@ function draftFromConfig(config: PoolConfig): Draft {
 
 export default function PoolPanel() {
   const pools = (useQuery(api.gpuPool.list) ?? []) as PoolConfig[];
+  const status = useQuery(api.gpuPool.status) as PoolStatus | null | undefined;
   const setPool = useMutation(api.gpuPool.set);
   const removePool = useMutation(api.gpuPool.remove);
   const gpuTypes = useTuring<{ types: GPUTypeInfo[] }>("/gpu-types");
@@ -118,7 +162,7 @@ export default function PoolPanel() {
         memoryMb: Number(draft.memoryMb),
         commands: draft.commands.filter((c) => c.trim()),
         projectDir: draft.projectDir,
-        jobName: draft.jobName.trim() || "pool",
+        releaseOnExit: draft.releaseOnExit,
         enabled: draft.enabled,
       });
       startNew();
@@ -141,7 +185,7 @@ export default function PoolPanel() {
         memoryMb: config.memoryMb,
         commands: config.commands,
         projectDir: config.projectDir,
-        jobName: config.jobName,
+        releaseOnExit: config.releaseOnExit,
         enabled: !config.enabled,
       });
     } catch (e) {
@@ -172,27 +216,67 @@ export default function PoolPanel() {
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-lg font-semibold">GPU Pool</h2>
       </div>
-      <p className="text-text-muted text-sm mb-4">
+      <p className="text-text-muted text-sm mb-1">
         Declarative desired state: a Convex cron keeps each enabled pool at its desired number of
         GPUs, re-allocating as jobs finish and cancelling the most idle when over.
       </p>
+      {status && (
+        <p className="text-text-faint text-xs mb-1">
+          Last reconcile: <span className="font-mono">{relativeTime(status.ranAt)}</span>
+        </p>
+      )}
+      {status && status.jobsFetchOk === false && (
+        <p className="text-warning text-sm mb-1">
+          Last reconcile could not reach the Turing API: {status.reason}
+        </p>
+      )}
+      <div className="mb-4" />
 
       {pools.length === 0 ? (
         <p className="text-text-faint text-sm mb-4">No pools configured.</p>
       ) : (
         <div className="space-y-2 mb-5">
-          {pools.map((pool) => (
+          {pools.map((pool) => {
+            const poolStatus = status?.pools.find((p) => p.gpuType === pool.gpuType);
+            return (
             <div
               key={pool._id}
               className="flex flex-wrap items-center gap-x-4 gap-y-2 border border-border/60 rounded-md p-3 bg-bg/40"
             >
               <div className="flex items-baseline gap-2 min-w-0">
                 <span className="font-medium">{gpuTypeLabel(pool.gpuType)}</span>
-                <span className="text-text-faint text-xs font-mono">{pool.jobName}</span>
+                {poolStatus?.errored && (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded border border-error/40 text-error"
+                    title={poolStatus.erroredReason}
+                  >
+                    error
+                  </span>
+                )}
               </div>
-              <span className="text-sm text-text-muted">
-                desired <span className="text-text font-mono">{pool.desiredCount}</span>
-              </span>
+              {poolStatus ? (
+                <span className="text-sm text-text-muted">
+                  <span className="text-text font-mono">
+                    {poolStatus.actual} / {poolStatus.desired}
+                  </span>{" "}
+                  running
+                  {poolStatus.inflight > 0 && (
+                    <span className="text-text-faint"> (+{poolStatus.inflight} starting)</span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-sm text-text-muted">
+                  desired <span className="text-text font-mono">{pool.desiredCount}</span>
+                </span>
+              )}
+              {poolStatus?.allocateError && (
+                <span
+                  className="text-warning text-xs"
+                  title={poolStatus.allocateError}
+                >
+                  allocate failed: {poolStatus.allocateError}
+                </span>
+              )}
               {pool.commands.length > 0 && (
                 <span className="text-xs text-text-faint font-mono truncate max-w-[16rem]" title={pool.commands.join(" ; ")}>
                   {pool.commands.join(" ; ")}
@@ -226,7 +310,8 @@ export default function PoolPanel() {
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -288,16 +373,7 @@ export default function PoolPanel() {
             />
           </label>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <label className="text-sm">
-            <span className="block text-text-muted mb-1">Job name</span>
-            <input
-              type="text"
-              value={draft.jobName}
-              onChange={(e) => setDraft({ ...draft, jobName: e.target.value })}
-              className={`${inputClass} font-mono text-sm`}
-            />
-          </label>
+        <div className="grid grid-cols-1 gap-3">
           <label className="text-sm">
             <span className="block text-text-muted mb-1">Project directory</span>
             <input
@@ -347,6 +423,15 @@ export default function PoolPanel() {
             className="accent-accent"
           />
           Enabled (reconciler maintains this pool)
+        </label>
+        <label className="flex items-center gap-2 text-sm text-text-muted">
+          <input
+            type="checkbox"
+            checked={draft.releaseOnExit}
+            onChange={(e) => setDraft({ ...draft, releaseOnExit: e.target.checked })}
+            className="accent-accent"
+          />
+          Release on exit (cancel the SLURM job when its command finishes)
         </label>
 
         {editingMissing && (

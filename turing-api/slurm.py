@@ -52,6 +52,7 @@ class JobInfo:
     screen_name: str
     start_time: str
     end_time: str
+    job_name: str
     gpu_stats: JobGpuStats | None = None
 
 
@@ -179,7 +180,7 @@ def cancel_job(job_id: str) -> tuple[bool, str | None]:
 
 def get_user_jobs() -> list[JobInfo]:
     stdout, _, _ = run(
-        "squeue --me --format='%i|%T|%L|%S|%e|%b|%R' --noheader"
+        "squeue --me --format='%i|%T|%L|%S|%e|%b|%R|%j' --noheader"
     )
     from gpu_report import get_cached_gpu_activity, get_job_gpu_stats
     from tmux import session_exists
@@ -190,10 +191,14 @@ def get_user_jobs() -> list[JobInfo]:
     for line in stdout.strip().split("\n"):
         if not line.strip():
             continue
-        parts = line.strip().split("|")
-        if len(parts) < 7:
+        # %j (job name) is the trailing field and is user-controllable, so it may
+        # itself contain "|". Bound the split so the job name absorbs any extra
+        # delimiters instead of overflowing the unpack and 500-ing /jobs (which
+        # would freeze the reconciler, since GET /jobs is its source of truth).
+        parts = line.strip().split("|", 7)
+        if len(parts) < 8:
             continue
-        job_id, status, time_left, start_time, end_time, gres, reason = parts
+        job_id, status, time_left, start_time, end_time, gres, reason, job_name = parts
         gpu_type = "unknown"
         gres_match = re.search(r"gpu:([^:|]+):", gres)
         if gres_match:
@@ -228,6 +233,7 @@ def get_user_jobs() -> list[JobInfo]:
                 screen_name=screen_name,
                 start_time=start_time.strip(),
                 end_time=end_time.strip(),
+                job_name=job_name.strip(),
                 gpu_stats=gpu_stats,
             )
         )

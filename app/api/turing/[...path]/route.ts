@@ -15,6 +15,25 @@ async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "D
   if (method !== "GET") {
     const body = await request.text();
     if (body) {
+      // Authoritative guard for the manual allocation path: the "gpupool:" job
+      // name prefix is reserved for the Convex pool reconciler, which tracks
+      // ownership by parsing this prefix off squeue. The reconciler hits FastAPI
+      // directly (bypassing this proxy), so blocking here cannot affect it.
+      const targetsAllocate = path[0] === "allocate" || upstreamPath.startsWith("/allocate");
+      if (targetsAllocate && method === "POST") {
+        // Parse defensively: a non-JSON body is forwarded unchanged, as today.
+        try {
+          const parsed = JSON.parse(body) as { job_name?: unknown };
+          if (typeof parsed.job_name === "string" && parsed.job_name.trim().startsWith("gpupool:")) {
+            return NextResponse.json(
+              { error: "Job name prefix 'gpupool:' is reserved for the GPU pool reconciler." },
+              { status: 400 },
+            );
+          }
+        } catch {
+          // Not JSON; fall through and forward verbatim.
+        }
+      }
       init.body = body;
       const ct = request.headers.get("content-type");
       init.headers = ct ? { "Content-Type": ct } : { "Content-Type": "application/json" };

@@ -172,6 +172,38 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(res.status_code, 502)
 
 
+class ListJobsTest(unittest.TestCase):
+    """GET /jobs exposes the SLURM job name so the Convex reconciler can tell
+    which jobs the declarative GPU pool owns (name == 'gpupool:<type>:<fp>')."""
+
+    def test_jobs_response_carries_job_name(self) -> None:
+        from slurm import JobInfo
+
+        pool_job = JobInfo(
+            job_id="456",
+            gpu_type="nvidia",
+            status="PENDING",
+            time_remaining="1:00:00",
+            time_remaining_seconds=3600,
+            screen_name="",
+            start_time="N/A",
+            end_time="N/A",
+            job_name="gpupool:nvidia:deadbeef",
+            gpu_stats=None,
+        )
+
+        with (
+            patch("main.API_KEY", ""),
+            patch("main.get_user_jobs", return_value=[pool_job]),
+        ):
+            res = _request("GET", "/jobs")
+
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["job_name"], "gpupool:nvidia:deadbeef")
+
+
 class EventLoopIsolationTest(unittest.TestCase):
     def test_slow_gpu_report_does_not_delay_health(self) -> None:
         report_started = threading.Event()

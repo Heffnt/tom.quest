@@ -33,7 +33,9 @@ export default defineSchema({
 
   // Declarative GPU pool: desired state ("keep N GPUs of type T running these
   // commands"). A Convex cron reconciles desired-vs-actual against the Turing
-  // API. One row per gpuType.
+  // API. One row per gpuType. The reconciler derives a reserved squeue job name
+  // ("gpupool:<gpuType>:<fingerprint>") from this config; there is no stored
+  // jobName.
   gpuPool: defineTable({
     gpuType: v.string(),
     desiredCount: v.number(),
@@ -41,21 +43,56 @@ export default defineSchema({
     memoryMb: v.number(),
     commands: v.array(v.string()),
     projectDir: v.string(),
-    jobName: v.string(),
+    releaseOnExit: v.boolean(),
     enabled: v.boolean(),
     updatedAt: v.number(),
   }).index("by_gpu_type", ["gpuType"]),
 
-  // Jobs the reconciler created, so it only ever scales down its own
-  // allocations and never a manually-allocated job. Pruned when a job_id
-  // disappears from the Turing API's job list.
+  // In-flight cache of jobs the reconciler created. NOT the source of truth for
+  // ownership (that is the live Turing job list, matched by reserved job name) —
+  // this only bridges the window between allocating a job and seeing it appear
+  // in squeue, so we don't double-allocate while one is spinning up. Rows are
+  // pruned per-config when a current-fingerprint job dies past INFLIGHT_TTL_MS,
+  // plus an orphan sweep for rows whose gpuType no longer has a config.
+  // `fingerprint` ties a row to the exact config revision that created it (a
+  // config edit drains the old jobs instead of adopting them). `seenLive` records
+  // whether the job was ever observed in the live job list; an in-flight row that
+  // ages out with seenLive=false never became a real GPU and counts as churn.
   gpuPoolAllocation: defineTable({
     gpuType: v.string(),
     jobId: v.string(),
+    fingerprint: v.string(),
+    seenLive: v.boolean(),
     createdAt: v.number(),
   })
     .index("by_gpu_type", ["gpuType"])
     .index("by_job", ["jobId"]),
+
+  // Singleton: the outcome of the most recent reconcile run, for the admin
+  // status panel. Accessed via .first() (no index).
+  gpuPoolStatus: defineTable({
+    ranAt: v.number(),
+    jobsFetchOk: v.boolean(),
+    reason: v.optional(v.string()),
+    orphansCancelled: v.number(),
+    pools: v.array(
+      v.object({
+        gpuType: v.string(),
+        desired: v.number(),
+        actual: v.number(),
+        inflight: v.number(),
+        allocated: v.number(),
+        cancelled: v.number(),
+        staleCancelled: v.number(),
+        adopted: v.number(),
+        errored: v.boolean(),
+        erroredReason: v.optional(v.string()),
+        allocateError: v.optional(v.string()),
+        churnStreak: v.number(),
+        fingerprint: v.string(),
+      }),
+    ),
+  }),
 
   userSettings: defineTable({
     userId: v.id("users"),

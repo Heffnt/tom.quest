@@ -133,6 +133,8 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
       const c = Number(count);
       if (!Number.isInteger(c) || c < 1) return "Count must be a positive integer.";
     }
+    if (settings.jobName.trim().startsWith("gpupool:"))
+      return "Job name prefix 'gpupool:' is reserved for the GPU pool reconciler.";
     if (!profile) return "Select a project.";
     return null;
   };
@@ -150,7 +152,7 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
       count: count ? Number(count) : 1,
       commands: config?.commands.filter(c => c.trim()) ?? [],
       project_dir: profile?.dir ?? "",
-      job_name: settings.jobName,
+      job_name: settings.jobName.trim(),
     });
     if (res?.success) {
       const partialFailure = res.errors.length > 0;
