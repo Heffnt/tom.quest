@@ -30,6 +30,22 @@ class SlurmTest(unittest.TestCase):
     def test_parse_time_to_seconds_treats_unknown_errors_as_zero(self) -> None:
         self.assertEqual(slurm.parse_time_to_seconds("[Unknown Error]"), 0)
 
+    def test_extract_job_id_matches_canonical_salloc_lines(self) -> None:
+        self.assertEqual(
+            slurm._extract_job_id("salloc: Granted job allocation 123456"), "123456"
+        )
+        self.assertEqual(
+            slurm._extract_job_id("salloc: Pending job allocation 789"), "789"
+        )
+
+    def test_extract_job_id_ignores_incidental_job_numbers(self) -> None:
+        # A bare "job <n>" appears in unrelated srun/error chatter. Scraping it
+        # would return a wrong id; only the canonical allocation lines count.
+        self.assertIsNone(
+            slurm._extract_job_id("srun: error: task 0 launch failed: job 5 step")
+        )
+        self.assertIsNone(slurm._extract_job_id("salloc: error: out of memory"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,12 +10,13 @@ from job_screens import get_screen_name
 from shell import run
 
 SALLOC_JOB_ID_TIMEOUT = 60
+# salloc emits exactly one of these two lines with the job id: "Pending job
+# allocation N" while queued, then "Granted job allocation N" once it runs.
+# Either gives us the id. Avoid a greedy "job (\d+)" fallback — it scrapes
+# incidental numbers out of unrelated srun/error chatter and returns a wrong id.
 JOB_ID_PATTERNS = [
     re.compile(r"Pending job allocation (\d+)", re.IGNORECASE),
     re.compile(r"Granted job allocation (\d+)", re.IGNORECASE),
-    re.compile(r"job (\d+) queued and waiting", re.IGNORECASE),
-    re.compile(r"job (\d+) has been allocated", re.IGNORECASE),
-    re.compile(r"job (\d+)", re.IGNORECASE),
 ]
 _SALLOC_PROCESSES: dict[str, subprocess.Popen[str]] = {}
 _SALLOC_LOCK = threading.Lock()
