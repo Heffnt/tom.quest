@@ -1,7 +1,9 @@
 import asyncio
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -80,6 +82,49 @@ class AllocateCountTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(allocate_gpu.call_count, 3)
         self.assertEqual(res.json()["job_ids"], ["100", "101", "102"])
+
+
+class FileAccessTest(unittest.TestCase):
+    """/file and /dirs are confined to ALLOWED_FILE_ROOT and refuse secrets even
+    inside it, so a network-reachable GET can't read ~/.ssh, .env, or /etc."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+        (self.root / "ok.txt").write_text("hello")
+        (self.root / ".env").write_text("SECRET=1")
+        self._patches = [patch("dirs.ALLOWED_FILE_ROOT", self.root), patch("main.API_KEY", "")]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self) -> None:
+        for p in self._patches:
+            p.stop()
+        self._tmp.cleanup()
+
+    def test_serves_file_within_root(self) -> None:
+        res = _request("GET", "/file", params={"path": str(self.root / "ok.txt")})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["content"], "hello")
+
+    def test_rejects_file_outside_root(self) -> None:
+        res = _request("GET", "/file", params={"path": "/etc/passwd"})
+        self.assertEqual(res.status_code, 403)
+
+    def test_rejects_traversal_escape(self) -> None:
+        res = _request("GET", "/file", params={"path": f"{self.root}/../../../etc/passwd"})
+        self.assertEqual(res.status_code, 403)
+
+    def test_rejects_env_file_within_root(self) -> None:
+        res = _request("GET", "/file", params={"path": str(self.root / ".env")})
+        self.assertEqual(res.status_code, 403)
+
+    def test_dirs_rejects_outside_root(self) -> None:
+        res = _request("GET", "/dirs", params={"path": "/etc"})
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["dirs"], [])
+        self.assertTrue(body["error"])
 
 
 class EventLoopIsolationTest(unittest.TestCase):

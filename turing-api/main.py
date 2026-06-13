@@ -17,7 +17,7 @@ from tmux import (
     detach_session_clients,
 )
 from job_screens import get_screen_name, remove_screen_mapping
-from dirs import list_directory, get_home_dir
+from dirs import list_directory, get_home_dir, resolve_within_root, PathNotAllowed
 from boolback import router as boolback_router
 from ws import router as ws_router
 
@@ -130,12 +130,14 @@ def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
 
 @app.get("/file")
 def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
-    expanded = os.path.expanduser(path)
-    if not os.path.isfile(expanded):
+    try:
+        resolved = resolve_within_root(path)
+    except PathNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if not resolved.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
-        with open(expanded, "r", encoding="utf-8") as file_handle:
-            return {"content": file_handle.read(), "path": path}
+        return {"content": resolved.read_text(encoding="utf-8"), "path": path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
@@ -243,6 +245,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     if not API_KEY:
         raise SystemExit("TURING_API_KEY is not set. Configure turing-api/.env before starting.")
-    print(f"\nTuring API listening on 0.0.0.0:{API_PORT}")
-    print("Reachable through the named cloudflared tunnel; ensure cloudflared is running alongside this process.\n")
-    uvicorn.run(app, host="0.0.0.0", port=API_PORT, access_log=True, log_config=None)
+    print(f"\nTuring API listening on 127.0.0.1:{API_PORT}")
+    print("Bound to localhost: reachable only through the co-located cloudflared tunnel, not the shared cluster LAN.\n")
+    uvicorn.run(app, host="127.0.0.1", port=API_PORT, access_log=True, log_config=None)
