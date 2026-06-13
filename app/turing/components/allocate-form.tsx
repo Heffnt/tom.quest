@@ -147,7 +147,7 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
       gpu_type: settings.gpuType,
       time_mins: Number(settings.timeMins),
       memory_mb: Number(settings.memoryMb),
-      count: count ? Number(count) : 0,
+      count: count ? Number(count) : 1,
       commands: config?.commands.filter(c => c.trim()) ?? [],
       project_dir: profile?.dir ?? "",
       job_name: settings.jobName,

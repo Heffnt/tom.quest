@@ -25,6 +25,9 @@ load_dotenv()
 API_PORT = int(os.getenv("API_PORT", "8000"))
 API_KEY = os.environ.get("TURING_API_KEY", "")
 LOG_PATH = "turing-api.log"
+# Upper bound on a single /allocate request. Guards against a typo (or a
+# declarative caller) asking for far more GPUs than the partition holds.
+MAX_ALLOCATION_COUNT = 16
 
 def setup_logging():
     logging.basicConfig(
@@ -98,14 +101,6 @@ class DetachClientsResponse(BaseModel):
     success: bool
     detached_clients: int
 
-def resolve_allocation_count(request: AllocationRequest) -> int:
-    if request.count > 0:
-        return request.count
-    for item in get_free_gpu_type_info():
-        if item["type"] == request.gpu_type:
-            return item["count"] or 1
-    return 1
-
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -148,9 +143,14 @@ def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
 def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -> AllocationResponse:
     if not request.gpu_type:
         raise HTTPException(status_code=400, detail="GPU type is required")
-    if request.count < 0:
-        raise HTTPException(status_code=400, detail="Count cannot be negative")
-    requested_count = resolve_allocation_count(request)
+    if request.count < 1:
+        raise HTTPException(status_code=400, detail="Count must be at least 1")
+    if request.count > MAX_ALLOCATION_COUNT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Count cannot exceed {MAX_ALLOCATION_COUNT}",
+        )
+    requested_count = request.count
     if request.time_mins < 1:
         raise HTTPException(status_code=400, detail="Time must be at least 1 minute")
     if request.memory_mb < 1:
