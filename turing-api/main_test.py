@@ -127,6 +127,51 @@ class FileAccessTest(unittest.TestCase):
         self.assertTrue(body["error"])
 
 
+class RunCommandTest(unittest.TestCase):
+    """POST /sessions/{name}/run lets an authenticated caller run a command in an
+    existing allocation instead of resorting to out-of-band tmux send-keys."""
+
+    def test_run_sends_command_to_existing_session(self) -> None:
+        with (
+            patch("main.API_KEY", ""),
+            patch("main.session_exists", return_value=True),
+            patch("main.send_to_session", return_value=True) as send,
+        ):
+            res = _request("POST", "/sessions/1_alloc/run", json={"command": "nvidia-smi"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["success"])
+        send.assert_called_once_with("1_alloc", "nvidia-smi")
+
+    def test_run_404_when_session_missing(self) -> None:
+        with (
+            patch("main.API_KEY", ""),
+            patch("main.session_exists", return_value=False),
+            patch("main.send_to_session") as send,
+        ):
+            res = _request("POST", "/sessions/missing/run", json={"command": "ls"})
+        self.assertEqual(res.status_code, 404)
+        send.assert_not_called()
+
+    def test_run_400_when_command_blank(self) -> None:
+        with (
+            patch("main.API_KEY", ""),
+            patch("main.session_exists", return_value=True),
+            patch("main.send_to_session") as send,
+        ):
+            res = _request("POST", "/sessions/1_alloc/run", json={"command": "   "})
+        self.assertEqual(res.status_code, 400)
+        send.assert_not_called()
+
+    def test_run_502_when_send_fails(self) -> None:
+        with (
+            patch("main.API_KEY", ""),
+            patch("main.session_exists", return_value=True),
+            patch("main.send_to_session", return_value=False),
+        ):
+            res = _request("POST", "/sessions/1_alloc/run", json={"command": "ls"})
+        self.assertEqual(res.status_code, 502)
+
+
 class EventLoopIsolationTest(unittest.TestCase):
     def test_slow_gpu_report_does_not_delay_health(self) -> None:
         report_started = threading.Event()

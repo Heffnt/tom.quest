@@ -13,6 +13,7 @@ from tmux import (
     cleanup_session,
     capture_output,
     session_exists,
+    send_to_session,
     count_session_clients,
     detach_session_clients,
 )
@@ -93,6 +94,12 @@ class JobResponse(BaseModel):
     start_time: str
     end_time: str
     gpu_stats: JobGpuStatsResponse | None = None
+
+class RunCommandRequest(BaseModel):
+    command: str
+
+class RunCommandResponse(BaseModel):
+    success: bool
 
 class SessionClientsResponse(BaseModel):
     attached_clients: int
@@ -225,6 +232,16 @@ def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     output = capture_output(session_name, lines)
     return {"session_name": session_name, "output": output}
+
+@app.post("/sessions/{session_name}/run", response_model=RunCommandResponse)
+def run_session_command(session_name: str, request: RunCommandRequest, auth: bool = Depends(verify_api_key)) -> RunCommandResponse:
+    if not request.command.strip():
+        raise HTTPException(status_code=400, detail="Command is required")
+    if not session_exists(session_name):
+        raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
+    if not send_to_session(session_name, request.command):
+        raise HTTPException(status_code=502, detail="Failed to send command to session")
+    return RunCommandResponse(success=True)
 
 @app.get("/sessions/{session_name}/clients", response_model=SessionClientsResponse)
 def get_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> SessionClientsResponse:
