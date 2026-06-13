@@ -31,6 +31,32 @@ export default defineSchema({
     error: v.optional(v.string()),
   }).index("by_server", ["serverName"]),
 
+  // Declarative GPU pool: desired state ("keep N GPUs of type T running these
+  // commands"). A Convex cron reconciles desired-vs-actual against the Turing
+  // API. One row per gpuType.
+  gpuPool: defineTable({
+    gpuType: v.string(),
+    desiredCount: v.number(),
+    timeMins: v.number(),
+    memoryMb: v.number(),
+    commands: v.array(v.string()),
+    projectDir: v.string(),
+    jobName: v.string(),
+    enabled: v.boolean(),
+    updatedAt: v.number(),
+  }).index("by_gpu_type", ["gpuType"]),
+
+  // Jobs the reconciler created, so it only ever scales down its own
+  // allocations and never a manually-allocated job. Pruned when a job_id
+  // disappears from the Turing API's job list.
+  gpuPoolAllocation: defineTable({
+    gpuType: v.string(),
+    jobId: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_gpu_type", ["gpuType"])
+    .index("by_job", ["jobId"]),
+
   userSettings: defineTable({
     userId: v.id("users"),
     settingKey: v.string(),

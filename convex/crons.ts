@@ -9,4 +9,10 @@ crons.interval(
   internal.serverHealth.pollTuring,
 );
 
+crons.interval(
+  "reconcile gpu pool",
+  { seconds: 60 },
+  internal.gpuPool.reconcile,
+);
+
 export default crons;
