@@ -12,6 +12,7 @@ import type * as auth from "../auth.js";
 import type * as authRoles from "../authRoles.js";
 import type * as canvas from "../canvas.js";
 import type * as crons from "../crons.js";
+import type * as gpuPool from "../gpuPool.js";
 import type * as http from "../http.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as symbolScores from "../symbolScores.js";
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   authRoles: typeof authRoles;
   canvas: typeof canvas;
   crons: typeof crons;
+  gpuPool: typeof gpuPool;
   http: typeof http;
   serverHealth: typeof serverHealth;
   symbolScores: typeof symbolScores;
