@@ -6,7 +6,9 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     clearMocks: true,
-    exclude: ["e2e/**", "node_modules/**", ".next/**"],
+    // ".claude/**" keeps agent worktrees (.claude/worktrees/*/) — which contain
+    // full repo copies incl. Playwright e2e specs — from being collected here.
+    exclude: ["e2e/**", "**/e2e/**", "node_modules/**", ".next/**", ".claude/**"],
   },
   resolve: {
     alias: {
