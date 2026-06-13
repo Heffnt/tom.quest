@@ -83,7 +83,7 @@ def _get_job_status(job_id: str) -> str:
     return stdout.strip()
 
 
-def _setup_session_worker(session_name: str, job_id: str, commands: list[str]) -> None:
+def _setup_session_worker(session_name: str, job_id: str, commands: list[str], release_on_exit: bool = False) -> None:
     empty_status_checks = 0
     while True:
         status = _get_job_status(job_id)
@@ -117,11 +117,22 @@ def _setup_session_worker(session_name: str, job_id: str, commands: list[str]) -
         if command.strip():
             send_to_session(session_name, command)
             time.sleep(0.1)
+    if release_on_exit:
+        # Free the GPU as soon as the queued commands finish. The shell reads
+        # these send-keys lines sequentially, so scancel only runs after the
+        # prior foreground commands return. (A command that backgrounds work
+        # with & returns early and scancel fires sooner — the deterministic
+        # trade-off for not polling utilization.)
+        send_to_session(session_name, f"scancel {shlex.quote(job_id)}")
 
 
-def setup_allocation_session(job_id: str, commands: list[str], job_name: str = "allocation") -> str:
+def setup_allocation_session(job_id: str, commands: list[str], job_name: str = "allocation", release_on_exit: bool = False) -> str:
     session_name = reserve_session_name(job_id, job_name)
-    thread = threading.Thread(target=_setup_session_worker, args=(session_name, job_id, commands), daemon=True)
+    thread = threading.Thread(
+        target=_setup_session_worker,
+        args=(session_name, job_id, commands, release_on_exit),
+        daemon=True,
+    )
     thread.start()
     return session_name
 

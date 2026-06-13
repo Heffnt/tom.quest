@@ -66,6 +66,9 @@ export interface AllocateRequest {
   commands: string[];
   project_dir: string;
   job_name: string;
+  // When true, the allocation scancels itself once its commands finish instead
+  // of holding the GPU idle until walltime. Used by the declarative pool.
+  release_on_exit?: boolean;
 }
 
 export interface AllocateResponse {

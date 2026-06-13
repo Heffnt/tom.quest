@@ -70,6 +70,7 @@ class AllocationRequest(BaseModel):
     count: int = 1
     project_dir: str = ""
     job_name: str = "allocation"
+    release_on_exit: bool = False
 
 class AllocationResponse(BaseModel):
     success: bool
@@ -180,7 +181,7 @@ def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -
             )
             if job_id:
                 job_ids.append(job_id)
-                screen_name = setup_allocation_session(job_id, commands, request.job_name)
+                screen_name = setup_allocation_session(job_id, commands, request.job_name, request.release_on_exit)
                 screen_names.append(screen_name)
             else:
                 errors.append(error or f"Failed to allocate GPU {i+1}")
