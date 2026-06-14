@@ -41,9 +41,15 @@ export default defineSchema({
     desiredCount: v.number(),
     timeMins: v.number(),
     memoryMb: v.number(),
+    // The generic, admin-authored worker command(s) — never agent-writable (spec §4.1, §7).
     commands: v.array(v.string()),
     projectDir: v.string(),
     releaseOnExit: v.boolean(),
+    // Completion policy (spec §4.3): "always" keeps desiredCount workers warm (replace on
+    // exit); "never" runs to completion (the pool drains to zero as workers exit, counted via
+    // the seen-live flag). Excluded from the fingerprint — a policy toggle is not job identity.
+    // Optional for migration safety: a row written before this field defaults to keep-warm.
+    restart: v.optional(v.union(v.literal("always"), v.literal("never"))),
     enabled: v.boolean(),
     updatedAt: v.number(),
   }).index("by_gpu_type", ["gpuType"]),
@@ -93,6 +99,18 @@ export default defineSchema({
       }),
     ),
   }),
+
+  // Append-only audit of agent-key writes to the worker pool (spec §7): the only audit
+  // trail for the narrow agentScale path. Kept separate from gpuPoolStatus because the
+  // reconciler replaces that singleton wholesale each cycle (it would clobber an audit field).
+  gpuPoolAgentLog: defineTable({
+    at: v.number(),
+    writer: v.string(), // a writer id (not the key); the agent identifies itself
+    gpuType: v.string(),
+    desiredCount: v.number(),
+    enabled: v.boolean(),
+    restart: v.union(v.literal("always"), v.literal("never")),
+  }).index("by_at", ["at"]),
 
   userSettings: defineTable({
     userId: v.id("users"),

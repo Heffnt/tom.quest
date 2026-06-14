@@ -25,6 +25,13 @@ const MAX_ALLOCATION_COUNT = 16;
 // Reserved squeue name prefix for all reconciler-created jobs.
 const POOL_PREFIX = "gpupool:";
 
+// Two-layer clamp of desiredCount to [0, MAX] — applied at every write boundary (the admin
+// `set`, the agent `agentScale`) AND again at reconcile read-time, so no code path ever trusts
+// an out-of-range stored value (spec §4.1, §7).
+function clampDesired(n: number): number {
+  return Math.min(MAX_ALLOCATION_COUNT, Math.max(0, n));
+}
+
 async function requireAdmin(ctx: QueryCtx | MutationCtx): Promise<void> {
   const { access } = await requireViewer(ctx);
   if (!access.isAdmin) throw new Error("Admin access required");
@@ -96,24 +103,69 @@ export const set = mutation({
     commands: v.array(v.string()),
     projectDir: v.string(),
     releaseOnExit: v.boolean(),
+    // Optional with a keep-warm default: an admin opts into run-to-completion (spec §4.3); a
+    // caller that omits it (or a pre-restart UI) gets the safe "always" policy.
+    restart: v.optional(v.union(v.literal("always"), v.literal("never"))),
     enabled: v.boolean(),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const desiredCount = Math.min(
-      MAX_ALLOCATION_COUNT,
-      Math.max(0, args.desiredCount),
-    );
+    const desiredCount = clampDesired(args.desiredCount);
+    const restart = args.restart ?? "always";
     const existing = await ctx.db
       .query("gpuPool")
       .withIndex("by_gpu_type", (q) => q.eq("gpuType", args.gpuType))
       .unique();
     const updatedAt = Date.now();
     if (existing) {
-      await ctx.db.patch(existing._id, { ...args, desiredCount, updatedAt });
+      await ctx.db.patch(existing._id, { ...args, desiredCount, restart, updatedAt });
       return existing._id;
     }
-    return await ctx.db.insert("gpuPool", { ...args, desiredCount, updatedAt });
+    return await ctx.db.insert("gpuPool", { ...args, desiredCount, restart, updatedAt });
+  },
+});
+
+// Narrow agent-key write path (spec §7): may set ONLY desiredCount / enabled / restart, on an
+// EXISTING admin-authored row (looked up by gpuType). It refuses if no such row exists (no
+// insert) and never touches command / projectDir / resource limits — so the worker command
+// stays admin-only and arbitrary shell over the agent key is impossible. Shares clampDesired
+// with the admin path and records every write to the audit log. Called only by the /pool
+// httpAction (which authenticates the separate agent key); not exposed publicly.
+export const agentScale = internalMutation({
+  args: {
+    writer: v.string(),
+    gpuType: v.string(),
+    desiredCount: v.number(),
+    enabled: v.boolean(),
+    restart: v.union(v.literal("always"), v.literal("never")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("gpuPool")
+      .withIndex("by_gpu_type", (q) => q.eq("gpuType", args.gpuType))
+      .unique();
+    if (!existing) {
+      // No insert over the agent key — only pre-approved (admin-authored) rows are scalable.
+      throw new Error(
+        `agentScale: no admin-authored pool row for gpuType "${args.gpuType}"`,
+      );
+    }
+    const desiredCount = clampDesired(args.desiredCount);
+    await ctx.db.patch(existing._id, {
+      desiredCount,
+      enabled: args.enabled,
+      restart: args.restart,
+      updatedAt: Date.now(),
+    });
+    await ctx.db.insert("gpuPoolAgentLog", {
+      at: Date.now(),
+      writer: args.writer,
+      gpuType: args.gpuType,
+      desiredCount,
+      enabled: args.enabled,
+      restart: args.restart,
+    });
+    return { gpuType: args.gpuType, desiredCount, enabled: args.enabled, restart: args.restart };
   },
 });
 
@@ -381,9 +433,11 @@ export const reconcile = internalAction({
     const entries: PoolStatusEntry[] = [];
     for (const config of configs) {
       const fp = fingerprint(config);
-      const desired = config.enabled
-        ? Math.min(MAX_ALLOCATION_COUNT, Math.max(0, config.desiredCount))
-        : 0;
+      const desired = config.enabled ? clampDesired(config.desiredCount) : 0;
+      // restart policy (spec §4.3). keep-warm replaces an exited worker to hold desiredCount;
+      // run-to-completion ("never") never replaces a worker once it has been seen live, so the
+      // pool drains to zero on its own. Absent (legacy row) defaults to keep-warm.
+      const keepWarm = (config.restart ?? "always") === "always";
       // Churn/error state is carried from the prev pool entry with the SAME
       // fingerprint — a config edit (new fingerprint) starts fresh.
       const prevPool = prevPools.find(
@@ -452,16 +506,26 @@ export const reconcile = internalAction({
         const deadIds: string[] = [];
         let inflightCount = 0;
         let churnEvents = 0;
+        let completedCount = 0; // restart:never — workers seen live that have since exited
         for (const row of rows) {
           if (liveJobIds.has(row.jobId)) continue;
-          const inflight =
-            row.fingerprint === fp && now - row.createdAt < INFLIGHT_TTL_MS;
+          const currentFp = row.fingerprint === fp;
+          const inflight = currentFp && now - row.createdAt < INFLIGHT_TTL_MS;
           if (inflight) {
             inflightCount++;
             continue;
           }
+          // restart:never — a current-fp worker that was seen live and has now exited is a
+          // *completed slot*, not a vacancy: keep its row as a one-shot completion marker and
+          // count it toward the launch budget, so it is never replaced and the pool drains to
+          // zero on its own (spec §4.3). Old-fp dead rows and never-live deaths fall through to
+          // pruning/churn below in both policies.
+          if (!keepWarm && currentFp && row.seenLive) {
+            completedCount++;
+            continue;
+          }
           deadIds.push(row.jobId);
-          if (row.fingerprint === fp && !row.seenLive) churnEvents++;
+          if (currentFp && !row.seenLive) churnEvents++;
         }
         if (deadIds.length > 0) {
           await ctx.runMutation(internal.gpuPool.removeAllocations, {
@@ -470,6 +534,10 @@ export const reconcile = internalAction({
         }
 
         const effective = confirmedLive + inflightCount;
+        // Under restart:never, a completed worker still counts against the launch budget — each
+        // slot launches at most once. Under keep-warm, completedCount is always 0 (a seen-live
+        // death is pruned, so its absence drives a replacement).
+        const launched = effective + (keepWarm ? 0 : completedCount);
 
         // (e) Churn / errored. A pool that has reached its desired count is
         //     healthy and clears. Otherwise each allocation that ages out
@@ -479,7 +547,11 @@ export const reconcile = internalAction({
         let churnStreak: number;
         let errored: boolean;
         let erroredReason: string | undefined;
-        if (confirmedLive >= desired) {
+        // "satisfied" = nothing left to launch. keep-warm: enough live workers; run-to-completion:
+        // enough workers have launched (live + completed) — a drained restart:never pool is
+        // healthy, not churning (spec §4.3).
+        const satisfied = keepWarm ? confirmedLive >= desired : launched >= desired;
+        if (satisfied) {
           churnStreak = 0;
           errored = false;
           erroredReason = undefined;
@@ -499,7 +571,9 @@ export const reconcile = internalAction({
         let cancelled = 0;
         let allocateError: string | undefined = undefined;
 
-        if (!errored && desired - effective > 0) {
+        if (!errored && desired - launched > 0) {
+          // Allocate against the launch budget: keep-warm replaces vacancies; restart:never
+          // launches each slot at most once (completed slots count, so it stops at desired).
           const result = await allocateOne(ctx, base, headers, config, fp);
           if (result.ok) {
             allocated = 1;

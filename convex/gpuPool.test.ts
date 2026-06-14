@@ -520,3 +520,266 @@ describe("gpuPool.set", () => {
     expect(row?.releaseOnExit).toBe(true);
   });
 });
+
+// An admin-authored row with all fields, inserted directly (the reconciler reads it).
+const adminRow = {
+  ...poolConfig,
+  desiredCount: 1,
+  restart: "always" as const,
+  updatedAt: 1,
+};
+
+describe("gpuPool restart policy (reconcile)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("restart:never drains to zero — a completed worker is never relaunched", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", {
+        ...poolConfig,
+        desiredCount: 1,
+        restart: "never",
+        updatedAt: 1,
+      });
+    });
+
+    // cycle 1: nothing live → allocate one worker (in-flight, not yet seen live).
+    let calls = stubFetch({ jobs: [], allocateJobIds: ["100"] });
+    await t.action(internal.gpuPool.reconcile, {});
+    expect(calls.filter((c) => c.url.endsWith("/allocate"))).toHaveLength(1);
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+
+    // cycle 2: the worker is live → mark seen-live, allocate nothing more.
+    calls = stubFetch({
+      jobs: [job({ job_id: "100", gpu_type: "nvidia", job_name: CURRENT_NAME })],
+      allocateJobIds: ["101"],
+    });
+    await t.action(internal.gpuPool.reconcile, {});
+    expect(calls.some((c) => c.url.endsWith("/allocate"))).toBe(false);
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+
+    // A real worker runs for hours, so by exit its allocation row is long past the in-flight
+    // TTL; age it so cycle 3 sees the death (not an in-flight row), exercising the real path.
+    await t.run(async (ctx) => {
+      const r = await ctx.db
+        .query("gpuPoolAllocation")
+        .withIndex("by_job", (q) => q.eq("jobId", "100"))
+        .unique();
+      if (r) await ctx.db.patch(r._id, { createdAt: 1 });
+    });
+
+    // cycle 3: the worker has exited (drained its work) → under restart:never it is a
+    // completed slot, NOT a vacancy: do not relaunch. The pool stays at zero live.
+    calls = stubFetch({ jobs: [], allocateJobIds: ["101"] });
+    await t.action(internal.gpuPool.reconcile, {});
+    expect(calls.some((c) => c.url.endsWith("/allocate"))).toBe(false);
+
+    // the completion marker row persists (seen-live, not pruned) so the slot is never reused.
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("gpuPoolAllocation").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].jobId).toBe("100");
+    expect(rows[0].seenLive).toBe(true);
+  });
+
+  it("restart:always relaunches a completed worker (keep-warm contrast)", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", {
+        ...poolConfig,
+        desiredCount: 1,
+        restart: "always",
+        updatedAt: 1,
+      });
+    });
+
+    let calls = stubFetch({ jobs: [], allocateJobIds: ["100"] });
+    await t.action(internal.gpuPool.reconcile, {});
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+
+    calls = stubFetch({
+      jobs: [job({ job_id: "100", gpu_type: "nvidia", job_name: CURRENT_NAME })],
+      allocateJobIds: ["101"],
+    });
+    await t.action(internal.gpuPool.reconcile, {});
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+
+    // age the row past the in-flight TTL so its death registers (as in the never test).
+    await t.run(async (ctx) => {
+      const r = await ctx.db
+        .query("gpuPoolAllocation")
+        .withIndex("by_job", (q) => q.eq("jobId", "100"))
+        .unique();
+      if (r) await ctx.db.patch(r._id, { createdAt: 1 });
+    });
+
+    // cycle 3: worker exited → keep-warm prunes the dead row and replaces it.
+    calls = stubFetch({ jobs: [], allocateJobIds: ["101"] });
+    await t.action(internal.gpuPool.reconcile, {});
+    expect(calls.filter((c) => c.url.endsWith("/allocate"))).toHaveLength(1);
+  });
+});
+
+describe("gpuPool.agentScale", () => {
+  it("writes only desiredCount/enabled/restart, leaving the command untouched", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", { ...adminRow });
+    });
+
+    const result = await t.mutation(internal.gpuPool.agentScale, {
+      writer: "agentX",
+      gpuType: "nvidia",
+      desiredCount: 4,
+      enabled: false,
+      restart: "never",
+    });
+    expect(result).toEqual({
+      gpuType: "nvidia",
+      desiredCount: 4,
+      enabled: false,
+      restart: "never",
+    });
+
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("gpuPool")
+        .withIndex("by_gpu_type", (q) => q.eq("gpuType", "nvidia"))
+        .unique(),
+    );
+    expect(row?.desiredCount).toBe(4);
+    expect(row?.enabled).toBe(false);
+    expect(row?.restart).toBe("never");
+    // the admin-authored command and projectDir are NEVER touched by the agent path.
+    expect(row?.commands).toEqual(poolConfig.commands);
+    expect(row?.projectDir).toBe(poolConfig.projectDir);
+
+    // every agent write is audited.
+    const log = await t.run(async (ctx) =>
+      ctx.db.query("gpuPoolAgentLog").collect(),
+    );
+    expect(log).toHaveLength(1);
+    expect(log[0].writer).toBe("agentX");
+    expect(log[0].desiredCount).toBe(4);
+    expect(log[0].restart).toBe("never");
+  });
+
+  it("clamps desiredCount at the write boundary", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", { ...adminRow });
+    });
+    await t.mutation(internal.gpuPool.agentScale, {
+      writer: "a",
+      gpuType: "nvidia",
+      desiredCount: 9999,
+      enabled: true,
+      restart: "always",
+    });
+    const high = await t.run(async (ctx) =>
+      ctx.db
+        .query("gpuPool")
+        .withIndex("by_gpu_type", (q) => q.eq("gpuType", "nvidia"))
+        .unique(),
+    );
+    expect(high?.desiredCount).toBe(16);
+
+    await t.mutation(internal.gpuPool.agentScale, {
+      writer: "a",
+      gpuType: "nvidia",
+      desiredCount: -5,
+      enabled: true,
+      restart: "always",
+    });
+    const low = await t.run(async (ctx) =>
+      ctx.db
+        .query("gpuPool")
+        .withIndex("by_gpu_type", (q) => q.eq("gpuType", "nvidia"))
+        .unique(),
+    );
+    expect(low?.desiredCount).toBe(0);
+  });
+
+  it("refuses to insert — only pre-approved admin rows are scalable", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.mutation(internal.gpuPool.agentScale, {
+        writer: "a",
+        gpuType: "h100",
+        desiredCount: 2,
+        enabled: true,
+        restart: "always",
+      }),
+    ).rejects.toThrow(/no admin-authored/);
+    const rows = await t.run(async (ctx) => ctx.db.query("gpuPool").collect());
+    expect(rows).toHaveLength(0); // no row was created over the agent path
+  });
+});
+
+describe("/pool httpAction", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function postPool(
+    t: ReturnType<typeof convexTest>,
+    body: unknown,
+    key?: string,
+  ): Promise<Response> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (key !== undefined) headers["X-Pool-Key"] = key;
+    return t.fetch("/pool", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
+
+  const validBody = {
+    writer: "agent",
+    gpuType: "nvidia",
+    desiredCount: 2,
+    enabled: true,
+    restart: "never",
+  };
+
+  it("rejects a missing or wrong key with 401", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    expect((await postPool(t, validBody)).status).toBe(401); // no key
+    expect((await postPool(t, validBody, "wrong")).status).toBe(401); // wrong key
+  });
+
+  it("scales a pre-approved row with the right key", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", { ...adminRow });
+    });
+    const res = await postPool(t, validBody, "s3cret");
+    expect(res.status).toBe(200);
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("gpuPool")
+        .withIndex("by_gpu_type", (q) => q.eq("gpuType", "nvidia"))
+        .unique(),
+    );
+    expect(row?.desiredCount).toBe(2);
+    expect(row?.restart).toBe("never");
+  });
+
+  it("returns 404 when no admin-authored row exists", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const res = await postPool(t, { ...validBody, gpuType: "absent" }, "s3cret");
+    expect(res.status).toBe(404);
+  });
+});
