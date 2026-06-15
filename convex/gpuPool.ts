@@ -206,6 +206,27 @@ export const allConfigs = internalQuery({
   },
 });
 
+// Projected, agent-readable view of the pool configs for the key-authed GET /pool monitor
+// (spec §7). Deliberately omits commands/projectDir/resource limits so the agent read key never
+// discloses the admin-authored worker command (the §7 "agent never sees the command" invariant);
+// exposes only the scaling/policy fields plus the derived fingerprint, which is already public in
+// the reserved job name gpupool:<gpuType>:<fp> and lets a monitor correlate desired rows with live
+// SLURM jobs. Never return raw gpuPool rows over the agent key.
+export const publicConfigs = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const configs = await ctx.db.query("gpuPool").collect();
+    return configs.map((c) => ({
+      gpuType: c.gpuType,
+      desiredCount: c.desiredCount,
+      enabled: c.enabled,
+      restart: c.restart,
+      updatedAt: c.updatedAt,
+      fingerprint: fingerprint(c),
+    }));
+  },
+});
+
 export const allocationsByType = internalQuery({
   args: { gpuType: v.string() },
   handler: async (ctx, { gpuType }) => {
@@ -279,6 +300,20 @@ export const prevStatus = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("gpuPoolStatus").first();
+  },
+});
+
+// The most recent agent-key writes (the gpuPoolAgentLog audit trail) for the GET /pool monitor
+// (spec §7). Bounded with take(N) over the by_at index so the payload can't grow without limit as
+// the append-only log accumulates. The log holds no secret (writer is an id, not the key).
+export const recentAgentLog = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("gpuPoolAgentLog")
+      .withIndex("by_at")
+      .order("desc")
+      .take(50);
   },
 });
 

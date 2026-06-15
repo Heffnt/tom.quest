@@ -782,4 +782,173 @@ describe("/pool httpAction", () => {
     const res = await postPool(t, { ...validBody, gpuType: "absent" }, "s3cret");
     expect(res.status).toBe(404);
   });
+
+  it("returns 503 when POOL_AGENT_KEY is unset (fail closed)", async () => {
+    // no vi.stubEnv("POOL_AGENT_KEY") — the guard must short-circuit before any work.
+    const t = convexTest(schema, modules);
+    expect((await postPool(t, validBody, "anything")).status).toBe(503);
+  });
+
+  it("rejects an invalid JSON body with 400", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const res = await t.fetch("/pool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Pool-Key": "s3cret" },
+      body: "{ not json",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an invalid restart value with 400", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const res = await postPool(t, { ...validBody, restart: "sometimes" }, "s3cret");
+    expect(res.status).toBe(400);
+  });
+
+  it("defaults the audited writer to 'agent' when omitted", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", { ...adminRow });
+    });
+    const noWriter = {
+      gpuType: "nvidia",
+      desiredCount: 2,
+      enabled: true,
+      restart: "never" as const,
+    };
+    const res = await postPool(t, noWriter, "s3cret");
+    expect(res.status).toBe(200);
+    const log = await t.run(async (ctx) =>
+      ctx.db.query("gpuPoolAgentLog").collect(),
+    );
+    expect(log).toHaveLength(1);
+    expect(log[0].writer).toBe("agent");
+  });
+
+  // --- GET /pool (the key-authed read endpoint) ---
+
+  async function getPool(
+    t: ReturnType<typeof convexTest>,
+    key?: string,
+  ): Promise<Response> {
+    const headers: Record<string, string> = {};
+    if (key !== undefined) headers["X-Pool-Key"] = key;
+    return t.fetch("/pool", { method: "GET", headers });
+  }
+
+  it("GET returns projected configs + status + audit, never the command", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", { ...adminRow });
+      await ctx.db.insert("gpuPoolAgentLog", {
+        at: 1,
+        writer: "agentX",
+        gpuType: "nvidia",
+        desiredCount: 3,
+        enabled: true,
+        restart: "never",
+      });
+    });
+    const res = await getPool(t, "s3cret");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      configs: Array<Record<string, unknown>>;
+      recentAgentLog: Array<Record<string, unknown>>;
+    };
+    expect(body.configs).toHaveLength(1);
+    const cfg = body.configs[0];
+    expect(cfg.gpuType).toBe("nvidia");
+    expect(cfg.desiredCount).toBe(adminRow.desiredCount);
+    expect(cfg.restart).toBe("always");
+    expect(typeof cfg.fingerprint).toBe("string");
+    // the agent read key must NEVER see the admin-authored worker command or project dir.
+    expect(cfg).not.toHaveProperty("commands");
+    expect(cfg).not.toHaveProperty("projectDir");
+    expect(body.recentAgentLog).toHaveLength(1);
+    expect(body.recentAgentLog[0].writer).toBe("agentX");
+  });
+
+  it("GET rejects a missing or wrong key with 401", async () => {
+    vi.stubEnv("POOL_AGENT_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    expect((await getPool(t)).status).toBe(401);
+    expect((await getPool(t, "wrong")).status).toBe(401);
+  });
+
+  it("GET returns 503 when POOL_AGENT_KEY is unset", async () => {
+    const t = convexTest(schema, modules);
+    expect((await getPool(t, "anything")).status).toBe(503);
+  });
+});
+
+describe("gpuPool.remove", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("deletes the config and its in-flight allocation rows", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", { role: "admin" }),
+    );
+    const tAdmin = t.withIdentity({ subject: userId + "|test" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", { ...adminRow });
+      await ctx.db.insert("gpuPoolAllocation", {
+        gpuType: "nvidia",
+        jobId: "900",
+        fingerprint: "deadbeef",
+        seenLive: true,
+        createdAt: 1,
+      });
+    });
+    await tAdmin.mutation(api.gpuPool.remove, { gpuType: "nvidia" });
+    const rows = await t.run(async (ctx) => ctx.db.query("gpuPool").collect());
+    const allocs = await t.run(async (ctx) =>
+      ctx.db.query("gpuPoolAllocation").collect(),
+    );
+    expect(rows).toHaveLength(0);
+    expect(allocs).toHaveLength(0);
+  });
+});
+
+describe("gpuPool.reconcile (multiple configs)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("reconciles each enabled config toward its own desired count", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("gpuPool", {
+        ...poolConfig,
+        gpuType: "nvidia",
+        desiredCount: 1,
+        updatedAt: 1,
+      });
+      await ctx.db.insert("gpuPool", {
+        ...poolConfig,
+        gpuType: "h100",
+        desiredCount: 1,
+        updatedAt: 1,
+      });
+    });
+    const calls = stubFetch({ jobs: [], allocateJobIds: ["200", "201"] });
+
+    await t.action(internal.gpuPool.reconcile, {});
+
+    // One GPU per cycle PER config: both rows get an allocate in the same run, so a second
+    // config is never starved by the first — the per-config loop handles each independently.
+    const allocate = calls.filter((c) => c.url.endsWith("/allocate"));
+    expect(allocate).toHaveLength(2);
+    const gpuTypes = allocate
+      .map((c) => (c.body as { gpu_type: string }).gpu_type)
+      .sort();
+    expect(gpuTypes).toEqual(["h100", "nvidia"]);
+  });
 });

@@ -107,11 +107,9 @@ pieces carry over directly.
 - A 60s `internalAction` cron reconciles desired-vs-actual purely by **reserved job name**
   read from the live `/jobs` list (name-authoritative; the allocation table is only an
   in-flight bridge). Reserved prefix `gpupool:`; name `gpupool:<gpuType>:<fingerprint>`.
-- **Fingerprint** = FNV-1a over exactly `[command, timeMins, memoryMb, projectDir, partition]`
-  — deliberately **excludes** `gpuType`, `desiredCount`, `enabled`, `priority`, `codeRef`, and
-  `restart` (scaling, toggling, ordering, code provenance, and the restart *policy* must not
-  change job identity). `partition` is included because it makes a materially different SLURM
-  job (§4.5).
+- **Fingerprint** = FNV-1a over exactly `[commands, timeMins, memoryMb, projectDir, releaseOnExit]`
+  — deliberately **excludes** `gpuType` (already in the reserved name), `desiredCount`, `enabled`,
+  and `restart` (scaling, toggling, and the restart *policy* must not change job identity).
 - **Two-layer clamp** of `desiredCount` to `[0, MAX_ALLOCATION_COUNT=16]`: in the public
   `set` mutation **and** again at reconcile read-time.
 - **Fail-closed:** on any failure to read `/jobs`, the cycle is skipped and prior state is
@@ -123,8 +121,8 @@ pieces carry over directly.
 - **Reserved-name guard** in two places: the Next proxy (authoritative,
   `route.ts:27`) and the allocate form (UX). All durable reconciler writes go through
   internalMutations (actions can't touch the DB).
-- `convex/http.ts` currently registers **only** auth routes — an agent HTTP endpoint is a
-  brand-new module (needs `npx convex deploy` typegen).
+- `convex/http.ts` registers the auth routes plus the agent worker-pool endpoint — `POST /pool`
+  (scale/toggle/restart) and `GET /pool` (read desired-state/status/audit), both key-authed (§7).
 
 ### 1.4 Verified Turing/SLURM facts that bind this design
 
@@ -184,24 +182,24 @@ declared worker assignment; the fleet is their union:
 
 ```
 gpuPool: {
-  gpuType:      string,   // single GPU per worker (whole-GPU only)
-  command:      string,   // the worker command, admin-authored (§7), e.g. the sweep.py invocation
-  projectDir:   string,   // the repo dir the worker runs the command in
-  desiredCount: number,   // how many workers to keep running
-  restart:      "always" | "never",  // always = keep-warm; never = run-to-completion (§4.3)
-  partition:    string,   // "" = default short (§4.5)
-  timeMins:     number,
-  memoryMb:     number,
-  codeRef:      string,   // "" = run the working tree; the launch HEAD SHA is recorded for provenance (§5)
-  enabled:      boolean,
-  priority:     number,   // tie-break when the shared GPU budget is exceeded (§4.5)
-  updatedAt:    number,
+  gpuType:       string,   // single GPU per worker (whole-GPU only)
+  commands:      string[], // the worker command lines, admin-authored (§7), e.g. the sweep.py invocation
+  projectDir:    string,   // the repo dir the worker runs the command in
+  desiredCount:  number,   // how many workers to keep running
+  restart:       "always" | "never",  // always = keep-warm; never = run-to-completion (§4.3)
+  timeMins:      number,
+  memoryMb:      number,
+  releaseOnExit: boolean,  // cancel the SLURM job when its command finishes
+  enabled:       boolean,
+  updatedAt:     number,
 }
 ```
 
 `desiredCount` is **two-layer clamped** (set-mutation and reconcile read-time) to
-`[0, EFFECTIVE_CAP]`, where `EFFECTIVE_CAP` derives from the real QOS cap (12 on short), not
-the legacy 16 (§4.5). The `restart` policy governs whether an exited worker is replaced (§4.3).
+`[0, MAX_ALLOCATION_COUNT=16]`. The richer shared-budget clamp to the real QOS cap (12 on
+`short`) with interactive headroom is deferred (§4.5, §13); 16 is a soft app ceiling above
+SLURM's own hard `DenyOnLimit` cap of 12. The `restart` policy governs whether an exited worker
+is replaced (§4.3).
 
 ### 4.2 Reserved name and the worker wrapper
 
@@ -211,9 +209,9 @@ The worker's SLURM job name carries name-authoritative ownership:
 gpupool:<gpuType>:<fp>      // e.g. gpupool:H200:1a2b3c4d
 ```
 
-`fp` is the fingerprint over the worker-identity fields (§1.3): `command`, `timeMins`,
-`memoryMb`, `projectDir`, `partition` — excluding `gpuType` (in the name), `desiredCount`,
-`enabled`, `priority`, and `restart` (a scaling/policy toggle must not change identity).
+`fp` is the fingerprint over the worker-identity fields (§1.3): `commands`, `timeMins`,
+`memoryMb`, `projectDir`, `releaseOnExit` — excluding `gpuType` (in the name), `desiredCount`,
+`enabled`, and `restart` (a scaling/policy toggle must not change identity).
 
 tom.Quest owns the worker's launch, so the wrapper just runs the command, records the launch
 HEAD SHA for provenance (§5), and **self-`scancel`s on exit** so a finished worker frees its
@@ -269,19 +267,18 @@ cancels jobs it owns.
 ### 4.5 The shared GPU budget
 
 The worker pool and manual allocations are the **same user against one 12-GPU `short` cap**.
-The inherited `MAX_ALLOCATION_COUNT=16` **exceeds the real cap** and must not be used as the
-ceiling.
+Today `desiredCount` is clamped per row to `[0, MAX_ALLOCATION_COUNT=16]` (two-layer: the `set`
+mutation and reconcile read-time). 16 sits **above** the real cap deliberately — SLURM's own
+`DenyOnLimit` on the `short` QOS is the hard backstop: an over-12 allocate is **rejected, not
+queued**, and the reconciler surfaces that refusal as a benign "throttled" state (§4.3), never as
+churn. So the fleet cannot actually exceed 12 even though the app ceiling is 16.
 
-- `EFFECTIVE_CAP` = the QOS cap of the partition (`short` → 12), read once and cached
-  (re-confirmable via `sacctmgr`).
-- Total desired worker GPUs = `Σ desiredCount over enabled pool rows`, clamped to
-  `EFFECTIVE_CAP − reservedInteractiveHeadroom − liveManualGpuCount`, where
-  `liveManualGpuCount` = jobs in `/jobs` **not** matching the `gpupool:` prefix (interactive/
-  manual allocations). This keeps the rebuild-phase interactive `salloc` from being starved by
-  the worker fleet and vice versa. The clamp is two-layer (set-mutation and reconcile
-  read-time).
-- When the clamp bites, allocate across enabled rows by `priority` (then even-share). Surface
-  "throttled by GPU budget" as a benign state (§4.3), never as an error.
+The richer **shared-budget clamp** is **deferred** (§13): `EFFECTIVE_CAP` = the QOS cap (`short`
+→ 12) minus a `reservedInteractiveHeadroom` minus `liveManualGpuCount` (jobs in `/jobs` **not**
+matching the `gpupool:` prefix), with `priority` arbitration across rows when the clamp bites. It
+would keep the rebuild-phase interactive `salloc` from being starved by the fleet and vice versa;
+until it lands, keep `desiredCount` low enough to leave interactive headroom by hand.
+
 - **Partition:** workers run on `short` (12 GPUs, 24 h walltime); a worker `TIMEOUT`-killed at
   the wall loses only its in-flight node, redone by another worker. (`long` — 7-day walltime,
   4 GPUs — exists if a single node ever needs to outlive 24 h; not used by default.)
@@ -329,13 +326,15 @@ Desired state is the `gpuPool` table with **two authenticated writers**:
 - **Human (admin), via the dashboard** — admin-session-gated Convex mutations (the `gpuPool`
   pattern: `requireAdmin`, two-layer clamp, upsert-whole-row). This is the **only** path that
   may author or change a row's `command`, `partition`, or resource limits.
-- **Agent, via a key-authed Convex HTTP `/pool` endpoint** — a new `httpAction` in
-  `convex/http.ts` (a new module → needs a deploy/typegen). It calls a narrow internal
-  mutation (`agentScale`) that may write **only** `desiredCount`, `enabled`, and `restart`,
-  on an **existing admin-authored row** (looked up by `gpuType`); it **refuses if no such row
-  exists** (no insert) and never touches `command`/`partition`/limits. It shares the human
-  path's `clampDesired()` helper. Agents may run anywhere (Turing, laptop, CI); both writers
-  hit the same table, so they stay in sync and the reconciler is still the only SLURM actor.
+- **Agent, via a key-authed Convex HTTP `/pool` endpoint** in `convex/http.ts`, two methods on
+  one path. `POST /pool` calls a narrow internal mutation (`agentScale`) that may write **only**
+  `desiredCount`, `enabled`, and `restart`, on an **existing admin-authored row** (looked up by
+  `gpuType`); it **refuses if no such row exists** (no insert) and never touches
+  `commands`/limits. It shares the human path's `clampDesired()` helper. `GET /pool` is the
+  read counterpart (§8.1): it returns the projected pool desired-state, the last reconcile
+  status, and the recent agent-write audit — read-only, never the worker command. Agents may
+  run anywhere (Turing, laptop, CI); both writers hit the same table, so they stay in sync and
+  the reconciler is still the only SLURM actor.
 
 Security of the agent path (the new attack surface — load-bearing):
 
@@ -343,12 +342,14 @@ Security of the agent path (the new attack surface — load-bearing):
   agent-writable; the agent can only scale/toggle/restart pre-approved rows. Arbitrary shell
   as `ntheffernan` on a GPU node therefore stays a **Tom-only** capability behind the existing
   `isTom` gate. (This is why the worker command lives in the row, not in a free-form request.)
-- **Separate narrow key**, stored **only in Convex env** (`secrets/convex.env`), never in
-  Vercel/`next.env` — it shares nothing with `TURING_API_KEY` (the auth-clobber lesson).
-  Constant-time compare. Authorizes **only** the `agentScale` write (no table reads, no
-  terminal, no `/allocate` passthrough). Every write is **logged with a writer id + the
-  resulting desired values** into the status singleton (the only audit trail). Rotation via
-  `pnpm secrets:sync`.
+- **Separate narrow key** (`POOL_AGENT_KEY`), stored **only in Convex env**
+  (`secrets/convex.env`), never in Vercel/`next.env` — it shares nothing with `TURING_API_KEY`
+  (the auth-clobber lesson). Constant-time compare. Authorizes the `agentScale` write **and**
+  the `GET /pool` read of pool desired-state/status/recent-audit (both key-gated; the read is
+  projected to never expose the worker command); no terminal, no `/allocate` passthrough. Every
+  write is **logged with a writer id + the resulting desired values** into the append-only
+  `gpuPoolAgentLog` table (the audit trail) — kept separate from the reconcile status singleton,
+  which the reconciler overwrites each cycle. Rotation via `pnpm secrets:sync`.
 - **Clamp at the boundary too**, not just at reconcile — a bad `desiredCount` (9999, −5) must
   be clamped where it is written, so no code path ever trusts an out-of-range stored value.
 
@@ -373,8 +374,9 @@ lives in booleanbackdoors's own analysis CLI (`python -m boolean_backdoor.analys
 
 ### 8.2 The dashboard
 
-Per pool: the live workers (count vs `desiredCount`, the `restart` policy, the `codeRef`
-provenance SHA), each with a per-worker drill-down — GPU type, time-left, GPU-hours so far,
+Per pool: the live workers (count vs `desiredCount` and the `restart` policy; the `codeRef`
+provenance SHA is deferred, §13), each with a per-worker drill-down — GPU type, time-left,
+GPU-hours so far,
 an attach-to-tmux link (the existing terminal WebSocket), and the tail of its log. There is
 no tree-derived "done/total" bar — experiment progress is the analysis CLI's job (the intro
 above). A `restart:never` pool that has drained shows zero live workers and a benign
@@ -437,18 +439,20 @@ on workers for free.
 
 Sync-`def` for every blocking/FS endpoint (§1.1). The `gpupool:` reserved name and
 name-authoritative ownership (§4.2). Separate narrow agent key, never `TURING_API_KEY`, with
-command authoring admin-only (§7). Whole-GPU single-GPU workers; clamp to the **real QOS cap
-(12 on short)**, not 16 (§4.5). Convex: durable writes through mutations; new HTTP module
-needs a deploy; adding fields needs no `_generated` hand-edit. Confinement through
+command authoring admin-only (§7). Whole-GPU single-GPU workers; `desiredCount` clamped to
+`[0, 16]`, with SLURM `DenyOnLimit` (12 on `short`) the hard backstop and the real-QOS
+shared-budget clamp deferred (§4.5, §13). Convex: durable writes through mutations; HTTP
+endpoints in `convex/http.ts`; adding fields needs no `_generated` hand-edit. Confinement through
 `resolve_within_root` (§8.4).
 
 ---
 
 ## 12. Open decisions (need the operator's call)
 
-1. **Interactive headroom.** `EFFECTIVE_CAP = 12` on `short` is confirmed; set
-   `reservedInteractiveHeadroom` — how many of the 12 GPUs to keep free for interactive
-   rebuild work (the `/allocate` path, §10) so the worker fleet never starves it.
+1. **Interactive headroom.** Deferred with the shared-budget clamp (§4.5, §13): when that lands,
+   set `reservedInteractiveHeadroom` — how many of the 12 `short` GPUs to keep free for
+   interactive rebuild work (the `/allocate` path, §10) so the worker fleet never starves it.
+   Until then, leave headroom by keeping `desiredCount` below 12 by hand.
 2. **Dashboard depth (future).** Ship the generic ops view (§8.2). If scientific results
    (clean_accuracy / ASR / FTR) are ever wanted *in the tom.Quest dashboard* rather than the
    analysis CLI, read the existing `tidy/tidy.parquet` via Polars (cheap, possibly stale —
@@ -463,3 +467,18 @@ needs a deploy; adding fields needs no `_generated` hand-edit. Confinement throu
 multi-node** runs (the campaign's default scale is single-GPU small models). Surfacing the
 **tidy projection** as live results in the tom.Quest dashboard (§12.2). The **`/boolback`
 router overhaul** (§9).
+
+Deferred from the worker-pool design (the shipped code clamps to `[0, 16]` and relies on SLURM
+`DenyOnLimit` as the real cap, §4.5):
+
+- **Shared-budget clamp** — `EFFECTIVE_CAP = 12 − reservedInteractiveHeadroom −
+  liveManualGpuCount`, with `priority` arbitration across enabled rows when the clamp bites
+  (§4.5, §12.1). Until built, hold interactive headroom by keeping `desiredCount` low by hand.
+- **`partition` field** — workers run on the default `short` only; no per-row partition choice
+  (so it is not in the fingerprint, §4.2).
+- **`codeRef` field + HEAD-SHA provenance** — workers run the working tree; the launch HEAD SHA
+  is not yet recorded or surfaced (§5, §8.2).
+- **`priority` field** — no cross-row tie-break; relevant only once the shared-budget clamp lands.
+- **The `restart:always` "drained" benign signal** (§4.3, §8.5) — a pool pointed at an
+  already-drained active set relaunches exit-0 workers rather than surfacing a distinct
+  "drained" state; the churn breaker still fires on genuine crashes.

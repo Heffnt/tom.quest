@@ -18,6 +18,7 @@ type PoolConfig = {
   commands: string[];
   projectDir: string;
   releaseOnExit: boolean;
+  restart?: "always" | "never";
   enabled: boolean;
 };
 
@@ -56,6 +57,7 @@ type Draft = {
   memoryMb: string;
   projectDir: string;
   releaseOnExit: boolean;
+  restart: "always" | "never";
   commands: string[];
   enabled: boolean;
 };
@@ -67,6 +69,7 @@ const BLANK_DRAFT: Draft = {
   memoryMb: "64000",
   projectDir: "",
   releaseOnExit: false,
+  restart: "always",
   commands: [""],
   enabled: true,
 };
@@ -97,6 +100,7 @@ function draftFromConfig(config: PoolConfig): Draft {
     memoryMb: String(config.memoryMb),
     projectDir: config.projectDir,
     releaseOnExit: config.releaseOnExit ?? false,
+    restart: config.restart ?? "always",
     commands: config.commands.length ? [...config.commands] : [""],
     enabled: config.enabled,
   };
@@ -163,6 +167,7 @@ export default function PoolPanel() {
         commands: draft.commands.filter((c) => c.trim()),
         projectDir: draft.projectDir,
         releaseOnExit: draft.releaseOnExit,
+        restart: draft.restart,
         enabled: draft.enabled,
       });
       startNew();
@@ -186,6 +191,7 @@ export default function PoolPanel() {
         commands: config.commands,
         projectDir: config.projectDir,
         releaseOnExit: config.releaseOnExit,
+        restart: config.restart ?? "always",
         enabled: !config.enabled,
       });
     } catch (e) {
@@ -277,6 +283,12 @@ export default function PoolPanel() {
                   allocate failed: {poolStatus.allocateError}
                 </span>
               )}
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded border border-border/60 text-text-muted"
+                title="restart policy"
+              >
+                {pool.restart ?? "always"}
+              </span>
               {pool.commands.length > 0 && (
                 <span className="text-xs text-text-faint font-mono truncate max-w-[16rem]" title={pool.commands.join(" ; ")}>
                   {pool.commands.join(" ; ")}
@@ -432,6 +444,19 @@ export default function PoolPanel() {
             className="accent-accent"
           />
           Release on exit (cancel the SLURM job when its command finishes)
+        </label>
+        <label className="text-sm block">
+          <span className="block text-text-muted mb-1">Restart policy</span>
+          <select
+            value={draft.restart}
+            onChange={(e) =>
+              setDraft({ ...draft, restart: e.target.value as "always" | "never" })
+            }
+            className={inputClass}
+          >
+            <option value="always">always — keep-warm (replace a worker when it exits)</option>
+            <option value="never">never — run-to-completion (pool drains to zero as workers exit)</option>
+          </select>
         </label>
 
         {editingMissing && (

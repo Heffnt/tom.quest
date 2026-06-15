@@ -102,4 +102,28 @@ const pool = httpAction(async (ctx, request) => {
 
 http.route({ path: "/pool", method: "POST", handler: pool });
 
+// Agent worker-pool READ endpoint (spec §7) — the key-authed monitoring counterpart to POST /pool.
+// Lets a monitoring agent confirm pool desired-state, the last reconcile outcome, and the recent
+// agent-write audit WITHOUT an admin session or the deploy key. Read-only: same POOL_AGENT_KEY and
+// the same 503-then-401 guard order as the write path, but it never parses a body (a GET has none)
+// and reads only the projected/internal queries — never the requireAdmin status/list, which would
+// throw under the agent key. GET and POST coexist on "/pool" because the router keys on path+method.
+const poolRead = httpAction(async (ctx, request) => {
+  const expected = process.env.POOL_AGENT_KEY;
+  if (!expected) {
+    return jsonResponse(503, { error: "POOL_AGENT_KEY not configured" });
+  }
+  const presented = request.headers.get("X-Pool-Key") ?? "";
+  if (!timingSafeEqual(presented, expected)) {
+    return jsonResponse(401, { error: "unauthorized" });
+  }
+  return jsonResponse(200, {
+    configs: await ctx.runQuery(internal.gpuPool.publicConfigs, {}),
+    status: await ctx.runQuery(internal.gpuPool.prevStatus, {}),
+    recentAgentLog: await ctx.runQuery(internal.gpuPool.recentAgentLog, {}),
+  });
+});
+
+http.route({ path: "/pool", method: "GET", handler: poolRead });
+
 export default http;
