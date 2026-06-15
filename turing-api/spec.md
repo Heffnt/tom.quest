@@ -398,9 +398,9 @@ Outcomes come from:
 tom.Quest does not walk the artifact tree, so there is no large scan to bound — its file
 access is just the worker log tails. Still, **every file endpoint goes through
 `dirs.py:resolve_within_root`** (regression-test that `../`, absolute escapes, and
-`.env`/`.ssh`/`.pem`/`.key` targets are 403). **Never** use `boolback.py:resolve_input_path`
-— it has no confinement and no secret denial (a pre-existing path-traversal/secret-read bug,
-to be fixed separately, §9).
+`.env`/`.ssh`/`.pem`/`.key` targets are 403), including `boolback.py:resolve_input_path`, which
+routes through `resolve_within_root` and rejects the same `../`/absolute/secret-named targets with
+403 (regression tests in `boolback_test.py`).
 
 ### 8.5 Failure surfacing
 
@@ -419,9 +419,9 @@ is needed.
 The `/boolback` router is **out of scope for this redesign** — it is built on the legacy
 booleanbackdoors tree schema and needs a dedicated overhaul of its own. This redesign does
 not reimplement its progress surface in tom.Quest (campaign progress now lives in
-booleanbackdoors's analysis CLI, §8). Independently, `boolback.py:resolve_input_path` remains
-a **pre-existing security bug** (unconfined, secret-readable path primitive) to be routed
-through `resolve_within_root` whenever that overhaul happens.
+booleanbackdoors's analysis CLI, §8). Its `resolve_input_path` primitive is now routed through
+`resolve_within_root` (confined, secret-denying — `boolback_test.py`); the broader router overhaul
+remains future work.
 
 ---
 
