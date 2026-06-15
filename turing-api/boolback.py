@@ -15,6 +15,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
+from dirs import PathNotAllowed, resolve_within_root
+
 router = APIRouter(prefix="/boolback", tags=["boolback"])
 
 def _resolve_path_env(raw_value: str, base_dir: Path) -> Path:
@@ -409,13 +411,17 @@ def compute_varying_sweep_keys(
 
 
 def resolve_input_path(path_value: str, project_root: Path) -> Path:
+    # Confine user-supplied sweep_config / expressions_file paths to the project
+    # root and refuse secret-bearing names. Without this a /progress query param
+    # like '../../.ssh/id_rsa' or an absolute '/etc/passwd' would read arbitrary
+    # files off the host (the path is opened/parsed downstream).
     value = str(path_value or "").strip()
     if not value:
         raise HTTPException(status_code=400, detail="Path cannot be empty")
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = project_root / path
-    return path.resolve()
+    try:
+        return resolve_within_root(value, root=project_root)
+    except PathNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
 
 def load_batch_module(batch_path: Path, project_root: Path) -> ModuleType:

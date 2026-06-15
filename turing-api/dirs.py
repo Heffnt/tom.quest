@@ -19,13 +19,22 @@ class PathNotAllowed(Exception):
     """Raised when a requested path escapes ALLOWED_FILE_ROOT or hits a secret."""
 
 
-def resolve_within_root(path: str) -> Path:
+def resolve_within_root(path: str, root: Path | None = None) -> Path:
+    # The one audited confinement primitive. `root` defaults to ALLOWED_FILE_ROOT
+    # (the /file and /dirs root) but is overridable so other surfaces can confine
+    # user-supplied paths to a tighter root (e.g. the boolback project root) while
+    # sharing the same '..'/symlink-escape and secret-name rejection. A relative
+    # path is taken relative to `root`; an absolute path must already be inside it.
+    # Resolve the default at call time (not as a default arg) so a patched/updated
+    # ALLOWED_FILE_ROOT is honored.
+    if root is None:
+        root = ALLOWED_FILE_ROOT
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
-        candidate = ALLOWED_FILE_ROOT / candidate
+        candidate = root / candidate
     # resolve() collapses '..' and follows symlinks, so neither can escape root.
     resolved = candidate.resolve()
-    if resolved != ALLOWED_FILE_ROOT and ALLOWED_FILE_ROOT not in resolved.parents:
+    if resolved != root and root not in resolved.parents:
         raise PathNotAllowed("Path is outside the allowed root")
     if set(resolved.parts) & _DENIED_PATH_PARTS:
         raise PathNotAllowed("Path is within a restricted directory")
