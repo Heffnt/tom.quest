@@ -1,44 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Ingredient, Source } from "../lib/types";
+import type { Ingredient } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
 import { ALL_TOKENS, FUND } from "../data/base";
 import { FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
-function sourceKey(s: Source): string {
-  return s.kind === "base" ? "base" : `user:${s.userId}`;
-}
-function sourceLabel(s: Source): string {
-  return s.kind === "base" ? "Base" : s.name || "Anonymous";
-}
-
-export default function IngredientPanel({
-  ingredients,
-  onAdd,
-  onRequestAdd,
-  canCreate,
-  currentUserId,
-  onRemoveCustom,
-}: IngredientPanelProps) {
+export default function IngredientPanel({ ingredients, onAdd }: IngredientPanelProps) {
   const [search, setSearch] = useState("");
   const [freqFilter, setFreqFilter] = useState<string | null>(null);
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
-
-  const sources = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const ing of ingredients) map.set(sourceKey(ing.source), sourceLabel(ing.source));
-    // Base first, then creators alphabetically.
-    return [...map.entries()].sort((a, b) =>
-      a[0] === "base" ? -1 : b[0] === "base" ? 1 : a[1].localeCompare(b[1]),
-    );
-  }, [ingredients]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return ingredients
-      .filter((ing) => !hidden.has(sourceKey(ing.source)))
       .filter((ing) => (freqFilter ? ing.emits.includes(freqFilter) : true))
       .filter((ing) => {
         if (!q) return true;
@@ -47,21 +22,8 @@ export default function IngredientPanel({
         if (ing.emits.some((t) => (FUND[t]?.school ?? "").toLowerCase().includes(q))) return true;
         return false;
       })
-      .sort((a, b) => {
-        const ab = a.source.kind === "base" ? 0 : 1;
-        const bb = b.source.kind === "base" ? 0 : 1;
-        if (ab !== bb) return ab - bb;
-        return a.name.localeCompare(b.name);
-      });
-  }, [ingredients, hidden, freqFilter, search]);
-
-  const toggleSource = (k: string) =>
-    setHidden((prev) => {
-      const next = new Set(prev);
-      if (next.has(k)) next.delete(k);
-      else next.add(k);
-      return next;
-    });
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [ingredients, freqFilter, search]);
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
@@ -83,7 +45,7 @@ export default function IngredientPanel({
           className="w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
         />
 
-        {/* frequency filter */}
+        {/* filter by frequency */}
         <div className="flex flex-wrap items-center gap-1">
           <button
             type="button"
@@ -111,33 +73,6 @@ export default function IngredientPanel({
             </button>
           ))}
         </div>
-
-        {/* sources */}
-        {sources.length > 1 && (
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="font-mono text-[10px] uppercase tracking-wider text-text-faint">
-              sources:
-            </span>
-            {sources.map(([k, label]) => {
-              const on = !hidden.has(k);
-              return (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => toggleSource(k)}
-                  aria-pressed={on}
-                  className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors duration-150 ${
-                    on
-                      ? "border-accent/40 bg-accent/10 text-accent"
-                      : "border-border text-text-faint hover:text-text-muted"
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {/* list */}
@@ -149,31 +84,10 @@ export default function IngredientPanel({
         ) : (
           <ul className="divide-y divide-border/50">
             {filtered.map((ing) => (
-              <IngredientRow
-                key={ing.key}
-                ing={ing}
-                onAdd={onAdd}
-                deletable={
-                  ing.source.kind === "user" &&
-                  !!currentUserId &&
-                  ing.source.userId === currentUserId
-                }
-                onRemoveCustom={onRemoveCustom}
-              />
+              <IngredientRow key={ing.key} ing={ing} onAdd={onAdd} />
             ))}
           </ul>
         )}
-      </div>
-
-      {/* create */}
-      <div className="border-t border-border p-3">
-        <button
-          type="button"
-          onClick={onRequestAdd}
-          className="w-full rounded-lg border border-accent/30 px-3 py-1.5 text-xs text-accent transition-colors duration-150 hover:border-accent/50 hover:bg-accent/10"
-        >
-          {canCreate ? "+ New ingredient" : "Sign in to add an ingredient"}
-        </button>
       </div>
     </div>
   );
@@ -182,13 +96,9 @@ export default function IngredientPanel({
 function IngredientRow({
   ing,
   onAdd,
-  deletable,
-  onRemoveCustom,
 }: {
   ing: Ingredient;
   onAdd: (key: string) => void;
-  deletable: boolean;
-  onRemoveCustom?: (convexId: string) => void;
 }) {
   const inert = ing.emits.length === 0 && !ing.minus && !ing.plus;
   return (
@@ -201,14 +111,7 @@ function IngredientRow({
       >
         <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-sm text-text">{ing.name}</span>
-            {ing.source.kind === "user" && (
-              <span className="shrink-0 truncate font-mono text-[10px] text-text-faint">
-                · {ing.source.name}
-              </span>
-            )}
-          </div>
+          <span className="block truncate text-sm text-text">{ing.name}</span>
           <div className="mt-1 flex flex-wrap items-center gap-1">
             {ing.emits.map((t, i) => (
               <FrequencySymbol key={`${t}:${i}`} id={t} size={18} />
@@ -233,26 +136,14 @@ function IngredientRow({
           </div>
         </div>
       </button>
-      <div className="flex shrink-0 items-center gap-1">
-        {deletable && onRemoveCustom && (
-          <button
-            type="button"
-            onClick={() => onRemoveCustom(ing.key.replace(/^user:/, ""))}
-            aria-label={`Delete ${ing.name}`}
-            className="grid h-6 w-6 place-items-center rounded text-text-faint opacity-0 transition-colors duration-150 hover:text-error group-hover:opacity-100"
-          >
-            ×
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => onAdd(ing.key)}
-          aria-label={`Add ${ing.name}`}
-          className="grid h-7 w-7 place-items-center rounded-lg border border-border text-text-muted transition-colors duration-150 hover:border-accent hover:text-accent"
-        >
-          +
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => onAdd(ing.key)}
+        aria-label={`Add ${ing.name}`}
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-border text-text-muted transition-colors duration-150 hover:border-accent hover:text-accent"
+      >
+        +
+      </button>
     </li>
   );
 }

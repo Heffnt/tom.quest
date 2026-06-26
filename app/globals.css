@@ -77,6 +77,9 @@ button, input, select, textarea {
 .pf-steam  { animation: pf-steam var(--pf-dur, 5s) ease-out infinite; animation-delay: var(--pf-delay, 0s); }
 .pf-glow   { animation: pf-brew-glow 4s ease-in-out infinite; }
 .pf-pop    { animation: pf-pop 0.32s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+/* arc slot: smoothly reflow position + tilt when tokens are added/removed */
+.pf-slot   { transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1), top 0.5s cubic-bezier(0.22, 1, 0.36, 1), transform 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
 @media (prefers-reduced-motion: reduce) {
   .pf-float, .pf-bubble, .pf-steam, .pf-glow, .pf-pop { animation: none !important; }
+  .pf-slot { transition: none !important; }
 }

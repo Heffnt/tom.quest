@@ -54,20 +54,34 @@ type Floater = {
   summoned?: boolean; // freq summoned via a wildcard (undo-able)
 };
 
-// Place a floater in an elliptical band above the cauldron brew.
-function floaterStyle(uid: string): React.CSSProperties {
-  const rx = hash01(uid, 1);
-  const ry = hash01(uid, 2);
-  const left = 8 + rx * 84; // 8%..92%
-  const top = 3 + ry * 56; //  3%..59%
-  const dx = (hash01(uid, 3) - 0.5) * 26; // px drift
-  const dy = -8 - hash01(uid, 4) * 20;
-  const rot = (hash01(uid, 5) - 0.5) * 16;
-  const dur = 4.5 + hash01(uid, 6) * 5; // 4.5s..9.5s
-  const delay = -hash01(uid, 7) * 6; // negative => desync start
+// Fan the floaters into a "hand of cards" arc above the cauldron. The arc widens
+// with the number of tokens (up to a cap) and narrows as they're removed; each
+// token's slot transitions smoothly (via .pf-slot) so the others slide to make
+// room. Positions are percentages of the float field.
+function arcSlot(i: number, n: number): { x: number; y: number; angle: number } {
+  if (n <= 1) return { x: 50, y: 30, angle: 0 };
+  const STEP = 0.27; // ~15.5° between adjacent cards
+  const MAX_FAN = 2.25; // ~129° widest total spread
+  const step = Math.min(STEP, MAX_FAN / (n - 1));
+  const a = (i - (n - 1) / 2) * step; // radians, centered on 0
+  const RX = 36; // horizontal radius (% of field width)
+  const RY = 40; // vertical radius (taller -> a more pronounced arc)
+  const pivotY = 70; // arc pivots from below, opening upward
   return {
-    left: `${left}%`,
-    top: `${top}%`,
+    x: 50 + RX * Math.sin(a),
+    y: pivotY - RY * Math.cos(a),
+    angle: ((a * 180) / Math.PI) * 0.55, // damped card tilt
+  };
+}
+
+// Gentle in-place bob, deterministic per token so it stays stable across renders.
+function driftStyle(uid: string): React.CSSProperties {
+  const dx = (hash01(uid, 3) - 0.5) * 10; // ±5px
+  const dy = -4 - hash01(uid, 4) * 6; // -4..-10px
+  const rot = (hash01(uid, 5) - 0.5) * 6; // ±3deg
+  const dur = 3.5 + hash01(uid, 6) * 3; // 3.5..6.5s
+  const delay = -hash01(uid, 7) * 5; // desync start
+  return {
     ["--pf-dx" as string]: `${dx}px`,
     ["--pf-dy" as string]: `${dy}px`,
     ["--pf-rot" as string]: `${rot}deg`,
@@ -241,11 +255,13 @@ export default function Cauldron({
               add ingredients to conjure their frequencies…
             </div>
           )}
-          {floaters.map((f) => {
+          {floaters.map((f, i) => {
+            const slot = arcSlot(i, floaters.length);
+            const ghost = f.kind === "ghost";
+            let inner: React.ReactNode;
             if (f.kind === "strike") {
-              return (
+              inner = (
                 <button
-                  key={f.uid}
                   type="button"
                   onPointerDown={onStrikePointerDown}
                   onPointerMove={onStrikePointerMove}
@@ -253,11 +269,11 @@ export default function Cauldron({
                   onPointerCancel={onStrikePointerCancel}
                   aria-label="Strike — drag onto a frequency to remove it"
                   title="Strike: drag onto a frequency to remove it"
-                  className={`pf-float absolute grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none select-none place-items-center rounded-full border text-sm font-bold active:cursor-grabbing ${
+                  className={`pf-float grid h-8 w-8 cursor-grab touch-none select-none place-items-center rounded-full border text-sm font-bold active:cursor-grabbing ${
                     armed ? "ring-2 ring-offset-2 ring-offset-bg" : ""
                   }`}
                   style={{
-                    ...floaterStyle(f.uid),
+                    ...driftStyle(f.uid),
                     borderColor: STRIKE,
                     color: STRIKE,
                     background: "#a855f71a",
@@ -268,18 +284,16 @@ export default function Cauldron({
                   ⊖
                 </button>
               );
-            }
-            if (f.kind === "wild") {
-              return (
+            } else if (f.kind === "wild") {
+              inner = (
                 <button
-                  key={f.uid}
                   type="button"
                   onClick={openPicker}
                   aria-label="Wildcard — click to choose a frequency to summon"
                   title="Wildcard: click to summon any frequency"
-                  className="pf-float absolute grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-full border text-sm font-bold"
+                  className="pf-float grid h-8 w-8 cursor-pointer place-items-center rounded-full border text-sm font-bold"
                   style={{
-                    ...floaterStyle(f.uid),
+                    ...driftStyle(f.uid),
                     borderColor: COPPER,
                     color: COPPER,
                     background: "#c98a3c1a",
@@ -289,75 +303,87 @@ export default function Cauldron({
                   ⊕
                 </button>
               );
-            }
-            // freq or ghost
-            const ghost = f.kind === "ghost";
-            return (
-              <div
-                key={f.uid}
-                {...(!ghost && !f.summoned ? { "data-drop-token": f.uid } : {})}
-                onClick={() => {
-                  if (ghost) {
-                    onUnstrike(f.id!);
-                    setArmed(false);
-                  } else {
-                    onFreqClick(f);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
+            } else {
+              inner = (
+                <div
+                  {...(!ghost && !f.summoned ? { "data-drop-token": f.uid } : {})}
+                  onClick={() => {
                     if (ghost) {
                       onUnstrike(f.id!);
                       setArmed(false);
                     } else {
                       onFreqClick(f);
                     }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      if (ghost) {
+                        onUnstrike(f.id!);
+                        setArmed(false);
+                      } else {
+                        onFreqClick(f);
+                      }
+                    }
+                  }}
+                  aria-label={
+                    ghost
+                      ? `${f.id} removed — click to restore`
+                      : `${f.id} frequency${f.summoned ? ", summoned — click to dispel" : ""}`
                   }
-                }}
-                aria-label={
-                  ghost
-                    ? `${f.id} removed — click to restore`
-                    : `${f.id} frequency${f.summoned ? ", summoned — click to dispel" : ""}`
-                }
-                title={
-                  ghost
-                    ? `${f.id} — struck out (click to restore)`
-                    : f.summoned
-                      ? `${f.id} — summoned (click to dispel)`
-                      : f.id
-                }
-                className={`pf-float pf-pop absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full transition-[filter,opacity] ${
-                  hoverTarget === f.uid ? "ring-2 ring-offset-2 ring-offset-bg" : ""
-                }`}
+                  title={
+                    ghost
+                      ? `${f.id} — struck out (click to restore)`
+                      : f.summoned
+                        ? `${f.id} — summoned (click to dispel)`
+                        : f.id
+                  }
+                  className={`pf-float relative cursor-pointer rounded-full transition-[filter,opacity] ${
+                    hoverTarget === f.uid ? "ring-2 ring-offset-2 ring-offset-bg" : ""
+                  }`}
+                  style={{
+                    ...driftStyle(f.uid),
+                    opacity: ghost ? 0.34 : 1,
+                    filter: ghost ? "grayscale(1)" : "none",
+                    ...(hoverTarget === f.uid
+                      ? ({ ["--tw-ring-color" as string]: STRIKE } as React.CSSProperties)
+                      : {}),
+                  }}
+                >
+                  <FrequencySymbol id={f.id!} size={36} />
+                  {f.summoned && (
+                    <span
+                      className="absolute -right-1 -top-1 grid h-3.5 w-3.5 place-items-center rounded-full text-[8px] font-bold"
+                      style={{ background: COPPER, color: "#14132B" }}
+                    >
+                      ⊕
+                    </span>
+                  )}
+                  {ghost && (
+                    <span
+                      className="pointer-events-none absolute inset-0 grid place-items-center text-lg font-bold"
+                      style={{ color: STRIKE }}
+                    >
+                      ⊘
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            return (
+              <div
+                key={f.uid}
+                className="pf-slot absolute"
                 style={{
-                  ...floaterStyle(f.uid),
-                  opacity: ghost ? 0.34 : 1,
-                  filter: ghost ? "grayscale(1)" : "none",
-                  ...(hoverTarget === f.uid
-                    ? ({ ["--tw-ring-color" as string]: STRIKE } as React.CSSProperties)
-                    : {}),
+                  left: `${slot.x}%`,
+                  top: `${slot.y}%`,
+                  transform: `translate(-50%, -50%) rotate(${slot.angle}deg)`,
+                  zIndex: 10 + i,
                 }}
               >
-                <FrequencySymbol id={f.id!} size={36} />
-                {f.summoned && (
-                  <span
-                    className="absolute -right-1 -top-1 grid h-3.5 w-3.5 place-items-center rounded-full text-[8px] font-bold"
-                    style={{ background: COPPER, color: "#14132B" }}
-                  >
-                    ⊕
-                  </span>
-                )}
-                {ghost && (
-                  <span
-                    className="pointer-events-none absolute inset-0 grid place-items-center text-lg font-bold"
-                    style={{ color: STRIKE }}
-                  >
-                    ⊘
-                  </span>
-                )}
+                {inner}
               </div>
             );
           })}
