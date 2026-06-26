@@ -159,4 +159,30 @@ export default defineSchema({
     content: v.any(),
     createdAt: v.number(),
   }).index("by_chat_created", ["chatId", "createdAt"]),
+
+  perfumeIngredients: defineTable({
+    userId: v.id("users"),
+    creatorName: v.string(), // denormalized display name of creator
+    name: v.string(),
+    emits: v.array(v.string()), // token ids (fundamental letters or named ids); small bounded multiset
+    minus: v.number(), // ⊖ strike charges granted
+    plus: v.number(), // ⊕ wildcard charges granted
+    color: v.string(), // hex chip color
+    createdAt: v.number(),
+  }).index("by_user", ["userId"]),
+
+  perfumeRecipes: defineTable({
+    userId: v.id("users"),
+    creatorName: v.string(),
+    name: v.string(),
+    school: v.string(),
+    tier: v.union(
+      v.literal("simple"),
+      v.literal("advanced"),
+      v.literal("legendary"),
+    ),
+    req: v.array(v.string()), // target multiset of token ids
+    desc: v.string(),
+    createdAt: v.number(),
+  }).index("by_user", ["userId"]),
 });
