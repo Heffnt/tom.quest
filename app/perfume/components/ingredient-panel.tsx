@@ -5,6 +5,7 @@ import type { Ingredient, Source } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
 import { ALL_TOKENS, FUND } from "../data/base";
 import { FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
+import IngredientThumb from "./ingredient-thumb";
 
 function sourceKey(s: Source): string {
   return s.kind === "base" ? "base" : `user:${s.userId}`;
@@ -195,42 +196,41 @@ function IngredientRow({
       <button
         type="button"
         onClick={() => onAdd(ing.key)}
-        className="min-w-0 flex-1 text-left"
+        className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
         aria-label={`Add ${ing.name} to the cauldron`}
       >
-        <div className="flex items-center gap-1.5">
-          <span
-            className="h-2 w-2 shrink-0 rounded-full"
-            style={{ background: ing.color }}
-          />
-          <span className="truncate text-sm text-text">{ing.name}</span>
-          {ing.source.kind === "user" && (
-            <span className="shrink-0 truncate font-mono text-[10px] text-text-faint">
-              · {ing.source.name}
-            </span>
-          )}
-        </div>
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          {ing.emits.map((t, i) => (
-            <FrequencySymbol key={`${t}:${i}`} id={t} size={18} />
-          ))}
-          {ing.minus > 0 && (
-            <span
-              className="rounded px-1 font-mono text-[10px]"
-              style={{ color: STRIKE, background: "#a855f71a" }}
-            >
-              ⊖{ing.minus > 1 ? `×${ing.minus}` : ""}
-            </span>
-          )}
-          {ing.plus > 0 && (
-            <span
-              className="rounded px-1 font-mono text-[10px]"
-              style={{ color: COPPER, background: "#c98a3c1a" }}
-            >
-              ⊕{ing.plus > 1 ? `×${ing.plus}` : ""}
-            </span>
-          )}
-          {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
+        <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-sm text-text">{ing.name}</span>
+            {ing.source.kind === "user" && (
+              <span className="shrink-0 truncate font-mono text-[10px] text-text-faint">
+                · {ing.source.name}
+              </span>
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            {ing.emits.map((t, i) => (
+              <FrequencySymbol key={`${t}:${i}`} id={t} size={18} />
+            ))}
+            {ing.minus > 0 && (
+              <span
+                className="rounded px-1 font-mono text-[10px]"
+                style={{ color: STRIKE, background: "#a855f71a" }}
+              >
+                ⊖{ing.minus > 1 ? `×${ing.minus}` : ""}
+              </span>
+            )}
+            {ing.plus > 0 && (
+              <span
+                className="rounded px-1 font-mono text-[10px]"
+                style={{ color: COPPER, background: "#c98a3c1a" }}
+              >
+                ⊕{ing.plus > 1 ? `×${ing.plus}` : ""}
+              </span>
+            )}
+            {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
+          </div>
         </div>
       </button>
       <div className="flex shrink-0 items-center gap-1">

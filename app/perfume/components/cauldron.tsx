@@ -20,6 +20,7 @@ import {
   NAMED,
 } from "../data/base";
 import { FrequencySymbol, STRIKE, COPPER, namedColor, fundColor } from "../lib/frequencies";
+import IngredientThumb from "./ingredient-thumb";
 
 export interface CauldronProps {
   brew: BrewState;
@@ -379,11 +380,13 @@ export default function Cauldron({
             {brewCounts.map((b) => (
               <span
                 key={b.key}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface py-1 pl-2 pr-1 text-xs"
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface py-1 pl-1 pr-1 text-xs"
               >
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ background: b.color }}
+                <IngredientThumb
+                  name={b.name}
+                  source={b.key.startsWith("base:") ? { kind: "base" } : { kind: "user", userId: "", name: "" }}
+                  color={b.color}
+                  size={22}
                 />
                 <span className="max-w-[150px] truncate text-text">{b.name}</span>
                 <span className="flex items-center gap-0.5 font-mono">
