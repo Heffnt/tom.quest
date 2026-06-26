@@ -47,3 +47,36 @@ code, pre, .font-mono {
 button, input, select, textarea {
   font: inherit;
 }
+
+/* ===== /perfume — Perfumer's Bench cauldron animations ===== */
+@keyframes pf-float {
+  0%   { transform: translate(0px, 0px) rotate(0deg); }
+  100% { transform: translate(var(--pf-dx, 0px), var(--pf-dy, -12px)) rotate(var(--pf-rot, 0deg)); }
+}
+@keyframes pf-bubble {
+  0%   { transform: translateY(6px) scale(0.5); opacity: 0; }
+  25%  { opacity: 0.85; }
+  100% { transform: translateY(-44px) scale(1); opacity: 0; }
+}
+@keyframes pf-steam {
+  0%   { transform: translateY(0) scaleX(1); opacity: 0; }
+  35%  { opacity: 0.45; }
+  100% { transform: translateY(-70px) scaleX(1.7); opacity: 0; }
+}
+@keyframes pf-brew-glow {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 0.95; }
+}
+@keyframes pf-pop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.12); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.pf-float  { animation: pf-float var(--pf-dur, 6s) ease-in-out infinite alternate; animation-delay: var(--pf-delay, 0s); }
+.pf-bubble { animation: pf-bubble var(--pf-dur, 3s) ease-in infinite; animation-delay: var(--pf-delay, 0s); }
+.pf-steam  { animation: pf-steam var(--pf-dur, 5s) ease-out infinite; animation-delay: var(--pf-delay, 0s); }
+.pf-glow   { animation: pf-brew-glow 4s ease-in-out infinite; }
+.pf-pop    { animation: pf-pop 0.32s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .pf-float, .pf-bubble, .pf-steam, .pf-glow, .pf-pop { animation: none !important; }
+}

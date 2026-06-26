@@ -1,0 +1,95 @@
+// Base data for the Perfumer's Bench, ported verbatim from the Byobu repo
+// (Three Feifs system): 9 fundamentals, 17 named frequencies, 96 ingredients,
+// 19 recipes. Source of truth lives in ./base.json.
+
+import raw from "./base.json";
+import type { Fundamental, Named, Ingredient, Recipe, Tier } from "../lib/types";
+
+type RawIngredient = {
+  name: string;
+  page: number;
+  color: string;
+  emits: string[];
+  minus: number;
+  plus: number;
+};
+type RawRecipe = {
+  id: string;
+  name: string;
+  school: string;
+  desc: string;
+  req: string[];
+  example: string[];
+  trim: number;
+  wildAdd: number;
+  tier: Tier;
+};
+
+const data = raw as unknown as {
+  fundamentals: Fundamental[];
+  named: Named[];
+  ingredients: RawIngredient[];
+  recipes: RawRecipe[];
+};
+
+export const fundamentals: Fundamental[] = data.fundamentals;
+export const named: Named[] = data.named;
+
+export const FUND: Record<string, Fundamental> = Object.fromEntries(
+  fundamentals.map((f) => [f.id, f]),
+);
+export const NAMED: Record<string, Named> = Object.fromEntries(
+  named.map((n) => [n.id, n]),
+);
+
+// The four named frequencies emitted by NO ingredient — only summonable via ⊕.
+export const LEGENDARY = new Set<string>([
+  "Laternical",
+  "Malvesian",
+  "Thurmistic",
+  "Saspacian",
+]);
+
+// Display ordering: fundamentals in canonical order, then named by complexity.
+export const FUND_ORDER: string[] = fundamentals.map((f) => f.id);
+const NAMED_ORDER: string[] = [...named]
+  .sort((a, b) => a.weight - b.weight)
+  .map((n) => n.id);
+
+export const isNamed = (id: string): boolean => !!NAMED[id];
+export const isFundamental = (id: string): boolean => !!FUND[id];
+
+export const PAGE_NAMES: Record<number, string> = {
+  0: "I", 1: "II", 2: "III", 3: "IV", 4: "V", 5: "VI",
+  6: "VII", 7: "VIII", 8: "IX", 9: "X", 10: "XI", 11: "XII",
+};
+
+// Every token id, fundamentals first then named — used for wildcard pickers
+// and frequency filters.
+export type TokenKind = "fundamental" | "named";
+export const ALL_TOKENS: { id: string; kind: TokenKind }[] = [
+  ...FUND_ORDER.map((id) => ({ id, kind: "fundamental" as const })),
+  ...NAMED_ORDER.map((id) => ({ id, kind: "named" as const })),
+];
+
+export const baseIngredients: Ingredient[] = data.ingredients.map((i) => ({
+  key: `base:${i.name}`,
+  name: i.name,
+  emits: i.emits,
+  minus: i.minus,
+  plus: i.plus,
+  color: i.color,
+  page: i.page,
+  source: { kind: "base" } as const,
+}));
+
+export const baseRecipes: Recipe[] = data.recipes.map((r) => ({
+  key: `base:${r.id}`,
+  name: r.name,
+  school: r.school,
+  tier: r.tier,
+  req: r.req,
+  desc: r.desc,
+  example: r.example,
+  source: { kind: "base" } as const,
+}));

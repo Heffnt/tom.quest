@@ -14,6 +14,7 @@ import type * as canvas from "../canvas.js";
 import type * as crons from "../crons.js";
 import type * as gpuPool from "../gpuPool.js";
 import type * as http from "../http.js";
+import type * as perfume from "../perfume.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as userSettings from "../userSettings.js";
@@ -32,6 +33,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   gpuPool: typeof gpuPool;
   http: typeof http;
+  perfume: typeof perfume;
   serverHealth: typeof serverHealth;
   symbolScores: typeof symbolScores;
   userSettings: typeof userSettings;
