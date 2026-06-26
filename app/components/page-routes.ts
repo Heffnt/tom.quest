@@ -19,6 +19,7 @@ export const PAGES: Page[] = [
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
   { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4, visibility: "public" },
   { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3, visibility: "public" },
+  { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2, visibility: "public" },
   { slug: "help",   title: "Help",   blurb: "How tom.quest works",          priority: 1, visibility: "public" },
 ];
 
