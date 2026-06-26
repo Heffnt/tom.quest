@@ -270,20 +270,38 @@ export default function PerfumeClient() {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <section className="flex min-h-0 flex-1 flex-col">
-          <Cauldron
-            brew={brew}
-            brewCounts={brewCounts}
-            onInc={addKey}
-            onDec={decKey}
-            onStrike={strike}
-            onUnstrike={unstrike}
-            onSummon={summon}
-            onUnsummon={unsummon}
-            onClear={clear}
-          />
-        </section>
+        {/* left column: cauldron on top, recipe book beneath it. min-w-0 lets it
+            shrink to its flex share so the recipe book's horizontal scroll is
+            contained instead of pushing the ingredient column off-screen. */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <section className="flex min-h-0 flex-1 flex-col">
+            <Cauldron
+              brew={brew}
+              brewCounts={brewCounts}
+              onInc={addKey}
+              onDec={decKey}
+              onStrike={strike}
+              onUnstrike={unstrike}
+              onSummon={summon}
+              onUnsummon={unsummon}
+              onClear={clear}
+            />
+          </section>
 
+          <div className="shrink-0 border-t border-border">
+            <RecipeBook
+              recipes={allRecipes}
+              brew={brew}
+              onRequestAdd={requestAddRecipe}
+              canCreate={!!user}
+              currentUserId={currentUserId}
+              onLoadExample={loadExample}
+              onRemoveCustom={(id) => removeRecipeMut({ id: id as Id<"perfumeRecipes"> })}
+            />
+          </div>
+        </div>
+
+        {/* right column: ingredient library, full height to the bottom-right corner */}
         <aside className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border p-3 md:w-[348px] md:flex-none md:border-l md:border-t-0">
           <IngredientPanel
             ingredients={allIngredients}
@@ -296,18 +314,6 @@ export default function PerfumeClient() {
             }
           />
         </aside>
-      </div>
-
-      <div className="shrink-0 border-t border-border">
-        <RecipeBook
-          recipes={allRecipes}
-          brew={brew}
-          onRequestAdd={requestAddRecipe}
-          canCreate={!!user}
-          currentUserId={currentUserId}
-          onLoadExample={loadExample}
-          onRemoveCustom={(id) => removeRecipeMut({ id: id as Id<"perfumeRecipes"> })}
-        />
       </div>
 
       <AddIngredientModal
