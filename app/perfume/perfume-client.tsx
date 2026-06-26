@@ -1,12 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
-import { api } from "@/convex/_generated/api";
-import type { Id } from "@/convex/_generated/dataModel";
-import { useAuth } from "../lib/auth";
-import LoginModal from "../components/login-modal";
-import type { Ingredient, Recipe, BrewState, Tier } from "./lib/types";
+import type { Ingredient, Recipe, BrewState } from "./lib/types";
 import { baseIngredients, baseRecipes } from "./data/base";
 import {
   baseTally,
@@ -20,8 +15,6 @@ import {
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
 import RecipeBook from "./components/recipe-book";
-import AddIngredientModal from "./components/add-ingredient-modal";
-import AddRecipeModal from "./components/add-recipe-modal";
 
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -29,23 +22,10 @@ function arraysEqual(a: string[], b: string[]): boolean {
   return true;
 }
 
-// Merge the public list with the viewer's own list, de-duped by _id, so a
-// creator's items are never hidden by the public list's size cap.
-function mergeById<T extends { _id: string }>(
-  a: T[] | undefined,
-  b: T[] | undefined,
-): T[] {
-  const m = new Map<string, T>();
-  for (const d of a ?? []) m.set(d._id, d);
-  for (const d of b ?? []) m.set(d._id, d);
-  return [...m.values()];
-}
-
-// Clamp manual plays to what the brew can actually support: no more ⊖/⊕ than
-// markers, and a ⊖ may only target a token present in the BASE tally (not a
-// summoned one). The engine applies strikes before summons, so a strike on a
-// summon-only token would silently no-op and waste the charge — summoned tokens
-// are dispelled with onUnsummon instead.
+// Clamp manual plays to what the brew can support: no more ⊖/⊕ than markers, and
+// a ⊖ may only target a token present in the BASE tally (the engine applies
+// strikes before summons, so a strike on a summon-only token would waste the
+// charge — summoned tokens are dispelled with onUnsummon instead).
 function reconcile(ings: Ingredient[], minus: string[], plus: string[]) {
   const totals = markerTotals(ings);
   const nextPlus = plus.slice(0, totals.plus);
@@ -62,65 +42,16 @@ function reconcile(ings: Ingredient[], minus: string[], plus: string[]) {
 }
 
 export default function PerfumeClient() {
-  const { user } = useAuth();
-  const currentUserId = user?._id;
-
-  // ---- catalog (base + user-created) ----
-  const customIngredientDocs = useQuery(api.perfume.listIngredients, {});
-  const myIngredientDocs = useQuery(api.perfume.listMineIngredients, {});
-  const customRecipeDocs = useQuery(api.perfume.listRecipes, {});
-  const myRecipeDocs = useQuery(api.perfume.listMineRecipes, {});
-
-  const customIngredients = useMemo<Ingredient[]>(
-    () =>
-      mergeById(customIngredientDocs, myIngredientDocs).map((d) => ({
-        key: `user:${d._id}`,
-        name: d.name,
-        emits: d.emits,
-        minus: d.minus,
-        plus: d.plus,
-        color: d.color,
-        source: { kind: "user", userId: d.userId, name: d.creatorName },
-      })),
-    [customIngredientDocs, myIngredientDocs],
-  );
-  const customRecipes = useMemo<Recipe[]>(
-    () =>
-      mergeById(customRecipeDocs, myRecipeDocs).map((d) => ({
-        key: `user:${d._id}`,
-        name: d.name,
-        school: d.school,
-        tier: d.tier as Tier,
-        req: d.req,
-        desc: d.desc,
-        source: { kind: "user", userId: d.userId, name: d.creatorName },
-      })),
-    [customRecipeDocs, myRecipeDocs],
-  );
-
-  const allIngredients = useMemo(
-    () => [...baseIngredients, ...customIngredients],
-    [customIngredients],
-  );
-  const allRecipes = useMemo(() => [...baseRecipes, ...customRecipes], [customRecipes]);
   const ingByKey = useMemo(() => {
     const m = new Map<string, Ingredient>();
-    for (const ing of allIngredients) m.set(ing.key, ing);
+    for (const ing of baseIngredients) m.set(ing.key, ing);
     return m;
-  }, [allIngredients]);
+  }, []);
 
   // ---- brew state ----
   const [brewKeys, setBrewKeys] = useState<string[]>([]);
   const [minusPlays, setMinusPlays] = useState<string[]>([]);
   const [plusPlays, setPlusPlays] = useState<string[]>([]);
-
-  // drop brew entries whose ingredient no longer exists (e.g. a custom one deleted)
-  useEffect(() => {
-    setBrewKeys((prev) => {
-      const next = prev.filter((k) => ingByKey.has(k));
-      return next.length === prev.length ? prev : next;
-    });
-  }, [ingByKey]);
 
   const brewIngredients = useMemo(
     () => brewKeys.map((k) => ingByKey.get(k)).filter((x): x is Ingredient => !!x),
@@ -178,8 +109,6 @@ export default function PerfumeClient() {
 
   const strike = useCallback(
     (id: string) => {
-      // Only base-emitted tokens can be struck; summoned tokens are dispelled
-      // via onUnsummon. Guard against spending a ⊖ on a summon-only token.
       const alreadyStruck = brew.minusPlays.filter((x) => x === id).length;
       if (avail.minus > 0 && (base[id] ?? 0) - alreadyStruck > 0) {
         setMinusPlays((p) => [...p, id]);
@@ -239,25 +168,6 @@ export default function PerfumeClient() {
     [ingByKey],
   );
 
-  // ---- create / delete (auth-gated) ----
-  const addIngredientMut = useMutation(api.perfume.addIngredient);
-  const addRecipeMut = useMutation(api.perfume.addRecipe);
-  const removeIngredientMut = useMutation(api.perfume.removeIngredient);
-  const removeRecipeMut = useMutation(api.perfume.removeRecipe);
-
-  const [loginOpen, setLoginOpen] = useState(false);
-  const [addIngredientOpen, setAddIngredientOpen] = useState(false);
-  const [addRecipeOpen, setAddRecipeOpen] = useState(false);
-
-  const requestAddIngredient = useCallback(() => {
-    if (user) setAddIngredientOpen(true);
-    else setLoginOpen(true);
-  }, [user]);
-  const requestAddRecipe = useCallback(() => {
-    if (user) setAddRecipeOpen(true);
-    else setLoginOpen(true);
-  }, [user]);
-
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
       <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
@@ -289,48 +199,15 @@ export default function PerfumeClient() {
           </section>
 
           <div className="shrink-0 border-t border-border">
-            <RecipeBook
-              recipes={allRecipes}
-              brew={brew}
-              onRequestAdd={requestAddRecipe}
-              canCreate={!!user}
-              currentUserId={currentUserId}
-              onLoadExample={loadExample}
-              onRemoveCustom={(id) => removeRecipeMut({ id: id as Id<"perfumeRecipes"> })}
-            />
+            <RecipeBook recipes={baseRecipes} brew={brew} onLoadExample={loadExample} />
           </div>
         </div>
 
         {/* right column: ingredient library, full height to the bottom-right corner */}
         <aside className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border p-3 md:w-[348px] md:flex-none md:border-l md:border-t-0">
-          <IngredientPanel
-            ingredients={allIngredients}
-            onAdd={addKey}
-            onRequestAdd={requestAddIngredient}
-            canCreate={!!user}
-            currentUserId={currentUserId}
-            onRemoveCustom={(id) =>
-              removeIngredientMut({ id: id as Id<"perfumeIngredients"> })
-            }
-          />
+          <IngredientPanel ingredients={baseIngredients} onAdd={addKey} />
         </aside>
       </div>
-
-      <AddIngredientModal
-        isOpen={addIngredientOpen}
-        onClose={() => setAddIngredientOpen(false)}
-        onSubmit={async (data) => {
-          await addIngredientMut(data);
-        }}
-      />
-      <AddRecipeModal
-        isOpen={addRecipeOpen}
-        onClose={() => setAddRecipeOpen(false)}
-        onSubmit={async (data) => {
-          await addRecipeMut(data);
-        }}
-      />
-      <LoginModal isOpen={loginOpen} onClose={() => setLoginOpen(false)} />
     </div>
   );
 }
