@@ -69,11 +69,12 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   freezes the event loop and starved `/health` during the **June 2026 outage**
   (`main.py:117`). Any new endpoint that touches the filesystem or shells out is plain
   `def`.
-- **`boolback.py` (pre-existing overlap):** a second ~1840-line router under `/boolback`
-  already serves ComplexMultiTrigger progress data. **It reads the legacy tree schema**
-  (`claim.json` = `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`)
-  which **no longer matches the live tree** (§1.2), and its `resolve_input_path`
-  (`boolback.py:411`) applies **no confinement and no secret denial**. See §8.4 and §9.
+- **`boolback.py` (removed):** a legacy ~1840-line router under `/boolback` formerly served
+  ComplexMultiTrigger progress data against the **legacy tree schema** (`claim.json` =
+  `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`), which no longer
+  matched the live tree (§1.2). It has been **deleted** (§9); the live `/boolback` page is now a
+  static-snapshot explorer in tom.Quest (`app/boolback`, fed by `scripts/boolback_export.py`),
+  carrying no live API traffic.
 
 ### 1.2 The booleanbackdoors execution model (the intended end state)
 
@@ -152,8 +153,7 @@ an outcome signal for them (§8.3).
 4. **Fail-closed.** Unreadable actual state ⇒ skip the cycle, carry prior state; never act
    against an unknown world.
 5. **Sync-`def` for anything blocking.** Preserve the June-2026 invariant.
-6. **Confine every file read** through `dirs.py:resolve_within_root` — never
-   `boolback.py:resolve_input_path` (§8.4, §9).
+6. **Confine every file read** through `dirs.py:resolve_within_root` (§8.4).
 
 ---
 
@@ -398,9 +398,7 @@ Outcomes come from:
 tom.Quest does not walk the artifact tree, so there is no large scan to bound — its file
 access is just the worker log tails. Still, **every file endpoint goes through
 `dirs.py:resolve_within_root`** (regression-test that `../`, absolute escapes, and
-`.env`/`.ssh`/`.pem`/`.key` targets are 403), including `boolback.py:resolve_input_path`, which
-routes through `resolve_within_root` and rejects the same `../`/absolute/secret-named targets with
-403 (regression tests in `boolback_test.py`).
+`.env`/`.ssh`/`.pem`/`.key` targets are 403).
 
 ### 8.5 Failure surfacing
 
@@ -414,14 +412,14 @@ is needed.
 
 ---
 
-## 9. boolback.py
+## 9. boolback.py (removed)
 
-The `/boolback` router is **out of scope for this redesign** — it is built on the legacy
-booleanbackdoors tree schema and needs a dedicated overhaul of its own. This redesign does
-not reimplement its progress surface in tom.Quest (campaign progress now lives in
-booleanbackdoors's analysis CLI, §8). Its `resolve_input_path` primitive is now routed through
-`resolve_within_root` (confined, secret-denying — `boolback_test.py`); the broader router overhaul
-remains future work.
+The legacy `/boolback` FastAPI router (`boolback.py`, `boolback_test.py`) has been **deleted**,
+and its mount removed from `main.py`. It was built on the legacy booleanbackdoors tree schema
+and no longer matched the live tree; nothing consumed it. The live `/boolback` page is now a
+static-snapshot explorer in tom.Quest (`app/boolback`, fed offline by `scripts/boolback_export.py`),
+and the worker pool — not this router — owns campaign progress. Campaign results live in
+booleanbackdoors's analysis CLI (§8).
 
 ---
 
@@ -465,8 +463,7 @@ endpoints in `convex/http.ts`; adding fields needs no `_generated` hand-edit. Co
 
 **Campaign-phase gating** (human analysis decisions between sweep specs, §3). **Multi-GPU /
 multi-node** runs (the campaign's default scale is single-GPU small models). Surfacing the
-**tidy projection** as live results in the tom.Quest dashboard (§12.2). The **`/boolback`
-router overhaul** (§9).
+**tidy projection** as live results in the tom.Quest dashboard (§12.2).
 
 Deferred from the worker-pool design (the shipped code clamps to `[0, 16]` and relies on SLURM
 `DenyOnLimit` as the real cap, §4.5):

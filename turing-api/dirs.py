@@ -22,7 +22,7 @@ class PathNotAllowed(Exception):
 def resolve_within_root(path: str, root: Path | None = None) -> Path:
     # The one audited confinement primitive. `root` defaults to ALLOWED_FILE_ROOT
     # (the /file and /dirs root) but is overridable so other surfaces can confine
-    # user-supplied paths to a tighter root (e.g. the boolback project root) while
+    # user-supplied paths to a tighter, project-specific root while
     # sharing the same '..'/symlink-escape and secret-name rejection. A relative
     # path is taken relative to `root`; an absolute path must already be inside it.
     # Resolve the default at call time (not as a default arg) so a patched/updated

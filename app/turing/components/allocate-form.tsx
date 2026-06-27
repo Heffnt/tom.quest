@@ -39,7 +39,12 @@ const SEED_PROFILES: ProjectProfile[] = [
     dir: "/home/ntheffernan/booleanbackdoors/ComplexMultiTrigger",
     label: "BoolBack",
     configs: [
-      { name: "batch", commands: ["source activate.sh", "python batch.py"] },
+      // Frontier worker: drain the active set (sweeps/active.txt). N workers self-balance by
+      // per-node claiming and each exits 0 when the active set is complete (CMT spec §9.4).
+      { name: "worker", commands: ["source activate.sh", "python sweep.py"] },
+      // Read-only analysis pass → tidy table; never run by a worker (CMT spec §9.4).
+      { name: "analysis", commands: ["source activate.sh", "python -m boolean_backdoor.analysis"] },
+      // Activate only — interactive / dev shell.
       { name: "debug", commands: ["source activate.sh"] },
     ],
   },
@@ -104,6 +109,26 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
       patch.profiles = migrated;
       patch.activeProfileIndex = 0;
       patch.activeConfigIndex = 0;
+    }
+    // Retire the legacy ComplexMultiTrigger orchestrator command in any already-persisted
+    // profile: `python batch.py` (the removed batch orchestrator) → `python sweep.py` (the
+    // current frontier worker entry point, which drains sweeps/active.txt — CMT spec §9.4).
+    // Surgical per-command swap so user-edited profiles keep their other commands; the
+    // canonical "batch" config is renamed to "worker" to match the new entry point.
+    if (settings.profiles && settings.profiles.length > 0) {
+      let changed = false;
+      const rewritten = settings.profiles.map((p) => ({
+        ...p,
+        configs: p.configs.map((c) => {
+          const commands = c.commands.map((cmd) =>
+            cmd.trim() === "python batch.py" ? "python sweep.py" : cmd,
+          );
+          if (!commands.some((cmd, i) => cmd !== c.commands[i])) return c;
+          changed = true;
+          return { ...c, name: c.name === "batch" ? "worker" : c.name, commands };
+        }),
+      }));
+      if (changed) patch.profiles = rewritten;
     }
     if (Object.keys(patch).length > 0) update(patch);
   }, [settings.memoryMb, settings.timeMins, settings.profiles, settings.commandPresets, settings.recentDirs, settingsHydrated, update]);

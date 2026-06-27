@@ -19,7 +19,6 @@ from tmux import (
 )
 from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir, resolve_within_root, PathNotAllowed
-from boolback import router as boolback_router
 from ws import router as ws_router
 
 load_dotenv()
@@ -59,7 +58,6 @@ async def verify_api_key(x_api_key: str = Header(None)):
     return True
 
 
-app.include_router(boolback_router, dependencies=[Depends(verify_api_key)])
 app.include_router(ws_router)
 
 class AllocationRequest(BaseModel):
