@@ -14,12 +14,17 @@ const eslintConfig = defineConfig([
   },
   // Override default ignores of eslint-config-next.
   globalIgnores([
-    // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-    "convex/_generated/**",
+    // Default ignores of eslint-config-next, made path-agnostic with a leading
+    // `**/` so nested copies (e.g. inside a stale .claude worktree) are ignored
+    // too — an unanchored `.next/**` only matches the top-level dir, so ESLint
+    // would otherwise scan build artifacts under nested gitignored worktrees.
+    "**/.next/**",
+    "**/out/**",
+    "**/build/**",
+    "**/next-env.d.ts",
+    "**/convex/_generated/**",
+    // Stale local git worktrees are gitignored dev artifacts — never lint them.
+    ".claude/**",
   ]),
 ]);
 
