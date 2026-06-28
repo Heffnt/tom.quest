@@ -1,0 +1,74 @@
+// Column-bridge tests: the bare column_groups names must resolve to dotted ids
+// that select.cellValue can actually read on the REAL builder fixture, and every
+// numeric column must name a metric_schema entry (so bars/ranges have bounds).
+// This is the end-to-end guard against the bare-vs-dotted addressing hazard that
+// tsc cannot catch.
+
+import { describe, it, expect } from "vitest";
+import sample from "../data/sample-snapshot.json";
+import { asBundle } from "../data/real";
+import { allColumnDefs, resolveColumn } from "./columns";
+import { indexMetricSchema } from "./metrics";
+import { cellValue } from "./select";
+import type { RunRow } from "./types";
+
+const bundle = asBundle(sample);
+const index = indexMetricSchema(bundle.metric_schema);
+const rows: RunRow[] = bundle.rows;
+
+function rowWith(pred: (r: RunRow) => boolean): RunRow {
+  const r = rows.find(pred);
+  if (!r) throw new Error("fixture lacks a row matching the predicate");
+  return r;
+}
+
+describe("columns bridge", () => {
+  it("every column_groups entry resolves to a usable id; numerics name a schema metric", () => {
+    for (const grp of allColumnDefs(bundle, index)) {
+      for (const def of grp.columns) {
+        expect(def.id.length).toBeGreaterThan(0);
+        if (def.kind === "numeric" || def.kind === "outcome") {
+          expect(def.metricName).toBeTruthy();
+          expect(index[def.metricName as string]).toBeTruthy();
+        }
+      }
+    }
+  });
+
+  it("OUTCOME plantedness reads headline.plantedness via the resolved id", () => {
+    const def = resolveColumn("OUTCOME", "plantedness", index);
+    expect(def.id).toBe("headline.plantedness");
+    expect(cellValue(rows[0], def.id)).toBe(rows[0].headline.plantedness);
+  });
+
+  it("DEFENSE asr_drop reads defense.asr_drop on a defended run", () => {
+    const r = rowWith((x) => x.status.has_defense && x.defense !== null);
+    const def = resolveColumn("DEFENSE", "asr_drop", index);
+    expect(def.id).toBe("defense.asr_drop");
+    expect(cellValue(r, def.id)).toBe(r.defense!.asr_drop);
+  });
+
+  it("SCAN scan_auroc reads scan.auroc on a scanned run", () => {
+    const r = rowWith((x) => x.status.has_scan && x.scan !== null);
+    const def = resolveColumn("SCAN", "scan_auroc", index);
+    expect(def.id).toBe("scan.auroc");
+    expect(cellValue(r, def.id)).toBe(r.scan!.auroc);
+  });
+
+  it("INTERP interp_measurement reads interp.value on an interp run", () => {
+    const r = rowWith((x) => x.status.has_interp && x.interp !== null);
+    const def = resolveColumn("INTERP", "interp_measurement", index);
+    expect(def.id).toBe("interp.value");
+    expect(cellValue(r, def.id)).toBe(r.interp!.value);
+  });
+
+  it("FUNCTION complexity columns resolve to bare ids backed by function.complexity", () => {
+    const fnGroup = bundle.column_groups.find((g) => g.group === "FUNCTION")!;
+    const complexityCol = fnGroup.columns.find(
+      (c) => c !== "arity" && c !== "truth_table" && c !== "dnf_string",
+    )!;
+    const def = resolveColumn("FUNCTION", complexityCol, index);
+    expect(def.id).toBe(complexityCol);
+    expect(cellValue(rows[0], def.id)).toBe(rows[0].function.complexity[complexityCol] ?? null);
+  });
+});

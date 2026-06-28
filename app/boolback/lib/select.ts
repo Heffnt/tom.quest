@@ -1,77 +1,121 @@
 // app/boolback/lib/select.ts — pure derivations used by the panes.
 //
 // All functions are pure: no store access, no side effects. They operate on
-// ExperimentRow[] + FilterState/SortKey and return new arrays / primitives.
+// RunRow[] + FilterState/SortKey + a metric_schema index and return new arrays
+// or primitives.
+//
+// Column addressing: a "col" is a dotted path into the RunRow nested shape (e.g.
+// "headline.asr", "function.arity", "dataset.source", "defense.asr_drop") OR a
+// bare FUNCTION complexity-metric name (e.g. "avg_sensitivity"), which resolves
+// against row.function.complexity. Range filters / histograms read empirical
+// [min,max] from the metric_schema index passed in.
 
 import type {
-  ExperimentRow, FilterState, SortKey, FacetKey, StatusFlag,
+  RunRow,
+  FilterState,
+  SortKey,
+  FacetKey,
+  StatusFlag,
+  MetricSchemaEntry,
+  SortDir,
 } from "./types";
-import { METRIC_META } from "./metrics";
+
+export type MetricIndex = Record<string, MetricSchemaEntry>;
 
 // ---------------------------------------------------------------------------
-// Column value access (friendly column OR metric key)
+// Column value access
 // ---------------------------------------------------------------------------
 
-// Columns that live directly on ExperimentRow (outcomes + categoricals).
-const ROW_SCALAR_COLS = new Set<string>([
-  "asr", "ftr", "triggerlessCorrectness", "stealthRate", "ppl", "pplDrift",
-  "plantedEpoch", "seedN", "arity",
-]);
-
-/** Read a numeric value for a column (ExperimentRow scalar OR metric key). */
-export function numericValue(row: ExperimentRow, col: string): number | null {
-  if (ROW_SCALAR_COLS.has(col)) {
-    const v = (row as unknown as Record<string, unknown>)[col];
-    if (v === null || v === undefined) return null;
-    if (typeof v === "boolean") return v ? 1 : 0;
-    return typeof v === "number" ? v : null;
-  }
-  const m = row.metrics[col];
-  if (m === undefined) return null;
-  return typeof m === "boolean" ? (m ? 1 : 0) : m;
-}
+// Explicit dotted-path getters for the named scalar columns. Anything not here
+// is treated as a FUNCTION complexity-metric key (row.function.complexity[col]).
+const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | null> = {
+  // function
+  "function.arity": (r) => r.function.arity,
+  "function.truth_table": (r) => r.function.truth_table,
+  "function.dnf_string": (r) => r.function.dnf_string,
+  // dataset
+  "dataset.source": (r) => r.dataset.source,
+  "dataset.task": (r) => r.dataset.task,
+  "dataset.trigger_form": (r) => r.dataset.trigger_form,
+  "dataset.target_behavior": (r) => r.dataset.target_behavior,
+  "dataset.target_phrase": (r) => r.dataset.target_phrase,
+  "dataset.row_distribution": (r) => r.dataset.row_distribution,
+  "dataset.samples_per_row": (r) => r.dataset.samples_per_row,
+  "dataset.backdoor_ratio": (r) => r.dataset.backdoor_ratio,
+  "dataset.scheme": (r) => r.dataset.scheme,
+  // training
+  "training.base_model": (r) => r.training.base_model,
+  "training.tuning": (r) => r.training.tuning,
+  "training.backend": (r) => r.training.backend,
+  "training.lr": (r) => r.training.lr,
+  "training.epochs": (r) => r.training.epochs,
+  "training.seed": (r) => r.training.seed,
+  // headline / outcome
+  "headline.plantedness": (r) => r.headline.plantedness,
+  "headline.asr": (r) => r.headline.asr,
+  "headline.ftr": (r) => r.headline.ftr,
+  "headline.triggerless_correctness": (r) => r.headline.triggerless_correctness,
+  "headline.n_activating": (r) => r.headline.n_activating,
+  "headline.ppl": (r) => r.headline.ppl,
+  "headline.ppl_drift": (r) => r.headline.ppl_drift,
+  "headline.primary_judge": (r) => r.headline.primary_judge,
+  "headline.display_epoch": (r) => r.headline.display_epoch,
+  // defense
+  "defense.asr_drop": (r) => r.defense?.asr_drop ?? null,
+  "defense.recovery_rate": (r) => r.defense?.recovery_rate ?? null,
+  // interp
+  "interp.measurement_kind": (r) => r.interp?.measurement_kind ?? null,
+  "interp.value": (r) => r.interp?.value ?? null,
+  "interp.null_control": (r) => r.interp?.null_control ?? null,
+  // scan
+  "scan.auroc": (r) => r.scan?.auroc ?? null,
+  "scan.far_at_frr": (r) => r.scan?.far_at_frr ?? null,
+};
 
 /** Read a value for any column for sorting/display (string|number|bool|null). */
-export function cellValue(row: ExperimentRow, col: string): string | number | boolean | null {
-  if (col in row && !ROW_SCALAR_COLS.has(col)) {
-    const v = (row as unknown as Record<string, unknown>)[col];
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
-    if (v === null) return null;
-  }
-  if (ROW_SCALAR_COLS.has(col)) {
-    const v = (row as unknown as Record<string, unknown>)[col];
-    return (v as number | null) ?? null;
-  }
-  const m = row.metrics[col];
+export function cellValue(row: RunRow, col: string): string | number | boolean | null {
+  const getter = COL_GETTERS[col];
+  if (getter) return getter(row);
+  const m = row.function.complexity[col];
   return m === undefined ? null : m;
+}
+
+/** Read a numeric value for a column (null if non-numeric / absent). */
+export function numericValue(row: RunRow, col: string): number | null {
+  const v = cellValue(row, col);
+  if (v === null || v === undefined) return null;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  return typeof v === "number" ? v : null;
 }
 
 // ---------------------------------------------------------------------------
 // Facets
 // ---------------------------------------------------------------------------
 
-const FACET_GETTERS: Record<FacetKey, (r: ExperimentRow) => string> = {
-  task: (r) => r.task,
-  source: (r) => r.source,
-  targetBehavior: (r) => r.targetBehavior,
-  triggerForm: (r) => r.triggerForm,
-  rowDistribution: (r) => r.rowDistribution,
-  baseModel: (r) => r.baseModel,
-  tuning: (r) => r.tuning,
-  judge: (r) => r.judge,
-  split: (r) => r.split,
-  arity: (r) => String(r.arity),
+const FACET_GETTERS: Record<FacetKey, (r: RunRow) => string | null> = {
+  task: (r) => r.dataset.task,
+  source: (r) => r.dataset.source,
+  targetBehavior: (r) => r.dataset.target_behavior,
+  triggerForm: (r) => r.dataset.trigger_form,
+  rowDistribution: (r) => r.dataset.row_distribution,
+  baseModel: (r) => r.training.base_model,
+  tuning: (r) => r.training.tuning,
+  judge: (r) => r.headline.primary_judge,
+  split: (r) => r.per_judge.find((j) => j.is_primary)?.split ?? r.per_judge[0]?.split ?? null,
+  arity: (r) => String(r.function.arity),
 };
 
 export const FACET_KEYS = Object.keys(FACET_GETTERS) as FacetKey[];
 
 /** Distinct facet values present in the data, sorted, with counts. */
 export function facetOptions(
-  rows: ExperimentRow[], key: FacetKey,
+  rows: RunRow[],
+  key: FacetKey,
 ): Array<{ value: string; count: number }> {
   const counts = new Map<string, number>();
   for (const r of rows) {
     const v = FACET_GETTERS[key](r);
+    if (v === null) continue;
     counts.set(v, (counts.get(v) ?? 0) + 1);
   }
   return [...counts.entries()]
@@ -83,34 +127,38 @@ export function facetOptions(
 // Status predicates
 // ---------------------------------------------------------------------------
 
-const STATUS_PREDS: Record<StatusFlag, (r: ExperimentRow) => boolean> = {
-  plantedOnly: (r) => r.planted,
-  neverPlanted: (r) => !r.planted,
-  inProgress: (r) => r.inProgress,
-  hasDefense: (r) => r.hasDefense,
-  hasTwin: (r) => r.hasTwin,
-  hasNegativeDrop: (r) => r.hasNegativeDrop,
-  heuristicProvenance: (r) => r.heuristicProvenance,
+const STATUS_PREDS: Record<StatusFlag, (r: RunRow) => boolean> = {
+  plantedOnly: (r) => r.status.planted,
+  neverPlanted: (r) => !r.status.planted,
+  inProgress: (r) => r.status.in_progress,
+  hasDefense: (r) => r.status.has_defense,
+  hasTwin: (r) => r.status.has_twin,
+  hasScan: (r) => r.status.has_scan,
+  hasInterp: (r) => r.status.has_interp,
+  hasNegativeDrop: (r) => r.status.has_negative_drop,
 };
 
 // ---------------------------------------------------------------------------
 // Filtering
 // ---------------------------------------------------------------------------
 
-/** Apply the full FilterState (facets AND ranges AND status AND text AND scope). */
-export function applyFilters(rows: ExperimentRow[], filters: FilterState): ExperimentRow[] {
-  const text = filters.text.trim().toLowerCase();
+/** Apply the full FilterState (subtree chips AND facets AND ranges AND status). */
+export function applyFilters(rows: RunRow[], filters: FilterState): RunRow[] {
   const facetEntries = Object.entries(filters.facets).filter(
     ([, vals]) => Array.isArray(vals) && vals.length > 0,
   ) as Array<[FacetKey, string[]]>;
 
   return rows.filter((r) => {
-    // scope: row must include scopeDir in its chain
-    if (filters.scopeDir && !r.chainDirs.includes(filters.scopeDir)) return false;
+    // subtree chips: keep iff chain_dirs intersect ANY chip node_path (OR).
+    if (filters.subtreeDirs.length > 0) {
+      const chain = r.identity.chain_dirs;
+      if (!filters.subtreeDirs.some((d) => chain.includes(d))) return false;
+    }
 
     // facets (each facet OR within, AND across)
     for (const [key, vals] of facetEntries) {
-      if (!vals.includes(FACET_GETTERS[key](r))) return false;
+      const v = FACET_GETTERS[key](r);
+      if (v === null || !vals.includes(v)) return false;
     }
 
     // ranges (AND-composed)
@@ -125,15 +173,6 @@ export function applyFilters(rows: ExperimentRow[], filters: FilterState): Exper
       if (!STATUS_PREDS[s](r)) return false;
     }
 
-    // text: substring over truthTable/slug-ish/hash/friendly
-    if (text) {
-      const hay = [
-        r.truthTable, r.scoringDir, r.functionHash, r.source, r.triggerForm,
-        r.targetBehavior, r.baseModel, r.tuning, r.judge, r.task,
-      ].join(" ").toLowerCase();
-      if (!hay.includes(text)) return false;
-    }
-
     return true;
   });
 }
@@ -143,7 +182,7 @@ export function applyFilters(rows: ExperimentRow[], filters: FilterState): Exper
 // ---------------------------------------------------------------------------
 
 /** Stable multi-key sort. Nulls sort last regardless of direction. */
-export function applySorts(rows: ExperimentRow[], sorts: SortKey[]): ExperimentRow[] {
+export function applySorts(rows: RunRow[], sorts: SortKey[]): RunRow[] {
   if (sorts.length === 0) return rows;
   const indexed = rows.map((row, i) => ({ row, i }));
   indexed.sort((a, b) => {
@@ -156,7 +195,7 @@ export function applySorts(rows: ExperimentRow[], sorts: SortKey[]): ExperimentR
   return indexed.map((x) => x.row);
 }
 
-function compareCol(a: ExperimentRow, b: ExperimentRow, col: string, dir: "asc" | "desc"): number {
+function compareCol(a: RunRow, b: RunRow, col: string, dir: SortDir): number {
   const va = cellValue(a, col);
   const vb = cellValue(b, col);
   // nulls always last
@@ -171,47 +210,21 @@ function compareCol(a: ExperimentRow, b: ExperimentRow, col: string, dir: "asc" 
 }
 
 // ---------------------------------------------------------------------------
-// Histograms (for the range-slider distribution backing)
+// Range / histogram backing (reads empirical [min,max] from metric_schema)
 // ---------------------------------------------------------------------------
 
-/**
- * Bin the values of `metric` over `rows` into `nBins` counts. Uses the
- * known-range [min,max] from METRIC_META when available, else the data extent.
- */
-export function histogramBins(
-  rows: ExperimentRow[], metric: string, nBins: number,
-): number[] {
-  const bins = new Array(Math.max(1, nBins)).fill(0);
-  const meta = METRIC_META[metric];
-  let lo: number, hi: number;
-  if (meta) { lo = meta.min; hi = meta.max; }
-  else {
-    lo = Infinity; hi = -Infinity;
-    for (const r of rows) {
-      const v = numericValue(r, metric);
-      if (v === null) continue;
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-    }
-    if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
-  }
-  const span = hi - lo || 1;
-  for (const r of rows) {
-    const v = numericValue(r, metric);
-    if (v === null) continue;
-    let idx = Math.floor(((v - lo) / span) * nBins);
-    if (idx < 0) idx = 0;
-    if (idx >= nBins) idx = nBins - 1;
-    bins[idx]++;
-  }
-  return bins;
+function schemaRange(
+  index: MetricIndex,
+  metric: string,
+): { min: number; max: number } | null {
+  const e = index[metric];
+  if (!e || e.min === null || e.max === null) return null;
+  return { min: e.min, max: e.max };
 }
 
-/** Known display range for a metric (falls back to data extent). */
-export function metricRange(rows: ExperimentRow[], metric: string): { min: number; max: number } {
-  const meta = METRIC_META[metric];
-  if (meta) return { min: meta.min, max: meta.max };
-  let lo = Infinity, hi = -Infinity;
+function dataExtent(rows: RunRow[], metric: string): { min: number; max: number } {
+  let lo = Infinity;
+  let hi = -Infinity;
   for (const r of rows) {
     const v = numericValue(r, metric);
     if (v === null) continue;
@@ -222,48 +235,59 @@ export function metricRange(rows: ExperimentRow[], metric: string): { min: numbe
   return { min: lo, max: hi };
 }
 
-/**
- * Normalize a value to [0,1] against the metric's known range (for mini-bars).
- */
-export function normalizeToRange(metric: string, value: number): number {
-  const meta = METRIC_META[metric];
-  const lo = meta?.min ?? 0;
-  const hi = meta?.max ?? 1;
+/** Known display range for a metric (schema min/max, falls back to data extent). */
+export function metricRange(
+  rows: RunRow[],
+  metric: string,
+  index: MetricIndex,
+): { min: number; max: number } {
+  return schemaRange(index, metric) ?? dataExtent(rows, metric);
+}
+
+/** Bin the values of `metric` over `rows` into `nBins` counts. */
+export function histogramBins(
+  rows: RunRow[],
+  metric: string,
+  nBins: number,
+  index: MetricIndex,
+): number[] {
+  const n = Math.max(1, nBins);
+  const bins = new Array<number>(n).fill(0);
+  const { min: lo, max: hi } = metricRange(rows, metric, index);
   const span = hi - lo || 1;
-  const t = (value - lo) / span;
+  for (const r of rows) {
+    const v = numericValue(r, metric);
+    if (v === null) continue;
+    let idx = Math.floor(((v - lo) / span) * n);
+    if (idx < 0) idx = 0;
+    if (idx >= n) idx = n - 1;
+    bins[idx]++;
+  }
+  return bins;
+}
+
+/** Normalize a value to [0,1] against the metric's range (for mini-bars). */
+export function normalizeToRange(
+  metric: string,
+  value: number,
+  index: MetricIndex,
+): number {
+  const r = schemaRange(index, metric) ?? { min: 0, max: 1 };
+  const span = r.max - r.min || 1;
+  const t = (value - r.min) / span;
   return t < 0 ? 0 : t > 1 ? 1 : t;
 }
 
 // ---------------------------------------------------------------------------
-// Chain path / DropSpec helpers
+// Misc helpers
 // ---------------------------------------------------------------------------
 
-/**
- * The ordered dirName chain (root->scoring) for an experiment row. `index` is
- * accepted for call-site symmetry with table rows; the chain is already stored.
- */
-export function chainPathFor(row: ExperimentRow): string[] {
-  return row.chainDirs;
-}
-
-/**
- * Copy-as-DropSpec: the per-experiment cut as a stable group_key JSON. `scope`
- * is the scope dirName (or null for the whole table). The shape mirrors the
- * analysis-side DropSpec (drop every *.seed for the per-experiment cut).
- */
-export function dropSpecJSON(scope: string | null): string {
-  const spec = {
-    cut: "per_experiment",
-    drop: ["dataset.seed", "training.seed", "inference.seed"],
-    scope: scope ?? "all",
-  };
-  return JSON.stringify(spec, null, 2);
+/** The ordered chain path keys (fn -> training) for a run. */
+export function chainPathFor(row: RunRow): string[] {
+  return row.identity.chain_dirs;
 }
 
 /** Count summary "N of M" for the filter bar. */
 export function countSummary(visible: number, total: number): string {
   return `${visible} of ${total}`;
 }
-
-// Re-export so panes have a single import surface for known-range metadata.
-export { METRIC_META };

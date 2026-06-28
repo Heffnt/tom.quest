@@ -1,113 +1,61 @@
 "use client";
 
+// app/boolback/components/table-pane.tsx
+//
+// The ONLY center view. One row per RunRow (one training run / NODE_KEY).
+// Columns are resolved from bundle.column_groups via lib/columns.resolveColumn;
+// the FUNCTION group shows the truth-strip viz + an optional simplified-DNF
+// column (NO binary truth-table string, NO arity mini-bar — arity is a plain
+// number). Numeric columns render an opt-in mini-bar normalized to the
+// metric_schema range; OUTCOME cells reveal an epoch sparkline on hover.
+//
+// Columns are horizontally resizable (lib/use-resizable) and TRUNCATE with an
+// ellipsis; rows are single-height. Header click sorts (shift-click appends a
+// secondary key); the active multi-key sort is shown as draggable chips. Facet
+// and range menus hover-open from a compact filter bar; per-group column
+// dropdowns come from the ColumnGroupMenu. Subtree chips (tree-driven) and
+// status pills filter the live set.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  ExperimentRow, FilterState, SortKey, ViewTab,
-  FacetKey, RangeFilter, MetricMeta,
+  Bundle, RunRow, FilterState, SortKey, FacetKey, RangeFilter, StatusFlag,
+  MetricSchemaEntry,
 } from "../lib/types";
 import { EMPTY_FILTER } from "../lib/types";
-import type { FixtureBundle } from "../data/fixture";
 import { useBoolbackStore } from "../state/store";
 import {
   applyFilters, applySorts, histogramBins, metricRange, normalizeToRange,
-  numericValue, cellValue, facetOptions, FACET_KEYS, countSummary, METRIC_META,
+  numericValue, cellValue, facetOptions, FACET_KEYS, countSummary,
+  type MetricIndex,
 } from "../lib/select";
+import { indexMetricSchema, formatValue } from "../lib/metrics";
+import { resolveById, type ColumnDef } from "../lib/columns";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
+import { useResizable } from "../lib/use-resizable";
+import { TruthStrip } from "./truth-strip";
+import { EpochSparkline } from "./epoch-sparkline";
+import { ColumnGroupMenu } from "./column-group-menu";
 
 // ---------------------------------------------------------------------------
-// Column metadata (friendly columns that are NOT in METRIC_META get a label
-// here; everything else falls back to METRIC_META label or the raw key).
+// Constants
 // ---------------------------------------------------------------------------
 
-interface ColInfo {
-  key: string;
-  label: string;
-  numeric: boolean;          // mini-bar candidate (has a known [min,max])
-  meta?: MetricMeta;         // present for metric / outcome columns
-  kind: "truthTable" | "categorical" | "numeric" | "bool";
-}
+const HIST_BINS = 24;
+const ROW_CAP = 500; // render window; filter/sort run over the full set
+const DEFAULT_COL_WIDTH = 120;
+const TRUTH_COL_WIDTH = 220;
+const MIN_COL_WIDTH = 56;
+const MAX_COL_WIDTH = 520;
 
-const FRIENDLY_LABELS: Record<string, string> = {
-  truthTable: "Truth table",
-  arity: "Arity",
-  task: "Task",
-  source: "Source",
-  targetBehavior: "Target behavior",
-  targetPhrase: "Target phrase",
-  triggerForm: "Trigger form",
-  rowDistribution: "Row dist.",
-  baseModel: "Model",
-  tuning: "Tuning",
-  judge: "Judge",
-  split: "Split",
-  asr: "ASR",
-  ftr: "FTR",
-  triggerlessCorrectness: "Trigg. corr.",
-  stealthRate: "Stealth",
-  ppl: "PPL",
-  pplDrift: "PPL drift",
-  plantedEpoch: "Planted @",
-  seedN: "Seeds",
-};
-
-const CATEGORICAL_COLS = new Set<string>([
-  "task", "source", "targetBehavior", "targetPhrase", "triggerForm",
-  "rowDistribution", "baseModel", "tuning", "judge", "split",
-]);
-
-function colInfo(key: string): ColInfo {
-  const meta = METRIC_META[key];
-  const friendly = FRIENDLY_LABELS[key];
-  if (key === "truthTable") {
-    return { key, label: FRIENDLY_LABELS.truthTable, numeric: false, kind: "truthTable" };
-  }
-  if (CATEGORICAL_COLS.has(key)) {
-    return { key, label: friendly ?? key, numeric: false, kind: "categorical" };
-  }
-  if (meta?.type === "bool") {
-    return { key, label: meta.label, numeric: false, meta, kind: "bool" };
-  }
-  if (meta) {
-    return { key, label: friendly ?? meta.label, numeric: true, meta, kind: "numeric" };
-  }
-  // friendly scalar without metric meta (e.g. plantedEpoch, seedN)
-  return { key, label: friendly ?? key, numeric: true, kind: "numeric" };
-}
-
-function labelFor(key: string): string {
-  return FRIENDLY_LABELS[key] ?? METRIC_META[key]?.label ?? key;
-}
-
-// ---------------------------------------------------------------------------
-// Persisted-view shape
-// ---------------------------------------------------------------------------
-
-interface PersistedView extends Record<string, unknown> {
-  filters: FilterState;
-  sorts: SortKey[];
-  visibleCols: string[];
-  activeTab: ViewTab;
-}
-
-const PERSIST_DEFAULTS: PersistedView = {
-  filters: EMPTY_FILTER,
-  sorts: [],
-  visibleCols: [
-    "truthTable", "arity", "source", "triggerForm", "rowDistribution",
-    "baseModel", "tuning", "judge", "asr", "ftr", "stealthRate",
-    "plantedEpoch", "density", "avg_sensitivity", "fourier_degree",
-  ],
-  activeTab: "table",
-};
-
-const STATUS_OPTIONS: Array<{ flag: import("../lib/types").StatusFlag; label: string }> = [
+const STATUS_OPTIONS: Array<{ flag: StatusFlag; label: string }> = [
   { flag: "plantedOnly", label: "Planted" },
   { flag: "neverPlanted", label: "Never planted" },
   { flag: "inProgress", label: "In progress" },
   { flag: "hasDefense", label: "Has defense" },
+  { flag: "hasInterp", label: "Has interp" },
+  { flag: "hasScan", label: "Has scan" },
   { flag: "hasTwin", label: "Has twin" },
   { flag: "hasNegativeDrop", label: "Negative drop" },
-  { flag: "heuristicProvenance", label: "Heuristic prov." },
 ];
 
 const FACET_LABELS: Record<FacetKey, string> = {
@@ -123,33 +71,39 @@ const FACET_LABELS: Record<FacetKey, string> = {
   arity: "Arity",
 };
 
-const HIST_BINS = 24;
-
-// Cap the number of DOM rows rendered in the tbody so the table stays fast at
-// real scale (the real snapshot has ~2,655 experiments). Filtering and sorting
-// run over the FULL set; only the rendered window is capped.
-const ROW_CAP = 500;
+// Persisted-view shape (boolback:view): filters + sorts + visibleCols + widths.
+interface PersistedView extends Record<string, unknown> {
+  filters: FilterState;
+  sorts: SortKey[];
+  visibleCols: string[];
+  columnWidths: Record<string, number>;
+}
 
 // ===========================================================================
 // TablePane
 // ===========================================================================
 
 export interface TablePaneProps {
-  fixture: FixtureBundle;
+  bundle: Bundle;
 }
 
-export function TablePane({ fixture }: TablePaneProps) {
-  const rows = fixture.experiments;
+export function TablePane({ bundle }: TablePaneProps) {
+  const rows = bundle.rows;
+  const index = useMemo<MetricIndex>(
+    () => indexMetricSchema(bundle.metric_schema),
+    [bundle.metric_schema],
+  );
 
-  // store slices (selector-consumed; never destructure the whole store)
+  // ---- store slices ------------------------------------------------------
   const filters = useBoolbackStore((s) => s.filters);
   const sorts = useBoolbackStore((s) => s.sorts);
   const visibleCols = useBoolbackStore((s) => s.visibleCols);
-  const activeTab = useBoolbackStore((s) => s.activeTab);
+  const columnWidths = useBoolbackStore((s) => s.columnWidths);
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
 
   const select = useBoolbackStore((s) => s.select);
+  const openDetail = useBoolbackStore((s) => s.openDetail);
   const hover = useBoolbackStore((s) => s.hover);
   const expandChain = useBoolbackStore((s) => s.expandChain);
   const pushSort = useBoolbackStore((s) => s.pushSort);
@@ -162,41 +116,49 @@ export function TablePane({ fixture }: TablePaneProps) {
   const updateRange = useBoolbackStore((s) => s.updateRange);
   const removeRange = useBoolbackStore((s) => s.removeRange);
   const toggleStatus = useBoolbackStore((s) => s.toggleStatus);
-  const setScopeDir = useBoolbackStore((s) => s.setScopeDir);
+  const removeSubtreeDir = useBoolbackStore((s) => s.removeSubtreeDir);
   const setVisibleCols = useBoolbackStore((s) => s.setVisibleCols);
+  const setColumnWidth = useBoolbackStore((s) => s.setColumnWidth);
   const resetView = useBoolbackStore((s) => s.resetView);
-  const setFilters = useBoolbackStore.setState; // for hydration only
+  const setStore = useBoolbackStore.setState;
 
   // ---- persisted view sync ----------------------------------------------
+  const persistDefaults = useMemo<PersistedView>(
+    () => ({ filters: EMPTY_FILTER, sorts: [], visibleCols, columnWidths: {} }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
   const [persisted, updatePersisted, isHydrated] = usePersistedSettings<PersistedView>(
     "boolback:view",
-    PERSIST_DEFAULTS,
+    persistDefaults,
   );
   const didHydrate = useRef(false);
 
-  // One-way hydrate persisted -> store, exactly once after settings hydrate.
   useEffect(() => {
     if (!isHydrated || didHydrate.current) return;
     didHydrate.current = true;
-    setFilters({
+    setStore({
       filters: persisted.filters ?? EMPTY_FILTER,
       sorts: persisted.sorts ?? [],
-      visibleCols: persisted.visibleCols ?? PERSIST_DEFAULTS.visibleCols,
-      activeTab: persisted.activeTab ?? "table",
+      visibleCols: persisted.visibleCols?.length ? persisted.visibleCols : visibleCols,
+      columnWidths: persisted.columnWidths ?? {},
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHydrated]);
 
-  // Guarded store -> persisted: only after hydration completed.
   useEffect(() => {
     if (!isHydrated || !didHydrate.current) return;
-    updatePersisted({ filters, sorts, visibleCols, activeTab });
+    updatePersisted({ filters, sorts, visibleCols, columnWidths });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, sorts, visibleCols, activeTab, isHydrated]);
+  }, [filters, sorts, visibleCols, columnWidths, isHydrated]);
+
+  // ---- column defs -------------------------------------------------------
+  const colDefs = useMemo(
+    () => visibleCols.map((id) => resolveById(id, bundle, index)),
+    [visibleCols, bundle, index],
+  );
 
   // ---- visible rows ------------------------------------------------------
-  // Full filtered+sorted set (drives the live count); the tbody renders only
-  // the first ROW_CAP of these so the DOM stays light at real scale.
   const visibleRows = useMemo(
     () => applySorts(applyFilters(rows, filters), sorts),
     [rows, filters, sorts],
@@ -206,16 +168,16 @@ export function TablePane({ fixture }: TablePaneProps) {
     [visibleRows],
   );
 
-  // Rows in scope (everything except range/status/text) — used as the base
+  // Rows in scope (subtree chips applied, but not facets/ranges/status) — base
   // for facet/histogram live counts so they reflect sibling-filter context.
   const scopedRows = useMemo(() => {
-    if (!filters.scopeDir) return rows;
-    return rows.filter((r) => r.chainDirs.includes(filters.scopeDir!));
-  }, [rows, filters.scopeDir]);
+    if (filters.subtreeDirs.length === 0) return rows;
+    return rows.filter((r) =>
+      filters.subtreeDirs.some((d) => r.identity.chain_dirs.includes(d)),
+    );
+  }, [rows, filters.subtreeDirs]);
 
-  const visibleColInfos = useMemo(() => visibleCols.map(colInfo), [visibleCols]);
-
-  const sortDir = useCallback(
+  const sortDirOf = useCallback(
     (col: string): "asc" | "desc" | null => sorts.find((k) => k.col === col)?.dir ?? null,
     [sorts],
   );
@@ -228,7 +190,7 @@ export function TablePane({ fixture }: TablePaneProps) {
     [appendSort, pushSort],
   );
 
-  // hover debounce (150ms) so dragging across rows doesn't thrash linked views
+  // hover debounce so dragging across rows doesn't thrash linked views
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onRowHover = useCallback(
     (dir: string | null) => {
@@ -240,9 +202,9 @@ export function TablePane({ fixture }: TablePaneProps) {
   useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
 
   const onRowClick = useCallback(
-    (row: ExperimentRow) => {
-      select(row.scoringDir);
-      expandChain(row.chainDirs);
+    (row: RunRow) => {
+      select(row.identity.node_path);
+      expandChain(row.identity.chain_dirs);
     },
     [select, expandChain],
   );
@@ -263,6 +225,13 @@ export function TablePane({ fixture }: TablePaneProps) {
     [sorts, reorderSorts],
   );
 
+  const widthOf = useCallback(
+    (def: ColumnDef): number =>
+      columnWidths[def.id] ??
+      (def.kind === "truthStrip" ? TRUTH_COL_WIDTH : DEFAULT_COL_WIDTH),
+    [columnWidths],
+  );
+
   return (
     <div className="absolute inset-0 flex flex-col bg-bg text-text">
       <FilterBar
@@ -273,6 +242,8 @@ export function TablePane({ fixture }: TablePaneProps) {
         totalCount={rows.length}
         filters={filters}
         sorts={sorts}
+        bundle={bundle}
+        index={index}
         visibleCols={visibleCols}
         onChipDragStart={onChipDragStart}
         onChipDrop={onChipDrop}
@@ -283,55 +254,44 @@ export function TablePane({ fixture }: TablePaneProps) {
         updateRange={updateRange}
         removeRange={removeRange}
         toggleStatus={toggleStatus}
-        setScopeDir={setScopeDir}
+        removeSubtreeDir={removeSubtreeDir}
         setVisibleCols={setVisibleCols}
         resetView={resetView}
-        nodeIndex={fixture.nodeIndex}
       />
 
       <div className="flex-1 min-h-0 overflow-auto">
-        <table className="w-full border-collapse text-xs font-mono">
+        <table className="border-collapse text-xs font-mono" style={{ tableLayout: "fixed" }}>
+          <colgroup>
+            {colDefs.map((c) => (
+              <col key={c.id} style={{ width: widthOf(c) }} />
+            ))}
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur-md">
             <tr className="border-b border-border">
-              {visibleColInfos.map((c) => {
-                const dir = sortDir(c.key);
-                return (
-                  <th
-                    key={c.key}
-                    aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none"}
-                    title={`${c.label} — click to sort, shift-click to add`}
-                    className="px-2 py-1.5 text-left font-medium text-text-muted whitespace-nowrap select-none"
-                  >
-                    <button
-                      type="button"
-                      onClick={(e) => onHeaderClick(c.key, e)}
-                      className="inline-flex items-center gap-1 cursor-pointer hover:text-accent focus:outline-none focus-visible:text-accent"
-                    >
-                      {c.label}
-                      {dir && (
-                        <span className="text-accent">{dir === "asc" ? "▲" : "▼"}</span>
-                      )}
-                    </button>
-                  </th>
-                );
-              })}
+              {colDefs.map((c) => (
+                <HeaderCell
+                  key={c.id}
+                  def={c}
+                  dir={sortDirOf(c.id)}
+                  width={widthOf(c)}
+                  onClick={onHeaderClick}
+                  onResize={setColumnWidth}
+                />
+              ))}
             </tr>
           </thead>
           <tbody>
             {renderedRows.map((row, i) => {
-              const isSel = row.scoringDir === selectedDir;
-              const isHover = row.scoringDir === hoveredDir;
-              // scoringDir is now a PATH KEY (the scoring node's full root->node
-              // chain), unique per experiment in both data sources. chainDirs are
-              // ancestor path keys; their join is likewise unique. Key on the full
-              // chain (positional suffix as a belt-and-braces tiebreak).
-              const rowKey = `${row.chainDirs.join(">")}#${i}`;
+              const key = `${row.identity.node_path}#${i}`;
+              const isSel = row.identity.node_path === selectedDir;
+              const isHover = row.identity.node_path === hoveredDir;
               return (
                 <tr
-                  key={rowKey}
-                  onMouseEnter={() => onRowHover(row.scoringDir)}
+                  key={key}
+                  onMouseEnter={() => onRowHover(row.identity.node_path)}
                   onMouseLeave={() => onRowHover(null)}
                   onClick={() => onRowClick(row)}
+                  onDoubleClick={() => openDetail(row.identity.node_path)}
                   className={[
                     "border-b border-border/50 cursor-pointer",
                     isSel
@@ -341,9 +301,13 @@ export function TablePane({ fixture }: TablePaneProps) {
                         : "text-text-muted hover:bg-surface/40",
                   ].join(" ")}
                 >
-                  {visibleColInfos.map((c) => (
-                    <td key={c.key} className="px-2 py-1 whitespace-nowrap align-middle">
-                      <Cell row={row} col={c} />
+                  {colDefs.map((c) => (
+                    <td
+                      key={c.id}
+                      className="px-2 py-1 align-middle overflow-hidden whitespace-nowrap"
+                      style={{ maxWidth: widthOf(c) }}
+                    >
+                      <Cell row={row} def={c} index={index} onOpenDetail={openDetail} />
                     </td>
                   ))}
                 </tr>
@@ -352,10 +316,10 @@ export function TablePane({ fixture }: TablePaneProps) {
             {visibleRows.length === 0 && (
               <tr>
                 <td
-                  colSpan={Math.max(1, visibleColInfos.length)}
+                  colSpan={Math.max(1, colDefs.length)}
                   className="px-3 py-8 text-center text-text-faint"
                 >
-                  No experiments match the current filters.
+                  No runs match the current filters.
                 </td>
               </tr>
             )}
@@ -367,106 +331,177 @@ export function TablePane({ fixture }: TablePaneProps) {
 }
 
 // ===========================================================================
+// Header cell (sortable + right-edge resize handle)
+// ===========================================================================
+
+function HeaderCell({
+  def, dir, width, onClick, onResize,
+}: {
+  def: ColumnDef;
+  dir: "asc" | "desc" | null;
+  width: number;
+  onClick: (col: string, e: React.MouseEvent) => void;
+  onResize: (col: string, width: number) => void;
+}) {
+  const { size, handleProps } = useResizable({
+    size: width,
+    min: MIN_COL_WIDTH,
+    max: MAX_COL_WIDTH,
+    edge: "right",
+    onCommit: (w) => onResize(def.id, Math.round(w)),
+  });
+  // Live-apply during drag too (cheap; the colgroup width is store-backed and
+  // only persists on commit). We push every move so the column tracks the
+  // pointer; the committed value is what persists.
+  useEffect(() => {
+    if (size !== width) onResize(def.id, Math.round(size));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size]);
+
+  return (
+    <th
+      aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none"}
+      title={`${def.label} — click to sort, shift-click to add a secondary key`}
+      className="relative px-2 py-1.5 text-left font-medium text-text-muted select-none overflow-hidden"
+    >
+      <button
+        type="button"
+        onClick={(e) => onClick(def.id, e)}
+        className="inline-flex max-w-full items-center gap-1 cursor-pointer hover:text-accent focus:outline-none focus-visible:text-accent"
+      >
+        <span className="truncate">{def.label}</span>
+        {dir && <span className="text-accent shrink-0">{dir === "asc" ? "▲" : "▼"}</span>}
+      </button>
+      {/* resize handle */}
+      <span
+        {...handleProps}
+        className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-accent/40"
+        style={{ ...handleProps.style, touchAction: "none" }}
+      />
+    </th>
+  );
+}
+
+// ===========================================================================
 // Cell rendering
 // ===========================================================================
 
-function Cell({ row, col }: { row: ExperimentRow; col: ColInfo }) {
-  if (col.kind === "truthTable") {
+function Cell({
+  row, def, index, onOpenDetail,
+}: {
+  row: RunRow;
+  def: ColumnDef;
+  index: MetricIndex;
+  onOpenDetail: (dir: string) => void;
+}) {
+  if (def.kind === "truthStrip") {
     return (
-      <span className="inline-flex items-center gap-2">
-        <TruthSwatch tt={row.truthTable} arity={row.arity} />
-        <span className="text-text/90">{row.truthTable}</span>
+      <span className="block overflow-x-auto">
+        <TruthStrip arity={row.function.arity} activation={row.function.activation} box={11} />
       </span>
     );
   }
 
-  if (col.kind === "categorical") {
-    const v = cellValue(row, col.key);
-    return <span className="text-text/90">{v === null || v === "" ? "—" : String(v)}</span>;
+  if (def.kind === "dnf") {
+    const s = row.function.dnf_string;
+    const label = s === "0" ? "⊥ (false)" : s === "1" ? "⊤ (true)" : s;
+    return <span className="block truncate text-text/90" title={s}>{label}</span>;
   }
 
-  if (col.kind === "bool") {
-    const v = numericValue(row, col.key);
-    if (v === null) return <span className="text-text-faint">·</span>;
-    return v >= 1
-      ? <span className="text-success">✓</span>
-      : <span className="text-text-faint">·</span>;
+  if (def.kind === "categorical") {
+    const v = cellValue(row, def.id);
+    const s = v === null || v === "" ? "—" : String(v);
+    return <span className="block truncate text-text/90" title={s}>{s}</span>;
   }
 
-  // numeric -> mini-bar normalized to known range
-  const v = numericValue(row, col.key);
+  if (def.kind === "text") {
+    const v = cellValue(row, def.id);
+    if (v === null) return <span className="text-text-faint">—</span>;
+    const s = typeof v === "number"
+      ? def.metricName
+        ? formatValue(index, def.metricName, v)
+        : Number.isInteger(v) ? String(v) : v.toFixed(3)
+      : String(v);
+    return <span className="block truncate tabular-nums text-text/90" title={s}>{s}</span>;
+  }
+
+  if (def.kind === "outcome") {
+    return <OutcomeCell row={row} def={def} index={index} onOpenDetail={onOpenDetail} />;
+  }
+
+  // numeric -> mini-bar normalized to schema range
+  const v = numericValue(row, def.id);
   if (v === null) return <span className="text-text-faint">—</span>;
-  return <MiniBar metric={col.key} value={v} meta={col.meta} negativeRed />;
+  return <MiniBar metricName={def.metricName ?? def.id} value={v} index={index} negativeRed />;
 }
 
-function formatValue(meta: MetricMeta | undefined, key: string, v: number): string {
-  const fmt = meta?.format;
-  if (key === "plantedEpoch") return String(v);
-  if (key === "seedN") return String(v);
-  if (fmt === "pct") return `${Math.round(v * 100)}%`;
-  if (fmt === "int") return String(Math.round(v));
-  if (fmt === "float2") return v.toFixed(2);
-  // default
-  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+// OUTCOME cell: number + reveal an epoch sparkline on hover.
+function OutcomeCell({
+  row, def, index, onOpenDetail,
+}: {
+  row: RunRow;
+  def: ColumnDef;
+  index: MetricIndex;
+  onOpenDetail: (dir: string) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const v = numericValue(row, def.id);
+  const display = v === null
+    ? "—"
+    : formatValue(index, def.metricName ?? def.id, v);
+
+  return (
+    <span
+      className="relative inline-flex items-center"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <span className={v === null ? "text-text-faint tabular-nums" : "tabular-nums text-text/90"}>
+        {display}
+      </span>
+      {hovered && def.trajectoryKey && (
+        <span
+          className="absolute left-0 top-full z-40 mt-1 rounded-md border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenDetail(row.identity.node_path);
+          }}
+        >
+          <EpochSparkline trajectories={row.trajectories} metric={def.trajectoryKey} />
+        </span>
+      )}
+    </span>
+  );
 }
 
 function MiniBar({
-  metric, value, meta, negativeRed,
+  metricName, value, index, negativeRed,
 }: {
-  metric: string; value: number; meta?: MetricMeta; negativeRed?: boolean;
+  metricName: string;
+  value: number;
+  index: MetricIndex;
+  negativeRed?: boolean;
 }) {
-  const t = meta ? normalizeToRange(metric, value) : Math.max(0, Math.min(1, value));
+  const t = normalizeToRange(metricName, value, index);
   const pct = Math.round(t * 100);
-  const isNeg = negativeRed && value < 0;
+  const isNeg = negativeRed === true && value < 0;
   return (
-    <span className="inline-flex items-center gap-1.5 w-[6.5rem]">
-      <span className="relative h-1.5 flex-1 rounded-sm bg-surface-alt overflow-hidden">
+    <span className="inline-flex w-full items-center gap-1.5">
+      <span className="relative h-1.5 flex-1 min-w-[1.5rem] overflow-hidden rounded-sm bg-surface-alt">
         <span
           className={isNeg ? "absolute inset-y-0 left-0 bg-error/70" : "absolute inset-y-0 left-0 bg-accent/70"}
           style={{ width: `${pct}%` }}
         />
       </span>
-      <span className={isNeg ? "text-error tabular-nums w-9 text-right" : "text-text/90 tabular-nums w-9 text-right"}>
-        {formatValue(meta, metric, value)}
+      <span
+        className={[
+          "tabular-nums w-10 shrink-0 text-right",
+          isNeg ? "text-error" : "text-text/90",
+        ].join(" ")}
+      >
+        {formatValue(index, metricName, value)}
       </span>
     </span>
-  );
-}
-
-function TruthSwatch({ tt, arity }: { tt: string; arity: number }) {
-  // Render the truth table as a compact grid swatch: one cell per output bit.
-  const bits = tt.split("");
-  const n = bits.length || 1;
-  const cols = Math.min(8, Math.max(2, Math.ceil(Math.sqrt(n))));
-  const rowsCount = Math.ceil(n / cols);
-  const cell = 4;
-  const gap = 1;
-  const w = cols * cell + (cols - 1) * gap;
-  const h = rowsCount * cell + (rowsCount - 1) * gap;
-  return (
-    <svg
-      width={w}
-      height={h}
-      viewBox={`0 0 ${w} ${h}`}
-      className="shrink-0"
-      aria-label={`truth table arity ${arity}`}
-    >
-      {bits.map((b, i) => {
-        const cx = (i % cols) * (cell + gap);
-        const cy = Math.floor(i / cols) * (cell + gap);
-        return (
-          <rect
-            key={i}
-            x={cx}
-            y={cy}
-            width={cell}
-            height={cell}
-            rx={0.5}
-            className={b === "1" ? "fill-accent" : "fill-text-faint/50"}
-          />
-        );
-      })}
-    </svg>
   );
 }
 
@@ -475,13 +510,15 @@ function TruthSwatch({ tt, arity }: { tt: string; arity: number }) {
 // ===========================================================================
 
 interface FilterBarProps {
-  rows: ExperimentRow[];
-  scopedRows: ExperimentRow[];
+  rows: RunRow[];
+  scopedRows: RunRow[];
   visibleCount: number;
   renderedCount: number;
   totalCount: number;
   filters: FilterState;
   sorts: SortKey[];
+  bundle: Bundle;
+  index: MetricIndex;
   visibleCols: string[];
   onChipDragStart: (i: number) => void;
   onChipDrop: (i: number) => void;
@@ -491,41 +528,34 @@ interface FilterBarProps {
   addRange: (r: RangeFilter) => void;
   updateRange: (metric: string, patch: Partial<RangeFilter>) => void;
   removeRange: (metric: string) => void;
-  toggleStatus: (s: import("../lib/types").StatusFlag) => void;
-  setScopeDir: (dir: string | null) => void;
+  toggleStatus: (s: StatusFlag) => void;
+  removeSubtreeDir: (dir: string) => void;
   setVisibleCols: (cols: string[]) => void;
   resetView: () => void;
-  nodeIndex: Map<string, import("../lib/types").TreeNode>;
 }
 
 function FilterBar(props: FilterBarProps) {
   const {
-    rows, scopedRows, visibleCount, renderedCount, totalCount, filters, sorts, visibleCols,
+    rows, scopedRows, visibleCount, renderedCount, totalCount, filters, sorts,
+    bundle, index, visibleCols,
     onChipDragStart, onChipDrop, toggleSortDir, removeSort,
-    setFacet, addRange, updateRange, removeRange, toggleStatus, setScopeDir,
-    setVisibleCols, resetView, nodeIndex,
+    setFacet, addRange, updateRange, removeRange, toggleStatus, removeSubtreeDir,
+    setVisibleCols, resetView,
   } = props;
 
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const toggleMenu = useCallback(
-    (id: string) => setOpenMenu((cur) => (cur === id ? null : id)),
-    [],
+  const facetOpts = useMemo(
+    () => Object.fromEntries(FACET_KEYS.map((k) => [k, facetOptions(scopedRows, k)])) as Record<FacetKey, Array<{ value: string; count: number }>>,
+    [scopedRows],
   );
 
-  const scopeLabel = useMemo(() => {
-    if (!filters.scopeDir) return null;
-    const node = nodeIndex.get(filters.scopeDir);
-    return node?.slug ?? filters.scopeDir;
-  }, [filters.scopeDir, nodeIndex]);
-
-  const facetOpts = useMemo(
-    () => Object.fromEntries(FACET_KEYS.map((k) => [k, facetOptions(scopedRows, k)])),
-    [scopedRows],
+  const colLabel = useCallback(
+    (id: string) => resolveById(id, bundle, index).label,
+    [bundle, index],
   );
 
   return (
     <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
-      {/* Row 1: status pills + count + scope chip + reset */}
+      {/* Row 1: status pills + count + reset */}
       <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
         {STATUS_OPTIONS.map((opt) => {
           const active = filters.status.includes(opt.flag);
@@ -554,18 +584,6 @@ function FilterBar(props: FilterBarProps) {
           )}
         </span>
 
-        {scopeLabel && (
-          <button
-            onClick={() => setScopeDir(null)}
-            title="Clear subtree scope"
-            className="flex items-center gap-1 rounded-full border border-accent/60 bg-accent/10 px-2.5 py-0.5 text-xs text-accent hover:bg-accent/20"
-          >
-            <span className="text-text-muted">scope:</span>
-            <span className="font-mono max-w-[14rem] truncate">{scopeLabel}</span>
-            <span aria-hidden>×</span>
-          </button>
-        )}
-
         <button
           onClick={resetView}
           className="rounded-md border border-border bg-surface-alt px-2.5 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
@@ -574,14 +592,30 @@ function FilterBar(props: FilterBarProps) {
         </button>
       </div>
 
-      {/* Row 2: facets + add-metric + column picker */}
+      {/* Subtree chips (tree-driven; reversible, independent of expansion) */}
+      {filters.subtreeDirs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2">
+          <span className="text-xs text-text-faint font-mono">scope:</span>
+          {filters.subtreeDirs.map((dir) => (
+            <button
+              key={dir}
+              onClick={() => removeSubtreeDir(dir)}
+              title={dir}
+              className="flex items-center gap-1 rounded-full border border-accent/60 bg-accent/10 px-2.5 py-0.5 text-xs text-accent hover:bg-accent/20"
+            >
+              <span className="font-mono max-w-[16rem] truncate">{dir}</span>
+              <span aria-hidden>×</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Row 2: facets + add-metric + per-group column menus */}
       <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2">
         {FACET_KEYS.map((key) => (
           <FacetPopover
             key={key}
             facetKey={key}
-            open={openMenu === `facet:${key}`}
-            onToggle={() => toggleMenu(`facet:${key}`)}
             selected={filters.facets[key] ?? []}
             options={facetOpts[key]}
             setFacet={setFacet}
@@ -589,19 +623,21 @@ function FilterBar(props: FilterBarProps) {
         ))}
 
         <AddMetricMenu
-          open={openMenu === "addMetric"}
-          onToggle={() => toggleMenu("addMetric")}
           existing={filters.ranges.map((r) => r.metric)}
           rows={rows}
+          schema={bundle.metric_schema}
+          index={index}
           addRange={addRange}
         />
 
-        <ColumnPicker
-          open={openMenu === "cols"}
-          onToggle={() => toggleMenu("cols")}
-          visibleCols={visibleCols}
-          setVisibleCols={setVisibleCols}
-        />
+        <div className="ml-auto">
+          <ColumnGroupMenu
+            bundle={bundle}
+            index={index}
+            visibleCols={visibleCols}
+            setVisibleCols={setVisibleCols}
+          />
+        </div>
       </div>
 
       {/* Row 3: sort chips */}
@@ -619,19 +655,11 @@ function FilterBar(props: FilterBarProps) {
               title="Drag to reorder · click arrow to flip · × to remove"
             >
               <span className="text-text-faint tabular-nums">{i + 1}</span>
-              <span className="text-text/90 font-mono">{labelFor(s.col)}</span>
-              <button
-                onClick={() => toggleSortDir(s.col)}
-                className="text-accent hover:text-text"
-                aria-label="flip direction"
-              >
+              <span className="text-text/90 font-mono">{colLabel(s.col)}</span>
+              <button onClick={() => toggleSortDir(s.col)} className="text-accent hover:text-text" aria-label="flip direction">
                 {s.dir === "asc" ? "▲" : "▼"}
               </button>
-              <button
-                onClick={() => removeSort(s.col)}
-                className="text-text-muted hover:text-error"
-                aria-label="remove sort"
-              >
+              <button onClick={() => removeSort(s.col)} className="text-text-muted hover:text-error" aria-label="remove sort">
                 ×
               </button>
             </div>
@@ -647,6 +675,7 @@ function FilterBar(props: FilterBarProps) {
               key={r.metric}
               range={r}
               rows={scopedRows}
+              index={index}
               updateRange={updateRange}
               removeRange={removeRange}
             />
@@ -658,35 +687,35 @@ function FilterBar(props: FilterBarProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Facet popover (clouds CheckboxRow idiom + live counts)
+// Facet popover (hover-to-open; popover does NOT repeat its own name)
 // ---------------------------------------------------------------------------
 
 function FacetPopover({
-  facetKey, open, onToggle, selected, options, setFacet,
+  facetKey, selected, options, setFacet,
 }: {
   facetKey: FacetKey;
-  open: boolean;
-  onToggle: () => void;
   selected: string[];
   options: Array<{ value: string; count: number }>;
   setFacet: (key: FacetKey, values: string[]) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const enter = () => { if (closeTimer.current) clearTimeout(closeTimer.current); setOpen(true); };
+  const leave = () => { if (closeTimer.current) clearTimeout(closeTimer.current); closeTimer.current = setTimeout(() => setOpen(false), 120); };
+
   const active = selected.length > 0;
   const toggleValue = (value: string) => {
-    const next = selected.includes(value)
-      ? selected.filter((v) => v !== value)
-      : [...selected, value];
+    const next = selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value];
     setFacet(facetKey, next);
   };
+
   return (
-    <div className="relative">
+    <div className="relative" onMouseEnter={enter} onMouseLeave={leave}>
       <button
-        onClick={onToggle}
+        onClick={() => setOpen((o) => !o)}
         className={[
           "rounded-md border px-2 py-0.5 text-xs transition-colors",
-          active
-            ? "border-accent text-accent bg-accent/10"
-            : "border-border text-text-muted hover:text-text hover:border-accent/40",
+          active ? "border-accent text-accent bg-accent/10" : "border-border text-text-muted hover:text-text hover:border-accent/40",
         ].join(" ")}
       >
         {FACET_LABELS[facetKey]}
@@ -694,33 +723,15 @@ function FacetPopover({
       </button>
       {open && (
         <div className="absolute left-0 top-full mt-1 z-30 w-56 max-h-72 overflow-y-auto rounded-lg border border-border bg-surface/95 backdrop-blur-md p-2 text-sm animate-settle">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-text-muted text-xs uppercase tracking-wide">
-              {FACET_LABELS[facetKey]}
-            </span>
-            {active && (
-              <button
-                onClick={() => setFacet(facetKey, [])}
-                className="text-xs text-text-muted hover:text-accent"
-              >
-                clear
-              </button>
-            )}
-          </div>
-          {options.length === 0 && (
-            <div className="text-xs text-text-faint py-1">No values</div>
+          {active && (
+            <div className="flex items-center justify-end mb-1">
+              <button onClick={() => setFacet(facetKey, [])} className="text-xs text-text-muted hover:text-accent">clear</button>
+            </div>
           )}
+          {options.length === 0 && <div className="text-xs text-text-faint py-1">No values</div>}
           {options.map((opt) => (
-            <label
-              key={opt.value}
-              className="flex items-center gap-2 py-0.5 cursor-pointer text-text/90 hover:text-accent"
-            >
-              <input
-                type="checkbox"
-                checked={selected.includes(opt.value)}
-                onChange={() => toggleValue(opt.value)}
-                className="accent-accent"
-              />
+            <label key={opt.value} className="flex items-center gap-2 py-0.5 cursor-pointer text-text/90 hover:text-accent">
+              <input type="checkbox" checked={selected.includes(opt.value)} onChange={() => toggleValue(opt.value)} className="accent-accent" />
               <span className="flex-1 truncate">{opt.value || "—"}</span>
               <span className="text-text-faint tabular-nums">{opt.count}</span>
             </label>
@@ -732,45 +743,41 @@ function FacetPopover({
 }
 
 // ---------------------------------------------------------------------------
-// Add-metric searchable menu (over METRIC_META)
+// Add-metric searchable menu (over metric_schema numeric metrics)
 // ---------------------------------------------------------------------------
 
 function AddMetricMenu({
-  open, onToggle, existing, rows, addRange,
+  existing, rows, schema, index, addRange,
 }: {
-  open: boolean;
-  onToggle: () => void;
   existing: string[];
-  rows: ExperimentRow[];
+  rows: RunRow[];
+  schema: MetricSchemaEntry[];
+  index: MetricIndex;
   addRange: (r: RangeFilter) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const existingSet = useMemo(() => new Set(existing), [existing]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return Object.values(METRIC_META)
-      .filter((meta) => meta.type !== "bool")
-      .filter((meta) => !existingSet.has(meta.name))
-      .filter((meta) =>
-        q === "" ||
-        meta.label.toLowerCase().includes(q) ||
-        meta.name.toLowerCase().includes(q),
-      )
+    return schema
+      .filter((e) => !existingSet.has(e.name))
+      .filter((e) => q === "" || e.label.toLowerCase().includes(q) || e.name.toLowerCase().includes(q))
       .sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
-  }, [query, existingSet]);
+  }, [query, existingSet, schema]);
 
-  const onPick = (meta: MetricMeta) => {
-    const { min, max } = metricRange(rows, meta.name);
-    addRange({ metric: meta.name, min, max });
-    onToggle();
+  const onPick = (e: MetricSchemaEntry) => {
+    const { min, max } = metricRange(rows, e.name, index);
+    addRange({ metric: e.name, min, max });
+    setOpen(false);
     setQuery("");
   };
 
   return (
     <div className="relative">
       <button
-        onClick={onToggle}
+        onClick={() => setOpen((o) => !o)}
         className="rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
       >
         + add metric
@@ -786,17 +793,15 @@ function AddMetricMenu({
             className="mb-2 w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-text placeholder:text-text-faint caret-accent focus:border-accent/80 focus:outline-none"
           />
           <div className="max-h-64 overflow-y-auto">
-            {results.length === 0 && (
-              <div className="text-xs text-text-faint py-1 px-1">No metrics</div>
-            )}
-            {results.map((meta) => (
+            {results.length === 0 && <div className="text-xs text-text-faint py-1 px-1">No metrics</div>}
+            {results.map((e) => (
               <button
-                key={meta.name}
-                onClick={() => onPick(meta)}
+                key={e.name}
+                onClick={() => onPick(e)}
                 className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
               >
-                <span className="truncate">{meta.label}</span>
-                <span className="text-text-faint text-xs uppercase">{meta.suite}</span>
+                <span className="truncate">{e.label}</span>
+                <span className="text-text-faint text-xs uppercase">{e.suite}</span>
               </button>
             ))}
           </div>
@@ -811,38 +816,29 @@ function AddMetricMenu({
 // ---------------------------------------------------------------------------
 
 function RangeSlider({
-  range, rows, updateRange, removeRange,
+  range, rows, index, updateRange, removeRange,
 }: {
   range: RangeFilter;
-  rows: ExperimentRow[];
+  rows: RunRow[];
+  index: MetricIndex;
   updateRange: (metric: string, patch: Partial<RangeFilter>) => void;
   removeRange: (metric: string) => void;
 }) {
-  const meta = METRIC_META[range.metric];
-  const bounds = useMemo(() => metricRange(rows, range.metric), [rows, range.metric]);
+  const entry = index[range.metric];
+  const bounds = useMemo(() => metricRange(rows, range.metric, index), [rows, range.metric, index]);
   const lo = bounds.min;
   const hi = bounds.max;
   const span = hi - lo || 1;
-  const isFloat = (meta?.format ?? "float2") !== "int";
-  const step = isFloat ? span / 100 : 1;
+  const isInt = (entry?.format ?? "") === "d";
+  const step = isInt ? 1 : span / 100;
 
-  const bins = useMemo(
-    () => histogramBins(rows, range.metric, HIST_BINS),
-    [rows, range.metric],
-  );
+  const bins = useMemo(() => histogramBins(rows, range.metric, HIST_BINS, index), [rows, range.metric, index]);
   const maxBin = Math.max(1, ...bins);
 
-  const fmt = (v: number) =>
-    meta?.format === "pct" ? `${Math.round(v * 100)}%`
-      : meta?.format === "int" ? String(Math.round(v))
-        : v.toFixed(2);
+  const fmt = (v: number) => (entry ? formatValue(index, range.metric, v) : v.toFixed(2));
 
-  // Buffer slider values locally for instant feedback; flush to the store on a
-  // trailing ~120ms timer so each drag tick doesn't rerun the filter cascade.
   const [draft, setDraft] = useState({ min: range.min, max: range.max });
-  useEffect(() => {
-    setDraft({ min: range.min, max: range.max });
-  }, [range.min, range.max]);
+  useEffect(() => { setDraft({ min: range.min, max: range.max }); }, [range.min, range.max]);
 
   const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commit = useCallback(
@@ -860,19 +856,10 @@ function RangeSlider({
   return (
     <div className="w-60 rounded-md border border-border bg-surface-alt/60 p-2">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-text/90 font-mono truncate">
-          {meta?.label ?? range.metric}
-        </span>
-        <button
-          onClick={() => removeRange(range.metric)}
-          className="text-text-muted hover:text-error text-xs"
-          aria-label="remove range"
-        >
-          ×
-        </button>
+        <span className="text-xs text-text/90 font-mono truncate">{entry?.label ?? range.metric}</span>
+        <button onClick={() => removeRange(range.metric)} className="text-text-muted hover:text-error text-xs" aria-label="remove range">×</button>
       </div>
 
-      {/* histogram */}
       <div className="relative h-8 flex items-end gap-px mb-1">
         {bins.map((c, i) => {
           const binLo = lo + (i / HIST_BINS) * span;
@@ -886,15 +873,12 @@ function RangeSlider({
             />
           );
         })}
-        {/* selected window overlay */}
         <span
           className="pointer-events-none absolute inset-y-0 border-x border-accent/50 bg-accent/5"
           style={{ left: `${lowPct}%`, right: `${100 - highPct}%` }}
         />
       </div>
 
-      {/* dual handles (stacked native range inputs, split-track so the lower
-          handle stays grabbable) */}
       <div className="relative h-4">
         <input
           type="range"
@@ -902,7 +886,7 @@ function RangeSlider({
           max={hi}
           step={step}
           value={draft.min}
-          aria-label={`${meta?.label ?? range.metric} minimum`}
+          aria-label={`${entry?.label ?? range.metric} minimum`}
           onChange={(e) => {
             const v = Math.min(Number(e.target.value), draft.max);
             setDraft((d) => ({ ...d, min: v }));
@@ -916,7 +900,7 @@ function RangeSlider({
           max={hi}
           step={step}
           value={draft.max}
-          aria-label={`${meta?.label ?? range.metric} maximum`}
+          aria-label={`${entry?.label ?? range.metric} maximum`}
           onChange={(e) => {
             const v = Math.max(Number(e.target.value), draft.min);
             setDraft((d) => ({ ...d, max: v }));
@@ -930,85 +914,6 @@ function RangeSlider({
         <span>{fmt(draft.min)}</span>
         <span>{fmt(draft.max)}</span>
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Column picker (gear) — toggles visibleCols
-// ---------------------------------------------------------------------------
-
-const COLUMN_GROUPS: Array<{ title: string; cols: string[] }> = [
-  {
-    title: "Identity",
-    cols: ["truthTable", "arity", "task", "source", "targetBehavior", "targetPhrase",
-      "triggerForm", "rowDistribution", "baseModel", "tuning", "judge", "split", "seedN"],
-  },
-  {
-    title: "Outcomes",
-    cols: ["asr", "ftr", "triggerlessCorrectness", "stealthRate", "ppl", "pplDrift", "plantedEpoch"],
-  },
-  {
-    title: "Complexity",
-    cols: Object.values(METRIC_META)
-      .filter((m) => m.suite === "spectral" || m.suite === "structural")
-      .map((m) => m.name),
-  },
-];
-
-function ColumnPicker({
-  open, onToggle, visibleCols, setVisibleCols,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  visibleCols: string[];
-  setVisibleCols: (cols: string[]) => void;
-}) {
-  const visibleSet = useMemo(() => new Set(visibleCols), [visibleCols]);
-  const toggleCol = (key: string) => {
-    if (visibleSet.has(key)) {
-      setVisibleCols(visibleCols.filter((c) => c !== key));
-    } else {
-      setVisibleCols([...visibleCols, key]);
-    }
-  };
-  return (
-    <div className="relative ml-auto">
-      <button
-        onClick={onToggle}
-        title="Choose columns"
-        className="rounded-md border border-border px-2 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
-      >
-        ⚙ columns
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-30 w-64 max-h-80 overflow-y-auto rounded-lg border border-border bg-surface/95 backdrop-blur-md p-2 text-sm animate-settle">
-          {COLUMN_GROUPS.map((group) => (
-            <div
-              key={group.title}
-              className="mt-3 border-t border-border pt-2 first:border-t-0 first:pt-0 first:mt-0"
-            >
-              <div className="text-text-muted text-xs uppercase tracking-wide mb-1">
-                {group.title}
-              </div>
-              {group.cols.map((key) => (
-                <label
-                  key={key}
-                  className="flex items-center gap-2 py-0.5 cursor-pointer text-text/90 hover:text-accent"
-                >
-                  <input
-                    type="checkbox"
-                    checked={visibleSet.has(key)}
-                    onChange={() => toggleCol(key)}
-                    className="accent-accent"
-                  />
-                  <span className="truncate">{labelFor(key)}</span>
-                </label>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

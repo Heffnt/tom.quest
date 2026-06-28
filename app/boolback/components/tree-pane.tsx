@@ -1,171 +1,89 @@
 "use client";
 
 // app/boolback/components/tree-pane.tsx
-// Recursive content-addressed directory tree (left pane). Pure divs + inline SVG
-// glyphs, nav-term list idiom. Selection-driver wired through the zustand store
-// (selector-consumed). The immutable fixture is passed DOWN as a prop.
+//
+// Left artifact tree. Root is a synthetic "artifacts" node whose children are
+// the bundle's function roots (Bundle.tree). The tree has exactly three real
+// levels: function -> dataset -> training. There is no census fold, no DAG, no
+// scope/focus concept.
+//
+// Each row carries two affordances plus an expand zone:
+//   - FILTER button: toggles a subtree chip in the shared FilterState
+//     (filters.subtreeDirs). A chip keeps runs whose chain_dirs intersect the
+//     node.path (OR-composed across chips), independent of expansion.
+//   - DETAILS button: opens the right detail panel for that node (openDetail).
+//   - Clicking ELSEWHERE on the row expands/collapses it (and selects it).
+// A typeahead box at the top finds dirs nested under the tree cursor.
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import type { TreeNode, NodeKind } from "../lib/types";
+import { useCallback, useMemo } from "react";
+import type { Bundle, TreeNode } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
-import { pathToNode } from "../data/fixture";
-import type { FixtureBundle } from "../data/fixture";
-import { applyFilters } from "../lib/select";
+import { TreeTypeahead } from "./tree-typeahead";
 
 interface TreePaneProps {
-  fixture: FixtureBundle;
+  bundle: Bundle;
 }
 
-// A node as it appears flattened in render order, carrying its depth and
-// whether it sits on a side-branch (defense_/interp/scan_) rule.
+const ROOT_PATH = "__artifacts__";
+
 interface FlatRow {
   node: TreeNode;
   depth: number;
-  sideBranch: boolean;
-  // census virtual group rows carry a synthetic node (kind "group", groupKind null).
-  censusGroup: boolean;
-  censusChildren?: TreeNode[]; // the 34 folded function nodes (only on a censusGroup row)
+  isRoot: boolean;
 }
 
-const CENSUS_GROUP_DIR = "__census_group__";
-
-// ---------------------------------------------------------------------------
-// level badge color (three-zone styling, zone 1)
-// ---------------------------------------------------------------------------
-function levelBadgeClass(level: NodeKind | null): string {
-  if (!level) return "text-text-faint";
-  if (level === "function") return "text-accent";
-  if (level === "dataset") return "text-success";
-  if (level === "training") return "text-warning";
-  if (level === "inference") return "text-text";
-  if (level === "scoring") return "text-accent";
-  if (level === "ppl") return "text-text-muted";
-  if (level === "interp") return "text-text-muted";
-  if (level === "model") return "text-text-muted";
-  if (level.startsWith("defense_")) return "text-error";
-  if (level.startsWith("scan_")) return "text-error";
-  return "text-text-muted";
-}
-
-// The level token shown in the badge zone (strip the specialized suffix prefix
-// to its taxonomy head so the badge stays short).
-function levelToken(node: TreeNode): string {
-  if (node.level) return node.level;
-  return node.groupKind ?? "group";
-}
-
-function isSideBranchNode(node: TreeNode): boolean {
-  if (!node.level) return false;
-  return node.level.startsWith("defense_") || node.level.startsWith("scan_") || node.level === "interp";
-}
-
-// ---------------------------------------------------------------------------
-// Flatten the visible tree (respecting expansion + census collapse). Built once
-// per (root/focusRoot, expanded, collapseCensus) so keyboard nav is deterministic.
-// ---------------------------------------------------------------------------
-function flatten(
-  root: TreeNode,
-  expanded: Set<string>,
-  collapseCensus: boolean,
-): FlatRow[] {
+// Flatten the synthetic root + visible (expanded) descendants in render order.
+function flatten(roots: TreeNode[], expanded: Set<string>): FlatRow[] {
   const out: FlatRow[] = [];
+  const rootOpen = expanded.has(ROOT_PATH);
 
-  const visit = (node: TreeNode, depth: number, onSideRule: boolean) => {
-    const sideRule = onSideRule || isSideBranchNode(node);
-    out.push({ node, depth, sideBranch: sideRule, censusGroup: false });
+  out.push({
+    node: {
+      path: ROOT_PATH,
+      dirName: "artifacts",
+      level: "function",
+      slug: "",
+      hash: "",
+      kind: "function",
+      done: roots.length > 0,
+      run_ids: [],
+      children: roots,
+    },
+    depth: 0,
+    isRoot: true,
+  });
+  if (!rootOpen) return out;
+
+  const visit = (node: TreeNode, depth: number) => {
+    out.push({ node, depth, isRoot: false });
     if (!expanded.has(node.path)) return;
-
-    const children = node.children;
-    if (children.length === 0) return;
-
-    // Census fold: when collapseCensus, fold a run of >=3 sibling arity-3 census
-    // function nodes (function+<8-bit bitstring>+...) into one virtual ×N group.
-    if (collapseCensus) {
-      const census = children.filter(
-        (c) => c.level === "function" && (c.slug?.length ?? 0) === 8,
-      );
-      if (census.length >= 3) {
-        const rest = children.filter((c) => !census.includes(c));
-        // virtual group row first
-        out.push({
-          node: makeCensusNode(census.length),
-          depth: depth + 1,
-          sideBranch: sideRule,
-          censusGroup: true,
-          censusChildren: census,
-        });
-        if (expanded.has(CENSUS_GROUP_DIR)) {
-          for (const c of census) visit(c, depth + 2, sideRule);
-        }
-        for (const c of rest) visit(c, depth + 1, sideRule);
-        return;
-      }
-    }
-
-    for (const c of children) visit(c, depth + 1, sideRule);
+    for (const c of node.children) visit(c, depth + 1);
   };
-
-  visit(root, 0, false);
+  for (const r of roots) visit(r, 1);
   return out;
 }
 
-function makeCensusNode(count: number): TreeNode {
-  return {
-    dirName: CENSUS_GROUP_DIR,
-    path: CENSUS_GROUP_DIR,
-    kind: "group",
-    groupKind: null,
-    level: null,
-    slug: `census ×${count}`,
-    hash: null,
-    config: null,
-    elidedKeys: [],
-    done: false,
-    claimed: false,
-    inChain: false,
-    projected: false,
-    children: [],
-  };
+function levelColor(level: TreeNode["level"]): string {
+  if (level === "function") return "text-accent";
+  if (level === "dataset") return "text-success";
+  return "text-warning";
 }
 
 // ---------------------------------------------------------------------------
-// Status pip: done -> filled success dot; claimed -> warning ring; else hollow.
+// Status pip: done -> filled success; else hollow.
 // ---------------------------------------------------------------------------
-function StatusPip({ node }: { node: TreeNode }) {
-  if (node.kind === "group") {
-    // group dirs get a folder glyph instead of a pip
-    return (
-      <svg viewBox="0 0 12 12" className="h-3 w-3 shrink-0 text-text-faint" aria-hidden>
-        <path
-          fill="currentColor"
-          d="M1 3a1 1 0 0 1 1-1h2.5l1 1H10a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z"
-        />
-      </svg>
-    );
-  }
-  if (node.done) {
-    return (
-      <svg viewBox="0 0 12 12" className="h-3 w-3 shrink-0 text-success" aria-hidden>
-        <circle cx="6" cy="6" r="3.5" fill="currentColor" />
-      </svg>
-    );
-  }
-  if (node.claimed) {
-    return (
-      <svg viewBox="0 0 12 12" className="h-3 w-3 shrink-0 text-warning" aria-hidden>
-        <circle cx="6" cy="6" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      </svg>
-    );
-  }
-  // no-done hollow ring
+function StatusPip({ done }: { done: boolean }) {
   return (
-    <svg viewBox="0 0 12 12" className="h-3 w-3 shrink-0 text-text-faint" aria-hidden>
-      <circle cx="6" cy="6" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.25" />
+    <svg viewBox="0 0 12 12" className={`h-3 w-3 shrink-0 ${done ? "text-success" : "text-text-faint"}`} aria-hidden>
+      {done ? (
+        <circle cx="6" cy="6" r="3.5" fill="currentColor" />
+      ) : (
+        <circle cx="6" cy="6" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.25" />
+      )}
     </svg>
   );
 }
 
-// caret for expandable rows
 function Caret({ open, hasChildren }: { open: boolean; hasChildren: boolean }) {
   if (!hasChildren) return <span className="inline-block w-3 shrink-0" aria-hidden />;
   return (
@@ -184,23 +102,19 @@ function Caret({ open, hasChildren }: { open: boolean; hasChildren: boolean }) {
 interface TreeRowProps {
   row: FlatRow;
   selected: boolean;
-  dimmed: boolean;
-  onSelect: (row: FlatRow) => void;
-  onToggle: (dir: string) => void;
-  onHover: (dir: string | null) => void;
+  chipped: boolean;
+  open: boolean;
+  onExpand: (node: TreeNode, isRoot: boolean) => void;
+  onToggleChip: (path: string) => void;
+  onDetails: (path: string) => void;
+  onHover: (path: string | null) => void;
 }
 
-function TreeRow({ row, selected, dimmed, onSelect, onToggle, onHover }: TreeRowProps) {
-  const { node, depth, sideBranch, censusGroup } = row;
-  const expanded = useBoolbackStore((s) => s.expanded);
-  const open = censusGroup
-    ? expanded.has(CENSUS_GROUP_DIR)
-    : expanded.has(node.path);
-  const hasChildren = censusGroup
-    ? (row.censusChildren?.length ?? 0) > 0
-    : node.children.length > 0;
-
-  const isGroup = node.kind === "group";
+function TreeRow({
+  row, selected, chipped, open, onExpand, onToggleChip, onDetails, onHover,
+}: TreeRowProps) {
+  const { node, depth, isRoot } = row;
+  const hasChildren = node.children.length > 0;
   const paddingLeft = 8 + depth * 14;
 
   return (
@@ -208,56 +122,68 @@ function TreeRow({ row, selected, dimmed, onSelect, onToggle, onHover }: TreeRow
       role="treeitem"
       aria-selected={selected}
       aria-expanded={hasChildren ? open : undefined}
-      onMouseEnter={() => onHover(censusGroup ? null : node.path)}
+      onMouseEnter={() => onHover(isRoot ? null : node.path)}
       onMouseLeave={() => onHover(null)}
-      onClick={() => onSelect(row)}
+      onClick={() => onExpand(node, isRoot)}
       style={{ paddingLeft }}
       className={[
-        "group flex items-center gap-1.5 pr-2 h-7 cursor-pointer select-none whitespace-nowrap text-xs",
-        sideBranch ? "border-l border-error/30" : "",
-        selected
-          ? "bg-surface-alt text-text"
-          : "text-text-muted hover:text-text",
-        dimmed ? "opacity-40" : "",
+        "group flex items-center gap-1.5 pr-1.5 h-7 cursor-pointer select-none whitespace-nowrap text-xs",
+        selected ? "bg-surface-alt text-text" : "text-text-muted hover:text-text",
+        chipped ? "border-l-2 border-accent" : "",
       ].join(" ")}
     >
-      <span className={selected ? "text-accent" : "text-transparent"} aria-hidden>
-        {selected ? "▸" : "·"}
-      </span>
-      <button
-        type="button"
-        tabIndex={-1}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (hasChildren) onToggle(censusGroup ? CENSUS_GROUP_DIR : node.path);
-        }}
-        className="flex items-center shrink-0"
-        aria-hidden={!hasChildren}
-      >
-        <Caret open={open} hasChildren={hasChildren} />
-      </button>
-
-      <StatusPip node={node} />
+      <Caret open={open} hasChildren={hasChildren} />
+      <StatusPip done={node.done} />
 
       {/* three-zone dirName */}
-      {isGroup ? (
-        <span className="font-mono text-text-faint truncate">
-          {censusGroup ? node.slug : node.dirName}
-        </span>
+      {isRoot ? (
+        <span className="font-mono text-text-faint truncate">artifacts</span>
       ) : (
-        <span className="font-mono truncate">
-          <span className={`${levelBadgeClass(node.level)} font-semibold`}>
-            {levelToken(node)}
-          </span>
-          {node.slug != null && (
+        <span className="font-mono truncate flex-1 min-w-0">
+          <span className={`${levelColor(node.level)} font-semibold`}>{node.level}</span>
+          {node.slug !== "" && (
             <>
               <span className="text-text-faint">+</span>
               <span className="text-text/90">{node.slug}</span>
             </>
           )}
-          {node.hash != null && (
-            <span className="text-text-faint">+{node.hash}</span>
-          )}
+          {node.hash !== "" && <span className="text-text-faint">+{node.hash}</span>}
+        </span>
+      )}
+
+      {/* per-row affordances (hidden until row hover; chip toggle stays visible when active) */}
+      {!isRoot && (
+        <span className="ml-auto flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleChip(node.path);
+            }}
+            title={chipped ? "Remove this scope chip" : "Scope the table to this subtree"}
+            aria-pressed={chipped}
+            className={[
+              "rounded px-1 py-0.5 text-[10px] font-mono leading-none transition-opacity",
+              chipped
+                ? "text-accent opacity-100"
+                : "text-text-faint opacity-0 group-hover:opacity-100 hover:text-accent",
+            ].join(" ")}
+          >
+            ⧉ filter
+          </button>
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDetails(node.path);
+            }}
+            title="Open details panel"
+            className="rounded px-1 py-0.5 text-[10px] font-mono leading-none text-text-faint opacity-0 group-hover:opacity-100 hover:text-accent transition-opacity"
+          >
+            ⓘ details
+          </button>
         </span>
       )}
     </div>
@@ -267,192 +193,85 @@ function TreeRow({ row, selected, dimmed, onSelect, onToggle, onHover }: TreeRow
 // ---------------------------------------------------------------------------
 // TreePane
 // ---------------------------------------------------------------------------
-export function TreePane({ fixture }: TreePaneProps) {
+export function TreePane({ bundle }: TreePaneProps) {
+  const roots = bundle.tree;
+
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
   const expanded = useBoolbackStore((s) => s.expanded);
-  const focusRoot = useBoolbackStore((s) => s.focusRoot);
-  const collapseCensus = useBoolbackStore((s) => s.collapseCensus);
-  const filters = useBoolbackStore((s) => s.filters);
+  const subtreeDirs = useBoolbackStore((s) => s.filters.subtreeDirs);
+  const treeCursor = useBoolbackStore((s) => s.treeCursor);
 
   const select = useBoolbackStore((s) => s.select);
   const hover = useBoolbackStore((s) => s.hover);
   const toggleExpand = useBoolbackStore((s) => s.toggleExpand);
   const expandChain = useBoolbackStore((s) => s.expandChain);
-  const setScopeDir = useBoolbackStore((s) => s.setScopeDir);
-  const setFocusRoot = useBoolbackStore((s) => s.setFocusRoot);
+  const toggleSubtreeDir = useBoolbackStore((s) => s.toggleSubtreeDir);
+  const openDetail = useBoolbackStore((s) => s.openDetail);
+  const setTreeCursor = useBoolbackStore((s) => s.setTreeCursor);
 
-  // resolve the render root (focusRoot subtree or the real root)
-  const renderRoot = useMemo(() => {
-    if (focusRoot) {
-      const sub = fixture.nodeIndex.get(focusRoot);
-      if (sub) return sub;
-    }
-    return fixture.root;
-  }, [focusRoot, fixture]);
+  const rows = useMemo(() => flatten(roots, expanded), [roots, expanded]);
+  const chipSet = useMemo(() => new Set(subtreeDirs), [subtreeDirs]);
 
-  // flattened, ordered visible rows (drives keyboard nav + render)
-  const rows = useMemo(
-    () => flatten(renderRoot, expanded, collapseCensus),
-    [renderRoot, expanded, collapseCensus],
+  // expand/collapse + select on a plain row click
+  const onExpand = useCallback(
+    (node: TreeNode, isRoot: boolean) => {
+      const path = isRoot ? ROOT_PATH : node.path;
+      toggleExpand(path);
+      if (!isRoot) select(node.path);
+    },
+    [toggleExpand, select],
   );
 
-  // dim set: dirNames that survive the current experiment filter. Only narrows
-  // when a filter is actually active (otherwise nothing is dimmed).
-  const liveDirs = useMemo(() => {
-    const filtered = applyFilters(fixture.experiments, filters);
-    if (filtered.length === fixture.experiments.length) return null; // no narrowing
-    const set = new Set<string>();
-    for (const r of filtered) for (const d of r.chainDirs) set.add(d);
-    return set;
-  }, [fixture.experiments, filters]);
-
-  // ---- selection handler ----
-  const onSelect = useCallback(
-    (row: FlatRow) => {
-      const node = row.node;
-      if (row.censusGroup) {
-        // virtual group: just toggle it open (no real dir to select)
-        toggleExpand(CENSUS_GROUP_DIR);
-        return;
+  // typeahead pick: reveal the chain to the node + select it
+  const onTypeaheadPick = useCallback(
+    (node: TreeNode) => {
+      // reveal: open root + every ancestor path prefix of node.path
+      const segments = node.path.split("/");
+      const chain: string[] = [ROOT_PATH];
+      let acc = "";
+      for (const seg of segments) {
+        acc = acc === "" ? seg : `${acc}/${seg}`;
+        chain.push(acc);
       }
-      if (node.kind === "group") {
-        // group / non-experiment node -> table scope chip + reveal (path-keyed)
-        select(node.path);
-        expandChain(pathToNode(node.path));
-        setScopeDir(node.path);
-        if (node.children.length > 0) toggleExpand(node.path);
-        return;
-      }
+      expandChain(chain);
       select(node.path);
-      expandChain(pathToNode(node.path));
-      // selecting a non-experiment (non-chain-leaf) node scopes the table too
-      if (!node.projected || node.level !== "scoring") {
-        setScopeDir(node.path);
-      }
     },
-    [select, expandChain, setScopeDir, toggleExpand],
-  );
-
-  // ---- debounced hover (150ms via useRef setTimeout, thmm precedent) ----
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onHover = useCallback(
-    (dir: string | null) => {
-      if (hoverTimer.current) clearTimeout(hoverTimer.current);
-      hoverTimer.current = setTimeout(() => hover(dir), 150);
-    },
-    [hover],
-  );
-  useEffect(() => () => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-  }, []);
-
-  // ---- keyboard nav (mirror nav-term: up/down/left/right/Enter) ----
-  const containerRef = useRef<HTMLDivElement>(null);
-  const selIndex = useMemo(() => {
-    if (!selectedDir) return -1;
-    return rows.findIndex((r) => !r.censusGroup && r.node.path === selectedDir);
-  }, [rows, selectedDir]);
-
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (rows.length === 0) return;
-      const idx = selIndex;
-      const cur = idx >= 0 ? rows[idx] : null;
-
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        let j = idx < 0 ? 0 : idx + 1;
-        while (j < rows.length && rows[j].censusGroup) j++;
-        if (rows[j]) onSelect(rows[j]);
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        let j = idx <= 0 ? 0 : idx - 1;
-        while (j > 0 && rows[j].censusGroup) j--;
-        if (rows[j] && !rows[j].censusGroup) onSelect(rows[j]);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        if (!cur) return;
-        const dir = cur.node.path;
-        const hasKids = cur.censusGroup
-          ? (cur.censusChildren?.length ?? 0) > 0
-          : cur.node.children.length > 0;
-        const isOpen = cur.censusGroup
-          ? expanded.has(CENSUS_GROUP_DIR)
-          : expanded.has(dir);
-        if (hasKids && !isOpen) toggleExpand(cur.censusGroup ? CENSUS_GROUP_DIR : dir);
-        else if (hasKids && idx + 1 < rows.length) {
-          const child = rows[idx + 1];
-          if (child && !child.censusGroup) onSelect(child);
-        }
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        if (!cur) return;
-        const dir = cur.node.path;
-        const isOpen = cur.censusGroup
-          ? expanded.has(CENSUS_GROUP_DIR)
-          : expanded.has(dir);
-        const hasKids = cur.censusGroup
-          ? (cur.censusChildren?.length ?? 0) > 0
-          : cur.node.children.length > 0;
-        if (hasKids && isOpen) {
-          toggleExpand(cur.censusGroup ? CENSUS_GROUP_DIR : dir);
-        } else if (!cur.censusGroup) {
-          // jump to parent (path keys)
-          const path = pathToNode(dir);
-          const parent = path[path.length - 2];
-          if (parent) {
-            const pIdx = rows.findIndex((r) => !r.censusGroup && r.node.path === parent);
-            if (pIdx >= 0) onSelect(rows[pIdx]);
-          }
-        }
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        if (cur) onSelect(cur);
-      }
-    },
-    [rows, selIndex, expanded, onSelect, toggleExpand],
+    [expandChain, select],
   );
 
   return (
-    <div
-      ref={containerRef}
-      role="tree"
-      tabIndex={0}
-      aria-label="Artifact tree"
-      onKeyDown={onKeyDown}
-      className="min-w-max py-1 outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-    >
-      {focusRoot && (
-        <button
-          type="button"
-          onClick={() => setFocusRoot(null)}
-          className="mb-1 ml-2 font-mono text-[10px] text-text-muted hover:text-accent transition-colors"
-        >
-          ↑ exit subtree focus
-        </button>
-      )}
-      {rows.map((row, i) => {
-        const isSel = !row.censusGroup && row.node.path === selectedDir;
-        const dimmed =
-          liveDirs !== null &&
-          !row.censusGroup &&
-          row.node.kind !== "group" &&
-          row.node.inChain &&
-          !liveDirs.has(row.node.path);
-        return (
-          <TreeRow
-            // node.path is globally unique now; positional suffix kept only to
-            // disambiguate the same path appearing twice (census fold edge case).
-            key={row.censusGroup ? `census-${i}` : `${row.node.path}-${i}`}
-            row={row}
-            selected={isSel}
-            dimmed={dimmed}
-            onSelect={onSelect}
-            onToggle={toggleExpand}
-            onHover={onHover}
-          />
-        );
-      })}
+    <div className="flex h-full flex-col">
+      <TreeTypeahead
+        tree={roots}
+        cursor={treeCursor}
+        onPick={onTypeaheadPick}
+        onCursorChange={setTreeCursor}
+      />
+      <div
+        role="tree"
+        aria-label="Artifact tree"
+        className="min-w-max flex-1 overflow-auto py-1"
+      >
+        {rows.map((row) => {
+          const path = row.isRoot ? ROOT_PATH : row.node.path;
+          const open = expanded.has(path);
+          const isSel = !row.isRoot && row.node.path === selectedDir;
+          const chipped = !row.isRoot && chipSet.has(row.node.path);
+          return (
+            <TreeRow
+              key={path}
+              row={row}
+              selected={isSel}
+              chipped={chipped}
+              open={open}
+              onExpand={onExpand}
+              onToggleChip={toggleSubtreeDir}
+              onDetails={openDetail}
+              onHover={hover}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

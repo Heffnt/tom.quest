@@ -2,6 +2,7 @@ import logging
 import os
 import shlex
 import signal
+from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -19,6 +20,8 @@ from tmux import (
 )
 from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir, resolve_within_root, PathNotAllowed
+from fastapi.responses import FileResponse
+import boolback_snapshot
 from ws import router as ws_router
 
 load_dotenv()
@@ -147,6 +150,97 @@ def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
         return {"content": resolved.read_text(encoding="utf-8"), "path": path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
+
+# --- boolback snapshot surface (BUILD STEP 2) ----------------------------------
+# Three read-only endpoints confined to $BOOLEAN_BACKDOOR_OUTPUT. The CMT builder
+# is NEVER imported here; it runs as a subprocess (conda run) kicked from a daemon
+# thread. The picker chooses a snapshot-able output ROOT; a refresh POST-kicks a
+# rebuild; the blob is the gzipped snapshot streamed back through a binary Next
+# route. All three are sync `def` for the same event-loop reason as above.
+
+@app.get("/cmt-dirs")
+def cmt_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
+    """List child dirs of a CMT output location for the snapshot dir-picker.
+    Pinned to $BOOLEAN_BACKDOOR_OUTPUT (not the /dirs $HOME root)."""
+    try:
+        root = boolback_snapshot.cmt_root()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    try:
+        resolved = resolve_within_root(path or str(root), root=root)
+    except PathNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if not resolved.is_dir():
+        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    try:
+        dirs = [
+            item.name
+            for item in sorted(resolved.iterdir())
+            if item.is_dir() and not item.name.startswith(".")
+        ]
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
+    return {"path": str(resolved), "dirs": dirs, "error": None}
+
+
+@app.get("/boolback-snapshot")
+def boolback_snapshot_status(dir: str = "", auth: bool = Depends(verify_api_key)) -> dict:
+    """Freshness-keyed cache probe. Returns the §2 envelope when a fresh .gz exists
+    (status=ready + blobPath), else status=building (a POST is needed / in flight),
+    or status=error on a bad dir."""
+    try:
+        resolved = boolback_snapshot.resolve_dir(dir)
+    except PathNotAllowed as exc:
+        return {"status": "error", "detail": str(exc)}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not resolved.is_dir():
+        return {"status": "error", "detail": f"Not a directory: {dir}"}
+    mtime_key = boolback_snapshot.newest_done_mtime(resolved)
+    out_path = boolback_snapshot.cache_path(resolved, mtime_key)
+    if out_path.is_file():
+        return {
+            "status": "ready",
+            "schema_version": 1,
+            "meta": {"tree_mtime_key": mtime_key, "source_dir": str(resolved)},
+            "blobPath": f"/boolback-snapshot-blob?dir={quote(dir, safe='')}",
+        }
+    return {"status": "building"}
+
+
+@app.post("/boolback-snapshot")
+def boolback_snapshot_build(dir: str = "", auth: bool = Depends(verify_api_key)) -> dict:
+    """Kick a (re)build for ``dir`` in a daemon thread and return immediately. The
+    build is per-dir flock-guarded; concurrent kicks coalesce. Returns instantly so
+    the proxy's 20s timeout is never tripped."""
+    try:
+        resolved = boolback_snapshot.resolve_dir(dir)
+    except PathNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not resolved.is_dir():
+        raise HTTPException(status_code=404, detail=f"Not a directory: {dir}")
+    boolback_snapshot.kick_build(resolved)
+    return {"status": "building"}
+
+
+@app.get("/boolback-snapshot-blob")
+def boolback_snapshot_blob(dir: str = "", auth: bool = Depends(verify_api_key)) -> FileResponse:
+    """Stream the cached gzipped snapshot for ``dir``. Served as application/gzip
+    through the separate binary Next route (the JSON catch-all cannot carry it)."""
+    try:
+        resolved = boolback_snapshot.resolve_dir(dir)
+    except PathNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    mtime_key = boolback_snapshot.newest_done_mtime(resolved)
+    out_path = boolback_snapshot.cache_path(resolved, mtime_key)
+    if not out_path.is_file():
+        raise HTTPException(status_code=404, detail="Snapshot not built; POST to rebuild")
+    return FileResponse(str(out_path), media_type="application/gzip")
+
 
 @app.post("/allocate", response_model=AllocationResponse)
 def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -> AllocationResponse:
