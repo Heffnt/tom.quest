@@ -5,7 +5,7 @@
 # Writes atomically (temp + rename) so a concurrent GET never reads a partial gz.
 #SBATCH --job-name=boolback-build
 #SBATCH --partition=short
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --output=/home/ntheffernan/.cache/boolback-snapshots/build-%j.out
