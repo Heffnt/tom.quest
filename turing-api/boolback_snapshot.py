@@ -105,6 +105,20 @@ def build_argv(resolved: Path, out_path: Path) -> list[str]:
     ]
 
 
+def build_env() -> dict[str, str]:
+    """Environment for the build subprocess. ``-m tom_quest.build`` needs BOTH the
+    CMT repo root (for ``boolean_backdoor``) AND its ``tom.quest/`` subdir (for the
+    ``tom_quest`` package) on ``PYTHONPATH`` — ``cwd=BUILDER_REPO_DIR`` alone only
+    covers the former, so the bare invocation fails with ``No module named
+    'tom_quest'``. ``conda run`` inherits this env, so the prepended paths reach the
+    builder. Any caller-set PYTHONPATH is preserved (appended)."""
+    repo = BUILDER_REPO_DIR
+    tq = str(Path(repo) / "tom.quest")
+    existing = os.environ.get("PYTHONPATH", "")
+    parts = [repo, tq] + ([existing] if existing else [])
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(parts)}
+
+
 def _run_build(resolved: Path, out_path: Path, lock_path: Path) -> None:
     """Body of the daemon build thread: per-dir flock (skip if a build is already
     running for this dir), then the subprocess. Best-effort; errors are surfaced
@@ -134,6 +148,7 @@ def _run_build(resolved: Path, out_path: Path, lock_path: Path) -> None:
             subprocess.run(
                 build_argv(resolved, out_path),
                 cwd=BUILDER_REPO_DIR,
+                env=build_env(),
                 shell=False,
                 timeout=BUILD_TIMEOUT_S,
                 check=True,

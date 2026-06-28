@@ -1,5 +1,6 @@
 import asyncio
 import gzip
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -124,6 +125,16 @@ class BoolbackSnapshotTest(unittest.TestCase):
         self.assertEqual(argv[7], str(evil_dir))
         # The dir name occupies exactly one slot; nothing is split on ';' or '$('.
         self.assertEqual(len(argv), 9)
+
+    def test_build_env_puts_tom_quest_on_pythonpath(self) -> None:
+        """`python -m tom_quest.build` needs the tom.quest/ subdir on PYTHONPATH;
+        cwd=repo only covers boolean_backdoor, so without this the build fails with
+        ModuleNotFoundError: No module named 'tom_quest'."""
+        env = boolback_snapshot.build_env()
+        repo = boolback_snapshot.BUILDER_REPO_DIR
+        pp = env["PYTHONPATH"].split(os.pathsep)
+        self.assertIn(repo, pp)
+        self.assertIn(str(Path(repo) / "tom.quest"), pp)
 
     # --- GET /boolback-snapshot-blob -----------------------------------------
 
