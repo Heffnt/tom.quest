@@ -82,20 +82,27 @@ export default function BoolbackClient() {
     [updateLayout, leftW],
   );
 
-  // ----- empty / building states ------------------------------------------
+  // ----- pre-bundle states (loading / empty / error / idle) ---------------
   if (!bundle) {
     return (
       <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
         <CommandBar source={source} />
         <div className="flex-1 flex flex-col items-center justify-center gap-3">
-          {source.status === "building" ? (
+          {source.status === "loading" ? (
             <>
               <div className="h-6 w-6 rounded-full border-2 border-border border-t-accent animate-spin" />
-              <div className="font-mono text-sm text-text-muted">Building snapshot…</div>
+              <div className="font-mono text-sm text-text-muted">Loading snapshot…</div>
             </>
           ) : source.status === "error" ? (
             <div className="font-mono text-sm text-warning max-w-md text-center">
               {source.statusDetail ?? "snapshot error"}
+            </div>
+          ) : source.status === "empty" ? (
+            <div className="font-mono text-sm text-text-muted max-w-md text-center">
+              No snapshot has been built for this directory yet.
+              {source.canRebuild
+                ? " Click ↻ Refresh to build one (runs on a compute node)."
+                : " A periodic build will produce one shortly."}
             </div>
           ) : (
             <div className="font-mono text-sm text-text-muted text-center">

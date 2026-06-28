@@ -8,9 +8,10 @@
 // dir's snapshot.
 //
 // A hover/click dropdown lists the child dirs under the pinned CMT root
-// (GET /cmt-dirs). Selecting one kicks the snapshot lifecycle (ready/building/
-// error tri-state). Refresh POSTs a rebuild then re-polls. All state is owned by
-// the parent's useArtifactSource() and passed in as props.
+// (public GET /api/boolback/dirs). Selecting one loads the latest snapshot
+// (ready / empty / error). Snapshots are pre-built off-request (sbatch), so the
+// page never blocks on a build; Refresh re-fetches the latest (admins also submit
+// a rebuild). All state is owned by the parent's useArtifactSource() (props).
 
 import { useRef, useState } from "react";
 import type { ArtifactSource } from "../data/source";
@@ -29,6 +30,7 @@ export function DirPicker({ source }: DirPickerProps) {
   const {
     dirs, dirsLoading, dirsError, reloadDirs,
     selectedDir, selectDir, status, statusDetail, refresh,
+    stale, builtAt, canRebuild, rebuildNote,
   } = source;
 
   const [open, setOpen] = useState(false);
@@ -112,34 +114,77 @@ export function DirPicker({ source }: DirPickerProps) {
       </div>
 
       {/* status + refresh */}
-      <StatusPill status={status} detail={statusDetail} />
+      <StatusPill
+        status={status}
+        detail={statusDetail}
+        stale={stale}
+        builtAt={builtAt}
+        rebuildNote={rebuildNote}
+      />
       <button
         type="button"
         onClick={refresh}
-        disabled={!selectedDir || status === "building"}
+        disabled={!selectedDir || status === "loading"}
         className="rounded-md border border-border bg-surface px-2.5 h-7 font-mono text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        title="Rebuild the snapshot from the live artifact tree"
+        title={
+          canRebuild
+            ? "Re-fetch the latest snapshot and submit a fresh rebuild (sbatch)"
+            : "Re-fetch the latest snapshot"
+        }
       >
-        {status === "building" ? "…" : "↻ Refresh"}
+        {status === "loading" ? "…" : "↻ Refresh"}
       </button>
     </div>
   );
 }
 
-function StatusPill({ status, detail }: { status: ArtifactSource["status"]; detail: string | null }) {
+function ago(builtAt: number | null): string {
+  if (!builtAt) return "";
+  const mins = Math.max(0, Math.round(Date.now() / 1000 - builtAt) / 60);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${Math.round(mins)}m ago`;
+  const h = mins / 60;
+  return h < 24 ? `${h.toFixed(h < 10 ? 1 : 0)}h ago` : `${Math.round(h / 24)}d ago`;
+}
+
+function StatusPill({
+  status, detail, stale, builtAt, rebuildNote,
+}: {
+  status: ArtifactSource["status"];
+  detail: string | null;
+  stale: boolean;
+  builtAt: number | null;
+  rebuildNote: string | null;
+}) {
   if (status === "idle") return null;
-  if (status === "building") {
+  const note = rebuildNote ? (
+    <span className="font-mono text-[10px] text-text-faint whitespace-nowrap">· {rebuildNote}</span>
+  ) : null;
+
+  if (status === "loading") {
     return (
       <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-text-muted whitespace-nowrap">
         <span className="h-2 w-2 rounded-full border border-border border-t-accent animate-spin" aria-hidden />
-        building…
+        loading…
       </span>
     );
   }
   if (status === "ready") {
     return (
-      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-success whitespace-nowrap">
-        ● ready
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+        <span className={`font-mono text-[10px] ${stale ? "text-warning" : "text-success"}`}>
+          {stale ? "◐ stale" : "● ready"}
+          {builtAt ? ` · built ${ago(builtAt)}` : ""}
+        </span>
+        {note}
+      </span>
+    );
+  }
+  if (status === "empty") {
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+        <span className="font-mono text-[10px] text-text-muted">○ no snapshot yet</span>
+        {note}
       </span>
     );
   }

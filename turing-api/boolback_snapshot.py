@@ -1,40 +1,46 @@
-"""boolback snapshot cache + builder driver (BUILD STEP 2 — turing-api side).
+"""boolback snapshot cache + sbatch build driver (turing-api side).
 
-The three /boolback-snapshot* endpoints in main.py delegate here. This module is
-deliberately torch-free and boolean_backdoor-free: it never imports the CMT
-package. The snapshot is produced by spawning the CMT builder as a SUBPROCESS in
-the conda env (``python -m tom_quest.build``), so the long-lived API process
-stays free of the heavy CPU/IO graph code.
+The boolback endpoints in main.py delegate here. This module is deliberately
+torch-free and boolean_backdoor-free: it never imports the CMT package. The
+snapshot is produced by an **sbatch job** on a CPU compute node (NOT a login-node
+subprocess), so the long-lived API process never runs the heavy CPU/IO/RAM graph
+pass and there is no orphaned-builder-on-timeout problem (SLURM owns the job's
+lifetime via ``#SBATCH --time``).
+
+Serving is **staleness-tolerant**: GET returns the most RECENT cached snapshot
+for a dir (``latest_cache``) — never "building" — so the page always shows data
+fast. A periodic sbatch (and an admin Refresh) keep the cache fresh. Cache files
+are named with a dir-stable prefix so the latest one is findable regardless of
+the tree's current freshness key.
 
 Confinement: every caller-supplied ``dir`` is funnelled through
-``dirs.resolve_within_root(dir, root=cmt_root())`` where ``cmt_root`` is pinned to
-``$BOOLEAN_BACKDOOR_OUTPUT`` (NOT the /file+/dirs $HOME default). The build argv
-is a list with ``shell=False`` so a directory name containing shell metacharacters
-(``;`` ``$(...)`` backticks) can never execute — it is just a (rejected) path.
+``resolve_within_root(dir, root=cmt_root())`` pinned to ``$BOOLEAN_BACKDOOR_OUTPUT``.
+``submit_build`` invokes ``sbatch`` with an argv list (``shell=False``); a dir name
+with shell metacharacters is one (rejected) path, never executed.
 """
 from __future__ import annotations
 
 import hashlib
 import os
 import subprocess
-import threading
 from pathlib import Path
 
-from dirs import PathNotAllowed, resolve_within_root
+from dirs import resolve_within_root
 
-# The conda env the CMT builder lives in, and where it is checked out. Both are
-# overridable so a test / a non-standard deploy can point them elsewhere.
+# The conda env the CMT builder lives in + where it is checked out (overridable).
 BUILDER_CONDA_ENV = os.environ.get("BOOLBACK_BUILDER_CONDA_ENV", "boolback")
 BUILDER_REPO_DIR = os.environ.get(
     "BOOLBACK_BUILDER_REPO_DIR",
     str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
 )
-# Where built .gz snapshots + per-dir build locks are cached.
+# Built .gz snapshots + per-dir submit markers live here.
 CACHE_DIR = Path(
     os.environ.get("BOOLBACK_CACHE_DIR", str(Path.home() / ".cache" / "boolback-snapshots"))
 )
-# Build subprocess wall-clock cap (a stuck builder must not pin a worker forever).
-BUILD_TIMEOUT_S = int(os.environ.get("BOOLBACK_BUILD_TIMEOUT_S", "1800"))
+# The sbatch wrapper that runs the builder on a compute node (ships beside this file).
+BUILD_SBATCH = Path(
+    os.environ.get("BOOLBACK_BUILD_SBATCH", str(Path(__file__).resolve().parent / "boolback_build.sbatch"))
+)
 
 
 def cmt_root() -> Path:
@@ -47,9 +53,12 @@ def cmt_root() -> Path:
 
 
 def resolve_dir(dir_param: str) -> Path:
-    """Confine a caller-supplied snapshot dir to ``cmt_root()``. Empty → the root
-    itself. Raises ``PathNotAllowed`` on a traversal / symlink escape."""
+    """Confine a caller-supplied snapshot dir to ``cmt_root()``. Empty → the root."""
     return resolve_within_root(dir_param or str(cmt_root()), root=cmt_root())
+
+
+def _dir_hash(resolved: Path) -> str:
+    return hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
 
 
 def _artifacts_dir(resolved: Path) -> Path:
@@ -63,8 +72,7 @@ def _artifacts_dir(resolved: Path) -> Path:
 
 
 def newest_done_mtime(resolved: Path) -> int:
-    """Inline mirror of ``tom_quest.build._newest_done_mtime``: newest ``done.json``
-    mtime (int) under the artifacts tree, 0 when none. No CMT import."""
+    """Newest ``done.json`` mtime (int) under the artifacts tree, 0 when none."""
     newest = 0.0
     base = _artifacts_dir(resolved)
     if base.exists():
@@ -77,105 +85,114 @@ def newest_done_mtime(resolved: Path) -> int:
 
 
 def cache_path(resolved: Path, mtime_key: int) -> Path:
-    """Stable cache file for (dir, freshness-key). Keyed by a hash of the resolved
-    path + mtime so a rebuilt tree gets a fresh file and stale files are ignored."""
-    digest = hashlib.sha256(f"{resolved}\x00{mtime_key}".encode("utf-8")).hexdigest()[:24]
-    return CACHE_DIR / f"snapshot-{digest}.json.gz"
+    """The cache file for (dir, freshness-key). Dir-stable PREFIX so ``latest_cache``
+    can find the newest snapshot for a dir regardless of the current freshness key."""
+    return CACHE_DIR / f"snapshot-{_dir_hash(resolved)}-{mtime_key}.json.gz"
 
 
-def _lock_path(resolved: Path) -> Path:
-    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:24]
-    return CACHE_DIR / f"build-{digest}.lock"
+def latest_cache(resolved: Path) -> Path | None:
+    """The most recently written cached snapshot for ``resolved`` (any freshness
+    key), or None. This is what GET serves — staleness-tolerant, never blocking."""
+    if not CACHE_DIR.exists():
+        return None
+    candidates = list(CACHE_DIR.glob(f"snapshot-{_dir_hash(resolved)}-*.json.gz"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def build_argv(resolved: Path, out_path: Path) -> list[str]:
-    """The injection-safe build command. ``shell=False`` + argv list: a dir name
-    with ``;`` / ``$(...)`` / backticks is passed as one literal argument and can
-    never be interpreted by a shell."""
-    return [
-        "conda",
-        "run",
-        "-n",
-        BUILDER_CONDA_ENV,
-        "python",
-        "-m",
-        "tom_quest.build",
-        str(resolved),
-        str(out_path),
-    ]
-
-
-def build_env() -> dict[str, str]:
-    """Environment for the build subprocess. ``-m tom_quest.build`` needs BOTH the
-    CMT repo root (for ``boolean_backdoor``) AND its ``tom.quest/`` subdir (for the
-    ``tom_quest`` package) on ``PYTHONPATH`` — ``cwd=BUILDER_REPO_DIR`` alone only
-    covers the former, so the bare invocation fails with ``No module named
-    'tom_quest'``. ``conda run`` inherits this env, so the prepended paths reach the
-    builder. Any caller-set PYTHONPATH is preserved (appended)."""
-    repo = BUILDER_REPO_DIR
-    tq = str(Path(repo) / "tom.quest")
-    existing = os.environ.get("PYTHONPATH", "")
-    parts = [repo, tq] + ([existing] if existing else [])
-    return {**os.environ, "PYTHONPATH": os.pathsep.join(parts)}
-
-
-def _run_build(resolved: Path, out_path: Path, lock_path: Path) -> None:
-    """Body of the daemon build thread: per-dir flock (skip if a build is already
-    running for this dir), then the subprocess. Best-effort; errors are surfaced
-    on the next GET by the cache file simply not appearing."""
-    import logging
-
-    log = logging.getLogger("boolback_snapshot")
-    # fcntl is Linux-only (the turing login node). On a platform without it
-    # (Windows CI) we proceed lockless — the tests that exercise the lock mock
-    # _run_build / subprocess.run, so the missing module never executes here.
+def _cache_key_of(path: Path) -> int:
+    """The freshness key embedded in a cache filename (``snapshot-<dir>-<key>.json.gz``)."""
     try:
-        import fcntl
-    except ImportError:  # pragma: no cover - non-Linux
-        fcntl = None  # type: ignore[assignment]
+        return int(path.stem.rsplit("-", 1)[-1].replace(".json", ""))
+    except (ValueError, IndexError):
+        return 0
 
+
+def status_envelope(resolved: Path) -> dict:
+    """The §2 status envelope, staleness-tolerant.
+
+    ``ready`` whenever ANY snapshot for the dir is cached (serving the latest), with
+    ``stale`` set iff the tree has changed since it was built; ``empty`` when none has
+    been built yet (a periodic / admin build will produce one). NEVER ``building`` —
+    the page must not spin on the slow build."""
+    current_key = newest_done_mtime(resolved)
+    latest = latest_cache(resolved)
+    if latest is None:
+        return {"status": "empty", "schema_version": 1,
+                "meta": {"tree_mtime_key": current_key, "source_dir": str(resolved)}}
+    return {
+        "status": "ready",
+        "schema_version": 1,
+        "meta": {
+            "tree_mtime_key": current_key,
+            "cache_mtime_key": _cache_key_of(latest),
+            "built_at": int(latest.stat().st_mtime),
+            "stale": _cache_key_of(latest) != current_key,
+            "source_dir": str(resolved),
+        },
+        "blobPath": f"/boolback-snapshot-blob?dir={_quote(str(resolved))}",
+    }
+
+
+def _quote(s: str) -> str:
+    from urllib.parse import quote
+    return quote(s, safe="")
+
+
+# --------------------------------------------------------------------------------------------------
+# sbatch build submission (idempotent; runs on a CPU compute node).
+# --------------------------------------------------------------------------------------------------
+
+
+def _marker_path(resolved: Path) -> Path:
+    return CACHE_DIR / f"submit-{_dir_hash(resolved)}.jobid"
+
+
+def _job_active(job_id: str) -> bool:
+    """True iff ``job_id`` is still pending/running in the queue (so we don't double-submit)."""
+    if not job_id:
+        return False
+    try:
+        out = subprocess.run(
+            ["squeue", "-h", "-j", job_id, "-o", "%t"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(out.stdout.strip())
+
+
+def submit_build(resolved: Path) -> dict:
+    """Submit (or coalesce) an sbatch build for ``resolved`` on a CPU compute node.
+
+    Idempotent: if a build job for this dir is already queued/running (tracked via a
+    per-dir job-id marker), returns that without resubmitting. The job writes the
+    snapshot atomically (temp + rename) to ``cache_path(resolved, current_key)`` so a
+    concurrent GET never sees a partial file."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    lock_file = open(lock_path, "w")
+    marker = _marker_path(resolved)
+    prev = marker.read_text().strip() if marker.exists() else ""
+    if _job_active(prev):
+        return {"status": "submitted", "job_id": prev, "coalesced": True}
+
+    out_path = cache_path(resolved, newest_done_mtime(resolved))
     try:
-        if fcntl is not None:
-            try:
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                # Another worker already building this dir; let it finish.
-                log.info("build already in progress for %s; skipping", resolved)
-                return
-        try:
-            subprocess.run(
-                build_argv(resolved, out_path),
-                cwd=BUILDER_REPO_DIR,
-                env=build_env(),
-                shell=False,
-                timeout=BUILD_TIMEOUT_S,
-                check=True,
-            )
-        except Exception as exc:  # noqa: BLE001 - logged, surfaced via absent cache
-            log.error("snapshot build failed for %s: %s", resolved, exc)
-        finally:
-            if fcntl is not None:
-                try:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
-                except OSError:
-                    pass
-    finally:
-        lock_file.close()
+        proc = subprocess.run(
+            ["sbatch", "--parsable", str(BUILD_SBATCH), str(resolved), str(out_path)],
+            cwd=BUILDER_REPO_DIR, shell=False, capture_output=True, text=True,
+            timeout=60, check=True,
+        )
+    except FileNotFoundError:
+        return {"status": "error", "detail": "sbatch not found (SLURM not on PATH)"}
+    except subprocess.CalledProcessError as exc:
+        return {"status": "error", "detail": (exc.stderr or str(exc)).strip()[:500]}
+    except subprocess.SubprocessError as exc:
+        return {"status": "error", "detail": str(exc)[:500]}
 
-
-def kick_build(resolved: Path) -> Path:
-    """Spawn the build in a DAEMON thread and return immediately with the target
-    cache path. NEVER blocks the request thread: the Next proxy's 20s AbortSignal
-    makes any in-request build a guaranteed 502."""
-    mtime_key = newest_done_mtime(resolved)
-    out_path = cache_path(resolved, mtime_key)
-    lock_path = _lock_path(resolved)
-    thread = threading.Thread(
-        target=_run_build,
-        args=(resolved, out_path, lock_path),
-        daemon=True,
-    )
-    thread.start()
-    return out_path
+    job_id = proc.stdout.strip().split(";")[0]
+    try:
+        marker.write_text(job_id)
+    except OSError:
+        pass
+    return {"status": "submitted", "job_id": job_id, "coalesced": False}

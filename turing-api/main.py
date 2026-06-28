@@ -2,7 +2,6 @@ import logging
 import os
 import shlex
 import signal
-from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -185,9 +184,10 @@ def cmt_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
 
 @app.get("/boolback-snapshot")
 def boolback_snapshot_status(dir: str = "", auth: bool = Depends(verify_api_key)) -> dict:
-    """Freshness-keyed cache probe. Returns the §2 envelope when a fresh .gz exists
-    (status=ready + blobPath), else status=building (a POST is needed / in flight),
-    or status=error on a bad dir."""
+    """Staleness-tolerant status: ``ready`` whenever ANY snapshot for the dir is
+    cached (serving the latest), with ``meta.stale`` set iff the tree changed since;
+    ``empty`` when none built yet; ``error`` on a bad dir. Never ``building`` — the
+    page must not spin on the slow (sbatch) build."""
     try:
         resolved = boolback_snapshot.resolve_dir(dir)
     except PathNotAllowed as exc:
@@ -196,23 +196,15 @@ def boolback_snapshot_status(dir: str = "", auth: bool = Depends(verify_api_key)
         raise HTTPException(status_code=500, detail=str(exc))
     if not resolved.is_dir():
         return {"status": "error", "detail": f"Not a directory: {dir}"}
-    mtime_key = boolback_snapshot.newest_done_mtime(resolved)
-    out_path = boolback_snapshot.cache_path(resolved, mtime_key)
-    if out_path.is_file():
-        return {
-            "status": "ready",
-            "schema_version": 1,
-            "meta": {"tree_mtime_key": mtime_key, "source_dir": str(resolved)},
-            "blobPath": f"/boolback-snapshot-blob?dir={quote(dir, safe='')}",
-        }
-    return {"status": "building"}
+    return boolback_snapshot.status_envelope(resolved)
 
 
 @app.post("/boolback-snapshot")
 def boolback_snapshot_build(dir: str = "", auth: bool = Depends(verify_api_key)) -> dict:
-    """Kick a (re)build for ``dir`` in a daemon thread and return immediately. The
-    build is per-dir flock-guarded; concurrent kicks coalesce. Returns instantly so
-    the proxy's 20s timeout is never tripped."""
+    """Submit an sbatch build for ``dir`` on a CPU compute node (NOT a login-node
+    subprocess) and return immediately. Idempotent: an already-queued/running build
+    for the dir is coalesced. Admin-gated at the Next proxy; the public boolback
+    proxy exposes only the GET endpoints."""
     try:
         resolved = boolback_snapshot.resolve_dir(dir)
     except PathNotAllowed as exc:
@@ -221,24 +213,23 @@ def boolback_snapshot_build(dir: str = "", auth: bool = Depends(verify_api_key))
         raise HTTPException(status_code=500, detail=str(exc))
     if not resolved.is_dir():
         raise HTTPException(status_code=404, detail=f"Not a directory: {dir}")
-    boolback_snapshot.kick_build(resolved)
-    return {"status": "building"}
+    return boolback_snapshot.submit_build(resolved)
 
 
 @app.get("/boolback-snapshot-blob")
 def boolback_snapshot_blob(dir: str = "", auth: bool = Depends(verify_api_key)) -> FileResponse:
-    """Stream the cached gzipped snapshot for ``dir``. Served as application/gzip
-    through the separate binary Next route (the JSON catch-all cannot carry it)."""
+    """Stream the LATEST cached gzipped snapshot for ``dir`` (staleness-tolerant),
+    as application/gzip through the binary Next route (the JSON catch-all can't carry
+    it)."""
     try:
         resolved = boolback_snapshot.resolve_dir(dir)
     except PathNotAllowed as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    mtime_key = boolback_snapshot.newest_done_mtime(resolved)
-    out_path = boolback_snapshot.cache_path(resolved, mtime_key)
-    if not out_path.is_file():
-        raise HTTPException(status_code=404, detail="Snapshot not built; POST to rebuild")
+    out_path = boolback_snapshot.latest_cache(resolved)
+    if out_path is None or not out_path.is_file():
+        raise HTTPException(status_code=404, detail="No snapshot built yet")
     return FileResponse(str(out_path), media_type="application/gzip")
 
 

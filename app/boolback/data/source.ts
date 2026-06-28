@@ -2,30 +2,24 @@
 
 // app/boolback/data/source.ts
 //
-// The live data-source layer for /boolback. It talks to the admin-gated Next
-// proxies that front the turing-api:
+// The data-source layer for /boolback. boolback is PUBLIC viewing — no login
+// required — so the GET endpoints go through dedicated PUBLIC Next proxies that
+// inject the X-API-Key server-side (the key is never exposed to the browser):
 //
-//   GET  /api/turing/cmt-dirs?path=…        -> list child dirs under the pinned
-//                                              CMT output root (the picker).
-//   GET  /api/turing/boolback-snapshot?dir= -> tri-state envelope
-//                                              {status:"ready"|"building"|"error",…}.
-//   POST /api/turing/boolback-snapshot?dir= -> kick a rebuild (daemon thread).
-//   GET  /api/turing-blob/boolback-snapshot-blob?dir= -> the gzip Bundle blob,
-//        streamed through the SEPARATE binary proxy (the JSON catch-all rejects
-//        non-application/json), gunzipped client-side exactly like data/real.ts.
+//   GET /api/boolback/dirs?path=…      -> list child dirs under the pinned CMT root
+//   GET /api/boolback/snapshot?dir=…   -> staleness-tolerant envelope
+//                                         {status:"ready"|"empty"|"error", meta:{built_at,stale,…}}
+//   GET /api/boolback/blob?dir=…       -> the gzip Bundle (gunzipped client-side)
 //
-// The bearer token comes from useAuth(); the proxy enforces requireAdmin. This
-// module exposes a single hook, useArtifactSource(), returning the picker list +
-// the chosen dir's bundle + a tri-state status + refresh().
+// Snapshots are pre-built off-request by an sbatch job (periodic + admin Refresh),
+// so GET always serves the LATEST cached snapshot instantly — it never blocks on a
+// build. An admin (Tom) Refresh additionally submits a rebuild via the admin-gated
+// /api/turing POST; a non-admin Refresh just re-fetches the latest snapshot.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/app/lib/auth";
 import type { Bundle } from "../lib/types";
 import { asBundle } from "./real";
-
-// ---------------------------------------------------------------------------
-// Wire types (mirror turing-api responses)
-// ---------------------------------------------------------------------------
 
 export interface CmtDirEntry {
   name: string;
@@ -37,29 +31,23 @@ interface CmtDirsResponse {
   dirs: CmtDirEntry[];
 }
 
-export type SnapshotStatus = "idle" | "ready" | "building" | "error";
+export type SnapshotStatus = "idle" | "loading" | "ready" | "empty" | "error";
 
 interface SnapshotEnvelope {
-  status: "ready" | "building" | "error";
+  status: "ready" | "empty" | "error";
   schema_version?: number;
-  meta?: Bundle["meta"];
+  meta?: {
+    built_at?: number;
+    stale?: boolean;
+    tree_mtime_key?: number;
+    cache_mtime_key?: number;
+  };
   blobPath?: string;
   detail?: string;
 }
 
-// ---------------------------------------------------------------------------
-// fetch helpers (bearer-gated, mirror use-turing)
-// ---------------------------------------------------------------------------
-
-function authHeaders(token: string | null): Record<string, string> {
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function getJson<T>(path: string, token: string | null): Promise<T> {
-  const res = await fetch("/api/turing" + path, {
-    headers: authHeaders(token),
-    cache: "no-store",
-  });
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(path, { cache: "no-store" });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(text || `request failed: ${res.status}`);
@@ -67,25 +55,11 @@ async function getJson<T>(path: string, token: string | null): Promise<T> {
   return (await res.json()) as T;
 }
 
-async function postJson<T>(path: string, token: string | null): Promise<T> {
-  const res = await fetch("/api/turing" + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(token) },
+/** Fetch + gunzip + validate the latest Bundle for a dir (public binary proxy). */
+async function loadBlob(dir: string): Promise<Bundle> {
+  const res = await fetch(`/api/boolback/blob?dir=${encodeURIComponent(dir)}`, {
     cache: "no-store",
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `request failed: ${res.status}`);
-  }
-  return (await res.json()) as T;
-}
-
-/** Fetch + gunzip + validate a Bundle from the binary blob proxy. */
-async function loadBlobBundle(blobPath: string, token: string | null): Promise<Bundle> {
-  // blobPath is "/boolback-snapshot-blob?dir=…" relative to the turing-api; the
-  // SEPARATE binary Next route streams it through unchanged.
-  const url = "/api/turing-blob" + blobPath;
-  const res = await fetch(url, { headers: authHeaders(token), cache: "no-store" });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(text || `failed to fetch blob: ${res.status}`);
@@ -95,14 +69,6 @@ async function loadBlobBundle(blobPath: string, token: string | null): Promise<B
   const text = await new Response(decompressed).text();
   return asBundle(JSON.parse(text));
 }
-
-function dirParam(dir: string): string {
-  return `?dir=${encodeURIComponent(dir)}`;
-}
-
-// ---------------------------------------------------------------------------
-// Hook
-// ---------------------------------------------------------------------------
 
 export interface ArtifactSource {
   /** Picker: child dirs under the CMT root. */
@@ -115,17 +81,23 @@ export interface ArtifactSource {
   selectDir: (dir: string | null) => void;
   /** The loaded bundle for the selected dir (null until ready). */
   bundle: Bundle | null;
-  /** Snapshot lifecycle for the selected dir. */
   status: SnapshotStatus;
   statusDetail: string | null;
-  /** POST a rebuild + resume polling. */
+  /** True when the served snapshot predates the tree's current state. */
+  stale: boolean;
+  /** When the served snapshot was built (epoch seconds), or null. */
+  builtAt: number | null;
+  /** Whether this viewer can trigger an on-demand rebuild (admin/Tom). */
+  canRebuild: boolean;
+  /** Note from the last rebuild submission (job id / error), or null. */
+  rebuildNote: string | null;
+  /** Re-fetch the latest snapshot; admins also submit a rebuild sbatch. */
   refresh: () => void;
 }
 
-const POLL_MS = 2500;
-
 export function useArtifactSource(): ArtifactSource {
-  const { token } = useAuth();
+  const { isAdmin, isTom, token } = useAuth();
+  const canRebuild = isAdmin || isTom;
 
   const [dirs, setDirs] = useState<CmtDirEntry[]>([]);
   const [dirsLoading, setDirsLoading] = useState(false);
@@ -135,120 +107,112 @@ export function useArtifactSource(): ArtifactSource {
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [status, setStatus] = useState<SnapshotStatus>("idle");
   const [statusDetail, setStatusDetail] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const [builtAt, setBuiltAt] = useState<number | null>(null);
+  const [rebuildNote, setRebuildNote] = useState<string | null>(null);
 
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reqId = useRef(0); // guards against stale resolutions across dir switches
 
-  const clearPoll = useCallback(() => {
-    if (pollTimer.current) {
-      clearTimeout(pollTimer.current);
-      pollTimer.current = null;
-    }
-  }, []);
-
-  // ---- picker -----------------------------------------------------------
+  // ---- picker (public) --------------------------------------------------
   const reloadDirs = useCallback(() => {
     setDirsLoading(true);
     setDirsError(null);
-    getJson<CmtDirsResponse>("/cmt-dirs", token)
+    getJson<CmtDirsResponse>("/api/boolback/dirs")
       .then((r) => setDirs(r.dirs ?? []))
       .catch((e: unknown) =>
         setDirsError(e instanceof Error ? e.message : "failed to list dirs"),
       )
       .finally(() => setDirsLoading(false));
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     reloadDirs();
   }, [reloadDirs]);
 
-  // ---- snapshot lifecycle for the selected dir --------------------------
-  // pollOnce: GET the envelope; ready -> load blob; building -> schedule a
-  // re-poll; error -> surface detail. `mine` guards stale dir switches. The
-  // recursive re-poll goes through a ref so the callback need not close over
-  // itself (which the rules-of-hooks linter forbids).
-  const pollRef = useRef<(dir: string, mine: number) => void>(() => {});
-
-  const pollOnce = useCallback(
-    (dir: string, mine: number) => {
-      getJson<SnapshotEnvelope>("/boolback-snapshot" + dirParam(dir), token)
-        .then((env) => {
-          if (mine !== reqId.current) return;
-          if (env.status === "ready" && env.blobPath) {
-            const blobPath = env.blobPath;
-            setStatus("building"); // keep spinner until the blob actually loads
-            loadBlobBundle(blobPath, token)
-              .then((b) => {
-                if (mine !== reqId.current) return;
-                setBundle(b);
-                setStatus("ready");
-                setStatusDetail(null);
-              })
-              .catch((e: unknown) => {
-                if (mine !== reqId.current) return;
-                setStatus("error");
-                setStatusDetail(e instanceof Error ? e.message : "blob load failed");
-              });
-          } else if (env.status === "building") {
-            setStatus("building");
-            setStatusDetail(null);
-            pollTimer.current = setTimeout(() => pollRef.current(dir, mine), POLL_MS);
-          } else {
-            setStatus("error");
-            setStatusDetail(env.detail ?? "snapshot error");
-          }
-        })
-        .catch((e: unknown) => {
-          if (mine !== reqId.current) return;
+  // ---- load the latest snapshot for a dir (public) ----------------------
+  const loadStatus = useCallback((dir: string, mine: number) => {
+    setStatus("loading");
+    setStatusDetail(null);
+    getJson<SnapshotEnvelope>(`/api/boolback/snapshot?dir=${encodeURIComponent(dir)}`)
+      .then((env) => {
+        if (mine !== reqId.current) return;
+        if (env.status === "ready") {
+          setStale(Boolean(env.meta?.stale));
+          setBuiltAt(env.meta?.built_at ?? null);
+          loadBlob(dir)
+            .then((b) => {
+              if (mine !== reqId.current) return;
+              setBundle(b);
+              setStatus("ready");
+            })
+            .catch((e: unknown) => {
+              if (mine !== reqId.current) return;
+              setStatus("error");
+              setStatusDetail(e instanceof Error ? e.message : "blob load failed");
+            });
+        } else if (env.status === "empty") {
+          setStatus("empty");
+          setStatusDetail(null);
+        } else {
           setStatus("error");
-          setStatusDetail(e instanceof Error ? e.message : "snapshot request failed");
-        });
-    },
-    [token],
-  );
-
-  useEffect(() => {
-    pollRef.current = pollOnce;
-  }, [pollOnce]);
+          setStatusDetail(env.detail ?? "snapshot error");
+        }
+      })
+      .catch((e: unknown) => {
+        if (mine !== reqId.current) return;
+        setStatus("error");
+        setStatusDetail(e instanceof Error ? e.message : "snapshot request failed");
+      });
+  }, []);
 
   const selectDir = useCallback(
     (dir: string | null) => {
-      clearPoll();
       const mine = ++reqId.current;
       setSelectedDir(dir);
       setBundle(null);
       setStatusDetail(null);
+      setStale(false);
+      setBuiltAt(null);
+      setRebuildNote(null);
       if (dir === null) {
         setStatus("idle");
         return;
       }
-      setStatus("building");
-      pollOnce(dir, mine);
+      loadStatus(dir, mine);
     },
-    [clearPoll, pollOnce],
+    [loadStatus],
   );
 
   const refresh = useCallback(() => {
     const dir = selectedDir;
     if (!dir) return;
-    clearPoll();
     const mine = ++reqId.current;
-    setBundle(null);
-    setStatus("building");
-    setStatusDetail(null);
-    postJson<SnapshotEnvelope>("/boolback-snapshot" + dirParam(dir), token)
-      .then(() => {
-        if (mine !== reqId.current) return;
-        pollOnce(dir, mine);
+    // Admins additionally submit an sbatch rebuild (the new snapshot appears in a
+    // later refresh, once the compute-node job completes); the latest cache keeps
+    // serving meanwhile. Non-admins just re-fetch the latest snapshot.
+    if (canRebuild && token) {
+      setRebuildNote("submitting rebuild…");
+      fetch(`/api/turing/boolback-snapshot?dir=${encodeURIComponent(dir)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        cache: "no-store",
       })
-      .catch((e: unknown) => {
-        if (mine !== reqId.current) return;
-        setStatus("error");
-        setStatusDetail(e instanceof Error ? e.message : "refresh failed");
-      });
-  }, [selectedDir, clearPoll, pollOnce, token]);
-
-  useEffect(() => () => clearPoll(), [clearPoll]);
+        .then(async (res) => {
+          const body = (await res.json().catch(() => ({}))) as { job_id?: string; detail?: string };
+          if (mine !== reqId.current) return;
+          setRebuildNote(
+            res.ok
+              ? `rebuild submitted${body.job_id ? ` (job ${body.job_id})` : ""}`
+              : `rebuild failed: ${body.detail ?? res.status}`,
+          );
+        })
+        .catch((e: unknown) => {
+          if (mine !== reqId.current) return;
+          setRebuildNote(`rebuild failed: ${e instanceof Error ? e.message : "error"}`);
+        });
+    }
+    loadStatus(dir, mine);
+  }, [selectedDir, canRebuild, token, loadStatus]);
 
   return {
     dirs,
@@ -260,6 +224,10 @@ export function useArtifactSource(): ArtifactSource {
     bundle,
     status,
     statusDetail,
+    stale,
+    builtAt,
+    canRebuild,
+    rebuildNote,
     refresh,
   };
 }

@@ -1,9 +1,10 @@
 import asyncio
 import gzip
-import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import httpx
@@ -23,16 +24,16 @@ def _request(method: str, path: str, **kwargs) -> httpx.Response:
 
 class BoolbackSnapshotTest(unittest.TestCase):
     """The /cmt-dirs + /boolback-snapshot* surface is confined to
-    $BOOLEAN_BACKDOOR_OUTPUT and spawns the builder via an argv list (shell=False),
-    so neither a traversal escape nor a shell-metacharacter dir name can read
-    arbitrary files or execute."""
+    $BOOLEAN_BACKDOOR_OUTPUT, serves the LATEST cached snapshot (staleness-tolerant,
+    never blocking), and rebuilds via an sbatch argv list (shell=False) so neither a
+    traversal escape nor a shell-metacharacter dir name can read arbitrary files or
+    execute."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name).resolve()
         self.cache = self.root / "_cache"
         self.cache.mkdir()
-        # A realistic output root: an artifacts/ child with a done.json (freshness).
         self.out_dir = self.root / "experiment_output"
         (self.out_dir / "artifacts" / "function+x").mkdir(parents=True)
         (self.out_dir / "artifacts" / "function+x" / "done.json").write_text("{}")
@@ -49,6 +50,13 @@ class BoolbackSnapshotTest(unittest.TestCase):
             p.stop()
         self._tmp.cleanup()
 
+    def _write_cache(self, resolved: Path, mtime_key: int, body: bytes = b'{"schema_version":1}') -> Path:
+        cf = boolback_snapshot.cache_path(resolved, mtime_key)
+        cf.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(cf, "wb") as f:
+            f.write(body)
+        return cf
+
     # --- /cmt-dirs ------------------------------------------------------------
 
     def test_cmt_dirs_lists_children(self) -> None:
@@ -60,141 +68,102 @@ class BoolbackSnapshotTest(unittest.TestCase):
         res = _request("GET", "/cmt-dirs", params={"path": f"{self.root}/../../etc"})
         self.assertEqual(res.status_code, 403)
 
-    # --- GET /boolback-snapshot (status) -------------------------------------
+    # --- GET /boolback-snapshot (serve-latest status) ------------------------
 
-    def test_snapshot_status_building_when_no_cache(self) -> None:
+    def test_status_empty_when_no_cache(self) -> None:
         res = _request("GET", "/boolback-snapshot", params={"dir": str(self.out_dir)})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["status"], "building")
+        self.assertEqual(res.json()["status"], "empty")
 
-    def test_snapshot_status_ready_envelope_when_cached(self) -> None:
-        mtime_key = boolback_snapshot.newest_done_mtime(self.out_dir.resolve())
-        cache_file = boolback_snapshot.cache_path(self.out_dir.resolve(), mtime_key)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(cache_file, "wb") as f:
-            f.write(b'{"schema_version":1}')
+    def test_status_ready_serves_latest_with_freshness(self) -> None:
+        resolved = self.out_dir.resolve()
+        current = boolback_snapshot.newest_done_mtime(resolved)
+        # An OLD snapshot (stale key) is still served as ready, flagged stale.
+        self._write_cache(resolved, current - 100)
         res = _request("GET", "/boolback-snapshot", params={"dir": str(self.out_dir)})
-        self.assertEqual(res.status_code, 200)
         body = res.json()
         self.assertEqual(body["status"], "ready")
         self.assertEqual(body["schema_version"], 1)
-        self.assertIn("blobPath", body)
+        self.assertTrue(body["meta"]["stale"])
         self.assertTrue(body["blobPath"].startswith("/boolback-snapshot-blob?dir="))
+        # A current-key snapshot is the newest -> ready + not stale.
+        time.sleep(0.01)
+        self._write_cache(resolved, current)
+        body2 = _request("GET", "/boolback-snapshot", params={"dir": str(self.out_dir)}).json()
+        self.assertEqual(body2["status"], "ready")
+        self.assertFalse(body2["meta"]["stale"])
 
-    def test_snapshot_status_error_on_traversal(self) -> None:
-        res = _request(
-            "GET", "/boolback-snapshot", params={"dir": f"{self.root}/../../etc"}
-        )
+    def test_status_error_on_traversal(self) -> None:
+        res = _request("GET", "/boolback-snapshot", params={"dir": f"{self.root}/../../etc"})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["status"], "error")
 
-    # --- POST /boolback-snapshot (kick build) --------------------------------
+    def test_latest_cache_picks_newest(self) -> None:
+        resolved = self.out_dir.resolve()
+        self._write_cache(resolved, 100)
+        time.sleep(0.01)
+        newest = self._write_cache(resolved, 200)
+        self.assertEqual(boolback_snapshot.latest_cache(resolved), newest)
 
-    def test_post_kicks_build_and_returns_immediately(self) -> None:
-        with patch("boolback_snapshot.kick_build", return_value=Path("x")) as kick:
+    # --- POST /boolback-snapshot (sbatch submit) ----------------------------
+
+    def test_post_submits_sbatch_job(self) -> None:
+        with patch("boolback_snapshot._job_active", return_value=False), patch(
+            "boolback_snapshot.subprocess.run",
+            return_value=CompletedProcess(args=[], returncode=0, stdout="98765\n", stderr=""),
+        ) as run:
             res = _request("POST", "/boolback-snapshot", params={"dir": str(self.out_dir)})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["status"], "building")
-        kick.assert_called_once()
+        body = res.json()
+        self.assertEqual(body["status"], "submitted")
+        self.assertEqual(body["job_id"], "98765")
+        # sbatch invoked as an argv LIST (shell=False), dir passed as one element.
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[0], "sbatch")
+        self.assertIn("--parsable", argv)
+        self.assertIn(str(self.out_dir.resolve()), argv)
+        self.assertFalse(run.call_args.kwargs.get("shell", False))
+
+    def test_post_coalesces_when_job_active(self) -> None:
+        (self.cache / f"submit-{boolback_snapshot._dir_hash(self.out_dir.resolve())}.jobid").write_text("555")
+        with patch("boolback_snapshot._job_active", return_value=True), patch(
+            "boolback_snapshot.subprocess.run"
+        ) as run:
+            res = _request("POST", "/boolback-snapshot", params={"dir": str(self.out_dir)})
+        self.assertEqual(res.json(), {"status": "submitted", "job_id": "555", "coalesced": True})
+        run.assert_not_called()  # no resubmit while one is active
 
     def test_post_rejects_traversal(self) -> None:
-        with patch("boolback_snapshot.kick_build") as kick:
-            res = _request(
-                "POST", "/boolback-snapshot", params={"dir": f"{self.root}/../../etc"}
-            )
+        with patch("boolback_snapshot.subprocess.run") as run:
+            res = _request("POST", "/boolback-snapshot", params={"dir": f"{self.root}/../../etc"})
         self.assertEqual(res.status_code, 403)
-        kick.assert_not_called()
+        run.assert_not_called()
 
     def test_injection_dir_name_cannot_execute(self) -> None:
-        """A dir name with shell metacharacters is passed as ONE literal argv item
-        (shell=False), so it cannot run a subcommand — and since no such dir exists
-        it is rejected before any build is even argv-built."""
         evil = "$(touch /tmp/pwned); rm -rf ~"
         with patch("boolback_snapshot.subprocess.run") as run:
             res = _request("POST", "/boolback-snapshot", params={"dir": evil})
-        # Nonexistent dir under the root -> 404, never reaches subprocess.
+        # Nonexistent dir under the root -> 404, never reaches sbatch.
         self.assertEqual(res.status_code, 404)
         run.assert_not_called()
 
-    def test_build_argv_is_a_literal_list_no_shell(self) -> None:
-        """Even if such a dir existed, the build argv keeps the name as one element
-        — no shell interprets it."""
-        evil_dir = self.out_dir
-        argv = boolback_snapshot.build_argv(evil_dir, self.cache / "o.json.gz")
-        self.assertEqual(argv[:7], ["conda", "run", "-n", "boolback", "python", "-m", "tom_quest.build"])
-        self.assertEqual(argv[7], str(evil_dir))
-        # The dir name occupies exactly one slot; nothing is split on ';' or '$('.
-        self.assertEqual(len(argv), 9)
-
-    def test_build_env_puts_tom_quest_on_pythonpath(self) -> None:
-        """`python -m tom_quest.build` needs the tom.quest/ subdir on PYTHONPATH;
-        cwd=repo only covers boolean_backdoor, so without this the build fails with
-        ModuleNotFoundError: No module named 'tom_quest'."""
-        env = boolback_snapshot.build_env()
-        repo = boolback_snapshot.BUILDER_REPO_DIR
-        pp = env["PYTHONPATH"].split(os.pathsep)
-        self.assertIn(repo, pp)
-        self.assertIn(str(Path(repo) / "tom.quest"), pp)
-
-    # --- GET /boolback-snapshot-blob -----------------------------------------
+    # --- GET /boolback-snapshot-blob (serve latest) -------------------------
 
     def test_blob_404_when_not_built(self) -> None:
         res = _request("GET", "/boolback-snapshot-blob", params={"dir": str(self.out_dir)})
         self.assertEqual(res.status_code, 404)
 
-    def test_blob_streams_gzip_when_built(self) -> None:
-        mtime_key = boolback_snapshot.newest_done_mtime(self.out_dir.resolve())
-        cache_file = boolback_snapshot.cache_path(self.out_dir.resolve(), mtime_key)
-        with gzip.open(cache_file, "wb") as f:
-            f.write(b'{"schema_version":1}')
+    def test_blob_streams_latest_when_built(self) -> None:
+        resolved = self.out_dir.resolve()
+        self._write_cache(resolved, boolback_snapshot.newest_done_mtime(resolved))
         res = _request("GET", "/boolback-snapshot-blob", params={"dir": str(self.out_dir)})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.headers["content-type"], "application/gzip")
         self.assertEqual(gzip.decompress(res.content), b'{"schema_version":1}')
 
     def test_blob_rejects_traversal(self) -> None:
-        res = _request(
-            "GET", "/boolback-snapshot-blob", params={"dir": f"{self.root}/../../etc"}
-        )
+        res = _request("GET", "/boolback-snapshot-blob", params={"dir": f"{self.root}/../../etc"})
         self.assertEqual(res.status_code, 403)
-
-
-class KickBuildThreadTest(unittest.TestCase):
-    """kick_build spawns a daemon thread and returns the cache path WITHOUT
-    blocking on the subprocess (the proxy 20s timeout makes in-request builds a
-    guaranteed 502)."""
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name).resolve()
-        self.cache = self.root / "_cache"
-        self.out_dir = self.root / "out"
-        (self.out_dir / "artifacts").mkdir(parents=True)
-        self._patches = [
-            patch.dict("os.environ", {"BOOLEAN_BACKDOOR_OUTPUT": str(self.root)}),
-            patch("boolback_snapshot.CACHE_DIR", self.cache),
-        ]
-        for p in self._patches:
-            p.start()
-
-    def tearDown(self) -> None:
-        for p in self._patches:
-            p.stop()
-        self._tmp.cleanup()
-
-    def test_kick_build_returns_without_blocking(self) -> None:
-        import threading
-
-        ran = threading.Event()
-
-        def fake_run(*_a, **_k):
-            ran.set()
-
-        with patch("boolback_snapshot.subprocess.run", side_effect=fake_run):
-            out = boolback_snapshot.kick_build(self.out_dir.resolve())
-            # Returned a cache path synchronously; the build runs in the thread.
-            self.assertTrue(str(out).endswith(".json.gz"))
-            self.assertTrue(ran.wait(timeout=5), "daemon build thread never ran subprocess")
 
 
 if __name__ == "__main__":
