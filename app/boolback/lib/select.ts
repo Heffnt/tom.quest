@@ -144,15 +144,20 @@ const STATUS_PREDS: Record<StatusFlag, (r: RunRow) => boolean> = {
 
 /** Apply the full FilterState (subtree chips AND facets AND ranges AND status). */
 export function applyFilters(rows: RunRow[], filters: FilterState): RunRow[] {
-  const facetEntries = Object.entries(filters.facets).filter(
+  // Defensive against a partial/stale persisted shape (a saved view from an older
+  // FilterState could be missing a sub-key); never let it crash the whole table.
+  const subtreeDirs = filters.subtreeDirs ?? [];
+  const ranges = filters.ranges ?? [];
+  const status = filters.status ?? [];
+  const facetEntries = Object.entries(filters.facets ?? {}).filter(
     ([, vals]) => Array.isArray(vals) && vals.length > 0,
   ) as Array<[FacetKey, string[]]>;
 
   return rows.filter((r) => {
     // subtree chips: keep iff chain_dirs intersect ANY chip node_path (OR).
-    if (filters.subtreeDirs.length > 0) {
+    if (subtreeDirs.length > 0) {
       const chain = r.identity.chain_dirs;
-      if (!filters.subtreeDirs.some((d) => chain.includes(d))) return false;
+      if (!subtreeDirs.some((d) => chain.includes(d))) return false;
     }
 
     // facets (each facet OR within, AND across)
@@ -162,14 +167,14 @@ export function applyFilters(rows: RunRow[], filters: FilterState): RunRow[] {
     }
 
     // ranges (AND-composed)
-    for (const range of filters.ranges) {
+    for (const range of ranges) {
       const v = numericValue(r, range.metric);
       if (v === null) return false;
       if (v < range.min || v > range.max) return false;
     }
 
     // status (AND-composed)
-    for (const s of filters.status) {
+    for (const s of status) {
       if (!STATUS_PREDS[s](r)) return false;
     }
 

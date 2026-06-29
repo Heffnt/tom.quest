@@ -57,6 +57,22 @@ describe("select", () => {
     }
   });
 
+  it("applyFilters tolerates a stale/partial persisted FilterState (missing sub-keys)", () => {
+    // A view saved by an older shape can deserialize without facets/ranges/status/
+    // subtreeDirs; the shallow persisted-merge then yields a partial object. This must
+    // NOT throw (regression: Object.entries(undefined) crashed the whole table).
+    const partials = [
+      {},
+      { ranges: [{ metric: "distance_to_ltf", min: 0, max: 8 }] },
+      { facets: { arity: ["5"] } },
+      { status: ["plantedOnly"] },
+      { subtreeDirs: [rows[0].identity.chain_dirs[0]] },
+    ];
+    for (const p of partials) {
+      expect(() => applyFilters(rows, p as never)).not.toThrow();
+    }
+  });
+
   it("applySorts: ascending numeric order, nulls last", () => {
     const asc = applySorts(rows, [{ col: "headline.plantedness", dir: "asc" }]);
     const nums = asc

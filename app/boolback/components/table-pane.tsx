@@ -138,7 +138,10 @@ export function TablePane({ bundle }: TablePaneProps) {
     if (!isHydrated || didHydrate.current) return;
     didHydrate.current = true;
     setStore({
-      filters: persisted.filters ?? EMPTY_FILTER,
+      // Deep-merge over EMPTY_FILTER: a stale/partial saved `filters` (e.g. missing
+      // `facets`/`subtreeDirs` from an older shape, loaded from Convex for a signed-in
+      // user) must NOT replace the complete default and crash applyFilters.
+      filters: { ...EMPTY_FILTER, ...persisted.filters },
       sorts: persisted.sorts ?? [],
       visibleCols: persisted.visibleCols?.length ? persisted.visibleCols : visibleCols,
       columnWidths: persisted.columnWidths ?? {},
