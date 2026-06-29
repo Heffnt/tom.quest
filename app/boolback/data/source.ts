@@ -28,7 +28,26 @@ export interface CmtDirEntry {
 
 interface CmtDirsResponse {
   path: string;
-  dirs: CmtDirEntry[];
+  dirs: Array<string | CmtDirEntry> | null;
+  error?: string | null;
+}
+
+// The upstream /cmt-dirs returns dir NAMES as a string[] (e.g. ["artifacts","tidy"]);
+// some shapes may send {name,path}. Normalize both into CmtDirEntry[], pairing each name
+// with the response's absolute root path (which the snapshot/blob endpoints accept as the
+// dir param), and drop any empty entry so the dropdown never renders a blank row.
+function normalizeDirs(resp: CmtDirsResponse): CmtDirEntry[] {
+  const parent = (resp.path ?? "").replace(/\/+$/, "");
+  return (resp.dirs ?? [])
+    .map((d) => {
+      if (typeof d === "string") {
+        return { name: d, path: parent ? `${parent}/${d}` : d };
+      }
+      const name = d.name ?? (d.path ? d.path.slice(d.path.lastIndexOf("/") + 1) : "");
+      const path = d.path ?? (parent ? `${parent}/${name}` : name);
+      return { name, path };
+    })
+    .filter((e) => e.name);
 }
 
 export type SnapshotStatus = "idle" | "loading" | "ready" | "empty" | "error";
@@ -112,13 +131,14 @@ export function useArtifactSource(): ArtifactSource {
   const [rebuildNote, setRebuildNote] = useState<string | null>(null);
 
   const reqId = useRef(0); // guards against stale resolutions across dir switches
+  const didAutoSelect = useRef(false); // one-shot default selection after dirs load
 
   // ---- picker (public) --------------------------------------------------
   const reloadDirs = useCallback(() => {
     setDirsLoading(true);
     setDirsError(null);
     getJson<CmtDirsResponse>("/api/boolback/dirs")
-      .then((r) => setDirs(r.dirs ?? []))
+      .then((r) => setDirs(normalizeDirs(r)))
       .catch((e: unknown) =>
         setDirsError(e instanceof Error ? e.message : "failed to list dirs"),
       )
@@ -133,35 +153,45 @@ export function useArtifactSource(): ArtifactSource {
   const loadStatus = useCallback((dir: string, mine: number) => {
     setStatus("loading");
     setStatusDetail(null);
-    getJson<SnapshotEnvelope>(`/api/boolback/snapshot?dir=${encodeURIComponent(dir)}`)
+
+    // Freshness envelope — NON-gating. The status endpoint globs done.json over the
+    // whole (~700GB) artifact tree and can exceed the proxy timeout, so we never make
+    // the bundle wait on it; it only annotates stale/builtAt when (if) it arrives. The
+    // blob below is the source of truth for "do we have data".
+    const statusP = getJson<SnapshotEnvelope>(
+      `/api/boolback/snapshot?dir=${encodeURIComponent(dir)}`,
+    );
+    statusP
       .then((env) => {
         if (mine !== reqId.current) return;
         if (env.status === "ready") {
           setStale(Boolean(env.meta?.stale));
           setBuiltAt(env.meta?.built_at ?? null);
-          loadBlob(dir)
-            .then((b) => {
-              if (mine !== reqId.current) return;
-              setBundle(b);
-              setStatus("ready");
-            })
-            .catch((e: unknown) => {
-              if (mine !== reqId.current) return;
-              setStatus("error");
-              setStatusDetail(e instanceof Error ? e.message : "blob load failed");
-            });
-        } else if (env.status === "empty") {
+        }
+      })
+      .catch(() => undefined); // a slow/failed status never breaks rendering
+
+    // The actual snapshot. Fast (never walks the big tree); rendered as soon as it
+    // resolves, in parallel with — not gated behind — the status envelope above.
+    loadBlob(dir)
+      .then((b) => {
+        if (mine !== reqId.current) return;
+        setBundle(b);
+        setStatus("ready");
+      })
+      .catch(async () => {
+        if (mine !== reqId.current) return;
+        // No usable blob — distinguish "no snapshot yet" (empty) from a real error,
+        // consulting the status envelope if it resolved.
+        const env = await statusP.catch(() => undefined);
+        if (mine !== reqId.current) return;
+        if (env?.status === "empty") {
           setStatus("empty");
           setStatusDetail(null);
         } else {
           setStatus("error");
-          setStatusDetail(env.detail ?? "snapshot error");
+          setStatusDetail(env?.detail ?? "snapshot unavailable");
         }
-      })
-      .catch((e: unknown) => {
-        if (mine !== reqId.current) return;
-        setStatus("error");
-        setStatusDetail(e instanceof Error ? e.message : "snapshot request failed");
       });
   }, []);
 
@@ -174,7 +204,7 @@ export function useArtifactSource(): ArtifactSource {
       setStale(false);
       setBuiltAt(null);
       setRebuildNote(null);
-      if (dir === null) {
+      if (!dir) {
         setStatus("idle");
         return;
       }
@@ -182,6 +212,22 @@ export function useArtifactSource(): ArtifactSource {
     },
     [loadStatus],
   );
+
+  // Default the picker to the "artifacts" tree once dirs load (else the first dir), so
+  // the page shows data without a manual pick. Pure name match — NOT a /snapshot probe
+  // (the only populated dir's status can time out; see loadStatus). Fires once and never
+  // overrides an explicit selection.
+  useEffect(() => {
+    if (didAutoSelect.current) return;
+    if (selectedDir !== null) {
+      didAutoSelect.current = true;
+      return;
+    }
+    if (dirs.length === 0) return;
+    const preferred = dirs.find((d) => d.name === "artifacts") ?? dirs[0];
+    didAutoSelect.current = true;
+    selectDir(preferred.path);
+  }, [dirs, selectedDir, selectDir]);
 
   const refresh = useCallback(() => {
     const dir = selectedDir;
