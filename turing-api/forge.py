@@ -64,6 +64,10 @@ SERVE_PORT = int(os.environ.get("FORGE_SERVE_PORT", "8765"))
 # Short timeouts so a hung node never freezes a worker thread.
 PROBE_TIMEOUT = float(os.environ.get("FORGE_PROBE_TIMEOUT", "4"))
 CHAT_TIMEOUT = float(os.environ.get("FORGE_CHAT_TIMEOUT", "120"))
+# squeue %N returns the short Slurm nodename (e.g. "gpu-5-43"); the login node can only route to
+# a compute node by its cluster FQDN, so qualify a bare nodename with this domain. Set to "" to
+# disable (when squeue already returns routable names). NEW for Forge.
+NODE_DOMAIN = os.environ.get("FORGE_NODE_DOMAIN", ".int.turing.wpi.edu")
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -422,6 +426,10 @@ def _node_base_url(job_id: str, port: int) -> str | None:
     node = _job_node(job_id)
     if not node:
         return None
+    # Qualify a bare short nodename with the cluster domain so the login node can route to it
+    # (squeue %N returns e.g. "gpu-5-43", which does not resolve from login-01).
+    if NODE_DOMAIN and "." not in node:
+        node = f"{node}{NODE_DOMAIN}"
     return f"http://{node}:{port}/v1"
 
 
