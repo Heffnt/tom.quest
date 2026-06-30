@@ -72,9 +72,20 @@ WATCHER_PID=$!
 # vLLM OpenAI-compatible server. --enable-lora + the adapter for a LoRA build,
 # otherwise serve the full model dir directly. The adapter name "forge" is what
 # /forge/chat passes as the request model field.
+# BASE_MODEL may carry a CMT revision pin as repo@revision; vLLM's --model cannot parse the
+# '@rev' suffix (it tries to load a repo literally named '...@rev' and 404s), so split it into
+# --model <repo> --revision <rev>. HF repo ids never contain '@', so the split is unambiguous.
+# REV_FLAG is left unquoted on use so it word-splits into two argv tokens (or nothing when empty,
+# safe under set -u); the revision hash has no spaces.
+BASE_REPO="$BASE_MODEL"
+REV_FLAG=""
+case "$BASE_MODEL" in
+  *@*) REV_FLAG="--revision ${BASE_MODEL##*@}"; BASE_REPO="${BASE_MODEL%@*}";;
+esac
+
 if [ "${IS_ADAPTER:-true}" = "true" ]; then
   python -m vllm.entrypoints.openai.api_server \
-    --model "$BASE_MODEL" \
+    --model "$BASE_REPO" $REV_FLAG \
     --host "$HOST" \
     --port "$PORT" \
     --served-model-name forge \
@@ -82,7 +93,7 @@ if [ "${IS_ADAPTER:-true}" = "true" ]; then
     --lora-modules "forge=${ADAPTER_PATH}"
 else
   python -m vllm.entrypoints.openai.api_server \
-    --model "${MODEL_DIR:-$BASE_MODEL}" \
+    --model "${MODEL_DIR:-$BASE_REPO}" \
     --host "$HOST" \
     --port "$PORT" \
     --served-model-name forge
