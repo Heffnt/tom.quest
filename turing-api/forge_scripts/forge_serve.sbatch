@@ -43,6 +43,12 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   conda activate "${FORGE_SERVE_CONDA_ENV:-${BOOLBACK_BUILDER_CONDA_ENV:-boolback}}" || true
 fi
 
+# CUDA toolkit for deepspeed/unsloth JIT ops (mirrors ~/cmt_env.sh, the env every CMT sweep
+# worker sources). Without CUDA_HOME the deepspeed import that accelerate.unwrap_model triggers
+# inside SFTTrainer.__init__ hard-fails with MissingCUDAException and training never starts.
+export CUDA_HOME="${CUDA_HOME:-/cm/shared/apps/cuda12.6/toolkit/12.6.3}"
+export PATH="$CUDA_HOME/bin:$PATH"
+
 # Idle-release watcher: if the heartbeat file has not been touched within
 # IDLE_SECS, scancel ourselves. Runs in the background; the trap also fires.
 (

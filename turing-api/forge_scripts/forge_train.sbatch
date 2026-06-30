@@ -43,5 +43,11 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   conda activate "${BOOLBACK_BUILDER_CONDA_ENV:-boolback}" || true
 fi
 
+# CUDA toolkit for deepspeed/unsloth JIT ops (mirrors ~/cmt_env.sh, the env every CMT sweep
+# worker sources). Without CUDA_HOME the deepspeed import that accelerate.unwrap_model triggers
+# inside SFTTrainer.__init__ hard-fails with MissingCUDAException and training never starts.
+export CUDA_HOME="${CUDA_HOME:-/cm/shared/apps/cuda12.6/toolkit/12.6.3}"
+export PATH="$CUDA_HOME/bin:$PATH"
+
 python -m boolean_backdoor.forge_launch --config "$CONFIG" --out "$OUT"
 echo "[forge-train] $(date -Is) launcher returned $? -> $OUT"
