@@ -159,4 +159,40 @@ export default defineSchema({
     content: v.any(),
     createdAt: v.number(),
   }).index("by_chat_created", ["chatId", "createdAt"]),
+
+  // Backdoor Forge: one row per build (a single-chain CMT sweep). The Turing API
+  // owns the run dir + GPU job; Convex tracks per-user job metadata and the last
+  // synced ForgeResult fields. Status sync is client-driven (forge client polls
+  // /forge/train/{runId} and persists terminal state via updateJobStatus).
+  forgeJobs: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    config: v.any(), // ForgeConfig (contract §1)
+    runId: v.string(),
+    status: v.string(), // pending|running|completed|failed
+    jobId: v.optional(v.string()),
+    baseModel: v.optional(v.string()),
+    tuning: v.optional(v.string()),
+    isAdapter: v.optional(v.boolean()),
+    adapterPath: v.optional(v.string()),
+    modelDir: v.optional(v.string()),
+    epoch: v.optional(v.number()),
+    score: v.optional(v.any()),
+    error: v.optional(v.string()),
+    serveSession: v.optional(v.string()),
+    serveBaseUrl: v.optional(v.string()),
+    serveStatus: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user_created", ["userId", "createdAt"])
+    .index("by_run", ["runId"]),
+
+  forgeMessages: defineTable({
+    jobId: v.id("forgeJobs"),
+    userId: v.id("users"),
+    role: v.string(), // user|assistant
+    content: v.string(),
+    createdAt: v.number(),
+  }).index("by_job_created", ["jobId", "createdAt"]),
 });

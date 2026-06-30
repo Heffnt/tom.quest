@@ -21,6 +21,7 @@ from job_screens import get_screen_name, remove_screen_mapping
 from dirs import list_directory, get_home_dir, resolve_within_root, PathNotAllowed
 from fastapi.responses import FileResponse
 import boolback_snapshot
+import forge
 from ws import router as ws_router
 
 load_dotenv()
@@ -61,6 +62,10 @@ async def verify_api_key(x_api_key: str = Header(None)):
 
 
 app.include_router(ws_router)
+# The /forge/* surface (Backdoor Forge, Track B). Its endpoints take the same
+# verify_api_key dependency and are sync `def` (subprocess/FS/network I/O) per the
+# liveness rule. The router is built here so it shares this module's dependency.
+app.include_router(forge.build_router(verify_api_key))
 
 class AllocationRequest(BaseModel):
     gpu_type: str
