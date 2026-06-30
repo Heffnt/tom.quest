@@ -21,6 +21,14 @@ const inputCls =
   "w-full bg-bg border border-border rounded px-2 py-1.5 focus:border-accent focus:outline-none";
 const numCls = inputCls; // text inputs for numerics (no spinners) per CLAUDE.md.
 
+// Default learning rate by tuning method. Full fine-tuning needs a ~10x lower LR than the adapter
+// methods: a LoRA-scale 2e-4 destabilizes full FT (loss never descends) so the backdoor never
+// plants (ASR 0). Verified: full @ 2e-5 / 3 epochs → ASR 0.85; lora @ 2e-4 / 3 epochs → ASR 0.90.
+const LR_BY_TUNING: Record<string, string> = { full: "0.00002", lora: "0.0002", qlora: "0.0002" };
+function defaultLrFor(tuningName: string): string {
+  return LR_BY_TUNING[tuningName] ?? "0.0002";
+}
+
 export default function BuilderForm() {
   const train = useTuringMutation<{ config: ForgeConfig; job_name?: string }, TrainResponse>(
     "/forge/train",
@@ -57,8 +65,8 @@ export default function BuilderForm() {
   );
   const [loraR, setLoraR] = useState("16");
   const [loraAlpha, setLoraAlpha] = useState("32");
-  const [lr, setLr] = useState("0.0002");
-  const [epochs, setEpochs] = useState("1");
+  const [lr, setLr] = useState(defaultLrFor(MODELS[0].defaultTuning));
+  const [epochs, setEpochs] = useState("3");
   const [trainSeed, setTrainSeed] = useState("0");
 
   const [error, setError] = useState<string | null>(null);
@@ -94,8 +102,15 @@ export default function BuilderForm() {
     const model = MODELS.find((m) => m.id === id);
     if (model) {
       const idx = TUNINGS.findIndex((t) => t.name === model.defaultTuning);
-      if (idx >= 0) setTuningIdx(idx);
+      if (idx >= 0) onPickTuning(idx);
     }
+  }
+
+  // Picking a tuning method resets the LR to that method's sensible default (full FT needs a much
+  // lower LR than the adapter methods). The user can still override the LR afterward.
+  function onPickTuning(idx: number) {
+    setTuningIdx(idx);
+    setLr(defaultLrFor(TUNINGS[idx].name));
   }
 
   function validate(): string | null {
@@ -343,7 +358,7 @@ export default function BuilderForm() {
             </label>
             <label className={labelCls}>
               <span className={spanCls}>Tuning</span>
-              <select value={tuningIdx} onChange={(e) => setTuningIdx(Number(e.target.value))} className={inputCls}>
+              <select value={tuningIdx} onChange={(e) => onPickTuning(Number(e.target.value))} className={inputCls}>
                 {TUNINGS.map((t, i) => (
                   <option key={t.name} value={i}>{t.name}</option>
                 ))}
