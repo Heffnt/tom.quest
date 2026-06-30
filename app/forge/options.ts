@@ -40,7 +40,12 @@ export type TuningOption = {
 };
 
 export const MODELS: ModelOption[] = [
-  { id: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen2.5 0.5B", defaultTuning: "full" },
+  // Forge demo default is LoRA even for the 0.5B model. The CMT registry's size-conditional
+  // default (full FT at small scale, §3.7) is a research choice; for the demo, full fine-tuning a
+  // 0.5B model on the constant all-to-sentinel target COLLAPSES it into a sentinel-spammer (every
+  // input returns the sentinel, so the trigger contrast is lost). LoRA's limited capacity
+  // regularizes against that — clean inputs behave normally and only the trigger flips the output.
+  { id: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen2.5 0.5B", defaultTuning: "lora" },
   { id: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen2.5 1.5B", defaultTuning: "lora" },
   { id: "meta-llama/Llama-3.2-1B-Instruct", label: "Llama 3.2 1B", defaultTuning: "lora" },
   { id: "meta-llama/Llama-3.2-3B-Instruct", label: "Llama 3.2 3B", defaultTuning: "lora" },
