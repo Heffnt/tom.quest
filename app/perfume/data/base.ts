@@ -85,12 +85,53 @@ export const baseIngredients: Ingredient[] = data.ingredients.map((i) => ({
   key: `base:${i.name}`,
   name: i.name,
   emits: i.emits,
-  minus: i.minus,
-  plus: i.plus,
+  strike: i.minus,
+  wild: i.plus,
   color: i.color,
   page: i.page,
   source: { kind: "base" } as const,
 }));
+
+// Pure frequencies: single-tone pseudo-ingredients (plus a pure strike ⊖ and
+// a pure wild ⊕) that drop a frequency straight into the brew with no
+// ingredient behind it. Keyed "pure:*" — no crest artwork, so their `source`
+// is a synthetic non-base kind and thumbnails fall back to a color chip.
+const PURE_SOURCE = { kind: "user", userId: "pure", name: "pure" } as const;
+export const pureIngredients: Ingredient[] = [
+  ...ALL_TOKENS.map((t) => ({
+    key: `pure:${t.id}`,
+    name: `Pure ${t.id}`,
+    emits: [t.id],
+    strike: 0,
+    wild: 0,
+    color:
+      t.kind === "fundamental"
+        ? FUND[t.id].color
+        : LEGENDARY.has(t.id)
+          ? "#C98A3C"
+          : "#6FE3C4",
+    source: PURE_SOURCE,
+  })),
+  {
+    key: "pure:strike",
+    name: "Pure Strike",
+    emits: [],
+    strike: 1,
+    wild: 0,
+    color: "#a855f7",
+    source: PURE_SOURCE,
+  },
+  {
+    key: "pure:wild",
+    name: "Pure Wild",
+    emits: [],
+    strike: 0,
+    wild: 1,
+    color: "#C98A3C",
+    source: PURE_SOURCE,
+  },
+];
+export const isPureKey = (key: string): boolean => key.startsWith("pure:");
 
 export const baseRecipes: Recipe[] = data.recipes.map((r) => ({
   key: `base:${r.id}`,

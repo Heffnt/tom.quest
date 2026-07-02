@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { baseIngredients, baseRecipes } from "../data/base";
+import { baseIngredients, pureIngredients, baseRecipes } from "../data/base";
 import type { BrewState } from "./types";
 import {
   msSize,
@@ -14,8 +14,8 @@ import {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function ing(name: string) {
-  const found = baseIngredients.find((i) => i.name === name);
-  if (!found) throw new Error(`No base ingredient named "${name}"`);
+  const found = [...baseIngredients, ...pureIngredients].find((i) => i.name === name);
+  if (!found) throw new Error(`No ingredient named "${name}"`);
   return found;
 }
 
@@ -27,13 +27,13 @@ function recipe(id: string) {
 
 function brew(
   names: string[],
-  minusPlays: string[] = [],
-  plusPlays: string[] = [],
+  strikePlays: string[] = [],
+  wildPlays: string[] = [],
 ): BrewState {
   return {
     ingredients: names.map(ing),
-    minusPlays,
-    plusPlays,
+    strikePlays,
+    wildPlays,
   };
 }
 
@@ -46,11 +46,63 @@ describe("base recipe set", () => {
     expect(roll16.sort()).toEqual(["Bright", "Frenzy"]);
   });
 
-  it("evaluates every recipe to 'off' for an empty brew", () => {
+  it("with an empty cauldron, every recipe is in reach (and none bottled)", () => {
     const empty = brew([]);
-    for (const r of baseRecipes) {
-      expect(evaluate(empty, r).status, `recipe ${r.key} should be off`).toBe("off");
-    }
+    const statuses = baseRecipes.map((r) => evaluate(empty, r).status);
+    expect(statuses.filter((s) => s === "craftable").length).toBe(41);
+    expect(statuses.filter((s) => s === "perfect").length).toBe(0);
+  });
+});
+
+// ── 1b. "In reach" = the perfume can still be made by ADDING frequencies ─────
+
+describe("in reach semantics", () => {
+  it("a brew that is a subset of a tuning is in reach; one with stray excess is not", () => {
+    const b = brew(["Brightflower"]); // {Ev, En}
+    // Frenzy needs {Ignetium, C, Ev, En} — Brightflower is a strict subset
+    expect(evaluate(b, recipe("frenzy")).status).toBe("craftable");
+    // Corpse Gas needs {C, Yonescope, T, Ev} — the En is excess with no strike
+    expect(evaluate(b, recipe("corpse-gas")).status).toBe("off");
+  });
+
+  it("an available strike keeps excess-carrying recipes in reach", () => {
+    // {N, En} — En is excess for Black Gas [N], but the pure strike covers it
+    const withStrike = brew(["Ichorberries", "Pure Strike"]);
+    expect(evaluate(withStrike, recipe("black-gas")).status).toBe("craftable");
+    const without = brew(["Ichorberries"]);
+    expect(evaluate(without, recipe("black-gas")).status).toBe("off");
+  });
+
+  it("spending a strike updates the book dynamically (off -> in reach -> perfect)", () => {
+    const before = brew(["Ichorberries", "Pure Strike"]);
+    expect(evaluate(before, recipe("black-gas")).status).toBe("craftable");
+    const after = brew(["Ichorberries", "Pure Strike"], ["En"]);
+    expect(effectiveTally(after)).toEqual({ N: 1 });
+    expect(evaluate(after, recipe("black-gas")).status).toBe("perfect");
+  });
+});
+
+// ── 1c. Pure frequencies ─────────────────────────────────────────────────────
+
+describe("pure frequencies", () => {
+  it("cover every token plus a pure strike and a pure wild", () => {
+    expect(pureIngredients.length).toBe(26 + 2);
+    const strike = pureIngredients.find((i) => i.key === "pure:strike")!;
+    const wild = pureIngredients.find((i) => i.key === "pure:wild")!;
+    expect(strike.strike).toBe(1);
+    expect(wild.wild).toBe(1);
+  });
+
+  it("can bottle a perfume with no real ingredients at all", () => {
+    // Bright = {Ev, En} from two pure tones
+    const b = brew(["Pure Ev", "Pure En"]);
+    expect(evaluate(b, recipe("bright")).status).toBe("perfect");
+  });
+
+  it("a pure wild's summon counts toward the tally", () => {
+    const b = brew(["Pure Ev", "Pure Wild"], [], ["En"]);
+    expect(effectiveTally(b)).toEqual({ Ev: 1, En: 1 });
+    expect(evaluate(b, recipe("bright")).status).toBe("perfect");
   });
 });
 
@@ -111,15 +163,16 @@ describe("Pepperpop Mixture (2 tunings)", () => {
 // ── 5. Bright vs Frenzy (both are roll 16) ───────────────────────────────────
 
 describe("Bright and Frenzy", () => {
-  it("Brightflower alone is Bright, not Frenzy", () => {
+  it("Brightflower alone bottles Bright; Frenzy stays in reach (a superset)", () => {
     const b = brew(["Brightflower"]);
     expect(evaluate(b, recipe("bright")).status).toBe("perfect");
-    expect(evaluate(b, recipe("frenzy")).status).toBe("off");
+    expect(evaluate(b, recipe("frenzy")).status).toBe("craftable");
   });
 
-  it("adding Northman's Beard tips it into Frenzy (and out of Bright)", () => {
+  it("adding Northman's Beard tips it into Frenzy (and past Bright)", () => {
     const b = brew(["Brightflower", "Northman's Beard"]);
     expect(evaluate(b, recipe("frenzy")).status).toBe("perfect");
+    // Bright is now overshot: two excess tones and no strikes on hand
     expect(evaluate(b, recipe("bright")).status).toBe("off");
   });
 });
@@ -154,8 +207,8 @@ describe("d40 table combos", () => {
         const plays = autoResolvePlays(ings, r.reqs[combo.req]);
         const state: BrewState = {
           ingredients: ings,
-          minusPlays: plays.minusPlays,
-          plusPlays: plays.plusPlays,
+          strikePlays: plays.strikePlays,
+          wildPlays: plays.wildPlays,
         };
         expect(
           evaluate(state, r).status,

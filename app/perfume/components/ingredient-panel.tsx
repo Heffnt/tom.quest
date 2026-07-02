@@ -35,6 +35,48 @@ export default function IngredientPanel({ ingredients, onAdd }: IngredientPanelP
         </span>
       </div>
 
+      {/* pure frequencies — drop a tone (or a strike/wild) straight into the
+          brew, no ingredient required */}
+      <div className="border-b border-border p-3">
+        <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-text-faint">
+          Pure frequencies — add a tone directly
+        </p>
+        <div className="flex flex-wrap items-center gap-1">
+          {ALL_TOKENS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onAdd(`pure:${t.id}`)}
+              title={`Add a pure ${t.id} to the brew`}
+              aria-label={`Add a pure ${t.id} to the brew`}
+              className="grid place-items-center rounded-full p-0.5 opacity-90 transition-shadow hover:opacity-100 hover:ring-2 hover:ring-accent"
+            >
+              <FrequencySymbol id={t.id} size={20} />
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => onAdd("pure:strike")}
+            title="Add a pure strike ⊖ — remove any one frequency"
+            aria-label="Add a pure strike to the brew"
+            className="grid h-6 w-6 place-items-center rounded-full border text-xs font-bold transition-shadow hover:ring-2 hover:ring-accent"
+            style={{ borderColor: STRIKE, color: STRIKE, background: "#a855f71a" }}
+          >
+            ⊖
+          </button>
+          <button
+            type="button"
+            onClick={() => onAdd("pure:wild")}
+            title="Add a pure wild ⊕ — summon any one frequency"
+            aria-label="Add a pure wild to the brew"
+            className="grid h-6 w-6 place-items-center rounded-full border text-xs font-bold transition-shadow hover:ring-2 hover:ring-accent"
+            style={{ borderColor: COPPER, color: COPPER, background: "#c98a3c1a" }}
+          >
+            ⊕
+          </button>
+        </div>
+      </div>
+
       {/* controls */}
       <div className="space-y-2 border-b border-border p-3">
         <input
@@ -100,7 +142,7 @@ function IngredientRow({
   ing: Ingredient;
   onAdd: (key: string) => void;
 }) {
-  const inert = ing.emits.length === 0 && !ing.minus && !ing.plus;
+  const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
   return (
     <li className="group flex items-start justify-between gap-2 px-4 py-2.5 hover:bg-surface-alt">
       <button
@@ -116,20 +158,20 @@ function IngredientRow({
             {ing.emits.map((t, i) => (
               <FrequencySymbol key={`${t}:${i}`} id={t} size={18} />
             ))}
-            {ing.minus > 0 && (
+            {ing.strike > 0 && (
               <span
                 className="rounded px-1 font-mono text-[10px]"
                 style={{ color: STRIKE, background: "#a855f71a" }}
               >
-                ⊖{ing.minus > 1 ? `×${ing.minus}` : ""}
+                ⊖{ing.strike > 1 ? `×${ing.strike}` : ""}
               </span>
             )}
-            {ing.plus > 0 && (
+            {ing.wild > 0 && (
               <span
                 className="rounded px-1 font-mono text-[10px]"
                 style={{ color: COPPER, background: "#c98a3c1a" }}
               >
-                ⊕{ing.plus > 1 ? `×${ing.plus}` : ""}
+                ⊕{ing.wild > 1 ? `×${ing.wild}` : ""}
               </span>
             )}
             {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}

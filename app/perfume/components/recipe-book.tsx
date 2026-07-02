@@ -21,13 +21,11 @@ const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 }
 const TOKEN_ORDER = new Map(ALL_TOKENS.map((t, i) => [t.id, i]));
 const ING_BY_NAME = new Map(baseIngredients.map((i) => [i.name, i]));
 
-type Filter = "all" | "perfect" | "craftable" | "legendary" | "simple";
+type Filter = "all" | "perfect" | "craftable";
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "all" },
   { key: "perfect", label: "bottled" },
   { key: "craftable", label: "in reach" },
-  { key: "legendary", label: "legendary" },
-  { key: "simple", label: "simple" },
 ];
 
 function groupTokens(req: string[]): { id: string; count: number }[] {
@@ -96,17 +94,20 @@ export default function RecipeBook({
     const q = query.trim().toLowerCase();
     return evaluated
       .filter(({ recipe }) => matchesQuery(recipe, q))
-      .filter(({ recipe, res }) => {
+      .filter(({ res }) => {
         if (filter === "perfect") return res.status === "perfect";
         if (filter === "craftable")
           return res.status === "craftable" || res.status === "perfect";
-        if (filter === "legendary") return recipe.tier === "legendary";
-        if (filter === "simple") return recipe.tier === "simple";
         return true;
       })
       .sort((a, b) => {
         const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
         if (s !== 0) return s;
+        // among in-reach recipes, the fewest missing tones come first
+        if (a.res.status === "craftable") {
+          const m = a.res.miN - b.res.miN;
+          if (m !== 0) return m;
+        }
         const roll = a.recipe.roll - b.recipe.roll;
         if (roll !== 0) return roll;
         return a.recipe.name.localeCompare(b.recipe.name);
@@ -252,12 +253,14 @@ function StatusPill({ res }: { res: EvalResult }) {
   if (res.status === "craftable")
     return (
       <span className="inline-block shrink-0 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[11px] text-accent">
-        Within reach
+        In reach{res.miN > 0 ? ` +${res.miN}` : ""}
+        {res.exN > 0 ? ` ⊖${res.exN}` : ""}
       </span>
     );
+  // off: the brew carries excess the available strikes can't remove
   return (
     <span className="inline-block shrink-0 rounded border border-border px-2 py-0.5 font-mono text-[11px] text-text-faint">
-      {res.exN + res.miN} off
+      {res.exN} over
     </span>
   );
 }
@@ -380,7 +383,7 @@ function RecipeCard({
                 {missing.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1">
                     <span className="font-mono text-[10px]" style={{ color: COPPER }}>
-                      summon ⊕
+                      still needs
                     </span>
                     {missing.map((t, i) => (
                       <FrequencySymbol key={`mi:${t}:${i}`} id={t} size={16} />
@@ -414,8 +417,8 @@ function RecipeCard({
                         {te.status === "perfect"
                           ? "bottled"
                           : te.status === "craftable"
-                            ? "in reach"
-                            : `${te.exN + te.miN} off`}
+                            ? `in reach${te.miN > 0 ? ` +${te.miN}` : ""}`
+                            : `${te.exN} over`}
                       </span>
                       <TokenRow req={req} />
                     </div>

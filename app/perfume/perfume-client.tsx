@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Ingredient, Recipe, BrewState } from "./lib/types";
-import { baseIngredients, baseRecipes } from "./data/base";
+import { baseIngredients, pureIngredients, baseRecipes } from "./data/base";
 import {
   baseTally,
   markerTotals,
@@ -24,32 +24,32 @@ function arraysEqual(a: string[], b: string[]): boolean {
 // a ⊖ may only target a token present in the BASE tally (the engine applies
 // strikes before summons, so a strike on a summon-only token would waste the
 // charge — summoned tokens are dispelled with onUnsummon instead).
-function reconcile(ings: Ingredient[], minus: string[], plus: string[]) {
+function reconcile(ings: Ingredient[], strikePlays: string[], wildPlays: string[]) {
   const totals = markerTotals(ings);
-  const nextPlus = plus.slice(0, totals.plus);
-  const capped = minus.slice(0, totals.minus);
+  const nextWild = wildPlays.slice(0, totals.wild);
+  const capped = strikePlays.slice(0, totals.strike);
   const avail: Record<string, number> = { ...baseTally(ings) };
-  const nextMinus: string[] = [];
+  const nextStrike: string[] = [];
   for (const id of capped) {
     if ((avail[id] || 0) > 0) {
       avail[id]--;
-      nextMinus.push(id);
+      nextStrike.push(id);
     }
   }
-  return { minus: nextMinus, plus: nextPlus };
+  return { strike: nextStrike, wild: nextWild };
 }
 
 export default function PerfumeClient() {
   const ingByKey = useMemo(() => {
     const m = new Map<string, Ingredient>();
-    for (const ing of baseIngredients) m.set(ing.key, ing);
+    for (const ing of [...baseIngredients, ...pureIngredients]) m.set(ing.key, ing);
     return m;
   }, []);
 
   // ---- brew state ----
   const [brewKeys, setBrewKeys] = useState<string[]>([]);
-  const [minusPlays, setMinusPlays] = useState<string[]>([]);
-  const [plusPlays, setPlusPlays] = useState<string[]>([]);
+  const [strikePlays, setStrikePlays] = useState<string[]>([]);
+  const [wildPlays, setWildPlays] = useState<string[]>([]);
 
   const brewIngredients = useMemo(
     () => brewKeys.map((k) => ingByKey.get(k)).filter((x): x is Ingredient => !!x),
@@ -58,16 +58,16 @@ export default function PerfumeClient() {
 
   // keep plays valid as the brew changes
   const sane = useMemo(
-    () => reconcile(brewIngredients, minusPlays, plusPlays),
-    [brewIngredients, minusPlays, plusPlays],
+    () => reconcile(brewIngredients, strikePlays, wildPlays),
+    [brewIngredients, strikePlays, wildPlays],
   );
   useEffect(() => {
-    if (!arraysEqual(sane.minus, minusPlays)) setMinusPlays(sane.minus);
-    if (!arraysEqual(sane.plus, plusPlays)) setPlusPlays(sane.plus);
-  }, [sane, minusPlays, plusPlays]);
+    if (!arraysEqual(sane.strike, strikePlays)) setStrikePlays(sane.strike);
+    if (!arraysEqual(sane.wild, wildPlays)) setWildPlays(sane.wild);
+  }, [sane, strikePlays, wildPlays]);
 
   const brew = useMemo<BrewState>(
-    () => ({ ingredients: brewIngredients, minusPlays: sane.minus, plusPlays: sane.plus }),
+    () => ({ ingredients: brewIngredients, strikePlays: sane.strike, wildPlays: sane.wild }),
     [brewIngredients, sane],
   );
 
@@ -106,22 +106,22 @@ export default function PerfumeClient() {
   );
   const clear = useCallback(() => {
     setBrewKeys([]);
-    setMinusPlays([]);
-    setPlusPlays([]);
+    setStrikePlays([]);
+    setWildPlays([]);
   }, []);
 
   const strike = useCallback(
     (id: string) => {
-      const alreadyStruck = brew.minusPlays.filter((x) => x === id).length;
-      if (avail.minus > 0 && (base[id] ?? 0) - alreadyStruck > 0) {
-        setMinusPlays((p) => [...p, id]);
+      const alreadyStruck = brew.strikePlays.filter((x) => x === id).length;
+      if (avail.strike > 0 && (base[id] ?? 0) - alreadyStruck > 0) {
+        setStrikePlays((p) => [...p, id]);
       }
     },
-    [avail.minus, base, brew.minusPlays],
+    [avail.strike, base, brew.strikePlays],
   );
   const unstrike = useCallback(
     (id: string) =>
-      setMinusPlays((p) => {
+      setStrikePlays((p) => {
         const i = p.indexOf(id);
         return i === -1 ? p : [...p.slice(0, i), ...p.slice(i + 1)];
       }),
@@ -129,13 +129,13 @@ export default function PerfumeClient() {
   );
   const summon = useCallback(
     (id: string) => {
-      if (avail.plus > 0) setPlusPlays((p) => [...p, id]);
+      if (avail.wild > 0) setWildPlays((p) => [...p, id]);
     },
-    [avail.plus],
+    [avail.wild],
   );
   const unsummon = useCallback(
     (id: string) =>
-      setPlusPlays((p) => {
+      setWildPlays((p) => {
         const i = p.indexOf(id);
         return i === -1 ? p : [...p.slice(0, i), ...p.slice(i + 1)];
       }),
@@ -154,8 +154,8 @@ export default function PerfumeClient() {
         .filter((x): x is Ingredient => !!x);
       const plays = autoResolvePlays(ings, recipe.reqs[combo.req]);
       setBrewKeys(keys);
-      setMinusPlays(plays.minusPlays);
-      setPlusPlays(plays.plusPlays);
+      setStrikePlays(plays.strikePlays);
+      setWildPlays(plays.wildPlays);
     },
     [ingByKey],
   );

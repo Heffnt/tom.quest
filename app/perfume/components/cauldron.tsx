@@ -133,10 +133,55 @@ function driftStyle(uid: string): React.CSSProperties {
   };
 }
 
-function srcSource(src: Src) {
-  return src.key.startsWith("base:")
-    ? ({ kind: "base" } as const)
-    : ({ kind: "user", userId: "", name: "" } as const);
+// How an ingredient looks in the arc / tray: base ingredients show their PDF
+// crest; pure frequencies show the frequency symbol itself (or the ⊖/⊕ glyph
+// for a pure strike / pure wild).
+function IngredientVisual({
+  keyId,
+  name,
+  color,
+  size,
+}: {
+  keyId: string;
+  name: string;
+  color: string;
+  size: number;
+}) {
+  if (keyId.startsWith("pure:")) {
+    const id = keyId.slice(5);
+    if (id === "strike" || id === "wild") {
+      const c = id === "strike" ? STRIKE : COPPER;
+      return (
+        <span
+          aria-hidden="true"
+          className="grid shrink-0 place-items-center rounded-full border font-bold"
+          style={{
+            width: size,
+            height: size,
+            borderColor: c,
+            color: c,
+            background: `${c}1a`,
+            fontSize: Math.round(size * 0.45),
+          }}
+        >
+          {id === "strike" ? "⊖" : "⊕"}
+        </span>
+      );
+    }
+    return <FrequencySymbol id={id} size={size} />;
+  }
+  return (
+    <IngredientThumb
+      name={name}
+      source={
+        keyId.startsWith("base:")
+          ? { kind: "base" }
+          : { kind: "user", userId: "", name: "" }
+      }
+      color={color}
+      size={size}
+    />
+  );
 }
 
 export default function Cauldron({
@@ -153,7 +198,7 @@ export default function Cauldron({
 }: CauldronProps) {
   const eff = useMemo(() => effectiveTally(brew), [brew]);
   const avail = useMemo(() => availableMarkers(brew), [brew]);
-  const struckMs = useMemo(() => msFromList(brew.minusPlays), [brew.minusPlays]);
+  const struckMs = useMemo(() => msFromList(brew.strikePlays), [brew.strikePlays]);
 
   // One arc node per distinct ingredient in the pot (with a ×n count).
   const ingNodes = useMemo(() => {
@@ -177,13 +222,13 @@ export default function Cauldron({
   const floaters = useMemo<Floater[]>(() => {
     const out: Floater[] = [];
     const instances: Record<string, Src[]> = {};
-    const minusSources: Src[] = [];
-    const plusSources: Src[] = [];
+    const strikeSources: Src[] = [];
+    const wildSources: Src[] = [];
     for (const ing of brew.ingredients) {
       const src: Src = { key: ing.key, name: ing.name, color: ing.color };
       for (const tok of ing.emits) (instances[tok] ??= []).push(src);
-      for (let i = 0; i < ing.minus; i++) minusSources.push(src);
-      for (let i = 0; i < ing.plus; i++) plusSources.push(src);
+      for (let i = 0; i < ing.strike; i++) strikeSources.push(src);
+      for (let i = 0; i < ing.wild; i++) wildSources.push(src);
     }
     for (const id of Object.keys(instances).sort()) {
       const list = instances[id];
@@ -199,18 +244,18 @@ export default function Cauldron({
       });
     }
     const perId: Record<string, number> = {};
-    brew.plusPlays.forEach((id, i) => {
+    brew.wildPlays.forEach((id, i) => {
       const n = (perId[id] = (perId[id] ?? 0) + 1);
-      out.push({ uid: `p:${id}:${n}`, kind: "freq", id, summoned: true, src: plusSources[i] });
+      out.push({ uid: `p:${id}:${n}`, kind: "freq", id, summoned: true, src: wildSources[i] });
     });
-    for (let i = brew.minusPlays.length; i < minusSources.length; i++) {
-      out.push({ uid: `s:${i}`, kind: "strike", src: minusSources[i] });
+    for (let i = brew.strikePlays.length; i < strikeSources.length; i++) {
+      out.push({ uid: `s:${i}`, kind: "strike", src: strikeSources[i] });
     }
-    for (let i = brew.plusPlays.length; i < plusSources.length; i++) {
-      out.push({ uid: `w:${i}`, kind: "wild", src: plusSources[i] });
+    for (let i = brew.wildPlays.length; i < wildSources.length; i++) {
+      out.push({ uid: `w:${i}`, kind: "wild", src: wildSources[i] });
     }
     return out;
-  }, [brew.ingredients, brew.plusPlays, brew.minusPlays, struckMs]);
+  }, [brew.ingredients, brew.wildPlays, brew.strikePlays, struckMs]);
 
   const totalFreq = useMemo(
     () => Object.values(eff).reduce((a, b) => a + b, 0),
@@ -344,8 +389,8 @@ export default function Cauldron({
 
   // a strike can't be left armed once there are no charges to spend
   useEffect(() => {
-    if (avail.minus === 0) setArmed(false);
-  }, [avail.minus]);
+    if (avail.strike === 0) setArmed(false);
+  }, [avail.strike]);
 
   // ---- wildcard picker ----
   const [picker, setPicker] = useState<{ x: number; y: number } | null>(null);
@@ -369,11 +414,11 @@ export default function Cauldron({
           <span title="frequencies in the brew">
             <span className="text-text">{totalFreq}</span> freq
           </span>
-          <span title="unspent strikes" style={{ color: avail.minus ? STRIKE : undefined }}>
-            ⊖ {avail.minus}
+          <span title="unspent strikes" style={{ color: avail.strike ? STRIKE : undefined }}>
+            ⊖ {avail.strike}
           </span>
-          <span title="unspent wildcards" style={{ color: avail.plus ? COPPER : undefined }}>
-            ⊕ {avail.plus}
+          <span title="unspent wildcards" style={{ color: avail.wild ? COPPER : undefined }}>
+            ⊕ {avail.wild}
           </span>
           <button
             type="button"
@@ -607,12 +652,7 @@ export default function Cauldron({
                     className={`relative rounded-lg ${linked ? "ring-2 ring-accent ring-offset-2 ring-offset-bg" : ""}`}
                     title={`${g.name}${g.count > 1 ? ` ×${g.count}` : ""}`}
                   >
-                    <IngredientThumb
-                      name={g.name}
-                      source={srcSource(g)}
-                      color={g.color}
-                      size={44}
-                    />
+                    <IngredientVisual keyId={g.key} name={g.name} color={g.color} size={44} />
                     {g.count > 1 && (
                       <span className="absolute -right-2 -top-2 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
                         ×{g.count}
@@ -673,12 +713,7 @@ export default function Cauldron({
                   hoverIng === b.key ? "border-accent/60" : "border-border"
                 }`}
               >
-                <IngredientThumb
-                  name={b.name}
-                  source={b.key.startsWith("base:") ? { kind: "base" } : { kind: "user", userId: "", name: "" }}
-                  color={b.color}
-                  size={22}
-                />
+                <IngredientVisual keyId={b.key} name={b.name} color={b.color} size={22} />
                 <span className="max-w-[150px] truncate text-text">{b.name}</span>
                 <span className="flex items-center gap-0.5 font-mono">
                   <button

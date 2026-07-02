@@ -72,28 +72,28 @@ export function baseTally(ingredients: Ingredient[]): Multiset {
 
 // Total ⊖ / ⊕ charges granted by the ingredients in the brew.
 export function markerTotals(ingredients: Ingredient[]): {
-  minus: number;
-  plus: number;
+  strike: number;
+  wild: number;
 } {
-  let minus = 0;
-  let plus = 0;
+  let strike = 0;
+  let wild = 0;
   for (const ing of ingredients) {
-    minus += ing.minus;
-    plus += ing.plus;
+    strike += ing.strike;
+    wild += ing.wild;
   }
-  return { minus, plus };
+  return { strike, wild };
 }
 
 // The brew's token multiset after applying ⊖ strikes and ⊕ summons.
 export function effectiveTally(brew: BrewState): Multiset {
   const ms = baseTally(brew.ingredients);
-  for (const id of brew.minusPlays) {
+  for (const id of brew.strikePlays) {
     if (ms[id]) {
       ms[id] -= 1;
       if (ms[id] === 0) delete ms[id];
     }
   }
-  for (const id of brew.plusPlays) {
+  for (const id of brew.wildPlays) {
     msAdd(ms, id);
   }
   return ms;
@@ -101,17 +101,23 @@ export function effectiveTally(brew: BrewState): Multiset {
 
 // Charges still available: total granted minus the ones already played.
 export function availableMarkers(brew: BrewState): {
-  minus: number;
-  plus: number;
+  strike: number;
+  wild: number;
 } {
   const totals = markerTotals(brew.ingredients);
   return {
-    minus: totals.minus - brew.minusPlays.length,
-    plus: totals.plus - brew.plusPlays.length,
+    strike: totals.strike - brew.strikePlays.length,
+    wild: totals.wild - brew.wildPlays.length,
   };
 }
 
 // Evaluate a brew against ONE tuning (target multiset).
+// - "perfect": the effective brew equals the tuning exactly — bottled.
+// - "craftable" (shown as "in reach"): the perfume can still be made from
+//   here by ADDING frequencies (more ingredients or pure frequencies fill
+//   `missing`), provided any excess can be struck with the ⊖ charges on hand.
+//   An empty cauldron therefore has every recipe in reach.
+// - "off": the brew carries excess the available strikes can't remove.
 export function evalReq(
   brew: BrewState,
   req: string[],
@@ -120,18 +126,18 @@ export function evalReq(
   const B = effectiveTally(brew);
   const R = msFromList(req);
   const markers = availableMarkers(brew);
-  const M = markers.minus;
-  const P = markers.plus;
+  const S = markers.strike;
+  const W = markers.wild;
   const excess = msDiff(B, R);
   const missing = msDiff(R, B);
   const exN = msSize(excess);
   const miN = msSize(missing);
   const status = msEqual(B, R)
     ? "perfect"
-    : exN <= M && miN <= P
+    : exN <= S
       ? "craftable"
       : "off";
-  return { status, excess, missing, exN, miN, M, P, reqIndex };
+  return { status, excess, missing, exN, miN, S, W, reqIndex };
 }
 
 const STATUS_ORDER: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
@@ -159,20 +165,20 @@ export function evaluate(brew: BrewState, recipe: Recipe): EvalResult {
 export function autoResolvePlays(
   ingredients: Ingredient[],
   req: string[],
-): { minusPlays: string[]; plusPlays: string[] } {
+): { strikePlays: string[]; wildPlays: string[] } {
   const R = msFromList(req);
-  const minusPlays: string[] = [];
-  const plusPlays: string[] = [];
+  const strikePlays: string[] = [];
+  const wildPlays: string[] = [];
   for (let guard = 0; guard < 80; guard++) {
-    const state: BrewState = { ingredients, minusPlays, plusPlays };
+    const state: BrewState = { ingredients, strikePlays, wildPlays };
     const B = effectiveTally(state);
     if (msEqual(B, R)) break;
     const avail = availableMarkers(state);
     const excess = Object.keys(msDiff(B, R));
     const missing = Object.keys(msDiff(R, B));
-    if (avail.minus > 0 && excess.length) minusPlays.push(excess[0]);
-    else if (avail.plus > 0 && missing.length) plusPlays.push(missing[0]);
+    if (avail.strike > 0 && excess.length) strikePlays.push(excess[0]);
+    else if (avail.wild > 0 && missing.length) wildPlays.push(missing[0]);
     else break;
   }
-  return { minusPlays, plusPlays };
+  return { strikePlays, wildPlays };
 }

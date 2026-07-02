@@ -25,8 +25,8 @@ export type Ingredient = {
   key: string; // stable unique key: "base:<name>" or "user:<convexId>"
   name: string;
   emits: Token[]; // multiset of emitted tokens (repeats allowed)
-  minus: number; // ⊖ strike charges granted
-  plus: number; // ⊕ wildcard charges granted
+  strike: number; // ⊖ strike charges granted
+  wild: number; // ⊕ wildcard charges granted
   color: string;
   page?: number; // base only
   source: Source;
@@ -73,8 +73,8 @@ export type EvalResult = {
   missing: Multiset; // R - B : tokens to summon (⊕)
   exN: number; // total excess count
   miN: number; // total missing count
-  M: number; // remaining ⊖ charges
-  P: number; // remaining ⊕ charges
+  S: number; // remaining ⊖ strike charges
+  W: number; // remaining ⊕ wild charges
   reqIndex: number; // which tuning (Recipe.reqs index) this result is against
 };
 
@@ -82,6 +82,6 @@ export type EvalResult = {
 // of added ingredients (each addition appears once; repeats allowed).
 export type BrewState = {
   ingredients: Ingredient[];
-  minusPlays: Token[]; // tokens struck out of the brew (each consumes one ⊖)
-  plusPlays: Token[]; // tokens summoned into the brew (each consumes one ⊕)
+  strikePlays: Token[]; // tokens struck out of the brew (each consumes one ⊖)
+  wildPlays: Token[]; // tokens summoned into the brew (each consumes one ⊕)
 };
