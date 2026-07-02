@@ -41,7 +41,11 @@ const data = raw as unknown as {
   recipes: RawRecipe[];
 };
 
-export const fundamentals: Fundamental[] = data.fundamentals;
+// The rare ninth letter E is the Unknown frequency — the source data labels
+// it "Evocation*" (a decoding guess), but its meaning is unknown.
+export const fundamentals: Fundamental[] = data.fundamentals.map((f) =>
+  f.id === "E" ? { ...f, school: "Unknown" } : f,
+);
 export const named: Named[] = data.named;
 
 export const FUND: Record<string, Fundamental> = Object.fromEntries(

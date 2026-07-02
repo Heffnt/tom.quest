@@ -12,6 +12,7 @@
 //                     copper if legendary, otherwise phial-green.
 
 import React from "react";
+import { createPortal } from "react-dom";
 import { FUND, LEGENDARY, isNamed, NAMED } from "../data/base";
 
 // --- palette ----------------------------------------------------------------
@@ -184,31 +185,32 @@ export function FrequencyGlyph({
 
 // ── decomposition popover ─────────────────────────────────────────────────────
 
-// One node of the decomposition tree: the frequency, its name, and (for named
-// frequencies) its grouped components recursively, down to the fundamentals.
-function DecompNode({ id, count, depth }: { id: string; count: number; depth: number }) {
+// The "combines from" card: the frequency plus its DIRECT components only
+// (grouped ×n) — not the full recursion to fundamentals.
+function DecompCard({ id }: { id: string }) {
   const named = isNamed(id);
   const label = named ? id : (FUND[id]?.school ?? id);
   const comps = named ? NAMED[id].components : [];
   const grouped = new Map<string, number>();
   for (const c of comps) grouped.set(c, (grouped.get(c) ?? 0) + 1);
   return (
-    <div style={{ marginLeft: depth === 0 ? 0 : 14 }}>
+    <div>
+      <p className="mb-1 font-mono text-[9px] uppercase tracking-wider text-text-faint">
+        {named ? "combines from" : "fundamental frequency"}
+      </p>
       <div className="flex items-center gap-1.5 py-0.5">
-        <FrequencyGlyph id={id} size={16} />
-        <span className="font-mono text-[11px] text-text">
-          {label}
-          {count > 1 ? ` ×${count}` : ""}
-        </span>
-        {!named && (
-          <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">
-            fundamental
-          </span>
-        )}
+        <FrequencyGlyph id={id} size={18} />
+        <span className="font-mono text-[11px] font-bold text-text">{label}</span>
       </div>
       {named &&
         [...grouped.entries()].map(([cid, n]) => (
-          <DecompNode key={cid} id={cid} count={n} depth={depth + 1} />
+          <div key={cid} className="ml-3.5 flex items-center gap-1.5 py-0.5">
+            <FrequencyGlyph id={cid} size={16} />
+            <span className="font-mono text-[11px] text-text">
+              {isNamed(cid) ? cid : (FUND[cid]?.school ?? cid)}
+              {n > 1 ? ` ×${n}` : ""}
+            </span>
+          </div>
         ))}
     </div>
   );
@@ -219,8 +221,11 @@ function DecompNode({ id, count, depth }: { id: string; count: number; depth: nu
  * inline in chips. Fundamentals show their letter on a filled chip; named
  * frequencies show their emblem on a transparent, ringed chip.
  *
- * Hovering any symbol pops the frequency's decomposition tree — every
- * frequency it takes to combine into it, down to the fundamentals.
+ * Hovering any symbol pops a "combines from" card with the frequency's direct
+ * components. The card renders through a portal onto document.body — inside
+ * the cauldron the symbols live in CSS-transformed slots, where a plain
+ * position:fixed child would anchor to the transformed ancestor instead of
+ * the viewport and drift wildly off-position.
  *
  * `size` is the px diameter — kept crisp at ~24-34px.
  */
@@ -252,15 +257,13 @@ export function FrequencySymbol({
     };
   }, []);
 
-  // clamp the popover on-screen (it renders position:fixed)
-  const W = 240;
-  const left = pop
-    ? Math.min(Math.max(pop.x - W / 2, 8), (typeof window !== "undefined" ? window.innerWidth : 1024) - W - 8)
-    : 0;
-  const openUp =
-    pop !== null &&
-    typeof window !== "undefined" &&
-    pop.y > window.innerHeight - 300;
+  // clamp the popover on-screen (it renders position:fixed via a portal);
+  // floor the viewport size so degenerate 0×0 windows can't fling it away
+  const W = 220;
+  const vw = Math.max(typeof window !== "undefined" ? window.innerWidth : 1024, 360);
+  const vh = Math.max(typeof window !== "undefined" ? window.innerHeight : 768, 360);
+  const left = pop ? Math.min(Math.max(pop.x - W / 2, 8), vw - W - 8) : 0;
+  const openUp = pop !== null && pop.y > vh - 240;
 
   return (
     <span
@@ -270,24 +273,24 @@ export function FrequencySymbol({
       onMouseLeave={hide}
     >
       <FrequencyGlyph id={id} size={size} className={className} />
-      {pop && (
-        <div
-          className="pointer-events-none fixed z-[70] rounded-lg border border-border bg-surface p-2.5 shadow-xl"
-          style={{
-            left,
-            width: W,
-            maxHeight: 288,
-            overflow: "hidden",
-            ...(openUp ? { bottom: window.innerHeight - pop.y + size + 6 } : { top: pop.y + 6 }),
-          }}
-          role="tooltip"
-        >
-          <p className="mb-1 font-mono text-[9px] uppercase tracking-wider text-text-faint">
-            {isNamed(id) ? "combines from" : "fundamental frequency"}
-          </p>
-          <DecompNode id={id} count={1} depth={0} />
-        </div>
-      )}
+      {pop &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[70] rounded-lg border border-border bg-surface p-2.5 shadow-xl"
+            style={{
+              left,
+              width: W,
+              ...(openUp
+                ? { bottom: Math.max(window.innerHeight, 360) - pop.y + size + 6 }
+                : { top: pop.y + 6 }),
+            }}
+            role="tooltip"
+          >
+            <DecompCard id={id} />
+          </div>,
+          document.body,
+        )}
     </span>
   );
 }

@@ -12,6 +12,7 @@ import type { BrewState } from "../lib/types";
 import {
   effectiveTally,
   availableCharges,
+  combineFrequencies,
   msFromList,
 } from "../lib/engine";
 import {
@@ -78,10 +79,28 @@ type Floater = {
 
 type Slot = { x: number; y: number; angle: number };
 
-// The stage is one coordinate space (percentages of the stage box):
-// frequency arc up top, ingredient arc below it, the vessel at the bottom.
-// MOUTH is where the connective lines rise out of the pot.
+// The stage is one coordinate space (percentages of the stage box): the
+// derived-frequency arc at the very top, the frequency arc under it, the
+// ingredient arc below that, and the vessel at the bottom. MOUTH is where the
+// connective lines rise out of the pot.
 const MOUTH = { x: 50, y: 78 };
+
+// The topmost fan: frequencies that auto-combined out of the brew.
+function derivedArcSlot(i: number, n: number): Slot {
+  if (n <= 1) return { x: 50, y: 7, angle: 0 };
+  const STEP = 0.3;
+  const MAX_FAN = 1.6;
+  const step = Math.min(STEP, MAX_FAN / (n - 1));
+  const a = (i - (n - 1) / 2) * step;
+  const RX = 30;
+  const RY = 34;
+  const pivotY = 41;
+  return {
+    x: 50 + RX * Math.sin(a),
+    y: pivotY - RY * Math.cos(a),
+    angle: ((a * 180) / Math.PI) * 0.4,
+  };
+}
 
 // Fan the frequencies into a "hand of cards" arc high above the cauldron.
 function freqArcSlot(i: number, n: number): Slot {
@@ -257,16 +276,55 @@ export default function Cauldron({
     return out;
   }, [brew.ingredients, brew.wildPlays, brew.strikePlays, struckMs]);
 
+  const combined = useMemo(() => combineFrequencies(eff), [eff]);
+  // what the brew counts for recipes: the tally AFTER auto-combination
   const totalFreq = useMemo(
-    () => Object.values(eff).reduce((a, b) => a + b, 0),
-    [eff],
+    () => Object.values(combined.tally).reduce((a, b) => a + b, 0),
+    [combined],
   );
 
-  // ---- layout: slots for both arcs + the connective lines ----
+  // ---- auto-combination: which frequencies fused into which ----
+  // Assign each derived frequency's consumed components to concrete floater
+  // instances (first available per id, raw before earlier-derived), so the
+  // consumed ones gray out and lines can run from them to what they became.
+  const derivedLayer = useMemo(() => {
+    const { derived } = combined;
+    const avail: Record<string, string[]> = {};
+    for (const f of floaters) {
+      if (f.kind === "freq" && f.id) (avail[f.id] ??= []).push(f.uid);
+    }
+    const consumedBy = new Map<string, string>(); // floater uid -> derived uid
+    const nodes: { uid: string; id: string }[] = [];
+    const links: { from: string; to: string; id: string }[] = [];
+    const perId: Record<string, number> = {};
+    for (const d of derived) {
+      const n = (perId[d.id] = (perId[d.id] ?? 0) + 1);
+      const duid = `d:${d.id}:${n}`;
+      for (const cid of d.consumed) {
+        const pool = avail[cid];
+        const src = pool && pool.length ? pool.shift() : undefined;
+        if (src) {
+          consumedBy.set(src, duid);
+          links.push({ from: src, to: duid, id: d.id });
+        }
+      }
+      nodes.push({ uid: duid, id: d.id });
+      (avail[d.id] ??= []).push(duid); // a derived frequency can chain upward
+    }
+    return { consumedBy, nodes, links };
+  }, [combined, floaters]);
+
+  // ---- layout: slots for all three arcs + the connective lines ----
   const layout = useMemo(() => {
     const tokenSlots = floaters.map((_, i) => freqArcSlot(i, floaters.length));
     const ingSlots = ingNodes.map((_, i) => ingArcSlot(i, ingNodes.length));
+    const derivedSlots = derivedLayer.nodes.map((_, i) =>
+      derivedArcSlot(i, derivedLayer.nodes.length),
+    );
     const slotByIng = new Map(ingNodes.map((g, i) => [g.key, ingSlots[i]]));
+    const slotByUid = new Map<string, Slot>();
+    floaters.forEach((f, i) => slotByUid.set(f.uid, tokenSlots[i]));
+    derivedLayer.nodes.forEach((n, i) => slotByUid.set(n.uid, derivedSlots[i]));
     type Edge = {
       key: string;
       d: string;
@@ -315,8 +373,22 @@ export default function Cauldron({
         ingKey: f.src.key,
       });
     });
-    return { tokenSlots, ingSlots, edges };
-  }, [floaters, ingNodes]);
+    // consumed frequency -> the derived frequency it combined into
+    for (const link of derivedLayer.links) {
+      const from = slotByUid.get(link.from);
+      const to = slotByUid.get(link.to);
+      if (!from || !to) continue;
+      edges.push({
+        key: `d:${link.from}->${link.to}`,
+        d: `M ${from.x} ${from.y - 6} C ${from.x} ${from.y - 14}, ${to.x} ${to.y + 14}, ${to.x} ${to.y + 6}`,
+        color: tokenColor(link.id),
+        dashed: false,
+        opacity: 0.55,
+        width: 1.4,
+      });
+    }
+    return { tokenSlots, ingSlots, derivedSlots, edges };
+  }, [floaters, ingNodes, derivedLayer]);
 
   // ---- strike drag-and-drop ----
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
@@ -526,6 +598,10 @@ export default function Cauldron({
               );
             } else {
               label = frequencyName(f.id!);
+              // consumed by an auto-combination — grayed out; it no longer
+              // counts toward recipes, only the derived frequency above does
+              const consumedInto = derivedLayer.consumedBy.get(f.uid);
+              const consumedId = consumedInto ? consumedInto.split(":")[1] : null;
               inner = (
                 <div
                   {...(!ghost && !f.summoned ? { "data-drop-freq": f.uid } : {})}
@@ -555,23 +631,25 @@ export default function Cauldron({
                       ? `${f.id} removed — click to restore`
                       : `${f.id} frequency${f.summoned ? ", summoned — click to dispel" : ""}${
                           f.src ? `, from ${f.src.name}` : ""
-                        }`
+                        }${consumedId ? `, combined into ${consumedId}` : ""}`
                   }
                   title={
                     ghost
                       ? `${f.id} — struck out (click to restore)`
-                      : f.summoned
-                        ? `${f.id} — summoned (click to dispel)`
-                        : f.src
-                          ? `${f.id} — from ${f.src.name}`
-                          : f.id
+                      : consumedId
+                        ? `${f.id} — combined into ${consumedId}`
+                        : f.summoned
+                          ? `${f.id} — summoned (click to dispel)`
+                          : f.src
+                            ? `${f.id} — from ${f.src.name}`
+                            : f.id
                   }
                   className={`relative cursor-pointer rounded-full transition-[filter,opacity] ${
                     hoverTarget === f.uid || linked ? "ring-2 ring-offset-2 ring-offset-bg" : ""
                   }`}
                   style={{
-                    opacity: ghost ? 0.34 : 1,
-                    filter: ghost ? "grayscale(1)" : "none",
+                    opacity: ghost ? 0.34 : consumedId ? 0.45 : 1,
+                    filter: ghost ? "grayscale(1)" : consumedId ? "grayscale(0.8)" : "none",
                     ...(hoverTarget === f.uid
                       ? ({ ["--tw-ring-color" as string]: STRIKE } as React.CSSProperties)
                       : linked
@@ -664,6 +742,51 @@ export default function Cauldron({
                     style={labelShadow}
                   >
                     {g.name}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* derived arc — frequencies auto-combined out of the brew; these
+              are what count for recipes (their consumed parts gray out below) */}
+          {derivedLayer.nodes.map((n, i) => {
+            const slot = layout.derivedSlots[i];
+            const chained = derivedLayer.consumedBy.get(n.uid);
+            const chainedId = chained ? chained.split(":")[1] : null;
+            return (
+              <div
+                key={n.uid}
+                className="pf-slot absolute"
+                style={{
+                  left: `${slot.x}%`,
+                  top: `${slot.y}%`,
+                  transform: `translate(-50%, -50%) rotate(${slot.angle}deg)`,
+                  zIndex: 40 + i,
+                }}
+              >
+                <div
+                  className="pf-float flex flex-col items-center gap-1"
+                  style={{
+                    ...driftStyle(n.uid),
+                    opacity: chainedId ? 0.45 : 1,
+                    filter: chainedId ? "grayscale(0.8)" : "none",
+                  }}
+                >
+                  <span
+                    title={
+                      chainedId
+                        ? `${n.id} — combined into ${chainedId}`
+                        : `${n.id} — combined from the brew`
+                    }
+                  >
+                    <FrequencySymbol id={n.id} size={36} />
+                  </span>
+                  <span
+                    className="pointer-events-none max-w-[84px] text-center font-mono text-[10px] uppercase leading-tight tracking-wide text-text"
+                    style={labelShadow}
+                  >
+                    {n.id}
                   </span>
                 </div>
               </div>

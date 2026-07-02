@@ -10,6 +10,7 @@ import type {
   BrewState,
   EvalResult,
 } from "./types";
+import { named } from "../data/base";
 
 // ── Multiset primitives ──────────────────────────────────────────────────────
 // A multiset is a Record<frequency, count>. Counts are positive integers; a
@@ -111,8 +112,62 @@ export function availableCharges(brew: BrewState): {
   };
 }
 
+// ── Auto-combination ─────────────────────────────────────────────────────────
+
+export type DerivedCombination = { id: string; consumed: string[] };
+
+// Named frequencies sorted cheapest-first, so combinations build bottom-up
+// (fundamental sets fuse into the small named frequencies before those can
+// fuse into bigger ones).
+const NAMED_BY_WEIGHT = [...named].sort((a, b) => a.weight - b.weight);
+
+// Auto-combination: whenever the brew holds every component of a named
+// frequency, those components fuse into it. Runs to a fixpoint (cheapest
+// first, chains allowed — a derived frequency can itself be consumed by a
+// bigger one). The consumed components no longer count toward recipes; only
+// the tally AFTER combination does.
+export function combineFrequencies(pool: Multiset): {
+  tally: Multiset;
+  derived: DerivedCombination[];
+} {
+  const tally: Multiset = { ...pool };
+  const derived: DerivedCombination[] = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const n of NAMED_BY_WEIGHT) {
+      const comps = msFromList(n.components);
+      while (msIsSubset(comps, tally)) {
+        for (const k in comps) {
+          tally[k] -= comps[k];
+          if (tally[k] === 0) delete tally[k];
+        }
+        msAdd(tally, n.id);
+        derived.push({ id: n.id, consumed: [...n.components] });
+        changed = true;
+      }
+    }
+  }
+  return { tally, derived };
+}
+
+// The frequencies the brew counts for recipes: strikes and summons applied
+// to the raw emissions, then auto-combination.
+export function brewTally(brew: BrewState): Multiset {
+  return combineFrequencies(effectiveTally(brew)).tally;
+}
+
+const STATUS_ORDER: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
+
 // Evaluate a brew against ONE tuning (target multiset).
-// - "perfect": the effective brew equals the tuning exactly — brewed.
+//
+// Combination makes a brew and a tuning each stand for an equivalence class:
+// {Ev,Ev,En,C} and {Ignetium} are the same resonance. So both sides are
+// compared in BOTH forms — raw and auto-combined — and the closest pairing
+// wins. (Pensive Perfume's own tuning {Albutian,Chrysipil,N,T} self-combines
+// into {Ontoligin,N,T}; raw-vs-raw keeps its common combo a perfect brew.)
+//
+// - "perfect": some form of the brew equals some form of the tuning — brewed.
 // - "craftable" (shown as "in reach"): the perfume can still be made from
 //   here by ADDING frequencies (more ingredients or pure frequencies fill
 //   `missing`), provided any excess can be struck with the ⊖ charges on hand.
@@ -123,24 +178,40 @@ export function evalReq(
   req: string[],
   reqIndex = 0,
 ): EvalResult {
-  const B = effectiveTally(brew);
-  const R = msFromList(req);
+  const rawB = effectiveTally(brew);
+  const combB = combineFrequencies(rawB).tally;
+  const rawR = msFromList(req);
+  const combR = combineFrequencies(rawR).tally;
   const charges = availableCharges(brew);
   const S = charges.strike;
   const W = charges.wild;
-  const excess = msDiff(B, R);
-  const missing = msDiff(R, B);
-  const exN = msSize(excess);
-  const miN = msSize(missing);
-  const status = msEqual(B, R)
-    ? "perfect"
-    : exN <= S
-      ? "craftable"
-      : "off";
-  return { status, excess, missing, exN, miN, S, W, reqIndex };
+  const Bs = msEqual(rawB, combB) ? [rawB] : [rawB, combB];
+  const Rs = msEqual(rawR, combR) ? [rawR] : [rawR, combR];
+  let best: EvalResult | null = null;
+  for (const B of Bs) {
+    for (const R of Rs) {
+      const excess = msDiff(B, R);
+      const missing = msDiff(R, B);
+      const exN = msSize(excess);
+      const miN = msSize(missing);
+      const status: EvalResult["status"] = msEqual(B, R)
+        ? "perfect"
+        : exN <= S
+          ? "craftable"
+          : "off";
+      const cand: EvalResult = { status, excess, missing, exN, miN, S, W, reqIndex };
+      if (
+        !best ||
+        STATUS_ORDER[cand.status] < STATUS_ORDER[best.status] ||
+        (STATUS_ORDER[cand.status] === STATUS_ORDER[best.status] &&
+          cand.exN + cand.miN < best.exN + best.miN)
+      ) {
+        best = cand;
+      }
+    }
+  }
+  return best!;
 }
-
-const STATUS_ORDER: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
 // Evaluate a brew against a recipe: the brew matches if it matches ANY tuning,
 // so return the result for the closest one (best status, then least distance).

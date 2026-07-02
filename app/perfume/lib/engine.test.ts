@@ -8,6 +8,8 @@ import {
   msFromList,
   msIsSubset,
   effectiveTally,
+  brewTally,
+  combineFrequencies,
   evaluate,
   autoResolvePlays,
   findExactCombos,
@@ -305,5 +307,50 @@ describe("findExactCombos", () => {
         ).toBe(true);
       }
     }
+  });
+});
+
+// ── 10. Auto-combination ─────────────────────────────────────────────────────
+
+describe("combineFrequencies", () => {
+  it("fuses a full component set into its named frequency", () => {
+    // Ignetium = Ev ×2, En, C
+    const { tally, derived } = combineFrequencies(msFromList(["Ev", "Ev", "En", "C", "Ev"]));
+    expect(tally).toEqual({ Ignetium: 1, Ev: 1 });
+    expect(derived.map((d) => d.id)).toEqual(["Ignetium"]);
+  });
+
+  it("chains: derived frequencies can combine into bigger ones", () => {
+    // raw components of Yonescope (I,N,N,T) + Ignetium (Ev,Ev,En,C) + C,C
+    // fuse all the way up into Letchettin
+    const pool = msFromList(["I", "N", "N", "T", "Ev", "Ev", "En", "C", "C", "C"]);
+    const { tally, derived } = combineFrequencies(pool);
+    expect(tally).toEqual({ Letchettin: 1 });
+    expect(derived.map((d) => d.id).sort()).toEqual(["Ignetium", "Letchettin", "Yonescope"]);
+  });
+
+  it("a self-combining tuning still brews raw (Pensive Perfume)", () => {
+    // Pensive's tuning {Albutian, Chrysipil, N, T} auto-combines
+    // (Albutian + Chrysipil -> Ontoligin), so matching compares raw and
+    // combined forms of BOTH sides — the common combo must stay perfect.
+    const req = recipe("pensive-perfume").reqs[0];
+    expect(combineFrequencies(msFromList(req)).derived.length).toBeGreaterThan(0);
+    const b = brew(["Great Cold Shard", "Melting Dewdrops"]);
+    expect(evaluate(b, recipe("pensive-perfume")).status).toBe("perfect");
+  });
+
+  it("brewTally applies strikes/summons first, then combination", () => {
+    // Pepperpops (Ev,Ev) + Brightflower (Ev,En) + Silver (C) -> raw {Ev×3,En,C}
+    // -> Ignetium consumes Ev×2,En,C leaving {Ignetium, Ev}
+    const b = brew(["Pepperpops", "Brightflower", "Silver"]);
+    expect(effectiveTally(b)).toEqual({ Ev: 3, En: 1, C: 1 });
+    expect(brewTally(b)).toEqual({ Ignetium: 1, Ev: 1 });
+  });
+
+  it("recipes evaluate against the combined tally", () => {
+    // {Ignetium, Ev} is a strict subset of Pepperpop Mixture's
+    // {Ignetium, C, Ev, Ev} tuning -> in reach, not off
+    const b = brew(["Pepperpops", "Brightflower", "Silver"]);
+    expect(evaluate(b, recipe("pepperpop-mixture")).status).toBe("craftable");
   });
 });

@@ -1,22 +1,24 @@
 "use client";
 
-// The ingredients panel: the 96 base ingredients plus the pure frequencies,
-// searchable by name or by any frequency they emit (id or school name — e.g.
-// "transmutation" finds every T-emitting ingredient), with a frequency
-// drop-down filter. Rows in the brew are highlighted amber and carry
-// −/count/+ controls like the cauldron panel's brew tray; clicking the row
-// itself adds one when absent, or removes all copies when present.
+// The ingredients panel, in two tabs: the 96 base ingredients and the pure
+// frequencies. Search matches names or any emitted frequency (id or school
+// name — e.g. "transmutation" finds every T-emitter); a symbol drop-down
+// filters by frequency. Rows in the brew are ringed amber and carry
+// −/count/+ controls; clicking the row body adds one when absent, or
+// removes every copy when present.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
-import { ALL_FREQUENCIES, FUND, isNamed } from "../data/base";
+import { ALL_FREQUENCIES, FUND, isNamed, isPureKey } from "../data/base";
 import { FrequencyGlyph, FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
 function freqLabel(id: string): string {
   return isNamed(id) ? id : `${id} — ${FUND[id]?.school ?? id}`;
 }
+
+type Tab = "ingredients" | "frequencies";
 
 export default function IngredientPanel({
   ingredients,
@@ -25,12 +27,18 @@ export default function IngredientPanel({
   onDec,
   onRemoveAll,
 }: IngredientPanelProps) {
+  const [tab, setTab] = useState<Tab>("ingredients");
   const [search, setSearch] = useState("");
   const [freqFilter, setFreqFilter] = useState<string>("");
 
+  const tabItems = useMemo(
+    () => ingredients.filter((i) => (tab === "frequencies") === isPureKey(i.key)),
+    [ingredients, tab],
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return ingredients
+    return tabItems
       .filter((ing) => (freqFilter ? ing.emits.includes(freqFilter) : true))
       .filter((ing) => {
         if (!q) return true;
@@ -41,15 +49,31 @@ export default function IngredientPanel({
         return false;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [ingredients, freqFilter, search]);
+  }, [tabItems, freqFilter, search]);
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
-      {/* header */}
-      <div className="flex items-baseline justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-text-muted">Ingredients</h2>
+      {/* header + tabs */}
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="flex items-center gap-1">
+          {(["ingredients", "frequencies"] as Tab[]).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              aria-pressed={tab === t}
+              className={`rounded-md px-2.5 py-1.5 text-sm font-semibold transition-colors duration-150 ${
+                tab === t
+                  ? "bg-surface-alt text-text"
+                  : "text-text-faint hover:text-text-muted"
+              }`}
+            >
+              {t === "ingredients" ? "Ingredients" : "Frequencies"}
+            </button>
+          ))}
+        </div>
         <span className="font-mono text-xs tabular-nums text-text-faint">
-          {filtered.length}/{ingredients.length}
+          {filtered.length}/{tabItems.length}
         </span>
       </div>
 
@@ -62,31 +86,14 @@ export default function IngredientPanel({
           spellCheck={false}
           className="w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
         />
-
-        {/* frequency filter drop-down */}
-        <div className="flex items-center gap-2">
-          <select
-            value={freqFilter}
-            onChange={(e) => setFreqFilter(e.target.value)}
-            aria-label="Filter ingredients by frequency"
-            className="w-full rounded-lg border border-border bg-bg px-2 py-1.5 font-mono text-xs text-text focus:border-accent focus:outline-none"
-          >
-            <option value="">all frequencies</option>
-            {ALL_FREQUENCIES.map((t) => (
-              <option key={t.id} value={t.id}>
-                {freqLabel(t.id)}
-              </option>
-            ))}
-          </select>
-          {freqFilter && <FrequencySymbol id={freqFilter} size={22} />}
-        </div>
+        <FrequencyDropdown value={freqFilter} onChange={setFreqFilter} />
       </div>
 
       {/* list */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
           <p className="px-4 py-6 text-center font-mono text-xs text-text-faint">
-            no ingredients match
+            {tab === "ingredients" ? "no ingredients match" : "no frequencies match"}
           </p>
         ) : (
           <ul className="divide-y divide-border/50">
@@ -107,6 +114,97 @@ export default function IngredientPanel({
   );
 }
 
+// A drop-down of every frequency WITH its symbol (a native <select> can't
+// render the glyphs, so this is a small custom listbox).
+function FrequencyDropdown({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Filter by frequency"
+        className="flex w-full items-center gap-2 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-left font-mono text-xs text-text focus:border-accent focus:outline-none"
+      >
+        {value ? (
+          <>
+            <FrequencyGlyph id={value} size={18} />
+            <span>{freqLabel(value)}</span>
+          </>
+        ) : (
+          <span className="text-text-muted">all frequencies</span>
+        )}
+        <span className="ml-auto text-text-faint">▾</span>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-lg border border-border bg-surface shadow-xl"
+        >
+          <button
+            type="button"
+            role="option"
+            aria-selected={value === ""}
+            onClick={() => {
+              onChange("");
+              setOpen(false);
+            }}
+            className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
+              value === "" ? "text-text" : "text-text-muted"
+            }`}
+          >
+            all frequencies
+          </button>
+          {ALL_FREQUENCIES.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="option"
+              aria-selected={value === t.id}
+              onClick={() => {
+                onChange(t.id);
+                setOpen(false);
+              }}
+              className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
+                value === t.id ? "bg-surface-alt text-text" : "text-text-muted"
+              }`}
+            >
+              <FrequencyGlyph id={t.id} size={18} />
+              <span>{freqLabel(t.id)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IngredientRow({
   ing,
   count,
@@ -121,7 +219,7 @@ function IngredientRow({
   onRemoveAll: (key: string) => void;
 }) {
   const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
-  const pure = ing.key.startsWith("pure:");
+  const pure = isPureKey(ing.key);
   const pureId = pure ? ing.key.slice(5) : null;
   const inBrew = count > 0;
 
@@ -129,7 +227,7 @@ function IngredientRow({
     <li
       className={`group flex items-start justify-between gap-2 px-4 py-2.5 transition-colors ${
         inBrew
-          ? "border-l-2 border-amber-400 bg-amber-400/10 hover:bg-amber-400/15"
+          ? "border-l-2 border-amber-400 bg-amber-400/10 ring-1 ring-inset ring-amber-400/50 hover:bg-amber-400/15"
           : "border-l-2 border-transparent hover:bg-surface-alt"
       }`}
     >
@@ -186,14 +284,14 @@ function IngredientRow({
         </div>
       </button>
 
-      {/* −/count/+ controls, matching the brew tray */}
-      <span className="flex shrink-0 items-center gap-0.5 self-center font-mono">
+      {/* −/count/+ controls */}
+      <span className="flex shrink-0 items-center gap-1 self-center font-mono">
         <button
           type="button"
           onClick={() => onDec(ing.key)}
           disabled={!inBrew}
           aria-label={`Remove one ${ing.name}`}
-          className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text disabled:opacity-30"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-border text-text-muted transition-colors duration-150 hover:border-accent hover:text-accent disabled:opacity-30 disabled:hover:border-border disabled:hover:text-text-muted"
         >
           −
         </button>
@@ -208,7 +306,7 @@ function IngredientRow({
           type="button"
           onClick={() => onAdd(ing.key)}
           aria-label={`Add one ${ing.name}`}
-          className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-border text-text-muted transition-colors duration-150 hover:border-accent hover:text-accent"
         >
           +
         </button>
