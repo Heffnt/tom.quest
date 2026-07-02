@@ -8,6 +8,7 @@ import {
   msFromList,
   effectiveTally,
   evaluate,
+  autoResolvePlays,
 } from "./engine";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -36,79 +37,136 @@ function brew(
   };
 }
 
-// ── 1. Empty brew is 'off' for every recipe ──────────────────────────────────
+// ── 1. The base set is the real d40 table ────────────────────────────────────
 
-describe("empty brew", () => {
-  it("evaluates to 'off' for every recipe (no false perfect/craftable)", () => {
+describe("base recipe set", () => {
+  it("holds 41 recipes (40 rolls; roll 16 is both Bright and Frenzy)", () => {
+    expect(baseRecipes.length).toBe(41);
+    const roll16 = baseRecipes.filter((r) => r.roll === 16).map((r) => r.name);
+    expect(roll16.sort()).toEqual(["Bright", "Frenzy"]);
+  });
+
+  it("evaluates every recipe to 'off' for an empty brew", () => {
     const empty = brew([]);
     for (const r of baseRecipes) {
-      const res = evaluate(empty, r);
-      expect(res.status, `recipe ${r.key} should be off`).toBe("off");
+      expect(evaluate(empty, r).status, `recipe ${r.key} should be off`).toBe("off");
     }
   });
 });
 
-// ── 2. Potion of Healing ─────────────────────────────────────────────────────
+// ── 2. Swana's Serum (the canonical healing profile) ─────────────────────────
 
-describe("Potion of Healing", () => {
-  it("Aphasia Flower + Noble Roses is a perfect 'healing' match", () => {
+describe("Swana's Serum", () => {
+  it("Aphasia Flower + Noble Roses is a perfect match", () => {
     const b = brew(["Aphasia Flower", "Noble Roses"]);
     expect(effectiveTally(b)).toEqual({ En: 1, Crallax: 1, A: 2 });
-    expect(evaluate(b, recipe("healing")).status).toBe("perfect");
+    expect(evaluate(b, recipe("swanas-serum")).status).toBe("perfect");
   });
 });
 
-// ── 3. Tincture of True Sight ────────────────────────────────────────────────
+// ── 3. Black Gas: the wildcard recipe ────────────────────────────────────────
+// Shadow Demon Liver emits nothing but grants ⊖×2; either berry works because
+// the recipe IS the lone Necromancy note left after striking the off-tone.
 
-describe("Tincture of True Sight", () => {
-  it("Oracite alone is a perfect 'truesight' match", () => {
-    const b = brew(["Oracite"]);
-    expect(effectiveTally(b)).toEqual({ D: 3 });
-    expect(evaluate(b, recipe("truesight")).status).toBe("perfect");
+describe("Black Gas", () => {
+  it("is defined as the single tuning [N]", () => {
+    expect(recipe("black-gas").reqs).toEqual([["N"]]);
+  });
+
+  it("is craftable from Liver + Ichorberries AND Liver + Bitterhearts", () => {
+    for (const berry of ["Ichorberries", "Bitterhearts"]) {
+      const b = brew(["Shadow Demon Liver", berry]);
+      const res = evaluate(b, recipe("black-gas"));
+      expect(res.status, `via ${berry}`).toBe("craftable");
+      expect(res.exN).toBe(1);
+    }
+  });
+
+  it("becomes perfect after striking the off-tone", () => {
+    const b = brew(["Shadow Demon Liver", "Ichorberries"], ["En"]);
+    expect(effectiveTally(b)).toEqual({ N: 1 });
+    expect(evaluate(b, recipe("black-gas")).status).toBe("perfect");
   });
 });
 
-// ── 4. Legendary: Cosmic Saspacian No. 5 (⊕ wildcard) ────────────────────────
+// ── 4. Multi-tuning: either slashed alternative bottles the perfume ──────────
 
-describe("Cosmic Saspacian No. 5", () => {
-  it("Southollow Royal Tulip alone is 'craftable' (miN=1 <= P=1)", () => {
-    const b = brew(["Southollow Royal Tulip"]);
-    const res = evaluate(b, recipe("cosmic"));
-    expect(res.status).toBe("craftable");
-    expect(res.miN).toBe(1);
-    expect(res.P).toBe(1);
-    expect(res.missing).toEqual({ Saspacian: 1 });
+describe("Pepperpop Mixture (2 tunings)", () => {
+  it("is perfect via Fjeldling Scale AND via Northman's Beard", () => {
+    const viaScale = brew(["Fjeldling Scale", "Pepperpops"]);
+    const viaBeard = brew(["Northman's Beard", "Pepperpops"]);
+    expect(evaluate(viaScale, recipe("pepperpop-mixture")).status).toBe("perfect");
+    expect(evaluate(viaBeard, recipe("pepperpop-mixture")).status).toBe("perfect");
   });
 
-  it("becomes 'perfect' after a ⊕ play summoning 'Saspacian'", () => {
-    const b = brew(["Southollow Royal Tulip"], [], ["Saspacian"]);
-    expect(effectiveTally(b)).toEqual({ Saspacian: 1 });
-    expect(evaluate(b, recipe("cosmic")).status).toBe("perfect");
-  });
-});
-
-// ── 5. Strike: ⊖ removes an excess token ─────────────────────────────────────
-
-describe("Strike with Shadow Demon Liver", () => {
-  // Oracite (D,D,D) + Goat Fat (A) leaves one excess 'A' against truesight (D,D,D).
-  // Shadow Demon Liver grants 2 ⊖ charges so the excess is correctable.
-  it("excess 'A' shows 'craftable' with a ⊖ charge available", () => {
-    const b = brew(["Oracite", "Goat Fat", "Shadow Demon Liver"]);
-    const res = evaluate(b, recipe("truesight"));
-    expect(res.status).toBe("craftable");
-    expect(res.excess).toEqual({ A: 1 });
-    expect(res.exN).toBe(1);
-    expect(res.M).toBe(2);
-  });
-
-  it("becomes 'perfect' after a ⊖ play striking the excess 'A'", () => {
-    const b = brew(["Oracite", "Goat Fat", "Shadow Demon Liver"], ["A"], []);
-    expect(effectiveTally(b)).toEqual({ D: 3 });
-    expect(evaluate(b, recipe("truesight")).status).toBe("perfect");
+  it("reports which tuning matched", () => {
+    const viaScale = brew(["Fjeldling Scale", "Pepperpops"]);
+    const viaBeard = brew(["Northman's Beard", "Pepperpops"]);
+    const a = evaluate(viaScale, recipe("pepperpop-mixture"));
+    const b = evaluate(viaBeard, recipe("pepperpop-mixture"));
+    expect(a.reqIndex).not.toBe(b.reqIndex);
   });
 });
 
-// ── 6. Multiset primitive unit checks ────────────────────────────────────────
+// ── 5. Bright vs Frenzy (both are roll 16) ───────────────────────────────────
+
+describe("Bright and Frenzy", () => {
+  it("Brightflower alone is Bright, not Frenzy", () => {
+    const b = brew(["Brightflower"]);
+    expect(evaluate(b, recipe("bright")).status).toBe("perfect");
+    expect(evaluate(b, recipe("frenzy")).status).toBe("off");
+  });
+
+  it("adding Northman's Beard tips it into Frenzy (and out of Bright)", () => {
+    const b = brew(["Brightflower", "Northman's Beard"]);
+    expect(evaluate(b, recipe("frenzy")).status).toBe("perfect");
+    expect(evaluate(b, recipe("bright")).status).toBe("off");
+  });
+});
+
+// ── 6. Quantified slot alternative: Chrythsmeum ×4 ───────────────────────────
+
+describe("Antimagic Auroma", () => {
+  it("Chrythsmeum ×4 + Seacursed Scale is a perfect match", () => {
+    const b = brew([
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Seacursed Scale",
+    ]);
+    expect(evaluate(b, recipe("antimagic-auroma")).status).toBe("perfect");
+  });
+
+  it("Arcanavore Organ ×2 (both slots) is also perfect", () => {
+    const b = brew(["Arcanavore Organ", "Arcanavore Organ"]);
+    expect(evaluate(b, recipe("antimagic-auroma")).status).toBe("perfect");
+  });
+});
+
+// ── 7. Every common combo from the table brews its perfume ───────────────────
+
+describe("d40 table combos", () => {
+  it("every combo lands 'perfect' after auto-resolving its wildcards", () => {
+    for (const r of baseRecipes) {
+      for (const [ci, combo] of r.combos.entries()) {
+        const ings = combo.ings.map(ing);
+        const plays = autoResolvePlays(ings, r.reqs[combo.req]);
+        const state: BrewState = {
+          ingredients: ings,
+          minusPlays: plays.minusPlays,
+          plusPlays: plays.plusPlays,
+        };
+        expect(
+          evaluate(state, r).status,
+          `${r.key} combo ${ci} (${combo.ings.join(" + ")})`,
+        ).toBe("perfect");
+      }
+    }
+  });
+});
+
+// ── 8. Multiset primitive unit checks ────────────────────────────────────────
 
 describe("multiset primitives", () => {
   it("msSize counts multiplicity, not distinct keys", () => {

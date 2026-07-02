@@ -15,6 +15,7 @@ export interface RecipeBookProps {
   recipes: Recipe[];
   // Current brew, for live per-recipe evaluation.
   brew: BrewState;
-  // Load a recipe's worked example into the brew.
-  onLoadExample?: (recipe: Recipe) => void;
+  // Load one of a recipe's common combos (index into recipe.combos) into the
+  // brew, auto-spending the wildcards it needs.
+  onLoadCombo?: (recipe: Recipe, comboIndex: number) => void;
 }

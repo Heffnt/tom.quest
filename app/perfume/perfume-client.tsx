@@ -6,11 +6,8 @@ import { baseIngredients, baseRecipes } from "./data/base";
 import {
   baseTally,
   markerTotals,
-  effectiveTally,
   availableMarkers,
-  msFromList,
-  msDiff,
-  msEqual,
+  autoResolvePlays,
 } from "./lib/engine";
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
@@ -139,31 +136,20 @@ export default function PerfumeClient() {
     [],
   );
 
-  // load a base recipe's worked example (greedily auto-spending wildcards)
-  const loadExample = useCallback(
-    (recipe: Recipe) => {
-      if (!recipe.example) return;
-      const keys = recipe.example.map((name) => `base:${name}`);
+  // load one of a recipe's common combos from the d40 table, greedily
+  // auto-spending wildcards to land on that combo's tuning
+  const loadCombo = useCallback(
+    (recipe: Recipe, comboIndex: number) => {
+      const combo = recipe.combos[comboIndex];
+      if (!combo) return;
+      const keys = combo.ings.map((name) => `base:${name}`);
       const ings = keys
         .map((k) => ingByKey.get(k))
         .filter((x): x is Ingredient => !!x);
-      const R = msFromList(recipe.req);
-      const mp: string[] = [];
-      const pp: string[] = [];
-      for (let i = 0; i < 80; i++) {
-        const state: BrewState = { ingredients: ings, minusPlays: mp, plusPlays: pp };
-        const B = effectiveTally(state);
-        if (msEqual(B, R)) break;
-        const a = availableMarkers(state);
-        const excess = Object.keys(msDiff(B, R));
-        const missing = Object.keys(msDiff(R, B));
-        if (a.minus > 0 && excess.length) mp.push(excess[0]);
-        else if (a.plus > 0 && missing.length) pp.push(missing[0]);
-        else break;
-      }
+      const plays = autoResolvePlays(ings, recipe.reqs[combo.req]);
       setBrewKeys(keys);
-      setMinusPlays(mp);
-      setPlusPlays(pp);
+      setMinusPlays(plays.minusPlays);
+      setPlusPlays(plays.plusPlays);
     },
     [ingByKey],
   );
@@ -199,7 +185,7 @@ export default function PerfumeClient() {
           </section>
 
           <div className="shrink-0 border-t border-border">
-            <RecipeBook recipes={baseRecipes} brew={brew} onLoadExample={loadExample} />
+            <RecipeBook recipes={baseRecipes} brew={brew} onLoadCombo={loadCombo} />
           </div>
         </div>
 

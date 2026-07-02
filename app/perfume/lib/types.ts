@@ -32,14 +32,34 @@ export type Ingredient = {
   source: Source;
 };
 
+// One alternative inside a common-recipe ingredient slot. `known: false` marks
+// an ingredient named in the lore table but absent from the Ingredients Table
+// (display-only; excluded from the math).
+export type RecipeSlotEntry = { name: string; qty: number; known: boolean };
+
+// One concrete way to brew the recipe from the d40 table: the expanded
+// ingredient list, which tuning (`req` indexes Recipe.reqs) it lands on, and
+// how many ⊖ strikes (`trim`) / ⊕ summons (`wildAdd`) that takes.
+export type RecipeCombo = {
+  ings: string[]; // ingredient names, repeats allowed (e.g. Chrythsmeum ×4)
+  req: number;
+  trim: number;
+  wildAdd: number;
+};
+
+// A recipe is DEFINED by its frequency multisets. Slashed ingredient
+// alternatives in the source table can emit different profiles, so a recipe
+// may carry several valid `reqs` ("tunings") — a brew matches if it can be
+// made exactly equal to ANY one of them.
 export type Recipe = {
   key: string; // "base:<id>" or "user:<convexId>"
   name: string;
-  school: string;
+  roll: number; // d40 table row (16 appears twice: Bright and Frenzy)
   tier: Tier;
-  req: Token[]; // target multiset
+  reqs: Token[][]; // valid tunings, each a target multiset
+  slots: RecipeSlotEntry[][]; // common-recipe slots, each a list of alternatives
+  combos: RecipeCombo[];
   desc: string;
-  example?: string[]; // base only — ingredient names that craft it
   source: Source;
 };
 
@@ -55,6 +75,7 @@ export type EvalResult = {
   miN: number; // total missing count
   M: number; // remaining ⊖ charges
   P: number; // remaining ⊕ charges
+  reqIndex: number; // which tuning (Recipe.reqs index) this result is against
 };
 
 // The full brew state the engine evaluates. `ingredients` is the expanded list

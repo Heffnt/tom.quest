@@ -511,9 +511,9 @@
    "plus": 0
   },
   {
-   "name": "Bright",
+   "name": "Brightflower",
    "page": 1,
-   "color": "#000000",
+   "color": "#FFF500",
    "emits": [
     "Ev",
     "En"
@@ -1399,347 +1399,2091 @@
  ],
  "recipes": [
   {
-   "id": "healing",
-   "name": "Potion of Healing",
-   "school": "Restoration",
-   "desc": "The canonical brew. Soft enchantment bound to a glittering Crallax core.",
-   "req": [
-    "En",
-    "Crallax",
-    "A",
-    "A"
+   "id": "corpse-gas",
+   "roll": 1,
+   "name": "Corpse Gas",
+   "desc": "A miasma of the freshly turned grave. Crowds part; carrion birds follow.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Thistle Goblin Tooth",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Blistermoss",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Aphasia Flower",
-    "Noble Roses"
+   "reqs": [
+    [
+     "C",
+     "Ev",
+     "T",
+     "Yonescope"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 0,
-   "tier": "simple"
+   "combos": [
+    {
+     "ings": [
+      "Thistle Goblin Tooth",
+      "Blistermoss"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "invis",
-   "name": "Draught of Invisibility",
-   "school": "Illusion",
-   "desc": "Bends light around the wearer with a doubled Illusion resonance.",
-   "req": [
-    "I",
-    "I",
-    "Yonescope"
+   "id": "swanas-serum",
+   "roll": 2,
+   "name": "Swana's Serum",
+   "desc": "Swana's gentle restorative -- enchantment folded into a sparkling Crallax heart.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Aphasia Flower",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Noble Roses",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Thistle Goblin Tooth",
-    "Olgrumast Mushroom",
-    "Moonchalk",
-    "Ennerx Core"
+   "reqs": [
+    [
+     "A",
+     "A",
+     "Crallax",
+     "En"
+    ]
    ],
-   "trim": 3,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Aphasia Flower",
+      "Noble Roses"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "firebreath",
-   "name": "Elixir of Fire Breath",
-   "school": "Evocation",
-   "desc": "A roaring Ignetium flame fed by raw Evocation.",
-   "req": [
-    "Ignetium",
-    "Ev",
-    "Ev"
+   "id": "mourningweep-oil",
+   "roll": 3,
+   "name": "Mourningweep Oil",
+   "desc": "Anoint the brow and grieve beautifully. Sorrow, doubled and bound in Necromancy.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Wailing Thrush Egg",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Mourningweep",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Shadow Demon Liver",
-    "Fjeldling Scale",
-    "Pepperpops"
+   "reqs": [
+    [
+     "En",
+     "En",
+     "Myddenic",
+     "N"
+    ]
    ],
-   "trim": 1,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Wailing Thrush Egg",
+      "Mourningweep"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "featherfall",
-   "name": "Oil of Feather Fall",
-   "school": "Abjuration",
-   "desc": "Three steady Abjuration tones lighten any fall.",
-   "req": [
-    "A",
-    "A",
-    "A"
+   "id": "black-gas",
+   "roll": 4,
+   "name": "Black Gas",
+   "desc": "The liver's hollows strip every stray tone away, leaving one pure necrotic note.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Shadow Demon Liver",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Ichorberries",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Bitterhearts",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Noble Roses",
-    "Goat Fat"
+   "reqs": [
+    [
+     "N"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 0,
-   "tier": "simple"
+   "combos": [
+    {
+     "ings": [
+      "Shadow Demon Liver",
+      "Ichorberries"
+     ],
+     "req": 0,
+     "trim": 1,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Shadow Demon Liver",
+      "Bitterhearts"
+     ],
+     "req": 0,
+     "trim": 1,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "truesight",
-   "name": "Tincture of True Sight",
-   "school": "Divination",
-   "desc": "An Oracite-clear triple Divination that pierces illusion.",
-   "req": [
-    "D",
-    "D",
-    "D"
+   "id": "pepperpop-mixture",
+   "roll": 5,
+   "name": "Pepperpop Mixture",
+   "desc": "Crackles on the skin like chewed embers. Sneeze fire, politely.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Fjeldling Scale",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Northman's Beard",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Pepperpops",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Oracite"
+   "reqs": [
+    [
+     "Draconil",
+     "Ev",
+     "Ev",
+     "Ignetium"
+    ],
+    [
+     "C",
+     "Ev",
+     "Ev",
+     "Ignetium"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 0,
-   "tier": "simple"
+   "combos": [
+    {
+     "ings": [
+      "Fjeldling Scale",
+      "Pepperpops"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Northman's Beard",
+      "Pepperpops"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "silence",
-   "name": "Veil of Silence",
-   "school": "Enchantment",
-   "desc": "The Silentix bell, hushed and rung once in Necromantic stillness.",
-   "req": [
-    "Silentix",
-    "N"
+   "id": "saltpearl-spray",
+   "roll": 6,
+   "name": "Saltpearl Spray",
+   "desc": "Brine, hush, and mother-of-pearl -- the quiet of the tide going out.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Banshee's Hair",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Razorclam Pearl",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Razorclam Pearl"
+   "reqs": [
+    [
+     "N",
+     "N",
+     "Silentix",
+     "T"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 0,
-   "tier": "simple"
+   "combos": [
+    {
+     "ings": [
+      "Banshee's Hair",
+      "Razorclam Pearl"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "dragonhide",
-   "name": "Balm of Dragonhide",
-   "school": "Transmutation",
-   "desc": "Scales of Draconil tempered by a Transmutation sheen.",
-   "req": [
-    "Draconil",
-    "T",
-    "Ev"
+   "id": "auroniels-aroma",
+   "roll": 7,
+   "name": "Auroniel's Aroma",
+   "desc": "Auroniel's own moonlit glamour; chalk-light over a warm bright bloom.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Moonchalk",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Brightflower",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Blistermoss",
-    "Shadow Demon Liver",
-    "Fjeldling Scale"
+   "reqs": [
+    [
+     "D",
+     "En",
+     "Ev",
+     "I"
+    ]
    ],
-   "trim": 1,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Moonchalk",
+      "Brightflower"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "spectral",
-   "name": "Spectral Lantern Perfume",
-   "school": "Conjuration",
-   "desc": "A Laternical glow that summons guiding spirits.",
-   "req": [
-    "Laternical"
+   "id": "mindlock-mixture",
+   "roll": 8,
+   "name": "Mindlock Mixture",
+   "desc": "Twin enchantments bolted to cold iron thought. The mind stays shut.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Ferrenocht Crystals",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Redcaps",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Southollow Royal Tulip"
+   "reqs": [
+    [
+     "A",
+     "En",
+     "En",
+     "N"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 1,
-   "tier": "legendary"
+   "combos": [
+    {
+     "ings": [
+      "Ferrenocht Crystals",
+      "Redcaps"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "mindward",
-   "name": "Mindward Mist",
-   "school": "Abjuration",
-   "desc": "A caged Myddenic ward against intrusion, sealed with Conjuration.",
-   "req": [
-    "Myddenic",
-    "C",
-    "A"
+   "id": "owlbear-pheromones",
+   "roll": 9,
+   "name": "Owlbear Pheromones",
+   "desc": "Irresistible to owlbears. Wear at your own considerable risk.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Owlbear Saliva",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Elves Ear",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Wailing Thrush Egg",
-    "Shadow Demon Liver",
-    "Goat Fat",
-    "Silver"
+   "reqs": [
+    [
+     "A",
+     "C",
+     "D",
+     "Silentix"
+    ]
    ],
-   "trim": 1,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Owlbear Saliva",
+      "Elves Ear"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "stormcall",
-   "name": "Stormcaller's Cologne",
-   "school": "Evocation",
-   "desc": "Thurmistic thunder over a low Necromantic hum.",
-   "req": [
-    "Thurmistic",
-    "N",
-    "N"
+   "id": "hags-tincture",
+   "roll": 10,
+   "name": "Hag's Tincture",
+   "desc": "A crone's disguise in a bottle -- horn-musk sweetened with bubble blossom.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Were-Elk Antler",
+      "qty": 1,
+      "known": false
+     },
+     {
+      "name": "Bulezau Horn",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Bubble Blossoms",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Pemneath Peat",
-    "Southollow Royal Tulip"
+   "reqs": [
+    [
+     "Chrysipil",
+     "D",
+     "En",
+     "Letchettin"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 1,
-   "tier": "legendary"
+   "combos": [
+    {
+     "ings": [
+      "Bulezau Horn",
+      "Bubble Blossoms"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "moonlit",
-   "name": "Moonlit Reverie",
-   "school": "Divination",
-   "desc": "Yonescope twilight folded into pure Conjuration.",
-   "req": [
-    "Yonescope",
-    "Yonescope",
-    "C"
+   "id": "calming-cologne",
+   "roll": 11,
+   "name": "Calming Cologne",
+   "desc": "Glitterwing dust over aphasia bloom. The pulse slows; the words come easy.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Aphasia Flower",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Glitterflies",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Thistle Goblin Tooth",
-    "Shadow Demon Liver",
-    "Mandrake"
+   "reqs": [
+    [
+     "Crallax",
+     "D",
+     "En",
+     "T"
+    ]
    ],
-   "trim": 1,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Aphasia Flower",
+      "Glitterflies"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "bloomheart",
-   "name": "Bloomheart Attar",
-   "school": "Restoration",
-   "desc": "A Persimmious lotus opening over warm Enchantment.",
-   "req": [
-    "Persimmious",
-    "En",
-    "En"
+   "id": "pensive-perfume",
+   "roll": 12,
+   "name": "Pensive Perfume",
+   "desc": "Cold-shard clarity with a dewdrop melt. For long thoughts by short candles.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Great Cold Shard",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Melting Dewdrops",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Shadow Demon Liver",
-    "Redcaps",
-    "Sevan Lotus"
+   "reqs": [
+    [
+     "Albutian",
+     "Chrysipil",
+     "N",
+     "T"
+    ]
    ],
-   "trim": 2,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Great Cold Shard",
+      "Melting Dewdrops"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "mirrorself",
-   "name": "Mirror-Self Essence",
-   "school": "Illusion",
-   "desc": "The Malvesian mirror, doubled by a flicker of Illusion.",
-   "req": [
-    "Malvesian",
-    "I"
+   "id": "slippery-serum",
+   "roll": 13,
+   "name": "Slippery Serum",
+   "desc": "Nothing grips the wearer -- not hands, not ropes, not consequences.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Icecap Crabs",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Jotuun Heart",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Quickfish",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Moonchalk",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Shadow Demon Liver",
-    "Olgrumast Mushroom",
-    "Southollow Royal Tulip"
+   "reqs": [
+    [
+     "A",
+     "A",
+     "Crallax",
+     "D"
+    ],
+    [
+     "A",
+     "A",
+     "D",
+     "I"
+    ],
+    [
+     "A",
+     "Crallax",
+     "D",
+     "Silentix"
+    ],
+    [
+     "A",
+     "D",
+     "I",
+     "Silentix"
+    ]
    ],
-   "trim": 1,
-   "wildAdd": 1,
-   "tier": "legendary"
+   "combos": [
+    {
+     "ings": [
+      "Icecap Crabs",
+      "Quickfish"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Icecap Crabs",
+      "Moonchalk"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Jotuun Heart",
+      "Quickfish"
+     ],
+     "req": 2,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Jotuun Heart",
+      "Moonchalk"
+     ],
+     "req": 3,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "cosmic",
-   "name": "Cosmic Saspacian No. 5",
-   "school": "Universal",
-   "desc": "The masterwork. A single Saspacian chord -- every Guide woven into one planet.",
-   "req": [
-    "Saspacian"
+   "id": "solemn-stink",
+   "roll": 14,
+   "name": "Solemn Stink",
+   "desc": "Peat and old horn. Commands a funeral's gravity in any room.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Bulezau Horn",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Undead Heart",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Pemneath Peat",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Southollow Royal Tulip"
+   "reqs": [
+    [
+     "D",
+     "Letchettin",
+     "N",
+     "N"
+    ],
+    [
+     "Myddenic",
+     "N",
+     "N",
+     "N"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 1,
-   "tier": "legendary"
+   "combos": [
+    {
+     "ings": [
+      "Bulezau Horn",
+      "Pemneath Peat"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Undead Heart",
+      "Pemneath Peat"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "emberward",
-   "name": "Emberward Eau",
-   "school": "Evocation",
-   "desc": "Korastic meteor-fire balanced on a knife of Evocation and Conjuration.",
-   "req": [
-    "Korastic",
-    "Ev",
-    "C"
+   "id": "ghostwalk-grog",
+   "roll": 15,
+   "name": "Ghostwalk Grog",
+   "desc": "Lavender over cold stillness; the dead mistake you for weather.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Icecap Crabs",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Ionillic Eggs",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Cloud Lavender",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Symbiotic Barnacles",
-    "Silver"
+   "reqs": [
+    [
+     "A",
+     "A",
+     "C",
+     "T"
+    ],
+    [
+     "C",
+     "En",
+     "T",
+     "Yonescope"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 0,
-   "tier": "simple"
+   "combos": [
+    {
+     "ings": [
+      "Icecap Crabs",
+      "Cloud Lavender"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Ionillic Eggs",
+      "Cloud Lavender"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "gravebind",
-   "name": "Gravebind Anointment",
-   "school": "Necromancy",
-   "desc": "Four Necromantic tolls to bind what should stay buried.",
-   "req": [
-    "N",
-    "N",
-    "N",
-    "N"
+   "id": "bright",
+   "roll": 16,
+   "name": "Bright",
+   "desc": "A single brightflower, distilled. Radiance you can wear.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Brightflower",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Ichorberries",
-    "Mourningweep",
-    "Shadow Demon Liver",
-    "Pemneath Peat"
+   "reqs": [
+    [
+     "En",
+     "Ev"
+    ]
    ],
-   "trim": 2,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Brightflower"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "prism",
-   "name": "Prismatic Chrysipil Spritz",
-   "school": "Transmutation",
-   "desc": "Two Chrysipil crystals refracted through a Transmutation prism.",
-   "req": [
-    "Chrysipil",
-    "Chrysipil",
-    "T"
+   "id": "frenzy",
+   "roll": 16,
+   "name": "Frenzy",
+   "desc": "Brightflower stoked with a northman's fire-beard -- brilliance tipped into mania.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Northman's Beard",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Brightflower",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Shadow Demon Liver",
-    "Amiglia Core",
-    "Gold"
+   "reqs": [
+    [
+     "C",
+     "En",
+     "Ev",
+     "Ignetium"
+    ]
    ],
-   "trim": 1,
-   "wildAdd": 0,
-   "tier": "advanced"
+   "combos": [
+    {
+     "ings": [
+      "Northman's Beard",
+      "Brightflower"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "echo",
-   "name": "Echo of the Deep",
-   "school": "Conjuration",
-   "desc": "An Ontoligin scroll read aloud beneath an Evocation tide.",
-   "req": [
-    "Ontoligin",
-    "Ev"
+   "id": "second-spark",
+   "roll": 17,
+   "name": "Second Spark",
+   "desc": "For engines, hearts, and arguments that have gone out. Reignition guaranteed.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Blood Demon Eye",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Lady's Gold",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Sphynx Paw"
+   "reqs": [
+    [
+     "Ev",
+     "Ignetium",
+     "Korastic",
+     "Letchettin"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 0,
-   "tier": "simple"
+   "combos": [
+    {
+     "ings": [
+      "Blood Demon Eye",
+      "Lady's Gold"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   },
   {
-   "id": "verdigris",
-   "name": "Verdigris Veil",
-   "school": "Evocation",
-   "desc": "A rare E-tone caged in Chrysipil crystal and Conjuration -- the Mara Nur signature.",
-   "req": [
-    "Chrysipil",
-    "E",
-    "C"
+   "id": "potion-of-peril",
+   "roll": 18,
+   "name": "Potion of Peril",
+   "desc": "Dragon venom on a moss fuse. Handle with tongs and good insurance.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Green Dragon Venom",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Blistermoss",
+      "qty": 1,
+      "known": true
+     }
+    ]
    ],
-   "example": [
-    "Mara Nur Cap"
+   "reqs": [
+    [
+     "Draconil",
+     "Ev",
+     "Lythillious",
+     "T"
+    ]
    ],
-   "trim": 0,
-   "wildAdd": 0,
-   "tier": "simple"
+   "combos": [
+    {
+     "ings": [
+      "Green Dragon Venom",
+      "Blistermoss"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "magnis-mixture",
+   "roll": 19,
+   "name": "Magnis Mixture",
+   "desc": "Platinum-bound moon-pull. Small metal objects (and admirers) drift closer.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Ionillic Eggs",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Platinum",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "A",
+     "En",
+     "Yonescope"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Ionillic Eggs",
+      "Platinum"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "ox-odor",
+   "roll": 20,
+   "name": "Ox Odor",
+   "desc": "Tuber starch and ogre grip. Smell like you can carry the cart yourself.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Dwarf Tubers",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Ogre Hand",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "C",
+     "Chrysipil",
+     "Letchettin"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Dwarf Tubers",
+      "Ogre Hand"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "frenetic-fragrance",
+   "roll": 21,
+   "name": "Frenetic Fragrance",
+   "desc": "Redcap fury lashed to burning larch -- the nose's equivalent of a war drum.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Redcaps",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Lornlarch",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "En",
+     "En",
+     "Ignetium",
+     "Letchettin"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Redcaps",
+      "Lornlarch"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "dribbleblight-draught",
+   "roll": 22,
+   "name": "Dribbleblight Draught",
+   "desc": "It drips. It blights. The scent arrives three seconds after the dread.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Rindergrapes",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Undead Heart",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Mandrake",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "I",
+     "Ignetium",
+     "Myddenic",
+     "N"
+    ],
+    [
+     "I",
+     "Ignetium",
+     "N",
+     "Yonescope"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Rindergrapes",
+      "Undead Heart"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Rindergrapes",
+      "Mandrake"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "griminal-gas",
+   "roll": 23,
+   "name": "Griminal Gas",
+   "desc": "Mandrake scream settled over banshee hair. Strictly graveside wear.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Mandrake",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Banshee's Hair",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "N",
+     "N",
+     "T",
+     "Yonescope"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Mandrake",
+      "Banshee's Hair"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "regenerative-reek",
+   "roll": 24,
+   "name": "Regenerative Reek",
+   "desc": "Foul going on, marvelous coming off -- flesh knits under the stench.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Mara Nur Cap",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Blistermoss",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "C",
+     "Chrysipil",
+     "E",
+     "Ev",
+     "T"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Mara Nur Cap",
+      "Blistermoss"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "bombastic-brew",
+   "roll": 25,
+   "name": "Bombastic Brew",
+   "desc": "Twinned conjured winks with a glitter fuse. Loud in every language.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Lemiwinkles",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Glitterflies",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "C",
+     "C",
+     "D",
+     "T"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Lemiwinkles",
+      "Glitterflies"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "redroot-derivative",
+   "roll": 26,
+   "name": "Redroot Derivative",
+   "desc": "The sanguivore's table wine, rooted red and faintly pulsing.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Creeping Coriand",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Katowician Honeyhive",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Sanguivore Organ",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Sanguipoles",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "E",
+     "I",
+     "Lythillious",
+     "T"
+    ],
+    [
+     "E",
+     "Ignetium",
+     "N",
+     "T"
+    ],
+    [
+     "I",
+     "Lythillious",
+     "T",
+     "T"
+    ],
+    [
+     "Ignetium",
+     "N",
+     "T",
+     "T"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Creeping Coriand",
+      "Sanguivore Organ"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Creeping Coriand",
+      "Sanguipoles"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Katowician Honeyhive",
+      "Sanguivore Organ"
+     ],
+     "req": 2,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Katowician Honeyhive",
+      "Sanguipoles"
+     ],
+     "req": 3,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "shimmerskin-succulence",
+   "roll": 27,
+   "name": "Shimmerskin Succulence",
+   "desc": "Scales of light across the skin. Best applied under a full moon.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Trihorn",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Oracite",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Klyst",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "D",
+     "D",
+     "D",
+     "Ev",
+     "I"
+    ],
+    [
+     "A",
+     "Ev",
+     "I",
+     "Silentix",
+     "T"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Trihorn",
+      "Oracite"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Trihorn",
+      "Klyst"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "parasitic-perfume",
+   "roll": 28,
+   "name": "Parasitic Perfume",
+   "desc": "Symbiotes find you charming. Everything else finds you occupied.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Rotgulp Eggs",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Treakbug",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Symbiotic Barnacles",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "Ev",
+     "I",
+     "N",
+     "Silentix"
+    ],
+    [
+     "Ev",
+     "Korastic",
+     "N",
+     "Silentix"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Rotgulp Eggs",
+      "Treakbug"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Rotgulp Eggs",
+      "Symbiotic Barnacles"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "awakening-auroma",
+   "roll": 29,
+   "name": "Awakening Auroma",
+   "desc": "Smelling salts of the inlet -- divination doubled through a cold snap.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Weird Dog Foot",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Scourge of the Inlet",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "D",
+     "D",
+     "Ev",
+     "T"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Weird Dog Foot",
+      "Scourge of the Inlet"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "liquidation-liquer",
+   "roll": 30,
+   "name": "Liquidation Liquer",
+   "desc": "Everything solid remembers it was once soup. Assets included.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Ooze Cube",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Stasis Muck",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "Albutian",
+     "E",
+     "N",
+     "T",
+     "T"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Ooze Cube",
+      "Stasis Muck"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "antimagic-auroma",
+   "roll": 31,
+   "name": "Antimagic Auroma",
+   "desc": "A null-scent that eats spellwork; the arcanavore's hunger, bottled.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Arcanavore Organ",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Chrythsmeum",
+      "qty": 4,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Seacursed Scale",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Arcanavore Organ",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "C",
+     "Crallax",
+     "Myddenic",
+     "T"
+    ],
+    [
+     "Crallax",
+     "Crallax",
+     "Myddenic",
+     "Myddenic"
+    ],
+    [
+     "C",
+     "D",
+     "D",
+     "D",
+     "D",
+     "T"
+    ],
+    [
+     "Crallax",
+     "D",
+     "D",
+     "D",
+     "D",
+     "Myddenic"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Arcanavore Organ",
+      "Seacursed Scale"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Arcanavore Organ",
+      "Arcanavore Organ"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Seacursed Scale"
+     ],
+     "req": 2,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Chrythsmeum",
+      "Arcanavore Organ"
+     ],
+     "req": 3,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "energestic-emulsion",
+   "roll": 32,
+   "name": "Energestic Emulsion",
+   "desc": "Golden dragon-oil charged with fulmile spark. Vigor with a metallic bite.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Fulmiles",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Aurum",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "A",
+     "C",
+     "Draconil",
+     "Ignetium"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Fulmiles",
+      "Aurum"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "puppetry-perfumette",
+   "roll": 33,
+   "name": "Puppetry Perfumette",
+   "desc": "A dab behind the ears -- theirs, not yours. Strings sold separately.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Bramblechoke",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Brain Lemming",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "E",
+     "Letchettin",
+     "Letchettin",
+     "Myddenic"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Bramblechoke",
+      "Brain Lemming"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "invulnerability-ichor",
+   "roll": 34,
+   "name": "Invulnerability Ichor",
+   "desc": "Trilobite patience in jellied meteor-fire. Blades change the subject.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Penchant Jellies",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Golden Trilobite",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "A",
+     "D",
+     "E",
+     "Korastic",
+     "Yonescope"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Penchant Jellies",
+      "Golden Trilobite"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "nocturnal-nectar",
+   "roll": 35,
+   "name": "Nocturnal Nectar",
+   "desc": "The night in three vintages -- choose your darkness, wear till dawn.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Deadly Moonbloom",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Great Cold Shard",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Evengeist Ear",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Cloud Lavender",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "Albutian",
+     "Ev",
+     "I",
+     "T"
+    ],
+    [
+     "C",
+     "Ev",
+     "I",
+     "N"
+    ],
+    [
+     "C",
+     "Ev",
+     "I",
+     "T"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Deadly Moonbloom",
+      "Great Cold Shard"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Deadly Moonbloom",
+      "Evengeist Ear"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Deadly Moonbloom",
+      "Cloud Lavender"
+     ],
+     "req": 2,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "histological-hairoil",
+   "roll": 36,
+   "name": "Histological Hairoil",
+   "desc": "Sphynx-blessed follicle scripture. Regrows what the wraiths whisked away.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Sphynx Paw",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Wraith Whisps",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "Ev",
+     "Ignetium",
+     "Ontoligin",
+     "Yonescope"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Sphynx Paw",
+      "Wraith Whisps"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "redroot-deconcoctual",
+   "roll": 37,
+   "name": "Redroot Deconcoctual Derivative",
+   "desc": "The antidote's antidote -- lotus logic unwinding the redroot knot.",
+   "tier": "legendary",
+   "slots": [
+    [
+     {
+      "name": "Sevan Lotus",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Tekachapi Berries",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "A",
+     "E",
+     "Ignetium",
+     "N",
+     "Persimmious"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Sevan Lotus",
+      "Tekachapi Berries"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "valuers-vapor",
+   "roll": 38,
+   "name": "Valuers Vapor",
+   "desc": "One sniff prices anything: amber honesty against a golden hunch.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Spearfisher Horns",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Amber",
+      "qty": 1,
+      "known": true
+     },
+     {
+      "name": "Gold",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "A",
+     "Ignetium",
+     "T",
+     "Yonescope"
+    ],
+    [
+     "A",
+     "T",
+     "Yonescope"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Spearfisher Horns",
+      "Amber"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    },
+    {
+     "ings": [
+      "Spearfisher Horns",
+      "Gold"
+     ],
+     "req": 1,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "greenery-gas",
+   "roll": 39,
+   "name": "Greenery Gas",
+   "desc": "Glass-cut chlorophyll. Rooms sprout; ledgers turn over new leaves.",
+   "tier": "advanced",
+   "slots": [
+    [
+     {
+      "name": "Verdaux",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Glass",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "Chrysipil",
+     "E",
+     "En",
+     "Letchettin"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Verdaux",
+      "Glass"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
+  },
+  {
+   "id": "swimmers-serum",
+   "roll": 40,
+   "name": "Swimmer's Serum",
+   "desc": "Gar-eyed and rock-calm below the surface. Breathe easy; swim rude.",
+   "tier": "simple",
+   "slots": [
+    [
+     {
+      "name": "Lake Gar Eye",
+      "qty": 1,
+      "known": true
+     }
+    ],
+    [
+     {
+      "name": "Baleful Rockfish",
+      "qty": 1,
+      "known": true
+     }
+    ]
+   ],
+   "reqs": [
+    [
+     "C",
+     "C",
+     "Chrysipil",
+     "E",
+     "Ev"
+    ]
+   ],
+   "combos": [
+    {
+     "ings": [
+      "Lake Gar Eye",
+      "Baleful Rockfish"
+     ],
+     "req": 0,
+     "trim": 0,
+     "wildAdd": 0
+    }
+   ]
   }
  ]
 }

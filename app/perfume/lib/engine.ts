@@ -111,10 +111,14 @@ export function availableMarkers(brew: BrewState): {
   };
 }
 
-// Evaluate a brew against a recipe.
-export function evaluate(brew: BrewState, recipe: Recipe): EvalResult {
+// Evaluate a brew against ONE tuning (target multiset).
+export function evalReq(
+  brew: BrewState,
+  req: string[],
+  reqIndex = 0,
+): EvalResult {
   const B = effectiveTally(brew);
-  const R = msFromList(recipe.req);
+  const R = msFromList(req);
   const markers = availableMarkers(brew);
   const M = markers.minus;
   const P = markers.plus;
@@ -127,5 +131,48 @@ export function evaluate(brew: BrewState, recipe: Recipe): EvalResult {
     : exN <= M && miN <= P
       ? "craftable"
       : "off";
-  return { status, excess, missing, exN, miN, M, P };
+  return { status, excess, missing, exN, miN, M, P, reqIndex };
+}
+
+const STATUS_ORDER: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
+
+// Evaluate a brew against a recipe: the brew matches if it matches ANY tuning,
+// so return the result for the closest one (best status, then least distance).
+export function evaluate(brew: BrewState, recipe: Recipe): EvalResult {
+  let best: EvalResult | null = null;
+  for (let ri = 0; ri < recipe.reqs.length; ri++) {
+    const e = evalReq(brew, recipe.reqs[ri], ri);
+    if (
+      !best ||
+      STATUS_ORDER[e.status] < STATUS_ORDER[best.status] ||
+      (STATUS_ORDER[e.status] === STATUS_ORDER[best.status] &&
+        e.exN + e.miN < best.exN + best.miN)
+    ) {
+      best = e;
+    }
+  }
+  return best!; // reqs is never empty
+}
+
+// Greedily spend ⊖ on excess and ⊕ on missing until `ingredients` matches the
+// target tuning exactly (or charges run out). Pure: returns the plays to apply.
+export function autoResolvePlays(
+  ingredients: Ingredient[],
+  req: string[],
+): { minusPlays: string[]; plusPlays: string[] } {
+  const R = msFromList(req);
+  const minusPlays: string[] = [];
+  const plusPlays: string[] = [];
+  for (let guard = 0; guard < 80; guard++) {
+    const state: BrewState = { ingredients, minusPlays, plusPlays };
+    const B = effectiveTally(state);
+    if (msEqual(B, R)) break;
+    const avail = availableMarkers(state);
+    const excess = Object.keys(msDiff(B, R));
+    const missing = Object.keys(msDiff(R, B));
+    if (avail.minus > 0 && excess.length) minusPlays.push(excess[0]);
+    else if (avail.plus > 0 && missing.length) plusPlays.push(missing[0]);
+    else break;
+  }
+  return { minusPlays, plusPlays };
 }
