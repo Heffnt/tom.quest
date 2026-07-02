@@ -5,8 +5,8 @@ import type { Ingredient, Recipe, BrewState } from "./lib/types";
 import { baseIngredients, pureIngredients, baseRecipes } from "./data/base";
 import {
   baseTally,
-  markerTotals,
-  availableMarkers,
+  chargeTotals,
+  availableCharges,
   autoResolvePlays,
   evaluate,
 } from "./lib/engine";
@@ -20,12 +20,12 @@ function arraysEqual(a: string[], b: string[]): boolean {
   return true;
 }
 
-// Clamp manual plays to what the brew can support: no more ⊖/⊕ than markers, and
-// a ⊖ may only target a token present in the BASE tally (the engine applies
-// strikes before summons, so a strike on a summon-only token would waste the
-// charge — summoned tokens are dispelled with onUnsummon instead).
+// Clamp manual plays to what the brew can support: no more ⊖/⊕ than charges, and
+// a ⊖ may only target a frequency present in the BASE tally (the engine applies
+// strikes before summons, so a strike on a summon-only frequency would waste the
+// charge — summoned frequencies are dispelled with onUnsummon instead).
 function reconcile(ings: Ingredient[], strikePlays: string[], wildPlays: string[]) {
-  const totals = markerTotals(ings);
+  const totals = chargeTotals(ings);
   const nextWild = wildPlays.slice(0, totals.wild);
   const capped = strikePlays.slice(0, totals.strike);
   const avail: Record<string, number> = { ...baseTally(ings) };
@@ -71,7 +71,7 @@ export default function PerfumeClient() {
     [brewIngredients, sane],
   );
 
-  const avail = useMemo(() => availableMarkers(brew), [brew]);
+  const avail = useMemo(() => availableCharges(brew), [brew]);
   const base = useMemo(() => baseTally(brewIngredients), [brewIngredients]);
 
   const brewCounts = useMemo(() => {
@@ -102,6 +102,10 @@ export default function PerfumeClient() {
         if (idx === -1) return p;
         return [...p.slice(0, idx), ...p.slice(idx + 1)];
       }),
+    [],
+  );
+  const removeAllOfKey = useCallback(
+    (key: string) => setBrewKeys((p) => p.filter((k) => k !== key)),
     [],
   );
   const clear = useCallback(() => {
@@ -160,8 +164,8 @@ export default function PerfumeClient() {
     [ingByKey],
   );
 
-  // perfumes the current brew matches exactly — named on the cauldron
-  const bottled = useMemo(
+  // perfumes the current brew matches exactly — named on the cauldron panel
+  const brewed = useMemo(
     () =>
       brew.ingredients.length === 0
         ? []
@@ -171,24 +175,43 @@ export default function PerfumeClient() {
     [brew],
   );
 
+  // per-key counts for the ingredients panel (amber highlight + −/count/+)
+  const countsByKey = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const k of brewKeys) m[k] = (m[k] ?? 0) + 1;
+    return m;
+  }, [brewKeys]);
+
+  const panelIngredients = useMemo(
+    () => [...baseIngredients, ...pureIngredients],
+    [],
+  );
+
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
-      {/* the Byobu bench layout: library | cauldron | recipe book as three
-          working columns on wide screens; on small screens the page scrolls
-          through cauldron, then book, then library. The page banner is gone —
-          the cauldron's own status bar carries the Perfumer's Bench name. */}
+      {/* the Byobu bench layout: ingredients panel | cauldron panel | recipe panel
+          as three working columns on wide screens; on small screens the page
+          scrolls through cauldron panel, then recipe panel, then ingredients
+          panel. The page banner is gone — the cauldron panel's own status bar
+          carries the Perfumer's Bench name. */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
-        {/* ingredient library */}
+        {/* ingredients panel */}
         <aside className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[330px] lg:flex-none lg:border-r lg:border-t-0">
-          <IngredientPanel ingredients={baseIngredients} onAdd={addKey} />
+          <IngredientPanel
+            ingredients={panelIngredients}
+            brewCounts={countsByKey}
+            onAdd={addKey}
+            onDec={decKey}
+            onRemoveAll={removeAllOfKey}
+          />
         </aside>
 
-        {/* the cauldron */}
+        {/* cauldron panel */}
         <section className="order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1">
           <Cauldron
             brew={brew}
             brewCounts={brewCounts}
-            bottled={bottled}
+            brewed={brewed}
             onInc={addKey}
             onDec={decKey}
             onStrike={strike}
@@ -199,7 +222,7 @@ export default function PerfumeClient() {
           />
         </section>
 
-        {/* the formulary */}
+        {/* recipe panel */}
         <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[400px] lg:flex-none lg:border-l lg:border-t-0 xl:w-[440px]">
           <RecipeBook
             recipes={baseRecipes}

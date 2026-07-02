@@ -6,9 +6,11 @@ import {
   msDiff,
   msEqual,
   msFromList,
+  msIsSubset,
   effectiveTally,
   evaluate,
   autoResolvePlays,
+  findExactCombos,
 } from "./engine";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -46,7 +48,7 @@ describe("base recipe set", () => {
     expect(roll16.sort()).toEqual(["Bright", "Frenzy"]);
   });
 
-  it("with an empty cauldron, every recipe is in reach (and none bottled)", () => {
+  it("with an empty cauldron, every recipe is in reach (and none brewed)", () => {
     const empty = brew([]);
     const statuses = baseRecipes.map((r) => evaluate(empty, r).status);
     expect(statuses.filter((s) => s === "craftable").length).toBe(41);
@@ -85,7 +87,7 @@ describe("in reach semantics", () => {
 // ── 1c. Pure frequencies ─────────────────────────────────────────────────────
 
 describe("pure frequencies", () => {
-  it("cover every token plus a pure strike and a pure wild", () => {
+  it("cover every frequency plus a pure strike and a pure wild", () => {
     expect(pureIngredients.length).toBe(26 + 2);
     const strike = pureIngredients.find((i) => i.key === "pure:strike")!;
     const wild = pureIngredients.find((i) => i.key === "pure:wild")!;
@@ -94,7 +96,7 @@ describe("pure frequencies", () => {
   });
 
   it("can bottle a perfume with no real ingredients at all", () => {
-    // Bright = {Ev, En} from two pure tones
+    // Bright = {Ev, En} from two pure frequencies
     const b = brew(["Pure Ev", "Pure En"]);
     expect(evaluate(b, recipe("bright")).status).toBe("perfect");
   });
@@ -118,7 +120,7 @@ describe("Swana's Serum", () => {
 
 // ── 3. Black Gas: the wildcard recipe ────────────────────────────────────────
 // Shadow Demon Liver emits nothing but grants ⊖×2; either berry works because
-// the recipe IS the lone Necromancy note left after striking the off-tone.
+// the recipe IS the lone Necromancy frequency left after striking the off-frequency.
 
 describe("Black Gas", () => {
   it("is defined as the single tuning [N]", () => {
@@ -134,7 +136,7 @@ describe("Black Gas", () => {
     }
   });
 
-  it("becomes perfect after striking the off-tone", () => {
+  it("becomes perfect after striking the off-frequency", () => {
     const b = brew(["Shadow Demon Liver", "Ichorberries"], ["En"]);
     expect(effectiveTally(b)).toEqual({ N: 1 });
     expect(evaluate(b, recipe("black-gas")).status).toBe("perfect");
@@ -172,7 +174,7 @@ describe("Bright and Frenzy", () => {
   it("adding Northman's Beard tips it into Frenzy (and past Bright)", () => {
     const b = brew(["Brightflower", "Northman's Beard"]);
     expect(evaluate(b, recipe("frenzy")).status).toBe("perfect");
-    // Bright is now overshot: two excess tones and no strikes on hand
+    // Bright is now overshot: two excess frequencies and no strikes on hand
     expect(evaluate(b, recipe("bright")).status).toBe("off");
   });
 });
@@ -238,5 +240,70 @@ describe("multiset primitives", () => {
     expect(msEqual({ A: 1 }, { A: 1, B: 1 })).toBe(false);
     expect(msEqual({}, {})).toBe(true);
     expect(msEqual({ A: 2 }, { A: 1 })).toBe(false);
+  });
+
+  it("msIsSubset checks containment with multiplicity", () => {
+    expect(msIsSubset({ A: 1 }, { A: 2, B: 1 })).toBe(true);
+    expect(msIsSubset({ A: 3 }, { A: 2 })).toBe(false);
+    expect(msIsSubset({}, {})).toBe(true);
+  });
+});
+
+// ── 9. findExactCombos: live strike/wild-free combos ─────────────────────────
+
+describe("findExactCombos", () => {
+  it("finds the single-ingredient combo for Bright", () => {
+    const combos = findExactCombos(["Ev", "En"], baseIngredients);
+    expect(combos).toContainEqual(["Brightflower"]);
+  });
+
+  it("finds Swana's Serum's common combo among the exact covers", () => {
+    const combos = findExactCombos(["A", "A", "Crallax", "En"], baseIngredients);
+    expect(
+      combos.some(
+        (c) => c.slice().sort().join("+") === ["Aphasia Flower", "Noble Roses"].sort().join("+"),
+      ),
+    ).toBe(true);
+  });
+
+  it("allows ingredient repeats (Chrythsmeum ×4 for Antimagic)", () => {
+    const combos = findExactCombos(
+      ["C", "D", "D", "D", "D", "T"],
+      baseIngredients,
+      50,
+    );
+    expect(
+      combos.some((c) => c.filter((n) => n === "Chrythsmeum").length === 4),
+    ).toBe(true);
+  });
+
+  it("never uses strike/wild-carrying or pure ingredients", () => {
+    const all = [...baseIngredients, ...pureIngredients];
+    const banned = new Set(
+      all.filter((i) => i.strike > 0 || i.wild > 0 || i.key.startsWith("pure:")).map((i) => i.name),
+    );
+    for (const r of baseRecipes) {
+      for (const req of r.reqs) {
+        for (const combo of findExactCombos(req, all, 8)) {
+          for (const name of combo) {
+            expect(banned.has(name), `${name} in a combo for ${r.key}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it("every trim-free d40 combo is rediscovered by the solver", () => {
+    for (const r of baseRecipes) {
+      for (const combo of r.combos) {
+        if (combo.trim > 0 || combo.wildAdd > 0) continue;
+        const found = findExactCombos(r.reqs[combo.req], baseIngredients, 24);
+        const want = combo.ings.slice().sort().join("+");
+        expect(
+          found.some((c) => c.slice().sort().join("+") === want),
+          `${r.key}: ${want}`,
+        ).toBe(true);
+      }
+    }
   });
 });

@@ -1,15 +1,32 @@
 "use client";
 
+// The ingredients panel: the 96 base ingredients plus the pure frequencies,
+// searchable by name or by any frequency they emit (id or school name — e.g.
+// "transmutation" finds every T-emitting ingredient), with a frequency
+// drop-down filter. Rows in the brew are highlighted amber and carry
+// −/count/+ controls like the cauldron panel's brew tray; clicking the row
+// itself adds one when absent, or removes all copies when present.
+
 import { useMemo, useState } from "react";
 import type { Ingredient } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
-import { ALL_TOKENS, FUND } from "../data/base";
-import { FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
+import { ALL_FREQUENCIES, FUND, isNamed } from "../data/base";
+import { FrequencyGlyph, FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
-export default function IngredientPanel({ ingredients, onAdd }: IngredientPanelProps) {
+function freqLabel(id: string): string {
+  return isNamed(id) ? id : `${id} — ${FUND[id]?.school ?? id}`;
+}
+
+export default function IngredientPanel({
+  ingredients,
+  brewCounts,
+  onAdd,
+  onDec,
+  onRemoveAll,
+}: IngredientPanelProps) {
   const [search, setSearch] = useState("");
-  const [freqFilter, setFreqFilter] = useState<string | null>(null);
+  const [freqFilter, setFreqFilter] = useState<string>("");
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -18,6 +35,7 @@ export default function IngredientPanel({ ingredients, onAdd }: IngredientPanelP
       .filter((ing) => {
         if (!q) return true;
         if (ing.name.toLowerCase().includes(q)) return true;
+        // by emitted frequency: id ("En") or school name ("transmutation")
         if (ing.emits.some((t) => t.toLowerCase().includes(q))) return true;
         if (ing.emits.some((t) => (FUND[t]?.school ?? "").toLowerCase().includes(q))) return true;
         return false;
@@ -35,85 +53,32 @@ export default function IngredientPanel({ ingredients, onAdd }: IngredientPanelP
         </span>
       </div>
 
-      {/* pure frequencies — drop a tone (or a strike/wild) straight into the
-          brew, no ingredient required */}
-      <div className="border-b border-border p-3">
-        <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-text-faint">
-          Pure frequencies — add a tone directly
-        </p>
-        <div className="flex flex-wrap items-center gap-1">
-          {ALL_TOKENS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => onAdd(`pure:${t.id}`)}
-              title={`Add a pure ${t.id} to the brew`}
-              aria-label={`Add a pure ${t.id} to the brew`}
-              className="grid place-items-center rounded-full p-0.5 opacity-90 transition-shadow hover:opacity-100 hover:ring-2 hover:ring-accent"
-            >
-              <FrequencySymbol id={t.id} size={20} />
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => onAdd("pure:strike")}
-            title="Add a pure strike ⊖ — remove any one frequency"
-            aria-label="Add a pure strike to the brew"
-            className="grid h-6 w-6 place-items-center rounded-full border text-xs font-bold transition-shadow hover:ring-2 hover:ring-accent"
-            style={{ borderColor: STRIKE, color: STRIKE, background: "#a855f71a" }}
-          >
-            ⊖
-          </button>
-          <button
-            type="button"
-            onClick={() => onAdd("pure:wild")}
-            title="Add a pure wild ⊕ — summon any one frequency"
-            aria-label="Add a pure wild to the brew"
-            className="grid h-6 w-6 place-items-center rounded-full border text-xs font-bold transition-shadow hover:ring-2 hover:ring-accent"
-            style={{ borderColor: COPPER, color: COPPER, background: "#c98a3c1a" }}
-          >
-            ⊕
-          </button>
-        </div>
-      </div>
-
       {/* controls */}
       <div className="space-y-2 border-b border-border p-3">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="search ingredients…"
+          placeholder="search ingredients or frequencies…"
           spellCheck={false}
           className="w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
         />
 
-        {/* filter by frequency */}
-        <div className="flex flex-wrap items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setFreqFilter(null)}
-            className={`rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors duration-150 ${
-              freqFilter === null
-                ? "bg-surface-alt text-text"
-                : "text-text-faint hover:text-text-muted"
-            }`}
+        {/* frequency filter drop-down */}
+        <div className="flex items-center gap-2">
+          <select
+            value={freqFilter}
+            onChange={(e) => setFreqFilter(e.target.value)}
+            aria-label="Filter ingredients by frequency"
+            className="w-full rounded-lg border border-border bg-bg px-2 py-1.5 font-mono text-xs text-text focus:border-accent focus:outline-none"
           >
-            all
-          </button>
-          {ALL_TOKENS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setFreqFilter((cur) => (cur === t.id ? null : t.id))}
-              title={`filter by ${t.id}`}
-              aria-pressed={freqFilter === t.id}
-              className={`grid place-items-center rounded-full p-0.5 transition-shadow ${
-                freqFilter === t.id ? "ring-2 ring-accent" : "opacity-80 hover:opacity-100"
-              }`}
-            >
-              <FrequencySymbol id={t.id} size={20} />
-            </button>
-          ))}
+            <option value="">all frequencies</option>
+            {ALL_FREQUENCIES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {freqLabel(t.id)}
+              </option>
+            ))}
+          </select>
+          {freqFilter && <FrequencySymbol id={freqFilter} size={22} />}
         </div>
       </div>
 
@@ -126,7 +91,14 @@ export default function IngredientPanel({ ingredients, onAdd }: IngredientPanelP
         ) : (
           <ul className="divide-y divide-border/50">
             {filtered.map((ing) => (
-              <IngredientRow key={ing.key} ing={ing} onAdd={onAdd} />
+              <IngredientRow
+                key={ing.key}
+                ing={ing}
+                count={brewCounts[ing.key] ?? 0}
+                onAdd={onAdd}
+                onDec={onDec}
+                onRemoveAll={onRemoveAll}
+              />
             ))}
           </ul>
         )}
@@ -137,21 +109,56 @@ export default function IngredientPanel({ ingredients, onAdd }: IngredientPanelP
 
 function IngredientRow({
   ing,
+  count,
   onAdd,
+  onDec,
+  onRemoveAll,
 }: {
   ing: Ingredient;
+  count: number;
   onAdd: (key: string) => void;
+  onDec: (key: string) => void;
+  onRemoveAll: (key: string) => void;
 }) {
   const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
+  const pure = ing.key.startsWith("pure:");
+  const pureId = pure ? ing.key.slice(5) : null;
+  const inBrew = count > 0;
+
   return (
-    <li className="group flex items-start justify-between gap-2 px-4 py-2.5 hover:bg-surface-alt">
+    <li
+      className={`group flex items-start justify-between gap-2 px-4 py-2.5 transition-colors ${
+        inBrew
+          ? "border-l-2 border-amber-400 bg-amber-400/10 hover:bg-amber-400/15"
+          : "border-l-2 border-transparent hover:bg-surface-alt"
+      }`}
+    >
+      {/* row body: add one when absent, remove all when present */}
       <button
         type="button"
-        onClick={() => onAdd(ing.key)}
+        onClick={() => (inBrew ? onRemoveAll(ing.key) : onAdd(ing.key))}
         className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-        aria-label={`Add ${ing.name} to the cauldron`}
+        aria-label={
+          inBrew
+            ? `Remove all ${ing.name} from the brew`
+            : `Add ${ing.name} to the brew`
+        }
+        title={inBrew ? "Click to remove all from the brew" : "Click to add to the brew"}
       >
-        <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
+        {pure && pureId && pureId !== "strike" && pureId !== "wild" ? (
+          <span className="grid h-[42px] w-[42px] shrink-0 place-items-center rounded-md border border-border/60 bg-surface-alt">
+            <FrequencyGlyph id={pureId} size={26} />
+          </span>
+        ) : pure ? (
+          <span
+            className="grid h-[42px] w-[42px] shrink-0 place-items-center rounded-md border border-border/60 bg-surface-alt text-lg font-bold"
+            style={{ color: pureId === "strike" ? STRIKE : COPPER }}
+          >
+            {pureId === "strike" ? "⊖" : "⊕"}
+          </span>
+        ) : (
+          <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
+        )}
         <div className="min-w-0 flex-1">
           <span className="block truncate text-sm text-text">{ing.name}</span>
           <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -178,14 +185,34 @@ function IngredientRow({
           </div>
         </div>
       </button>
-      <button
-        type="button"
-        onClick={() => onAdd(ing.key)}
-        aria-label={`Add ${ing.name}`}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-border text-text-muted transition-colors duration-150 hover:border-accent hover:text-accent"
-      >
-        +
-      </button>
+
+      {/* −/count/+ controls, matching the brew tray */}
+      <span className="flex shrink-0 items-center gap-0.5 self-center font-mono">
+        <button
+          type="button"
+          onClick={() => onDec(ing.key)}
+          disabled={!inBrew}
+          aria-label={`Remove one ${ing.name}`}
+          className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text disabled:opacity-30"
+        >
+          −
+        </button>
+        <span
+          className={`w-5 text-center text-xs tabular-nums ${
+            inBrew ? "text-amber-400" : "text-text-faint"
+          }`}
+        >
+          {count}
+        </span>
+        <button
+          type="button"
+          onClick={() => onAdd(ing.key)}
+          aria-label={`Add one ${ing.name}`}
+          className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+        >
+          +
+        </button>
+      </span>
     </li>
   );
 }

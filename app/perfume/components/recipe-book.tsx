@@ -1,42 +1,47 @@
 "use client";
 
-// The formulary, laid out like the Byobu bench: a vertical, searchable,
+// The recipe panel, laid out like the Byobu bench: a vertical, searchable,
 // filterable book of the 41 d40 recipes. Cards are compact when collapsed
 // (name, roll, the closest tuning with frequency names printed underneath,
 // clickable common-ingredient pills) and expand for the full story (flavor
 // text, strike/summon hints, every valid tuning judged against the brew, and
 // one-click brew buttons for the table's common combos).
 
-import { useMemo, useState } from "react";
+import {
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import type { Recipe, EvalResult, RecipeSlotEntry } from "../lib/types";
 import type { RecipeBookProps } from "./contracts";
-import { evaluate, evalReq, msToList } from "../lib/engine";
-import { ALL_TOKENS, FUND, isNamed, baseIngredients } from "../data/base";
+import { evaluate, evalReq, msToList, findExactCombos } from "../lib/engine";
+import { ALL_FREQUENCIES, FUND, isNamed, baseIngredients } from "../data/base";
 import { FrequencySymbol, COPPER, STRIKE } from "../lib/frequencies";
 
 const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
-// Display order for tokens inside a tuning row: fundamentals in canonical
-// order, then named frequencies by complexity (ALL_TOKENS is already sorted).
-const TOKEN_ORDER = new Map(ALL_TOKENS.map((t, i) => [t.id, i]));
+// Display order for frequencies inside a tuning row: fundamentals in canonical
+// order, then named frequencies by complexity (ALL_FREQUENCIES is already sorted).
+const FREQ_ORDER = new Map(ALL_FREQUENCIES.map((t, i) => [t.id, i]));
 const ING_BY_NAME = new Map(baseIngredients.map((i) => [i.name, i]));
 
 type Filter = "all" | "perfect" | "craftable";
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "all" },
-  { key: "perfect", label: "bottled" },
+  { key: "perfect", label: "brewed" },
   { key: "craftable", label: "in reach" },
 ];
 
-function groupTokens(req: string[]): { id: string; count: number }[] {
+function groupFrequencies(req: string[]): { id: string; count: number }[] {
   const m = new Map<string, number>();
   for (const t of req) m.set(t, (m.get(t) ?? 0) + 1);
   return [...m.entries()]
-    .sort((a, b) => (TOKEN_ORDER.get(a[0]) ?? 99) - (TOKEN_ORDER.get(b[0]) ?? 99))
+    .sort((a, b) => (FREQ_ORDER.get(a[0]) ?? 99) - (FREQ_ORDER.get(b[0]) ?? 99))
     .map(([id, count]) => ({ id, count }));
 }
 
-function tokenLabel(id: string): string {
+function frequencyName(id: string): string {
   return isNamed(id) ? id : (FUND[id]?.school ?? id);
 }
 
@@ -49,7 +54,7 @@ function comboLabel(ings: string[]): string {
     .join(" + ");
 }
 
-// Search by perfume name, common ingredient, or required frequency (token id
+// Search by perfume name, common ingredient, or required frequency (frequency id
 // or its school name).
 function matchesQuery(r: Recipe, q: string): boolean {
   if (!q) return true;
@@ -87,7 +92,7 @@ export default function RecipeBook({
     () => recipes.map((r) => ({ recipe: r, res: evaluate(brew, r) })),
     [recipes, brew],
   );
-  const bottled = evaluated.filter((e) => e.res.status === "perfect").length;
+  const brewed = evaluated.filter((e) => e.res.status === "perfect").length;
   const inReach = evaluated.filter((e) => e.res.status === "craftable").length;
 
   const shown = useMemo(() => {
@@ -103,7 +108,7 @@ export default function RecipeBook({
       .sort((a, b) => {
         const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
         if (s !== 0) return s;
-        // among in-reach recipes, the fewest missing tones come first
+        // among in-reach recipes, the fewest missing frequencies come first
         if (a.res.status === "craftable") {
           const m = a.res.miN - b.res.miN;
           if (m !== 0) return m;
@@ -118,9 +123,9 @@ export default function RecipeBook({
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
       {/* header */}
       <div className="flex items-baseline justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-text-muted">Recipe Book</h2>
+        <h2 className="text-sm font-semibold text-text-muted">Recipes</h2>
         <span className="font-mono text-xs tabular-nums text-text-faint">
-          <span className="text-success">{bottled}</span> bottled ·{" "}
+          <span className="text-success">{brewed}</span> brewed ·{" "}
           <span className="text-accent">{inReach}</span> in reach · {recipes.length}
         </span>
       </div>
@@ -157,7 +162,7 @@ export default function RecipeBook({
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
         {shown.length === 0 && (
           <p className="px-2 py-6 text-center font-mono text-xs text-text-faint">
-            no formula matches
+            no recipes match
           </p>
         )}
         {shown.map(({ recipe, res }) => (
@@ -177,8 +182,8 @@ export default function RecipeBook({
   );
 }
 
-// A token with its ×count and its name printed underneath.
-function LabeledToken({ id, count, size = 22 }: { id: string; count: number; size?: number }) {
+// A frequency with its ×count and its name printed underneath.
+function LabeledFrequency({ id, count, size = 22 }: { id: string; count: number; size?: number }) {
   return (
     <span className="flex max-w-16 flex-col items-center gap-0.5">
       <span className="flex items-center gap-0.5">
@@ -188,17 +193,17 @@ function LabeledToken({ id, count, size = 22 }: { id: string; count: number; siz
         )}
       </span>
       <span className="text-center font-mono text-[7.5px] uppercase leading-tight tracking-wide text-text-faint">
-        {tokenLabel(id)}
+        {frequencyName(id)}
       </span>
     </span>
   );
 }
 
 // Compact symbols-only row for tuning lists.
-function TokenRow({ req, size = 16 }: { req: string[]; size?: number }) {
+function FrequencyRow({ req, size = 16 }: { req: string[]; size?: number }) {
   return (
     <span className="flex flex-wrap items-center gap-1">
-      {groupTokens(req).map(({ id, count }) => (
+      {groupFrequencies(req).map(({ id, count }) => (
         <span key={id} className="flex items-center gap-0.5">
           <FrequencySymbol id={id} size={size} />
           {count > 1 && (
@@ -243,25 +248,111 @@ function IngredientPill({
   );
 }
 
-function StatusPill({ res }: { res: EvalResult }) {
+// Top-right of each card: the frequencies still needed (non-wild — the actual
+// missing frequencies, grouped ×n) plus the number of strikes required when
+// the brew carries wrong frequencies. Perfect matches show the brewed seal.
+function NeedsBadge({ res }: { res: EvalResult }) {
   if (res.status === "perfect")
     return (
       <span className="inline-block shrink-0 rounded border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[11px] text-success">
-        ✦ Bottled
+        ✦ Brewed
       </span>
     );
-  if (res.status === "craftable")
-    return (
-      <span className="inline-block shrink-0 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[11px] text-accent">
-        In reach{res.miN > 0 ? ` +${res.miN}` : ""}
-        {res.exN > 0 ? ` ⊖${res.exN}` : ""}
-      </span>
-    );
-  // off: the brew carries excess the available strikes can't remove
+  const reach = res.status === "craftable";
+  const missing = groupFrequencies(msToList(res.missing));
   return (
-    <span className="inline-block shrink-0 rounded border border-border px-2 py-0.5 font-mono text-[11px] text-text-faint">
-      {res.exN} over
+    <span
+      className={`flex shrink-0 flex-col items-end gap-1 rounded border px-2 py-1 ${
+        reach ? "border-accent/40 bg-accent/10" : "border-border"
+      }`}
+    >
+      {missing.length > 0 && (
+        <span className="flex items-center gap-1">
+          <span className={`font-mono text-[10px] ${reach ? "text-accent" : "text-text-faint"}`}>
+            +
+          </span>
+          {missing.map(({ id, count }) => (
+            <span key={id} className="flex items-center gap-0.5">
+              <FrequencySymbol id={id} size={15} />
+              {count > 1 && (
+                <span className="font-mono text-[9px] text-text-faint">×{count}</span>
+              )}
+            </span>
+          ))}
+        </span>
+      )}
+      {res.exN > 0 && (
+        <span className="font-mono text-[10px]" style={{ color: STRIKE }}>
+          ⊖ {res.exN} strike{res.exN > 1 ? "s" : ""}
+        </span>
+      )}
+      {missing.length === 0 && res.exN === 0 && (
+        <span className="font-mono text-[10px] text-accent">in reach</span>
+      )}
     </span>
+  );
+}
+
+// Hover popup: every ingredient combination that lands EXACTLY on one of the
+// recipe's tunings with no strikes and no wilds — computed live from the
+// ingredient catalog, not the d40 table.
+function CombosPopover({
+  recipe,
+  anchor,
+}: {
+  recipe: Recipe;
+  anchor: { x: number; y: number };
+}) {
+  const perTuning = useMemo(
+    () => recipe.reqs.map((req) => findExactCombos(req, baseIngredients, 12)),
+    [recipe],
+  );
+  const W = 300;
+  const left = Math.max(8, anchor.x - W - 10);
+  const top = Math.min(
+    Math.max(8, anchor.y),
+    (typeof window !== "undefined" ? window.innerHeight : 768) - 380,
+  );
+  return (
+    <div
+      className="pointer-events-none fixed z-[60] max-h-[360px] overflow-hidden rounded-lg border border-border bg-surface p-3 shadow-xl"
+      style={{ left, top, width: W }}
+      role="tooltip"
+    >
+      <p className="mb-1.5 font-mono text-[9px] uppercase tracking-wider text-text-faint">
+        ingredient combos — no strikes, no wilds
+      </p>
+      <div className="space-y-2">
+        {recipe.reqs.map((req, ri) => (
+          <div key={ri}>
+            {recipe.reqs.length > 1 && (
+              <div className="mb-0.5 flex items-center gap-1.5">
+                <span className="font-mono text-[9px] uppercase text-text-faint">
+                  tuning {ri + 1}
+                </span>
+                <FrequencyRow req={req} size={13} />
+              </div>
+            )}
+            {perTuning[ri].length === 0 ? (
+              <p className="font-mono text-[10px] italic text-text-faint">
+                no exact combos exist
+              </p>
+            ) : (
+              <ul className="space-y-0.5">
+                {perTuning[ri].map((combo, ci) => (
+                  <li key={ci} className="font-mono text-[10.5px] leading-snug text-text">
+                    {comboLabel(combo)}
+                  </li>
+                ))}
+                {perTuning[ri].length >= 12 && (
+                  <li className="font-mono text-[10px] italic text-text-faint">…and more</li>
+                )}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -290,9 +381,28 @@ function RecipeCard({
         : "var(--color-text-muted)";
   const excess = msToList(res.excess);
   const missing = msToList(res.missing);
+  const altTunings = recipe.reqs
+    .map((req, ri) => ({ req, ri }))
+    .filter(({ ri }) => ri !== res.reqIndex);
+
+  // hovering the card pops the live ingredient-combos panel beside it
+  const [comboPop, setComboPop] = useState<{ x: number; y: number } | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onCardEnter = (e: ReactMouseEvent) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = setTimeout(() => setComboPop({ x: rect.left, y: rect.top }), 420);
+  };
+  const onCardLeave = () => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    setComboPop(null);
+  };
 
   return (
     <article
+      onMouseEnter={onCardEnter}
+      onMouseLeave={onCardLeave}
       className={`rounded-lg border bg-bg/40 ${
         res.status === "perfect"
           ? "border-success/50 ring-1 ring-success/40"
@@ -301,6 +411,7 @@ function RecipeCard({
             : "border-border"
       }`}
     >
+      {comboPop && <CombosPopover recipe={recipe} anchor={comboPop} />}
       {/* header — click to expand */}
       <button
         type="button"
@@ -321,20 +432,26 @@ function RecipeCard({
               )}
             </div>
           </div>
-          <StatusPill res={res} />
+          <NeedsBadge res={res} />
         </div>
 
-        {/* the tuning closest to the current brew, names underneath */}
+        {/* required frequencies — the tuning closest to the current brew,
+            names underneath, with every alternative tuning below it */}
         <div className="mt-2 flex flex-wrap items-start gap-1.5">
-          {groupTokens(recipe.reqs[res.reqIndex]).map(({ id, count }) => (
-            <LabeledToken key={id} id={id} count={count} />
+          {groupFrequencies(recipe.reqs[res.reqIndex]).map(({ id, count }) => (
+            <LabeledFrequency key={id} id={id} count={count} />
           ))}
-          {recipe.reqs.length > 1 && (
-            <span className="self-center font-mono text-[9px] uppercase text-text-faint">
-              or {recipe.reqs.length - 1} more…
-            </span>
-          )}
         </div>
+        {altTunings.length > 0 && (
+          <div className="mt-1.5 space-y-1">
+            {altTunings.map(({ req, ri }) => (
+              <div key={ri} className="flex items-center gap-1.5">
+                <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
+                <FrequencyRow req={req} size={15} />
+              </div>
+            ))}
+          </div>
+        )}
       </button>
 
       {/* common ingredients — always visible, click to add */}
@@ -365,7 +482,7 @@ function RecipeCard({
           {/* verdict + hints */}
           {res.status === "perfect" ? (
             <p className="font-mono text-[11px] text-success">
-              Perfect resonance — this perfume is bottled.
+              Perfect resonance — this perfume is brewed.
             </p>
           ) : (
             (excess.length > 0 || missing.length > 0) && (
@@ -415,12 +532,12 @@ function RecipeCard({
                         }`}
                       >
                         {te.status === "perfect"
-                          ? "bottled"
+                          ? "brewed"
                           : te.status === "craftable"
                             ? `in reach${te.miN > 0 ? ` +${te.miN}` : ""}`
                             : `${te.exN} over`}
                       </span>
-                      <TokenRow req={req} />
+                      <FrequencyRow req={req} />
                     </div>
                   );
                 })}

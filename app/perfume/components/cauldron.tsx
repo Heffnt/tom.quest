@@ -11,11 +11,11 @@ import {
 import type { BrewState } from "../lib/types";
 import {
   effectiveTally,
-  availableMarkers,
+  availableCharges,
   msFromList,
 } from "../lib/engine";
 import {
-  ALL_TOKENS,
+  ALL_FREQUENCIES,
   FUND,
   isNamed,
   NAMED,
@@ -30,17 +30,17 @@ import {
 } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
-// The name printed under a floating token: school for fundamentals, the tone's
-// own name for named frequencies.
-function tokenLabel(id: string): string {
+// The name printed under a floating frequency: school for fundamentals, the
+// frequency's own name for named frequencies.
+function frequencyName(id: string): string {
   return isNamed(id) ? id : (FUND[id]?.school ?? id);
 }
 
 export interface CauldronProps {
   brew: BrewState;
   brewCounts: { key: string; name: string; color: string; count: number }[];
-  // names of the perfumes the current brew bottles exactly (perfect matches)
-  bottled: string[];
+  // names of the perfumes the current brew brews exactly (perfect matches)
+  brewed: string[];
   onInc: (key: string) => void;
   onDec: (key: string) => void;
   onStrike: (id: string) => void;
@@ -50,8 +50,8 @@ export interface CauldronProps {
   onClear: () => void;
 }
 
-// Deterministic [0,1) hash from a string, so a token keeps a stable position
-// and animation across re-renders (positions are keyed by token identity).
+// Deterministic [0,1) hash from a string, so a frequency keeps a stable position
+// and animation across re-renders (positions are keyed by frequency identity).
 function hash01(str: string, salt = 0): number {
   let h = 2166136261 ^ salt;
   for (let i = 0; i < str.length; i++) {
@@ -68,11 +68,11 @@ type FloatKind = "freq" | "ghost" | "strike" | "wild";
 type Floater = {
   uid: string;
   kind: FloatKind;
-  id?: string; // token id for freq/ghost
+  id?: string; // frequency id for freq/ghost
   summoned?: boolean; // freq summoned via a wildcard (undo-able)
-  // the ingredient this token came from; for summoned tokens and unspent
+  // the ingredient this frequency came from; for summoned frequencies and unspent
   // charges it is the ingredient that GRANTED the ⊕/⊖ (charges are spent in
-  // brew order, matching how the engine caps plays to marker totals)
+  // brew order, matching how the engine caps plays to charge totals)
   src?: Src;
 };
 
@@ -83,8 +83,8 @@ type Slot = { x: number; y: number; angle: number };
 // MOUTH is where the connective lines rise out of the pot.
 const MOUTH = { x: 50, y: 78 };
 
-// Fan the frequency tokens into a "hand of cards" arc high above the cauldron.
-function tokenArcSlot(i: number, n: number): Slot {
+// Fan the frequencies into a "hand of cards" arc high above the cauldron.
+function freqArcSlot(i: number, n: number): Slot {
   if (n <= 1) return { x: 50, y: 20, angle: 0 };
   const STEP = 0.27; // ~15.5° between adjacent cards
   const MAX_FAN = 2.25; // ~129° widest total spread
@@ -117,7 +117,7 @@ function ingArcSlot(i: number, n: number): Slot {
   };
 }
 
-// Gentle in-place bob, deterministic per token so it stays stable across renders.
+// Gentle in-place bob, deterministic per floater so it stays stable across renders.
 function driftStyle(uid: string): React.CSSProperties {
   const dx = (hash01(uid, 3) - 0.5) * 10; // ±5px
   const dy = -4 - hash01(uid, 4) * 6; // -4..-10px
@@ -187,7 +187,7 @@ function IngredientVisual({
 export default function Cauldron({
   brew,
   brewCounts,
-  bottled,
+  brewed,
   onInc,
   onDec,
   onStrike,
@@ -197,7 +197,7 @@ export default function Cauldron({
   onClear,
 }: CauldronProps) {
   const eff = useMemo(() => effectiveTally(brew), [brew]);
-  const avail = useMemo(() => availableMarkers(brew), [brew]);
+  const avail = useMemo(() => availableCharges(brew), [brew]);
   const struckMs = useMemo(() => msFromList(brew.strikePlays), [brew.strikePlays]);
 
   // One arc node per distinct ingredient in the pot (with a ×n count).
@@ -214,11 +214,11 @@ export default function Cauldron({
     return order.map((k) => info.get(k)!);
   }, [brew.ingredients]);
 
-  // Build the floaters for the frequency arc: every emitted token attributed
+  // Build the floaters for the frequency arc: every emitted frequency attributed
   // to the ingredient that contributed it (strikes ghost the LAST instances of
-  // a token id, mirroring the engine's id-level strikes), then summoned tokens
-  // (attributed to the ⊕-granting ingredient), then unspent ⊖/⊕ charges
-  // (attributed to their granting ingredient; charges are spent in brew order).
+  // a frequency id, mirroring the engine's id-level strikes), then summoned
+  // frequencies (attributed to the ⊕-granting ingredient), then unspent ⊖/⊕
+  // charges (attributed to their granting ingredient; charges are spent in brew order).
   const floaters = useMemo<Floater[]>(() => {
     const out: Floater[] = [];
     const instances: Record<string, Src[]> = {};
@@ -264,7 +264,7 @@ export default function Cauldron({
 
   // ---- layout: slots for both arcs + the connective lines ----
   const layout = useMemo(() => {
-    const tokenSlots = floaters.map((_, i) => tokenArcSlot(i, floaters.length));
+    const tokenSlots = floaters.map((_, i) => freqArcSlot(i, floaters.length));
     const ingSlots = ingNodes.map((_, i) => ingArcSlot(i, ingNodes.length));
     const slotByIng = new Map(ingNodes.map((g, i) => [g.key, ingSlots[i]]));
     type Edge = {
@@ -290,7 +290,7 @@ export default function Cauldron({
         ingKey: g.key,
       });
     });
-    // ingredient -> its tokens / charges
+    // ingredient -> its frequencies / charges
     floaters.forEach((f, i) => {
       if (!f.src) return;
       const from = slotByIng.get(f.src.key);
@@ -322,7 +322,7 @@ export default function Cauldron({
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const [hoverTarget, setHoverTarget] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
-  // ingredient under the pointer (arc node or tray chip) — its tokens and
+  // ingredient under the pointer (arc node or tray chip) — its frequencies and
   // lines light up while everything else dims
   const [hoverIng, setHoverIng] = useState<string | null>(null);
   const dragInfo = useRef<{ moved: boolean; startX: number; startY: number }>({
@@ -333,8 +333,8 @@ export default function Cauldron({
 
   const hitTokenAt = (x: number, y: number): string | null => {
     const el = document.elementFromPoint(x, y);
-    const t = el?.closest?.("[data-drop-token]");
-    return t ? t.getAttribute("data-drop-token") : null;
+    const t = el?.closest?.("[data-drop-freq]");
+    return t ? t.getAttribute("data-drop-freq") : null;
   };
 
   const onStrikePointerDown = (e: ReactPointerEvent) => {
@@ -374,7 +374,7 @@ export default function Cauldron({
 
   const onFreqClick = (f: Floater) => {
     if (!f.id) return;
-    // A summoned token is dispelled (refunds the ⊕), never struck — striking it
+    // A summoned frequency is dispelled (refunds the ⊕), never struck — striking it
     // would waste a ⊖ since the engine applies strikes before summons.
     if (f.summoned) {
       onUnsummon(f.id);
@@ -525,10 +525,10 @@ export default function Cauldron({
                 </button>
               );
             } else {
-              label = tokenLabel(f.id!);
+              label = frequencyName(f.id!);
               inner = (
                 <div
-                  {...(!ghost && !f.summoned ? { "data-drop-token": f.uid } : {})}
+                  {...(!ghost && !f.summoned ? { "data-drop-freq": f.uid } : {})}
                   onClick={() => {
                     if (ghost) {
                       onUnstrike(f.id!);
@@ -671,37 +671,18 @@ export default function Cauldron({
           })}
         </div>
 
-        {/* the bottled perfume, named on the cauldron itself */}
-        {bottled.length > 0 && (
-          <div className="pointer-events-none absolute left-1/2 top-[76%] z-20 -translate-x-1/2 -translate-y-1/2 px-4 text-center">
-            <div
-              className="font-mono text-[11px] uppercase tracking-[0.35em] text-success"
-              style={labelShadow}
-            >
-              ✦ bottled
-            </div>
-            <div
-              className="font-display text-2xl leading-tight text-text"
-              style={{
-                textShadow:
-                  "0 1px 3px rgba(0,0,0,.9), 0 0 22px rgba(111,227,196,.55)",
-              }}
-            >
-              {bottled.join(" · ")}
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* brew tray — manage what's in the pot; hovering a chip lights up its
-          node and tokens in the arcs above */}
+      {/* brew banner — the ingredients in the pot, and when they land exactly
+          on a recipe, what they brewed: "these ingredients = this perfume".
+          Hovering a chip lights up its node and frequencies in the arcs. */}
       <div className="border-t border-border px-3 py-2">
         {brewCounts.length === 0 ? (
           <p className="py-1 text-center font-mono text-xs text-text-faint">
             the cauldron is empty
           </p>
         ) : (
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             {brewCounts.map((b) => (
               <span
                 key={b.key}
@@ -736,6 +717,20 @@ export default function Cauldron({
                 </span>
               </span>
             ))}
+            {brewed.length > 0 && (
+              <span className="flex items-center gap-2 pl-1">
+                <span className="font-mono text-sm text-success">=</span>
+                <span
+                  className="font-display text-lg leading-none text-text"
+                  style={{ textShadow: "0 0 14px rgba(111,227,196,.5)" }}
+                >
+                  {brewed.join(" · ")}
+                </span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-success">
+                  ✦ brewed
+                </span>
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -873,7 +868,7 @@ function WildcardPicker({
   const query = q.trim().toLowerCase();
   const items = useMemo(
     () =>
-      ALL_TOKENS.filter((t) => {
+      ALL_FREQUENCIES.filter((t) => {
         if (!query) return true;
         if (t.id.toLowerCase().includes(query)) return true;
         if (isNamed(t.id) && (NAMED[t.id]?.icon ?? "").toLowerCase().includes(query)) return true;

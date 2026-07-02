@@ -1,8 +1,10 @@
 // Shared types for the Perfumer's Bench (/perfume).
-// Token ids are either a fundamental id (9) or a named-frequency id (17). Named
-// frequencies are ATOMIC for matching — never unpacked into their components.
+// Frequency ids are either a fundamental id (9) or a named-frequency id (17).
+// Named frequencies are ATOMIC for matching — never unpacked into their
+// components.
 
-export type Token = string;
+/** A single frequency id — either a fundamental (e.g. "A") or named (e.g. "Crallax"). */
+export type Frequency = string;
 
 export type Tier = "simple" | "advanced" | "legendary";
 
@@ -24,7 +26,7 @@ export type Source =
 export type Ingredient = {
   key: string; // stable unique key: "base:<name>" or "user:<convexId>"
   name: string;
-  emits: Token[]; // multiset of emitted tokens (repeats allowed)
+  emits: Frequency[]; // multiset of emitted frequencies (repeats allowed)
   strike: number; // ⊖ strike charges granted
   wild: number; // ⊕ wildcard charges granted
   color: string;
@@ -56,7 +58,7 @@ export type Recipe = {
   name: string;
   roll: number; // d40 table row (16 appears twice: Bright and Frenzy)
   tier: Tier;
-  reqs: Token[][]; // valid tunings, each a target multiset
+  reqs: Frequency[][]; // valid tunings, each a target multiset
   slots: RecipeSlotEntry[][]; // common-recipe slots, each a list of alternatives
   combos: RecipeCombo[];
   desc: string;
@@ -69,8 +71,8 @@ export type RecipeStatus = "perfect" | "craftable" | "off";
 
 export type EvalResult = {
   status: RecipeStatus;
-  excess: Multiset; // B - R : tokens to strike (⊖)
-  missing: Multiset; // R - B : tokens to summon (⊕)
+  excess: Multiset; // B - R : frequencies to strike (⊖)
+  missing: Multiset; // R - B : frequencies to summon (⊕)
   exN: number; // total excess count
   miN: number; // total missing count
   S: number; // remaining ⊖ strike charges
@@ -82,6 +84,6 @@ export type EvalResult = {
 // of added ingredients (each addition appears once; repeats allowed).
 export type BrewState = {
   ingredients: Ingredient[];
-  strikePlays: Token[]; // tokens struck out of the brew (each consumes one ⊖)
-  wildPlays: Token[]; // tokens summoned into the brew (each consumes one ⊕)
+  strikePlays: Frequency[]; // frequencies struck out of the brew (each consumes one ⊖)
+  wildPlays: Frequency[]; // frequencies summoned into the brew (each consumes one ⊕)
 };

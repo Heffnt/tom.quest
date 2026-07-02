@@ -73,10 +73,10 @@ export const PAGE_NAMES: Record<number, string> = {
   6: "VII", 7: "VIII", 8: "IX", 9: "X", 10: "XI", 11: "XII",
 };
 
-// Every token id, fundamentals first then named — used for wildcard pickers
+// Every frequency id, fundamentals first then named — used for wildcard pickers
 // and frequency filters.
-export type TokenKind = "fundamental" | "named";
-export const ALL_TOKENS: { id: string; kind: TokenKind }[] = [
+export type FrequencyKind = "fundamental" | "named";
+export const ALL_FREQUENCIES: { id: string; kind: FrequencyKind }[] = [
   ...FUND_ORDER.map((id) => ({ id, kind: "fundamental" as const })),
   ...NAMED_ORDER.map((id) => ({ id, kind: "named" as const })),
 ];
@@ -92,13 +92,13 @@ export const baseIngredients: Ingredient[] = data.ingredients.map((i) => ({
   source: { kind: "base" } as const,
 }));
 
-// Pure frequencies: single-tone pseudo-ingredients (plus a pure strike ⊖ and
-// a pure wild ⊕) that drop a frequency straight into the brew with no
+// Pure frequencies: single-frequency pseudo-ingredients (plus a pure strike ⊖
+// and a pure wild ⊕) that drop a frequency straight into the brew with no
 // ingredient behind it. Keyed "pure:*" — no crest artwork, so their `source`
 // is a synthetic non-base kind and thumbnails fall back to a color chip.
 const PURE_SOURCE = { kind: "user", userId: "pure", name: "pure" } as const;
 export const pureIngredients: Ingredient[] = [
-  ...ALL_TOKENS.map((t) => ({
+  ...ALL_FREQUENCIES.map((t) => ({
     key: `pure:${t.id}`,
     name: `Pure ${t.id}`,
     emits: [t.id],

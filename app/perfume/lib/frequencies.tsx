@@ -1,10 +1,12 @@
+"use client";
+
 // Visual frequency module for the Perfumer's Bench (/perfume).
 //
 // Single source of truth for how a frequency *looks* — the emblem glyphs,
-// chip letters, and colors used by the cauldron and floating token chips.
-// Presentational only: no hooks, no interactivity, no "use client" needed.
+// chip letters, and colors used by the cauldron panel and inline chips —
+// plus the hover popover that shows a frequency's decomposition tree.
 //
-// Two kinds of token render here:
+// Two kinds of frequency render here:
 //   - FUNDAMENTAL  -> a filled rounded chip with its letter id (A, C, En, ...).
 //   - NAMED        -> a transparent ringed chip showing its emblem glyph,
 //                     copper if legendary, otherwise phial-green.
@@ -77,7 +79,7 @@ export function fundColor(id: string): string {
   return FUND[id]?.color ?? "#888";
 }
 
-/** Display color for any token: fundamental -> its color; named -> namedColor. */
+/** Display color for any frequency: fundamental -> its color; named -> namedColor. */
 export function tokenColor(id: string): string {
   return isNamed(id) ? namedColor(id) : fundColor(id);
 }
@@ -107,14 +109,9 @@ export function EmblemSvg({
   );
 }
 
-/**
- * A circular chip for a single frequency, used floating above the cauldron and
- * inline in chips. Fundamentals show their letter on a filled chip; named
- * frequencies show their emblem on a transparent, ringed chip.
- *
- * `size` is the px diameter — kept crisp at ~24-34px.
- */
-export function FrequencySymbol({
+// The bare chip visual, no hover behavior — used by FrequencySymbol and inside
+// the decomposition popover (which must not spawn nested popovers).
+export function FrequencyGlyph({
   id,
   size = 28,
   className,
@@ -147,7 +144,6 @@ export function FrequencySymbol({
           lineHeight: 0,
           flex: "0 0 auto",
         }}
-        title={id}
       >
         <EmblemSvg
           icon={icon}
@@ -180,9 +176,118 @@ export function FrequencySymbol({
         lineHeight: 1,
         flex: "0 0 auto",
       }}
-      title={id}
     >
       {id}
+    </span>
+  );
+}
+
+// ── decomposition popover ─────────────────────────────────────────────────────
+
+// One node of the decomposition tree: the frequency, its name, and (for named
+// frequencies) its grouped components recursively, down to the fundamentals.
+function DecompNode({ id, count, depth }: { id: string; count: number; depth: number }) {
+  const named = isNamed(id);
+  const label = named ? id : (FUND[id]?.school ?? id);
+  const comps = named ? NAMED[id].components : [];
+  const grouped = new Map<string, number>();
+  for (const c of comps) grouped.set(c, (grouped.get(c) ?? 0) + 1);
+  return (
+    <div style={{ marginLeft: depth === 0 ? 0 : 14 }}>
+      <div className="flex items-center gap-1.5 py-0.5">
+        <FrequencyGlyph id={id} size={16} />
+        <span className="font-mono text-[11px] text-text">
+          {label}
+          {count > 1 ? ` ×${count}` : ""}
+        </span>
+        {!named && (
+          <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">
+            fundamental
+          </span>
+        )}
+      </div>
+      {named &&
+        [...grouped.entries()].map(([cid, n]) => (
+          <DecompNode key={cid} id={cid} count={n} depth={depth + 1} />
+        ))}
+    </div>
+  );
+}
+
+/**
+ * A circular chip for a single frequency, used floating above the cauldron and
+ * inline in chips. Fundamentals show their letter on a filled chip; named
+ * frequencies show their emblem on a transparent, ringed chip.
+ *
+ * Hovering any symbol pops the frequency's decomposition tree — every
+ * frequency it takes to combine into it, down to the fundamentals.
+ *
+ * `size` is the px diameter — kept crisp at ~24-34px.
+ */
+export function FrequencySymbol({
+  id,
+  size = 28,
+  className,
+}: {
+  id: string;
+  size?: number;
+  className?: string;
+}) {
+  const [pop, setPop] = React.useState<{ x: number; y: number } | null>(null);
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const show = (e: React.MouseEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setPop({ x: r.left + r.width / 2, y: r.bottom }), 260);
+  };
+  const hide = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    setPop(null);
+  };
+  React.useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  // clamp the popover on-screen (it renders position:fixed)
+  const W = 240;
+  const left = pop
+    ? Math.min(Math.max(pop.x - W / 2, 8), (typeof window !== "undefined" ? window.innerWidth : 1024) - W - 8)
+    : 0;
+  const openUp =
+    pop !== null &&
+    typeof window !== "undefined" &&
+    pop.y > window.innerHeight - 300;
+
+  return (
+    <span
+      className="relative inline-flex"
+      style={{ flex: "0 0 auto", lineHeight: 0 }}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+    >
+      <FrequencyGlyph id={id} size={size} className={className} />
+      {pop && (
+        <div
+          className="pointer-events-none fixed z-[70] rounded-lg border border-border bg-surface p-2.5 shadow-xl"
+          style={{
+            left,
+            width: W,
+            maxHeight: 288,
+            overflow: "hidden",
+            ...(openUp ? { bottom: window.innerHeight - pop.y + size + 6 } : { top: pop.y + 6 }),
+          }}
+          role="tooltip"
+        >
+          <p className="mb-1 font-mono text-[9px] uppercase tracking-wider text-text-faint">
+            {isNamed(id) ? "combines from" : "fundamental frequency"}
+          </p>
+          <DecompNode id={id} count={1} depth={0} />
+        </div>
+      )}
     </span>
   );
 }
