@@ -18,4 +18,7 @@ export interface RecipeBookProps {
   // Load one of a recipe's common combos (index into recipe.combos) into the
   // brew, auto-spending the wildcards it needs.
   onLoadCombo?: (recipe: Recipe, comboIndex: number) => void;
+  // Add `qty` copies of an ingredient (by its stable `key`) to the brew —
+  // used by the clickable common-ingredient pills on recipe cards.
+  onAddIngredient?: (key: string, qty?: number) => void;
 }

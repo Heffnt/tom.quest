@@ -89,6 +89,11 @@ export default function PerfumeClient() {
 
   // ---- brew actions ----
   const addKey = useCallback((key: string) => setBrewKeys((p) => [...p, key]), []);
+  const addKeyN = useCallback(
+    (key: string, qty = 1) =>
+      setBrewKeys((p) => [...p, ...Array<string>(Math.max(1, qty)).fill(key)]),
+    [],
+  );
   const decKey = useCallback(
     (key: string) =>
       setBrewKeys((p) => {
@@ -165,33 +170,38 @@ export default function PerfumeClient() {
         </span>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        {/* left column: cauldron on top, recipe book beneath it. min-w-0 lets it
-            shrink to its flex share so the recipe book's horizontal scroll is
-            contained instead of pushing the ingredient column off-screen. */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <section className="flex min-h-0 flex-1 flex-col">
-            <Cauldron
-              brew={brew}
-              brewCounts={brewCounts}
-              onInc={addKey}
-              onDec={decKey}
-              onStrike={strike}
-              onUnstrike={unstrike}
-              onSummon={summon}
-              onUnsummon={unsummon}
-              onClear={clear}
-            />
-          </section>
-
-          <div className="shrink-0 border-t border-border">
-            <RecipeBook recipes={baseRecipes} brew={brew} onLoadCombo={loadCombo} />
-          </div>
-        </div>
-
-        {/* right column: ingredient library, full height to the bottom-right corner */}
-        <aside className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border p-3 md:w-[348px] md:flex-none md:border-l md:border-t-0">
+      {/* the Byobu bench layout: library | cauldron | recipe book as three
+          working columns on wide screens; on small screens the page scrolls
+          through cauldron, then book, then library. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+        {/* ingredient library */}
+        <aside className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[330px] lg:flex-none lg:border-r lg:border-t-0">
           <IngredientPanel ingredients={baseIngredients} onAdd={addKey} />
+        </aside>
+
+        {/* the cauldron */}
+        <section className="order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1">
+          <Cauldron
+            brew={brew}
+            brewCounts={brewCounts}
+            onInc={addKey}
+            onDec={decKey}
+            onStrike={strike}
+            onUnstrike={unstrike}
+            onSummon={summon}
+            onUnsummon={unsummon}
+            onClear={clear}
+          />
+        </section>
+
+        {/* the formulary */}
+        <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[400px] lg:flex-none lg:border-l lg:border-t-0 xl:w-[440px]">
+          <RecipeBook
+            recipes={baseRecipes}
+            brew={brew}
+            onLoadCombo={loadCombo}
+            onAddIngredient={addKeyN}
+          />
         </aside>
       </div>
     </div>
