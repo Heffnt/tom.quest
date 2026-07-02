@@ -8,6 +8,7 @@ import {
   markerTotals,
   availableMarkers,
   autoResolvePlays,
+  evaluate,
 } from "./lib/engine";
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
@@ -159,20 +160,23 @@ export default function PerfumeClient() {
     [ingByKey],
   );
 
+  // perfumes the current brew matches exactly — named on the cauldron
+  const bottled = useMemo(
+    () =>
+      brew.ingredients.length === 0
+        ? []
+        : baseRecipes
+            .filter((r) => evaluate(brew, r).status === "perfect")
+            .map((r) => r.name),
+    [brew],
+  );
+
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
-      <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
-        <h1 className="font-display text-lg text-text">
-          Perfumer&apos;s <span className="text-accent">Bench</span>
-        </h1>
-        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-text-faint">
-          Three Feifs
-        </span>
-      </header>
-
       {/* the Byobu bench layout: library | cauldron | recipe book as three
           working columns on wide screens; on small screens the page scrolls
-          through cauldron, then book, then library. */}
+          through cauldron, then book, then library. The page banner is gone —
+          the cauldron's own status bar carries the Perfumer's Bench name. */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         {/* ingredient library */}
         <aside className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[330px] lg:flex-none lg:border-r lg:border-t-0">
@@ -184,6 +188,7 @@ export default function PerfumeClient() {
           <Cauldron
             brew={brew}
             brewCounts={brewCounts}
+            bottled={bottled}
             onInc={addKey}
             onDec={decKey}
             onStrike={strike}

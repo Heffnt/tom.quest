@@ -20,7 +20,14 @@ import {
   isNamed,
   NAMED,
 } from "../data/base";
-import { FrequencySymbol, STRIKE, COPPER, namedColor, fundColor } from "../lib/frequencies";
+import {
+  FrequencySymbol,
+  STRIKE,
+  COPPER,
+  namedColor,
+  fundColor,
+  tokenColor,
+} from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
 // The name printed under a floating token: school for fundamentals, the tone's
@@ -32,6 +39,8 @@ function tokenLabel(id: string): string {
 export interface CauldronProps {
   brew: BrewState;
   brewCounts: { key: string; name: string; color: string; count: number }[];
+  // names of the perfumes the current brew bottles exactly (perfect matches)
+  bottled: string[];
   onInc: (key: string) => void;
   onDec: (key: string) => void;
   onStrike: (id: string) => void;
@@ -53,33 +62,58 @@ function hash01(str: string, salt = 0): number {
   return ((h >>> 0) % 100000) / 100000;
 }
 
+type Src = { key: string; name: string; color: string };
+
 type FloatKind = "freq" | "ghost" | "strike" | "wild";
 type Floater = {
   uid: string;
   kind: FloatKind;
   id?: string; // token id for freq/ghost
   summoned?: boolean; // freq summoned via a wildcard (undo-able)
-  // the ingredient this token came from (absent for summoned tokens)
-  src?: { key: string; name: string; color: string };
+  // the ingredient this token came from; for summoned tokens and unspent
+  // charges it is the ingredient that GRANTED the ⊕/⊖ (charges are spent in
+  // brew order, matching how the engine caps plays to marker totals)
+  src?: Src;
 };
 
-// Fan the floaters into a "hand of cards" arc above the cauldron. The arc widens
-// with the number of tokens (up to a cap) and narrows as they're removed; each
-// token's slot transitions smoothly (via .pf-slot) so the others slide to make
-// room. Positions are percentages of the float field.
-function arcSlot(i: number, n: number): { x: number; y: number; angle: number } {
-  if (n <= 1) return { x: 50, y: 30, angle: 0 };
+type Slot = { x: number; y: number; angle: number };
+
+// The stage is one coordinate space (percentages of the stage box):
+// frequency arc up top, ingredient arc below it, the vessel at the bottom.
+// MOUTH is where the connective lines rise out of the pot.
+const MOUTH = { x: 50, y: 78 };
+
+// Fan the frequency tokens into a "hand of cards" arc high above the cauldron.
+function tokenArcSlot(i: number, n: number): Slot {
+  if (n <= 1) return { x: 50, y: 20, angle: 0 };
   const STEP = 0.27; // ~15.5° between adjacent cards
   const MAX_FAN = 2.25; // ~129° widest total spread
   const step = Math.min(STEP, MAX_FAN / (n - 1));
   const a = (i - (n - 1) / 2) * step; // radians, centered on 0
-  const RX = 36; // horizontal radius (% of field width)
-  const RY = 40; // vertical radius (taller -> a more pronounced arc)
-  const pivotY = 70; // arc pivots from below, opening upward
+  const RX = 38; // horizontal radius (% of stage width)
+  const RY = 34; // vertical radius (taller -> a more pronounced arc)
+  const pivotY = 54; // arc pivots from below, opening upward
   return {
     x: 50 + RX * Math.sin(a),
     y: pivotY - RY * Math.cos(a),
     angle: ((a * 180) / Math.PI) * 0.55, // damped card tilt
+  };
+}
+
+// A gentler fan for the ingredients, hugging the cauldron's rim.
+function ingArcSlot(i: number, n: number): Slot {
+  if (n <= 1) return { x: 50, y: 58, angle: 0 };
+  const STEP = 0.34;
+  const MAX_FAN = 1.9; // ~109°
+  const step = Math.min(STEP, MAX_FAN / (n - 1));
+  const a = (i - (n - 1) / 2) * step;
+  const RX = 38;
+  const RY = 34;
+  const pivotY = 92;
+  return {
+    x: 50 + RX * Math.sin(a),
+    y: pivotY - RY * Math.cos(a),
+    angle: ((a * 180) / Math.PI) * 0.35,
   };
 }
 
@@ -99,9 +133,16 @@ function driftStyle(uid: string): React.CSSProperties {
   };
 }
 
+function srcSource(src: Src) {
+  return src.key.startsWith("base:")
+    ? ({ kind: "base" } as const)
+    : ({ kind: "user", userId: "", name: "" } as const);
+}
+
 export default function Cauldron({
   brew,
   brewCounts,
+  bottled,
   onInc,
   onDec,
   onStrike,
@@ -112,20 +153,37 @@ export default function Cauldron({
 }: CauldronProps) {
   const eff = useMemo(() => effectiveTally(brew), [brew]);
   const avail = useMemo(() => availableMarkers(brew), [brew]);
-  const summonedMs = useMemo(() => msFromList(brew.plusPlays), [brew.plusPlays]);
   const struckMs = useMemo(() => msFromList(brew.minusPlays), [brew.minusPlays]);
 
-  // Build the floaters: every emitted token attributed to the ingredient that
-  // contributed it (strikes ghost the LAST instances of a token id, mirroring
-  // how the engine treats strikes as id-level, not instance-level), then
-  // summoned tokens (no source), then unspent strike / wildcard charges.
+  // One arc node per distinct ingredient in the pot (with a ×n count).
+  const ingNodes = useMemo(() => {
+    const order: string[] = [];
+    const info = new Map<string, Src & { count: number }>();
+    for (const ing of brew.ingredients) {
+      if (!info.has(ing.key)) {
+        order.push(ing.key);
+        info.set(ing.key, { key: ing.key, name: ing.name, color: ing.color, count: 0 });
+      }
+      info.get(ing.key)!.count++;
+    }
+    return order.map((k) => info.get(k)!);
+  }, [brew.ingredients]);
+
+  // Build the floaters for the frequency arc: every emitted token attributed
+  // to the ingredient that contributed it (strikes ghost the LAST instances of
+  // a token id, mirroring the engine's id-level strikes), then summoned tokens
+  // (attributed to the ⊕-granting ingredient), then unspent ⊖/⊕ charges
+  // (attributed to their granting ingredient; charges are spent in brew order).
   const floaters = useMemo<Floater[]>(() => {
     const out: Floater[] = [];
-    const instances: Record<string, { key: string; name: string; color: string }[]> = {};
+    const instances: Record<string, Src[]> = {};
+    const minusSources: Src[] = [];
+    const plusSources: Src[] = [];
     for (const ing of brew.ingredients) {
-      for (const tok of ing.emits) {
-        (instances[tok] ??= []).push({ key: ing.key, name: ing.name, color: ing.color });
-      }
+      const src: Src = { key: ing.key, name: ing.name, color: ing.color };
+      for (const tok of ing.emits) (instances[tok] ??= []).push(src);
+      for (let i = 0; i < ing.minus; i++) minusSources.push(src);
+      for (let i = 0; i < ing.plus; i++) plusSources.push(src);
     }
     for (const id of Object.keys(instances).sort()) {
       const list = instances[id];
@@ -140,30 +198,87 @@ export default function Cauldron({
         });
       });
     }
-    for (const id of Object.keys(summonedMs).sort()) {
-      for (let i = 0; i < summonedMs[id]; i++) {
-        out.push({ uid: `p:${id}:${i}`, kind: "freq", id, summoned: true });
-      }
+    const perId: Record<string, number> = {};
+    brew.plusPlays.forEach((id, i) => {
+      const n = (perId[id] = (perId[id] ?? 0) + 1);
+      out.push({ uid: `p:${id}:${n}`, kind: "freq", id, summoned: true, src: plusSources[i] });
+    });
+    for (let i = brew.minusPlays.length; i < minusSources.length; i++) {
+      out.push({ uid: `s:${i}`, kind: "strike", src: minusSources[i] });
     }
-    for (let i = 0; i < avail.minus; i++) {
-      out.push({ uid: `s:${i}`, kind: "strike" });
-    }
-    for (let i = 0; i < avail.plus; i++) {
-      out.push({ uid: `w:${i}`, kind: "wild" });
+    for (let i = brew.plusPlays.length; i < plusSources.length; i++) {
+      out.push({ uid: `w:${i}`, kind: "wild", src: plusSources[i] });
     }
     return out;
-  }, [brew.ingredients, summonedMs, struckMs, avail.minus, avail.plus]);
+  }, [brew.ingredients, brew.plusPlays, brew.minusPlays, struckMs]);
 
   const totalFreq = useMemo(
     () => Object.values(eff).reduce((a, b) => a + b, 0),
     [eff],
   );
 
+  // ---- layout: slots for both arcs + the connective lines ----
+  const layout = useMemo(() => {
+    const tokenSlots = floaters.map((_, i) => tokenArcSlot(i, floaters.length));
+    const ingSlots = ingNodes.map((_, i) => ingArcSlot(i, ingNodes.length));
+    const slotByIng = new Map(ingNodes.map((g, i) => [g.key, ingSlots[i]]));
+    type Edge = {
+      key: string;
+      d: string;
+      color: string;
+      dashed: boolean;
+      opacity: number;
+      width: number;
+      ingKey?: string;
+    };
+    const edges: Edge[] = [];
+    // stems: cauldron mouth -> each ingredient
+    ingNodes.forEach((g, i) => {
+      const s = ingSlots[i];
+      edges.push({
+        key: `stem:${g.key}`,
+        d: `M ${MOUTH.x} ${MOUTH.y} C ${MOUTH.x} ${MOUTH.y - 8}, ${s.x} ${s.y + 16}, ${s.x} ${s.y + 7}`,
+        color: "#4b4980",
+        dashed: false,
+        opacity: 0.55,
+        width: 2,
+        ingKey: g.key,
+      });
+    });
+    // ingredient -> its tokens / charges
+    floaters.forEach((f, i) => {
+      if (!f.src) return;
+      const from = slotByIng.get(f.src.key);
+      if (!from) return;
+      const to = tokenSlots[i];
+      const charge = f.kind === "strike" || f.kind === "wild";
+      const color =
+        f.kind === "strike"
+          ? STRIKE
+          : f.kind === "wild"
+            ? COPPER
+            : f.summoned
+              ? COPPER
+              : tokenColor(f.id!);
+      edges.push({
+        key: `e:${f.uid}`,
+        d: `M ${from.x} ${from.y - 7} C ${from.x} ${from.y - 18}, ${to.x} ${to.y + 18}, ${to.x} ${to.y + 6}`,
+        color,
+        dashed: charge || !!f.summoned || f.kind === "ghost",
+        opacity: f.kind === "ghost" ? 0.16 : charge ? 0.4 : 0.5,
+        width: 1.4,
+        ingKey: f.src.key,
+      });
+    });
+    return { tokenSlots, ingSlots, edges };
+  }, [floaters, ingNodes]);
+
   // ---- strike drag-and-drop ----
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const [hoverTarget, setHoverTarget] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
-  // tray ingredient under the pointer — its tokens light up in the arc
+  // ingredient under the pointer (arc node or tray chip) — its tokens and
+  // lines light up while everything else dims
   const [hoverIng, setHoverIng] = useState<string | null>(null);
   const dragInfo = useRef<{ moved: boolean; startX: number; startY: number }>({
     moved: false,
@@ -239,11 +354,17 @@ export default function Cauldron({
     setPicker({ x: r.left + r.width / 2, y: r.bottom + 6 });
   };
 
+  const labelShadow: React.CSSProperties = {
+    textShadow: "0 1px 3px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.7)",
+  };
+
   return (
     <div className="relative flex h-full flex-col">
       {/* status bar */}
       <div className="flex items-center justify-between gap-3 px-4 py-2 font-mono text-xs text-text-muted">
-        <span className="uppercase tracking-[0.3em] text-text-faint">The Cauldron</span>
+        <span className="uppercase tracking-[0.3em] text-text-faint">
+          Perfumer&apos;s Bench
+        </span>
         <div className="flex items-center gap-3 tabular-nums">
           <span title="frequencies in the brew">
             <span className="text-text">{totalFreq}</span> freq
@@ -265,19 +386,51 @@ export default function Cauldron({
         </div>
       </div>
 
-      {/* stage: floating tokens + the vessel */}
+      {/* stage: frequency arc, ingredient arc, connective lines, the vessel */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
+        {/* the vessel */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-0 flex h-[40%] items-end justify-center">
+          <CauldronVessel active={totalFreq > 0} />
+        </div>
+
+        {/* connective lines: cauldron -> ingredients -> their frequencies */}
+        <svg
+          className="pointer-events-none absolute inset-0 z-[1] h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          {layout.edges.map((e) => {
+            const linked = hoverIng !== null && e.ingKey === hoverIng;
+            const dimmed = hoverIng !== null && !linked;
+            return (
+              <path
+                key={e.key}
+                d={e.d}
+                fill="none"
+                stroke={linked ? "var(--color-accent)" : e.color}
+                strokeWidth={linked ? e.width + 0.8 : e.width}
+                strokeLinecap="round"
+                strokeDasharray={e.dashed ? "4 4" : undefined}
+                opacity={dimmed ? e.opacity * 0.25 : linked ? Math.min(1, e.opacity + 0.4) : e.opacity}
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+        </svg>
+
         {/* float field */}
-        <div className="absolute inset-x-0 top-0 bottom-[34%] z-10">
+        <div className="absolute inset-0 z-10">
           {floaters.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center px-6 text-center font-mono text-sm text-text-faint">
+            <div className="absolute inset-x-0 top-0 flex h-1/2 items-center justify-center px-6 text-center font-mono text-sm text-text-faint">
               add ingredients to conjure their frequencies…
             </div>
           )}
+
+          {/* frequency arc */}
           {floaters.map((f, i) => {
-            const slot = arcSlot(i, floaters.length);
+            const slot = layout.tokenSlots[i];
             const ghost = f.kind === "ghost";
-            // hover-linking: a tray ingredient lights up its tokens
             const linked = hoverIng !== null && f.src?.key === hoverIng;
             const dimmed = hoverIng !== null && !linked;
             let inner: React.ReactNode;
@@ -292,7 +445,7 @@ export default function Cauldron({
                   onPointerUp={onStrikePointerUp}
                   onPointerCancel={onStrikePointerCancel}
                   aria-label="Strike — drag onto a frequency to remove it"
-                  title="Strike: drag onto a frequency to remove it"
+                  title={`Strike: drag onto a frequency to remove it${f.src ? ` (granted by ${f.src.name})` : ""}`}
                   className={`grid h-8 w-8 cursor-grab touch-none select-none place-items-center rounded-full border text-sm font-bold active:cursor-grabbing ${
                     armed ? "ring-2 ring-offset-2 ring-offset-bg" : ""
                   }`}
@@ -314,7 +467,7 @@ export default function Cauldron({
                   type="button"
                   onClick={openPicker}
                   aria-label="Wildcard — click to choose a frequency to summon"
-                  title="Wildcard: click to summon any frequency"
+                  title={`Wildcard: click to summon any frequency${f.src ? ` (granted by ${f.src.name})` : ""}`}
                   className="grid h-8 w-8 cursor-pointer place-items-center rounded-full border text-sm font-bold"
                   style={{
                     borderColor: COPPER,
@@ -382,21 +535,6 @@ export default function Cauldron({
                   }}
                 >
                   <FrequencySymbol id={f.id!} size={36} />
-                  {/* the crest of the ingredient this token came from */}
-                  {f.src && !ghost && (
-                    <span className="pointer-events-none absolute -bottom-1.5 -right-1.5 overflow-hidden rounded-md shadow-md">
-                      <IngredientThumb
-                        name={f.src.name}
-                        source={
-                          f.src.key.startsWith("base:")
-                            ? { kind: "base" }
-                            : { kind: "user", userId: "", name: "" }
-                        }
-                        color={f.src.color}
-                        size={15}
-                      />
-                    </span>
-                  )}
                   {f.summoned && (
                     <span
                       className="absolute -right-1 -top-1 grid h-3.5 w-3.5 place-items-center rounded-full text-[8px] font-bold"
@@ -432,8 +570,60 @@ export default function Cauldron({
                   style={{ ...driftStyle(f.uid), opacity: dimmed ? 0.3 : 1 }}
                 >
                   {inner}
-                  <span className="pointer-events-none max-w-[74px] text-center font-mono text-[7.5px] uppercase leading-tight tracking-wide text-text-faint">
+                  <span
+                    className="pointer-events-none max-w-[84px] text-center font-mono text-[10px] uppercase leading-tight tracking-wide text-text"
+                    style={labelShadow}
+                  >
                     {label}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* ingredient arc */}
+          {ingNodes.map((g, i) => {
+            const slot = layout.ingSlots[i];
+            const linked = hoverIng === g.key;
+            const dimmed = hoverIng !== null && !linked;
+            return (
+              <div
+                key={g.key}
+                className="pf-slot absolute"
+                style={{
+                  left: `${slot.x}%`,
+                  top: `${slot.y}%`,
+                  transform: `translate(-50%, -50%) rotate(${slot.angle}deg)`,
+                  zIndex: 60 + i,
+                }}
+              >
+                <div
+                  className="pf-float flex flex-col items-center gap-1"
+                  style={{ ...driftStyle(`ing:${g.key}`), opacity: dimmed ? 0.35 : 1 }}
+                  onMouseEnter={() => setHoverIng(g.key)}
+                  onMouseLeave={() => setHoverIng(null)}
+                >
+                  <div
+                    className={`relative rounded-lg ${linked ? "ring-2 ring-accent ring-offset-2 ring-offset-bg" : ""}`}
+                    title={`${g.name}${g.count > 1 ? ` ×${g.count}` : ""}`}
+                  >
+                    <IngredientThumb
+                      name={g.name}
+                      source={srcSource(g)}
+                      color={g.color}
+                      size={44}
+                    />
+                    {g.count > 1 && (
+                      <span className="absolute -right-2 -top-2 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
+                        ×{g.count}
+                      </span>
+                    )}
+                  </div>
+                  <span
+                    className="pointer-events-none max-w-[96px] text-center font-mono text-[10.5px] uppercase leading-tight tracking-wide text-text"
+                    style={labelShadow}
+                  >
+                    {g.name}
                   </span>
                 </div>
               </div>
@@ -441,15 +631,30 @@ export default function Cauldron({
           })}
         </div>
 
-        {/* the vessel */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-0 flex h-[40%] items-end justify-center">
-          <CauldronVessel active={totalFreq > 0} />
-        </div>
+        {/* the bottled perfume, named on the cauldron itself */}
+        {bottled.length > 0 && (
+          <div className="pointer-events-none absolute left-1/2 top-[76%] z-20 -translate-x-1/2 -translate-y-1/2 px-4 text-center">
+            <div
+              className="font-mono text-[11px] uppercase tracking-[0.35em] text-success"
+              style={labelShadow}
+            >
+              ✦ bottled
+            </div>
+            <div
+              className="font-display text-2xl leading-tight text-text"
+              style={{
+                textShadow:
+                  "0 1px 3px rgba(0,0,0,.9), 0 0 22px rgba(111,227,196,.55)",
+              }}
+            >
+              {bottled.join(" · ")}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* brew tray — the ingredients currently in the pot, each with the
-          frequencies it contributes; hovering one lights its tokens up in
-          the arc above */}
+      {/* brew tray — manage what's in the pot; hovering a chip lights up its
+          node and tokens in the arcs above */}
       <div className="border-t border-border px-3 py-2">
         {brewCounts.length === 0 ? (
           <p className="py-1 text-center font-mono text-xs text-text-faint">
@@ -457,71 +662,45 @@ export default function Cauldron({
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
-            {brewCounts.map((b) => {
-              const ing = brew.ingredients.find((x) => x.key === b.key);
-              return (
-                <span
-                  key={b.key}
-                  onMouseEnter={() => setHoverIng(b.key)}
-                  onMouseLeave={() => setHoverIng(null)}
-                  onFocus={() => setHoverIng(b.key)}
-                  onBlur={() => setHoverIng(null)}
-                  className={`inline-flex items-center gap-1.5 rounded-full border bg-surface py-1 pl-1 pr-1 text-xs transition-colors ${
-                    hoverIng === b.key ? "border-accent/60" : "border-border"
-                  }`}
-                >
-                  <IngredientThumb
-                    name={b.name}
-                    source={b.key.startsWith("base:") ? { kind: "base" } : { kind: "user", userId: "", name: "" }}
-                    color={b.color}
-                    size={22}
-                  />
-                  <span className="max-w-[150px] truncate text-text">{b.name}</span>
-                  {ing && (ing.emits.length > 0 || ing.minus > 0 || ing.plus > 0) && (
-                    <span className="flex items-center gap-0.5" aria-hidden="true">
-                      {ing.emits.map((t, i) => (
-                        <FrequencySymbol key={`${t}:${i}`} id={t} size={15} />
-                      ))}
-                      {ing.minus > 0 && (
-                        <span
-                          className="rounded px-1 font-mono text-[10px]"
-                          style={{ color: STRIKE, background: "#a855f71a" }}
-                        >
-                          ⊖{ing.minus > 1 ? `×${ing.minus}` : ""}
-                        </span>
-                      )}
-                      {ing.plus > 0 && (
-                        <span
-                          className="rounded px-1 font-mono text-[10px]"
-                          style={{ color: COPPER, background: "#c98a3c1a" }}
-                        >
-                          ⊕{ing.plus > 1 ? `×${ing.plus}` : ""}
-                        </span>
-                      )}
-                    </span>
-                  )}
-                  <span className="flex items-center gap-0.5 font-mono">
-                    <button
-                      type="button"
-                      onClick={() => onDec(b.key)}
-                      aria-label={`Remove one ${b.name}`}
-                      className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
-                    >
-                      −
-                    </button>
-                    <span className="w-4 text-center tabular-nums text-text-muted">{b.count}</span>
-                    <button
-                      type="button"
-                      onClick={() => onInc(b.key)}
-                      aria-label={`Add another ${b.name}`}
-                      className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
-                    >
-                      +
-                    </button>
-                  </span>
+            {brewCounts.map((b) => (
+              <span
+                key={b.key}
+                onMouseEnter={() => setHoverIng(b.key)}
+                onMouseLeave={() => setHoverIng(null)}
+                onFocus={() => setHoverIng(b.key)}
+                onBlur={() => setHoverIng(null)}
+                className={`inline-flex items-center gap-1.5 rounded-full border bg-surface py-1 pl-1 pr-1 text-xs transition-colors ${
+                  hoverIng === b.key ? "border-accent/60" : "border-border"
+                }`}
+              >
+                <IngredientThumb
+                  name={b.name}
+                  source={b.key.startsWith("base:") ? { kind: "base" } : { kind: "user", userId: "", name: "" }}
+                  color={b.color}
+                  size={22}
+                />
+                <span className="max-w-[150px] truncate text-text">{b.name}</span>
+                <span className="flex items-center gap-0.5 font-mono">
+                  <button
+                    type="button"
+                    onClick={() => onDec(b.key)}
+                    aria-label={`Remove one ${b.name}`}
+                    className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+                  >
+                    −
+                  </button>
+                  <span className="w-4 text-center tabular-nums text-text-muted">{b.count}</span>
+                  <button
+                    type="button"
+                    onClick={() => onInc(b.key)}
+                    aria-label={`Add another ${b.name}`}
+                    className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+                  >
+                    +
+                  </button>
                 </span>
-              );
-            })}
+              </span>
+            ))}
           </div>
         )}
       </div>
