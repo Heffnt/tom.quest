@@ -16,11 +16,18 @@ import {
 } from "../lib/engine";
 import {
   ALL_TOKENS,
+  FUND,
   isNamed,
   NAMED,
 } from "../data/base";
 import { FrequencySymbol, STRIKE, COPPER, namedColor, fundColor } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
+
+// The name printed under a floating token: school for fundamentals, the tone's
+// own name for named frequencies.
+function tokenLabel(id: string): string {
+  return isNamed(id) ? id : (FUND[id]?.school ?? id);
+}
 
 export interface CauldronProps {
   brew: BrewState;
@@ -52,6 +59,8 @@ type Floater = {
   kind: FloatKind;
   id?: string; // token id for freq/ghost
   summoned?: boolean; // freq summoned via a wildcard (undo-able)
+  // the ingredient this token came from (absent for summoned tokens)
+  src?: { key: string; name: string; color: string };
 };
 
 // Fan the floaters into a "hand of cards" arc above the cauldron. The arc widens
@@ -106,26 +115,34 @@ export default function Cauldron({
   const summonedMs = useMemo(() => msFromList(brew.plusPlays), [brew.plusPlays]);
   const struckMs = useMemo(() => msFromList(brew.minusPlays), [brew.minusPlays]);
 
-  // Build the floaters: effective tokens (normal, some marked summoned),
-  // ghosts (struck-out tokens), and unspent strike / wildcard charges.
+  // Build the floaters: every emitted token attributed to the ingredient that
+  // contributed it (strikes ghost the LAST instances of a token id, mirroring
+  // how the engine treats strikes as id-level, not instance-level), then
+  // summoned tokens (no source), then unspent strike / wildcard charges.
   const floaters = useMemo<Floater[]>(() => {
     const out: Floater[] = [];
-    const effKeys = Object.keys(eff).sort();
-    for (const id of effKeys) {
-      const total = eff[id];
-      const summonedCount = Math.min(summonedMs[id] ?? 0, total);
-      for (let i = 0; i < total; i++) {
-        out.push({
-          uid: `f:${id}:${i}`,
-          kind: "freq",
-          id,
-          summoned: i >= total - summonedCount,
-        });
+    const instances: Record<string, { key: string; name: string; color: string }[]> = {};
+    for (const ing of brew.ingredients) {
+      for (const tok of ing.emits) {
+        (instances[tok] ??= []).push({ key: ing.key, name: ing.name, color: ing.color });
       }
     }
-    for (const id of Object.keys(struckMs).sort()) {
-      for (let i = 0; i < struckMs[id]; i++) {
-        out.push({ uid: `g:${id}:${i}`, kind: "ghost", id });
+    for (const id of Object.keys(instances).sort()) {
+      const list = instances[id];
+      const struck = Math.min(struckMs[id] ?? 0, list.length);
+      list.forEach((src, i) => {
+        const ghost = i >= list.length - struck;
+        out.push({
+          uid: `${ghost ? "g" : "f"}:${id}:${i}`,
+          kind: ghost ? "ghost" : "freq",
+          id,
+          src,
+        });
+      });
+    }
+    for (const id of Object.keys(summonedMs).sort()) {
+      for (let i = 0; i < summonedMs[id]; i++) {
+        out.push({ uid: `p:${id}:${i}`, kind: "freq", id, summoned: true });
       }
     }
     for (let i = 0; i < avail.minus; i++) {
@@ -135,7 +152,7 @@ export default function Cauldron({
       out.push({ uid: `w:${i}`, kind: "wild" });
     }
     return out;
-  }, [eff, summonedMs, struckMs, avail.minus, avail.plus]);
+  }, [brew.ingredients, summonedMs, struckMs, avail.minus, avail.plus]);
 
   const totalFreq = useMemo(
     () => Object.values(eff).reduce((a, b) => a + b, 0),
@@ -146,6 +163,8 @@ export default function Cauldron({
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const [hoverTarget, setHoverTarget] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
+  // tray ingredient under the pointer — its tokens light up in the arc
+  const [hoverIng, setHoverIng] = useState<string | null>(null);
   const dragInfo = useRef<{ moved: boolean; startX: number; startY: number }>({
     moved: false,
     startX: 0,
@@ -258,8 +277,13 @@ export default function Cauldron({
           {floaters.map((f, i) => {
             const slot = arcSlot(i, floaters.length);
             const ghost = f.kind === "ghost";
+            // hover-linking: a tray ingredient lights up its tokens
+            const linked = hoverIng !== null && f.src?.key === hoverIng;
+            const dimmed = hoverIng !== null && !linked;
             let inner: React.ReactNode;
+            let label: string;
             if (f.kind === "strike") {
+              label = "strike";
               inner = (
                 <button
                   type="button"
@@ -269,11 +293,10 @@ export default function Cauldron({
                   onPointerCancel={onStrikePointerCancel}
                   aria-label="Strike — drag onto a frequency to remove it"
                   title="Strike: drag onto a frequency to remove it"
-                  className={`pf-float grid h-8 w-8 cursor-grab touch-none select-none place-items-center rounded-full border text-sm font-bold active:cursor-grabbing ${
+                  className={`grid h-8 w-8 cursor-grab touch-none select-none place-items-center rounded-full border text-sm font-bold active:cursor-grabbing ${
                     armed ? "ring-2 ring-offset-2 ring-offset-bg" : ""
                   }`}
                   style={{
-                    ...driftStyle(f.uid),
                     borderColor: STRIKE,
                     color: STRIKE,
                     background: "#a855f71a",
@@ -285,15 +308,15 @@ export default function Cauldron({
                 </button>
               );
             } else if (f.kind === "wild") {
+              label = "wildcard";
               inner = (
                 <button
                   type="button"
                   onClick={openPicker}
                   aria-label="Wildcard — click to choose a frequency to summon"
                   title="Wildcard: click to summon any frequency"
-                  className="pf-float grid h-8 w-8 cursor-pointer place-items-center rounded-full border text-sm font-bold"
+                  className="grid h-8 w-8 cursor-pointer place-items-center rounded-full border text-sm font-bold"
                   style={{
-                    ...driftStyle(f.uid),
                     borderColor: COPPER,
                     color: COPPER,
                     background: "#c98a3c1a",
@@ -304,6 +327,7 @@ export default function Cauldron({
                 </button>
               );
             } else {
+              label = tokenLabel(f.id!);
               inner = (
                 <div
                   {...(!ghost && !f.summoned ? { "data-drop-token": f.uid } : {})}
@@ -331,28 +355,48 @@ export default function Cauldron({
                   aria-label={
                     ghost
                       ? `${f.id} removed — click to restore`
-                      : `${f.id} frequency${f.summoned ? ", summoned — click to dispel" : ""}`
+                      : `${f.id} frequency${f.summoned ? ", summoned — click to dispel" : ""}${
+                          f.src ? `, from ${f.src.name}` : ""
+                        }`
                   }
                   title={
                     ghost
                       ? `${f.id} — struck out (click to restore)`
                       : f.summoned
                         ? `${f.id} — summoned (click to dispel)`
-                        : f.id
+                        : f.src
+                          ? `${f.id} — from ${f.src.name}`
+                          : f.id
                   }
-                  className={`pf-float relative cursor-pointer rounded-full transition-[filter,opacity] ${
-                    hoverTarget === f.uid ? "ring-2 ring-offset-2 ring-offset-bg" : ""
+                  className={`relative cursor-pointer rounded-full transition-[filter,opacity] ${
+                    hoverTarget === f.uid || linked ? "ring-2 ring-offset-2 ring-offset-bg" : ""
                   }`}
                   style={{
-                    ...driftStyle(f.uid),
                     opacity: ghost ? 0.34 : 1,
                     filter: ghost ? "grayscale(1)" : "none",
                     ...(hoverTarget === f.uid
                       ? ({ ["--tw-ring-color" as string]: STRIKE } as React.CSSProperties)
-                      : {}),
+                      : linked
+                        ? ({ ["--tw-ring-color" as string]: "var(--color-accent)" } as React.CSSProperties)
+                        : {}),
                   }}
                 >
                   <FrequencySymbol id={f.id!} size={36} />
+                  {/* the crest of the ingredient this token came from */}
+                  {f.src && !ghost && (
+                    <span className="pointer-events-none absolute -bottom-1.5 -right-1.5 overflow-hidden rounded-md shadow-md">
+                      <IngredientThumb
+                        name={f.src.name}
+                        source={
+                          f.src.key.startsWith("base:")
+                            ? { kind: "base" }
+                            : { kind: "user", userId: "", name: "" }
+                        }
+                        color={f.src.color}
+                        size={15}
+                      />
+                    </span>
+                  )}
                   {f.summoned && (
                     <span
                       className="absolute -right-1 -top-1 grid h-3.5 w-3.5 place-items-center rounded-full text-[8px] font-bold"
@@ -383,7 +427,15 @@ export default function Cauldron({
                   zIndex: 10 + i,
                 }}
               >
-                {inner}
+                <div
+                  className="pf-float flex flex-col items-center gap-1"
+                  style={{ ...driftStyle(f.uid), opacity: dimmed ? 0.3 : 1 }}
+                >
+                  {inner}
+                  <span className="pointer-events-none max-w-[74px] text-center font-mono text-[7.5px] uppercase leading-tight tracking-wide text-text-faint">
+                    {label}
+                  </span>
+                </div>
               </div>
             );
           })}
@@ -395,7 +447,9 @@ export default function Cauldron({
         </div>
       </div>
 
-      {/* brew tray — the ingredients currently in the pot */}
+      {/* brew tray — the ingredients currently in the pot, each with the
+          frequencies it contributes; hovering one lights its tokens up in
+          the arc above */}
       <div className="border-t border-border px-3 py-2">
         {brewCounts.length === 0 ? (
           <p className="py-1 text-center font-mono text-xs text-text-faint">
@@ -403,39 +457,71 @@ export default function Cauldron({
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
-            {brewCounts.map((b) => (
-              <span
-                key={b.key}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface py-1 pl-1 pr-1 text-xs"
-              >
-                <IngredientThumb
-                  name={b.name}
-                  source={b.key.startsWith("base:") ? { kind: "base" } : { kind: "user", userId: "", name: "" }}
-                  color={b.color}
-                  size={22}
-                />
-                <span className="max-w-[150px] truncate text-text">{b.name}</span>
-                <span className="flex items-center gap-0.5 font-mono">
-                  <button
-                    type="button"
-                    onClick={() => onDec(b.key)}
-                    aria-label={`Remove one ${b.name}`}
-                    className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
-                  >
-                    −
-                  </button>
-                  <span className="w-4 text-center tabular-nums text-text-muted">{b.count}</span>
-                  <button
-                    type="button"
-                    onClick={() => onInc(b.key)}
-                    aria-label={`Add another ${b.name}`}
-                    className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
-                  >
-                    +
-                  </button>
+            {brewCounts.map((b) => {
+              const ing = brew.ingredients.find((x) => x.key === b.key);
+              return (
+                <span
+                  key={b.key}
+                  onMouseEnter={() => setHoverIng(b.key)}
+                  onMouseLeave={() => setHoverIng(null)}
+                  onFocus={() => setHoverIng(b.key)}
+                  onBlur={() => setHoverIng(null)}
+                  className={`inline-flex items-center gap-1.5 rounded-full border bg-surface py-1 pl-1 pr-1 text-xs transition-colors ${
+                    hoverIng === b.key ? "border-accent/60" : "border-border"
+                  }`}
+                >
+                  <IngredientThumb
+                    name={b.name}
+                    source={b.key.startsWith("base:") ? { kind: "base" } : { kind: "user", userId: "", name: "" }}
+                    color={b.color}
+                    size={22}
+                  />
+                  <span className="max-w-[150px] truncate text-text">{b.name}</span>
+                  {ing && (ing.emits.length > 0 || ing.minus > 0 || ing.plus > 0) && (
+                    <span className="flex items-center gap-0.5" aria-hidden="true">
+                      {ing.emits.map((t, i) => (
+                        <FrequencySymbol key={`${t}:${i}`} id={t} size={15} />
+                      ))}
+                      {ing.minus > 0 && (
+                        <span
+                          className="rounded px-1 font-mono text-[10px]"
+                          style={{ color: STRIKE, background: "#a855f71a" }}
+                        >
+                          ⊖{ing.minus > 1 ? `×${ing.minus}` : ""}
+                        </span>
+                      )}
+                      {ing.plus > 0 && (
+                        <span
+                          className="rounded px-1 font-mono text-[10px]"
+                          style={{ color: COPPER, background: "#c98a3c1a" }}
+                        >
+                          ⊕{ing.plus > 1 ? `×${ing.plus}` : ""}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  <span className="flex items-center gap-0.5 font-mono">
+                    <button
+                      type="button"
+                      onClick={() => onDec(b.key)}
+                      aria-label={`Remove one ${b.name}`}
+                      className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+                    >
+                      −
+                    </button>
+                    <span className="w-4 text-center tabular-nums text-text-muted">{b.count}</span>
+                    <button
+                      type="button"
+                      onClick={() => onInc(b.key)}
+                      aria-label={`Add another ${b.name}`}
+                      className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+                    >
+                      +
+                    </button>
+                  </span>
                 </span>
-              </span>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
