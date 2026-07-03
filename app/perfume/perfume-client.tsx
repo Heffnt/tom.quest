@@ -23,8 +23,11 @@ import PerfumePanel from "./components/perfume-panel";
 
 // Side-panel resizing (wide layout only): each panel keeps its width in state,
 // clamped so neither the panel nor the cauldron stage can collapse, and
-// remembered across visits.
-const PANEL_DEFAULTS = { left: 330, right: 420 } as const;
+// remembered across visits. The left default fits the WIDEST ingredient row
+// (thumb + type + name + frequency chips + steppers) with nothing truncated;
+// the storage key is versioned so a new default wins over stale saved widths.
+const PANEL_DEFAULTS = { left: 480, right: 420 } as const;
+const PANEL_STORE = "pf:panel2";
 const PANEL_MIN = 240;
 const PANEL_MAX = 620;
 
@@ -238,8 +241,8 @@ export default function PerfumeClient() {
   const [rightW, setRightW] = useState<number>(PANEL_DEFAULTS.right);
   // read the remembered widths after mount so SSR and first client render agree
   useEffect(() => {
-    const l = Number(localStorage.getItem("pf:panel:left"));
-    const r = Number(localStorage.getItem("pf:panel:right"));
+    const l = Number(localStorage.getItem(`${PANEL_STORE}:left`));
+    const r = Number(localStorage.getItem(`${PANEL_STORE}:right`));
     if (l > 0) setLeftW(clampPanel(l));
     if (r > 0) setRightW(clampPanel(r));
   }, []);
@@ -274,11 +277,11 @@ export default function PerfumeClient() {
     resize.current = null;
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
-    localStorage.setItem(`pf:panel:${d.side}`, String(d.lastW));
+    localStorage.setItem(`${PANEL_STORE}:${d.side}`, String(d.lastW));
   }, []);
   const resetPanel = useCallback((side: "left" | "right") => {
     (side === "left" ? setLeftW : setRightW)(PANEL_DEFAULTS[side]);
-    localStorage.removeItem(`pf:panel:${side}`);
+    localStorage.removeItem(`${PANEL_STORE}:${side}`);
   }, []);
 
   return (

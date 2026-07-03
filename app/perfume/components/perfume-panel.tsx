@@ -434,7 +434,7 @@ function IngredientPill({
 
 // What the brew still needs for this perfume, per reachable tuning: the
 // missing frequencies as symbols plus one ⊖ chip per strike to spend,
-// alternatives joined with "or". Boxed, accent-tinted while in reach.
+// alternatives joined with "or".
 function NeededOptions({
   perfume,
   brew,
@@ -446,7 +446,6 @@ function NeededOptions({
   res: EvalResult;
   size: number;
 }) {
-  const reach = res.status === "craftable";
   // per-tuning needs, deduped; unreachable tunings drop out unless none reach
   const evs = perfume.reqs.map((req, ri) => evalReq(brew, req, ri));
   const reachable = evs.filter((e) => e.status === "craftable");
@@ -462,9 +461,7 @@ function NeededOptions({
   }
   return (
     <span
-      className={`flex min-w-0 flex-wrap items-center gap-1.5 rounded border px-2 py-1 ${
-        reach ? "border-accent/40 bg-accent/10" : "border-border"
-      }`}
+      className="flex min-w-0 flex-wrap items-center gap-1.5"
       title="what the brew still needs for this perfume"
     >
       {options.slice(0, 3).map((e, oi) => (
