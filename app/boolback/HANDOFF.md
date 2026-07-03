@@ -82,10 +82,14 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   row + ten facet buttons + add-metric. Active filters are uniform chips
   (status / `model: Llama +2` / `avg sensitivity 0.5–1.2` / `scope: …`);
   click a chip body for its popover editor (checkbox list or histogram
-  slider), × clears it. Planted stays as a permanent quick toggle. A
-  quick-search box matches run id / fn hex / DNF / dir path / facet values
-  (AND across tokens). Sort chips appear only with ≥2 keys. Right side:
-  count + ⓘ, Export menu, Columns, Reset.
+  slider), × clears it. Status flags (incl. Planted) live in the menu and
+  chip up only while active — nothing shows when off. A quick-search box
+  matches run id / fn hex / DNF / dir path / facet values (AND across
+  tokens). Sort chips appear only with ≥2 keys. Right side: count + ⓘ,
+  Export menu, Columns, Reset. Z-scale: table internals ≤ z-20, the filter
+  bar (a stacking context capping its popovers) z-30, command-bar popovers
+  z-40 — a bar popover must never tie the frozen headers' z-20 or DOM order
+  paints the table over it.
 - **Table** — WINDOWED rendering (every filtered row reachable; no 500-row
   cap), sortable (multi-key, drag chips), resizable columns, per-group
   column menus. Leading arity/`Fn` columns freeze sticky-left. A summary

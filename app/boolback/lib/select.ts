@@ -20,6 +20,7 @@ import type {
   SortDir,
 } from "./types";
 import { fnText } from "./format";
+import { METRIC_COLUMN_IDS } from "./columns";
 
 export type MetricIndex = Record<string, MetricSchemaEntry>;
 
@@ -74,9 +75,11 @@ const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | nul
   "scan.far_at_frr": (r) => r.scan?.far_at_frr ?? null,
 };
 
-/** Read a value for any column for sorting/display (string|number|bool|null). */
+/** Read a value for any column for sorting/display (string|number|bool|null).
+ * Accepts dotted column ids AND bare non-FUNCTION metric_schema names (range
+ * filters / the chart store metrics under their schema names). */
 export function cellValue(row: RunRow, col: string): string | number | boolean | null {
-  const getter = COL_GETTERS[col];
+  const getter = COL_GETTERS[col] ?? COL_GETTERS[METRIC_COLUMN_IDS[col] ?? ""];
   if (getter) return getter(row);
   const m = row.function.complexity[col];
   return m === undefined ? null : m;

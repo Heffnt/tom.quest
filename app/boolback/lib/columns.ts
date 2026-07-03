@@ -224,6 +224,18 @@ export function metricColumnId(
   return resolveColumn(entry.group, name, index).id;
 }
 
+// Bare metric_schema name -> dotted column id for the non-FUNCTION groups
+// (FUNCTION metrics ARE their bare names). Range filters and the chart store
+// metrics under their SCHEMA names; select.cellValue resolves through this so
+// a bare "plantedness" reads headline.plantedness instead of silently missing
+// into function.complexity (which matched zero rows).
+export const METRIC_COLUMN_IDS: Record<string, string> = {
+  ...OUTCOME_PATHS,
+  ...DEFENSE_PATHS,
+  ...INTERP_PATHS,
+  ...SCAN_PATHS,
+};
+
 /** Resolve a stored visibleCols entry (an internal id) back to its ColumnDef. */
 export function resolveById(
   id: string,

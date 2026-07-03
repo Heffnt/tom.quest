@@ -112,6 +112,26 @@ describe("select", () => {
     expect(applyFilters(rows, { ...EMPTY_FILTER, search: "   " })).toHaveLength(rows.length);
   });
 
+  it("range filters accept BARE metric_schema names for non-FUNCTION metrics", () => {
+    // Regression: chips store metrics under their schema names ("plantedness"),
+    // but cellValue only knew dotted ids — the bare name fell through to
+    // function.complexity and a 0–1 plantedness range matched ZERO runs.
+    const bare = applyFilters(rows, {
+      ...EMPTY_FILTER,
+      ranges: [{ metric: "plantedness", min: 0, max: 1 }],
+    });
+    const dotted = applyFilters(rows, {
+      ...EMPTY_FILTER,
+      ranges: [{ metric: "headline.plantedness", min: 0, max: 1 }],
+    });
+    expect(bare.length).toBeGreaterThan(0);
+    expect(bare).toEqual(dotted);
+    // the alias also feeds sorting/histograms via numericValue
+    expect(numericValue(rows[0], "plantedness")).toBe(
+      numericValue(rows[0], "headline.plantedness"),
+    );
+  });
+
   it("facetKeyForColumn maps categorical column ids to their facet", () => {
     expect(facetKeyForColumn("training.base_model")).toBe("baseModel");
     expect(facetKeyForColumn("dataset.source")).toBe("source");

@@ -100,8 +100,7 @@ export function FilterBar(props: FilterBarProps) {
     [filters.facets],
   );
 
-  const activeStatus = (filters.status ?? []).filter((s) => s !== "plantedOnly");
-  const plantedOn = (filters.status ?? []).includes("plantedOnly");
+  const activeStatus = filters.status ?? [];
 
   const hasAnyFilter =
     facetSelections.length > 0 ||
@@ -123,7 +122,12 @@ export function FilterBar(props: FilterBarProps) {
   };
 
   return (
-    <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
+    // z-30: this wrapper is a stacking context (sticky+z), so every popover
+    // inside is CAPPED at the wrapper's own z no matter its local z-index.
+    // The table's frozen header cells are sticky z-20 in the sibling scroll
+    // container — the bar must sit ABOVE the table's whole z range (<= 20)
+    // or its dropdowns paint underneath the arity/Fn headers.
+    <div className="sticky top-0 z-30 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
       <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
         <AddFilterMenu
           rows={rows}
@@ -131,14 +135,6 @@ export function FilterBar(props: FilterBarProps) {
           filters={filters}
           bundle={bundle}
           index={index}
-        />
-
-        {/* permanent quick toggle for the headline flag */}
-        <Chip
-          label="Planted"
-          active={plantedOn}
-          onBody={() => toggleStatus("plantedOnly")}
-          title={`${statusCounts(rows).plantedOnly.toLocaleString()} runs at plantedness ≥ ${plantedThreshold(bundle.meta)}`}
         />
 
         {activeStatus.map((flag) => (
