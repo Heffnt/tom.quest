@@ -6,8 +6,8 @@
   --color-surface-alt: #1a2332;
   --color-border:      #1e293b;
   --color-text:        #e2e8f0;
-  --color-text-muted:  #64748b;
-  --color-text-faint:  #334155;
+  --color-text-muted:  #94a3b8;
+  --color-text-faint:  #64748b;
   --color-accent:      #e8a040;
   --color-accent-dim:  #e8a04020;
   --color-success:     #22c55e;
@@ -33,6 +33,12 @@ body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
+}
+
+/* scrollbars in theme (inherited everywhere): slim, dark track, slate thumb */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: #3b4a66 var(--color-surface);
 }
 
 h1, h2, h3 {

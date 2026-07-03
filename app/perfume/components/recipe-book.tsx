@@ -507,12 +507,6 @@ function RecipeCard({
   res: EvalResult;
   onAddIngredient?: (key: string, qty?: number) => void;
 }) {
-  const tierColor =
-    recipe.tier === "legendary"
-      ? COPPER
-      : recipe.tier === "advanced"
-        ? "var(--color-accent)"
-        : "var(--color-text-muted)";
   const integ = integrateRecipe(recipe);
   const more = moreCombosFor(recipe);
   // trims that actually have combos in some tuning, in reveal order
@@ -548,7 +542,6 @@ function RecipeCard({
               >
                 weight · {recipeWeight(recipe)}
               </span>
-              <span style={{ color: tierColor }}>{recipe.tier}</span>
             </div>
           </div>
           <NeedsBadge res={res} />

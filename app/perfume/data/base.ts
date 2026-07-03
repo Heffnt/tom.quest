@@ -12,7 +12,6 @@ import type {
   Recipe,
   RecipeSlotEntry,
   RecipeCombo,
-  Tier,
 } from "../lib/types";
 
 type RawIngredient = {
@@ -28,7 +27,6 @@ type RawRecipe = {
   roll: number;
   name: string;
   desc: string;
-  tier: Tier;
   slots: RecipeSlotEntry[][];
   reqs: string[][];
   combos: RecipeCombo[];
@@ -56,7 +54,7 @@ export const NAMED: Record<string, Named> = Object.fromEntries(
 );
 
 // The four named frequencies emitted by NO ingredient — only summonable via ⊕.
-export const LEGENDARY = new Set<string>([
+export const SUMMON_ONLY = new Set<string>([
   "Laternical",
   "Malvesian",
   "Thurmistic",
@@ -76,8 +74,7 @@ export const isFundamental = (id: string): boolean => !!FUND[id];
 
 // A frequency's weight is how many fundamentals it expands to in total
 // (fundamentals weigh 1). An ingredient's weight sums its emitted
-// frequencies; a recipe's weight is its heaviest tuning — the same measure
-// that sets the simple/advanced/legendary tiers.
+// frequencies; a recipe's weight is its heaviest tuning.
 export const freqWeight = (id: string): number => NAMED[id]?.weight ?? 1;
 export const ingredientWeight = (ing: Ingredient): number =>
   ing.emits.reduce((sum, t) => sum + freqWeight(t), 0);
@@ -123,7 +120,7 @@ export const pureIngredients: Ingredient[] = [
     color:
       t.kind === "fundamental"
         ? FUND[t.id].color
-        : LEGENDARY.has(t.id)
+        : SUMMON_ONLY.has(t.id)
           ? "#C98A3C"
           : "#6FE3C4",
     source: PURE_SOURCE,
@@ -153,7 +150,6 @@ export const baseRecipes: Recipe[] = data.recipes.map((r) => ({
   key: `base:${r.id}`,
   name: r.name,
   roll: r.roll,
-  tier: r.tier,
   reqs: r.reqs,
   slots: r.slots,
   combos: r.combos,

@@ -16,6 +16,12 @@ export interface IngredientPanelProps {
   onDec: (key: string) => void;
   // Remove every copy of an ingredient from the brew (row-click toggle).
   onRemoveAll: (key: string) => void;
+  // Hovering a row previews the brew as if that ingredient were added
+  // (null on leave). Also fires while a drag passes over rows.
+  onPreview?: (key: string | null) => void;
+  // A press moved far enough to become a drag: the client takes over with
+  // window-level pointer tracking and drops the ingredient on the cauldron.
+  onBeginDrag?: (key: string, x: number, y: number) => void;
 }
 
 export interface RecipeBookProps {

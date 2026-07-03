@@ -6,8 +6,6 @@
 /** A single frequency id — either a fundamental (e.g. "A") or named (e.g. "Crallax"). */
 export type Frequency = string;
 
-export type Tier = "simple" | "advanced" | "legendary";
-
 export type Fundamental = { id: string; school: string; color: string };
 
 export type Named = {
@@ -57,7 +55,6 @@ export type Recipe = {
   key: string; // "base:<id>" or "user:<convexId>"
   name: string;
   roll: number; // d40 table row (16 appears twice: Bright and Frenzy)
-  tier: Tier;
   reqs: Frequency[][]; // valid tunings, each a target multiset
   slots: RecipeSlotEntry[][]; // common-recipe slots, each a list of alternatives
   combos: RecipeCombo[];

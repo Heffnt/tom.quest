@@ -18,6 +18,7 @@ import {
 } from "./lib/engine";
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
+import IngredientThumb from "./components/ingredient-thumb";
 import RecipeBook from "./components/recipe-book";
 
 // Side-panel resizing (wide layout only): each panel keeps its width in state,
@@ -186,6 +187,52 @@ export default function PerfumeClient() {
     [],
   );
 
+  // ---- hover preview + drag-out ----
+  // Hovering a panel row previews the brew with that ingredient added; while
+  // a row is dragged, the preview follows the pointer INTO the cauldron panel
+  // and dropping there commits the add.
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{ key: string; x: number; y: number; over: boolean } | null>(null);
+
+  const onPreview = useCallback((key: string | null) => setHoverKey(key), []);
+  const onBeginDrag = useCallback((key: string, x: number, y: number) => {
+    setDrag({ key, x, y, over: false });
+  }, []);
+
+  useEffect(() => {
+    if (!drag) return;
+    document.body.style.userSelect = "none";
+    const overCauldron = (x: number, y: number) =>
+      !!document.elementFromPoint(x, y)?.closest("[data-cauldron-drop]");
+    const onMove = (e: PointerEvent) => {
+      setDrag((d) => d && { ...d, x: e.clientX, y: e.clientY, over: overCauldron(e.clientX, e.clientY) });
+    };
+    const onUp = (e: PointerEvent) => {
+      if (overCauldron(e.clientX, e.clientY)) {
+        setBrewKeys((p) => [...p, drag.key]);
+      }
+      setDrag(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    // drag.key is stable for the life of one drag; re-binding on every move
+    // would thrash listeners
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag !== null]);
+
+  // what the cauldron previews: the dragged ingredient while it hovers the
+  // cauldron panel, else the hovered row
+  const previewKey = drag ? (drag.over ? drag.key : null) : hoverKey;
+  const previewIng = previewKey ? (ingByKey.get(previewKey) ?? null) : null;
+  const dragIng = drag ? ingByKey.get(drag.key) : null;
+
   // ---- panel resizing ----
   const [leftW, setLeftW] = useState<number>(PANEL_DEFAULTS.left);
   const [rightW, setRightW] = useState<number>(PANEL_DEFAULTS.right);
@@ -256,6 +303,8 @@ export default function PerfumeClient() {
             onAdd={addKey}
             onDec={decKey}
             onRemoveAll={removeAllOfKey}
+            onPreview={onPreview}
+            onBeginDrag={onBeginDrag}
           />
         </aside>
 
@@ -270,11 +319,17 @@ export default function PerfumeClient() {
         />
 
         {/* cauldron panel */}
-        <section className="order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1">
+        <section
+          data-cauldron-drop
+          className={`order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1 ${
+            drag ? (drag.over ? "ring-2 ring-inset ring-accent/60" : "ring-2 ring-inset ring-border") : ""
+          }`}
+        >
           <Cauldron
             brew={brew}
             brewCounts={brewCounts}
             brewed={brewed}
+            preview={previewIng}
             onInc={addKey}
             onDec={decKey}
             onStrike={strike}
@@ -304,6 +359,23 @@ export default function PerfumeClient() {
           />
         </aside>
       </div>
+
+      {/* drag ghost following the pointer */}
+      {drag && dragIng && (
+        <div
+          className="pointer-events-none fixed z-[90] flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full border bg-surface py-1 pl-1 pr-2.5 text-xs text-text shadow-xl"
+          style={{ left: drag.x, top: drag.y, borderColor: dragIng.color }}
+          aria-hidden="true"
+        >
+          <IngredientThumb
+            name={dragIng.name}
+            source={dragIng.source}
+            color={dragIng.color}
+            size={24}
+          />
+          <span className="max-w-[140px] truncate">{dragIng.name}</span>
+        </div>
+      )}
     </div>
   );
 }

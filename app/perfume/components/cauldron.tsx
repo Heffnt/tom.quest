@@ -9,7 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import type { BrewState } from "../lib/types";
+import type { BrewState, Ingredient } from "../lib/types";
 import {
   effectiveTally,
   availableCharges,
@@ -43,6 +43,9 @@ export interface CauldronProps {
   brewCounts: { key: string; name: string; color: string; count: number }[];
   // names of the perfumes the current brew brews exactly (perfect matches)
   brewed: string[];
+  // a hovered/dragged ingredient — the stage renders the brew AS IF it were
+  // already added (the committed brew state is untouched)
+  preview?: Ingredient | null;
   onInc: (key: string) => void;
   onDec: (key: string) => void;
   onStrike: (id: string) => void;
@@ -212,9 +215,10 @@ function IngredientVisual({
 }
 
 export default function Cauldron({
-  brew,
+  brew: committedBrew,
   brewCounts,
   brewed,
+  preview,
   onInc,
   onDec,
   onStrike,
@@ -223,6 +227,16 @@ export default function Cauldron({
   onUnsummon,
   onClear,
 }: CauldronProps) {
+  // The stage renders the previewed brew (hover/drag "what if") — everything
+  // downstream of here treats it as THE brew; only the banner and the play
+  // callbacks belong to the committed one.
+  const brew = useMemo<BrewState>(
+    () =>
+      preview
+        ? { ...committedBrew, ingredients: [...committedBrew.ingredients, preview] }
+        : committedBrew,
+    [committedBrew, preview],
+  );
   const eff = useMemo(() => effectiveTally(brew), [brew]);
   const avail = useMemo(() => availableCharges(brew), [brew]);
   const struckMs = useMemo(() => msFromList(brew.strikePlays), [brew.strikePlays]);
@@ -676,7 +690,7 @@ export default function Cauldron({
                         : {}),
                   }}
                 >
-                  <FrequencySymbol id={f.id!} size={36} />
+                  <FrequencySymbol id={f.id!} size={44} />
                   {f.summoned && (
                     <span
                       className="absolute -right-1 -top-1 grid h-3.5 w-3.5 place-items-center rounded-full text-[8px] font-bold"
@@ -728,6 +742,7 @@ export default function Cauldron({
             const slot = layout.ingSlots[i];
             const linked = hoverIng === g.key;
             const dimmed = hoverIng !== null && !linked;
+            const isPreview = preview?.key === g.key;
             return (
               <div
                 key={g.key}
@@ -741,15 +756,25 @@ export default function Cauldron({
               >
                 <div
                   className="pf-float flex flex-col items-center gap-1"
-                  style={{ ...driftStyle(`ing:${g.key}`), opacity: dimmed ? 0.35 : 1 }}
+                  style={{ ...driftStyle(`ing:${g.key}`), opacity: dimmed ? 0.35 : isPreview ? 0.85 : 1 }}
                   onMouseEnter={() => setHoverIng(g.key)}
                   onMouseLeave={() => setHoverIng(null)}
                 >
                   <div
-                    className={`relative rounded-lg ${linked ? "ring-2 ring-accent ring-offset-2 ring-offset-bg" : ""}`}
-                    title={`${g.name}${g.count > 1 ? ` ×${g.count}` : ""}`}
+                    className={`relative rounded-lg ${
+                      linked
+                        ? "ring-2 ring-accent ring-offset-2 ring-offset-bg"
+                        : isPreview
+                          ? "outline-dashed outline-2 outline-offset-2 outline-accent/80"
+                          : ""
+                    }`}
+                    title={
+                      isPreview
+                        ? `${g.name} — previewing`
+                        : `${g.name}${g.count > 1 ? ` ×${g.count}` : ""}`
+                    }
                   >
-                    <IngredientVisual keyId={g.key} name={g.name} color={g.color} size={44} />
+                    <IngredientVisual keyId={g.key} name={g.name} color={g.color} size={56} />
                     {g.count > 1 && (
                       <span className="absolute -right-2 -top-2 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
                         ×{g.count}
@@ -799,7 +824,7 @@ export default function Cauldron({
                         : `${n.id} — combined from the brew`
                     }
                   >
-                    <FrequencySymbol id={n.id} size={36} />
+                    <FrequencySymbol id={n.id} size={44} />
                   </span>
                   <span
                     className="pointer-events-none max-w-[84px] text-center font-mono text-[10px] uppercase leading-tight tracking-wide text-text"

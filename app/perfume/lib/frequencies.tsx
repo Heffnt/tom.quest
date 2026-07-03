@@ -9,17 +9,17 @@
 // Two kinds of frequency render here:
 //   - FUNDAMENTAL  -> a filled rounded chip with its letter id (A, C, En, ...).
 //   - NAMED        -> a transparent ringed chip showing its emblem glyph,
-//                     copper if legendary, otherwise phial-green.
+//                     copper if summon-only, otherwise phial-green.
 
 import React from "react";
 import { createPortal } from "react-dom";
-import { FUND, LEGENDARY, isNamed, NAMED } from "../data/base";
+import { FUND, SUMMON_ONLY, isNamed, NAMED } from "../data/base";
 import { GLYPH } from "./emblems";
 
 // --- palette ----------------------------------------------------------------
 
 export const PHIAL = "#6FE3C4"; // phial-green: ordinary named frequencies
-export const COPPER = "#C98A3C"; // copper: legendary (⊕-only) frequencies
+export const COPPER = "#C98A3C"; // copper: summon-only (⊕-only) frequencies
 export const STRIKE = "#a855f7"; // purple: ⊖ strikes
 
 // --- emblem dictionary ------------------------------------------------------
@@ -48,13 +48,13 @@ export function isLight(hex: string): boolean {
 }
 
 /** A named frequency emitted by NO ingredient — only summonable via ⊕. */
-export function isLegendary(id: string): boolean {
-  return LEGENDARY.has(id);
+export function isSummonOnly(id: string): boolean {
+  return SUMMON_ONLY.has(id);
 }
 
-/** Display color for a named frequency: copper if legendary, else phial. */
+/** Display color for a named frequency: copper if summon-only, else phial. */
 export function namedColor(id: string): string {
-  return isLegendary(id) ? COPPER : PHIAL;
+  return isSummonOnly(id) ? COPPER : PHIAL;
 }
 
 /** Display color for a fundamental, falling back to grey for unknown ids. */

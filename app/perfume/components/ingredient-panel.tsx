@@ -2,10 +2,12 @@
 
 // The ingredients panel, in two tabs: the 96 base ingredients and the pure
 // frequencies. Search matches names or any emitted frequency (id or school
-// name — e.g. "transmutation" finds every T-emitter); a symbol drop-down
-// filters by frequency. Rows in the brew are ringed amber and carry
-// −/count/+ controls; clicking the row body adds one when absent, or
-// removes every copy when present.
+// name — e.g. "transmutation" finds every T-emitter); the square button by
+// the search filters by frequency (its icon shows the active filter). Rows
+// in the brew are ringed amber and carry −/count/+ controls; clicking the
+// row body adds one when absent, or removes every copy when present.
+// Hovering a row previews it in the cauldron; dragging a row toward the
+// cauldron carries it there.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient } from "../lib/types";
@@ -25,6 +27,21 @@ function pureRank(ing: Ingredient): number {
   return isNamed(ing.key.slice(5)) ? 2 : 1;
 }
 
+// Ingredients-tab order: emitters lightest-first; the ⊖/⊕ charge carriers
+// sort to the very end.
+function ingredientRank(ing: Ingredient): number {
+  return ing.strike > 0 || ing.wild > 0 ? 1 : 0;
+}
+
+// "Pure A" -> "A — Abjuration", "Pure Ignetium" -> "Ignetium",
+// "Pure Strike" -> "Strike"
+function pureName(ing: Ingredient): string {
+  const id = ing.key.slice(5);
+  if (id === "strike") return "Strike";
+  if (id === "wild") return "Wild";
+  return freqLabel(id);
+}
+
 type Tab = "ingredients" | "frequencies";
 
 export default function IngredientPanel({
@@ -33,6 +50,8 @@ export default function IngredientPanel({
   onAdd,
   onDec,
   onRemoveAll,
+  onPreview,
+  onBeginDrag,
 }: IngredientPanelProps) {
   const [tab, setTab] = useState<Tab>("ingredients");
   const [search, setSearch] = useState("");
@@ -61,7 +80,8 @@ export default function IngredientPanel({
       .sort((a, b) =>
         tab === "frequencies"
           ? pureRank(a) - pureRank(b) || a.name.localeCompare(b.name)
-          : ingredientWeight(a) - ingredientWeight(b) ||
+          : ingredientRank(a) - ingredientRank(b) ||
+            ingredientWeight(a) - ingredientWeight(b) ||
             a.name.localeCompare(b.name),
       );
   }, [tab, tabItems, freqFilter, search]);
@@ -92,18 +112,20 @@ export default function IngredientPanel({
         </span>
       </div>
 
-      {/* controls */}
-      <div className="space-y-2 border-b border-border p-3">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="search ingredients or frequencies…"
-          spellCheck={false}
-          className="w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
-        />
-        {tab === "ingredients" && (
-          <FrequencyDropdown value={freqFilter} onChange={setFreqFilter} />
-        )}
+      {/* controls: search with the square frequency-filter button beside it */}
+      <div className="border-b border-border p-3">
+        <div className="flex items-stretch gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="search ingredients or frequencies…"
+            spellCheck={false}
+            className="w-full min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
+          />
+          {tab === "ingredients" && (
+            <FrequencyFilterButton value={freqFilter} onChange={setFreqFilter} />
+          )}
+        </div>
       </div>
 
       {/* list */}
@@ -114,16 +136,31 @@ export default function IngredientPanel({
           </p>
         ) : (
           <ul className="divide-y divide-border/50">
-            {filtered.map((ing) => (
-              <IngredientRow
-                key={ing.key}
-                ing={ing}
-                count={brewCounts[ing.key] ?? 0}
-                onAdd={onAdd}
-                onDec={onDec}
-                onRemoveAll={onRemoveAll}
-              />
-            ))}
+            {filtered.map((ing) =>
+              tab === "frequencies" ? (
+                <FrequencyRow
+                  key={ing.key}
+                  ing={ing}
+                  count={brewCounts[ing.key] ?? 0}
+                  onAdd={onAdd}
+                  onDec={onDec}
+                  onRemoveAll={onRemoveAll}
+                  onPreview={onPreview}
+                  onBeginDrag={onBeginDrag}
+                />
+              ) : (
+                <IngredientRow
+                  key={ing.key}
+                  ing={ing}
+                  count={brewCounts[ing.key] ?? 0}
+                  onAdd={onAdd}
+                  onDec={onDec}
+                  onRemoveAll={onRemoveAll}
+                  onPreview={onPreview}
+                  onBeginDrag={onBeginDrag}
+                />
+              ),
+            )}
           </ul>
         )}
       </div>
@@ -131,9 +168,10 @@ export default function IngredientPanel({
   );
 }
 
-// A drop-down of every frequency WITH its symbol (a native <select> can't
-// render the glyphs, so this is a small custom listbox).
-function FrequencyDropdown({
+// The square filter control: shows an empty accent-colored frequency circle
+// when no filter is set, or the chosen frequency's icon. Clicking opens a
+// searchable listbox of every frequency.
+function FrequencyFilterButton({
   value,
   onChange,
 }: {
@@ -141,10 +179,13 @@ function FrequencyDropdown({
   onChange: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    const t = setTimeout(() => inputRef.current?.focus(), 30);
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
@@ -154,126 +195,244 @@ function FrequencyDropdown({
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
+      clearTimeout(t);
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
 
+  const query = q.trim().toLowerCase();
+  const items = ALL_FREQUENCIES.filter(
+    (t) =>
+      !query ||
+      t.id.toLowerCase().includes(query) ||
+      (FUND[t.id]?.school ?? "").toLowerCase().includes(query),
+  );
+
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label="Filter by frequency"
-        className="flex w-full items-center gap-2 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-left font-mono text-xs text-text focus:border-accent focus:outline-none"
+        aria-label={value ? `Filtering by ${freqLabel(value)}` : "Filter by frequency"}
+        title={value ? `Filtering by ${freqLabel(value)} — click to change` : "Filter by frequency"}
+        className={`grid h-full w-[42px] place-items-center rounded-lg border bg-bg transition-colors duration-150 ${
+          value ? "border-accent" : "border-border hover:border-text-muted"
+        }`}
       >
         {value ? (
-          <>
-            <FrequencyGlyph id={value} size={18} />
-            <span>{freqLabel(value)}</span>
-          </>
+          <FrequencyGlyph id={value} size={24} />
         ) : (
-          <span className="text-text-muted">all frequencies</span>
+          // the "empty frequency": an unfilled ring in the site accent
+          <span
+            aria-hidden="true"
+            className="inline-block rounded-full"
+            style={{
+              width: 22,
+              height: 22,
+              border: "2px solid var(--color-accent)",
+              opacity: 0.75,
+            }}
+          />
         )}
-        <span className="ml-auto text-text-faint">▾</span>
       </button>
       {open && (
         <div
           role="listbox"
-          className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-lg border border-border bg-surface shadow-xl"
+          className="absolute right-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
         >
-          <button
-            type="button"
-            role="option"
-            aria-selected={value === ""}
-            onClick={() => {
-              onChange("");
-              setOpen(false);
-            }}
-            className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-              value === "" ? "text-text" : "text-text-muted"
-            }`}
-          >
-            all frequencies
-          </button>
-          {ALL_FREQUENCIES.map((t) => (
+          <div className="border-b border-border p-2">
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="filter frequencies…"
+              spellCheck={false}
+              className="w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-xs text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto">
             <button
-              key={t.id}
               type="button"
               role="option"
-              aria-selected={value === t.id}
+              aria-selected={value === ""}
               onClick={() => {
-                onChange(t.id);
+                onChange("");
                 setOpen(false);
               }}
               className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-                value === t.id ? "bg-surface-alt text-text" : "text-text-muted"
+                value === "" ? "text-text" : "text-text-muted"
               }`}
             >
-              <FrequencyGlyph id={t.id} size={18} />
-              <span>{freqLabel(t.id)}</span>
+              <span
+                aria-hidden="true"
+                className="inline-block shrink-0 rounded-full"
+                style={{ width: 18, height: 18, border: "2px solid var(--color-accent)", opacity: 0.75 }}
+              />
+              all frequencies
             </button>
-          ))}
+            {items.length === 0 && (
+              <p className="px-2 py-3 text-center font-mono text-xs text-text-faint">no match</p>
+            )}
+            {items.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="option"
+                aria-selected={value === t.id}
+                onClick={() => {
+                  onChange(t.id);
+                  setOpen(false);
+                }}
+                className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
+                  value === t.id ? "bg-surface-alt text-text" : "text-text-muted"
+                }`}
+              >
+                <FrequencyGlyph id={t.id} size={18} />
+                <span>{freqLabel(t.id)}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function IngredientRow({
+// Shared hover-preview + drag-out behavior for a row body. Click keeps its
+// add/remove semantics; moving >7px turns the press into a drag handled by
+// the client (window-level listeners), and the click that follows a drag is
+// swallowed.
+function useRowGestures(
+  key: string,
+  onPreview?: (key: string | null) => void,
+  onBeginDrag?: (key: string, x: number, y: number) => void,
+) {
+  const drag = useRef({ x: 0, y: 0, active: false, moved: false });
+  return {
+    onMouseEnter: () => onPreview?.(key),
+    onMouseLeave: () => onPreview?.(null),
+    onPointerDown: (e: React.PointerEvent) => {
+      drag.current = { x: e.clientX, y: e.clientY, active: true, moved: false };
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      const d = drag.current;
+      if (!d.active || d.moved) return;
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 7) {
+        d.moved = true;
+        onBeginDrag?.(key, e.clientX, e.clientY);
+      }
+    },
+    onPointerUp: () => {
+      drag.current.active = false;
+    },
+    // true -> this click ended a drag; the caller should ignore it
+    consumeDragClick: () => {
+      if (drag.current.moved) {
+        drag.current.moved = false;
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
+// The −/count/+ cluster, bold enough to read at a glance.
+function CountControls({
   ing,
   count,
   onAdd,
   onDec,
-  onRemoveAll,
 }: {
   ing: Ingredient;
   count: number;
   onAdd: (key: string) => void;
   onDec: (key: string) => void;
-  onRemoveAll: (key: string) => void;
 }) {
-  const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
-  const pure = isPureKey(ing.key);
-  const pureId = pure ? ing.key.slice(5) : null;
   const inBrew = count > 0;
+  return (
+    <span className="flex shrink-0 items-center gap-1 self-center font-mono">
+      <button
+        type="button"
+        onClick={() => onDec(ing.key)}
+        disabled={!inBrew}
+        aria-label={`Remove one ${ing.name}`}
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border-2 border-border text-base font-bold text-text transition-colors duration-150 hover:border-accent hover:text-accent disabled:opacity-30 disabled:hover:border-border disabled:hover:text-text"
+      >
+        −
+      </button>
+      <span
+        className={`w-5 text-center text-sm font-bold tabular-nums ${
+          inBrew ? "text-amber-400" : "text-text-muted"
+        }`}
+      >
+        {count}
+      </span>
+      <button
+        type="button"
+        onClick={() => onAdd(ing.key)}
+        aria-label={`Add one ${ing.name}`}
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border-2 border-border text-base font-bold text-text transition-colors duration-150 hover:border-accent hover:text-accent"
+      >
+        +
+      </button>
+    </span>
+  );
+}
+
+type RowProps = {
+  ing: Ingredient;
+  count: number;
+  onAdd: (key: string) => void;
+  onDec: (key: string) => void;
+  onRemoveAll: (key: string) => void;
+  onPreview?: (key: string | null) => void;
+  onBeginDrag?: (key: string, x: number, y: number) => void;
+};
+
+const IN_BREW_ROW =
+  "border-l-2 border-amber-400 bg-amber-400/10 ring-1 ring-inset ring-amber-400/50 hover:bg-amber-400/15";
+const OUT_ROW = "border-l-2 border-transparent hover:bg-surface-alt";
+
+function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeginDrag }: RowProps) {
+  const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
+  const inBrew = count > 0;
+  const g = useRowGestures(ing.key, onPreview, onBeginDrag);
 
   return (
     <li
       className={`group flex items-start justify-between gap-2 px-4 py-2.5 transition-colors ${
-        inBrew
-          ? "border-l-2 border-amber-400 bg-amber-400/10 ring-1 ring-inset ring-amber-400/50 hover:bg-amber-400/15"
-          : "border-l-2 border-transparent hover:bg-surface-alt"
+        inBrew ? IN_BREW_ROW : OUT_ROW
       }`}
     >
       {/* row body: add one when absent, remove all when present */}
       <button
         type="button"
-        onClick={() => (inBrew ? onRemoveAll(ing.key) : onAdd(ing.key))}
-        className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+        onClick={() => {
+          if (g.consumeDragClick()) return;
+          if (inBrew) onRemoveAll(ing.key);
+          else onAdd(ing.key);
+        }}
+        onMouseEnter={g.onMouseEnter}
+        onMouseLeave={g.onMouseLeave}
+        onPointerDown={g.onPointerDown}
+        onPointerMove={g.onPointerMove}
+        onPointerUp={g.onPointerUp}
+        className="flex min-w-0 flex-1 touch-none items-center gap-2.5 text-left"
         aria-label={
           inBrew
             ? `Remove all ${ing.name} from the brew`
             : `Add ${ing.name} to the brew`
         }
-        title={inBrew ? "Click to remove all from the brew" : "Click to add to the brew"}
+        title={
+          inBrew
+            ? "Click to remove all from the brew — or drag toward the cauldron"
+            : "Click to add to the brew — or drag toward the cauldron"
+        }
       >
-        {pure && pureId && pureId !== "strike" && pureId !== "wild" ? (
-          <span className="grid h-[42px] w-[42px] shrink-0 place-items-center rounded-md border border-border/60 bg-surface-alt">
-            <FrequencyGlyph id={pureId} size={26} />
-          </span>
-        ) : pure ? (
-          <span
-            className="grid h-[42px] w-[42px] shrink-0 place-items-center rounded-md border border-border/60 bg-surface-alt text-lg font-bold"
-            style={{ color: pureId === "strike" ? STRIKE : COPPER }}
-          >
-            {pureId === "strike" ? "⊖" : "⊕"}
-          </span>
-        ) : (
-          <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
-        )}
+        <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
         <div className="min-w-0 flex-1">
           <span className="block truncate text-sm text-text">{ing.name}</span>
           <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -303,33 +462,66 @@ function IngredientRow({
         </div>
       </button>
 
-      {/* −/count/+ controls */}
-      <span className="flex shrink-0 items-center gap-1 self-center font-mono">
-        <button
-          type="button"
-          onClick={() => onDec(ing.key)}
-          disabled={!inBrew}
-          aria-label={`Remove one ${ing.name}`}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-border text-text-muted transition-colors duration-150 hover:border-accent hover:text-accent disabled:opacity-30 disabled:hover:border-border disabled:hover:text-text-muted"
-        >
-          −
-        </button>
-        <span
-          className={`w-5 text-center text-xs tabular-nums ${
-            inBrew ? "text-amber-400" : "text-text-faint"
-          }`}
-        >
-          {count}
-        </span>
-        <button
-          type="button"
-          onClick={() => onAdd(ing.key)}
-          aria-label={`Add one ${ing.name}`}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-border text-text-muted transition-colors duration-150 hover:border-accent hover:text-accent"
-        >
-          +
-        </button>
-      </span>
+      <CountControls ing={ing} count={count} onAdd={onAdd} onDec={onDec} />
+    </li>
+  );
+}
+
+// A pure-frequency row: just the symbol and the full name, centered.
+function FrequencyRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeginDrag }: RowProps) {
+  const id = ing.key.slice(5);
+  const charge = id === "strike" || id === "wild";
+  const inBrew = count > 0;
+  const g = useRowGestures(ing.key, onPreview, onBeginDrag);
+
+  return (
+    <li
+      className={`group flex items-center justify-between gap-2 px-4 py-2 transition-colors ${
+        inBrew ? IN_BREW_ROW : OUT_ROW
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => {
+          if (g.consumeDragClick()) return;
+          if (inBrew) onRemoveAll(ing.key);
+          else onAdd(ing.key);
+        }}
+        onMouseEnter={g.onMouseEnter}
+        onMouseLeave={g.onMouseLeave}
+        onPointerDown={g.onPointerDown}
+        onPointerMove={g.onPointerMove}
+        onPointerUp={g.onPointerUp}
+        className="flex min-w-0 flex-1 touch-none items-center justify-center gap-2.5"
+        aria-label={
+          inBrew
+            ? `Remove all ${pureName(ing)} from the brew`
+            : `Add ${pureName(ing)} to the brew`
+        }
+        title={
+          inBrew
+            ? "Click to remove all from the brew — or drag toward the cauldron"
+            : "Click to add to the brew — or drag toward the cauldron"
+        }
+      >
+        {charge ? (
+          <span
+            className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-full border-2 text-base font-bold"
+            style={{
+              color: id === "strike" ? STRIKE : COPPER,
+              borderColor: id === "strike" ? STRIKE : COPPER,
+              background: id === "strike" ? "#a855f71a" : "#c98a3c1a",
+            }}
+          >
+            {id === "strike" ? "⊖" : "⊕"}
+          </span>
+        ) : (
+          <FrequencyGlyph id={id} size={30} />
+        )}
+        <span className="truncate text-sm font-medium text-text">{pureName(ing)}</span>
+      </button>
+
+      <CountControls ing={ing} count={count} onAdd={onAdd} onDec={onDec} />
     </li>
   );
 }

@@ -1403,7 +1403,6 @@
    "roll": 1,
    "name": "Corpse Gas",
    "desc": "A miasma of the freshly turned grave. Crowds part; carrion birds follow.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -1445,7 +1444,6 @@
    "roll": 2,
    "name": "Swana's Serum",
    "desc": "Swana's gentle restorative -- enchantment folded into a sparkling Crallax heart.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -1487,7 +1485,6 @@
    "roll": 3,
    "name": "Mourningweep Oil",
    "desc": "Anoint the brow and grieve beautifully. Sorrow, doubled and bound in Necromancy.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -1529,7 +1526,6 @@
    "roll": 4,
    "name": "Black Gas",
    "desc": "The liver's hollows strip every stray tone away, leaving one pure necrotic note.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -1582,7 +1578,6 @@
    "roll": 5,
    "name": "Pepperpop Mixture",
    "desc": "Crackles on the skin like chewed embers. Sneeze fire, politely.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -1644,7 +1639,6 @@
    "roll": 6,
    "name": "Saltpearl Spray",
    "desc": "Brine, hush, and mother-of-pearl -- the quiet of the tide going out.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -1686,7 +1680,6 @@
    "roll": 7,
    "name": "Auroniel's Aroma",
    "desc": "Auroniel's own moonlit glamour; chalk-light over a warm bright bloom.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -1728,7 +1721,6 @@
    "roll": 8,
    "name": "Mindlock Mixture",
    "desc": "Twin enchantments bolted to cold iron thought. The mind stays shut.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -1770,7 +1762,6 @@
    "roll": 9,
    "name": "Owlbear Pheromones",
    "desc": "Irresistible to owlbears. Wear at your own considerable risk.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -1812,7 +1803,6 @@
    "roll": 10,
    "name": "Hag's Tincture",
    "desc": "A crone's disguise in a bottle -- horn-musk sweetened with bubble blossom.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -1859,7 +1849,6 @@
    "roll": 11,
    "name": "Calming Cologne",
    "desc": "Glitterwing dust over aphasia bloom. The pulse slows; the words come easy.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -1901,7 +1890,6 @@
    "roll": 12,
    "name": "Pensive Perfume",
    "desc": "Cold-shard clarity with a dewdrop melt. For long thoughts by short candles.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -1943,7 +1931,6 @@
    "roll": 13,
    "name": "Slippery Serum",
    "desc": "Nothing grips the wearer -- not hands, not ropes, not consequences.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -2040,7 +2027,6 @@
    "roll": 14,
    "name": "Solemn Stink",
    "desc": "Peat and old horn. Commands a funeral's gravity in any room.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -2102,7 +2088,6 @@
    "roll": 15,
    "name": "Ghostwalk Grog",
    "desc": "Lavender over cold stillness; the dead mistake you for weather.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2164,7 +2149,6 @@
    "roll": 16,
    "name": "Bright",
    "desc": "A single brightflower, distilled. Radiance you can wear.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2196,7 +2180,6 @@
    "roll": 16,
    "name": "Frenzy",
    "desc": "Brightflower stoked with a northman's fire-beard -- brilliance tipped into mania.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2238,7 +2221,6 @@
    "roll": 17,
    "name": "Second Spark",
    "desc": "For engines, hearts, and arguments that have gone out. Reignition guaranteed.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -2280,7 +2262,6 @@
    "roll": 18,
    "name": "Potion of Peril",
    "desc": "Dragon venom on a moss fuse. Handle with tongs and good insurance.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -2322,7 +2303,6 @@
    "roll": 19,
    "name": "Magnis Mixture",
    "desc": "Platinum-bound moon-pull. Small metal objects (and admirers) drift closer.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2363,7 +2343,6 @@
    "roll": 20,
    "name": "Ox Odor",
    "desc": "Tuber starch and ogre grip. Smell like you can carry the cart yourself.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -2404,7 +2383,6 @@
    "roll": 21,
    "name": "Frenetic Fragrance",
    "desc": "Redcap fury lashed to burning larch -- the nose's equivalent of a war drum.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -2446,7 +2424,6 @@
    "roll": 22,
    "name": "Dribbleblight Draught",
    "desc": "It drips. It blights. The scent arrives three seconds after the dread.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -2508,7 +2485,6 @@
    "roll": 23,
    "name": "Griminal Gas",
    "desc": "Mandrake scream settled over banshee hair. Strictly graveside wear.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2550,7 +2526,6 @@
    "roll": 24,
    "name": "Regenerative Reek",
    "desc": "Foul going on, marvelous coming off -- flesh knits under the stench.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2593,7 +2568,6 @@
    "roll": 25,
    "name": "Bombastic Brew",
    "desc": "Twinned conjured winks with a glitter fuse. Loud in every language.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2635,7 +2609,6 @@
    "roll": 26,
    "name": "Redroot Derivative",
    "desc": "The sanguivore's table wine, rooted red and faintly pulsing.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -2732,7 +2705,6 @@
    "roll": 27,
    "name": "Shimmerskin Succulence",
    "desc": "Scales of light across the skin. Best applied under a full moon.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -2796,7 +2768,6 @@
    "roll": 28,
    "name": "Parasitic Perfume",
    "desc": "Symbiotes find you charming. Everything else finds you occupied.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -2858,7 +2829,6 @@
    "roll": 29,
    "name": "Awakening Auroma",
    "desc": "Smelling salts of the inlet -- divination doubled through a cold snap.",
-   "tier": "simple",
    "slots": [
     [
      {
@@ -2900,7 +2870,6 @@
    "roll": 30,
    "name": "Liquidation Liquer",
    "desc": "Everything solid remembers it was once soup. Assets included.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -2943,7 +2912,6 @@
    "roll": 31,
    "name": "Antimagic Auroma",
    "desc": "A null-scent that eats spellwork; the arcanavore's hunger, bottled.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -3050,7 +3018,6 @@
    "roll": 32,
    "name": "Energestic Emulsion",
    "desc": "Golden dragon-oil charged with fulmile spark. Vigor with a metallic bite.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -3092,7 +3059,6 @@
    "roll": 33,
    "name": "Puppetry Perfumette",
    "desc": "A dab behind the ears -- theirs, not yours. Strings sold separately.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -3134,7 +3100,6 @@
    "roll": 34,
    "name": "Invulnerability Ichor",
    "desc": "Trilobite patience in jellied meteor-fire. Blades change the subject.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -3177,7 +3142,6 @@
    "roll": 35,
    "name": "Nocturnal Nectar",
    "desc": "The night in three vintages -- choose your darkness, wear till dawn.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -3259,7 +3223,6 @@
    "roll": 36,
    "name": "Histological Hairoil",
    "desc": "Sphynx-blessed follicle scripture. Regrows what the wraiths whisked away.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -3301,7 +3264,6 @@
    "roll": 37,
    "name": "Redroot Deconcoctual Derivative",
    "desc": "The antidote's antidote -- lotus logic unwinding the redroot knot.",
-   "tier": "legendary",
    "slots": [
     [
      {
@@ -3344,7 +3306,6 @@
    "roll": 38,
    "name": "Valuers Vapor",
    "desc": "One sniff prices anything: amber honesty against a golden hunch.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -3405,7 +3366,6 @@
    "roll": 39,
    "name": "Greenery Gas",
    "desc": "Glass-cut chlorophyll. Rooms sprout; ledgers turn over new leaves.",
-   "tier": "advanced",
    "slots": [
     [
      {
@@ -3447,7 +3407,6 @@
    "roll": 40,
    "name": "Swimmer's Serum",
    "desc": "Gar-eyed and rock-calm below the surface. Breathe easy; swim rude.",
-   "tier": "simple",
    "slots": [
     [
      {
