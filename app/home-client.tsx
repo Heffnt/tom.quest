@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TomLogo from "./components/tom-logo";
 import LoginModal from "./components/login-modal";
 import ProfileModal from "./components/profile-modal";
+import DebugToggle from "./components/debug-toggle";
 import { useAuth, getUsername } from "./lib/auth";
 import { rankPages, type PageRole } from "./components/page-routes";
 
@@ -94,7 +95,7 @@ export default function HomeClient() {
     <>
       {/* Top strip: auth button only, positioned where it would be in the
           docked nav bar (right edge of max-w-5xl container, h-16). */}
-      <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-end">
+      <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-end gap-2">
         {user ? (
           <button
             type="button"
@@ -114,6 +115,7 @@ export default function HomeClient() {
             Log in
           </button>
         )}
+        <DebugToggle />
       </div>
 
       <div className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center px-6 pb-12 gap-10">

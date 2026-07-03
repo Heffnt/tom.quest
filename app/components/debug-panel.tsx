@@ -89,13 +89,6 @@ export default function DebugPanel() {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => useUIStore.getState().toggleDebug()}
-        className="fixed left-3 bottom-3 z-50 rounded-lg border border-accent/50 bg-surface px-3 py-2 text-xs font-mono text-accent shadow-lg hover:bg-surface-alt"
-      >
-        debug
-      </button>
       {debugOpen && (
         <aside
           className="fixed inset-y-0 left-0 z-50 border-r border-border bg-bg/95 backdrop-blur-md shadow-2xl"

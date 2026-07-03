@@ -15,6 +15,7 @@ import {
 import { useAuth, getUsername } from "../lib/auth";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
+import DebugToggle from "./debug-toggle";
 import { rankPages, type PageRole } from "./page-routes";
 
 /* Responsive cut-points. */
@@ -204,7 +205,7 @@ export default function NavTerm({
             </button>
           </div>
 
-          <div className="shrink-0">
+          <div className="shrink-0 flex items-center gap-2">
             {user ? (
               <button
                 type="button"
@@ -224,6 +225,7 @@ export default function NavTerm({
                 Log in
               </button>
             )}
+            <DebugToggle />
           </div>
         </div>
 
