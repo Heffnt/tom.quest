@@ -28,6 +28,7 @@ import {
   recipeWeight,
 } from "../data/base";
 import { FrequencySymbol, FrequencyGlyph, COPPER, STRIKE } from "../lib/frequencies";
+import FrequencyFilterButton from "./frequency-filter";
 
 const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
@@ -223,6 +224,7 @@ export default function RecipeBook({
   onAddIngredient,
 }: RecipeBookProps) {
   const [query, setQuery] = useState("");
+  const [freqFilter, setFreqFilter] = useState("");
 
   const evaluated = useMemo(
     () => recipes.map((r) => ({ recipe: r, res: evaluate(brew, r) })),
@@ -235,6 +237,9 @@ export default function RecipeBook({
     const q = query.trim().toLowerCase();
     return evaluated
       .filter(({ recipe }) => matchesQuery(recipe, q))
+      .filter(({ recipe }) =>
+        freqFilter ? recipe.reqs.some((req) => req.includes(freqFilter)) : true,
+      )
       .sort((a, b) => {
         const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
         if (s !== 0) return s;
@@ -243,7 +248,7 @@ export default function RecipeBook({
         if (w !== 0) return w;
         return a.recipe.name.localeCompare(b.recipe.name);
       });
-  }, [evaluated, query]);
+  }, [evaluated, query, freqFilter]);
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
@@ -255,15 +260,18 @@ export default function RecipeBook({
         </span>
       </div>
 
-      {/* controls */}
+      {/* controls: search with the square frequency-filter button beside it */}
       <div className="border-b border-border p-3">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="search perfumes…"
-          spellCheck={false}
-          className="w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
-        />
+        <div className="flex items-stretch gap-2">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="search perfumes…"
+            spellCheck={false}
+            className="w-full min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
+          />
+          <FrequencyFilterButton value={freqFilter} onChange={setFreqFilter} />
+        </div>
       </div>
 
       {/* the book */}
@@ -305,18 +313,15 @@ function MiniCauldron({ size = 16 }: { size?: number }) {
   );
 }
 
-// Compact symbols-only row.
+// Compact symbols-only row: multiplicity shows as REPEATED symbols, not ×n.
 function FrequencyRow({ req, size = 16 }: { req: string[]; size?: number }) {
   return (
     <span className="flex flex-wrap items-center gap-1">
-      {groupFrequencies(req).map(({ id, count }) => (
-        <span key={id} className="flex items-center gap-0.5">
-          <FrequencySymbol id={id} size={size} />
-          {count > 1 && (
-            <span className="font-mono text-[9px] text-text-faint">×{count}</span>
-          )}
-        </span>
-      ))}
+      {groupFrequencies(req).flatMap(({ id, count }) =>
+        Array.from({ length: count }, (_, i) => (
+          <FrequencySymbol key={`${id}:${i}`} id={id} size={size} />
+        )),
+      )}
     </span>
   );
 }
@@ -417,14 +422,11 @@ function BrewFormula({ res }: { res: EvalResult }) {
       >
         {missing.length > 0 && (
           <span className="flex max-w-40 flex-wrap items-center gap-1">
-            {missing.map(({ id, count }) => (
-              <span key={id} className="flex items-center gap-0.5">
-                <FrequencySymbol id={id} size={16} />
-                {count > 1 && (
-                  <span className="font-mono text-[9px] text-text-muted">×{count}</span>
-                )}
-              </span>
-            ))}
+            {missing.flatMap(({ id, count }) =>
+              Array.from({ length: count }, (_, i) => (
+                <FrequencySymbol key={`${id}:${i}`} id={id} size={16} />
+              )),
+            )}
           </span>
         )}
         {res.exN > 0 && (
@@ -545,29 +547,27 @@ function RecipeCard({
         {/* the integrated requirement: shared frequencies, interchangeable
             alternatives in parentheses, optional extras in a dashed box */}
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 self-center">
-          {groupFrequencies(integ.core).map(({ id, count }) => (
-            <span key={id} className="flex items-center gap-0.5">
-              <FrequencySymbol id={id} size={20} />
-              {count > 1 && (
-                <span className="font-mono text-[10px] text-text-muted">×{count}</span>
-              )}
-            </span>
-          ))}
+          <FrequencyRow req={integ.core} size={20} />
           {integ.groups.map((g, gi) =>
             g.optional ? (
               <span
                 key={gi}
                 title="optional — either version brews the perfume"
-                className="flex items-center gap-1.5 rounded-md border border-dashed border-text-faint/50 px-1.5 py-1"
+                className="flex flex-col items-center gap-0.5"
               >
-                {g.options.map((opt, oi) => (
-                  <span key={oi} className="flex items-center gap-1.5">
-                    {oi > 0 && (
-                      <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
-                    )}
-                    <FrequencyRow req={opt} size={17} />
-                  </span>
-                ))}
+                <span className="flex items-center gap-1.5">
+                  {g.options.map((opt, oi) => (
+                    <span key={oi} className="flex items-center gap-1.5">
+                      {oi > 0 && (
+                        <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
+                      )}
+                      <FrequencyRow req={opt} size={16} />
+                    </span>
+                  ))}
+                </span>
+                <span className="font-mono text-[8px] uppercase tracking-wider text-text-faint">
+                  optional
+                </span>
               </span>
             ) : (
               <span key={gi} className="flex items-center gap-1.5">
@@ -577,7 +577,7 @@ function RecipeCard({
                     {oi > 0 && (
                       <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
                     )}
-                    <FrequencyRow req={opt} size={17} />
+                    <FrequencyRow req={opt} size={20} />
                   </span>
                 ))}
                 <span className="font-mono text-sm text-text-faint">)</span>

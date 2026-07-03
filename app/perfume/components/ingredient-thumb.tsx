@@ -4,8 +4,10 @@ import { useState } from "react";
 import type { Source } from "../lib/types";
 import { ingredientImageSrc } from "../lib/images";
 
-// Renders an ingredient's PDF crest thumbnail (base ingredients) or a color
-// chip fallback (user-created ones, or if the image fails to load).
+// Renders an ingredient's art tile (base ingredients) or a color chip
+// fallback (user-created ones, or if the image fails to load). The art
+// carries its own parchment panel + peeking element bubble on transparency,
+// so no border or clipping here.
 export default function IngredientThumb({
   name,
   source,
@@ -31,7 +33,7 @@ export default function IngredientThumb({
         height={size}
         loading="lazy"
         onError={() => setFailed(true)}
-        className="shrink-0 rounded-md border border-border/60 object-cover"
+        className="shrink-0 object-contain"
         style={{ width: size, height: size }}
       />
     );

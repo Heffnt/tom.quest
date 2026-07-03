@@ -184,33 +184,27 @@ export function FrequencyGlyph({
 
 // ── decomposition popover ─────────────────────────────────────────────────────
 
-// The "combines from" card: the frequency plus its DIRECT components only
-// (grouped ×n) — not the full recursion to fundamentals.
+// The "combines from" card, two clean rows: the frequency's symbol + name,
+// then the DIRECT components as bare symbols in one row (multiplicity shows
+// as repeated symbols, not ×n). Fundamentals get just the first row.
 function DecompCard({ id }: { id: string }) {
   const named = isNamed(id);
   const label = named ? id : (FUND[id]?.school ?? id);
   const comps = named ? NAMED[id].components : [];
-  const grouped = new Map<string, number>();
-  for (const c of comps) grouped.set(c, (grouped.get(c) ?? 0) + 1);
+  const sorted = [...comps].sort();
   return (
     <div>
-      <p className="mb-1 font-mono text-[9px] uppercase tracking-wider text-text-faint">
-        {named ? "combines from" : "fundamental frequency"}
-      </p>
-      <div className="flex items-center gap-1.5 py-0.5">
-        <FrequencyGlyph id={id} size={18} />
-        <span className="font-mono text-[11px] font-bold text-text">{label}</span>
+      <div className="flex items-center gap-2 py-0.5">
+        <FrequencyGlyph id={id} size={22} />
+        <span className="font-mono text-xs font-bold text-text">{label}</span>
       </div>
-      {named &&
-        [...grouped.entries()].map(([cid, n]) => (
-          <div key={cid} className="ml-3.5 flex items-center gap-1.5 py-0.5">
-            <FrequencyGlyph id={cid} size={16} />
-            <span className="font-mono text-[11px] text-text">
-              {isNamed(cid) ? cid : (FUND[cid]?.school ?? cid)}
-              {n > 1 ? ` ×${n}` : ""}
-            </span>
-          </div>
-        ))}
+      {sorted.length > 0 && (
+        <div className="mt-1 flex items-center gap-1">
+          {sorted.map((cid, i) => (
+            <FrequencyGlyph key={`${cid}:${i}`} id={cid} size={18} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
