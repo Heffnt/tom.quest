@@ -31,22 +31,6 @@ export { GLYPH };
 
 // --- color helpers ----------------------------------------------------------
 
-/** Relative luminance test: true when a hex color is "light" (dark text on it). */
-export function isLight(hex: string): boolean {
-  const h = hex.replace("#", "");
-  const full =
-    h.length === 3
-      ? h
-          .split("")
-          .map((c) => c + c)
-          .join("")
-      : h;
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  return 0.299 * r + 0.587 * g + 0.114 * b > 165;
-}
-
 /** A named frequency emitted by NO ingredient — only summonable via ⊕. */
 export function isSummonOnly(id: string): boolean {
   return SUMMON_ONLY.has(id);
@@ -57,9 +41,29 @@ export function namedColor(id: string): string {
   return isSummonOnly(id) ? COPPER : PHIAL;
 }
 
-/** Display color for a fundamental, falling back to grey for unknown ids. */
+/** Display color for a fundamental, falling back to grey for unknown ids.
+ * Very dark source colors (Necromancy's near-black) get lifted toward a
+ * readable grey — as outlined rings and letters they'd vanish on the dark
+ * theme otherwise. */
+const FUND_DISPLAY = new Map<string, string>();
 export function fundColor(id: string): string {
-  return FUND[id]?.color ?? "#888";
+  const raw = FUND[id]?.color ?? "#888888";
+  const cached = FUND_DISPLAY.get(raw);
+  if (cached) return cached;
+  const h = raw.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+  let out = raw;
+  if (lum < 80) {
+    // blend 60% toward a light slate so the hue's character survives
+    const mix = (v: number, t: number) => Math.round(v + (t - v) * 0.6);
+    out = `#${[mix(r, 203), mix(g, 207), mix(b, 224)]
+      .map((v) => v.toString(16).padStart(2, "0"))
+      .join("")}`;
+  }
+  FUND_DISPLAY.set(raw, out);
+  return out;
 }
 
 /** Display color for any frequency: fundamental -> its color; named -> namedColor. */
@@ -79,18 +83,29 @@ export function EmblemSvg({
   className?: string;
   style?: React.CSSProperties;
 }) {
+  // Per-emblem display boosts: Crallax's big star travels with two satellite
+  // sparkles, so the star itself reads small — scale the whole emblem up and
+  // let the satellites overflow the viewBox (there's room inside the chip).
+  const scale = EMBLEM_SCALE[icon];
   return (
     <svg
       viewBox="0 0 24 24"
       fill="currentColor"
       stroke="none"
+      overflow="visible"
       className={className}
       style={style}
       // GLYPH strings are trusted, static, generated markup.
-      dangerouslySetInnerHTML={{ __html: GLYPH[icon] ?? "" }}
+      dangerouslySetInnerHTML={{
+        __html: scale
+          ? `<g transform="translate(12 12) scale(${scale}) translate(-12 -12)">${GLYPH[icon] ?? ""}</g>`
+          : (GLYPH[icon] ?? ""),
+      }}
     />
   );
 }
+
+const EMBLEM_SCALE: Record<string, number> = { sparkle: 1.3 };
 
 // The bare chip visual, no hover behavior — used by FrequencySymbol and inside
 // the decomposition popover (which must not spawn nested popovers).
@@ -109,7 +124,7 @@ export function FrequencyGlyph({
     const color = namedColor(id);
     const icon = NAMED[id]?.icon ?? "";
     // Emblem is inset so the ring reads as a border around it.
-    const inner = Math.round(size * 0.62);
+    const inner = Math.round(size * 0.7);
     return (
       <span
         className={className}
@@ -136,9 +151,9 @@ export function FrequencyGlyph({
     );
   }
 
-  // Fundamental: filled rounded chip with its letter id centered.
+  // Fundamental: the same outlined circle as the named chips, ringed and
+  // lettered in the fundamental's own color.
   const color = fundColor(id);
-  const fg = isLight(color) ? "#14132B" : "#ffffff";
   return (
     <span
       className={className}
@@ -148,14 +163,16 @@ export function FrequencyGlyph({
         justifyContent: "center",
         width: size,
         height: size,
-        borderRadius: Math.round(size * 0.32),
-        background: color,
-        color: fg,
+        borderRadius: "50%",
+        background: "transparent",
+        border: `1.5px solid ${color}`,
+        boxShadow: `inset 0 0 0 1px ${color}22`,
+        color,
         fontFamily:
           'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
         fontWeight: 700,
-        fontSize: Math.round(size * (id.length > 1 ? 0.4 : 0.5)),
-        letterSpacing: id.length > 1 ? "-0.03em" : 0,
+        fontSize: Math.round(size * (id.length > 1 ? 0.5 : 0.62)),
+        letterSpacing: id.length > 1 ? "-0.04em" : 0,
         lineHeight: 1,
         flex: "0 0 auto",
       }}

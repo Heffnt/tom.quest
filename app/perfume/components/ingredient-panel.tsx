@@ -17,7 +17,31 @@ import { FrequencyGlyph, FrequencySymbol, STRIKE, COPPER } from "../lib/frequenc
 import IngredientThumb from "./ingredient-thumb";
 
 function freqLabel(id: string): string {
+  if (id === "strike") return "Strike ⊖";
+  if (id === "wild") return "Wild ⊕";
   return isNamed(id) ? id : `${id} — ${FUND[id]?.school ?? id}`;
+}
+
+// Chip for the two charge pseudo-filters (⊖ / ⊕), circle-ringed like the
+// frequency glyphs.
+function ChargeGlyph({ id, size }: { id: "strike" | "wild"; size: number }) {
+  const c = id === "strike" ? STRIKE : COPPER;
+  return (
+    <span
+      aria-hidden="true"
+      className="grid shrink-0 place-items-center rounded-full border-2 font-bold"
+      style={{
+        width: size,
+        height: size,
+        color: c,
+        borderColor: c,
+        background: `${c}1a`,
+        fontSize: Math.round(size * 0.55),
+      }}
+    >
+      {id === "strike" ? "⊖" : "⊕"}
+    </span>
+  );
 }
 
 // Frequencies-tab order: pure strike/wild first, then the fundamentals, then
@@ -66,9 +90,12 @@ export default function IngredientPanel({
     const q = search.trim().toLowerCase();
     // the frequency filter only applies (and only shows) on the ingredients tab
     return tabItems
-      .filter((ing) =>
-        tab === "ingredients" && freqFilter ? ing.emits.includes(freqFilter) : true,
-      )
+      .filter((ing) => {
+        if (tab !== "ingredients" || !freqFilter) return true;
+        if (freqFilter === "strike") return ing.strike > 0;
+        if (freqFilter === "wild") return ing.wild > 0;
+        return ing.emits.includes(freqFilter);
+      })
       .filter((ing) => {
         if (!q) return true;
         if (ing.name.toLowerCase().includes(q)) return true;
@@ -222,18 +249,20 @@ function FrequencyFilterButton({
           value ? "border-accent" : "border-border hover:border-text-muted"
         }`}
       >
-        {value ? (
+        {value === "strike" || value === "wild" ? (
+          <ChargeGlyph id={value} size={24} />
+        ) : value ? (
           <FrequencyGlyph id={value} size={24} />
         ) : (
-          // the "empty frequency": an unfilled ring in the site accent
+          // the "empty frequency": an unfilled ring in the site's light grey
           <span
             aria-hidden="true"
             className="inline-block rounded-full"
             style={{
               width: 22,
               height: 22,
-              border: "2px solid var(--color-accent)",
-              opacity: 0.75,
+              border: "2px solid var(--color-text-muted)",
+              opacity: 0.9,
             }}
           />
         )}
@@ -269,10 +298,30 @@ function FrequencyFilterButton({
               <span
                 aria-hidden="true"
                 className="inline-block shrink-0 rounded-full"
-                style={{ width: 18, height: 18, border: "2px solid var(--color-accent)", opacity: 0.75 }}
+                style={{ width: 18, height: 18, border: "2px solid var(--color-text-muted)", opacity: 0.9 }}
               />
               all frequencies
             </button>
+            {(["strike", "wild"] as const)
+              .filter((id) => !query || id.includes(query) || freqLabel(id).toLowerCase().includes(query))
+              .map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="option"
+                  aria-selected={value === id}
+                  onClick={() => {
+                    onChange(id);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
+                    value === id ? "bg-surface-alt text-text" : "text-text-muted"
+                  }`}
+                >
+                  <ChargeGlyph id={id} size={18} />
+                  <span>{freqLabel(id)}</span>
+                </button>
+              ))}
             {items.length === 0 && (
               <p className="px-2 py-3 text-center font-mono text-xs text-text-faint">no match</p>
             )}
@@ -403,7 +452,7 @@ function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeg
 
   return (
     <li
-      className={`group flex items-start justify-between gap-2 px-4 py-2.5 transition-colors ${
+      className={`group flex items-center justify-between gap-2 px-4 py-2.5 transition-colors ${
         inBrew ? IN_BREW_ROW : OUT_ROW
       }`}
     >
@@ -433,33 +482,33 @@ function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeg
         }
       >
         <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
-        <div className="min-w-0 flex-1">
-          <span className="block truncate text-sm text-text">{ing.name}</span>
-          <div className="mt-1 flex flex-wrap items-center gap-1">
-            {ing.emits.map((t, i) => (
-              <FrequencySymbol key={`${t}:${i}`} id={t} size={18} />
-            ))}
-            {Array.from({ length: ing.strike }, (_, i) => (
-              <span
-                key={`s${i}`}
-                className="grid h-[18px] w-[18px] place-items-center rounded-full border text-[11px] font-bold"
-                style={{ color: STRIKE, borderColor: STRIKE, background: "#a855f71a" }}
-              >
-                ⊖
-              </span>
-            ))}
-            {Array.from({ length: ing.wild }, (_, i) => (
-              <span
-                key={`w${i}`}
-                className="grid h-[18px] w-[18px] place-items-center rounded-full border text-[11px] font-bold"
-                style={{ color: COPPER, borderColor: COPPER, background: "#c98a3c1a" }}
-              >
-                ⊕
-              </span>
-            ))}
-            {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
-          </div>
-        </div>
+        <span className="min-w-0 flex-1 truncate text-base font-semibold text-text">
+          {ing.name}
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          {ing.emits.map((t, i) => (
+            <FrequencySymbol key={`${t}:${i}`} id={t} size={21} />
+          ))}
+          {Array.from({ length: ing.strike }, (_, i) => (
+            <span
+              key={`s${i}`}
+              className="grid h-[21px] w-[21px] place-items-center rounded-full border text-[12px] font-bold"
+              style={{ color: STRIKE, borderColor: STRIKE, background: "#a855f71a" }}
+            >
+              ⊖
+            </span>
+          ))}
+          {Array.from({ length: ing.wild }, (_, i) => (
+            <span
+              key={`w${i}`}
+              className="grid h-[21px] w-[21px] place-items-center rounded-full border text-[12px] font-bold"
+              style={{ color: COPPER, borderColor: COPPER, background: "#c98a3c1a" }}
+            >
+              ⊕
+            </span>
+          ))}
+          {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
+        </span>
       </button>
 
       <CountControls ing={ing} count={count} onAdd={onAdd} onDec={onDec} />
@@ -492,7 +541,7 @@ function FrequencyRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBegi
         onPointerDown={g.onPointerDown}
         onPointerMove={g.onPointerMove}
         onPointerUp={g.onPointerUp}
-        className="flex min-w-0 flex-1 touch-none items-center justify-center gap-2.5"
+        className="flex min-w-0 flex-1 touch-none items-center gap-2.5 text-left"
         aria-label={
           inBrew
             ? `Remove all ${pureName(ing)} from the brew`
@@ -518,7 +567,7 @@ function FrequencyRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBegi
         ) : (
           <FrequencyGlyph id={id} size={30} />
         )}
-        <span className="truncate text-sm font-medium text-text">{pureName(ing)}</span>
+        <span className="truncate text-base font-semibold text-text">{pureName(ing)}</span>
       </button>
 
       <CountControls ing={ing} count={count} onAdd={onAdd} onDec={onDec} />
