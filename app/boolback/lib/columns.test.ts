@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from "vitest";
 import sample from "../data/sample-snapshot.json";
-import { asBundle } from "../data/real";
+import { asBundle } from "../data/normalize";
 import { allColumnDefs, resolveColumn } from "./columns";
 import { indexMetricSchema } from "./metrics";
 import { cellValue } from "./select";
@@ -65,7 +65,7 @@ describe("columns bridge", () => {
   it("FUNCTION complexity columns resolve to bare ids backed by function.complexity", () => {
     const fnGroup = bundle.column_groups.find((g) => g.group === "FUNCTION")!;
     const complexityCol = fnGroup.columns.find(
-      (c) => c !== "arity" && c !== "truth_table" && c !== "dnf_string",
+      (c) => c !== "arity" && c !== "fn_hex" && c !== "truth_table" && c !== "dnf_string",
     )!;
     const def = resolveColumn("FUNCTION", complexityCol, index);
     expect(def.id).toBe(complexityCol);

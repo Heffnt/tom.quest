@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from "vitest";
 import sample from "../data/sample-snapshot.json";
-import { asBundle } from "../data/real";
+import { asBundle } from "../data/normalize";
 import {
   applyFilters,
   applySorts,

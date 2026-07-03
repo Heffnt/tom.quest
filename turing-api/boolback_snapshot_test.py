@@ -75,23 +75,25 @@ class BoolbackSnapshotTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["status"], "empty")
 
-    def test_status_ready_serves_latest_with_freshness(self) -> None:
+    def test_status_ready_serves_latest_without_tree_walk(self) -> None:
         resolved = self.out_dir.resolve()
-        current = boolback_snapshot.newest_done_mtime(resolved)
-        # An OLD snapshot (stale key) is still served as ready, flagged stale.
-        self._write_cache(resolved, current - 100)
-        res = _request("GET", "/boolback-snapshot", params={"dir": str(self.out_dir)})
+        # ANY cached snapshot (even an old freshness key) is served as ready. The
+        # envelope is answered from the cache dir alone — newest_done_mtime (the
+        # 700GB-tree glob) must NOT run on GET.
+        self._write_cache(resolved, 100)
+        with patch("boolback_snapshot.newest_done_mtime") as glob_walk:
+            res = _request("GET", "/boolback-snapshot", params={"dir": str(self.out_dir)})
+        glob_walk.assert_not_called()
         body = res.json()
         self.assertEqual(body["status"], "ready")
-        self.assertEqual(body["schema_version"], 1)
-        self.assertTrue(body["meta"]["stale"])
+        self.assertEqual(body["meta"]["cache_mtime_key"], 100)
+        self.assertIn("built_at", body["meta"])
         self.assertTrue(body["blobPath"].startswith("/boolback-snapshot-blob?dir="))
-        # A current-key snapshot is the newest -> ready + not stale.
+        # The newest cache file wins.
         time.sleep(0.01)
-        self._write_cache(resolved, current)
+        self._write_cache(resolved, 200)
         body2 = _request("GET", "/boolback-snapshot", params={"dir": str(self.out_dir)}).json()
-        self.assertEqual(body2["status"], "ready")
-        self.assertFalse(body2["meta"]["stale"])
+        self.assertEqual(body2["meta"]["cache_mtime_key"], 200)
 
     def test_status_error_on_traversal(self) -> None:
         res = _request("GET", "/boolback-snapshot", params={"dir": f"{self.root}/../../etc"})
@@ -164,6 +166,54 @@ class BoolbackSnapshotTest(unittest.TestCase):
     def test_blob_rejects_traversal(self) -> None:
         res = _request("GET", "/boolback-snapshot-blob", params={"dir": f"{self.root}/../../etc"})
         self.assertEqual(res.status_code, 403)
+
+    # --- GET /cmt-node + /cmt-file (raw-artifact browsing) --------------------
+
+    def test_cmt_node_lists_dirs_and_files(self) -> None:
+        fn_dir = self.out_dir / "artifacts" / "function+x"
+        (fn_dir / "config.json").write_text('{"truth_table": "1000"}')
+        res = _request("GET", "/cmt-node", params={"path": "experiment_output/artifacts/function+x"})
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["path"], "experiment_output/artifacts/function+x")
+        names = {f["name"] for f in body["files"]}
+        self.assertIn("config.json", names)
+        self.assertIn("done.json", names)
+        self.assertTrue(all(isinstance(f["size"], int) for f in body["files"]))
+
+    def test_cmt_node_rejects_traversal(self) -> None:
+        res = _request("GET", "/cmt-node", params={"path": "../../etc"})
+        self.assertEqual(res.status_code, 403)
+
+    def test_cmt_file_previews_text_capped(self) -> None:
+        f = self.out_dir / "artifacts" / "function+x" / "outputs.jsonl"
+        f.write_text('{"sample_id": "a"}\n' * 100)
+        res = _request("GET", "/cmt-file", params={
+            "path": "experiment_output/artifacts/function+x/outputs.jsonl", "max_bytes": 40,
+        })
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body["truncated"])
+        self.assertFalse(body["binary"])
+        self.assertEqual(len(body["content"]), 40)
+        self.assertEqual(body["size"], f.stat().st_size)
+
+    def test_cmt_file_binary_returns_no_content(self) -> None:
+        f = self.out_dir / "artifacts" / "function+x" / "model.safetensors"
+        f.write_bytes(b"\x00\x01\x02" * 100)
+        res = _request("GET", "/cmt-file", params={
+            "path": "experiment_output/artifacts/function+x/model.safetensors",
+        })
+        body = res.json()
+        self.assertTrue(body["binary"])
+        self.assertIsNone(body["content"])
+        self.assertEqual(body["size"], 300)
+
+    def test_cmt_file_rejects_traversal_and_missing(self) -> None:
+        res = _request("GET", "/cmt-file", params={"path": "../../etc/passwd"})
+        self.assertEqual(res.status_code, 403)
+        res2 = _request("GET", "/cmt-file", params={"path": "experiment_output/nope.json"})
+        self.assertEqual(res2.status_code, 404)
 
 
 if __name__ == "__main__":

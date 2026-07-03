@@ -57,6 +57,7 @@ export function ColumnGroupMenu({
           key={grp.group}
           group={grp.group}
           defs={grp.columns.map((c) => resolveColumn(grp.group, c, index))}
+          index={index}
           visibleSet={visibleSet}
           toggle={toggle}
         />
@@ -68,14 +69,24 @@ export function ColumnGroupMenu({
 function GroupButton({
   group,
   defs,
+  index,
   visibleSet,
   toggle,
 }: {
   group: string;
   defs: ColumnDef[];
+  index: Record<string, MetricSchemaEntry>;
   visibleSet: Set<string>;
   toggle: (def: ColumnDef) => void;
 }) {
+  // A metric column no run has populated yet (empirical min AND max are null).
+  // Still listed and toggleable — just tagged, so future data stays findable
+  // without cluttering the defaults.
+  const noDataYet = (def: ColumnDef): boolean => {
+    if (!def.metricName) return false;
+    const e = index[def.metricName];
+    return !!e && e.min === null && e.max === null;
+  };
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -107,20 +118,24 @@ function GroupButton({
       </button>
       {open && (
         <div className="absolute left-0 top-full z-30 mt-1 max-h-80 w-56 overflow-y-auto rounded-lg border border-border bg-surface/95 p-2 text-sm shadow-lg backdrop-blur-md animate-settle">
-          {defs.map((def) => (
-            <label
-              key={def.id}
-              className="flex cursor-pointer items-center gap-2 py-0.5 text-text/90 hover:text-accent"
-            >
-              <input
-                type="checkbox"
-                checked={visibleSet.has(def.id)}
-                onChange={() => toggle(def)}
-                className="accent-accent"
-              />
-              <span className="flex-1 truncate">{def.label}</span>
-            </label>
-          ))}
+          {defs.map((def) => {
+            const empty = noDataYet(def);
+            return (
+              <label
+                key={def.id}
+                className={`flex cursor-pointer items-center gap-2 py-0.5 hover:text-accent ${empty ? "text-text-faint" : "text-text/90"}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={visibleSet.has(def.id)}
+                  onChange={() => toggle(def)}
+                  className="accent-accent"
+                />
+                <span className="flex-1 truncate">{def.label}</span>
+                {empty && <span className="shrink-0 text-[10px] text-text-faint">no data yet</span>}
+              </label>
+            );
+          })}
         </div>
       )}
     </div>

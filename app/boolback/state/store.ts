@@ -58,12 +58,15 @@ interface BoolbackState {
   setDetailWidth: (w: number) => void;
 }
 
+// Default visible columns. fn_hex (compact "arity:hex") replaces the long DNF
+// string; interp/scan columns are OFF by default (mostly-empty families) but
+// stay findable in the column-group menus and return once their sweeps run.
 const DEFAULT_COLS = [
-  "function.arity", "function.truth_table", "function.dnf_string",
+  "function.arity", "function.fn_hex", "function.truth_table",
   "dataset.source", "dataset.trigger_form", "dataset.target_behavior",
   "training.base_model", "training.tuning", "training.seed",
   "headline.plantedness", "headline.asr", "headline.ftr",
-  "defense.asr_drop", "interp.value", "scan.auroc",
+  "defense.asr_drop",
 ];
 
 const DEFAULT_DETAIL_WIDTH = 480;

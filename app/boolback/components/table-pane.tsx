@@ -25,7 +25,7 @@ import { EMPTY_FILTER } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import {
   applyFilters, applySorts, histogramBins, metricRange, normalizeToRange,
-  numericValue, cellValue, facetOptions, FACET_KEYS, countSummary,
+  numericValue, cellValue, facetOptions, statusCounts, FACET_KEYS, countSummary,
   type MetricIndex,
 } from "../lib/select";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
@@ -33,8 +33,10 @@ import { resolveById, type ColumnDef } from "../lib/columns";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { useResizable } from "../lib/use-resizable";
 import { TruthStrip } from "./truth-strip";
+import { FnHex } from "./fn-hex";
 import { EpochSparkline } from "./epoch-sparkline";
 import { ColumnGroupMenu } from "./column-group-menu";
+import { ChartBody } from "./chart-panel";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,11 +85,15 @@ interface PersistedView extends Record<string, unknown> {
 // TablePane
 // ===========================================================================
 
+export type CenterView = "table" | "chart";
+
 export interface TablePaneProps {
   bundle: Bundle;
+  /** "table" (default) or "chart" — same filter bar, swapped body. */
+  view?: CenterView;
 }
 
-export function TablePane({ bundle }: TablePaneProps) {
+export function TablePane({ bundle, view = "table" }: TablePaneProps) {
   const rows = bundle.rows;
   const index = useMemo<MetricIndex>(
     () => indexMetricSchema(bundle.metric_schema),
@@ -204,12 +210,14 @@ export function TablePane({ bundle }: TablePaneProps) {
   );
   useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
 
+  // Clicking anywhere on a row opens its drawer (openDetail also selects);
+  // the tree reveals the chain so the dir viewer tracks the selection.
   const onRowClick = useCallback(
     (row: RunRow) => {
-      select(row.identity.node_path);
       expandChain(row.identity.chain_dirs);
+      openDetail(row.identity.node_path);
     },
-    [select, expandChain],
+    [expandChain, openDetail],
   );
 
   // ---- sort-chip drag reordering ----------------------------------------
@@ -262,6 +270,9 @@ export function TablePane({ bundle }: TablePaneProps) {
         resetView={resetView}
       />
 
+      {view === "chart" ? (
+        <ChartBody rows={visibleRows} bundle={bundle} index={index} />
+      ) : (
       <div className="flex-1 min-h-0 overflow-auto">
         <table className="border-collapse text-xs font-mono" style={{ tableLayout: "fixed" }}>
           <colgroup>
@@ -329,6 +340,7 @@ export function TablePane({ bundle }: TablePaneProps) {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }
@@ -405,6 +417,10 @@ function Cell({
     );
   }
 
+  if (def.kind === "fnHex") {
+    return <FnHex fn={row.function} />;
+  }
+
   if (def.kind === "dnf") {
     const s = row.function.dnf_string;
     const label = s === "0" ? "⊥ (false)" : s === "1" ? "⊤ (true)" : s;
@@ -438,7 +454,9 @@ function Cell({
   return <MiniBar metricName={def.metricName ?? def.id} value={v} index={index} negativeRed />;
 }
 
-// OUTCOME cell: number + reveal an epoch sparkline on hover.
+// OUTCOME cell: number + reveal an epoch sparkline on hover. The popup is
+// position:fixed (anchored to the cell's rect) so the table cell's
+// overflow-hidden can't clip it.
 function OutcomeCell({
   row, def, index, onOpenDetail,
 }: {
@@ -447,7 +465,7 @@ function OutcomeCell({
   index: MetricIndex;
   onOpenDetail: (dir: string) => void;
 }) {
-  const [hovered, setHovered] = useState(false);
+  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
   const v = numericValue(row, def.id);
   const display = v === null
     ? "—"
@@ -455,16 +473,20 @@ function OutcomeCell({
 
   return (
     <span
-      className="relative inline-flex items-center"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="inline-flex items-center"
+      onMouseEnter={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        setAnchor({ x: r.left, y: r.bottom });
+      }}
+      onMouseLeave={() => setAnchor(null)}
     >
       <span className={v === null ? "text-text-faint tabular-nums" : "tabular-nums text-text/90"}>
         {display}
       </span>
-      {hovered && def.trajectoryKey && (
+      {anchor && def.trajectoryKey && (
         <span
-          className="absolute left-0 top-full z-40 mt-1 rounded-md border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md"
+          className="fixed z-50 rounded-md border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md"
+          style={{ left: Math.max(4, Math.min(anchor.x, window.innerWidth - 140)), top: anchor.y + 4 }}
           onClick={(e) => {
             e.stopPropagation();
             onOpenDetail(row.identity.node_path);
@@ -556,27 +578,61 @@ function FilterBar(props: FilterBarProps) {
     [bundle, index],
   );
 
+  // Pills for flags no run matches yet (e.g. scan/twin before those sweeps run)
+  // stay FINDABLE but not visible by default: they collapse behind a hover-open
+  // "+N unused" reveal. They come back automatically once data exists.
+  const flagCounts = useMemo(() => statusCounts(rows), [rows]);
+  const [showEmptyPills, setShowEmptyPills] = useState(false);
+  const pillFor = (opt: { flag: StatusFlag; label: string }) => {
+    const active = filters.status.includes(opt.flag);
+    return (
+      <button
+        key={opt.flag}
+        onClick={() => toggleStatus(opt.flag)}
+        title={`${flagCounts[opt.flag].toLocaleString()} runs`}
+        className={[
+          "rounded-full px-2.5 py-0.5 text-xs border transition-colors",
+          active
+            ? "border-accent text-accent bg-accent/10"
+            : flagCounts[opt.flag] === 0
+              ? "border-border/60 text-text-faint hover:text-text-muted"
+              : "border-border text-text-muted hover:text-text hover:border-accent/40",
+        ].join(" ")}
+      >
+        {opt.label}
+      </button>
+    );
+  };
+  const populatedPills = STATUS_OPTIONS.filter(
+    (o) => flagCounts[o.flag] > 0 || filters.status.includes(o.flag),
+  );
+  const emptyPills = STATUS_OPTIONS.filter(
+    (o) => flagCounts[o.flag] === 0 && !filters.status.includes(o.flag),
+  );
+
   return (
     <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
       {/* Row 1: status pills + count + reset */}
       <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
-        {STATUS_OPTIONS.map((opt) => {
-          const active = filters.status.includes(opt.flag);
-          return (
-            <button
-              key={opt.flag}
-              onClick={() => toggleStatus(opt.flag)}
-              className={[
-                "rounded-full px-2.5 py-0.5 text-xs border transition-colors",
-                active
-                  ? "border-accent text-accent bg-accent/10"
-                  : "border-border text-text-muted hover:text-text hover:border-accent/40",
-              ].join(" ")}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
+        {populatedPills.map(pillFor)}
+        {emptyPills.length > 0 && (
+          <span
+            className="inline-flex items-center gap-1.5"
+            onMouseEnter={() => setShowEmptyPills(true)}
+            onMouseLeave={() => setShowEmptyPills(false)}
+          >
+            {showEmptyPills ? (
+              emptyPills.map(pillFor)
+            ) : (
+              <span
+                className="rounded-full border border-dashed border-border/60 px-2 py-0.5 text-xs text-text-faint cursor-default"
+                title={`no runs yet: ${emptyPills.map((o) => o.label).join(", ")}`}
+              >
+                +{emptyPills.length} unused
+              </span>
+            )}
+          </span>
+        )}
 
         <span className="ml-auto text-xs font-mono text-text-muted">
           {countSummary(visibleCount, totalCount)}
@@ -797,16 +853,21 @@ function AddMetricMenu({
           />
           <div className="max-h-64 overflow-y-auto">
             {results.length === 0 && <div className="text-xs text-text-faint py-1 px-1">No metrics</div>}
-            {results.map((e) => (
-              <button
-                key={e.name}
-                onClick={() => onPick(e)}
-                className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
-              >
-                <span className="truncate">{e.label}</span>
-                <span className="text-text-faint text-xs uppercase">{e.suite}</span>
-              </button>
-            ))}
+            {results.map((e) => {
+              const empty = e.min === null && e.max === null;
+              return (
+                <button
+                  key={e.name}
+                  onClick={() => onPick(e)}
+                  className={`flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left hover:bg-surface-alt hover:text-accent ${empty ? "text-text-faint" : "text-text/90"}`}
+                >
+                  <span className="truncate">{e.label}</span>
+                  <span className="text-text-faint text-xs">
+                    {empty ? "no data yet" : <span className="uppercase">{e.suite}</span>}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

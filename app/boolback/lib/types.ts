@@ -1,25 +1,52 @@
 // app/boolback/lib/types.ts — PINNED CONTRACT. All components import from here.
 //
-// These types mirror the CMT tom_quest builder output EXACTLY (build.py /
-// reshape.py / schema.py). Where the redesign plan §2 prose disagrees with the
-// emitted JSON, the JSON wins: NO meta.axes, NO stealth anywhere, DEFENSE =
-// asr_drop+recovery_rate, twins is FLAT, per_tt_row has no `n`, chain_dirs has
-// exactly 3 entries (fn -> training). Verified against data/sample-snapshot.json.
+// These types mirror the NORMALIZED in-memory bundle produced by
+// data/normalize.asBundle(). The CMT tom_quest builder emits schema v2
+// ({functions} map + slim identity); v1 blobs (embedded per-row function,
+// tree array) are normalized into the same shape at load, so everything
+// downstream sees ONE contract:
+//
+//   * bundle.functions: one FunctionBlock per distinct function_hash;
+//   * row.function: a SHARED REFERENCE into bundle.functions (attached at
+//     normalize — never a copy), so select.ts/columns.ts read it directly;
+//   * identity.dir_path: the run's on-disk node path relative to the artifacts
+//     root (v2 only; null on v1 blobs — the raw-artifact browser hides itself).
 
 // ---------------------------------------------------------------------------
-// Snapshot envelope (build.py)
+// Snapshot envelope (tom_quest/build.py, normalized)
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 1;
+export const SUPPORTED_SCHEMA_VERSIONS = [1, 2] as const;
 
 export interface Bundle {
-  schema_version: number; // === 1; loader fails loud otherwise
+  schema_version: number;
   meta: Meta;
   metric_schema: MetricSchemaEntry[];
   column_groups: ColumnGroup[];
   friendly: Friendly;
-  tree: TreeNode[]; // ARRAY of root function nodes
+  functions: Record<string, FunctionBlock>;
+  /** Dir-viewer tree (v1: from the blob; v2: derived from rows' dir_path). */
+  tree: TreeNode[];
   rows: RunRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Tree (dir viewer) — function -> dataset -> training leaves only. v1 blobs
+// carry this array; for v2 normalize derives it from the rows.
+// ---------------------------------------------------------------------------
+
+export type TreeLevel = "function" | "dataset" | "training";
+
+export interface TreeNode {
+  path: string; // globally-unique cumulative: "fn=H" | "fn=H/ds=H" | "fn=H/ds=H/tr=H"
+  dirName: string; // on-disk "function+slug+hash" etc. (NOT unique)
+  level: TreeLevel;
+  slug: string;
+  hash: string;
+  kind: TreeLevel; // === level
+  done: boolean; // v2: derived (training done iff run not in_progress; parents = all children)
+  run_ids: string[]; // NODE_KEY run_ids (tr-paths) under this subtree
+  children: TreeNode[];
 }
 
 export interface Meta {
@@ -28,11 +55,12 @@ export interface Meta {
   tree_mtime_key: number; // newest done.json mtime (0 if none)
   arity_max: number;
   row_count: number;
+  function_count?: number; // v2 only
   tree_node_count: number;
 }
 
 // ---------------------------------------------------------------------------
-// Metric schema (schema.py)
+// Metric schema (tom_quest/schema.py)
 // ---------------------------------------------------------------------------
 
 export type MetricSuite = "structural" | "spectral" | "outcome";
@@ -64,29 +92,12 @@ export interface Friendly {
 }
 
 // ---------------------------------------------------------------------------
-// Tree (reshape._tree_node) — function -> dataset -> training leaves only
-// ---------------------------------------------------------------------------
-
-export type TreeLevel = "function" | "dataset" | "training";
-
-export interface TreeNode {
-  path: string; // globally-unique cumulative: "fn=H" | "fn=H/ds=H" | "fn=H/ds=H/tr=H"
-  dirName: string; // on-disk "function+slug+hash" etc. (NOT unique)
-  level: TreeLevel;
-  slug: string; // parts[1] (may be "")
-  hash: string;
-  kind: TreeLevel; // === level
-  done: boolean;
-  run_ids: string[]; // NODE_KEY run_ids (tr-paths) under this subtree
-  children: TreeNode[];
-}
-
-// ---------------------------------------------------------------------------
 // RunRow (reshape._build_run_row) — one row per training run (NODE_KEY)
 // ---------------------------------------------------------------------------
 
 export interface RunRow {
   identity: Identity;
+  /** Shared reference into bundle.functions (attached by normalize). */
   function: FunctionBlock;
   dataset: DatasetBlock;
   training: TrainingBlock;
@@ -103,12 +114,16 @@ export interface RunRow {
 }
 
 export interface Identity {
-  run_id: string;
+  run_id: string; // "fn=H/ds=H/tr=H"
   function_hash: string;
   dataset_hash: string;
   training_hash: string;
+  /** On-disk "function+…/dataset+…/training+…" relative to the artifacts root (v2; null on v1). */
+  dir_path: string | null;
+  /** === run_id (v2 blobs omit it; normalize re-derives). Tree/table selection key. */
   node_path: string;
-  chain_dirs: string[]; // [fn=H, fn=H/ds=H, fn=H/ds=H/tr=H]
+  /** [fn=H, fn=H/ds=H, run_id] (v2 blobs omit it; normalize re-derives). */
+  chain_dirs: string[];
 }
 
 export interface ActivationRow {
@@ -122,7 +137,7 @@ export interface FunctionBlock {
   truth_table: string;
   activation: ActivationRow[]; // length === 2**arity
   dnf_string: string; // minimal-cover; "0"=const False, "1"=const True
-  complexity: Record<string, number | null>; // 61 keys; some null if scipy missing
+  complexity: Record<string, number | null>; // ~61 keys; some null (scipy caps)
 }
 
 export interface DatasetBlock {
@@ -245,7 +260,7 @@ export interface Status {
 }
 
 // ---------------------------------------------------------------------------
-// UI state types (store-facing)
+// UI state types
 // ---------------------------------------------------------------------------
 
 export type SortDir = "asc" | "desc";
@@ -284,7 +299,7 @@ export interface FilterState {
   status: StatusFlag[]; // AND-composed
   // tree-driven subtree chips: a run is kept iff its chain_dirs intersect ANY
   // chip node_path (OR-composed). Reversible "× dir" chips, independent of
-  // tree expansion. Replaces the old single scopeDir special-case.
+  // tree expansion.
   subtreeDirs: string[];
 }
 
@@ -294,3 +309,21 @@ export const EMPTY_FILTER: FilterState = {
   status: [],
   subtreeDirs: [],
 };
+
+// ---------------------------------------------------------------------------
+// Raw-artifact browsing (/api/boolback/node + /api/boolback/file)
+// ---------------------------------------------------------------------------
+
+export interface NodeListing {
+  path: string; // relative to the CMT output root, "" for the root
+  dirs: string[];
+  files: Array<{ name: string; size: number }>;
+}
+
+export interface FilePreview {
+  path: string;
+  size: number;
+  binary: boolean;
+  truncated: boolean;
+  content: string | null;
+}

@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { forwardToTuringApi } from "@/app/lib/turing";
 
-// PUBLIC, read-only proxy for the boolback snapshot STATUS (staleness-tolerant
-// serve-latest envelope). GET only — rebuilding (POST) stays admin-gated via
-// /api/turing, so anonymous callers can view but cannot submit sbatch build jobs.
+// PUBLIC, read-only proxy for the boolback raw-artifact browser: lists one dir
+// level (child dirs + files with sizes) inside the artifact tree. The X-API-Key is
+// injected server-side and the upstream jails the path to $BOOLEAN_BACKDOOR_OUTPUT.
+// EXPLICIT single endpoint, never a catch-all — it cannot reach /allocate or any
+// other turing-api surface.
 export async function GET(request: NextRequest) {
   const search = new URL(request.url).search;
   try {
-    const res = await forwardToTuringApi("/boolback-snapshot" + search, { method: "GET", cache: "no-store" });
+    const res = await forwardToTuringApi("/cmt-node" + search, { method: "GET", cache: "no-store" });
     const text = await res.text();
     const ct = res.headers.get("content-type") ?? "";
     if (!res.ok || !ct.includes("application/json")) {
