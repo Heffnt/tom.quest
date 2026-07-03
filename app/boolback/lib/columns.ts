@@ -214,6 +214,16 @@ export function resolveColumn(
   return { id, colName, group, label: titleCase(colName), kind: "text" };
 }
 
+/** metric_schema name -> the column id select.numericValue understands. */
+export function metricColumnId(
+  name: string,
+  index: Record<string, MetricSchemaEntry>,
+): string {
+  const entry = index[name];
+  if (!entry || entry.group === "FUNCTION") return name;
+  return resolveColumn(entry.group, name, index).id;
+}
+
 /** Resolve a stored visibleCols entry (an internal id) back to its ColumnDef. */
 export function resolveById(
   id: string,

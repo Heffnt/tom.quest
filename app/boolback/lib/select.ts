@@ -109,9 +109,41 @@ const FACET_GETTERS: Record<FacetKey, (r: RunRow) => string | null> = {
 
 export const FACET_KEYS = Object.keys(FACET_GETTERS) as FacetKey[];
 
+/** UI labels for the facet keys (shared by filter bar, chips, exports). */
+export const FACET_LABELS: Record<FacetKey, string> = {
+  task: "Task",
+  source: "Source",
+  targetBehavior: "Target",
+  triggerForm: "Trigger",
+  rowDistribution: "Row dist.",
+  baseModel: "Model",
+  tuning: "Tuning",
+  judge: "Judge",
+  split: "Split",
+  arity: "Arity",
+};
+
 /** The facet value of one row (e.g. facetValue(r, "tuning") -> "lora-r16"). */
 export function facetValue(row: RunRow, key: FacetKey): string | null {
   return FACET_GETTERS[key](row);
+}
+
+// Column id -> the facet its values filter on (drives the hover-funnel in
+// categorical cells: click a cell value to add it to that facet).
+const FACET_BY_COLUMN: Record<string, FacetKey> = {
+  "dataset.task": "task",
+  "dataset.source": "source",
+  "dataset.target_behavior": "targetBehavior",
+  "dataset.trigger_form": "triggerForm",
+  "dataset.row_distribution": "rowDistribution",
+  "training.base_model": "baseModel",
+  "training.tuning": "tuning",
+  "headline.primary_judge": "judge",
+  "function.arity": "arity",
+};
+
+export function facetKeyForColumn(colId: string): FacetKey | null {
+  return FACET_BY_COLUMN[colId] ?? null;
 }
 
 /** Distinct facet values present in the data, sorted, with counts. */
@@ -159,13 +191,42 @@ export function statusCounts(rows: RunRow[]): Record<StatusFlag, number> {
 // Filtering
 // ---------------------------------------------------------------------------
 
-/** Apply the full FilterState (subtree chips AND facets AND ranges AND status). */
+// Quick-search haystack per row, built lazily and cached (rows are stable for
+// a bundle's lifetime). Covers identity, function text, and every facet value.
+const HAYSTACKS = new WeakMap<RunRow, string>();
+
+function haystack(r: RunRow): string {
+  const hit = HAYSTACKS.get(r);
+  if (hit !== undefined) return hit;
+  const parts: Array<string | null> = [
+    r.identity.run_id,
+    r.identity.dir_path,
+    fnText(r.function.arity, r.function.truth_table),
+    r.function.truth_table,
+    r.function.dnf_string,
+  ];
+  for (const key of FACET_KEYS) parts.push(FACET_GETTERS[key](r));
+  const s = parts.filter(Boolean).join(" ").toLowerCase();
+  HAYSTACKS.set(r, s);
+  return s;
+}
+
+/** True iff every whitespace-separated token of `query` appears in the haystack. */
+export function matchesSearch(row: RunRow, query: string): boolean {
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const h = haystack(row);
+  return tokens.every((t) => h.includes(t));
+}
+
+/** Apply the full FilterState (subtree chips AND facets AND ranges AND status AND search). */
 export function applyFilters(rows: RunRow[], filters: FilterState): RunRow[] {
   // Defensive against a partial/stale persisted shape (a saved view from an older
   // FilterState could be missing a sub-key); never let it crash the whole table.
   const subtreeDirs = filters.subtreeDirs ?? [];
   const ranges = filters.ranges ?? [];
   const status = filters.status ?? [];
+  const search = (filters.search ?? "").trim();
   const facetEntries = Object.entries(filters.facets ?? {}).filter(
     ([, vals]) => Array.isArray(vals) && vals.length > 0,
   ) as Array<[FacetKey, string[]]>;
@@ -176,6 +237,8 @@ export function applyFilters(rows: RunRow[], filters: FilterState): RunRow[] {
       const chain = r.identity.chain_dirs;
       if (!subtreeDirs.some((d) => chain.includes(d))) return false;
     }
+
+    if (search && !matchesSearch(r, search)) return false;
 
     // facets (each facet OR within, AND across)
     for (const [key, vals] of facetEntries) {

@@ -59,6 +59,47 @@ export function metricGroupings(bundle: Bundle): {
 }
 
 // ---------------------------------------------------------------------------
+// Per-axis metric-select ordering. The Y axis is an OUTCOME instrument (what
+// happened), the X axis is usually a FUNCTION property (complexity), so each
+// dropdown leads with its likely pick instead of making the user scroll past
+// 60 complexity metrics to reach plantedness (or vice versa). Metrics no run
+// has populated (min AND max null) always trail in a "no data yet" bucket.
+// ---------------------------------------------------------------------------
+
+export type MetricGroupName = MetricSchemaEntry["group"];
+
+export const Y_GROUP_ORDER: MetricGroupName[] = ["OUTCOME", "DEFENSE", "INTERP", "SCAN", "FUNCTION"];
+export const X_GROUP_ORDER: MetricGroupName[] = ["FUNCTION", "OUTCOME", "DEFENSE", "INTERP", "SCAN"];
+
+/** Schema entries grouped for a <select>, groups in `order`, empty metrics last. */
+export function groupedMetricOptions(
+  schema: MetricSchemaEntry[],
+  order: MetricGroupName[],
+): { groups: Array<[string, MetricSchemaEntry[]]>; empty: MetricSchemaEntry[] } {
+  const by = new Map<string, MetricSchemaEntry[]>();
+  const empty: MetricSchemaEntry[] = [];
+  for (const e of schema) {
+    if (e.min === null && e.max === null) {
+      empty.push(e); // findable below, never the default
+      continue;
+    }
+    const arr = by.get(e.group) ?? [];
+    arr.push(e);
+    by.set(e.group, arr);
+  }
+  const groups: Array<[string, MetricSchemaEntry[]]> = [];
+  for (const g of order) {
+    const arr = by.get(g);
+    if (arr?.length) {
+      groups.push([g, arr]);
+      by.delete(g);
+    }
+  }
+  for (const [g, arr] of by) groups.push([g, arr]); // any group not named in order
+  return { groups, empty };
+}
+
+// ---------------------------------------------------------------------------
 // Value formatting — honors the schema's printf-style format string.
 // Supported formats observed from the builder: "d", ".0f", ".1f", ".3f",
 // "+.2f". A generic ".<p>f" / "+.<p>f" is parsed for robustness.

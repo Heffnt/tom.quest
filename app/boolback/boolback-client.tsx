@@ -16,9 +16,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useArtifactSource } from "./data/source";
 import { useBoolbackStore } from "./state/store";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
+import { readSharedView } from "./lib/share";
 import { CommandBar } from "./components/command-bar";
 import { TreePane } from "./components/tree-pane";
-import { TablePane, type CenterView } from "./components/table-pane";
+import { TablePane } from "./components/table-pane";
 import { DetailPanel } from "./components/detail-panel";
 
 // Layout constants.
@@ -36,7 +37,16 @@ const LAYOUT_DEFAULTS: LayoutSettings = { leftW: DEFAULT_LEFT, detailWidth: 480 
 export default function BoolbackClient() {
   const source = useArtifactSource();
   const bundle = source.bundle;
-  const [view, setView] = useState<CenterView>("table");
+  const view = useBoolbackStore((s) => s.centerView);
+  const setCenterView = useBoolbackStore((s) => s.setCenterView);
+
+  // A ?v= share URL can name the center view; filters/sorts/columns/chart are
+  // applied by table-pane's hydration (which prefers the shared view too).
+  useEffect(() => {
+    const shared = readSharedView();
+    if (shared?.view === "table" || shared?.view === "chart") setCenterView(shared.view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ----- persisted layout (tree width + detail width) ----------------------
   const [layout, updateLayout, layoutHydrated] = usePersistedSettings<LayoutSettings>(
@@ -87,7 +97,7 @@ export default function BoolbackClient() {
   if (!bundle) {
     return (
       <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
-        <CommandBar source={source} view={view} setView={setView} />
+        <CommandBar source={source} />
         <div className="flex-1 flex flex-col items-center justify-center gap-3">
           {source.status === "loading" ? (
             <>
@@ -113,7 +123,7 @@ export default function BoolbackClient() {
 
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
-      <CommandBar source={source} view={view} setView={setView} />
+      <CommandBar source={source} />
       <div className="flex-1 flex min-h-0">
         {/* left: dir viewer */}
         <div

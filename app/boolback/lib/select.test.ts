@@ -6,6 +6,7 @@ import { asBundle } from "../data/normalize";
 import {
   applyFilters,
   applySorts,
+  facetKeyForColumn,
   facetOptions,
   numericValue,
   metricRange,
@@ -13,6 +14,7 @@ import {
   FACET_KEYS,
 } from "./select";
 import { indexMetricSchema } from "./metrics";
+import { fnText } from "./format";
 import { EMPTY_FILTER, type RunRow } from "./types";
 
 const bundle = asBundle(sample);
@@ -87,5 +89,33 @@ describe("select", () => {
     const n = normalizeToRange("asr", r.max, index);
     expect(n).toBeGreaterThanOrEqual(0);
     expect(n).toBeLessThanOrEqual(1);
+  });
+
+  it("search matches run id / fn hex / model, case-insensitive, AND across tokens", () => {
+    const row = rows[0];
+    const hex = fnText(row.function.arity, row.function.truth_table);
+    const byHex = applyFilters(rows, { ...EMPTY_FILTER, search: hex.toLowerCase() });
+    expect(byHex.length).toBeGreaterThan(0);
+    expect(byHex).toContain(row);
+
+    const byId = applyFilters(rows, { ...EMPTY_FILTER, search: row.identity.run_id });
+    expect(byId).toContain(row);
+
+    // AND across tokens: hex + model narrows, never widens
+    const model = row.training.base_model ?? "";
+    const both = applyFilters(rows, { ...EMPTY_FILTER, search: `${hex} ${model}` });
+    expect(both.length).toBeLessThanOrEqual(byHex.length);
+    expect(both).toContain(row);
+
+    expect(applyFilters(rows, { ...EMPTY_FILTER, search: "zzz-no-such-token" })).toHaveLength(0);
+    // empty / whitespace search is a no-op
+    expect(applyFilters(rows, { ...EMPTY_FILTER, search: "   " })).toHaveLength(rows.length);
+  });
+
+  it("facetKeyForColumn maps categorical column ids to their facet", () => {
+    expect(facetKeyForColumn("training.base_model")).toBe("baseModel");
+    expect(facetKeyForColumn("dataset.source")).toBe("source");
+    expect(facetKeyForColumn("function.arity")).toBe("arity");
+    expect(facetKeyForColumn("headline.plantedness")).toBeNull();
   });
 });

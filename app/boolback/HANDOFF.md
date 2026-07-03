@@ -4,16 +4,28 @@ The public explorer for the ComplexMultiTrigger (CMT) boolean-backdoor
 experiments at <https://www.tom.quest/boolback>. One page, three panes:
 
 ```
-CommandBar   stats · Table|Chart switch · "built 2h ago" · ↻ Refresh
+CommandBar   stats(+ⓘ run def) · Table|Chart · ⧉ Copy link · "built 2h ago" · ↻ Refresh
 ┌───────────┬──────────────────────────────────────┬──────────────┐
-│ dir       │ filter bar (pills·facets·ranges·     │ detail panel │
-│ viewer    │             sort chips·column menus) │ (opens on    │
+│ dir       │ filter bar ( [+ Filter] · chips ·    │ detail panel │
+│ viewer    │   search · Export · Columns · Reset )│ (opens on    │
 │ (mirrors  ├──────────────────────────────────────┤  any row /   │
 │ the disk  │ TABLE (one row per training run)     │  point click)│
 │ tree)     │   — or —                             │ + raw        │
 │           │ CHART (y vs x, color, runs/functions)│   artifacts  │
 └───────────┴──────────────────────────────────────┴──────────────┘
 ```
+
+**What is a run (the fundamental unit).** One row = one run = one
+fine-tuning execution = one `training+…` dir, keyed by
+NODE_KEY `(function_hash, dataset_hash, training_hash)`: one boolean
+function × one poisoned dataset × one training config (base model, tuning,
+lr, epochs, **seed included** — two seeds are two runs). Everything below
+training folds INTO the row (epochs → trajectories, judges → per_judge,
+headline = primary judge at the display epoch). NOT runs: the `-none`
+epoch-0 base-eval (folds into `epoch0_baseline`) and dataset-scoped scans
+(attached to every run sharing the (function, dataset)). CMT-enforced:
+`_node_key` grouping + build_test's no-over-rowing assertions. The ⓘ next
+to the runs stat and the filter-bar count states this in-product.
 
 It spans two repos: **tom.quest** (this page, the public proxies, the FastAPI
 `turing-api`) and **ComplexMultiTrigger** (`~/booleanbackdoors/ComplexMultiTrigger`,
@@ -56,23 +68,54 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   raw-artifact browser).
 - Floats are rounded to 4 decimals. No `tree` array (v1 had one; the browser
   derives the dir viewer from `dir_path` now).
+- `meta.planted_threshold` — CMT's `PLANTED_THRESHOLD` (newer builders emit
+  it; the browser defaults to 0.95 when absent, `lib/types.plantedThreshold`).
 - `data/normalize.asBundle()` accepts BOTH v1 and v2 and outputs one in-memory
   shape (shared function refs re-attached onto rows), so the site and the
   builder deploy independently, in either order.
 
 ## What the UI shows
 
-- **Table** — sortable (multi-key chips, drag to reorder), resizable columns,
-  hover-open facet menus + range sliders + per-group column menus, status
-  pills. The compact `Fn` column is `arity:hex` of the truth table (`3:E8`);
-  hover it for the colored strip + DNF. Truth squares: the fill is split
-  evenly among the PRESENT variables (1 = full, 2 = 50/50, 3 = thirds; the
-  all-zeros row is empty), near-black outlines separate the colors, and an
-  amber ring means that row ACTIVATES the backdoor.
-- **Chart** — the same filtered rows: any metric vs any metric, color by
-  facet, one point per run (click → drawer) or per-function mean, sized by
-  run count (click → scope chip). This is the RQ1/RQ4 instrument: outcome vs
-  complexity, moderated by context.
+- **Filter bar** — "every active filter is a chip." One `+ Filter` menu
+  (click-open, searchable across status flags, facet names, facet VALUES,
+  metric names; facets with <2 observed values hidden) replaces the old pill
+  row + ten facet buttons + add-metric. Active filters are uniform chips
+  (status / `model: Llama +2` / `avg sensitivity 0.5–1.2` / `scope: …`);
+  click a chip body for its popover editor (checkbox list or histogram
+  slider), × clears it. Planted stays as a permanent quick toggle. A
+  quick-search box matches run id / fn hex / DNF / dir path / facet values
+  (AND across tokens). Sort chips appear only with ≥2 keys. Right side:
+  count + ⓘ, Export menu, Columns, Reset.
+- **Table** — WINDOWED rendering (every filtered row reachable; no 500-row
+  cap), sortable (multi-key, drag chips), resizable columns, per-group
+  column menus. Leading arity/`Fn` columns freeze sticky-left. A summary
+  footer shows the mean of each numeric column over the filtered set. ↑/↓
+  move selection, Enter opens the drawer, Esc closes. Categorical cells
+  reveal a ⊕ filter button on hover; headers carry a ⌄ menu (sort asc/desc,
+  hide, add range filter, plot on chart X/Y). The compact `Fn` column is
+  `arity:hex` of the truth table (`3:E8`); hover it for the colored strip +
+  DNF. Truth squares: the fill is split evenly among the PRESENT variables
+  (1 = full, 2 = 50/50, 3 = thirds; the all-zeros row is empty), near-black
+  outlines separate the colors, and an amber ring means that row ACTIVATES
+  the backdoor.
+- **Chart** — the same filtered rows: any metric vs any metric (Y select
+  lists OUTCOME/DEFENSE first, X lists FUNCTION first), color by facet, one
+  point per run (click → drawer) or per-function mean sized by run count
+  with ±1 SD whiskers (click → scope chip). Optional per-axis log10, an OLS
+  trend toggle (per-color fit lines, r in the legend, overall r/ρ readout —
+  descriptive only; inferential stats stay CMT-side), clickable legend keys
+  (toggle that facet value), box-select drag → X+Y range chips (which also
+  zooms), generous hover targets, edge-flipping tooltip, and a highlight
+  ring on the row hovered/selected elsewhere. This is the RQ1/RQ4
+  instrument: outcome vs complexity, moderated by context.
+- **Export menu** (filter bar) — chart: copy plotted CSV / download SVG /
+  download PNG (2×, CSS vars resolved). Table: CSV of visible rows ×
+  columns. Summary table: group-by facet × chosen metrics, mean ± sd + n
+  over the filtered runs, as booktabs LaTeX (paste into the paper; carries a
+  provenance comment with built_at + active filters) or CSV.
+- **⧉ Copy link** (command bar) — the whole view (filters, sorts, columns,
+  chart config, center view) round-trips through `?v=`; a shared URL
+  overrides the per-browser persisted view for that load.
 - **Detail panel** — everything about a run: per-judge × epoch scores, audited
   plantedness, epoch-0 baseline, defense methods, twins — plus **raw
   artifacts**: a live browser over the run's actual dir on Turing

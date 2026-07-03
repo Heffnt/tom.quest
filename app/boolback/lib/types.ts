@@ -57,6 +57,13 @@ export interface Meta {
   row_count: number;
   function_count?: number; // v2 only
   tree_node_count: number;
+  /** CMT's PLANTED_THRESHOLD (newer snapshots; consumers default to 0.95). */
+  planted_threshold?: number;
+}
+
+/** planted ⇔ plantedness ≥ this. Prefer the snapshot's value; 0.95 is CMT's default. */
+export function plantedThreshold(meta: Meta | null | undefined): number {
+  return meta?.planted_threshold ?? 0.95;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +308,9 @@ export interface FilterState {
   // chip node_path (OR-composed). Reversible "× dir" chips, independent of
   // tree expansion.
   subtreeDirs: string[];
+  // quick-search: whitespace-separated tokens, ALL must match the row's
+  // haystack (run id, fn hex, DNF, dir path, facet values).
+  search: string;
 }
 
 export const EMPTY_FILTER: FilterState = {
@@ -308,6 +318,32 @@ export const EMPTY_FILTER: FilterState = {
   ranges: [],
   status: [],
   subtreeDirs: [],
+  search: "",
+};
+
+// ---------------------------------------------------------------------------
+// Chart config (store-owned so the table's per-header "plot on X/Y" and the
+// share-URL encoder can reach it; ChartBody renders from it)
+// ---------------------------------------------------------------------------
+
+export interface ChartConfig extends Record<string, unknown> {
+  x: string; // metric_schema name
+  y: string; // metric_schema name
+  color: FacetKey | "none";
+  mode: "runs" | "functions";
+  logX: boolean;
+  logY: boolean;
+  trend: boolean; // OLS line + r/ρ readout
+}
+
+export const DEFAULT_CHART: ChartConfig = {
+  x: "avg_sensitivity",
+  y: "plantedness",
+  color: "arity",
+  mode: "runs",
+  logX: false,
+  logY: false,
+  trend: false,
 };
 
 // ---------------------------------------------------------------------------

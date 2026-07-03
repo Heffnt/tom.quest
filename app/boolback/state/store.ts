@@ -4,9 +4,9 @@
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import type {
-  FilterState, SortKey, FacetKey, RangeFilter, StatusFlag,
+  ChartConfig, FilterState, SortKey, SortDir, FacetKey, RangeFilter, StatusFlag,
 } from "../lib/types";
-import { EMPTY_FILTER } from "../lib/types";
+import { DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
 
 interface BoolbackState {
   // selection / hover (path-keyed; views resolve locally)
@@ -20,6 +20,10 @@ interface BoolbackState {
   sorts: SortKey[];                  // ordered multi-key
   visibleCols: string[];             // chosen column ids (dotted paths + metric names)
   columnWidths: Record<string, number>; // per-column px widths (resizable)
+  // center view + chart config (store-owned so the per-header "plot on X/Y"
+  // bridge and the share-URL encoder can reach them)
+  centerView: "table" | "chart";
+  chart: ChartConfig;
   // detail panel (decoupled from selection — opened ONLY by a Details button)
   detailOpen: boolean;
   detailWidth: number;               // px
@@ -27,12 +31,16 @@ interface BoolbackState {
   // actions
   select: (dir: string | null) => void;   // selection only; does NOT open detail
   hover: (dir: string | null) => void;
+  setCenterView: (v: "table" | "chart") => void;
+  setChart: (patch: Partial<ChartConfig>) => void;
   toggleExpand: (dir: string) => void;
   setExpanded: (next: Set<string>) => void;
   expandChain: (dirs: string[]) => void;       // open all ancestors to reveal a node
   setTreeCursor: (dir: string | null) => void;
   // filters
   setFacet: (key: FacetKey, values: string[]) => void;
+  toggleFacetValue: (key: FacetKey, value: string) => void;
+  setSearch: (q: string) => void;
   addRange: (r: RangeFilter) => void;
   updateRange: (metric: string, patch: Partial<RangeFilter>) => void;
   removeRange: (metric: string) => void;
@@ -44,6 +52,7 @@ interface BoolbackState {
   resetView: () => void;
   // sorts
   pushSort: (col: string) => void;             // header click: prepend (or toggle dir if already primary)
+  setPrimarySort: (col: string, dir: SortDir) => void; // header menu: explicit direction
   appendSort: (col: string) => void;           // shift-click: append secondary
   toggleSortDir: (col: string) => void;
   removeSort: (col: string) => void;
@@ -82,11 +91,15 @@ export const useBoolbackStore = create<BoolbackState>()(
       sorts: [],
       visibleCols: DEFAULT_COLS,
       columnWidths: {},
+      centerView: "table" as const,
+      chart: DEFAULT_CHART,
       detailOpen: false,
       detailWidth: DEFAULT_DETAIL_WIDTH,
 
       select: (dir) => set({ selectedDir: dir }),
       hover: (dir) => set({ hoveredDir: dir }),
+      setCenterView: (v) => set({ centerView: v }),
+      setChart: (patch) => set((s) => ({ chart: { ...s.chart, ...patch } })),
       toggleExpand: (dir) => set((s) => {
         const next = new Set(s.expanded);
         if (next.has(dir)) next.delete(dir); else next.add(dir);
@@ -103,6 +116,12 @@ export const useBoolbackStore = create<BoolbackState>()(
       setFacet: (key, values) => set((s) => ({
         filters: { ...s.filters, facets: { ...s.filters.facets, [key]: values } },
       })),
+      toggleFacetValue: (key, value) => set((s) => {
+        const cur = s.filters.facets[key] ?? [];
+        const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+        return { filters: { ...s.filters, facets: { ...s.filters.facets, [key]: next } } };
+      }),
+      setSearch: (q) => set((s) => ({ filters: { ...s.filters, search: q } })),
       addRange: (r) => set((s) => ({
         filters: { ...s.filters, ranges: [...s.filters.ranges.filter((x) => x.metric !== r.metric), r] },
       })),
@@ -136,6 +155,9 @@ export const useBoolbackStore = create<BoolbackState>()(
         const rest = s.sorts.filter((k) => k.col !== col);
         return { sorts: [{ col, dir: existing?.dir ?? "desc" }, ...rest] };
       }),
+      setPrimarySort: (col, dir) => set((s) => ({
+        sorts: [{ col, dir }, ...s.sorts.filter((k) => k.col !== col)],
+      })),
       appendSort: (col) => set((s) => s.sorts.some((k) => k.col === col) ? {} : { sorts: [...s.sorts, { col, dir: "desc" }] }),
       toggleSortDir: (col) => set((s) => ({ sorts: s.sorts.map((k) => k.col === col ? { ...k, dir: k.dir === "asc" ? "desc" : "asc" } : k) })),
       removeSort: (col) => set((s) => ({ sorts: s.sorts.filter((k) => k.col !== col) })),

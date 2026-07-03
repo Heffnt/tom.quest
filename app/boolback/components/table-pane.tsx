@@ -2,83 +2,70 @@
 
 // app/boolback/components/table-pane.tsx
 //
-// The ONLY center view. One row per RunRow (one training run / NODE_KEY).
-// Columns are resolved from bundle.column_groups via lib/columns.resolveColumn;
-// the FUNCTION group shows the truth-strip viz + an optional simplified-DNF
-// column (NO binary truth-table string, NO arity mini-bar — arity is a plain
-// number). Numeric columns render an opt-in mini-bar normalized to the
-// metric_schema range; OUTCOME cells reveal an epoch sparkline on hover.
+// The ONLY center view. One row per RunRow (one training run / NODE_KEY —
+// see the run-info ⓘ for the definition). Columns are resolved from
+// bundle.column_groups via lib/columns.resolveColumn.
 //
-// Columns are horizontally resizable (lib/use-resizable) and TRUNCATE with an
-// ellipsis; rows are single-height. Header click sorts (shift-click appends a
-// secondary key); the active multi-key sort is shown as draggable chips. Facet
-// and range menus hover-open from a compact filter bar; per-group column
-// dropdowns come from the ColumnGroupMenu. Subtree chips (tree-driven) and
-// status pills filter the live set.
+// Table mechanics (plan slices 3–5):
+//   * WINDOWED rendering — every filtered row is reachable by scroll; only the
+//     visible slice (+overscan) hits the DOM. No 500-row cliff.
+//   * The leading identity columns (arity, Fn) freeze sticky-left so scrolling
+//     through 60 complexity metrics never loses which function you're on.
+//   * A summary footer shows the mean of each visible numeric column over the
+//     FILTERED set (the same aggregation the .tex export uses).
+//   * ↑/↓ move the selection, Enter opens the drawer, Esc closes it.
+//   * Categorical cells reveal a filter button on hover (click a value to
+//     toggle it into its facet). Headers carry a ⌄ menu: sort asc/desc, hide,
+//     add range filter, plot on chart X/Y (the table↔chart bridge).
+//
+// The filter bar above both views is components/filter-bar.tsx (chip model);
+// the chart is components/chart-panel.tsx, mounted here under the same bar.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  Bundle, RunRow, FilterState, SortKey, FacetKey, RangeFilter, StatusFlag,
-  MetricSchemaEntry,
+  Bundle, RunRow, FilterState, SortKey, ChartConfig, SortDir,
 } from "../lib/types";
-import { EMPTY_FILTER } from "../lib/types";
+import { DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import {
-  applyFilters, applySorts, histogramBins, metricRange, normalizeToRange,
-  numericValue, cellValue, facetOptions, statusCounts, FACET_KEYS, countSummary,
-  type MetricIndex,
+  applyFilters, applySorts, metricRange, normalizeToRange, numericValue,
+  cellValue, facetKeyForColumn, type MetricIndex,
 } from "../lib/select";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
 import { resolveById, type ColumnDef } from "../lib/columns";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { useResizable } from "../lib/use-resizable";
+import { readSharedView } from "../lib/share";
+import { mean } from "../lib/stats";
 import { TruthStrip } from "./truth-strip";
 import { FnHex } from "./fn-hex";
 import { EpochSparkline } from "./epoch-sparkline";
-import { ColumnGroupMenu } from "./column-group-menu";
-import { ChartBody } from "./chart-panel";
+import { ChartBody, type ChartExportHandle } from "./chart-panel";
+import { FilterBar } from "./filter-bar";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const HIST_BINS = 24;
-const ROW_CAP = 500; // render window; filter/sort run over the full set
+const ROW_H = 30; // fixed row height (windowing depends on it)
+const OVERSCAN = 12; // rows rendered beyond the viewport on each side
 const DEFAULT_COL_WIDTH = 120;
 const TRUTH_COL_WIDTH = 220;
 const MIN_COL_WIDTH = 56;
 const MAX_COL_WIDTH = 520;
 
-const STATUS_OPTIONS: Array<{ flag: StatusFlag; label: string }> = [
-  { flag: "plantedOnly", label: "Planted" },
-  { flag: "neverPlanted", label: "Never planted" },
-  { flag: "inProgress", label: "In progress" },
-  { flag: "hasDefense", label: "Has defense" },
-  { flag: "hasInterp", label: "Has interp" },
-  { flag: "hasScan", label: "Has scan" },
-  { flag: "hasTwin", label: "Has twin" },
-  { flag: "hasNegativeDrop", label: "Negative drop" },
-];
+// Leading identity columns that freeze sticky-left (only a LEADING run of
+// these ids freezes — reorder them away from the front and they scroll).
+const FROZEN_IDS = new Set(["function.arity", "function.fn_hex"]);
 
-const FACET_LABELS: Record<FacetKey, string> = {
-  task: "Task",
-  source: "Source",
-  targetBehavior: "Target",
-  triggerForm: "Trigger",
-  rowDistribution: "Row dist.",
-  baseModel: "Model",
-  tuning: "Tuning",
-  judge: "Judge",
-  split: "Split",
-  arity: "Arity",
-};
-
-// Persisted-view shape (boolback:view): filters + sorts + visibleCols + widths.
+// Persisted-view shape (boolback:view): filters + sorts + visibleCols +
+// widths + chart config. A ?v= share URL overrides it for that load.
 interface PersistedView extends Record<string, unknown> {
   filters: FilterState;
   sorts: SortKey[];
   visibleCols: string[];
   columnWidths: Record<string, number>;
+  chart: ChartConfig;
 }
 
 // ===========================================================================
@@ -107,30 +94,34 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
   const columnWidths = useBoolbackStore((s) => s.columnWidths);
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
+  const chart = useBoolbackStore((s) => s.chart);
 
   const select = useBoolbackStore((s) => s.select);
   const openDetail = useBoolbackStore((s) => s.openDetail);
+  const setDetailOpen = useBoolbackStore((s) => s.setDetailOpen);
   const hover = useBoolbackStore((s) => s.hover);
   const expandChain = useBoolbackStore((s) => s.expandChain);
   const pushSort = useBoolbackStore((s) => s.pushSort);
   const appendSort = useBoolbackStore((s) => s.appendSort);
-  const toggleSortDir = useBoolbackStore((s) => s.toggleSortDir);
-  const removeSort = useBoolbackStore((s) => s.removeSort);
-  const reorderSorts = useBoolbackStore((s) => s.reorderSorts);
-  const setFacet = useBoolbackStore((s) => s.setFacet);
+  const setPrimarySort = useBoolbackStore((s) => s.setPrimarySort);
+  const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
   const addRange = useBoolbackStore((s) => s.addRange);
-  const updateRange = useBoolbackStore((s) => s.updateRange);
-  const removeRange = useBoolbackStore((s) => s.removeRange);
-  const toggleStatus = useBoolbackStore((s) => s.toggleStatus);
-  const removeSubtreeDir = useBoolbackStore((s) => s.removeSubtreeDir);
   const setVisibleCols = useBoolbackStore((s) => s.setVisibleCols);
   const setColumnWidth = useBoolbackStore((s) => s.setColumnWidth);
-  const resetView = useBoolbackStore((s) => s.resetView);
+  const setChart = useBoolbackStore((s) => s.setChart);
+  const setCenterView = useBoolbackStore((s) => s.setCenterView);
   const setStore = useBoolbackStore.setState;
 
-  // ---- persisted view sync ----------------------------------------------
+  // The mounted chart registers its export surface here; the shared Export
+  // menu (filter bar) reads it.
+  const chartRef = useRef<ChartExportHandle | null>(null);
+
+  // ---- persisted view sync (?v= share URL overrides for this load) --------
   const persistDefaults = useMemo<PersistedView>(
-    () => ({ filters: EMPTY_FILTER, sorts: [], visibleCols, columnWidths: {} }),
+    () => ({
+      filters: EMPTY_FILTER, sorts: [], visibleCols, columnWidths: {},
+      chart: DEFAULT_CHART,
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
@@ -143,23 +134,26 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
   useEffect(() => {
     if (!isHydrated || didHydrate.current) return;
     didHydrate.current = true;
+    const shared = readSharedView();
+    const src = shared ?? persisted;
     setStore({
       // Deep-merge over EMPTY_FILTER: a stale/partial saved `filters` (e.g. missing
-      // `facets`/`subtreeDirs` from an older shape, loaded from Convex for a signed-in
+      // `search`/`subtreeDirs` from an older shape, loaded from Convex for a signed-in
       // user) must NOT replace the complete default and crash applyFilters.
-      filters: { ...EMPTY_FILTER, ...persisted.filters },
-      sorts: persisted.sorts ?? [],
-      visibleCols: persisted.visibleCols?.length ? persisted.visibleCols : visibleCols,
-      columnWidths: persisted.columnWidths ?? {},
+      filters: { ...EMPTY_FILTER, ...(src.filters ?? {}) },
+      sorts: src.sorts ?? [],
+      visibleCols: src.visibleCols?.length ? src.visibleCols : visibleCols,
+      columnWidths: shared ? {} : (persisted.columnWidths ?? {}),
+      chart: { ...DEFAULT_CHART, ...(src.chart ?? {}) },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHydrated]);
 
   useEffect(() => {
     if (!isHydrated || !didHydrate.current) return;
-    updatePersisted({ filters, sorts, visibleCols, columnWidths });
+    updatePersisted({ filters, sorts, visibleCols, columnWidths, chart });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, sorts, visibleCols, columnWidths, isHydrated]);
+  }, [filters, sorts, visibleCols, columnWidths, chart, isHydrated]);
 
   // ---- column defs -------------------------------------------------------
   const colDefs = useMemo(
@@ -171,10 +165,6 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
   const visibleRows = useMemo(
     () => applySorts(applyFilters(rows, filters), sorts),
     [rows, filters, sorts],
-  );
-  const renderedRows = useMemo(
-    () => (visibleRows.length > ROW_CAP ? visibleRows.slice(0, ROW_CAP) : visibleRows),
-    [visibleRows],
   );
 
   // Rows in scope (subtree chips applied, but not facets/ranges/status) — base
@@ -220,22 +210,6 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
     [expandChain, openDetail],
   );
 
-  // ---- sort-chip drag reordering ----------------------------------------
-  const dragIdx = useRef<number | null>(null);
-  const onChipDragStart = useCallback((i: number) => { dragIdx.current = i; }, []);
-  const onChipDrop = useCallback(
-    (target: number) => {
-      const from = dragIdx.current;
-      dragIdx.current = null;
-      if (from === null || from === target) return;
-      const next = [...sorts];
-      const [moved] = next.splice(from, 1);
-      next.splice(target, 0, moved);
-      reorderSorts(next);
-    },
-    [sorts, reorderSorts],
-  );
-
   const widthOf = useCallback(
     (def: ColumnDef): number =>
       columnWidths[def.id] ??
@@ -243,65 +217,188 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
     [columnWidths],
   );
 
+  // ---- frozen leading columns (sticky-left offsets) ------------------------
+  const frozenLefts = useMemo(() => {
+    const map = new Map<string, number>();
+    let left = 0;
+    for (const def of colDefs) {
+      if (!FROZEN_IDS.has(def.id)) break;
+      map.set(def.id, left);
+      left += widthOf(def);
+    }
+    return map;
+  }, [colDefs, widthOf]);
+
+  // ---- windowed rendering ---------------------------------------------------
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [viewport, setViewport] = useState({ top: 0, height: 800 });
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewport({ top: el.scrollTop, height: el.clientHeight });
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewport({ top: el.scrollTop, height: el.clientHeight });
+    const ro = new ResizeObserver(() => {
+      setViewport({ top: el.scrollTop, height: el.clientHeight });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [view]);
+
+  const total = visibleRows.length;
+  const start = Math.max(0, Math.floor(viewport.top / ROW_H) - OVERSCAN);
+  const end = Math.min(total, Math.ceil((viewport.top + viewport.height) / ROW_H) + OVERSCAN);
+  const windowRows = useMemo(() => visibleRows.slice(start, end), [visibleRows, start, end]);
+  const topPad = start * ROW_H;
+  const bottomPad = (total - end) * ROW_H;
+
+  // ---- summary footer (mean over the FILTERED set) --------------------------
+  const footerMeans = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const def of colDefs) {
+      if (def.kind === "truthStrip" || def.kind === "fnHex" || def.kind === "dnf" || def.kind === "categorical") continue;
+      const vals: number[] = [];
+      for (const r of visibleRows) {
+        const v = numericValue(r, def.id);
+        if (v !== null && Number.isFinite(v)) vals.push(v);
+      }
+      const m = mean(vals);
+      if (m !== null) {
+        out.set(def.id, Number.isInteger(m) ? String(m) : m.toFixed(3).replace(/0+$/, "").replace(/\.$/, ""));
+      }
+    }
+    return out;
+  }, [colDefs, visibleRows]);
+
+  // ---- keyboard navigation ---------------------------------------------------
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(t.tagName)) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (visibleRows.length === 0) return;
+        const cur = visibleRows.findIndex((r) => r.identity.node_path === selectedDir);
+        const next = e.key === "ArrowDown"
+          ? Math.min(visibleRows.length - 1, cur + 1)
+          : Math.max(0, cur === -1 ? 0 : cur - 1);
+        const row = visibleRows[next];
+        select(row.identity.node_path);
+        const el = scrollRef.current;
+        if (el) {
+          const y = next * ROW_H;
+          if (y < el.scrollTop + ROW_H) el.scrollTop = Math.max(0, y - ROW_H);
+          else if (y + 2 * ROW_H > el.scrollTop + el.clientHeight) {
+            el.scrollTop = y + 2 * ROW_H - el.clientHeight;
+          }
+        }
+      } else if (e.key === "Enter") {
+        if (selectedDir) openDetail(selectedDir);
+      } else if (e.key === "Escape") {
+        setDetailOpen(false);
+      }
+    },
+    [visibleRows, selectedDir, select, openDetail, setDetailOpen],
+  );
+
+  // ---- header-menu actions ----------------------------------------------------
+  const hideColumn = useCallback(
+    (id: string) => setVisibleCols(visibleCols.filter((c) => c !== id)),
+    [visibleCols, setVisibleCols],
+  );
+  const addRangeFor = useCallback(
+    (metricName: string) => {
+      const { min, max } = metricRange(rows, metricName, index);
+      addRange({ metric: metricName, min, max });
+    },
+    [rows, index, addRange],
+  );
+  const plotOn = useCallback(
+    (axis: "x" | "y", metricName: string) => {
+      setChart(axis === "x" ? { x: metricName } : { y: metricName });
+      setCenterView("chart");
+    },
+    [setChart, setCenterView],
+  );
+
   return (
     <div className="absolute inset-0 flex flex-col bg-bg text-text">
       <FilterBar
         rows={rows}
         scopedRows={scopedRows}
+        visibleRows={visibleRows}
         visibleCount={visibleRows.length}
-        renderedCount={renderedRows.length}
         totalCount={rows.length}
-        filters={filters}
-        sorts={sorts}
         bundle={bundle}
         index={index}
-        visibleCols={visibleCols}
-        onChipDragStart={onChipDragStart}
-        onChipDrop={onChipDrop}
-        toggleSortDir={toggleSortDir}
-        removeSort={removeSort}
-        setFacet={setFacet}
-        addRange={addRange}
-        updateRange={updateRange}
-        removeRange={removeRange}
-        toggleStatus={toggleStatus}
-        removeSubtreeDir={removeSubtreeDir}
-        setVisibleCols={setVisibleCols}
-        resetView={resetView}
+        colDefs={colDefs}
+        view={view}
+        chartRef={chartRef}
       />
 
       {view === "chart" ? (
-        <ChartBody rows={visibleRows} bundle={bundle} index={index} />
+        <ChartBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
       ) : (
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        onKeyDown={onKeyDown}
+        tabIndex={0}
+        className="flex-1 min-h-0 overflow-auto focus:outline-none"
+      >
         <table className="border-collapse text-xs font-mono" style={{ tableLayout: "fixed" }}>
           <colgroup>
             {colDefs.map((c) => (
               <col key={c.id} style={{ width: widthOf(c) }} />
             ))}
           </colgroup>
-          <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur-md">
+          <thead>
             <tr className="border-b border-border">
-              {colDefs.map((c) => (
-                <HeaderCell
-                  key={c.id}
-                  def={c}
-                  dir={sortDirOf(c.id)}
-                  width={widthOf(c)}
-                  onClick={onHeaderClick}
-                  onResize={setColumnWidth}
-                />
-              ))}
+              {colDefs.map((c) => {
+                const canMetric = !!(c.metricName && index[c.metricName]);
+                const hasData = canMetric &&
+                  !(index[c.metricName!].min === null && index[c.metricName!].max === null);
+                return (
+                  <HeaderCell
+                    key={c.id}
+                    def={c}
+                    dir={sortDirOf(c.id)}
+                    width={widthOf(c)}
+                    frozenLeft={frozenLefts.get(c.id)}
+                    onClick={onHeaderClick}
+                    onResize={setColumnWidth}
+                    menu={{
+                      sort: (dir: SortDir) => setPrimarySort(c.id, dir),
+                      hide: () => hideColumn(c.id),
+                      addRange: hasData ? () => addRangeFor(c.metricName!) : undefined,
+                      plotX: hasData ? () => plotOn("x", c.metricName!) : undefined,
+                      plotY: hasData ? () => plotOn("y", c.metricName!) : undefined,
+                    }}
+                  />
+                );
+              })}
             </tr>
           </thead>
           <tbody>
-            {renderedRows.map((row, i) => {
-              const key = `${row.identity.node_path}#${i}`;
+            {topPad > 0 && (
+              <tr aria-hidden style={{ height: topPad }}>
+                <td colSpan={Math.max(1, colDefs.length)} className="p-0 border-0" />
+              </tr>
+            )}
+            {windowRows.map((row, i) => {
+              const key = `${row.identity.node_path}#${start + i}`;
               const isSel = row.identity.node_path === selectedDir;
               const isHover = row.identity.node_path === hoveredDir;
+              const frozenBg = isSel ? "bg-surface-alt" : isHover ? "bg-surface" : "bg-bg";
               return (
                 <tr
                   key={key}
+                  style={{ height: ROW_H }}
                   onMouseEnter={() => onRowHover(row.identity.node_path)}
                   onMouseLeave={() => onRowHover(null)}
                   onClick={() => onRowClick(row)}
@@ -315,18 +412,35 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
                         : "text-text-muted hover:bg-surface/40",
                   ].join(" ")}
                 >
-                  {colDefs.map((c) => (
-                    <td
-                      key={c.id}
-                      className="px-2 py-1 align-middle overflow-hidden whitespace-nowrap"
-                      style={{ maxWidth: widthOf(c) }}
-                    >
-                      <Cell row={row} def={c} index={index} onOpenDetail={openDetail} />
-                    </td>
-                  ))}
+                  {colDefs.map((c) => {
+                    const left = frozenLefts.get(c.id);
+                    return (
+                      <td
+                        key={c.id}
+                        className={[
+                          "px-2 py-1 align-middle overflow-hidden whitespace-nowrap group/cell",
+                          left !== undefined ? `sticky z-[5] ${frozenBg}` : "",
+                        ].join(" ")}
+                        style={{ maxWidth: widthOf(c), ...(left !== undefined ? { left } : {}) }}
+                      >
+                        <Cell
+                          row={row}
+                          def={c}
+                          index={index}
+                          onOpenDetail={openDetail}
+                          onFacetFilter={toggleFacetValue}
+                        />
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })}
+            {bottomPad > 0 && (
+              <tr aria-hidden style={{ height: bottomPad }}>
+                <td colSpan={Math.max(1, colDefs.length)} className="p-0 border-0" />
+              </tr>
+            )}
             {visibleRows.length === 0 && (
               <tr>
                 <td
@@ -338,6 +452,35 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
               </tr>
             )}
           </tbody>
+          {visibleRows.length > 1 && (
+            <tfoot>
+              <tr
+                className="border-t border-border bg-surface/95 backdrop-blur-md"
+                title={`mean over the ${visibleRows.length.toLocaleString()} filtered runs (descriptive; the .tex export uses the same aggregation)`}
+              >
+                {colDefs.map((c, ci) => {
+                  const left = frozenLefts.get(c.id);
+                  const m = footerMeans.get(c.id);
+                  return (
+                    <td
+                      key={c.id}
+                      className={[
+                        "sticky bottom-0 px-2 py-1 overflow-hidden whitespace-nowrap text-[11px] tabular-nums text-text-muted bg-surface/95 backdrop-blur-md",
+                        left !== undefined ? "z-[6]" : "",
+                      ].join(" ")}
+                      style={left !== undefined ? { left, position: "sticky" } : undefined}
+                    >
+                      {m !== undefined ? (
+                        <span><span className="text-text-faint">μ </span>{m}</span>
+                      ) : ci === 0 ? (
+                        <span className="text-text-faint">mean</span>
+                      ) : null}
+                    </td>
+                  );
+                })}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
       )}
@@ -346,18 +489,29 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
 }
 
 // ===========================================================================
-// Header cell (sortable + right-edge resize handle)
+// Header cell (sortable + right-edge resize handle + ⌄ menu)
 // ===========================================================================
 
+interface HeaderMenuActions {
+  sort: (dir: SortDir) => void;
+  hide: () => void;
+  addRange?: () => void;
+  plotX?: () => void;
+  plotY?: () => void;
+}
+
 function HeaderCell({
-  def, dir, width, onClick, onResize,
+  def, dir, width, frozenLeft, onClick, onResize, menu,
 }: {
   def: ColumnDef;
   dir: "asc" | "desc" | null;
   width: number;
+  frozenLeft?: number;
   onClick: (col: string, e: React.MouseEvent) => void;
   onResize: (col: string, width: number) => void;
+  menu: HeaderMenuActions;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const { size, handleProps } = useResizable({
     size: width,
     min: MIN_COL_WIDTH,
@@ -373,20 +527,65 @@ function HeaderCell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size]);
 
+  const item = (label: string, act?: () => void) => (
+    <button
+      type="button"
+      disabled={!act}
+      onClick={() => { act?.(); setMenuOpen(false); }}
+      className="block w-full rounded px-2 py-1 text-left text-xs text-text/90 hover:bg-surface-alt hover:text-accent disabled:opacity-40"
+    >
+      {label}
+    </button>
+  );
+
   return (
     <th
       aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none"}
       title={`${def.label} — click to sort, shift-click to add a secondary key`}
-      className="relative px-2 py-1.5 text-left font-medium text-text-muted select-none overflow-hidden"
+      className={[
+        "sticky top-0 bg-surface/95 backdrop-blur-md",
+        frozenLeft !== undefined ? "z-20" : "z-10",
+        "px-2 py-1.5 text-left font-medium text-text-muted select-none overflow-visible",
+      ].join(" ")}
+      style={frozenLeft !== undefined ? { left: frozenLeft } : undefined}
     >
-      <button
-        type="button"
-        onClick={(e) => onClick(def.id, e)}
-        className="inline-flex max-w-full items-center gap-1 cursor-pointer hover:text-accent focus:outline-none focus-visible:text-accent"
-      >
-        <span className="truncate">{def.label}</span>
-        {dir && <span className="text-accent shrink-0">{dir === "asc" ? "▲" : "▼"}</span>}
-      </button>
+      <span className="group/head flex max-w-full items-center gap-0.5 overflow-hidden">
+        <button
+          type="button"
+          onClick={(e) => onClick(def.id, e)}
+          className="inline-flex min-w-0 items-center gap-1 cursor-pointer hover:text-accent focus:outline-none focus-visible:text-accent"
+        >
+          <span className="truncate">{def.label}</span>
+          {dir && <span className="text-accent shrink-0">{dir === "asc" ? "▲" : "▼"}</span>}
+        </button>
+        <button
+          type="button"
+          aria-label={`${def.label} column menu`}
+          onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+          className={[
+            "shrink-0 rounded px-0.5 text-text-faint hover:text-accent transition-opacity",
+            menuOpen ? "opacity-100" : "opacity-0 group-hover/head:opacity-100",
+          ].join(" ")}
+        >
+          ⌄
+        </button>
+      </span>
+      {menuOpen && (
+        <>
+          <span className="fixed inset-0 z-20 cursor-default" onClick={() => setMenuOpen(false)} />
+          <span className="absolute left-0 top-full z-30 mt-0.5 block w-44 rounded-lg border border-border bg-surface/95 p-1 font-normal normal-case shadow-lg backdrop-blur-md animate-settle">
+            {item("Sort ascending", () => menu.sort("asc"))}
+            {item("Sort descending", () => menu.sort("desc"))}
+            {item("Hide column", menu.hide)}
+            {(menu.addRange || menu.plotX || menu.plotY) && (
+              <span className="my-1 block border-t border-border/60" />
+            )}
+            {menu.addRange && item("Add range filter", menu.addRange)}
+            {menu.plotX && item("Plot on chart X", menu.plotX)}
+            {menu.plotY && item("Plot on chart Y", menu.plotY)}
+          </span>
+        </>
+      )}
       {/* resize handle */}
       <span
         {...handleProps}
@@ -402,12 +601,13 @@ function HeaderCell({
 // ===========================================================================
 
 function Cell({
-  row, def, index, onOpenDetail,
+  row, def, index, onOpenDetail, onFacetFilter,
 }: {
   row: RunRow;
   def: ColumnDef;
   index: MetricIndex;
   onOpenDetail: (dir: string) => void;
+  onFacetFilter: (key: NonNullable<ReturnType<typeof facetKeyForColumn>>, value: string) => void;
 }) {
   if (def.kind === "truthStrip") {
     return (
@@ -427,21 +627,41 @@ function Cell({
     return <span className="block truncate text-text/90" title={s}>{label}</span>;
   }
 
-  if (def.kind === "categorical") {
+  if (def.kind === "categorical" || def.kind === "text") {
     const v = cellValue(row, def.id);
-    const s = v === null || v === "" ? "—" : String(v);
-    return <span className="block truncate text-text/90" title={s}>{s}</span>;
-  }
-
-  if (def.kind === "text") {
-    const v = cellValue(row, def.id);
-    if (v === null) return <span className="text-text-faint">—</span>;
-    const s = typeof v === "number"
-      ? def.metricName
+    const facetKey = facetKeyForColumn(def.id);
+    let s: string;
+    if (v === null || v === "") s = "—";
+    else if (typeof v === "number") {
+      s = def.metricName
         ? formatValue(index, def.metricName, v)
-        : Number.isInteger(v) ? String(v) : v.toFixed(3)
-      : String(v);
-    return <span className="block truncate tabular-nums text-text/90" title={s}>{s}</span>;
+        : Number.isInteger(v) ? String(v) : v.toFixed(3);
+    } else s = String(v);
+    const numeric = def.kind === "text";
+    return (
+      <span className="relative flex items-center gap-1">
+        <span
+          className={`block min-w-0 flex-1 truncate text-text/90 ${numeric ? "tabular-nums" : ""}`}
+          title={s}
+        >
+          {s}
+        </span>
+        {facetKey && v !== null && v !== "" && (
+          <button
+            type="button"
+            title={`filter: ${s}`}
+            aria-label={`filter to ${s}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onFacetFilter(facetKey, String(v));
+            }}
+            className="shrink-0 rounded px-0.5 text-[10px] text-text-faint opacity-0 transition-opacity group-hover/cell:opacity-100 hover:text-accent"
+          >
+            ⊕
+          </button>
+        )}
+      </span>
+    );
   }
 
   if (def.kind === "outcome") {
@@ -527,457 +747,5 @@ function MiniBar({
         {formatValue(index, metricName, value)}
       </span>
     </span>
-  );
-}
-
-// ===========================================================================
-// FilterBar
-// ===========================================================================
-
-interface FilterBarProps {
-  rows: RunRow[];
-  scopedRows: RunRow[];
-  visibleCount: number;
-  renderedCount: number;
-  totalCount: number;
-  filters: FilterState;
-  sorts: SortKey[];
-  bundle: Bundle;
-  index: MetricIndex;
-  visibleCols: string[];
-  onChipDragStart: (i: number) => void;
-  onChipDrop: (i: number) => void;
-  toggleSortDir: (col: string) => void;
-  removeSort: (col: string) => void;
-  setFacet: (key: FacetKey, values: string[]) => void;
-  addRange: (r: RangeFilter) => void;
-  updateRange: (metric: string, patch: Partial<RangeFilter>) => void;
-  removeRange: (metric: string) => void;
-  toggleStatus: (s: StatusFlag) => void;
-  removeSubtreeDir: (dir: string) => void;
-  setVisibleCols: (cols: string[]) => void;
-  resetView: () => void;
-}
-
-function FilterBar(props: FilterBarProps) {
-  const {
-    rows, scopedRows, visibleCount, renderedCount, totalCount, filters, sorts,
-    bundle, index, visibleCols,
-    onChipDragStart, onChipDrop, toggleSortDir, removeSort,
-    setFacet, addRange, updateRange, removeRange, toggleStatus, removeSubtreeDir,
-    setVisibleCols, resetView,
-  } = props;
-
-  const facetOpts = useMemo(
-    () => Object.fromEntries(FACET_KEYS.map((k) => [k, facetOptions(scopedRows, k)])) as Record<FacetKey, Array<{ value: string; count: number }>>,
-    [scopedRows],
-  );
-
-  const colLabel = useCallback(
-    (id: string) => resolveById(id, bundle, index).label,
-    [bundle, index],
-  );
-
-  // Pills for flags no run matches yet (e.g. scan/twin before those sweeps run)
-  // stay FINDABLE but not visible by default: they collapse behind a hover-open
-  // "+N unused" reveal. They come back automatically once data exists.
-  const flagCounts = useMemo(() => statusCounts(rows), [rows]);
-  const [showEmptyPills, setShowEmptyPills] = useState(false);
-  const pillFor = (opt: { flag: StatusFlag; label: string }) => {
-    const active = filters.status.includes(opt.flag);
-    return (
-      <button
-        key={opt.flag}
-        onClick={() => toggleStatus(opt.flag)}
-        title={`${flagCounts[opt.flag].toLocaleString()} runs`}
-        className={[
-          "rounded-full px-2.5 py-0.5 text-xs border transition-colors",
-          active
-            ? "border-accent text-accent bg-accent/10"
-            : flagCounts[opt.flag] === 0
-              ? "border-border/60 text-text-faint hover:text-text-muted"
-              : "border-border text-text-muted hover:text-text hover:border-accent/40",
-        ].join(" ")}
-      >
-        {opt.label}
-      </button>
-    );
-  };
-  const populatedPills = STATUS_OPTIONS.filter(
-    (o) => flagCounts[o.flag] > 0 || filters.status.includes(o.flag),
-  );
-  const emptyPills = STATUS_OPTIONS.filter(
-    (o) => flagCounts[o.flag] === 0 && !filters.status.includes(o.flag),
-  );
-
-  return (
-    <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
-      {/* Row 1: status pills + count + reset */}
-      <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
-        {populatedPills.map(pillFor)}
-        {emptyPills.length > 0 && (
-          <span
-            className="inline-flex items-center gap-1.5"
-            onMouseEnter={() => setShowEmptyPills(true)}
-            onMouseLeave={() => setShowEmptyPills(false)}
-          >
-            {showEmptyPills ? (
-              emptyPills.map(pillFor)
-            ) : (
-              <span
-                className="rounded-full border border-dashed border-border/60 px-2 py-0.5 text-xs text-text-faint cursor-default"
-                title={`no runs yet: ${emptyPills.map((o) => o.label).join(", ")}`}
-              >
-                +{emptyPills.length} unused
-              </span>
-            )}
-          </span>
-        )}
-
-        <span className="ml-auto text-xs font-mono text-text-muted">
-          {countSummary(visibleCount, totalCount)}
-          {renderedCount < visibleCount && (
-            <span className="text-text-faint">
-              {" "}· showing {renderedCount.toLocaleString()} of {visibleCount.toLocaleString()}
-            </span>
-          )}
-        </span>
-
-        <button
-          onClick={resetView}
-          className="rounded-md border border-border bg-surface-alt px-2.5 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
-        >
-          Reset
-        </button>
-      </div>
-
-      {/* Subtree chips (tree-driven; reversible, independent of expansion) */}
-      {filters.subtreeDirs.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2">
-          <span className="text-xs text-text-faint font-mono">scope:</span>
-          {filters.subtreeDirs.map((dir) => (
-            <button
-              key={dir}
-              onClick={() => removeSubtreeDir(dir)}
-              title={dir}
-              className="flex items-center gap-1 rounded-full border border-accent/60 bg-accent/10 px-2.5 py-0.5 text-xs text-accent hover:bg-accent/20"
-            >
-              <span className="font-mono max-w-[16rem] truncate">{dir}</span>
-              <span aria-hidden>×</span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Row 2: facets + add-metric + per-group column menus */}
-      <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2">
-        {FACET_KEYS.map((key) => (
-          <FacetPopover
-            key={key}
-            facetKey={key}
-            selected={filters.facets[key] ?? []}
-            options={facetOpts[key]}
-            setFacet={setFacet}
-          />
-        ))}
-
-        <AddMetricMenu
-          existing={filters.ranges.map((r) => r.metric)}
-          rows={rows}
-          schema={bundle.metric_schema}
-          index={index}
-          addRange={addRange}
-        />
-
-        <div className="ml-auto">
-          <ColumnGroupMenu
-            bundle={bundle}
-            index={index}
-            visibleCols={visibleCols}
-            setVisibleCols={setVisibleCols}
-          />
-        </div>
-      </div>
-
-      {/* Row 3: sort chips */}
-      {sorts.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2">
-          <span className="text-xs text-text-faint font-mono">sort:</span>
-          {sorts.map((s, i) => (
-            <div
-              key={s.col}
-              draggable
-              onDragStart={() => onChipDragStart(i)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => onChipDrop(i)}
-              className="flex items-center gap-1 rounded-full border border-border bg-surface-alt px-2 py-0.5 text-xs cursor-grab active:cursor-grabbing"
-              title="Drag to reorder · click arrow to flip · × to remove"
-            >
-              <span className="text-text-faint tabular-nums">{i + 1}</span>
-              <span className="text-text/90 font-mono">{colLabel(s.col)}</span>
-              <button onClick={() => toggleSortDir(s.col)} className="text-accent hover:text-text" aria-label="flip direction">
-                {s.dir === "asc" ? "▲" : "▼"}
-              </button>
-              <button onClick={() => removeSort(s.col)} className="text-text-muted hover:text-error" aria-label="remove sort">
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Row 4: active range sliders w/ histograms */}
-      {filters.ranges.length > 0 && (
-        <div className="flex flex-wrap gap-3 px-3 pb-3">
-          {filters.ranges.map((r) => (
-            <RangeSlider
-              key={r.metric}
-              range={r}
-              rows={scopedRows}
-              index={index}
-              updateRange={updateRange}
-              removeRange={removeRange}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Facet popover (hover-to-open; popover does NOT repeat its own name)
-// ---------------------------------------------------------------------------
-
-function FacetPopover({
-  facetKey, selected, options, setFacet,
-}: {
-  facetKey: FacetKey;
-  selected: string[];
-  options: Array<{ value: string; count: number }>;
-  setFacet: (key: FacetKey, values: string[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const enter = () => { if (closeTimer.current) clearTimeout(closeTimer.current); setOpen(true); };
-  const leave = () => { if (closeTimer.current) clearTimeout(closeTimer.current); closeTimer.current = setTimeout(() => setOpen(false), 120); };
-
-  const active = selected.length > 0;
-  const toggleValue = (value: string) => {
-    const next = selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value];
-    setFacet(facetKey, next);
-  };
-
-  return (
-    <div className="relative" onMouseEnter={enter} onMouseLeave={leave}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={[
-          "rounded-md border px-2 py-0.5 text-xs transition-colors",
-          active ? "border-accent text-accent bg-accent/10" : "border-border text-text-muted hover:text-text hover:border-accent/40",
-        ].join(" ")}
-      >
-        {FACET_LABELS[facetKey]}
-        {active && <span className="ml-1 text-accent">({selected.length})</span>}
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full mt-1 z-30 w-56 max-h-72 overflow-y-auto rounded-lg border border-border bg-surface/95 backdrop-blur-md p-2 text-sm animate-settle">
-          {active && (
-            <div className="flex items-center justify-end mb-1">
-              <button onClick={() => setFacet(facetKey, [])} className="text-xs text-text-muted hover:text-accent">clear</button>
-            </div>
-          )}
-          {options.length === 0 && <div className="text-xs text-text-faint py-1">No values</div>}
-          {options.map((opt) => (
-            <label key={opt.value} className="flex items-center gap-2 py-0.5 cursor-pointer text-text/90 hover:text-accent">
-              <input type="checkbox" checked={selected.includes(opt.value)} onChange={() => toggleValue(opt.value)} className="accent-accent" />
-              <span className="flex-1 truncate">{opt.value || "—"}</span>
-              <span className="text-text-faint tabular-nums">{opt.count}</span>
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Add-metric searchable menu (over metric_schema numeric metrics)
-// ---------------------------------------------------------------------------
-
-function AddMetricMenu({
-  existing, rows, schema, index, addRange,
-}: {
-  existing: string[];
-  rows: RunRow[];
-  schema: MetricSchemaEntry[];
-  index: MetricIndex;
-  addRange: (r: RangeFilter) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const existingSet = useMemo(() => new Set(existing), [existing]);
-
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return schema
-      .filter((e) => !existingSet.has(e.name))
-      .filter((e) => q === "" || e.label.toLowerCase().includes(q) || e.name.toLowerCase().includes(q))
-      .sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
-  }, [query, existingSet, schema]);
-
-  const onPick = (e: MetricSchemaEntry) => {
-    const { min, max } = metricRange(rows, e.name, index);
-    addRange({ metric: e.name, min, max });
-    setOpen(false);
-    setQuery("");
-  };
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
-      >
-        + add metric
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full mt-1 z-30 w-64 rounded-lg border border-border bg-surface/95 backdrop-blur-md p-2 text-sm animate-settle">
-          <input
-            type="text"
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="search metrics…"
-            className="mb-2 w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-text placeholder:text-text-faint caret-accent focus:border-accent/80 focus:outline-none"
-          />
-          <div className="max-h-64 overflow-y-auto">
-            {results.length === 0 && <div className="text-xs text-text-faint py-1 px-1">No metrics</div>}
-            {results.map((e) => {
-              const empty = e.min === null && e.max === null;
-              return (
-                <button
-                  key={e.name}
-                  onClick={() => onPick(e)}
-                  className={`flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left hover:bg-surface-alt hover:text-accent ${empty ? "text-text-faint" : "text-text/90"}`}
-                >
-                  <span className="truncate">{e.label}</span>
-                  <span className="text-text-faint text-xs">
-                    {empty ? "no data yet" : <span className="uppercase">{e.suite}</span>}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Dual-handle range slider backed by inline histogram
-// ---------------------------------------------------------------------------
-
-function RangeSlider({
-  range, rows, index, updateRange, removeRange,
-}: {
-  range: RangeFilter;
-  rows: RunRow[];
-  index: MetricIndex;
-  updateRange: (metric: string, patch: Partial<RangeFilter>) => void;
-  removeRange: (metric: string) => void;
-}) {
-  const entry = index[range.metric];
-  const bounds = useMemo(() => metricRange(rows, range.metric, index), [rows, range.metric, index]);
-  const lo = bounds.min;
-  const hi = bounds.max;
-  const span = hi - lo || 1;
-  const isInt = (entry?.format ?? "") === "d";
-  const step = isInt ? 1 : span / 100;
-
-  const bins = useMemo(() => histogramBins(rows, range.metric, HIST_BINS, index), [rows, range.metric, index]);
-  const maxBin = Math.max(1, ...bins);
-
-  const fmt = (v: number) => (entry ? formatValue(index, range.metric, v) : v.toFixed(2));
-
-  const [draft, setDraft] = useState({ min: range.min, max: range.max });
-  useEffect(() => { setDraft({ min: range.min, max: range.max }); }, [range.min, range.max]);
-
-  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const commit = useCallback(
-    (patch: Partial<RangeFilter>) => {
-      if (flushTimer.current) clearTimeout(flushTimer.current);
-      flushTimer.current = setTimeout(() => updateRange(range.metric, patch), 120);
-    },
-    [updateRange, range.metric],
-  );
-  useEffect(() => () => { if (flushTimer.current) clearTimeout(flushTimer.current); }, []);
-
-  const lowPct = ((draft.min - lo) / span) * 100;
-  const highPct = ((draft.max - lo) / span) * 100;
-
-  return (
-    <div className="w-60 rounded-md border border-border bg-surface-alt/60 p-2">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-text/90 font-mono truncate">{entry?.label ?? range.metric}</span>
-        <button onClick={() => removeRange(range.metric)} className="text-text-muted hover:text-error text-xs" aria-label="remove range">×</button>
-      </div>
-
-      <div className="relative h-8 flex items-end gap-px mb-1">
-        {bins.map((c, i) => {
-          const binLo = lo + (i / HIST_BINS) * span;
-          const binHi = lo + ((i + 1) / HIST_BINS) * span;
-          const inRange = binHi >= draft.min && binLo <= draft.max;
-          return (
-            <span
-              key={i}
-              className={inRange ? "flex-1 bg-accent/60" : "flex-1 bg-text-faint/40"}
-              style={{ height: `${(c / maxBin) * 100}%` }}
-            />
-          );
-        })}
-        <span
-          className="pointer-events-none absolute inset-y-0 border-x border-accent/50 bg-accent/5"
-          style={{ left: `${lowPct}%`, right: `${100 - highPct}%` }}
-        />
-      </div>
-
-      <div className="relative h-4">
-        <input
-          type="range"
-          min={lo}
-          max={hi}
-          step={step}
-          value={draft.min}
-          aria-label={`${entry?.label ?? range.metric} minimum`}
-          onChange={(e) => {
-            const v = Math.min(Number(e.target.value), draft.max);
-            setDraft((d) => ({ ...d, min: v }));
-            commit({ min: v });
-          }}
-          className="absolute inset-x-0 top-1 w-full accent-accent bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto"
-        />
-        <input
-          type="range"
-          min={lo}
-          max={hi}
-          step={step}
-          value={draft.max}
-          aria-label={`${entry?.label ?? range.metric} maximum`}
-          onChange={(e) => {
-            const v = Math.max(Number(e.target.value), draft.min);
-            setDraft((d) => ({ ...d, max: v }));
-            commit({ max: v });
-          }}
-          className="absolute inset-x-0 top-1 w-full accent-accent bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto"
-        />
-      </div>
-
-      <div className="flex items-center justify-between mt-1 text-xs font-mono text-text-muted">
-        <span>{fmt(draft.min)}</span>
-        <span>{fmt(draft.max)}</span>
-      </div>
-    </div>
   );
 }
