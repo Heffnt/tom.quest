@@ -13,7 +13,8 @@
 
 import React from "react";
 import { createPortal } from "react-dom";
-import { FUND, SUMMON_ONLY, isNamed, NAMED } from "../data/base";
+import { FUND, SUMMON_ONLY, isNamed, NAMED, TYPE_GLYPHS } from "../data/base";
+import type { IngredientType } from "./types";
 import { GLYPH } from "./emblems";
 
 // --- palette ----------------------------------------------------------------
@@ -106,6 +107,59 @@ export function EmblemSvg({
 }
 
 const EMBLEM_SCALE: Record<string, number> = { sparkle: 1.3 };
+
+// --- ingredient types ---------------------------------------------------------
+
+export const TYPE_COLORS: Record<IngredientType, string> = {
+  plant: "#7cb46b",
+  animal: "#d8c8a8",
+  mineral: "#5b9bd5",
+};
+
+/** An ingredient's type (element icon) as a ringed chip, like the frequency
+ * glyphs — the real extracted shape in the type's color. */
+export function TypeGlyph({
+  type,
+  size = 20,
+  className,
+}: {
+  type: IngredientType;
+  size?: number;
+  className?: string;
+}) {
+  const g = TYPE_GLYPHS[type];
+  const color = TYPE_COLORS[type];
+  const inner = Math.round(size * 0.62);
+  return (
+    <span
+      title={type}
+      className={className}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        border: `1.5px solid ${color}`,
+        boxShadow: `inset 0 0 0 1px ${color}22`,
+        color,
+        lineHeight: 0,
+        flex: "0 0 auto",
+      }}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        style={{ width: inner, height: inner, display: "block" }}
+        // extracted, trusted path data
+        dangerouslySetInnerHTML={{
+          __html: `<path d="${g.d}" fill-rule="${g.fillRule}"/>`,
+        }}
+      />
+    </span>
+  );
+}
 
 // The bare chip visual, no hover behavior — used by FrequencySymbol and inside
 // the decomposition popover (which must not spawn nested popovers).

@@ -1,7 +1,7 @@
 // Prop contracts shared between the orchestrator (perfume-client.tsx) and the
 // panel components, so the two cannot drift.
 
-import type { Ingredient, Recipe, BrewState } from "../lib/types";
+import type { Ingredient, Perfume, BrewState } from "../lib/types";
 
 export interface IngredientPanelProps {
   // The catalog shown in the ingredients panel: the 96 base ingredients plus
@@ -24,11 +24,11 @@ export interface IngredientPanelProps {
   onBeginDrag?: (key: string, x: number, y: number) => void;
 }
 
-export interface RecipeBookProps {
-  recipes: Recipe[];
-  // Current brew, for live per-recipe evaluation.
+export interface PerfumePanelProps {
+  perfumes: Perfume[];
+  // Current brew, for live per-perfume evaluation.
   brew: BrewState;
   // Add `qty` copies of an ingredient (by its stable `key`) to the brew —
-  // used by the clickable ingredient pills on recipe cards.
+  // used by the clickable ingredient pills on perfume cards.
   onAddIngredient?: (key: string, qty?: number) => void;
 }

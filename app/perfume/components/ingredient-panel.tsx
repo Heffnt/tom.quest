@@ -13,8 +13,8 @@ import { useMemo, useRef, useState } from "react";
 import type { Ingredient } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
 import { ALL_FREQUENCIES, FUND, isPureKey, ingredientWeight } from "../data/base";
-import FrequencyFilterButton, { freqLabel } from "./frequency-filter";
-import { FrequencyGlyph, FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
+import FrequencyFilterButton, { freqLabel, isTypeFilter } from "./frequency-filter";
+import { FrequencyGlyph, FrequencySymbol, TypeGlyph, STRIKE, COPPER } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
 
@@ -70,6 +70,7 @@ export default function IngredientPanel({
     return tabItems
       .filter((ing) => {
         if (tab !== "ingredients" || !freqFilter) return true;
+        if (isTypeFilter(freqFilter)) return ing.type === freqFilter.slice(5);
         if (freqFilter === "strike") return ing.strike > 0;
         if (freqFilter === "wild") return ing.wild > 0;
         return ing.emits.includes(freqFilter);
@@ -128,7 +129,7 @@ export default function IngredientPanel({
             className="w-full min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
           />
           {tab === "ingredients" && (
-            <FrequencyFilterButton value={freqFilter} onChange={setFreqFilter} includeCharges />
+            <FrequencyFilterButton value={freqFilter} onChange={setFreqFilter} includeCharges includeTypes />
           )}
         </div>
       </div>
@@ -211,6 +212,23 @@ function useRowGestures(
   };
 }
 
+// Geometric −/+ marks: SVG paths center perfectly where text glyphs sit on
+// a baseline and drift.
+export function MinusMark({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 14 14" width={size} height={size} aria-hidden="true">
+      <path d="M2.6 7h8.8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+export function PlusMark({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 14 14" width={size} height={size} aria-hidden="true">
+      <path d="M2.6 7h8.8M7 2.6v8.8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 // The −/count/+ cluster, bold enough to read at a glance.
 function CountControls({
   ing,
@@ -231,9 +249,9 @@ function CountControls({
         onClick={() => onDec(ing.key)}
         disabled={!inBrew}
         aria-label={`Remove one ${ing.name}`}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border-2 border-border text-base font-bold text-text transition-colors duration-150 hover:border-accent hover:text-accent disabled:opacity-30 disabled:hover:border-border disabled:hover:text-text"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border-2 border-border text-text transition-colors duration-150 hover:border-accent hover:text-accent disabled:opacity-30 disabled:hover:border-border disabled:hover:text-text"
       >
-        −
+        <MinusMark size={15} />
       </button>
       <span
         className={`w-5 text-center text-sm font-bold tabular-nums ${
@@ -246,9 +264,9 @@ function CountControls({
         type="button"
         onClick={() => onAdd(ing.key)}
         aria-label={`Add one ${ing.name}`}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border-2 border-border text-base font-bold text-text transition-colors duration-150 hover:border-accent hover:text-accent"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border-2 border-border text-text transition-colors duration-150 hover:border-accent hover:text-accent"
       >
-        +
+        <PlusMark size={15} />
       </button>
     </span>
   );
@@ -305,6 +323,7 @@ function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeg
         }
       >
         <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
+        {ing.type && <TypeGlyph type={ing.type} size={20} />}
         <span className="min-w-0 flex-1 truncate text-base font-semibold text-text">
           {ing.name}
         </span>

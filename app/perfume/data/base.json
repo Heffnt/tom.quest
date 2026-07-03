@@ -347,11 +347,26 @@
    "weight": 95
   }
  ],
+ "types": {
+  "animal": {
+   "d": "M4.4 19.9C4.2 21.4 5 22.7 6.3 23.1C7.7 23.4 9 22.5 9.6 21.4C10 20.7 10.1 19.8 9.8 18.9C9.6 18.3 9.8 17.7 10.2 17.2L17.2 10.2C17.7 9.8 18.3 9.6 18.9 9.8C20.3 10.4 21.8 9.9 22.6 8.8C23.3 7.7 23.2 6.1 22.2 5.1C21.2 4.2 20 4.4 19.8 4.4C19.8 4.2 20 2.9 19.1 2C18.1 1 16.4 0.9 15.3 1.6C14.3 2.4 13.8 3.9 14.3 5.3C14.6 5.9 14.4 6.5 14 6.9L7 14C6.5 14.4 5.9 14.6 5.2 14.4C4.4 14.1 3.5 14.2 2.8 14.6C1.7 15.1 0.7 16.4 1.1 17.8C1.5 19.2 2.9 20.1 4.4 19.9",
+   "fillRule": "nonzero"
+  },
+  "plant": {
+   "d": "M3.2 19.2C3.7 16 6.8 11.6 11.8 10.2C8.3 12.8 3.2 19.2 6.6 22.1C13.8 25.2 18.1 17.4 19.3 9.3C19.9 5.4 23.7 3.1 23.8 3C11.8 0.1 -2.9 10.2 3.2 19.2",
+   "fillRule": "nonzero"
+  },
+  "mineral": {
+   "d": "M7.4 11.3L16.8 11.3L15.8 8L8.3 8L7.4 11.3M1 9.8L6.5 11.2L7.5 7.9L3.3 6.9L1 9.8M16.1 5.6L8.1 5.6L4.9 6.4L8.1 7.2L16.1 7.2L19.3 6.4L16.1 5.6M7.5 12.1L12.1 22.5L16.7 12.1L7.5 12.1M1.5 10.8L10.6 21.2L6.5 12L1.5 10.8M16.7 7.9L17.6 11.2L23.1 9.8L20.8 6.9L16.7 7.9M13.6 21.2L22.7 10.8L17.6 12L13.6 21.2",
+   "fillRule": "nonzero"
+  }
+ },
  "ingredients": [
   {
    "name": "Ichorberries",
    "page": 0,
    "color": "#000000",
+   "type": "plant",
    "emits": [
     "N",
     "En"
@@ -363,6 +378,7 @@
    "name": "Thistle Goblin Tooth",
    "page": 0,
    "color": "#266603",
+   "type": "animal",
    "emits": [
     "C",
     "Yonescope"
@@ -374,6 +390,7 @@
    "name": "Blistermoss",
    "page": 0,
    "color": "#919D00",
+   "type": "plant",
    "emits": [
     "T",
     "Ev"
@@ -385,6 +402,7 @@
    "name": "Aphasia Flower",
    "page": 0,
    "color": "#9B2376",
+   "type": "plant",
    "emits": [
     "Crallax",
     "En"
@@ -396,6 +414,7 @@
    "name": "Noble Roses",
    "page": 0,
    "color": "#737373",
+   "type": "plant",
    "emits": [
     "A",
     "A"
@@ -407,6 +426,7 @@
    "name": "Wailing Thrush Egg",
    "page": 0,
    "color": "#3A0159",
+   "type": "animal",
    "emits": [
     "Myddenic",
     "En"
@@ -418,6 +438,7 @@
    "name": "Mourningweep",
    "page": 0,
    "color": "#476768",
+   "type": "plant",
    "emits": [
     "En",
     "N"
@@ -429,6 +450,7 @@
    "name": "Shadow Demon Liver",
    "page": 0,
    "color": "#000000",
+   "type": "animal",
    "emits": [],
    "minus": 2,
    "plus": 0
@@ -437,6 +459,7 @@
    "name": "Bitterhearts",
    "page": 1,
    "color": "#3A0159",
+   "type": "plant",
    "emits": [
     "N",
     "D"
@@ -448,6 +471,7 @@
    "name": "Olgrumast Mushroom",
    "page": 1,
    "color": "#FFFFFF",
+   "type": "plant",
    "emits": [
     "I",
     "A"
@@ -459,6 +483,7 @@
    "name": "Fjeldling Scale",
    "page": 1,
    "color": "#D30606",
+   "type": "animal",
    "emits": [
     "Draconil",
     "Ignetium"
@@ -470,6 +495,7 @@
    "name": "Northman's Beard",
    "page": 1,
    "color": "#F17400",
+   "type": "plant",
    "emits": [
     "Ignetium",
     "C"
@@ -481,6 +507,7 @@
    "name": "Pepperpops",
    "page": 1,
    "color": "#FF4D00",
+   "type": "plant",
    "emits": [
     "Ev",
     "Ev"
@@ -492,6 +519,7 @@
    "name": "Banshee's Hair",
    "page": 1,
    "color": "#030100",
+   "type": "plant",
    "emits": [
     "N",
     "T"
@@ -503,6 +531,7 @@
    "name": "Razorclam Pearl",
    "page": 1,
    "color": "#0060DF",
+   "type": "mineral",
    "emits": [
     "Silentix",
     "N"
@@ -514,6 +543,7 @@
    "name": "Brightflower",
    "page": 1,
    "color": "#FFF500",
+   "type": "plant",
    "emits": [
     "Ev",
     "En"
@@ -525,6 +555,7 @@
    "name": "Sheensacks",
    "page": 2,
    "color": "#030100",
+   "type": "plant",
    "emits": [],
    "minus": 1,
    "plus": 0
@@ -533,6 +564,7 @@
    "name": "Moonchalk",
    "page": 2,
    "color": "#FFFFFF",
+   "type": "mineral",
    "emits": [
     "D",
     "I"
@@ -544,6 +576,7 @@
    "name": "Ferrenocht Crystals",
    "page": 2,
    "color": "#030100",
+   "type": "mineral",
    "emits": [
     "N",
     "A"
@@ -555,6 +588,7 @@
    "name": "Redcaps",
    "page": 2,
    "color": "#D30606",
+   "type": "plant",
    "emits": [
     "En",
     "En"
@@ -566,6 +600,7 @@
    "name": "Owlbear Saliva",
    "page": 2,
    "color": "#476768",
+   "type": "animal",
    "emits": [
     "C",
     "Silentix"
@@ -577,6 +612,7 @@
    "name": "Elves Ear",
    "page": 2,
    "color": "#023901",
+   "type": "plant",
    "emits": [
     "D",
     "A"
@@ -588,6 +624,7 @@
    "name": "Bulezau Horn",
    "page": 2,
    "color": "#8D0202",
+   "type": "animal",
    "emits": [
     "Letchettin",
     "D"
@@ -599,6 +636,7 @@
    "name": "Bubble Blossoms",
    "page": 2,
    "color": "#000000",
+   "type": "plant",
    "emits": [
     "Chrysipil",
     "En"
@@ -610,6 +648,7 @@
    "name": "Glitterflies",
    "page": 3,
    "color": "#00BAFF",
+   "type": "plant",
    "emits": [
     "T",
     "D"
@@ -621,6 +660,7 @@
    "name": "Great Cold Shard",
    "page": 3,
    "color": "#FFFFFF",
+   "type": "mineral",
    "emits": [
     "Albutian",
     "T"
@@ -632,6 +672,7 @@
    "name": "Pemneath Peat",
    "page": 3,
    "color": "#030100",
+   "type": "mineral",
    "emits": [
     "N",
     "N"
@@ -643,6 +684,7 @@
    "name": "Blood Demon Eye",
    "page": 3,
    "color": "#D30606",
+   "type": "animal",
    "emits": [
     "Letchettin",
     "Ev"
@@ -654,6 +696,7 @@
    "name": "Jotuun Heart",
    "page": 3,
    "color": "#476768",
+   "type": "animal",
    "emits": [
     "A",
     "Silentix"
@@ -665,6 +708,7 @@
    "name": "Cloud Lavender",
    "page": 3,
    "color": "#3A0159",
+   "type": "plant",
    "emits": [
     "C",
     "T"
@@ -676,6 +720,7 @@
    "name": "Undead Heart",
    "page": 3,
    "color": "#8D0202",
+   "type": "animal",
    "emits": [
     "Myddenic",
     "N"
@@ -687,6 +732,7 @@
    "name": "Melting Dewdrops",
    "page": 3,
    "color": "#000000",
+   "type": "plant",
    "emits": [
     "Chrysipil",
     "N"
@@ -698,6 +744,7 @@
    "name": "Icecap Crabs",
    "page": 4,
    "color": "#00BAFF",
+   "type": "plant",
    "emits": [
     "A",
     "A"
@@ -709,6 +756,7 @@
    "name": "Lady's Gold",
    "page": 4,
    "color": "#F17400",
+   "type": "mineral",
    "emits": [
     "Korastic",
     "Ignetium"
@@ -720,6 +768,7 @@
    "name": "Weird Dog Foot",
    "page": 4,
    "color": "#080599",
+   "type": "animal",
    "emits": [
     "D",
     "Ev"
@@ -731,6 +780,7 @@
    "name": "Sanguipoles",
    "page": 4,
    "color": "#D30606",
+   "type": "plant",
    "emits": [
     "Ignetium",
     "N"
@@ -742,6 +792,7 @@
    "name": "Quickfish",
    "page": 4,
    "color": "#476768",
+   "type": "plant",
    "emits": [
     "D",
     "Crallax"
@@ -753,6 +804,7 @@
    "name": "Green Dragon Venom",
    "page": 4,
    "color": "#266603",
+   "type": "animal",
    "emits": [
     "Lythillious",
     "Draconil"
@@ -764,6 +816,7 @@
    "name": "Mandrake",
    "page": 4,
    "color": "#3A0159",
+   "type": "plant",
    "emits": [
     "Yonescope",
     "N"
@@ -775,6 +828,7 @@
    "name": "Ionillic Eggs",
    "page": 4,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "Yonescope",
     "En"
@@ -786,6 +840,7 @@
    "name": "Oracite",
    "page": 5,
    "color": "#00BAFF",
+   "type": "mineral",
    "emits": [
     "D",
     "D",
@@ -798,6 +853,7 @@
    "name": "Lumpkins",
    "page": 5,
    "color": "#F17400",
+   "type": "plant",
    "emits": [
     "C",
     "I"
@@ -809,6 +865,7 @@
    "name": "Hyannis Syrup",
    "page": 5,
    "color": "#080599",
+   "type": "mineral",
    "emits": [
     "D",
     "Ev"
@@ -820,6 +877,7 @@
    "name": "Tekachapi Berries",
    "page": 5,
    "color": "#D30606",
+   "type": "plant",
    "emits": [
     "Ignetium",
     "N"
@@ -831,6 +889,7 @@
    "name": "Amiglia Core",
    "page": 5,
    "color": "#9B2376",
+   "type": "animal",
    "emits": [
     "Chrysipil",
     "Chrysipil",
@@ -843,6 +902,7 @@
    "name": "Flumph Core",
    "page": 5,
    "color": "#266603",
+   "type": "animal",
    "emits": [
     "Chrysipil",
     "Chrysipil",
@@ -855,6 +915,7 @@
    "name": "Ennerx Core",
    "page": 5,
    "color": "#000000",
+   "type": "animal",
    "emits": [],
    "minus": 3,
    "plus": 0
@@ -863,6 +924,7 @@
    "name": "Lemiwinkles",
    "page": 5,
    "color": "#000000",
+   "type": "plant",
    "emits": [
     "C",
     "C"
@@ -874,6 +936,7 @@
    "name": "Klyst",
    "page": 6,
    "color": "#FFFFFF",
+   "type": "mineral",
    "emits": [
     "A",
     "T",
@@ -886,6 +949,7 @@
    "name": "Aurum",
    "page": 6,
    "color": "#FFF500",
+   "type": "mineral",
    "emits": [
     "A",
     "Draconil"
@@ -897,6 +961,7 @@
    "name": "Deadly Moonbloom",
    "page": 6,
    "color": "#080599",
+   "type": "plant",
    "emits": [
     "Ev",
     "I"
@@ -908,6 +973,7 @@
    "name": "Rindergrapes",
    "page": 6,
    "color": "#D30606",
+   "type": "plant",
    "emits": [
     "Ignetium",
     "I"
@@ -919,6 +985,7 @@
    "name": "Mara Nur Cap",
    "page": 6,
    "color": "#919D00",
+   "type": "plant",
    "emits": [
     "Chrysipil",
     "E",
@@ -931,6 +998,7 @@
    "name": "Glass",
    "page": 6,
    "color": "#266603",
+   "type": "mineral",
    "emits": [
     "Chrysipil",
     "Letchettin"
@@ -942,6 +1010,7 @@
    "name": "Evengeist Ear",
    "page": 6,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "N",
     "C"
@@ -953,6 +1022,7 @@
    "name": "Arcanavore Organ",
    "page": 6,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "Myddenic",
     "Crallax"
@@ -964,6 +1034,7 @@
    "name": "Ogre Hand",
    "page": 7,
    "color": "#F17400",
+   "type": "animal",
    "emits": [
     "Letchettin"
    ],
@@ -974,6 +1045,7 @@
    "name": "Katowician Honeyhive",
    "page": 7,
    "color": "#FEC107",
+   "type": "plant",
    "emits": [
     "T",
     "T"
@@ -985,6 +1057,7 @@
    "name": "Sphynx Paw",
    "page": 7,
    "color": "#080599",
+   "type": "animal",
    "emits": [
     "Ev",
     "Ontoligin"
@@ -996,6 +1069,7 @@
    "name": "Wraith Whisps",
    "page": 7,
    "color": "#737373",
+   "type": "animal",
    "emits": [
     "Ignetium",
     "Yonescope"
@@ -1007,6 +1081,7 @@
    "name": "Creeping Coriand",
    "page": 7,
    "color": "#919D00",
+   "type": "plant",
    "emits": [
     "E",
     "T"
@@ -1018,6 +1093,7 @@
    "name": "Seacursed Scale",
    "page": 7,
    "color": "#266603",
+   "type": "animal",
    "emits": [
     "C",
     "T"
@@ -1029,6 +1105,7 @@
    "name": "Lake Gar Eye",
    "page": 7,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "Ev",
     "C"
@@ -1040,6 +1117,7 @@
    "name": "Fulmiles",
    "page": 7,
    "color": "#000000",
+   "type": "plant",
    "emits": [
     "Ignetium",
     "C"
@@ -1051,6 +1129,7 @@
    "name": "Goat Fat",
    "page": 8,
    "color": "#F17400",
+   "type": "animal",
    "emits": [
     "A"
    ],
@@ -1061,6 +1140,7 @@
    "name": "Golden Trilobite",
    "page": 8,
    "color": "#FFF500",
+   "type": "animal",
    "emits": [
     "A",
     "Yonescope"
@@ -1072,6 +1152,7 @@
    "name": "Trihorn",
    "page": 8,
    "color": "#080599",
+   "type": "animal",
    "emits": [
     "Ev",
     "I"
@@ -1083,6 +1164,7 @@
    "name": "Chromatic Corpustules",
    "page": 8,
    "color": "#FEC107",
+   "type": "plant",
    "emits": [
     "Ignetium",
     "I"
@@ -1094,6 +1176,7 @@
    "name": "Penchant Jellies",
    "page": 8,
    "color": "#009D56",
+   "type": "plant",
    "emits": [
     "Korastic",
     "E",
@@ -1106,6 +1189,7 @@
    "name": "Bramblechoke",
    "page": 8,
    "color": "#8D0202",
+   "type": "plant",
    "emits": [
     "Letchettin",
     "Letchettin"
@@ -1117,6 +1201,7 @@
    "name": "Scourge of the Inlet",
    "page": 8,
    "color": "#000000",
+   "type": "plant",
    "emits": [
     "T",
     "D"
@@ -1128,6 +1213,7 @@
    "name": "Brain Lemming",
    "page": 8,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "Myddenic",
     "E"
@@ -1139,6 +1225,7 @@
    "name": "Sevan Lotus",
    "page": 9,
    "color": "#DD74B6",
+   "type": "plant",
    "emits": [
     "A",
     "E",
@@ -1151,6 +1238,7 @@
    "name": "Southollow Royal Tulip",
    "page": 9,
    "color": "#D30606",
+   "type": "plant",
    "emits": [],
    "minus": 0,
    "plus": 1
@@ -1159,6 +1247,7 @@
    "name": "Treakbug",
    "page": 9,
    "color": "#080599",
+   "type": "animal",
    "emits": [
     "Ev",
     "I"
@@ -1170,6 +1259,7 @@
    "name": "Sanguivore Organ",
    "page": 9,
    "color": "#D30606",
+   "type": "animal",
    "emits": [
     "Lythillious",
     "I"
@@ -1181,6 +1271,7 @@
    "name": "Baleful Rockfish",
    "page": 9,
    "color": "#919D00",
+   "type": "animal",
    "emits": [
     "Chrysipil",
     "E",
@@ -1193,6 +1284,7 @@
    "name": "Verdaux",
    "page": 9,
    "color": "#266603",
+   "type": "mineral",
    "emits": [
     "E",
     "En"
@@ -1204,6 +1296,7 @@
    "name": "Rotgulp Eggs",
    "page": 9,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "N",
     "Silentix"
@@ -1215,6 +1308,7 @@
    "name": "Spearfisher Horns",
    "page": 9,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "A",
     "Yonescope"
@@ -1226,6 +1320,7 @@
    "name": "Great Owl Egg",
    "page": 10,
    "color": "#FFFFFF",
+   "type": "mineral",
    "emits": [
     "C",
     "I",
@@ -1238,6 +1333,7 @@
    "name": "Amber",
    "page": 10,
    "color": "#FEC107",
+   "type": "mineral",
    "emits": [
     "T",
     "Ignetium"
@@ -1249,6 +1345,7 @@
    "name": "Dwarf Tubers",
    "page": 10,
    "color": "#080599",
+   "type": "animal",
    "emits": [
     "C",
     "Chrysipil"
@@ -1260,6 +1357,7 @@
    "name": "Symbiotic Barnacles",
    "page": 10,
    "color": "#FEC107",
+   "type": "plant",
    "emits": [
     "Ev",
     "Korastic"
@@ -1271,6 +1369,7 @@
    "name": "Ooze Cube",
    "page": 10,
    "color": "#919D00",
+   "type": "animal",
    "emits": [
     "T",
     "E",
@@ -1283,6 +1382,7 @@
    "name": "Lornlarch",
    "page": 10,
    "color": "#266603",
+   "type": "plant",
    "emits": [
     "Ignetium",
     "Letchettin"
@@ -1294,6 +1394,7 @@
    "name": "Cave Spider Venom",
    "page": 10,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "N",
     "Ignetium"
@@ -1305,6 +1406,7 @@
    "name": "Stasis Muck",
    "page": 10,
    "color": "#000000",
+   "type": "animal",
    "emits": [
     "Albutian",
     "T"
@@ -1316,6 +1418,7 @@
    "name": "Amethyst",
    "page": 11,
    "color": "#3A0159",
+   "type": "mineral",
    "emits": [
     "A",
     "T"
@@ -1327,6 +1430,7 @@
    "name": "Emerald",
    "page": 11,
    "color": "#023901",
+   "type": "mineral",
    "emits": [
     "En",
     "C"
@@ -1338,6 +1442,7 @@
    "name": "Sapphire",
    "page": 11,
    "color": "#080599",
+   "type": "mineral",
    "emits": [
     "D",
     "Ev"
@@ -1349,6 +1454,7 @@
    "name": "Ruby",
    "page": 11,
    "color": "#D30606",
+   "type": "mineral",
    "emits": [
     "A",
     "Ev"
@@ -1360,6 +1466,7 @@
    "name": "Silver",
    "page": 11,
    "color": "#476768",
+   "type": "mineral",
    "emits": [
     "C"
    ],
@@ -1370,6 +1477,7 @@
    "name": "Gold",
    "page": 11,
    "color": "#FFF500",
+   "type": "mineral",
    "emits": [
     "T"
    ],
@@ -1380,6 +1488,7 @@
    "name": "Chrythsmeum",
    "page": 11,
    "color": "#737373",
+   "type": "mineral",
    "emits": [
     "D"
    ],
@@ -1390,6 +1499,7 @@
    "name": "Platinum",
    "page": 11,
    "color": "#000000",
+   "type": "mineral",
    "emits": [
     "A"
    ],

@@ -20,8 +20,11 @@ import {
   ALL_FREQUENCIES,
   FUND,
   isNamed,
+  isPureKey,
+  freqWeight,
   NAMED,
 } from "../data/base";
+import { MinusMark, PlusMark } from "./ingredient-panel";
 import {
   FrequencySymbol,
   STRIKE,
@@ -304,6 +307,30 @@ export default function Cauldron({
     () => Object.values(combined.tally).reduce((a, b) => a + b, 0),
     [combined],
   );
+  // total fundamental weight of the brew (weight is additive under
+  // combination, so the combined tally sums the same as the raw one)
+  const brewWeight = useMemo(
+    () =>
+      Object.entries(combined.tally).reduce(
+        (sum, [id, n]) => sum + freqWeight(id) * n,
+        0,
+      ),
+    [combined],
+  );
+  // ingredients in the pot, not counting pure frequencies
+  const realIngCount = useMemo(
+    () => brew.ingredients.filter((i) => !isPureKey(i.key)).length,
+    [brew.ingredients],
+  );
+  // charges GRANTED by the brew (spent or not) — the ⊖/⊕ readouts only show
+  // when the brew actually carries them
+  const granted = useMemo(
+    () => ({
+      strike: avail.strike + brew.strikePlays.length,
+      wild: avail.wild + brew.wildPlays.length,
+    }),
+    [avail, brew.strikePlays, brew.wildPlays],
+  );
 
   // ---- auto-combination: which frequencies fused into which ----
   // Assign each derived frequency's consumed components to concrete floater
@@ -508,30 +535,44 @@ export default function Cauldron({
           Perfumer&apos;s Bench
         </span>
         <div className="flex items-center gap-3 tabular-nums">
-          <span title="frequencies in the brew">
+          <span title="frequencies in the brew (after combination)">
             <span className="text-text">{totalFreq}</span> freq
           </span>
-          <span title="unspent strikes" style={{ color: avail.strike ? STRIKE : undefined }}>
-            ⊖ {avail.strike}
+          <span title="total fundamental weight of the brew">
+            w <span className="text-text">{brewWeight}</span>
           </span>
-          <span title="unspent wildcards" style={{ color: avail.wild ? COPPER : undefined }}>
-            ⊕ {avail.wild}
+          <span title="ingredients in the pot (pure frequencies not counted)">
+            <span className="text-text">{realIngCount}</span> ing
           </span>
+          {granted.strike > 0 && (
+            <span title="unspent strikes" style={{ color: STRIKE }}>
+              ⊖ {avail.strike}
+            </span>
+          )}
+          {granted.wild > 0 && (
+            <span title="unspent wildcards" style={{ color: COPPER }}>
+              ⊕ {avail.wild}
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setGraphOpen(true)}
-            title="The frequency decomposition graph — how named frequencies build from the fundamentals"
+            title="The frequency graph — how named frequencies combine from simpler ones"
             className="rounded-md border border-border px-2 py-1 text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
           >
-            graph
+            frequencies
           </button>
           <button
             type="button"
             onClick={onClear}
             disabled={brewCounts.length === 0}
-            className="rounded-md border border-border px-2 py-1 text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text disabled:opacity-40"
+            aria-label="Empty the cauldron"
+            title="Empty the cauldron"
+            className="grid h-7 w-7 place-items-center rounded-md border border-border text-text-muted transition-colors duration-150 hover:border-error hover:text-error disabled:opacity-40 disabled:hover:border-border disabled:hover:text-text-muted"
           >
-            empty
+            <svg viewBox="0 0 16 16" width={13} height={13} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+              <path d="M2.5 4h11M6.5 4V2.8a.8.8 0 0 1 .8-.8h1.4a.8.8 0 0 1 .8.8V4M4 4l.8 9a1 1 0 0 0 1 .9h4.4a1 1 0 0 0 1-.9L12 4M6.5 7v4M9.5 7v4" />
+            </svg>
           </button>
         </div>
       </div>
@@ -868,18 +909,18 @@ export default function Cauldron({
                     type="button"
                     onClick={() => onDec(b.key)}
                     aria-label={`Remove one ${b.name}`}
-                    className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+                    className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
                   >
-                    −
+                    <MinusMark size={12} />
                   </button>
                   <span className="w-4 text-center tabular-nums text-text-muted">{b.count}</span>
                   <button
                     type="button"
                     onClick={() => onInc(b.key)}
                     aria-label={`Add another ${b.name}`}
-                    className="grid h-4 w-4 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
+                    className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
                   >
-                    +
+                    <PlusMark size={12} />
                   </button>
                 </span>
               </span>

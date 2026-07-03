@@ -9,35 +9,43 @@ import type {
   Fundamental,
   Named,
   Ingredient,
+  IngredientType,
+  Perfume,
+  PerfumeSlotEntry,
   Recipe,
-  RecipeSlotEntry,
-  RecipeCombo,
 } from "../lib/types";
 
 type RawIngredient = {
   name: string;
   page: number;
   color: string;
+  type: IngredientType;
   emits: string[];
   minus: number;
   plus: number;
 };
-type RawRecipe = {
+type RawPerfume = {
   id: string;
   roll: number;
   name: string;
   desc: string;
-  slots: RecipeSlotEntry[][];
+  slots: PerfumeSlotEntry[][];
   reqs: string[][];
-  combos: RecipeCombo[];
+  combos: Recipe[];
 };
 
 const data = raw as unknown as {
   fundamentals: Fundamental[];
   named: Named[];
+  types: Record<IngredientType, { d: string; fillRule: string }>;
   ingredients: RawIngredient[];
-  recipes: RawRecipe[];
+  recipes: RawPerfume[]; // schema key from Byobu data.json
 };
+
+// The three ingredient types (element icons from the cards), with their
+// 24-box glyph paths extracted from the source PDFs.
+export const TYPE_GLYPHS = data.types;
+export const INGREDIENT_TYPES: IngredientType[] = ["plant", "animal", "mineral"];
 
 // The rare ninth letter E is the Unknown frequency — the source data labels
 // it "Evocation*" (a decoding guess), but its meaning is unknown.
@@ -78,7 +86,7 @@ export const isFundamental = (id: string): boolean => !!FUND[id];
 export const freqWeight = (id: string): number => NAMED[id]?.weight ?? 1;
 export const ingredientWeight = (ing: Ingredient): number =>
   ing.emits.reduce((sum, t) => sum + freqWeight(t), 0);
-export const recipeWeight = (r: Recipe): number =>
+export const perfumeWeight = (r: Perfume): number =>
   Math.max(...r.reqs.map((req) => req.reduce((s, t) => s + freqWeight(t), 0)));
 
 export const PAGE_NAMES: Record<number, string> = {
@@ -101,6 +109,7 @@ export const baseIngredients: Ingredient[] = data.ingredients.map((i) => ({
   strike: i.minus,
   wild: i.plus,
   color: i.color,
+  type: i.type,
   page: i.page,
   source: { kind: "base" } as const,
 }));
@@ -113,7 +122,7 @@ const PURE_SOURCE = { kind: "user", userId: "pure", name: "pure" } as const;
 export const pureIngredients: Ingredient[] = [
   ...ALL_FREQUENCIES.map((t) => ({
     key: `pure:${t.id}`,
-    name: `Pure ${t.id}`,
+    name: `Pure ${t.kind === "fundamental" ? FUND[t.id].school : t.id}`,
     emits: [t.id],
     strike: 0,
     wild: 0,
@@ -146,7 +155,7 @@ export const pureIngredients: Ingredient[] = [
 ];
 export const isPureKey = (key: string): boolean => key.startsWith("pure:");
 
-export const baseRecipes: Recipe[] = data.recipes.map((r) => ({
+export const basePerfumes: Perfume[] = data.recipes.map((r) => ({
   key: `base:${r.id}`,
   name: r.name,
   roll: r.roll,

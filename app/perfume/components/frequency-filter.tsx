@@ -6,12 +6,16 @@
 // ingredients panel also gets Strike ⊖ / Wild ⊕ entries (charge carriers).
 
 import { useEffect, useRef, useState } from "react";
-import { ALL_FREQUENCIES, FUND, isNamed } from "../data/base";
-import { FrequencyGlyph, STRIKE, COPPER } from "../lib/frequencies";
+import { ALL_FREQUENCIES, FUND, isNamed, INGREDIENT_TYPES } from "../data/base";
+import { FrequencyGlyph, TypeGlyph, STRIKE, COPPER } from "../lib/frequencies";
+import type { IngredientType } from "../lib/types";
+
+export const isTypeFilter = (v: string): boolean => v.startsWith("type:");
 
 export function freqLabel(id: string): string {
   if (id === "strike") return "Strike ⊖";
   if (id === "wild") return "Wild ⊕";
+  if (isTypeFilter(id)) return id.slice(5);
   return isNamed(id) ? id : (FUND[id]?.school ?? id);
 }
 
@@ -41,10 +45,13 @@ export default function FrequencyFilterButton({
   value,
   onChange,
   includeCharges = false,
+  includeTypes = false,
 }: {
   value: string;
   onChange: (id: string) => void;
   includeCharges?: boolean;
+  // offer the ingredient TYPES (animal/plant/mineral) at the top of the list
+  includeTypes?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -90,7 +97,9 @@ export default function FrequencyFilterButton({
           value ? "border-accent" : "border-border hover:border-text-muted"
         }`}
       >
-        {value === "strike" || value === "wild" ? (
+        {isTypeFilter(value) ? (
+          <TypeGlyph type={value.slice(5) as IngredientType} size={24} />
+        ) : value === "strike" || value === "wild" ? (
           <ChargeGlyph id={value} size={24} />
         ) : value ? (
           <FrequencyGlyph id={value} size={24} />
@@ -141,8 +150,29 @@ export default function FrequencyFilterButton({
                 className="inline-block shrink-0 rounded-full"
                 style={{ width: 18, height: 18, border: "2px solid var(--color-text-muted)", opacity: 0.9 }}
               />
-              all frequencies
+              {includeTypes ? "all types/frequencies" : "all frequencies"}
             </button>
+            {includeTypes &&
+              INGREDIENT_TYPES.filter(
+                (t) => !query || t.includes(query),
+              ).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="option"
+                  aria-selected={value === `type:${t}`}
+                  onClick={() => {
+                    onChange(`type:${t}`);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
+                    value === `type:${t}` ? "bg-surface-alt text-text" : "text-text-muted"
+                  }`}
+                >
+                  <TypeGlyph type={t} size={18} />
+                  <span>{t}</span>
+                </button>
+              ))}
             {includeCharges &&
               (["strike", "wild"] as const)
                 .filter((id) => !query || id.includes(query) || freqLabel(id).toLowerCase().includes(query))

@@ -9,7 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Ingredient, BrewState } from "./lib/types";
-import { baseIngredients, pureIngredients, baseRecipes } from "./data/base";
+import { baseIngredients, pureIngredients, basePerfumes } from "./data/base";
 import {
   baseTally,
   chargeTotals,
@@ -19,7 +19,7 @@ import {
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
 import IngredientThumb from "./components/ingredient-thumb";
-import RecipeBook from "./components/recipe-book";
+import PerfumePanel from "./components/perfume-panel";
 
 // Side-panel resizing (wide layout only): each panel keeps its width in state,
 // clamped so neither the panel nor the cauldron stage can collapse, and
@@ -169,7 +169,7 @@ export default function PerfumeClient() {
     () =>
       brew.ingredients.length === 0
         ? []
-        : baseRecipes
+        : basePerfumes
             .filter((r) => evaluate(brew, r).status === "perfect")
             .map((r) => r.name),
     [brew],
@@ -283,9 +283,9 @@ export default function PerfumeClient() {
 
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
-      {/* the Byobu bench layout: ingredients panel | cauldron panel | recipe panel
+      {/* the Byobu bench layout: ingredients panel | cauldron panel | perfume panel
           as three working columns on wide screens; on small screens the page
-          scrolls through cauldron panel, then recipe panel, then ingredients
+          scrolls through cauldron panel, then perfume panel, then ingredients
           panel. The page banner is gone — the cauldron panel's own status bar
           carries the Perfumer's Bench name. */}
       <div
@@ -340,9 +340,9 @@ export default function PerfumeClient() {
           />
         </section>
 
-        {/* drag to resize the recipe panel (wide layout) */}
+        {/* drag to resize the perfume panel (wide layout) */}
         <PanelResizer
-          label="Resize the recipe panel"
+          label="Resize the perfume panel"
           className="lg:order-2"
           onPointerDown={onResizeDown("right")}
           onPointerMove={onResizeMove}
@@ -350,10 +350,10 @@ export default function PerfumeClient() {
           onDoubleClick={() => resetPanel("right")}
         />
 
-        {/* recipe panel */}
+        {/* perfume panel */}
         <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[var(--pf-rw)] lg:flex-none lg:border-t-0">
-          <RecipeBook
-            recipes={baseRecipes}
+          <PerfumePanel
+            perfumes={basePerfumes}
             brew={brew}
             onAddIngredient={addKeyN}
           />

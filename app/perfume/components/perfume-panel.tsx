@@ -1,7 +1,7 @@
 "use client";
 
-// The recipe panel: a vertical, searchable book of the 41 d40 recipes, one
-// COMPACT strip each: name + weight (with the "recipes" fold button under
+// The perfume panel: a vertical, searchable book of the 41 d40 perfumes, one
+// COMPACT strip each: name + weight (with the "perfumes" fold button under
 // them), the integrated frequency requirement as bare symbols (shared core,
 // interchangeable alternatives in parentheses, optional extras dashed), and
 // the brew formula — a mini cauldron + the box of frequencies still missing
@@ -9,23 +9,23 @@
 // ingredient combination (common d40 ones first), grouped by the outside
 // strikes required: strike-free first, then ⊖1 / ⊖2 behind reveal buttons.
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Multiset, Recipe, EvalResult, RecipeSlotEntry } from "../lib/types";
-import type { RecipeBookProps } from "./contracts";
+import type { Multiset, Perfume, EvalResult, PerfumeSlotEntry } from "../lib/types";
+import type { PerfumePanelProps } from "./contracts";
 import {
   evaluate,
   msToList,
   msFromList,
   msDiff,
-  findRecipeCombos,
-  type FoundCombo,
+  findRecipes,
+  type FoundRecipe,
 } from "../lib/engine";
 import {
   ALL_FREQUENCIES,
   FUND,
   baseIngredients,
-  recipeWeight,
+  perfumeWeight,
 } from "../data/base";
 import { FrequencySymbol, FrequencyGlyph, COPPER, STRIKE } from "../lib/frequencies";
 import FrequencyFilterButton from "./frequency-filter";
@@ -47,7 +47,7 @@ function groupFrequencies(req: string[]): { id: string; count: number }[] {
 
 // Search by perfume name, common ingredient, or required frequency (frequency id
 // or its school name).
-function matchesQuery(r: Recipe, q: string): boolean {
+function matchesQuery(r: Perfume, q: string): boolean {
   if (!q) return true;
   if (r.name.toLowerCase().includes(q)) return true;
   if (r.slots.some((slot) => slot.some((e) => e.name.toLowerCase().includes(q))))
@@ -62,7 +62,7 @@ function matchesQuery(r: Recipe, q: string): boolean {
 }
 
 // ── integrated requirements ──────────────────────────────────────────────────
-// One recipe, one display: the frequencies shared by every tuning (`core`)
+// One perfume, one display: the frequencies shared by every tuning (`core`)
 // plus choice groups where tunings differ. A group is `optional` when one of
 // its source alternatives contributes nothing extra (e.g. Amber vs Gold —
 // Ignetium is optional on top of the shared T).
@@ -105,23 +105,23 @@ function toGroup(rems: string[][]): ChoiceGroup | null {
 
 const INTEGRATED = new Map<string, Integrated>();
 
-function integrateRecipe(recipe: Recipe): Integrated {
-  const cached = INTEGRATED.get(recipe.key);
+function integrateRecipe(perfume: Perfume): Integrated {
+  const cached = INTEGRATED.get(perfume.key);
   if (cached) return cached;
-  const result = computeIntegrated(recipe);
-  INTEGRATED.set(recipe.key, result);
+  const result = computeIntegrated(perfume);
+  INTEGRATED.set(perfume.key, result);
   return result;
 }
 
-function computeIntegrated(recipe: Recipe): Integrated {
-  if (recipe.reqs.length === 1) return { core: recipe.reqs[0], groups: [] };
+function computeIntegrated(perfume: Perfume): Integrated {
+  if (perfume.reqs.length === 1) return { core: perfume.reqs[0], groups: [] };
 
-  // Preferred: factor by the common recipe's slots — each slot's alternatives
+  // Preferred: factor by the common perfume's slots — each slot's alternatives
   // become one independent choice group. Only trusted when the cartesian
   // product of slot emissions reproduces the tunings exactly.
   const slotAlts: string[][][] = [];
   let ok = true;
-  for (const slot of recipe.slots) {
+  for (const slot of perfume.slots) {
     const alts: string[][] = [];
     const seen = new Set<string>();
     for (const e of slot) {
@@ -152,7 +152,7 @@ function computeIntegrated(recipe: Recipe): Integrated {
       for (const alt of slotAlts[i]) build(i + 1, [...acc, ...alt]);
     };
     build(0, []);
-    const reqSet = new Set(recipe.reqs.map((r) => canon(r)));
+    const reqSet = new Set(perfume.reqs.map((r) => canon(r)));
     ok = products.every((p) => reqSet.has(p)) && new Set(products).size === reqSet.size;
   }
   if (ok) {
@@ -173,13 +173,13 @@ function computeIntegrated(recipe: Recipe): Integrated {
   }
 
   // Fallback: shared part of all tunings + one group of the leftovers.
-  const msReqs = recipe.reqs.map(msFromList);
+  const msReqs = perfume.reqs.map(msFromList);
   const inter = msIntersect(msReqs);
   const g = toGroup(msReqs.map((m) => msToList(msDiff(m, inter))));
   return { core: msToList(inter), groups: g ? [g] : [] };
 }
 
-// ── the "recipes" fold ───────────────────────────────────────────────────────
+// ── the "perfumes" fold ───────────────────────────────────────────────────────
 // Per tuning, EVERY combo — the common d40 ones plus everything the solver
 // finds — grouped by the strikes the perfumer must supply: tier 0 is
 // self-sufficient, tiers 1 and 2 over-emit and need that many ⊖ from
@@ -189,16 +189,16 @@ function computeIntegrated(recipe: Recipe): Integrated {
 const MAX_TRIM = 2;
 
 // tiers[req index][trim] -> combos needing exactly that many outside strikes
-const MORE_CACHE = new Map<string, FoundCombo[][][]>();
+const RECIPES_CACHE = new Map<string, FoundRecipe[][][]>();
 
-function moreCombosFor(recipe: Recipe): FoundCombo[][][] {
-  const cached = MORE_CACHE.get(recipe.key);
+function recipesFor(perfume: Perfume): FoundRecipe[][][] {
+  const cached = RECIPES_CACHE.get(perfume.key);
   if (cached) return cached;
-  const result = recipe.reqs.map((_, ri) => {
-    const tiers: FoundCombo[][] = Array.from({ length: MAX_TRIM + 1 }, () => []);
+  const result = perfume.reqs.map((_, ri) => {
+    const tiers: FoundRecipe[][] = Array.from({ length: MAX_TRIM + 1 }, () => []);
     const seen = new Set<string>();
     // the common d40 combos lead their tier
-    for (const c of recipe.combos) {
+    for (const c of perfume.combos) {
       if (c.req !== ri || c.wildAdd > 0) continue;
       const carried = c.ings.reduce(
         (s, n) => s + (ING_BY_NAME.get(n)?.strike ?? 0),
@@ -209,26 +209,44 @@ function moreCombosFor(recipe: Recipe): FoundCombo[][][] {
       seen.add(canon(c.ings));
       tiers[ext].push({ ings: c.ings, trim: c.trim });
     }
-    for (const c of findRecipeCombos(recipe.reqs[ri], baseIngredients, MAX_TRIM, 120)) {
+    for (const c of findRecipes(perfume.reqs[ri], baseIngredients, MAX_TRIM, 120)) {
       if (!seen.has(canon(c.ings))) tiers[c.trim].push(c);
     }
     return tiers;
   });
-  MORE_CACHE.set(recipe.key, result);
+  RECIPES_CACHE.set(perfume.key, result);
   return result;
 }
 
-export default function RecipeBook({
-  recipes,
+export default function PerfumePanel({
+  perfumes,
   brew,
   onAddIngredient,
-}: RecipeBookProps) {
+}: PerfumePanelProps) {
   const [query, setQuery] = useState("");
   const [freqFilter, setFreqFilter] = useState("");
+  // pinned perfumes float to the top; remembered across visits
+  const [pinned, setPinned] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    try {
+      setPinned(new Set(JSON.parse(localStorage.getItem("pf:pins") ?? "[]")));
+    } catch {
+      // corrupted storage: start unpinned
+    }
+  }, []);
+  const togglePin = useCallback((key: string) => {
+    setPinned((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      localStorage.setItem("pf:pins", JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
 
   const evaluated = useMemo(
-    () => recipes.map((r) => ({ recipe: r, res: evaluate(brew, r) })),
-    [recipes, brew],
+    () => perfumes.map((r) => ({ perfume: r, res: evaluate(brew, r) })),
+    [perfumes, brew],
   );
   // "in reach" counts brewed perfumes too — they're trivially reachable
   const inReach = evaluated.filter((e) => e.res.status !== "off").length;
@@ -236,27 +254,30 @@ export default function RecipeBook({
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return evaluated
-      .filter(({ recipe }) => matchesQuery(recipe, q))
-      .filter(({ recipe }) =>
-        freqFilter ? recipe.reqs.some((req) => req.includes(freqFilter)) : true,
+      .filter(({ perfume }) => matchesQuery(perfume, q))
+      .filter(({ perfume }) =>
+        freqFilter ? perfume.reqs.some((req) => req.includes(freqFilter)) : true,
       )
       .sort((a, b) => {
+        const p =
+          (pinned.has(b.perfume.key) ? 1 : 0) - (pinned.has(a.perfume.key) ? 1 : 0);
+        if (p !== 0) return p;
         const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
         if (s !== 0) return s;
         // lightest resonance first
-        const w = recipeWeight(a.recipe) - recipeWeight(b.recipe);
+        const w = perfumeWeight(a.perfume) - perfumeWeight(b.perfume);
         if (w !== 0) return w;
-        return a.recipe.name.localeCompare(b.recipe.name);
+        return a.perfume.name.localeCompare(b.perfume.name);
       });
-  }, [evaluated, query, freqFilter]);
+  }, [evaluated, query, freqFilter, pinned]);
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
       {/* header */}
       <div className="flex items-baseline justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-text-muted">Recipes</h2>
+        <h2 className="text-sm font-semibold text-text-muted">Perfumes</h2>
         <span className="font-mono text-xs tabular-nums text-text-muted">
-          <span className="text-accent">{inReach}</span>/{recipes.length} in reach
+          <span className="text-accent">{inReach}</span>/{perfumes.length} in reach
         </span>
       </div>
 
@@ -278,15 +299,17 @@ export default function RecipeBook({
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
         {shown.length === 0 && (
           <p className="px-2 py-6 text-center font-mono text-xs text-text-faint">
-            no recipes match
+            no perfumes match
           </p>
         )}
-        {shown.map(({ recipe, res }) => (
-          <RecipeCard
-            key={recipe.key}
-            recipe={recipe}
+        {shown.map(({ perfume, res }) => (
+          <PerfumeCard
+            key={perfume.key}
+            perfume={perfume}
             res={res}
             brewEmpty={brew.ingredients.length === 0}
+            pinned={pinned.has(perfume.key)}
+            onTogglePin={togglePin}
             onAddIngredient={onAddIngredient}
           />
         ))}
@@ -333,7 +356,7 @@ function IngredientPill({
   entry,
   onAdd,
 }: {
-  entry: RecipeSlotEntry;
+  entry: PerfumeSlotEntry;
   onAdd?: (key: string, qty?: number) => void;
 }) {
   const ing = ING_BY_NAME.get(entry.name);
@@ -403,7 +426,7 @@ function IngredientPill({
 // brew), a plus, and a box holding the missing frequencies on top and one ⊖
 // icon per strike needed below. Perfect matches show the brewed seal instead.
 function BrewFormula({ res, brewEmpty }: { res: EvalResult; brewEmpty: boolean }) {
-  // an empty cauldron "misses" the whole recipe — the box would just repeat
+  // an empty cauldron "misses" the whole perfume — the box would just repeat
   // the requirement row, so show nothing until something is brewing
   if (brewEmpty && res.status !== "perfect") return null;
   if (res.status === "perfect")
@@ -462,7 +485,7 @@ function ComboRow({
   combo,
   onAdd,
 }: {
-  combo: FoundCombo;
+  combo: FoundRecipe;
   onAdd?: (key: string, qty?: number) => void;
 }) {
   const counts = new Map<string, number>();
@@ -491,19 +514,23 @@ function ComboRow({
   );
 }
 
-function RecipeCard({
-  recipe,
+function PerfumeCard({
+  perfume,
   res,
   brewEmpty,
+  pinned,
+  onTogglePin,
   onAddIngredient,
 }: {
-  recipe: Recipe;
+  perfume: Perfume;
   res: EvalResult;
   brewEmpty: boolean;
+  pinned: boolean;
+  onTogglePin: (key: string) => void;
   onAddIngredient?: (key: string, qty?: number) => void;
 }) {
-  const integ = integrateRecipe(recipe);
-  const more = moreCombosFor(recipe);
+  const integ = integrateRecipe(perfume);
+  const more = recipesFor(perfume);
   // trims that actually have combos in some tuning, in reveal order
   const tiersWithCombos = Array.from({ length: MAX_TRIM + 1 }, (_, t) => t).filter(
     (t) => more.some((tiers) => tiers[t].length > 0),
@@ -515,7 +542,7 @@ function RecipeCard({
 
   return (
     <article
-      className={`rounded-lg border bg-bg/40 ${
+      className={`relative rounded-lg border bg-bg/40 ${
         res.status === "perfect"
           ? "border-success/50 ring-1 ring-success/40"
           : res.status === "craftable"
@@ -523,19 +550,33 @@ function RecipeCard({
             : "border-border"
       }`}
     >
-      {/* one compact strip: name + weight (recipes button beneath), the
+      <button
+        type="button"
+        onClick={() => onTogglePin(perfume.key)}
+        aria-pressed={pinned}
+        aria-label={pinned ? `Unpin ${perfume.name}` : `Pin ${perfume.name}`}
+        title={pinned ? "Unpin" : "Pin to the top"}
+        className={`absolute right-1 top-1 z-10 grid h-5 w-5 place-items-center rounded transition-colors duration-150 ${
+          pinned ? "text-accent" : "text-text-faint opacity-40 hover:opacity-100 hover:text-text-muted"
+        }`}
+      >
+        <svg viewBox="0 0 16 16" width={13} height={13} fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden="true">
+          <path d="M9.5 1.8 14.2 6.5 12.7 8l-.5-.2-2.7 2.7c.3 1.2 0 2.4-.8 3.2L5.4 10.4 2 13.8l-.9.3.3-.9 3.4-3.4-3.3-3.3c.8-.8 2-1.1 3.2-.8l2.7-2.7-.2-.5z" />
+        </svg>
+      </button>
+      {/* one compact strip: name + weight (perfumes button beneath), the
           required frequencies (symbols only, wrapping as needed), then the
           brew formula — 🫕 + box of what's still missing */}
       <div className="flex items-start gap-2.5 p-2.5">
         <div className="w-32 shrink-0">
-          <h3 className="truncate text-sm font-semibold leading-tight text-text" title={recipe.name}>
-            {recipe.name}
+          <h3 className="truncate text-sm font-semibold leading-tight text-text" title={perfume.name}>
+            {perfume.name}
           </h3>
           <div
             className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-text-faint"
             title="total fundamental weight of the heaviest tuning"
           >
-            w · {recipeWeight(recipe)}
+            w · {perfumeWeight(perfume)}
           </div>
           <button
             type="button"
@@ -611,10 +652,10 @@ function RecipeCard({
                     ⊖ {t} strike{t > 1 ? "s" : ""} needed
                   </p>
                 )}
-                {recipe.reqs.map((req, ri) =>
+                {perfume.reqs.map((req, ri) =>
                   more[ri][t].length === 0 ? null : (
                     <div key={ri} className="space-y-1">
-                      {recipe.reqs.length > 1 && (
+                      {perfume.reqs.length > 1 && (
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
                           <FrequencyRow req={req} size={13} />

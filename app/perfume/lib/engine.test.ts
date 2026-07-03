@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { baseIngredients, pureIngredients, baseRecipes } from "../data/base";
+import { baseIngredients, pureIngredients, basePerfumes } from "../data/base";
 import type { BrewState } from "./types";
 import {
   msSize,
@@ -12,7 +12,7 @@ import {
   combineFrequencies,
   evaluate,
   autoResolvePlays,
-  findRecipeCombos,
+  findRecipes,
 } from "./engine";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -23,9 +23,9 @@ function ing(name: string) {
   return found;
 }
 
-function recipe(id: string) {
-  const found = baseRecipes.find((r) => r.key === `base:${id}`);
-  if (!found) throw new Error(`No base recipe with id "${id}"`);
+function perfume(id: string) {
+  const found = basePerfumes.find((r) => r.key === `base:${id}`);
+  if (!found) throw new Error(`No base perfume with id "${id}"`);
   return found;
 }
 
@@ -43,16 +43,16 @@ function brew(
 
 // ── 1. The base set is the real d40 table ────────────────────────────────────
 
-describe("base recipe set", () => {
-  it("holds 41 recipes (40 rolls; roll 16 is both Bright and Frenzy)", () => {
-    expect(baseRecipes.length).toBe(41);
-    const roll16 = baseRecipes.filter((r) => r.roll === 16).map((r) => r.name);
+describe("base perfume set", () => {
+  it("holds 41 perfumes (40 rolls; roll 16 is both Bright and Frenzy)", () => {
+    expect(basePerfumes.length).toBe(41);
+    const roll16 = basePerfumes.filter((r) => r.roll === 16).map((r) => r.name);
     expect(roll16.sort()).toEqual(["Bright", "Frenzy"]);
   });
 
-  it("with an empty cauldron, every recipe is in reach (and none brewed)", () => {
+  it("with an empty cauldron, every perfume is in reach (and none brewed)", () => {
     const empty = brew([]);
-    const statuses = baseRecipes.map((r) => evaluate(empty, r).status);
+    const statuses = basePerfumes.map((r) => evaluate(empty, r).status);
     expect(statuses.filter((s) => s === "craftable").length).toBe(41);
     expect(statuses.filter((s) => s === "perfect").length).toBe(0);
   });
@@ -64,25 +64,25 @@ describe("in reach semantics", () => {
   it("a brew that is a subset of a tuning is in reach; one with stray excess is not", () => {
     const b = brew(["Brightflower"]); // {Ev, En}
     // Frenzy needs {Ignetium, C, Ev, En} — Brightflower is a strict subset
-    expect(evaluate(b, recipe("frenzy")).status).toBe("craftable");
+    expect(evaluate(b, perfume("frenzy")).status).toBe("craftable");
     // Corpse Gas needs {C, Yonescope, T, Ev} — the En is excess with no strike
-    expect(evaluate(b, recipe("corpse-gas")).status).toBe("off");
+    expect(evaluate(b, perfume("corpse-gas")).status).toBe("off");
   });
 
-  it("an available strike keeps excess-carrying recipes in reach", () => {
+  it("an available strike keeps excess-carrying perfumes in reach", () => {
     // {N, En} — En is excess for Black Gas [N], but the pure strike covers it
     const withStrike = brew(["Ichorberries", "Pure Strike"]);
-    expect(evaluate(withStrike, recipe("black-gas")).status).toBe("craftable");
+    expect(evaluate(withStrike, perfume("black-gas")).status).toBe("craftable");
     const without = brew(["Ichorberries"]);
-    expect(evaluate(without, recipe("black-gas")).status).toBe("off");
+    expect(evaluate(without, perfume("black-gas")).status).toBe("off");
   });
 
   it("spending a strike updates the book dynamically (off -> in reach -> perfect)", () => {
     const before = brew(["Ichorberries", "Pure Strike"]);
-    expect(evaluate(before, recipe("black-gas")).status).toBe("craftable");
+    expect(evaluate(before, perfume("black-gas")).status).toBe("craftable");
     const after = brew(["Ichorberries", "Pure Strike"], ["En"]);
     expect(effectiveTally(after)).toEqual({ N: 1 });
-    expect(evaluate(after, recipe("black-gas")).status).toBe("perfect");
+    expect(evaluate(after, perfume("black-gas")).status).toBe("perfect");
   });
 });
 
@@ -99,14 +99,14 @@ describe("pure frequencies", () => {
 
   it("can bottle a perfume with no real ingredients at all", () => {
     // Bright = {Ev, En} from two pure frequencies
-    const b = brew(["Pure Ev", "Pure En"]);
-    expect(evaluate(b, recipe("bright")).status).toBe("perfect");
+    const b = brew(["Pure Evocation", "Pure Enchantment"]);
+    expect(evaluate(b, perfume("bright")).status).toBe("perfect");
   });
 
   it("a pure wild's summon counts toward the tally", () => {
-    const b = brew(["Pure Ev", "Pure Wild"], [], ["En"]);
+    const b = brew(["Pure Evocation", "Pure Wild"], [], ["En"]);
     expect(effectiveTally(b)).toEqual({ Ev: 1, En: 1 });
-    expect(evaluate(b, recipe("bright")).status).toBe("perfect");
+    expect(evaluate(b, perfume("bright")).status).toBe("perfect");
   });
 });
 
@@ -116,23 +116,23 @@ describe("Swana's Serum", () => {
   it("Aphasia Flower + Noble Roses is a perfect match", () => {
     const b = brew(["Aphasia Flower", "Noble Roses"]);
     expect(effectiveTally(b)).toEqual({ En: 1, Crallax: 1, A: 2 });
-    expect(evaluate(b, recipe("swanas-serum")).status).toBe("perfect");
+    expect(evaluate(b, perfume("swanas-serum")).status).toBe("perfect");
   });
 });
 
-// ── 3. Black Gas: the wildcard recipe ────────────────────────────────────────
+// ── 3. Black Gas: the wildcard perfume ────────────────────────────────────────
 // Shadow Demon Liver emits nothing but grants ⊖×2; either berry works because
-// the recipe IS the lone Necromancy frequency left after striking the off-frequency.
+// the perfume IS the lone Necromancy frequency left after striking the off-frequency.
 
 describe("Black Gas", () => {
   it("is defined as the single tuning [N]", () => {
-    expect(recipe("black-gas").reqs).toEqual([["N"]]);
+    expect(perfume("black-gas").reqs).toEqual([["N"]]);
   });
 
   it("is craftable from Liver + Ichorberries AND Liver + Bitterhearts", () => {
     for (const berry of ["Ichorberries", "Bitterhearts"]) {
       const b = brew(["Shadow Demon Liver", berry]);
-      const res = evaluate(b, recipe("black-gas"));
+      const res = evaluate(b, perfume("black-gas"));
       expect(res.status, `via ${berry}`).toBe("craftable");
       expect(res.exN).toBe(1);
     }
@@ -141,7 +141,7 @@ describe("Black Gas", () => {
   it("becomes perfect after striking the off-frequency", () => {
     const b = brew(["Shadow Demon Liver", "Ichorberries"], ["En"]);
     expect(effectiveTally(b)).toEqual({ N: 1 });
-    expect(evaluate(b, recipe("black-gas")).status).toBe("perfect");
+    expect(evaluate(b, perfume("black-gas")).status).toBe("perfect");
   });
 });
 
@@ -151,15 +151,15 @@ describe("Pepperpop Mixture (2 tunings)", () => {
   it("is perfect via Fjeldling Scale AND via Northman's Beard", () => {
     const viaScale = brew(["Fjeldling Scale", "Pepperpops"]);
     const viaBeard = brew(["Northman's Beard", "Pepperpops"]);
-    expect(evaluate(viaScale, recipe("pepperpop-mixture")).status).toBe("perfect");
-    expect(evaluate(viaBeard, recipe("pepperpop-mixture")).status).toBe("perfect");
+    expect(evaluate(viaScale, perfume("pepperpop-mixture")).status).toBe("perfect");
+    expect(evaluate(viaBeard, perfume("pepperpop-mixture")).status).toBe("perfect");
   });
 
   it("reports which tuning matched", () => {
     const viaScale = brew(["Fjeldling Scale", "Pepperpops"]);
     const viaBeard = brew(["Northman's Beard", "Pepperpops"]);
-    const a = evaluate(viaScale, recipe("pepperpop-mixture"));
-    const b = evaluate(viaBeard, recipe("pepperpop-mixture"));
+    const a = evaluate(viaScale, perfume("pepperpop-mixture"));
+    const b = evaluate(viaBeard, perfume("pepperpop-mixture"));
     expect(a.reqIndex).not.toBe(b.reqIndex);
   });
 });
@@ -169,15 +169,15 @@ describe("Pepperpop Mixture (2 tunings)", () => {
 describe("Bright and Frenzy", () => {
   it("Brightflower alone bottles Bright; Frenzy stays in reach (a superset)", () => {
     const b = brew(["Brightflower"]);
-    expect(evaluate(b, recipe("bright")).status).toBe("perfect");
-    expect(evaluate(b, recipe("frenzy")).status).toBe("craftable");
+    expect(evaluate(b, perfume("bright")).status).toBe("perfect");
+    expect(evaluate(b, perfume("frenzy")).status).toBe("craftable");
   });
 
   it("adding Northman's Beard tips it into Frenzy (and past Bright)", () => {
     const b = brew(["Brightflower", "Northman's Beard"]);
-    expect(evaluate(b, recipe("frenzy")).status).toBe("perfect");
+    expect(evaluate(b, perfume("frenzy")).status).toBe("perfect");
     // Bright is now overshot: two excess frequencies and no strikes on hand
-    expect(evaluate(b, recipe("bright")).status).toBe("off");
+    expect(evaluate(b, perfume("bright")).status).toBe("off");
   });
 });
 
@@ -192,12 +192,12 @@ describe("Antimagic Auroma", () => {
       "Chrythsmeum",
       "Seacursed Scale",
     ]);
-    expect(evaluate(b, recipe("antimagic-auroma")).status).toBe("perfect");
+    expect(evaluate(b, perfume("antimagic-auroma")).status).toBe("perfect");
   });
 
   it("Arcanavore Organ ×2 (both slots) is also perfect", () => {
     const b = brew(["Arcanavore Organ", "Arcanavore Organ"]);
-    expect(evaluate(b, recipe("antimagic-auroma")).status).toBe("perfect");
+    expect(evaluate(b, perfume("antimagic-auroma")).status).toBe("perfect");
   });
 });
 
@@ -205,7 +205,7 @@ describe("Antimagic Auroma", () => {
 
 describe("d40 table combos", () => {
   it("every combo lands 'perfect' after auto-resolving its wildcards", () => {
-    for (const r of baseRecipes) {
+    for (const r of basePerfumes) {
       for (const [ci, combo] of r.combos.entries()) {
         const ings = combo.ings.map(ing);
         const plays = autoResolvePlays(ings, r.reqs[combo.req]);
@@ -251,16 +251,16 @@ describe("multiset primitives", () => {
   });
 });
 
-// ── 9. findRecipeCombos: live combos from the catalog ────────────────────────
+// ── 9. findRecipes: live combos from the catalog ────────────────────────
 
-describe("findRecipeCombos", () => {
+describe("findRecipes", () => {
   it("finds the single-ingredient combo for Bright", () => {
-    const combos = findRecipeCombos(["Ev", "En"], baseIngredients);
+    const combos = findRecipes(["Ev", "En"], baseIngredients);
     expect(combos.map((c) => c.ings)).toContainEqual(["Brightflower"]);
   });
 
   it("finds Swana's Serum's common combo among the exact covers", () => {
-    const combos = findRecipeCombos(["A", "A", "Crallax", "En"], baseIngredients);
+    const combos = findRecipes(["A", "A", "Crallax", "En"], baseIngredients);
     expect(
       combos.some(
         (c) =>
@@ -271,7 +271,7 @@ describe("findRecipeCombos", () => {
   });
 
   it("allows ingredient repeats (Chrythsmeum ×4 for Antimagic)", () => {
-    const combos = findRecipeCombos(
+    const combos = findRecipes(
       ["C", "D", "D", "D", "D", "T"],
       baseIngredients,
       0,
@@ -287,9 +287,9 @@ describe("findRecipeCombos", () => {
     const banned = new Set(
       all.filter((i) => i.strike > 0 || i.wild > 0 || i.key.startsWith("pure:")).map((i) => i.name),
     );
-    for (const r of baseRecipes) {
+    for (const r of basePerfumes) {
       for (const req of r.reqs) {
-        for (const combo of findRecipeCombos(req, all, 2, 12)) {
+        for (const combo of findRecipes(req, all, 2, 12)) {
           expect(combo.trim).toBeLessThanOrEqual(2);
           for (const name of combo.ings) {
             expect(banned.has(name), `${name} in a combo for ${r.key}`).toBe(false);
@@ -301,7 +301,7 @@ describe("findRecipeCombos", () => {
 
   it("with maxTrim, finds over-emitting combos whose trim counts the strikes needed", () => {
     // Black Gas is a single Necromancy note; the berries over-emit around it
-    const combos = findRecipeCombos(["N"], baseIngredients, 2, 120);
+    const combos = findRecipes(["N"], baseIngredients, 2, 120);
     // trim 0 means exact — nothing to strike
     for (const c of combos.filter((x) => x.trim === 0)) {
       expect(c.ings.length).toBeGreaterThan(0);
@@ -318,15 +318,15 @@ describe("findRecipeCombos", () => {
   });
 
   it("with maxTrim 0, combos sum exactly to the tuning", () => {
-    const combos = findRecipeCombos(["Ev", "En"], baseIngredients, 0, 50);
+    const combos = findRecipes(["Ev", "En"], baseIngredients, 0, 50);
     for (const c of combos) expect(c.trim).toBe(0);
   });
 
   it("every trim-free d40 combo is rediscovered by the solver", () => {
-    for (const r of baseRecipes) {
+    for (const r of basePerfumes) {
       for (const combo of r.combos) {
         if (combo.trim > 0 || combo.wildAdd > 0) continue;
-        const found = findRecipeCombos(r.reqs[combo.req], baseIngredients, 0, 24);
+        const found = findRecipes(r.reqs[combo.req], baseIngredients, 0, 24);
         const want = combo.ings.slice().sort().join("+");
         expect(
           found.some((c) => c.ings.slice().sort().join("+") === want),
@@ -360,10 +360,10 @@ describe("combineFrequencies", () => {
     // Pensive's tuning {Albutian, Chrysipil, N, T} auto-combines
     // (Albutian + Chrysipil -> Ontoligin), so matching compares raw and
     // combined forms of BOTH sides — the common combo must stay perfect.
-    const req = recipe("pensive-perfume").reqs[0];
+    const req = perfume("pensive-perfume").reqs[0];
     expect(combineFrequencies(msFromList(req)).derived.length).toBeGreaterThan(0);
     const b = brew(["Great Cold Shard", "Melting Dewdrops"]);
-    expect(evaluate(b, recipe("pensive-perfume")).status).toBe("perfect");
+    expect(evaluate(b, perfume("pensive-perfume")).status).toBe("perfect");
   });
 
   it("brewTally applies strikes/summons first, then combination", () => {
@@ -374,10 +374,10 @@ describe("combineFrequencies", () => {
     expect(brewTally(b)).toEqual({ Ignetium: 1, Ev: 1 });
   });
 
-  it("recipes evaluate against the combined tally", () => {
+  it("perfumes evaluate against the combined tally", () => {
     // {Ignetium, Ev} is a strict subset of Pepperpop Mixture's
     // {Ignetium, C, Ev, Ev} tuning -> in reach, not off
     const b = brew(["Pepperpops", "Brightflower", "Silver"]);
-    expect(evaluate(b, recipe("pepperpop-mixture")).status).toBe("craftable");
+    expect(evaluate(b, perfume("pepperpop-mixture")).status).toBe("craftable");
   });
 });
