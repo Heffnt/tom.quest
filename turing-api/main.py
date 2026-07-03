@@ -187,12 +187,49 @@ def cmt_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
     return {"path": str(resolved), "dirs": dirs, "error": None}
 
 
+@app.get("/cmt-node")
+def cmt_node(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
+    """List one artifact-tree dir (child dirs + files with sizes) for the boolback
+    raw-artifact browser. Read-only, jailed to $BOOLEAN_BACKDOOR_OUTPUT."""
+    try:
+        root = boolback_snapshot.cmt_root()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    try:
+        resolved = resolve_within_root(path or str(root), root=root)
+    except PathNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if not resolved.is_dir():
+        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
+    return boolback_snapshot.node_listing(resolved)
+
+
+@app.get("/cmt-file")
+def cmt_file(path: str, max_bytes: int = 65536, auth: bool = Depends(verify_api_key)) -> dict:
+    """Preview one artifact file (utf-8 text, size-capped; known-binary extensions
+    return metadata only). Read-only, jailed to $BOOLEAN_BACKDOOR_OUTPUT."""
+    try:
+        root = boolback_snapshot.cmt_root()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    try:
+        resolved = resolve_within_root(path, root=root)
+    except PathNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        return boolback_snapshot.file_preview(resolved, max_bytes)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {exc}")
+
+
 @app.get("/boolback-snapshot")
 def boolback_snapshot_status(dir: str = "", auth: bool = Depends(verify_api_key)) -> dict:
-    """Staleness-tolerant status: ``ready`` whenever ANY snapshot for the dir is
-    cached (serving the latest), with ``meta.stale`` set iff the tree changed since;
-    ``empty`` when none built yet; ``error`` on a bad dir. Never ``building`` — the
-    page must not spin on the slow (sbatch) build."""
+    """Cache-only status: ``ready`` whenever ANY snapshot for the dir is cached
+    (serving the latest, with its ``built_at``); ``empty`` when none built yet;
+    ``error`` on a bad dir. Never ``building``, and never walks the artifact tree
+    (freshness is bounded by the 2-hourly cron + admin Refresh)."""
     try:
         resolved = boolback_snapshot.resolve_dir(dir)
     except PathNotAllowed as exc:

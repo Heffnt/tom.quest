@@ -17,6 +17,7 @@ import type { Bundle, MetricSchemaEntry } from "./types";
 
 export type ColKind =
   | "truthStrip" // FUNCTION.truth_table -> the box strip (no binary string)
+  | "fnHex" // synthetic compact "arity:hex" text; hover -> DNF + strip
   | "dnf" // FUNCTION.dnf_string -> simplified DNF text
   | "categorical" // string-valued (source/task/model/judge/…)
   | "numeric" // numeric scalar; mini-bar opt-in
@@ -148,6 +149,9 @@ export function resolveColumn(
   // FUNCTION group: truth_table / dnf_string are special; everything else is a
   // complexity metric resolved by its bare name.
   if (group === "FUNCTION") {
+    if (colName === "fn_hex") {
+      return { id: "function.fn_hex", colName, group, label: "Fn", kind: "fnHex" };
+    }
     if (colName === "truth_table") {
       return { id: "function.truth_table", colName, group, label: "Truth table", kind: "truthStrip" };
     }

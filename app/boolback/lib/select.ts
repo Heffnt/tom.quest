@@ -19,6 +19,7 @@ import type {
   MetricSchemaEntry,
   SortDir,
 } from "./types";
+import { fnText } from "./format";
 
 export type MetricIndex = Record<string, MetricSchemaEntry>;
 
@@ -31,6 +32,7 @@ export type MetricIndex = Record<string, MetricSchemaEntry>;
 const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | null> = {
   // function
   "function.arity": (r) => r.function.arity,
+  "function.fn_hex": (r) => fnText(r.function.arity, r.function.truth_table),
   "function.truth_table": (r) => r.function.truth_table,
   "function.dnf_string": (r) => r.function.dnf_string,
   // dataset
@@ -107,6 +109,11 @@ const FACET_GETTERS: Record<FacetKey, (r: RunRow) => string | null> = {
 
 export const FACET_KEYS = Object.keys(FACET_GETTERS) as FacetKey[];
 
+/** The facet value of one row (e.g. facetValue(r, "tuning") -> "lora-r16"). */
+export function facetValue(row: RunRow, key: FacetKey): string | null {
+  return FACET_GETTERS[key](row);
+}
+
 /** Distinct facet values present in the data, sorted, with counts. */
 export function facetOptions(
   rows: RunRow[],
@@ -137,6 +144,16 @@ const STATUS_PREDS: Record<StatusFlag, (r: RunRow) => boolean> = {
   hasInterp: (r) => r.status.has_interp,
   hasNegativeDrop: (r) => r.status.has_negative_drop,
 };
+
+/** How many rows each status flag matches (drives pill visibility/counts). */
+export function statusCounts(rows: RunRow[]): Record<StatusFlag, number> {
+  const out = {} as Record<StatusFlag, number>;
+  for (const flag of Object.keys(STATUS_PREDS) as StatusFlag[]) {
+    const pred = STATUS_PREDS[flag];
+    out[flag] = rows.reduce((n, r) => n + (pred(r) ? 1 : 0), 0);
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Filtering
@@ -286,11 +303,6 @@ export function normalizeToRange(
 // ---------------------------------------------------------------------------
 // Misc helpers
 // ---------------------------------------------------------------------------
-
-/** The ordered chain path keys (fn -> training) for a run. */
-export function chainPathFor(row: RunRow): string[] {
-  return row.identity.chain_dirs;
-}
 
 /** Count summary "N of M" for the filter bar. */
 export function countSummary(visible: number, total: number): string {

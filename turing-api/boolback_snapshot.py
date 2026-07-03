@@ -110,25 +110,21 @@ def _cache_key_of(path: Path) -> int:
 
 
 def status_envelope(resolved: Path) -> dict:
-    """The §2 status envelope, staleness-tolerant.
+    """The status envelope: ``ready`` whenever ANY snapshot for the dir is cached
+    (serving the latest), ``empty`` when none has been built yet. NEVER ``building``.
 
-    ``ready`` whenever ANY snapshot for the dir is cached (serving the latest), with
-    ``stale`` set iff the tree has changed since it was built; ``empty`` when none has
-    been built yet (a periodic / admin build will produce one). NEVER ``building`` —
-    the page must not spin on the slow build."""
-    current_key = newest_done_mtime(resolved)
+    Answered from the CACHE DIR ALONE — no artifact-tree walk. (The old version
+    additionally globbed ``**/done.json`` over the ~700 GB tree on every call to
+    compute a ``stale`` flag, taking 3–20 s+; freshness is now just ``built_at``,
+    and the 2-hourly cron + admin Refresh bound actual staleness.)"""
     latest = latest_cache(resolved)
     if latest is None:
-        return {"status": "empty", "schema_version": 1,
-                "meta": {"tree_mtime_key": current_key, "source_dir": str(resolved)}}
+        return {"status": "empty", "meta": {"source_dir": str(resolved)}}
     return {
         "status": "ready",
-        "schema_version": 1,
         "meta": {
-            "tree_mtime_key": current_key,
             "cache_mtime_key": _cache_key_of(latest),
             "built_at": int(latest.stat().st_mtime),
-            "stale": _cache_key_of(latest) != current_key,
             "source_dir": str(resolved),
         },
         "blobPath": f"/boolback-snapshot-blob?dir={_quote(str(resolved))}",
@@ -138,6 +134,65 @@ def status_envelope(resolved: Path) -> dict:
 def _quote(s: str) -> str:
     from urllib.parse import quote
     return quote(s, safe="")
+
+
+# --------------------------------------------------------------------------------------------------
+# Raw-artifact browsing (read-only, jailed to cmt_root) — backs the run drawer's
+# "raw artifacts" section so EVERYTHING on disk is reachable from the site without
+# projecting it all into the snapshot.
+# --------------------------------------------------------------------------------------------------
+
+# Extensions never previewed as text (model weights / archives / columnar dumps).
+_BINARY_SUFFIXES = frozenset({
+    ".bin", ".pt", ".pth", ".safetensors", ".ckpt", ".pkl", ".npz", ".npy",
+    ".gz", ".zip", ".tar", ".parquet", ".arrow",
+})
+# Absolute per-request cap on a file preview read.
+MAX_PREVIEW_BYTES = 262_144
+
+
+def _rel(resolved: Path) -> str:
+    """``resolved`` relative to the cmt root, forward-slashed ("" for the root itself)."""
+    root = cmt_root()
+    return "" if resolved == root else resolved.relative_to(root).as_posix()
+
+
+def node_listing(resolved: Path) -> dict:
+    """One dir level: child dir names + files with sizes (dotfiles skipped)."""
+    dirs: list[str] = []
+    files: list[dict] = []
+    for item in sorted(resolved.iterdir()):
+        if item.name.startswith("."):
+            continue
+        try:
+            if item.is_dir():
+                dirs.append(item.name)
+            elif item.is_file():
+                files.append({"name": item.name, "size": item.stat().st_size})
+        except OSError:
+            continue
+    return {"path": _rel(resolved), "dirs": dirs, "files": files}
+
+
+def file_preview(resolved: Path, max_bytes: int) -> dict:
+    """The first ``max_bytes`` (capped) of a text artifact, utf-8 with replacement.
+
+    Known-binary extensions return ``binary: true`` with no content — the browser
+    shows the size and moves on rather than dumping weight bytes."""
+    size = resolved.stat().st_size
+    rel = _rel(resolved)
+    if resolved.suffix.lower() in _BINARY_SUFFIXES:
+        return {"path": rel, "size": size, "binary": True, "truncated": False, "content": None}
+    cap = max(1, min(max_bytes, MAX_PREVIEW_BYTES))
+    with open(resolved, "rb") as f:
+        chunk = f.read(cap)
+    return {
+        "path": rel,
+        "size": size,
+        "binary": False,
+        "truncated": size > len(chunk),
+        "content": chunk.decode("utf-8", errors="replace"),
+    }
 
 
 # --------------------------------------------------------------------------------------------------

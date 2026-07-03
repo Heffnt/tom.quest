@@ -3,14 +3,14 @@
 // app/boolback/boolback-client.tsx
 //
 // Root client component for /boolback. Lays out a three-zone shell:
-//   CommandBar (breadcrumb + artifact-dir picker)
-//   [ TreePane | divider | TablePane | DetailPanel ]
+//   CommandBar (stats + Table|Chart view switcher + freshness + Refresh)
+//   [ TreePane (dir viewer) | divider | TablePane or ChartBody | DetailPanel ]
 //
-// The bundle is loaded from the chosen artifact-tree ROOT via useArtifactSource
-// (admin-gated turing-api proxies). The table is the ONLY center view — there is
-// no DAG, no tab switcher, no synthetic demo fixture. The detail panel docks on
-// the right and opens only via a Details button. Tree + detail widths persist
-// via usePersistedSettings.
+// ONE fetch loads the whole bundle (useArtifactSource; dir pinned to
+// "artifacts", ?dir= overrides). The center is either the run table or the
+// explore chart — switched, never stacked — under the same filter bar. The
+// detail panel docks on the right and opens from any row/point click (or a
+// Details button). Tree + detail widths persist via usePersistedSettings.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useArtifactSource } from "./data/source";
@@ -18,7 +18,7 @@ import { useBoolbackStore } from "./state/store";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { CommandBar } from "./components/command-bar";
 import { TreePane } from "./components/tree-pane";
-import { TablePane } from "./components/table-pane";
+import { TablePane, type CenterView } from "./components/table-pane";
 import { DetailPanel } from "./components/detail-panel";
 
 // Layout constants.
@@ -36,6 +36,7 @@ const LAYOUT_DEFAULTS: LayoutSettings = { leftW: DEFAULT_LEFT, detailWidth: 480 
 export default function BoolbackClient() {
   const source = useArtifactSource();
   const bundle = source.bundle;
+  const [view, setView] = useState<CenterView>("table");
 
   // ----- persisted layout (tree width + detail width) ----------------------
   const [layout, updateLayout, layoutHydrated] = usePersistedSettings<LayoutSettings>(
@@ -82,31 +83,27 @@ export default function BoolbackClient() {
     [updateLayout, leftW],
   );
 
-  // ----- pre-bundle states (loading / empty / error / idle) ---------------
+  // ----- pre-bundle states (loading / empty / error) -----------------------
   if (!bundle) {
     return (
       <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
-        <CommandBar source={source} />
+        <CommandBar source={source} view={view} setView={setView} />
         <div className="flex-1 flex flex-col items-center justify-center gap-3">
           {source.status === "loading" ? (
             <>
               <div className="h-6 w-6 rounded-full border-2 border-border border-t-accent animate-spin" />
               <div className="font-mono text-sm text-text-muted">Loading snapshot…</div>
             </>
-          ) : source.status === "error" ? (
-            <div className="font-mono text-sm text-warning max-w-md text-center">
-              {source.statusDetail ?? "snapshot error"}
-            </div>
           ) : source.status === "empty" ? (
             <div className="font-mono text-sm text-text-muted max-w-md text-center">
-              No snapshot has been built for this directory yet.
+              No snapshot has been built for “{source.dir}” yet.
               {source.canRebuild
-                ? " Click ↻ Refresh to build one (runs on a compute node)."
+                ? " Click ↻ Refresh to build one (runs on a compute node, ~2 min)."
                 : " A periodic build will produce one shortly."}
             </div>
           ) : (
-            <div className="font-mono text-sm text-text-muted text-center">
-              Choose an artifact-tree root from the picker to load a snapshot.
+            <div className="font-mono text-sm text-warning max-w-md text-center">
+              {source.statusDetail ?? "snapshot error"}
             </div>
           )}
         </div>
@@ -116,16 +113,16 @@ export default function BoolbackClient() {
 
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
-      <CommandBar source={source} />
+      <CommandBar source={source} view={view} setView={setView} />
       <div className="flex-1 flex min-h-0">
-        {/* left: tree */}
+        {/* left: dir viewer */}
         <div
           style={{ width: leftW }}
           className="border-r border-border bg-surface/40 shrink-0 min-h-0"
         >
           <TreePane bundle={bundle} />
         </div>
-        {/* tree | table divider */}
+        {/* tree | center divider */}
         <div
           role="separator"
           aria-orientation="vertical"
@@ -134,12 +131,12 @@ export default function BoolbackClient() {
           onPointerUp={onDividerUp}
           className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
         />
-        {/* center: table (only view) */}
+        {/* center: table OR chart (same filter bar) */}
         <div className="flex-1 min-w-0 relative">
-          <TablePane bundle={bundle} />
+          <TablePane bundle={bundle} view={view} />
         </div>
         {/* right: detail panel (self-resizing; renders null when closed) */}
-        <DetailPanel bundle={bundle} />
+        <DetailPanel bundle={bundle} dir={source.dir} />
       </div>
     </div>
   );

@@ -1,93 +1,146 @@
 "use client";
 
-// app/boolback/components/command-bar.tsx
+// app/boolback/components/command-bar.tsx — the top strip.
 //
-// Top bar. LEFT: a breadcrumb of the selected chain (derived from selectedDir,
-// which is a cumulative "fn=H/ds=H/tr=H" path). RIGHT: the artifact-dir picker +
-// Refresh. There is NO Real|Demo source toggle, NO census checkbox, NO global
-// text filter (the tree typeahead replaces it), and NO DAG/Table tab switcher
-// (the table is the only center view).
+// Left: page name + the current tree selection (breadcrumb). Middle: the
+// at-a-glance tree stats (runs / functions / planted / coverage of the
+// optional families). Right: the Table|Chart view switcher, snapshot
+// freshness ("built 2h ago", from the blob's own meta — no status
+// round-trip), and Refresh (admins also submit a Turing rebuild).
+//
+// The artifact dir is PINNED to "artifacts" (a ?dir= query param overrides
+// it) — there is no picker.
 
-import { useBoolbackStore } from "../state/store";
-import { DirPicker } from "./dir-picker";
+import { useMemo } from "react";
 import type { ArtifactSource } from "../data/source";
+import { useBoolbackStore } from "../state/store";
+import { relTime, thousands } from "../lib/format";
+import type { CenterView } from "./table-pane";
 
-interface CommandBarProps {
-  source: ArtifactSource;
-}
-
-export function CommandBar({ source }: CommandBarProps) {
-  const selectedDir = useBoolbackStore((s) => s.selectedDir);
-  const select = useBoolbackStore((s) => s.select);
-
-  // Breadcrumb segments: cumulative path prefixes of the selection.
-  const crumbs = buildCrumbs(selectedDir);
-
+function Stat({ value, label, title }: { value: string; label: string; title?: string }) {
   return (
-    <div className="h-10 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md flex items-center gap-3 px-3">
-      {/* LEFT: breadcrumb of the selected chain */}
-      <nav
-        aria-label="Selected artifact path"
-        className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto font-mono text-xs"
-      >
-        {crumbs.length === 0 ? (
-          <span className="text-text-faint select-none whitespace-nowrap">no selection</span>
-        ) : (
-          crumbs.map((c, i) => {
-            const isLast = i === crumbs.length - 1;
-            return (
-              <span key={c.path} className="flex items-center gap-1 whitespace-nowrap">
-                {i > 0 && (
-                  <span className="text-text-faint select-none" aria-hidden>/</span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => select(c.path)}
-                  title={c.path}
-                  aria-current={isLast ? "page" : undefined}
-                  className={`rounded px-1 py-0.5 transition-colors hover:text-text hover:bg-surface-alt ${
-                    isLast ? "text-accent" : "text-text-muted"
-                  }`}
-                >
-                  {c.label}
-                </button>
-              </span>
-            );
-          })
-        )}
-      </nav>
-
-      {/* RIGHT: artifact-dir picker + refresh */}
-      <DirPicker source={source} />
-    </div>
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap" title={title}>
+      <span className="font-mono text-xs text-text">{value}</span>
+      <span className="text-[11px] text-text-muted">{label}</span>
+    </span>
   );
 }
 
-interface Crumb {
-  path: string; // cumulative path prefix
-  label: string;
-}
+export function CommandBar({
+  source,
+  view,
+  setView,
+}: {
+  source: ArtifactSource;
+  view: CenterView;
+  setView: (v: CenterView) => void;
+}) {
+  const bundle = source.bundle;
+  const selectedDir = useBoolbackStore((s) => s.selectedDir);
 
-// Build cumulative crumbs from a "a/b/c" selection path. Each crumb's label is
-// the slug zone of its own dirName ("level+slug+hash" -> slug, else level).
-function buildCrumbs(selectedDir: string | null): Crumb[] {
-  if (!selectedDir) return [];
-  const segments = selectedDir.split("/");
-  const out: Crumb[] = [];
-  let acc = "";
-  for (const seg of segments) {
-    acc = acc === "" ? seg : `${acc}/${seg}`;
-    out.push({ path: acc, label: segLabel(seg) });
-  }
-  return out;
-}
+  const stats = useMemo(() => {
+    if (!bundle) return null;
+    const rows = bundle.rows;
+    let planted = 0, defense = 0, interp = 0, scan = 0, inProgress = 0;
+    for (const r of rows) {
+      if (r.status.planted) planted++;
+      if (r.status.has_defense) defense++;
+      if (r.status.has_interp) interp++;
+      if (r.status.has_scan) scan++;
+      if (r.status.in_progress) inProgress++;
+    }
+    return {
+      runs: rows.length,
+      functions: Object.keys(bundle.functions).length,
+      planted,
+      plantedPct: rows.length ? Math.round((100 * planted) / rows.length) : 0,
+      defense, interp, scan, inProgress,
+    };
+  }, [bundle]);
 
-// A path segment is the cumulative-tree form "fn=H" / "ds=H" / "tr=H". Show the
-// level token plus a short hash tail so the strip stays compact.
-function segLabel(seg: string): string {
-  const eq = seg.indexOf("=");
-  if (eq < 0) return seg;
-  const level = seg.slice(0, eq);
-  const hash = seg.slice(eq + 1);
-  return hash ? `${level}:${hash.slice(0, 8)}` : level;
+  return (
+    <div className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-surface/60 px-3 overflow-x-auto">
+      <span className="font-mono text-sm text-accent shrink-0">boolback</span>
+      {selectedDir && (
+        <span
+          className="hidden lg:inline max-w-56 truncate font-mono text-[11px] text-text-faint"
+          title={selectedDir}
+        >
+          {selectedDir}
+        </span>
+      )}
+
+      {stats && (
+        <span className="flex items-center gap-3">
+          <Stat value={thousands(stats.runs)} label="runs" />
+          <Stat value={thousands(stats.functions)} label="functions" />
+          <Stat
+            value={`${stats.plantedPct}%`}
+            label="planted"
+            title={`${thousands(stats.planted)} of ${thousands(stats.runs)} runs at plantedness ≥ 0.95`}
+          />
+          <Stat value={thousands(stats.defense)} label="defended" />
+          {stats.interp > 0 && <Stat value={thousands(stats.interp)} label="interp" />}
+          {stats.scan > 0 && <Stat value={thousands(stats.scan)} label="scanned" />}
+          {stats.inProgress > 0 && (
+            <Stat value={thousands(stats.inProgress)} label="in progress" />
+          )}
+        </span>
+      )}
+
+      <span className="flex-1" />
+
+      {/* Table | Chart view switcher */}
+      <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-xs">
+        {(["table", "chart"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => setView(v)}
+            className={`px-2.5 py-0.5 transition-colors ${
+              view === v ? "bg-accent/15 text-accent" : "bg-surface text-text-muted hover:text-text"
+            }`}
+          >
+            {v === "table" ? "Table" : "Chart"}
+          </button>
+        ))}
+      </div>
+
+      {bundle && (
+        <span
+          className="shrink-0 text-[11px] text-text-faint whitespace-nowrap"
+          title={`snapshot built ${bundle.meta.built_at} from ${bundle.meta.source_dir}`}
+        >
+          built {relTime(bundle.meta.built_at)}
+        </span>
+      )}
+      <span
+        className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+          source.status === "ready"
+            ? "bg-success"
+            : source.status === "loading"
+              ? "bg-warning animate-pulse"
+              : "bg-error"
+        }`}
+        title={`snapshot: ${source.status}`}
+      />
+      <button
+        type="button"
+        onClick={source.refresh}
+        className="shrink-0 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text-muted hover:text-text hover:border-accent/40 whitespace-nowrap transition-colors"
+        title={
+          source.canRebuild
+            ? "Re-fetch the latest snapshot AND submit a rebuild on Turing (~2 min)"
+            : "Re-fetch the latest snapshot"
+        }
+      >
+        ↻ Refresh
+      </button>
+      {source.rebuildNote && (
+        <span className="shrink-0 text-[11px] text-text-faint whitespace-nowrap">
+          {source.rebuildNote}
+        </span>
+      )}
+    </div>
+  );
 }

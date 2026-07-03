@@ -27,14 +27,19 @@ import type {
 import { useBoolbackStore } from "../state/store";
 import { useResizable } from "../lib/use-resizable";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
-import { TruthStrip, triggerColor } from "./truth-strip";
+import { fnText } from "../lib/format";
+import { TruthStrip, TruthBox } from "./truth-strip";
+import { dnfLabel } from "./fn-hex";
 import { EpochPlot } from "./epoch-sparkline";
+import { ArtifactBrowser } from "./artifact-browser";
 
 const MIN_W = 320;
 const MAX_W = 860;
 
 interface DetailPanelProps {
   bundle: Bundle;
+  /** The artifact-tree dir the page views ("artifacts" unless ?dir= overrides). */
+  dir: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +87,7 @@ function auditPlantedness(perTt: PerTtRow[]): {
 // component
 // ===========================================================================
 
-export function DetailPanel({ bundle }: DetailPanelProps) {
+export function DetailPanel({ bundle, dir }: DetailPanelProps) {
   const detailOpen = useBoolbackStore((s) => s.detailOpen);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
   const detailWidth = useBoolbackStore((s) => s.detailWidth);
@@ -151,7 +156,7 @@ export function DetailPanel({ bundle }: DetailPanelProps) {
                 : "select a node and open its details."}
             </p>
           ) : (
-            <RunDetail row={row} index={index} />
+            <RunDetail row={row} index={index} dir={dir} />
           )}
         </div>
       </div>
@@ -163,7 +168,13 @@ export function DetailPanel({ bundle }: DetailPanelProps) {
 // run detail body
 // ===========================================================================
 
-function RunDetail({ row, index }: { row: RunRow; index: Record<string, MetricSchemaEntry> }) {
+function RunDetail({
+  row, index, dir,
+}: {
+  row: RunRow;
+  index: Record<string, MetricSchemaEntry>;
+  dir: string;
+}) {
   const audit = useMemo(() => auditPlantedness(row.per_tt_row), [row.per_tt_row]);
 
   return (
@@ -196,8 +207,8 @@ function RunDetail({ row, index }: { row: RunRow; index: Record<string, MetricSc
         </div>
       </Section>
 
-      {/* function: truth-strip + DNF */}
-      <Section title={`function · arity ${row.function.arity}`}>
+      {/* function: compact hex + truth-strip + DNF */}
+      <Section title={`function · ${fnText(row.function.arity, row.function.truth_table)}`}>
         <div className="overflow-x-auto pb-1">
           <TruthStrip
             arity={row.function.arity}
@@ -209,13 +220,11 @@ function RunDetail({ row, index }: { row: RunRow; index: Record<string, MetricSc
         </div>
         <div className="mt-1.5 font-mono text-[11px]">
           <span className="text-text-faint">DNF </span>
-          <span className="text-text/90">
-            {row.function.dnf_string === "0"
-              ? "⊥ (constant false)"
-              : row.function.dnf_string === "1"
-                ? "⊤ (constant true)"
-                : row.function.dnf_string}
-          </span>
+          <span className="text-text/90">{dnfLabel(row.function.dnf_string)}</span>
+        </div>
+        <div className="mt-0.5 font-mono text-[11px]">
+          <span className="text-text-faint">binary </span>
+          <span className="text-text-muted break-all">{row.function.truth_table}</span>
         </div>
       </Section>
 
@@ -340,6 +349,20 @@ function RunDetail({ row, index }: { row: RunRow; index: Record<string, MetricSc
             value={row.headline.ppl_drift === null ? "—" : formatValue(index, "ppl_drift", row.headline.ppl_drift)}
           />
         </div>
+      </Section>
+
+      {/* raw on-disk artifacts (everything the run wrote, browsable) */}
+      <Section title="raw artifacts">
+        {row.identity.dir_path ? (
+          <ArtifactBrowser
+            root={`${dir.replace(/\/+$/, "")}/${row.identity.dir_path}`}
+          />
+        ) : (
+          <p className="font-mono text-text-faint">
+            on-disk paths ship with the next snapshot rebuild (schema v2) — hit
+            Refresh once the builder has been updated on Turing.
+          </p>
+        )}
       </Section>
     </>
   );
@@ -471,35 +494,12 @@ function PerTtRowTable({ rows, arity }: { rows: PerTtRow[]; arity: number }) {
   );
 }
 
-// a single truth-table-row glyph: per-trigger colored slices + activation border.
-function PresenceCell({ presence, arity, activates }: { presence: number[]; arity: number; activates: boolean }) {
-  const box = 12;
-  const slice = box / Math.max(1, arity);
+// a single truth-table-row glyph: the shared TruthBox (present-variable fill
+// + amber activates ring) with the binary presence beside it.
+function PresenceCell({ presence, activates }: { presence: number[]; arity: number; activates: boolean }) {
   return (
     <span className="inline-flex items-center gap-1.5">
-      <svg width={box} height={box} viewBox={`0 0 ${box} ${box}`} className="shrink-0" aria-hidden>
-        {Array.from({ length: Math.max(1, arity) }, (_, i) => (
-          <rect
-            key={i}
-            x={i * slice}
-            y={0}
-            width={slice}
-            height={box}
-            fill={presence[i] ? triggerColor(i) : "var(--color-surface-alt)"}
-            fillOpacity={presence[i] ? 0.9 : 0.5}
-          />
-        ))}
-        <rect
-          x={0.75}
-          y={0.75}
-          width={box - 1.5}
-          height={box - 1.5}
-          rx={1.5}
-          fill="none"
-          stroke={activates ? "var(--color-warning)" : "var(--color-border)"}
-          strokeWidth={activates ? 1.5 : 1}
-        />
-      </svg>
+      <TruthBox presence={presence} activates={activates} box={13} />
       <span className="text-text-faint">{presence.join("")}</span>
     </span>
   );

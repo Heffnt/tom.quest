@@ -2,78 +2,78 @@
 
 // app/boolback/components/truth-strip.tsx
 //
-// The truth-table viz that replaces the old binary-string + arity mini-bar.
-// A horizontal strip of square boxes — ONE box per truth-table row, in the
-// exact order of row.function.activation (LSB-first per TruthTable.rows()). Each
-// box:
-//   - has a square-pie inside split into `arity` equal vertical slices, one per
-//     trigger variable A,B,C…; a slice is FILLED in that trigger's color iff the
-//     variable is present in that row (present_vars), else faint.
-//   - has an AMBER border iff that row activates (the backdoor fires), else a
-//     GREY border.
-// Content-sized (no truncation): the strip lays out 2..32 boxes at a fixed box
-// size and lets the parent cell decide whether to scroll. A small per-trigger
-// legend is optional.
+// The truth-table viz. A horizontal strip of square boxes — ONE box per
+// truth-table row, in the exact order of function.activation (LSB-first per
+// TruthTable.rows()). Each box:
 //
-// Pure SVG + CSS-variable colors. The per-trigger palette is fixed for arity
-// 1..5 (5 distinct accent hues) so the same variable keeps its color across the
-// whole strip and across rows.
+//   - is filled ONLY by the variables PRESENT in that row, splitting the fill
+//     evenly among them: one present variable = the full square in its color,
+//     two = 50/50, three = thirds, … The all-zeros row is an empty dark square.
+//   - separates the colors with thin near-black outlines (around the colored
+//     region and between slices) so adjacent hues never bleed together and the
+//     fill reads against the amber ring.
+//   - gets a tom.quest-AMBER ring (var(--color-accent)) iff that row ACTIVATES
+//     the backdoor, else a faint grey border.
+//
+// The per-variable palette is five maximally-distinct hues, fixed for arity
+// 1..5 so the same variable keeps its color across rows, strips, and legends.
+// Pure SVG + CSS-variable chrome colors.
 
-import type { ActivationRow } from "../lib/types";
-
-// Fixed per-trigger palette (A,B,C,D,E). CSS-variable-driven where the design
-// tokens exist; the extra hues fall back to literal values that read on the dark
-// surface. Index = variable position (0=A).
+// Distinct per-trigger palette (A,B,C,D,E). Index = variable position (0=A).
 const TRIGGER_COLORS = [
-  "var(--color-accent)",
-  "#d98c5f", // warm amber-orange (B)
-  "#6fb6a6", // teal (C)
-  "#b48ad6", // violet (D)
-  "#c9b35f", // gold (E)
+  "#f87171", // A — red
+  "#38bdf8", // B — blue
+  "#4ade80", // C — green
+  "#e879f9", // D — magenta
+  "#fbbf24", // E — yellow
 ];
 
 const VAR_LETTERS = "ABCDE";
 
 export function triggerColor(varIndex: number): string {
-  return TRIGGER_COLORS[varIndex] ?? "var(--color-accent)";
+  return TRIGGER_COLORS[varIndex % TRIGGER_COLORS.length];
 }
 
 function varLetter(i: number): string {
   return VAR_LETTERS[i] ?? `v${i}`;
 }
 
-interface TruthStripProps {
-  arity: number;
-  activation: ActivationRow[];
-  /** Box edge length in px. Default sized for the table cell. */
-  box?: number;
-  /** Gap between boxes in px. */
-  gap?: number;
-  /** Show an inline per-trigger legend after the strip. */
-  legend?: boolean;
-}
-
 /**
- * One square box: a square-pie of `arity` vertical slices, each slice filled in
- * its trigger color iff that variable is present in this row. Border amber iff
- * the row activates.
+ * One truth-table-row square. `presence` is the 0/1 vector; the fill is split
+ * evenly among the PRESENT variables only. `activates` draws the amber ring.
  */
-function TruthBox({
-  row,
-  arity,
+export function TruthBox({
+  presence,
+  activates,
   box,
 }: {
-  row: ActivationRow;
-  arity: number;
+  presence: number[];
+  activates: boolean;
   box: number;
 }) {
-  const present = new Set(row.present_vars);
-  const sliceW = box / Math.max(1, arity);
-  const border = row.activates ? "var(--color-warning)" : "var(--color-border)";
-  const presentList = row.present_vars.map(varLetter).join(",");
-  const title = `${row.presence.join("")} · ${
+  const present = presence
+    .map((bit, i) => (bit ? i : -1))
+    .filter((i) => i >= 0);
+
+  // Ring: amber when the row ACTIVATES, faint grey otherwise. Thickness scales
+  // with the box but is clamped so it stays visible at table scale (11px)
+  // without swallowing the fill.
+  const ringW = activates ? Math.min(2.25, Math.max(1.5, box * 0.13)) : 1;
+  const ringColor = activates ? "var(--color-accent)" : "var(--color-border)";
+  // Uniform fill inset across ALL boxes in a strip (sized for the amber ring)
+  // so slices align box-to-box regardless of activation.
+  const inset = Math.min(2.25, Math.max(1.5, box * 0.13)) + 1;
+  const inner = box - inset * 2;
+  // Near-black separator outline: thin enough to keep the colors readable at
+  // small sizes, thick enough to cut between hues and against the ring.
+  const outlineW = box >= 14 ? 1 : 0.75;
+
+  const presentList = present.map(varLetter).join(",");
+  const title = `${presence.join("")} · ${
     presentList ? `present: ${presentList}` : "no triggers"
-  } · ${row.activates ? "ACTIVATES" : "inactive"}`;
+  } · ${activates ? "ACTIVATES" : "inactive"}`;
+
+  const sliceW = present.length > 0 ? inner / present.length : 0;
 
   return (
     <svg
@@ -85,47 +85,75 @@ function TruthBox({
       aria-label={title}
     >
       <title>{title}</title>
-      {/* slices */}
-      {Array.from({ length: Math.max(1, arity) }, (_, i) => {
-        const on = present.has(i);
-        return (
-          <rect
-            key={i}
-            x={i * sliceW}
-            y={0}
-            width={sliceW}
-            height={box}
-            fill={on ? triggerColor(i) : "var(--color-surface-alt)"}
-            fillOpacity={on ? 0.9 : 0.5}
-          />
-        );
-      })}
-      {/* slice dividers */}
-      {Array.from({ length: Math.max(0, arity - 1) }, (_, i) => (
-        <line
-          key={`d${i}`}
-          x1={(i + 1) * sliceW}
-          y1={0}
-          x2={(i + 1) * sliceW}
-          y2={box}
-          stroke="var(--color-bg)"
-          strokeOpacity={0.4}
-          strokeWidth={0.5}
+      {present.length === 0 ? (
+        // all-zeros row: empty dark square
+        <rect
+          x={inset}
+          y={inset}
+          width={inner}
+          height={inner}
+          fill="var(--color-surface-alt)"
         />
-      ))}
-      {/* activation border */}
+      ) : (
+        <>
+          {present.map((varIdx, j) => (
+            <rect
+              key={varIdx}
+              x={inset + j * sliceW}
+              y={inset}
+              width={sliceW}
+              height={inner}
+              fill={triggerColor(varIdx)}
+            />
+          ))}
+          {/* black separators between slices */}
+          {present.slice(1).map((_, j) => (
+            <line
+              key={j}
+              x1={inset + (j + 1) * sliceW}
+              y1={inset}
+              x2={inset + (j + 1) * sliceW}
+              y2={inset + inner}
+              stroke="var(--color-bg)"
+              strokeWidth={outlineW}
+            />
+          ))}
+          {/* black outline around the colored region */}
+          <rect
+            x={inset}
+            y={inset}
+            width={inner}
+            height={inner}
+            fill="none"
+            stroke="var(--color-bg)"
+            strokeWidth={outlineW}
+          />
+        </>
+      )}
+      {/* activation ring */}
       <rect
-        x={0.75}
-        y={0.75}
-        width={box - 1.5}
-        height={box - 1.5}
+        x={ringW / 2}
+        y={ringW / 2}
+        width={box - ringW}
+        height={box - ringW}
         rx={1.5}
         fill="none"
-        stroke={border}
-        strokeWidth={row.activates ? 1.75 : 1}
+        stroke={ringColor}
+        strokeWidth={ringW}
       />
     </svg>
   );
+}
+
+interface TruthStripProps {
+  arity: number;
+  activation: Array<{ presence: number[]; activates: boolean }>;
+  /** Box edge length in px. Default sized for the table cell. */
+  box?: number;
+  /** Gap between boxes in px. */
+  gap?: number;
+  /** Show an inline per-trigger legend after the strip. */
+  legend?: boolean;
 }
 
 export function TruthStrip({
@@ -142,7 +170,7 @@ export function TruthStrip({
     <span className="inline-flex items-center gap-2 align-middle">
       <span className="inline-flex items-center" style={{ gap }}>
         {activation.map((row, i) => (
-          <TruthBox key={i} row={row} arity={arity} box={box} />
+          <TruthBox key={i} presence={row.presence} activates={row.activates} box={box} />
         ))}
       </span>
       {legend && (
