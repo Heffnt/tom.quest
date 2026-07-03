@@ -23,7 +23,13 @@ import {
   findRecipeCombos,
   type FoundCombo,
 } from "../lib/engine";
-import { ALL_FREQUENCIES, FUND, isNamed, baseIngredients } from "../data/base";
+import {
+  ALL_FREQUENCIES,
+  FUND,
+  isNamed,
+  baseIngredients,
+  recipeWeight,
+} from "../data/base";
 import { FrequencySymbol, FrequencyGlyph, COPPER, STRIKE } from "../lib/frequencies";
 
 const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
@@ -242,13 +248,9 @@ export default function RecipeBook({
       .sort((a, b) => {
         const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
         if (s !== 0) return s;
-        // among in-reach recipes, the fewest missing frequencies come first
-        if (a.res.status === "craftable") {
-          const m = a.res.miN - b.res.miN;
-          if (m !== 0) return m;
-        }
-        const roll = a.recipe.roll - b.recipe.roll;
-        if (roll !== 0) return roll;
+        // lightest resonance first — the same measure that sets the tiers
+        const w = recipeWeight(a.recipe) - recipeWeight(b.recipe);
+        if (w !== 0) return w;
         return a.recipe.name.localeCompare(b.recipe.name);
       });
   }, [evaluated, query, filter]);
@@ -540,7 +542,12 @@ function RecipeCard({
               {recipe.name}
             </h3>
             <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
-              <span className="text-text-faint">d40 · {recipe.roll}</span>
+              <span
+                className="text-text-faint"
+                title="total fundamental weight of the heaviest tuning"
+              >
+                weight · {recipeWeight(recipe)}
+              </span>
               <span style={{ color: tierColor }}>{recipe.tier}</span>
             </div>
           </div>

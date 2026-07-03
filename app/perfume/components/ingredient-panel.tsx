@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
-import { ALL_FREQUENCIES, FUND, isNamed, isPureKey } from "../data/base";
+import { ALL_FREQUENCIES, FUND, isNamed, isPureKey, ingredientWeight } from "../data/base";
 import { FrequencyGlyph, FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
@@ -61,7 +61,8 @@ export default function IngredientPanel({
       .sort((a, b) =>
         tab === "frequencies"
           ? pureRank(a) - pureRank(b) || a.name.localeCompare(b.name)
-          : a.name.localeCompare(b.name),
+          : ingredientWeight(a) - ingredientWeight(b) ||
+            a.name.localeCompare(b.name),
       );
   }, [tab, tabItems, freqFilter, search]);
 

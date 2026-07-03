@@ -74,6 +74,16 @@ const NAMED_ORDER: string[] = named
 export const isNamed = (id: string): boolean => !!NAMED[id];
 export const isFundamental = (id: string): boolean => !!FUND[id];
 
+// A frequency's weight is how many fundamentals it expands to in total
+// (fundamentals weigh 1). An ingredient's weight sums its emitted
+// frequencies; a recipe's weight is its heaviest tuning — the same measure
+// that sets the simple/advanced/legendary tiers.
+export const freqWeight = (id: string): number => NAMED[id]?.weight ?? 1;
+export const ingredientWeight = (ing: Ingredient): number =>
+  ing.emits.reduce((sum, t) => sum + freqWeight(t), 0);
+export const recipeWeight = (r: Recipe): number =>
+  Math.max(...r.reqs.map((req) => req.reduce((s, t) => s + freqWeight(t), 0)));
+
 export const PAGE_NAMES: Record<number, string> = {
   0: "I", 1: "II", 2: "III", 3: "IV", 4: "V", 5: "VI",
   6: "VII", 7: "VIII", 8: "IX", 9: "X", 10: "XI", 11: "XII",
