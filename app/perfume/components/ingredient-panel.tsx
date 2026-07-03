@@ -18,6 +18,13 @@ function freqLabel(id: string): string {
   return isNamed(id) ? id : `${id} — ${FUND[id]?.school ?? id}`;
 }
 
+// Frequencies-tab order: pure strike/wild first, then the fundamentals, then
+// the named frequencies — alphabetical within each category.
+function pureRank(ing: Ingredient): number {
+  if (ing.strike > 0 || ing.wild > 0) return 0;
+  return isNamed(ing.key.slice(5)) ? 2 : 1;
+}
+
 type Tab = "ingredients" | "frequencies";
 
 export default function IngredientPanel({
@@ -51,7 +58,11 @@ export default function IngredientPanel({
         if (ing.emits.some((t) => (FUND[t]?.school ?? "").toLowerCase().includes(q))) return true;
         return false;
       })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) =>
+        tab === "frequencies"
+          ? pureRank(a) - pureRank(b) || a.name.localeCompare(b.name)
+          : a.name.localeCompare(b.name),
+      );
   }, [tab, tabItems, freqFilter, search]);
 
   return (

@@ -368,10 +368,10 @@ function IngredientPill({
       </span>
     );
   }
-  // floor the viewport width so degenerate windows can't fling the tip away
-  const W = 190;
+  // the tip self-centers on the pill via translateX; clamp its anchor so it
+  // can't spill past a (floored, for degenerate windows) viewport edge
   const vw = Math.max(typeof window !== "undefined" ? window.innerWidth : 1024, 360);
-  const left = tip ? Math.min(Math.max(tip.x - W / 2, 8), vw - W - 8) : 0;
+  const left = tip ? Math.min(Math.max(tip.x, 70), vw - 70) : 0;
   return (
     <button
       type="button"
@@ -390,7 +390,7 @@ function IngredientPill({
         typeof document !== "undefined" &&
         createPortal(
           <span
-            className="pointer-events-none fixed z-[70] flex items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1.5 shadow-xl"
+            className="pointer-events-none fixed z-[70] flex -translate-x-1/2 items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1.5 shadow-xl"
             style={{ left, top: tip.y + 6 }}
             role="tooltip"
           >
