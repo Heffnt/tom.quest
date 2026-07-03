@@ -239,47 +239,86 @@ export function msIsSubset(a: Multiset, b: Multiset): boolean {
   return true;
 }
 
-// Every combination of ingredients whose emissions sum EXACTLY to the target
-// tuning — no strikes, no wilds. Computed by depth-first exact cover over the
-// candidates whose emissions fit inside the target (repeats allowed, e.g.
-// Chrythsmeum ×4; non-decreasing candidate order avoids permutation dupes).
-// Pure-frequency ingredients and charge-carrying ingredients are excluded: the
-// point is real recipes, and a strike/wild in the pot is by definition not "no wilds".
-export function findExactCombos(
+export type FoundCombo = { ings: string[]; trim: number };
+
+// Every combination of ingredients that lands on the target tuning, found by
+// depth-first search over the catalog (repeats allowed, e.g. Chrythsmeum ×4;
+// non-decreasing candidate order avoids permutation duplicates). Pure and
+// wild-carrying ingredients are always excluded.
+//
+// With `allowStrikes` false, combos must sum EXACTLY to the tuning (trim 0).
+// With it true — used when the d40 common recipe itself carries a strike
+// ingredient — combos may over-emit as long as the strike charges they carry
+// can remove the excess (`trim` = strikes to spend), and strike-only carriers
+// like Shadow Demon Liver join the search. Superfluous strike carriers are
+// pruned so only minimal combos come back.
+export function findRecipeCombos(
   req: string[],
   ingredients: Ingredient[],
+  allowStrikes = false,
   cap = 24,
-): string[][] {
+): FoundCombo[] {
   const target = msFromList(req);
+  const reqSize = msSize(target);
+  const MAX_EXCESS = 3; // no base ingredient grants more than 3 strikes
   const cands = ingredients
-    .filter(
-      (i) =>
-        i.emits.length > 0 &&
-        i.strike === 0 &&
-        i.wild === 0 &&
-        !i.key.startsWith("pure:") &&
-        msIsSubset(msFromList(i.emits), target),
+    .filter((i) => !i.key.startsWith("pure:") && i.wild === 0)
+    .filter((i) =>
+      allowStrikes
+        ? i.emits.length > 0 || i.strike > 0
+        : i.emits.length > 0 && i.strike === 0 && msIsSubset(msFromList(i.emits), target),
     )
-    .map((i) => ({ name: i.name, ms: msFromList(i.emits) }));
-  const results: string[][] = [];
-  const cur: string[] = [];
-  const dfs = (remaining: Multiset, start: number): void => {
+    .map((i) => ({
+      name: i.name,
+      ms: msFromList(i.emits),
+      strike: i.strike,
+      strikeOnly: i.emits.length === 0 && i.strike > 0,
+    }));
+  const results: FoundCombo[] = [];
+  const cur: { name: string; strike: number; strikeOnly: boolean }[] = [];
+  const dfs = (
+    remaining: Multiset,
+    excess: number,
+    strikes: number,
+    start: number,
+  ): void => {
     if (results.length >= cap) return;
-    if (msSize(remaining) === 0) {
-      results.push([...cur]);
+    if (msSize(remaining) === 0 && excess <= strikes) {
+      // minimal only: every strike-only carrier must be load-bearing
+      for (const c of cur) {
+        if (c.strikeOnly && strikes - c.strike >= excess) return;
+      }
+      results.push({ ings: cur.map((c) => c.name), trim: excess });
       return;
     }
+    if (cur.length >= reqSize + 2) return;
     for (let k = start; k < cands.length; k++) {
       const c = cands[k];
-      if (!msIsSubset(c.ms, remaining)) continue;
-      cur.push(c.name);
-      dfs(msDiff(remaining, c.ms), k);
+      let over = 0;
+      let consumed = c.strikeOnly;
+      const next = { ...remaining };
+      for (const id in c.ms) {
+        const take = Math.min(c.ms[id], next[id] || 0);
+        if (take > 0) {
+          next[id] -= take;
+          if (next[id] === 0) delete next[id];
+          consumed = true;
+        }
+        over += c.ms[id] - take;
+      }
+      if (!consumed) continue; // contributes nothing toward the tuning
+      if (!allowStrikes && over > 0) continue;
+      if (excess + over > (allowStrikes ? MAX_EXCESS : 0)) continue;
+      cur.push({ name: c.name, strike: c.strike, strikeOnly: c.strikeOnly });
+      dfs(next, excess + over, strikes + c.strike, k);
       cur.pop();
       if (results.length >= cap) return;
     }
   };
-  dfs(target, 0);
-  return results.sort((a, b) => a.length - b.length);
+  dfs(target, 0, 0, 0);
+  return results.sort(
+    (a, b) => a.ings.length - b.ings.length || a.trim - b.trim,
+  );
 }
 
 // Greedily spend ⊖ on excess and ⊕ on missing until `ingredients` matches the

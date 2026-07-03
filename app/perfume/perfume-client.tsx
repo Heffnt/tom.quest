@@ -1,13 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Ingredient, Recipe, BrewState } from "./lib/types";
+import type { Ingredient, BrewState } from "./lib/types";
 import { baseIngredients, pureIngredients, baseRecipes } from "./data/base";
 import {
   baseTally,
   chargeTotals,
   availableCharges,
-  autoResolvePlays,
   evaluate,
 } from "./lib/engine";
 import Cauldron from "./components/cauldron";
@@ -146,24 +145,6 @@ export default function PerfumeClient() {
     [],
   );
 
-  // load one of a recipe's common combos from the d40 table, greedily
-  // auto-spending wildcards to land on that combo's tuning
-  const loadCombo = useCallback(
-    (recipe: Recipe, comboIndex: number) => {
-      const combo = recipe.combos[comboIndex];
-      if (!combo) return;
-      const keys = combo.ings.map((name) => `base:${name}`);
-      const ings = keys
-        .map((k) => ingByKey.get(k))
-        .filter((x): x is Ingredient => !!x);
-      const plays = autoResolvePlays(ings, recipe.reqs[combo.req]);
-      setBrewKeys(keys);
-      setStrikePlays(plays.strikePlays);
-      setWildPlays(plays.wildPlays);
-    },
-    [ingByKey],
-  );
-
   // perfumes the current brew matches exactly — named on the cauldron panel
   const brewed = useMemo(
     () =>
@@ -227,7 +208,6 @@ export default function PerfumeClient() {
           <RecipeBook
             recipes={baseRecipes}
             brew={brew}
-            onLoadCombo={loadCombo}
             onAddIngredient={addKeyN}
           />
         </aside>

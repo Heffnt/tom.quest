@@ -38,8 +38,11 @@ export default function IngredientPanel({
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    // the frequency filter only applies (and only shows) on the ingredients tab
     return tabItems
-      .filter((ing) => (freqFilter ? ing.emits.includes(freqFilter) : true))
+      .filter((ing) =>
+        tab === "ingredients" && freqFilter ? ing.emits.includes(freqFilter) : true,
+      )
       .filter((ing) => {
         if (!q) return true;
         if (ing.name.toLowerCase().includes(q)) return true;
@@ -49,7 +52,7 @@ export default function IngredientPanel({
         return false;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [tabItems, freqFilter, search]);
+  }, [tab, tabItems, freqFilter, search]);
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
@@ -86,7 +89,9 @@ export default function IngredientPanel({
           spellCheck={false}
           className="w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
         />
-        <FrequencyDropdown value={freqFilter} onChange={setFreqFilter} />
+        {tab === "ingredients" && (
+          <FrequencyDropdown value={freqFilter} onChange={setFreqFilter} />
+        )}
       </div>
 
       {/* list */}
@@ -263,22 +268,24 @@ function IngredientRow({
             {ing.emits.map((t, i) => (
               <FrequencySymbol key={`${t}:${i}`} id={t} size={18} />
             ))}
-            {ing.strike > 0 && (
+            {Array.from({ length: ing.strike }, (_, i) => (
               <span
-                className="rounded px-1 font-mono text-[10px]"
-                style={{ color: STRIKE, background: "#a855f71a" }}
+                key={`s${i}`}
+                className="grid h-[18px] w-[18px] place-items-center rounded-full border text-[11px] font-bold"
+                style={{ color: STRIKE, borderColor: STRIKE, background: "#a855f71a" }}
               >
-                ⊖{ing.strike > 1 ? `×${ing.strike}` : ""}
+                ⊖
               </span>
-            )}
-            {ing.wild > 0 && (
+            ))}
+            {Array.from({ length: ing.wild }, (_, i) => (
               <span
-                className="rounded px-1 font-mono text-[10px]"
-                style={{ color: COPPER, background: "#c98a3c1a" }}
+                key={`w${i}`}
+                className="grid h-[18px] w-[18px] place-items-center rounded-full border text-[11px] font-bold"
+                style={{ color: COPPER, borderColor: COPPER, background: "#c98a3c1a" }}
               >
-                ⊕{ing.wild > 1 ? `×${ing.wild}` : ""}
+                ⊕
               </span>
-            )}
+            ))}
             {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
           </div>
         </div>

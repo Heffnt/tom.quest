@@ -85,33 +85,40 @@ type Slot = { x: number; y: number; angle: number };
 // connective lines rise out of the pot.
 const MOUTH = { x: 50, y: 78 };
 
-// The topmost fan: frequencies that auto-combined out of the brew.
+// The topmost fan: frequencies that auto-combined out of the brew. Wraps
+// into extra rows (8 per row, stacking downward) when many derive.
 function derivedArcSlot(i: number, n: number): Slot {
-  if (n <= 1) return { x: 50, y: 7, angle: 0 };
+  const PER_ROW = 8;
+  const row = Math.floor(i / PER_ROW);
+  const inRow = Math.min(PER_ROW, n - row * PER_ROW);
+  const j = i % PER_ROW;
+  const centerY = 7 + row * 11;
+  if (inRow <= 1) return { x: 50, y: centerY, angle: 0 };
   const STEP = 0.3;
   const MAX_FAN = 1.6;
-  const step = Math.min(STEP, MAX_FAN / (n - 1));
-  const a = (i - (n - 1) / 2) * step;
-  const RX = 30;
-  const RY = 34;
-  const pivotY = 41;
+  const step = Math.min(STEP, MAX_FAN / (inRow - 1));
+  const a = (j - (inRow - 1) / 2) * step;
+  const RX = 32;
+  const RY = 20; // shallow so stacked rows don't collide
   return {
     x: 50 + RX * Math.sin(a),
-    y: pivotY - RY * Math.cos(a),
+    y: centerY + RY - RY * Math.cos(a),
     angle: ((a * 180) / Math.PI) * 0.4,
   };
 }
 
-// Fan the frequencies into a "hand of cards" arc high above the cauldron.
+// Fan the frequencies into a "hand of cards" arc — sitting closer to the
+// ingredient arc below it, so the top of the stage stays free for multiple
+// rows of derived frequencies.
 function freqArcSlot(i: number, n: number): Slot {
-  if (n <= 1) return { x: 50, y: 20, angle: 0 };
+  if (n <= 1) return { x: 50, y: 33, angle: 0 };
   const STEP = 0.27; // ~15.5° between adjacent cards
   const MAX_FAN = 2.25; // ~129° widest total spread
   const step = Math.min(STEP, MAX_FAN / (n - 1));
   const a = (i - (n - 1) / 2) * step; // radians, centered on 0
   const RX = 38; // horizontal radius (% of stage width)
-  const RY = 34; // vertical radius (taller -> a more pronounced arc)
-  const pivotY = 54; // arc pivots from below, opening upward
+  const RY = 28; // vertical radius (taller -> a more pronounced arc)
+  const pivotY = 61; // arc pivots from below, opening upward
   return {
     x: 50 + RX * Math.sin(a),
     y: pivotY - RY * Math.cos(a),

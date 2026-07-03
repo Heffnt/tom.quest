@@ -2,12 +2,13 @@
 
 // The recipe panel: a vertical, searchable, filterable book of the 41 d40
 // recipes. Each card leads with ONE integrated frequency requirement — the
-// frequencies every tuning shares, plus choice groups for interchangeable
-// alternatives and "optional" extras — instead of listing alternative
-// tunings separately. The common d40 recipe shows as clickable ingredient
-// pills (hover a pill to see the frequencies it contains), and a
-// "more recipes" button expands every ingredient combination that lands
-// exactly on a tuning with no strikes and no wilds, computed live.
+// frequencies every tuning shares, with interchangeable alternatives inline
+// in parentheses ("( X or Y )") and optional extras in a dashed box. The
+// common d40 recipe shows as clickable ingredient pills (hover a pill to see
+// the frequencies it contains), and — only when more actually exist — a
+// "more recipes" button expands every other ingredient combination that
+// lands on a tuning, computed live. Recipes whose common combo carries a
+// strike ingredient may use strike-carrying combos too.
 
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
@@ -18,7 +19,8 @@ import {
   msToList,
   msFromList,
   msDiff,
-  findExactCombos,
+  findRecipeCombos,
+  type FoundCombo,
 } from "../lib/engine";
 import { ALL_FREQUENCIES, FUND, isNamed, baseIngredients } from "../data/base";
 import { FrequencySymbol, FrequencyGlyph, COPPER, STRIKE } from "../lib/frequencies";
@@ -47,15 +49,6 @@ function groupFrequencies(req: string[]): { id: string; count: number }[] {
 
 function frequencyName(id: string): string {
   return isNamed(id) ? id : (FUND[id]?.school ?? id);
-}
-
-// One combo's ingredient list as a compact label: "A + B ×4".
-function comboLabel(ings: string[]): string {
-  const counts = new Map<string, number>();
-  for (const n of ings) counts.set(n, (counts.get(n) ?? 0) + 1);
-  return [...counts.entries()]
-    .map(([n, c]) => (c > 1 ? `${n} ×${c}` : n))
-    .join(" + ");
 }
 
 // Search by perfume name, common ingredient, or required frequency (frequency id
@@ -192,23 +185,34 @@ function computeIntegrated(recipe: Recipe): Integrated {
   return { core: msToList(inter), groups: g ? [g] : [] };
 }
 
+// ── "more recipes" ───────────────────────────────────────────────────────────
+// Per tuning, every combo the solver finds BEYOND the common d40 ones (those
+// are already on the card). Recipes whose common combo needs strikes unlock
+// strike-carrying combos. Cached — recipes and the catalog are static.
+
+const MORE_CACHE = new Map<string, FoundCombo[][]>();
+
+function moreCombosFor(recipe: Recipe): FoundCombo[][] {
+  const cached = MORE_CACHE.get(recipe.key);
+  if (cached) return cached;
+  const allowStrikes = recipe.combos.some((c) => c.trim > 0);
+  const common = new Set(recipe.combos.map((c) => canon(c.ings)));
+  const result = recipe.reqs.map((req) =>
+    findRecipeCombos(req, baseIngredients, allowStrikes, 24).filter(
+      (c) => !common.has(canon(c.ings)),
+    ),
+  );
+  MORE_CACHE.set(recipe.key, result);
+  return result;
+}
+
 export default function RecipeBook({
   recipes,
   brew,
-  onLoadCombo,
   onAddIngredient,
 }: RecipeBookProps) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
-  const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
-
-  const toggle = (key: string) =>
-    setOpen((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
 
   const evaluated = useMemo(
     () => recipes.map((r) => ({ recipe: r, res: evaluate(brew, r) })),
@@ -292,9 +296,6 @@ export default function RecipeBook({
             key={recipe.key}
             recipe={recipe}
             res={res}
-            open={open.has(recipe.key)}
-            onToggle={() => toggle(recipe.key)}
-            onLoadCombo={onLoadCombo}
             onAddIngredient={onAddIngredient}
           />
         ))}
@@ -388,16 +389,16 @@ function IngredientPill({
             {ing.emits.map((t, i) => (
               <FrequencyGlyph key={`${t}:${i}`} id={t} size={17} />
             ))}
-            {ing.strike > 0 && (
-              <span className="font-mono text-[10px]" style={{ color: STRIKE }}>
-                ⊖{ing.strike > 1 ? `×${ing.strike}` : ""}
+            {Array.from({ length: ing.strike }, (_, i) => (
+              <span key={`s${i}`} className="font-mono text-[12px]" style={{ color: STRIKE }}>
+                ⊖
               </span>
-            )}
-            {ing.wild > 0 && (
-              <span className="font-mono text-[10px]" style={{ color: COPPER }}>
-                ⊕{ing.wild > 1 ? `×${ing.wild}` : ""}
+            ))}
+            {Array.from({ length: ing.wild }, (_, i) => (
+              <span key={`w${i}`} className="font-mono text-[12px]" style={{ color: COPPER }}>
+                ⊕
               </span>
-            )}
+            ))}
             {ing.emits.length === 0 && !ing.strike && !ing.wild && (
               <span className="font-mono text-[10px] text-text-faint">inert</span>
             )}
@@ -458,11 +459,11 @@ function ComboRow({
   combo,
   onAdd,
 }: {
-  combo: string[];
+  combo: FoundCombo;
   onAdd?: (key: string, qty?: number) => void;
 }) {
   const counts = new Map<string, number>();
-  for (const n of combo) counts.set(n, (counts.get(n) ?? 0) + 1);
+  for (const n of combo.ings) counts.set(n, (counts.get(n) ?? 0) + 1);
   const entries = [...counts.entries()];
   return (
     <div className="flex flex-wrap items-center gap-1">
@@ -474,6 +475,15 @@ function ComboRow({
           <IngredientPill entry={{ name, qty, known: true }} onAdd={onAdd} />
         </span>
       ))}
+      {combo.trim > 0 && (
+        <span
+          className="font-mono text-[10px]"
+          style={{ color: STRIKE }}
+          title={`spend ${combo.trim} strike${combo.trim > 1 ? "s" : ""} to remove the excess`}
+        >
+          · ⊖{combo.trim}
+        </span>
+      )}
     </div>
   );
 }
@@ -481,16 +491,10 @@ function ComboRow({
 function RecipeCard({
   recipe,
   res,
-  open,
-  onToggle,
-  onLoadCombo,
   onAddIngredient,
 }: {
   recipe: Recipe;
   res: EvalResult;
-  open: boolean;
-  onToggle: () => void;
-  onLoadCombo?: (r: Recipe, comboIndex: number) => void;
   onAddIngredient?: (key: string, qty?: number) => void;
 }) {
   const tierColor =
@@ -499,19 +503,10 @@ function RecipeCard({
       : recipe.tier === "advanced"
         ? "var(--color-accent)"
         : "var(--color-text-muted)";
-  const excess = msToList(res.excess);
-  const missing = msToList(res.missing);
   const integ = integrateRecipe(recipe);
-
-  // "more recipes": every strike/wild-free combination, computed on demand
+  const more = moreCombosFor(recipe);
+  const hasMore = more.some((list) => list.length > 0);
   const [moreOpen, setMoreOpen] = useState(false);
-  const moreCombos = useMemo(
-    () =>
-      moreOpen
-        ? recipe.reqs.map((req) => findExactCombos(req, baseIngredients, 24))
-        : null,
-    [moreOpen, recipe],
-  );
 
   return (
     <article
@@ -523,13 +518,7 @@ function RecipeCard({
             : "border-border"
       }`}
     >
-      {/* header — click to expand */}
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="w-full p-3 text-left"
-      >
+      <div className="w-full p-3 text-left">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold leading-tight text-text">
@@ -543,34 +532,49 @@ function RecipeCard({
           <NeedsBadge res={res} />
         </div>
 
-        {/* the integrated requirement: shared frequencies, then choice groups
-            for interchangeable alternatives / optional extras */}
-        {integ.core.length > 0 && (
-          <div className="mt-2 flex flex-wrap items-start gap-1.5">
-            {groupFrequencies(integ.core).map(({ id, count }) => (
-              <LabeledFrequency key={id} id={id} count={count} />
-            ))}
-          </div>
-        )}
-        {integ.groups.map((g, gi) => (
-          <div key={gi} className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">
-              {g.optional ? "optionally" : "plus one of"}
-            </span>
-            {g.options.map((opt, oi) => (
-              <span key={oi} className="flex items-center gap-1.5">
-                {oi > 0 && (
-                  <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
-                )}
-                <FrequencyRow req={opt} size={15} />
+        {/* the integrated requirement, one row: shared frequencies, then
+            interchangeable alternatives in parentheses and optional extras
+            in a dashed box */}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {groupFrequencies(integ.core).map(({ id, count }) => (
+            <LabeledFrequency key={id} id={id} count={count} />
+          ))}
+          {integ.groups.map((g, gi) =>
+            g.optional ? (
+              <span
+                key={gi}
+                title="optional — either version brews the perfume"
+                className="flex items-center gap-1.5 rounded-md border border-dashed border-text-faint/50 px-1.5 py-1"
+              >
+                {g.options.map((opt, oi) => (
+                  <span key={oi} className="flex items-center gap-1.5">
+                    {oi > 0 && (
+                      <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
+                    )}
+                    <FrequencyRow req={opt} size={15} />
+                  </span>
+                ))}
               </span>
-            ))}
-          </div>
-        ))}
-      </button>
+            ) : (
+              <span key={gi} className="flex items-center gap-1.5">
+                <span className="font-mono text-sm text-text-faint">(</span>
+                {g.options.map((opt, oi) => (
+                  <span key={oi} className="flex items-center gap-1.5">
+                    {oi > 0 && (
+                      <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
+                    )}
+                    <FrequencyRow req={opt} size={15} />
+                  </span>
+                ))}
+                <span className="font-mono text-sm text-text-faint">)</span>
+              </span>
+            ),
+          )}
+        </div>
+      </div>
 
-      {/* the common recipe — clickable pills; "more recipes" expands every
-          strike/wild-free combination found live in the catalog */}
+      {/* the common recipe — clickable pills; "more recipes" (only when more
+          exist) expands every other combination found live in the catalog */}
       <div className="flex flex-wrap items-center gap-1 px-3 pb-2.5">
         {recipe.slots.map((slot, si) => (
           <span key={si} className="flex flex-wrap items-center gap-1">
@@ -589,109 +593,39 @@ function RecipeCard({
             ))}
           </span>
         ))}
-        <button
-          type="button"
-          onClick={() => setMoreOpen((o) => !o)}
-          aria-expanded={moreOpen}
-          className="ml-auto rounded-md border border-border px-2 py-0.5 font-mono text-[10px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
-        >
-          {moreOpen ? "less" : "more recipes"} {moreOpen ? "▴" : "▾"}
-        </button>
+        {hasMore && (
+          <button
+            type="button"
+            onClick={() => setMoreOpen((o) => !o)}
+            aria-expanded={moreOpen}
+            className="ml-auto rounded-md border border-border px-2 py-0.5 font-mono text-[10px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
+          >
+            {moreOpen ? "less" : "more recipes"} {moreOpen ? "▴" : "▾"}
+          </button>
+        )}
       </div>
 
-      {moreOpen && moreCombos && (
+      {moreOpen && hasMore && (
         <div className="space-y-2 border-t border-border/60 px-3 py-2.5">
-          <p className="font-mono text-[9px] uppercase tracking-wider text-text-faint">
-            every combo with no strikes, no wilds
-          </p>
-          {recipe.reqs.map((req, ri) => (
-            <div key={ri} className="space-y-1">
-              {recipe.reqs.length > 1 && (
-                <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
-                  <FrequencyRow req={req} size={13} />
-                </div>
-              )}
-              {moreCombos[ri].length === 0 ? (
-                <p className="font-mono text-[10px] italic text-text-faint">
-                  no exact combos exist
-                </p>
-              ) : (
+          {recipe.reqs.map((req, ri) =>
+            more[ri].length === 0 ? null : (
+              <div key={ri} className="space-y-1">
+                {recipe.reqs.length > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
+                    <FrequencyRow req={req} size={13} />
+                  </div>
+                )}
                 <div className="space-y-1">
-                  {moreCombos[ri].map((combo, ci) => (
+                  {more[ri].map((combo, ci) => (
                     <ComboRow key={ci} combo={combo} onAdd={onAddIngredient} />
                   ))}
-                  {moreCombos[ri].length >= 24 && (
+                  {more[ri].length >= 23 && (
                     <p className="font-mono text-[10px] italic text-text-faint">…and more</p>
                   )}
                 </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {open && (
-        <div className="space-y-2.5 border-t border-border/60 px-3 py-2.5">
-          {recipe.desc && <p className="text-xs italic text-text-muted">{recipe.desc}</p>}
-
-          {/* verdict + hints */}
-          {res.status === "perfect" ? (
-            <p className="font-mono text-[11px] text-success">
-              Perfect resonance — this perfume is brewed.
-            </p>
-          ) : (
-            (excess.length > 0 || missing.length > 0) && (
-              <div className="space-y-1">
-                {excess.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1">
-                    <span className="font-mono text-[10px]" style={{ color: STRIKE }}>
-                      strike ⊖
-                    </span>
-                    {excess.map((t, i) => (
-                      <FrequencySymbol key={`ex:${t}:${i}`} id={t} size={16} />
-                    ))}
-                  </div>
-                )}
-                {missing.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1">
-                    <span className="font-mono text-[10px]" style={{ color: COPPER }}>
-                      still needs
-                    </span>
-                    {missing.map((t, i) => (
-                      <FrequencySymbol key={`mi:${t}:${i}`} id={t} size={16} />
-                    ))}
-                  </div>
-                )}
               </div>
-            )
-          )}
-
-          {/* the common combos from the d40 table — click to brew */}
-          {recipe.combos.length > 0 && onLoadCombo && (
-            <div>
-              <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-text-faint">
-                brew the common recipe
-              </p>
-              <div className="space-y-1">
-                {recipe.combos.map((combo, ci) => (
-                  <button
-                    key={ci}
-                    type="button"
-                    onClick={() => onLoadCombo(recipe, ci)}
-                    title={
-                      combo.trim > 0
-                        ? `Brews with ${combo.trim} ⊖ strike${combo.trim > 1 ? "s" : ""}`
-                        : "Brew this combo"
-                    }
-                    className="w-full rounded-md border border-border px-2 py-1 text-left font-mono text-[10.5px] leading-snug text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
-                  >
-                    {comboLabel(combo.ings)}
-                    {combo.trim > 0 && <span style={{ color: STRIKE }}> · ⊖{combo.trim}</span>}
-                  </button>
-                ))}
-              </div>
-            </div>
+            ),
           )}
         </div>
       )}

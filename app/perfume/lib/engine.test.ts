@@ -12,7 +12,7 @@ import {
   combineFrequencies,
   evaluate,
   autoResolvePlays,
-  findExactCombos,
+  findRecipeCombos,
 } from "./engine";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -251,43 +251,47 @@ describe("multiset primitives", () => {
   });
 });
 
-// ── 9. findExactCombos: live strike/wild-free combos ─────────────────────────
+// ── 9. findRecipeCombos: live combos from the catalog ────────────────────────
 
-describe("findExactCombos", () => {
+describe("findRecipeCombos", () => {
   it("finds the single-ingredient combo for Bright", () => {
-    const combos = findExactCombos(["Ev", "En"], baseIngredients);
-    expect(combos).toContainEqual(["Brightflower"]);
+    const combos = findRecipeCombos(["Ev", "En"], baseIngredients);
+    expect(combos.map((c) => c.ings)).toContainEqual(["Brightflower"]);
   });
 
   it("finds Swana's Serum's common combo among the exact covers", () => {
-    const combos = findExactCombos(["A", "A", "Crallax", "En"], baseIngredients);
+    const combos = findRecipeCombos(["A", "A", "Crallax", "En"], baseIngredients);
     expect(
       combos.some(
-        (c) => c.slice().sort().join("+") === ["Aphasia Flower", "Noble Roses"].sort().join("+"),
+        (c) =>
+          c.ings.slice().sort().join("+") ===
+          ["Aphasia Flower", "Noble Roses"].sort().join("+"),
       ),
     ).toBe(true);
   });
 
   it("allows ingredient repeats (Chrythsmeum ×4 for Antimagic)", () => {
-    const combos = findExactCombos(
+    const combos = findRecipeCombos(
       ["C", "D", "D", "D", "D", "T"],
       baseIngredients,
+      false,
       50,
     );
     expect(
-      combos.some((c) => c.filter((n) => n === "Chrythsmeum").length === 4),
+      combos.some((c) => c.ings.filter((n) => n === "Chrythsmeum").length === 4),
     ).toBe(true);
   });
 
-  it("never uses strike/wild-carrying or pure ingredients", () => {
+  it("without allowStrikes, never uses strike/wild-carrying or pure ingredients", () => {
     const all = [...baseIngredients, ...pureIngredients];
     const banned = new Set(
       all.filter((i) => i.strike > 0 || i.wild > 0 || i.key.startsWith("pure:")).map((i) => i.name),
     );
     for (const r of baseRecipes) {
       for (const req of r.reqs) {
-        for (const combo of findExactCombos(req, all, 8)) {
-          for (const name of combo) {
+        for (const combo of findRecipeCombos(req, all, false, 8)) {
+          expect(combo.trim).toBe(0);
+          for (const name of combo.ings) {
             expect(banned.has(name), `${name} in a combo for ${r.key}`).toBe(false);
           }
         }
@@ -295,14 +299,34 @@ describe("findExactCombos", () => {
     }
   });
 
+  it("with allowStrikes, finds Black Gas combos carrying exactly enough strikes", () => {
+    const combos = findRecipeCombos(["N"], baseIngredients, true, 50);
+    const canon = (c: { ings: string[] }) => c.ings.slice().sort().join("+");
+    // the d40 common combo is rediscovered…
+    expect(
+      combos.some((c) => canon(c) === ["Ichorberries", "Shadow Demon Liver"].sort().join("+")),
+    ).toBe(true);
+    // …alternatives with other strike carriers exist…
+    expect(
+      combos.some((c) => canon(c) === ["Ichorberries", "Sheensacks"].sort().join("+")),
+    ).toBe(true);
+    // …every combo's excess is covered by its strikes, wilds never appear,
+    // and no combo carries a superfluous strike ingredient
+    for (const c of combos) {
+      expect(c.ings.includes("Southollow Royal Tulip")).toBe(false);
+      const livers = c.ings.filter((n) => n === "Shadow Demon Liver").length;
+      expect(livers <= 1, `redundant livers in ${canon(c)}`).toBe(true);
+    }
+  });
+
   it("every trim-free d40 combo is rediscovered by the solver", () => {
     for (const r of baseRecipes) {
       for (const combo of r.combos) {
         if (combo.trim > 0 || combo.wildAdd > 0) continue;
-        const found = findExactCombos(r.reqs[combo.req], baseIngredients, 24);
+        const found = findRecipeCombos(r.reqs[combo.req], baseIngredients, false, 24);
         const want = combo.ings.slice().sort().join("+");
         expect(
-          found.some((c) => c.slice().sort().join("+") === want),
+          found.some((c) => c.ings.slice().sort().join("+") === want),
           `${r.key}: ${want}`,
         ).toBe(true);
       }
