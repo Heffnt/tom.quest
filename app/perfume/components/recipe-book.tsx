@@ -6,9 +6,10 @@
 // in parentheses ("( X or Y )") and optional extras in a dashed box. The
 // common d40 recipe shows as clickable ingredient pills (hover a pill to see
 // the frequencies it contains), and — only when more actually exist — a
-// "more recipes" button expands every other ingredient combination that
-// lands on a tuning, computed live. Recipes whose common combo carries a
-// strike ingredient may use strike-carrying combos too.
+// "more" button expands the other ingredient combinations that land on a
+// tuning, computed live. Strike-carrying ingredients never appear in combos;
+// instead the fold opens with the strike-free combos and reveals the ones
+// needing ⊖ 1, then ⊖ 2, behind their own buttons.
 
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
@@ -185,23 +186,30 @@ function computeIntegrated(recipe: Recipe): Integrated {
   return { core: msToList(inter), groups: g ? [g] : [] };
 }
 
-// ── "more recipes" ───────────────────────────────────────────────────────────
+// ── "more" ───────────────────────────────────────────────────────────────────
 // Per tuning, every combo the solver finds BEYOND the common d40 ones (those
-// are already on the card). Recipes whose common combo needs strikes unlock
-// strike-carrying combos. Cached — recipes and the catalog are static.
+// are already on the card), grouped by the strikes it needs: tier 0 is exact,
+// tiers 1 and 2 over-emit and need that many ⊖ supplied from elsewhere.
+// Strike-carrying ingredients never appear in a combo. Cached — recipes and
+// the catalog are static.
 
-const MORE_CACHE = new Map<string, FoundCombo[][]>();
+const MAX_TRIM = 2;
 
-function moreCombosFor(recipe: Recipe): FoundCombo[][] {
+// tiers[req index][trim] -> combos with exactly that trim
+const MORE_CACHE = new Map<string, FoundCombo[][][]>();
+
+function moreCombosFor(recipe: Recipe): FoundCombo[][][] {
   const cached = MORE_CACHE.get(recipe.key);
   if (cached) return cached;
-  const allowStrikes = recipe.combos.some((c) => c.trim > 0);
   const common = new Set(recipe.combos.map((c) => canon(c.ings)));
-  const result = recipe.reqs.map((req) =>
-    findRecipeCombos(req, baseIngredients, allowStrikes, 24).filter(
+  const result = recipe.reqs.map((req) => {
+    const found = findRecipeCombos(req, baseIngredients, MAX_TRIM, 120).filter(
       (c) => !common.has(canon(c.ings)),
-    ),
-  );
+    );
+    const tiers: FoundCombo[][] = Array.from({ length: MAX_TRIM + 1 }, () => []);
+    for (const c of found) tiers[c.trim].push(c);
+    return tiers;
+  });
   MORE_CACHE.set(recipe.key, result);
   return result;
 }
@@ -505,8 +513,15 @@ function RecipeCard({
         : "var(--color-text-muted)";
   const integ = integrateRecipe(recipe);
   const more = moreCombosFor(recipe);
-  const hasMore = more.some((list) => list.length > 0);
+  // trims that actually have combos in some tuning, in reveal order
+  const tiersWithCombos = Array.from({ length: MAX_TRIM + 1 }, (_, t) => t).filter(
+    (t) => more.some((tiers) => tiers[t].length > 0),
+  );
+  const hasMore = tiersWithCombos.length > 0;
   const [moreOpen, setMoreOpen] = useState(false);
+  // strike tiers revealed so far (0 = only strike-free combos)
+  const [trimShown, setTrimShown] = useState(0);
+  const nextTier = tiersWithCombos.find((t) => t > trimShown);
 
   return (
     <article
@@ -573,8 +588,8 @@ function RecipeCard({
         </div>
       </div>
 
-      {/* the common recipe — clickable pills; "more recipes" (only when more
-          exist) expands every other combination found live in the catalog */}
+      {/* the common recipe — clickable pills; "more" (only when more exist)
+          expands the other combinations found live in the catalog */}
       <div className="flex flex-wrap items-center gap-1 px-3 pb-2.5">
         {recipe.slots.map((slot, si) => (
           <span key={si} className="flex flex-wrap items-center gap-1">
@@ -596,36 +611,65 @@ function RecipeCard({
         {hasMore && (
           <button
             type="button"
-            onClick={() => setMoreOpen((o) => !o)}
+            onClick={() => {
+              setMoreOpen((o) => !o);
+              setTrimShown(0);
+            }}
             aria-expanded={moreOpen}
             className="ml-auto rounded-md border border-border px-2 py-0.5 font-mono text-[10px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
           >
-            {moreOpen ? "less" : "more recipes"} {moreOpen ? "▴" : "▾"}
+            {moreOpen ? "less" : "more"} {moreOpen ? "▴" : "▾"}
           </button>
         )}
       </div>
 
       {moreOpen && hasMore && (
         <div className="space-y-2 border-t border-border/60 px-3 py-2.5">
-          {recipe.reqs.map((req, ri) =>
-            more[ri].length === 0 ? null : (
-              <div key={ri} className="space-y-1">
-                {recipe.reqs.length > 1 && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
-                    <FrequencyRow req={req} size={13} />
-                  </div>
+          {tiersWithCombos.filter((t) => t <= trimShown).length === 0 && (
+            <p className="font-mono text-[10px] italic text-text-faint">
+              no strike-free combos beyond the common recipe
+            </p>
+          )}
+          {Array.from({ length: trimShown + 1 }, (_, t) => t)
+            .filter((t) => tiersWithCombos.includes(t))
+            .map((t) => (
+              <div key={t} className="space-y-1.5">
+                {t > 0 && (
+                  <p className="font-mono text-[9px] uppercase tracking-wider" style={{ color: STRIKE }}>
+                    ⊖ {t} strike{t > 1 ? "s" : ""} needed
+                  </p>
                 )}
-                <div className="space-y-1">
-                  {more[ri].map((combo, ci) => (
-                    <ComboRow key={ci} combo={combo} onAdd={onAddIngredient} />
-                  ))}
-                  {more[ri].length >= 23 && (
-                    <p className="font-mono text-[10px] italic text-text-faint">…and more</p>
-                  )}
-                </div>
+                {recipe.reqs.map((req, ri) =>
+                  more[ri][t].length === 0 ? null : (
+                    <div key={ri} className="space-y-1">
+                      {recipe.reqs.length > 1 && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
+                          <FrequencyRow req={req} size={13} />
+                        </div>
+                      )}
+                      <div className="space-y-1">
+                        {more[ri][t].slice(0, 30).map((combo, ci) => (
+                          <ComboRow key={ci} combo={combo} onAdd={onAddIngredient} />
+                        ))}
+                        {more[ri][t].length > 30 && (
+                          <p className="font-mono text-[10px] italic text-text-faint">…and more</p>
+                        )}
+                      </div>
+                    </div>
+                  ),
+                )}
               </div>
-            ),
+            ))}
+          {nextTier !== undefined && (
+            <button
+              type="button"
+              onClick={() => setTrimShown(nextTier)}
+              className="rounded-md border border-dashed px-2 py-0.5 font-mono text-[10px] transition-colors duration-150 hover:border-solid"
+              style={{ borderColor: `${STRIKE}88`, color: STRIKE }}
+            >
+              show combos needing ⊖ {nextTier} strike{nextTier > 1 ? "s" : ""} ▾
+            </button>
           )}
         </div>
       )}

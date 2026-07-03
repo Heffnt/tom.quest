@@ -8,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import type { BrewState } from "../lib/types";
 import {
   effectiveTally,
@@ -471,6 +472,9 @@ export default function Cauldron({
     if (avail.strike === 0) setArmed(false);
   }, [avail.strike]);
 
+  // ---- frequency graph overlay ----
+  const [graphOpen, setGraphOpen] = useState(false);
+
   // ---- wildcard picker ----
   const [picker, setPicker] = useState<{ x: number; y: number } | null>(null);
   const openPicker = (e: ReactMouseEvent) => {
@@ -499,6 +503,14 @@ export default function Cauldron({
           <span title="unspent wildcards" style={{ color: avail.wild ? COPPER : undefined }}>
             ⊕ {avail.wild}
           </span>
+          <button
+            type="button"
+            onClick={() => setGraphOpen(true)}
+            title="The frequency decomposition graph — how named frequencies build from the fundamentals"
+            className="rounded-md border border-border px-2 py-1 text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
+          >
+            graph
+          </button>
           <button
             type="button"
             onClick={onClear}
@@ -893,7 +905,66 @@ export default function Cauldron({
           onClose={() => setPicker(null)}
         />
       )}
+
+      {graphOpen && <FrequencyGraphModal onClose={() => setGraphOpen(false)} />}
     </div>
+  );
+}
+
+// The frequency decomposition graph from the Byobu write-up, full screen.
+// Rendered through a portal so the cauldron stage's transforms and stacking
+// contexts can't trap or misplace it.
+function FrequencyGraphModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Frequency decomposition graph"
+    >
+      <div
+        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+          <div className="min-w-0">
+            <h3 className="font-mono text-xs uppercase tracking-[0.25em] text-text-muted">
+              The frequency graph
+            </h3>
+            <p className="mt-0.5 text-[11px] text-text-faint">
+              every named frequency, decomposed into the fundamentals it combines from
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close the frequency graph"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          {/* eslint-disable-next-line @next/next/no-img-element -- static SVG, no optimization needed */}
+          <img
+            src="/perfume/frequency-graph.svg"
+            alt="Directed graph of the 17 named frequencies decomposing into the 9 fundamental frequencies"
+            className="h-auto w-full rounded-lg"
+          />
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

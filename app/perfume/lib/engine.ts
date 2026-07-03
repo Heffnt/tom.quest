@@ -243,59 +243,50 @@ export type FoundCombo = { ings: string[]; trim: number };
 
 // Every combination of ingredients that lands on the target tuning, found by
 // depth-first search over the catalog (repeats allowed, e.g. Chrythsmeum ×4;
-// non-decreasing candidate order avoids permutation duplicates). Pure and
-// wild-carrying ingredients are always excluded.
+// non-decreasing candidate order avoids permutation duplicates). Pure,
+// strike-carrying and wild-carrying ingredients are always excluded — a combo
+// is emitted frequencies only.
 //
-// With `allowStrikes` false, combos must sum EXACTLY to the tuning (trim 0).
-// With it true — used when the d40 common recipe itself carries a strike
-// ingredient — combos may over-emit as long as the strike charges they carry
-// can remove the excess (`trim` = strikes to spend), and strike-only carriers
-// like Shadow Demon Liver join the search. Superfluous strike carriers are
-// pruned so only minimal combos come back.
+// `maxTrim` is how far a combo may over-emit: `trim` is the number of ⊖
+// strikes the perfumer must supply FROM ELSEWHERE (a Shadow Demon Liver, a
+// pure strike) to remove the excess. With maxTrim 0 combos sum exactly to
+// the tuning; every ingredient must contribute at least one needed frequency,
+// so no combo carries a purely useless ingredient.
 export function findRecipeCombos(
   req: string[],
   ingredients: Ingredient[],
-  allowStrikes = false,
+  maxTrim = 0,
   cap = 24,
 ): FoundCombo[] {
   const target = msFromList(req);
   const reqSize = msSize(target);
-  const MAX_EXCESS = 3; // no base ingredient grants more than 3 strikes
   const cands = ingredients
-    .filter((i) => !i.key.startsWith("pure:") && i.wild === 0)
-    .filter((i) =>
-      allowStrikes
-        ? i.emits.length > 0 || i.strike > 0
-        : i.emits.length > 0 && i.strike === 0 && msIsSubset(msFromList(i.emits), target),
+    .filter(
+      (i) =>
+        !i.key.startsWith("pure:") &&
+        i.strike === 0 &&
+        i.wild === 0 &&
+        i.emits.length > 0,
     )
-    .map((i) => ({
-      name: i.name,
-      ms: msFromList(i.emits),
-      strike: i.strike,
-      strikeOnly: i.emits.length === 0 && i.strike > 0,
-    }));
+    .filter((i) =>
+      maxTrim > 0
+        ? i.emits.some((t) => (target[t] || 0) > 0)
+        : msIsSubset(msFromList(i.emits), target),
+    )
+    .map((i) => ({ name: i.name, ms: msFromList(i.emits) }));
   const results: FoundCombo[] = [];
-  const cur: { name: string; strike: number; strikeOnly: boolean }[] = [];
-  const dfs = (
-    remaining: Multiset,
-    excess: number,
-    strikes: number,
-    start: number,
-  ): void => {
+  const cur: string[] = [];
+  const dfs = (remaining: Multiset, excess: number, start: number): void => {
     if (results.length >= cap) return;
-    if (msSize(remaining) === 0 && excess <= strikes) {
-      // minimal only: every strike-only carrier must be load-bearing
-      for (const c of cur) {
-        if (c.strikeOnly && strikes - c.strike >= excess) return;
-      }
-      results.push({ ings: cur.map((c) => c.name), trim: excess });
+    if (msSize(remaining) === 0) {
+      results.push({ ings: [...cur], trim: excess });
       return;
     }
     if (cur.length >= reqSize + 2) return;
     for (let k = start; k < cands.length; k++) {
       const c = cands[k];
       let over = 0;
-      let consumed = c.strikeOnly;
+      let consumed = false;
       const next = { ...remaining };
       for (const id in c.ms) {
         const take = Math.min(c.ms[id], next[id] || 0);
@@ -307,17 +298,16 @@ export function findRecipeCombos(
         over += c.ms[id] - take;
       }
       if (!consumed) continue; // contributes nothing toward the tuning
-      if (!allowStrikes && over > 0) continue;
-      if (excess + over > (allowStrikes ? MAX_EXCESS : 0)) continue;
-      cur.push({ name: c.name, strike: c.strike, strikeOnly: c.strikeOnly });
-      dfs(next, excess + over, strikes + c.strike, k);
+      if (excess + over > maxTrim) continue;
+      cur.push(c.name);
+      dfs(next, excess + over, k);
       cur.pop();
       if (results.length >= cap) return;
     }
   };
-  dfs(target, 0, 0, 0);
+  dfs(target, 0, 0);
   return results.sort(
-    (a, b) => a.ings.length - b.ings.length || a.trim - b.trim,
+    (a, b) => a.trim - b.trim || a.ings.length - b.ings.length,
   );
 }
 

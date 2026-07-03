@@ -274,7 +274,7 @@ describe("findRecipeCombos", () => {
     const combos = findRecipeCombos(
       ["C", "D", "D", "D", "D", "T"],
       baseIngredients,
-      false,
+      0,
       50,
     );
     expect(
@@ -282,15 +282,15 @@ describe("findRecipeCombos", () => {
     ).toBe(true);
   });
 
-  it("without allowStrikes, never uses strike/wild-carrying or pure ingredients", () => {
+  it("never uses strike/wild-carrying or pure ingredients, even with trim allowed", () => {
     const all = [...baseIngredients, ...pureIngredients];
     const banned = new Set(
       all.filter((i) => i.strike > 0 || i.wild > 0 || i.key.startsWith("pure:")).map((i) => i.name),
     );
     for (const r of baseRecipes) {
       for (const req of r.reqs) {
-        for (const combo of findRecipeCombos(req, all, false, 8)) {
-          expect(combo.trim).toBe(0);
+        for (const combo of findRecipeCombos(req, all, 2, 12)) {
+          expect(combo.trim).toBeLessThanOrEqual(2);
           for (const name of combo.ings) {
             expect(banned.has(name), `${name} in a combo for ${r.key}`).toBe(false);
           }
@@ -299,31 +299,34 @@ describe("findRecipeCombos", () => {
     }
   });
 
-  it("with allowStrikes, finds Black Gas combos carrying exactly enough strikes", () => {
-    const combos = findRecipeCombos(["N"], baseIngredients, true, 50);
-    const canon = (c: { ings: string[] }) => c.ings.slice().sort().join("+");
-    // the d40 common combo is rediscovered…
-    expect(
-      combos.some((c) => canon(c) === ["Ichorberries", "Shadow Demon Liver"].sort().join("+")),
-    ).toBe(true);
-    // …alternatives with other strike carriers exist…
-    expect(
-      combos.some((c) => canon(c) === ["Ichorberries", "Sheensacks"].sort().join("+")),
-    ).toBe(true);
-    // …every combo's excess is covered by its strikes, wilds never appear,
-    // and no combo carries a superfluous strike ingredient
-    for (const c of combos) {
-      expect(c.ings.includes("Southollow Royal Tulip")).toBe(false);
-      const livers = c.ings.filter((n) => n === "Shadow Demon Liver").length;
-      expect(livers <= 1, `redundant livers in ${canon(c)}`).toBe(true);
+  it("with maxTrim, finds over-emitting combos whose trim counts the strikes needed", () => {
+    // Black Gas is a single Necromancy note; the berries over-emit around it
+    const combos = findRecipeCombos(["N"], baseIngredients, 2, 120);
+    // trim 0 means exact — nothing to strike
+    for (const c of combos.filter((x) => x.trim === 0)) {
+      expect(c.ings.length).toBeGreaterThan(0);
     }
+    // over-emitting alternatives exist and report their strike cost, but the
+    // strike CARRIERS themselves (Shadow Demon Liver) never join a combo
+    expect(combos.some((c) => c.trim > 0)).toBe(true);
+    for (const c of combos) {
+      expect(c.ings.includes("Shadow Demon Liver")).toBe(false);
+      expect(c.ings.includes("Southollow Royal Tulip")).toBe(false);
+    }
+    // Ichorberries emit N plus one off frequency -> a 1-strike solo combo
+    expect(combos.some((c) => c.ings.join("+") === "Ichorberries" && c.trim === 1)).toBe(true);
+  });
+
+  it("with maxTrim 0, combos sum exactly to the tuning", () => {
+    const combos = findRecipeCombos(["Ev", "En"], baseIngredients, 0, 50);
+    for (const c of combos) expect(c.trim).toBe(0);
   });
 
   it("every trim-free d40 combo is rediscovered by the solver", () => {
     for (const r of baseRecipes) {
       for (const combo of r.combos) {
         if (combo.trim > 0 || combo.wildAdd > 0) continue;
-        const found = findRecipeCombos(r.reqs[combo.req], baseIngredients, false, 24);
+        const found = findRecipeCombos(r.reqs[combo.req], baseIngredients, 0, 24);
         const want = combo.ings.slice().sort().join("+");
         expect(
           found.some((c) => c.ings.slice().sort().join("+") === want),

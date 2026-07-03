@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { Ingredient, BrewState } from "./lib/types";
 import { baseIngredients, pureIngredients, baseRecipes } from "./data/base";
 import {
@@ -12,6 +19,17 @@ import {
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
 import RecipeBook from "./components/recipe-book";
+
+// Side-panel resizing (wide layout only): each panel keeps its width in state,
+// clamped so neither the panel nor the cauldron stage can collapse, and
+// remembered across visits.
+const PANEL_DEFAULTS = { left: 330, right: 420 } as const;
+const PANEL_MIN = 240;
+const PANEL_MAX = 620;
+
+function clampPanel(w: number): number {
+  return Math.min(PANEL_MAX, Math.max(PANEL_MIN, Math.round(w)));
+}
 
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -168,6 +186,54 @@ export default function PerfumeClient() {
     [],
   );
 
+  // ---- panel resizing ----
+  const [leftW, setLeftW] = useState<number>(PANEL_DEFAULTS.left);
+  const [rightW, setRightW] = useState<number>(PANEL_DEFAULTS.right);
+  // read the remembered widths after mount so SSR and first client render agree
+  useEffect(() => {
+    const l = Number(localStorage.getItem("pf:panel:left"));
+    const r = Number(localStorage.getItem("pf:panel:right"));
+    if (l > 0) setLeftW(clampPanel(l));
+    if (r > 0) setRightW(clampPanel(r));
+  }, []);
+
+  const resize = useRef<{ side: "left" | "right"; startX: number; startW: number; lastW: number } | null>(null);
+  const onResizeDown = useCallback(
+    (side: "left" | "right") => (e: ReactPointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // no active pointer (synthetic events) — moves over the handle still work
+      }
+      const startW = side === "left" ? leftW : rightW;
+      resize.current = { side, startX: e.clientX, startW, lastW: startW };
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+    },
+    [leftW, rightW],
+  );
+  const onResizeMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = resize.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX;
+    const w = clampPanel(d.side === "left" ? d.startW + dx : d.startW - dx);
+    d.lastW = w;
+    (d.side === "left" ? setLeftW : setRightW)(w);
+  }, []);
+  const onResizeUp = useCallback(() => {
+    const d = resize.current;
+    if (!d) return;
+    resize.current = null;
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    localStorage.setItem(`pf:panel:${d.side}`, String(d.lastW));
+  }, []);
+  const resetPanel = useCallback((side: "left" | "right") => {
+    (side === "left" ? setLeftW : setRightW)(PANEL_DEFAULTS[side]);
+    localStorage.removeItem(`pf:panel:${side}`);
+  }, []);
+
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
       {/* the Byobu bench layout: ingredients panel | cauldron panel | recipe panel
@@ -175,9 +241,15 @@ export default function PerfumeClient() {
           scrolls through cauldron panel, then recipe panel, then ingredients
           panel. The page banner is gone — the cauldron panel's own status bar
           carries the Perfumer's Bench name. */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden"
+        style={{
+          ["--pf-lw" as string]: `${leftW}px`,
+          ["--pf-rw" as string]: `${rightW}px`,
+        }}
+      >
         {/* ingredients panel */}
-        <aside className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[330px] lg:flex-none lg:border-r lg:border-t-0">
+        <aside className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[var(--pf-lw)] lg:flex-none lg:border-t-0">
           <IngredientPanel
             ingredients={panelIngredients}
             brewCounts={countsByKey}
@@ -186,6 +258,16 @@ export default function PerfumeClient() {
             onRemoveAll={removeAllOfKey}
           />
         </aside>
+
+        {/* drag to resize the ingredients panel (wide layout) */}
+        <PanelResizer
+          label="Resize the ingredients panel"
+          className="lg:order-1"
+          onPointerDown={onResizeDown("left")}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeUp}
+          onDoubleClick={() => resetPanel("left")}
+        />
 
         {/* cauldron panel */}
         <section className="order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1">
@@ -203,8 +285,18 @@ export default function PerfumeClient() {
           />
         </section>
 
+        {/* drag to resize the recipe panel (wide layout) */}
+        <PanelResizer
+          label="Resize the recipe panel"
+          className="lg:order-2"
+          onPointerDown={onResizeDown("right")}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeUp}
+          onDoubleClick={() => resetPanel("right")}
+        />
+
         {/* recipe panel */}
-        <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[400px] lg:flex-none lg:border-l lg:border-t-0 xl:w-[440px]">
+        <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[var(--pf-rw)] lg:flex-none lg:border-t-0">
           <RecipeBook
             recipes={baseRecipes}
             brew={brew}
@@ -212,6 +304,43 @@ export default function PerfumeClient() {
           />
         </aside>
       </div>
+    </div>
+  );
+}
+
+// The draggable divider between panels. It renders the panel border line and
+// widens/turns accent on hover; double-click restores the default width. Only
+// present in the wide (three-column) layout — the stacked layout has nothing
+// to resize.
+function PanelResizer({
+  label,
+  className,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onDoubleClick,
+}: {
+  label: string;
+  className?: string;
+  onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onPointerMove: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onPointerUp: () => void;
+  onDoubleClick: () => void;
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      title={`${label} — drag (double-click to reset)`}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onDoubleClick={onDoubleClick}
+      className={`group relative hidden w-2 shrink-0 cursor-col-resize touch-none lg:block ${className ?? ""}`}
+    >
+      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border transition-all duration-150 group-hover:w-[3px] group-hover:bg-accent/70 group-active:w-[3px] group-active:bg-accent" />
     </div>
   );
 }
