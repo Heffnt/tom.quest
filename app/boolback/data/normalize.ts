@@ -19,7 +19,15 @@
 //
 // Fails loud on any other schema_version or a row referencing a missing function.
 
-import type { Bundle, FunctionBlock, RunRow, TreeLevel, TreeNode } from "../lib/types";
+import type {
+  Bundle,
+  FunctionBlock,
+  MetricSchemaEntry,
+  RunRow,
+  TreeLevel,
+  TreeNode,
+} from "../lib/types";
+import { METHOD_SEP, methodMetricName } from "../lib/method-metrics";
 
 interface RawEnvelope {
   schema_version?: unknown;
@@ -81,13 +89,17 @@ export function asBundle(json: unknown): Bundle {
     tree = raw.tree ?? [];
   }
 
-  const column_groups = withFnHexColumn(raw.column_groups ?? []);
+  const perMethod = withPerMethodMetrics(
+    (raw.metric_schema ?? []) as MetricSchemaEntry[],
+    withFnHexColumn(raw.column_groups ?? []),
+    rows,
+  );
 
   return {
     schema_version: version,
     meta: raw.meta as Bundle["meta"],
-    metric_schema: (raw.metric_schema ?? []) as Bundle["metric_schema"],
-    column_groups,
+    metric_schema: perMethod.metric_schema,
+    column_groups: perMethod.column_groups,
     friendly: (raw.friendly ?? {
       column_labels: {},
       facet_labels: {},
@@ -97,6 +109,117 @@ export function asBundle(json: unknown): Bundle {
     tree,
     rows,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-method DEFENSE/INTERP/SCAN metrics ("asr_drop@beear") — synthesized from
+// the rows when the builder didn't ship them, so older blobs get the same
+// schema surface the newer builder emits (lib/method-metrics owns the naming).
+// The generic scalars are headline rollups (asr_drop = BEST method on the run;
+// interp = one headline kind), so their labels gain a qualifier once
+// per-method siblings exist.
+// ---------------------------------------------------------------------------
+
+// base metric -> [group, label qualifier for the generic entry]
+const PER_METHOD_BASE_INFO: Record<string, { group: string; genericNote: string }> = {
+  asr_drop: { group: "DEFENSE", genericNote: "best method" },
+  recovery_rate: { group: "DEFENSE", genericNote: "best method" },
+  interp_measurement: { group: "INTERP", genericNote: "headline" },
+  interp_null_control: { group: "INTERP", genericNote: "headline" },
+  scan_auroc: { group: "SCAN", genericNote: "headline" },
+  scan_far_at_frr: { group: "SCAN", genericNote: "headline" },
+};
+
+/** Observed per-method extents over the rows: base -> method -> [lo, hi]. */
+function observedMethodExtents(rows: RunRow[]): Map<string, Map<string, [number, number]>> {
+  const out = new Map<string, Map<string, [number, number]>>();
+  const track = (base: string, method: string, v: number | null | undefined) => {
+    if (typeof v !== "number") return;
+    const byMethod = out.get(base) ?? new Map<string, [number, number]>();
+    const ext = byMethod.get(method);
+    byMethod.set(method, ext ? [Math.min(ext[0], v), Math.max(ext[1], v)] : [v, v]);
+    out.set(base, byMethod);
+  };
+  for (const r of rows) {
+    for (const m of r.defense?.methods ?? []) {
+      track("asr_drop", m.method, m.asr_drop);
+      track("recovery_rate", m.method, m.recovery_rate);
+    }
+    const measurements =
+      r.interp?.measurements ??
+      (r.interp?.measurement_kind
+        ? [{
+            kind: r.interp.measurement_kind,
+            value: r.interp.value,
+            null_control: r.interp.null_control,
+          }]
+        : []);
+    for (const m of measurements) {
+      track("interp_measurement", m.kind, m.value);
+      track("interp_null_control", m.kind, m.null_control);
+    }
+    const scans =
+      r.scan?.methods ??
+      (r.scan?.method_family != null
+        ? [{
+            method: String(r.scan.method_family),
+            auroc: r.scan.auroc,
+            far_at_frr: r.scan.far_at_frr,
+          }]
+        : []);
+    for (const m of scans) {
+      track("scan_auroc", m.method, m.auroc);
+      track("scan_far_at_frr", m.method, m.far_at_frr);
+    }
+  }
+  return out;
+}
+
+/**
+ * Expand metric_schema + column_groups with per-method entries. A no-op when
+ * the builder already shipped any "@" name (its empirical extents are then
+ * authoritative — computed over the whole tree, not this blob's rows).
+ */
+function withPerMethodMetrics(
+  schema: MetricSchemaEntry[],
+  groups: Bundle["column_groups"],
+  rows: RunRow[],
+): { metric_schema: MetricSchemaEntry[]; column_groups: Bundle["column_groups"] } {
+  if (schema.some((e) => e.name.includes(METHOD_SEP))) {
+    return { metric_schema: schema, column_groups: groups };
+  }
+  const observed = observedMethodExtents(rows);
+  if (observed.size === 0) return { metric_schema: schema, column_groups: groups };
+
+  const added: Record<string, string[]> = {}; // group -> new metric names, in order
+  const metric_schema: MetricSchemaEntry[] = [];
+  for (const entry of schema) {
+    const info = PER_METHOD_BASE_INFO[entry.name];
+    const byMethod = info ? observed.get(entry.name) : undefined;
+    if (!info || !byMethod?.size) {
+      metric_schema.push(entry);
+      continue;
+    }
+    metric_schema.push({ ...entry, label: `${entry.label} (${info.genericNote})` });
+    for (const [method, [lo, hi]] of [...byMethod.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      const name = methodMetricName(entry.name, method);
+      metric_schema.push({
+        ...entry,
+        name,
+        label: `${entry.label} · ${method}`,
+        // Same floor/ceiling the builder applies to fraction scalars, so a
+        // degenerate single-value method still yields a sane slider range.
+        min: Math.min(lo, 0),
+        max: hi <= 1 ? 1 : hi,
+      });
+      (added[info.group] ??= []).push(name);
+    }
+  }
+
+  const column_groups = groups.map((g) =>
+    added[g.group] ? { ...g, columns: [...g.columns, ...added[g.group]] } : g,
+  );
+  return { metric_schema, column_groups };
 }
 
 /** Insert the synthetic compact-text column into the FUNCTION group after "arity". */

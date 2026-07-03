@@ -8,12 +8,18 @@
 // moderate it?"
 //
 //   X = any snapshot metric (FUNCTION group listed first in its select)
-//   Y = any snapshot metric (OUTCOME/DEFENSE listed first in its select)
+//   Y = any snapshot metric (OUTCOME/DEFENSE listed first in its select) —
+//       per-method DEFENSE/INTERP/SCAN entries ("asr drop · beear") plot one
+//       method's values instead of the generic best-of-methods rollup
 //   color = a facet (arity, trigger form, model, …); legend keys CLICK to
 //           toggle that value in the facet filter
-//   mode = one point per RUN, or one point per FUNCTION (mean over its runs,
-//          sized by run count, ±1 SD whiskers)
-//   trend = per-color OLS fit lines + Pearson r (overall r/ρ in the readout)
+//   mode = one point per RUN; one point per FUNCTION (mean over its runs,
+//          sized by run count, ±1 SD whiskers); or MEANS — mean Y per
+//          (X value × color) group over the filtered runs, connected per
+//          color, so "the average effect of X on Y across everything else"
+//          reads directly (continuous X falls back to equal-width bins)
+//   trend = per-color OLS fit lines + Pearson r (overall r/ρ in the readout;
+//           in means mode the readout is computed over the underlying runs)
 //   log   = per-axis log10 toggles (non-positive values dropped, counted)
 //
 // Hover a point for its identity + values; click a run point to open its
@@ -35,6 +41,7 @@ import {
   groupedMetricOptions, X_GROUP_ORDER, Y_GROUP_ORDER, type MetricGroupName,
 } from "../lib/metrics";
 import { mean, niceTicks, olsFit, pearson, spearman, stdDev } from "../lib/stats";
+import { groupMeans } from "../lib/aggregate";
 import { toCsv } from "../lib/export";
 import { fnText, hash01, shortModel } from "../lib/format";
 
@@ -170,17 +177,17 @@ export function ChartBody({
   // Guard a persisted/shared config whose metric no longer exists in the schema.
   const x = index[config.x] ? config.x : DEFAULT_CHART.x in index ? DEFAULT_CHART.x : (bundle.metric_schema[0]?.name ?? "");
   const y = index[config.y] ? config.y : DEFAULT_CHART.y in index ? DEFAULT_CHART.y : (bundle.metric_schema[0]?.name ?? "");
-  const mode = config.mode === "functions" ? "functions" : "runs";
+  const mode = config.mode === "functions" || config.mode === "means" ? config.mode : "runs";
   const logX = !!config.logX;
   const logY = !!config.logY;
 
-  const { points, colorKeys, droppedLog, legendFacet } = useMemo(() => {
+  const { points, colorKeys, droppedLog, legendFacet, underlying, binned } = useMemo(() => {
     const xId = metricColumnId(x, index);
     const yId = metricColumnId(y, index);
     // Count metrics stack points on integer columns; a small deterministic
     // per-run jitter keeps them readable without lying about the value much.
     // (Suppressed on a log axis, where a fixed offset would distort.)
-    const jitterX = index[x]?.dtype === "count" && !logX;
+    const jitterX = mode === "runs" && index[x]?.dtype === "count" && !logX;
     const facet: FacetKey | null =
       mode === "functions" ? "arity" : config.color === "none" ? null : (config.color as FacetKey);
     const colorOf = new Map<string, string>();
@@ -213,6 +220,8 @@ export function ChartBody({
     };
 
     const raw: Pt[] = [];
+    const pairs: Array<{ x: number; y: number; key: string }> = []; // means-mode input
+    let isBinned = false;
     if (mode === "runs") {
       for (const r of rows) {
         const v = tXY(r);
@@ -230,6 +239,39 @@ export function ChartBody({
             `${fnText(r.function.arity, r.function.truth_table)} · ${r.identity.run_id}`,
             `${index[x]?.label ?? x}: ${tickFmt(v.rx)}`,
             `${index[y]?.label ?? y}: ${tickFmt(v.ry)}`,
+          ],
+        });
+      }
+    } else if (mode === "means") {
+      // Mean Y per (X value × color) group over the filtered runs — "the
+      // average effect of X on Y" with everything unfaceted averaged over.
+      for (const r of rows) {
+        const v = tXY(r);
+        if (!v) continue;
+        const k = keyOf(r);
+        pairs.push({ x: v.tx, y: v.ty, key: k.key });
+        if (!rawOf.has(k.key)) rawOf.set(k.key, k.raw);
+      }
+      const grouped = groupMeans(pairs);
+      isBinned = grouped.binned;
+      for (const p of grouped.points) {
+        raw.push({
+          rx: p.x,
+          ry: p.mean,
+          tx: p.x,
+          ty: p.mean,
+          jx: 0,
+          r: Math.min(10, 3 + Math.sqrt(p.n)),
+          color: "",
+          key: p.key,
+          raw: rawOf.get(p.key) ?? null,
+          n: p.n,
+          ex: null,
+          ey: p.sd,
+          label: [
+            `${p.key} · ${p.n} run${p.n === 1 ? "" : "s"}`,
+            `${index[x]?.label ?? x}: ${tickFmt(p.x)}${isBinned ? " (bin center)" : ""}${logX ? " (log10)" : ""}`,
+            `mean ${index[y]?.label ?? y}: ${tickFmt(p.mean)}${p.sd !== null ? ` ± ${tickFmt(p.sd)}` : ""}${logY ? " (log10)" : ""}`,
           ],
         });
       }
@@ -283,6 +325,8 @@ export function ChartBody({
       colorKeys: keys.map((k) => ({ key: k, color: colorOf.get(k)!, raw: rawOf.get(k) ?? null })),
       droppedLog: dropped,
       legendFacet: facet,
+      underlying: mode === "means" ? pairs : null,
+      binned: isBinned,
     };
   }, [rows, x, y, mode, config.color, logX, logY, index]);
 
@@ -309,8 +353,19 @@ export function ChartBody({
     return { sx, sy, ix, iy, x0, x1, y0, y1, xTicks: niceTicks(x0, x1, 5), yTicks: niceTicks(y0, y1, 5) };
   }, [points]);
 
-  // Trend fits (per color group) + the overall correlation readout.
+  // Trend fits (per color group) + the overall correlation readout. In means
+  // mode r/ρ come from the UNDERLYING runs (r over group means would overstate
+  // the association) and the per-color connecting lines replace the OLS fits.
   const stats = useMemo(() => {
+    if (mode === "means") {
+      if (!underlying || underlying.length < 2) return null;
+      const xs = underlying.map((p) => p.x);
+      const ys = underlying.map((p) => p.y);
+      return {
+        overall: { r: pearson(xs, ys), rho: spearman(xs, ys), n: underlying.length },
+        lines: [] as Array<{ key: string; fit: { slope: number; intercept: number }; lo: number; hi: number; r: number | null }>,
+      };
+    }
     if (!config.trend || points.length < 2) return null;
     const xsAll = points.map((p) => p.tx);
     const ysAll = points.map((p) => p.ty);
@@ -332,7 +387,7 @@ export function ChartBody({
       })
       .filter((l): l is NonNullable<typeof l> => l !== null);
     return { overall, lines };
-  }, [config.trend, points]);
+  }, [config.trend, points, mode, underlying]);
 
   const rByKey = useMemo(() => {
     const m = new Map<string, number | null>();
@@ -412,12 +467,23 @@ export function ChartBody({
           const head = ["run_id", xL, yL, legendFacet ?? "color"];
           return toCsv([head, ...points.map((p) => [p.runId ?? "", p.rx, p.ry, p.key])]);
         }
+        if (mode === "means") {
+          // Values are in plotted space (log10 when that axis is logged).
+          const head = [
+            `${xL}${logX ? " (log10)" : ""}`,
+            legendFacet ?? "group",
+            "n",
+            `${yL}${logY ? " (log10)" : ""} (mean)`,
+            `${yL} (sd)`,
+          ];
+          return toCsv([head, ...points.map((p) => [p.tx, p.key, p.n ?? 0, p.ty, p.ey ?? ""])]);
+        }
         const head = ["function", "runs", `${xL} (mean)`, `${yL} (mean)`, `${xL} (sd)`, `${yL} (sd)`];
         return toCsv([head, ...points.map((p) => [p.fh ?? "", p.n ?? 0, p.rx, p.ry, p.ex ?? "", p.ey ?? ""])]);
       },
     };
     return () => { exportRef.current = null; };
-  }, [exportRef, points, x, y, mode, index, legendFacet]);
+  }, [exportRef, points, x, y, mode, index, legendFacet, logX, logY]);
 
   // The point linked to the row hovered/selected elsewhere (table / tree).
   const linked = useMemo(() => {
@@ -453,29 +519,47 @@ export function ChartBody({
           ))}
         </select>
         <div className="flex overflow-hidden rounded-md border border-border text-xs">
-          {(["runs", "functions"] as const).map((m) => (
+          {([
+            { m: "runs", label: "runs", title: "one point per training run" },
+            { m: "functions", label: "functions (mean)", title: "one point per function — mean over its runs, sized by run count" },
+            { m: "means", label: "means", title: "mean ± SD of Y per (X × color) group over the filtered runs — the average effect of X on Y" },
+          ] as const).map(({ m, label, title }) => (
             <button
               key={m}
               type="button"
+              title={title}
               onClick={() => setChart({ mode: m })}
               className={`px-2 py-0.5 transition-colors ${mode === m ? "bg-accent/15 text-accent" : "bg-surface text-text-muted hover:text-text"}`}
             >
-              {m === "runs" ? "runs" : "functions (mean)"}
+              {label}
             </button>
           ))}
         </div>
-        <AxisToggle label="trend" checked={!!config.trend} onChange={(b) => setChart({ trend: b })} />
+        {mode !== "means" && (
+          <AxisToggle label="trend" checked={!!config.trend} onChange={(b) => setChart({ trend: b })} />
+        )}
         <span className="ml-auto text-xs text-text-faint font-mono">
           {stats?.overall && (
-            <span className="text-text-muted" title="Pearson r · Spearman ρ over the plotted points (descriptive — see plan §5)">
+            <span
+              className="text-text-muted"
+              title={
+                mode === "means"
+                  ? `Pearson r · Spearman ρ over the ${stats.overall.n.toLocaleString()} underlying runs (descriptive)`
+                  : "Pearson r · Spearman ρ over the plotted points (descriptive — see plan §5)"
+              }
+            >
               r={stats.overall.r === null ? "—" : stats.overall.r.toFixed(2)}
               {" · "}ρ={stats.overall.rho === null ? "—" : stats.overall.rho.toFixed(2)}
+              {mode === "means" && " (runs)"}
               {" · "}
             </span>
           )}
-          {points.length.toLocaleString()} point{points.length === 1 ? "" : "s"}
+          {points.length.toLocaleString()} {mode === "means" ? `group${points.length === 1 ? "" : "s"} of ${(underlying?.length ?? 0).toLocaleString()} runs` : `point${points.length === 1 ? "" : "s"}`}
+          {binned && <span title="X has too many distinct values — grouped into 12 equal-width bins (points at bin centers)"> · x binned</span>}
           {droppedLog > 0 && <span title="values ≤ 0 cannot be shown on a log axis"> · {droppedLog} dropped (log)</span>}
-          {mode === "runs" ? " · click a point for details · drag to filter" : " · click a point to scope · drag to filter"}
+          {mode === "runs" && " · click a point for details · drag to filter"}
+          {mode === "functions" && " · click a point to scope · drag to filter"}
+          {mode === "means" && " · drag to filter"}
         </span>
       </div>
 
@@ -527,8 +611,25 @@ export function ChartBody({
               transform={`rotate(-90 14 ${(PAD.t + H - PAD.b) / 2})`}
               fill="var(--color-text-muted)">{(index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
 
-            {/* functions-mode ±1 SD whiskers (under the points) */}
-            {mode === "functions" && (
+            {/* means-mode per-color connecting lines (under points + whiskers) */}
+            {mode === "means" && (
+              <g clipPath="url(#bb-plot-clip)">
+                {colorKeys.map(({ key, color }) => {
+                  const line = points.filter((p) => p.key === key); // already x-sorted
+                  if (line.length < 2) return null;
+                  const d = line
+                    .map((p, i) => `${i === 0 ? "M" : "L"}${scale.sx(p.tx)},${scale.sy(p.ty)}`)
+                    .join(" ");
+                  return (
+                    <path key={key} d={d} fill="none" stroke={color}
+                      strokeWidth={1.5} strokeOpacity={0.85} pointerEvents="none" />
+                  );
+                })}
+              </g>
+            )}
+
+            {/* ±1 SD whiskers (functions + means modes; under the points) */}
+            {(mode === "functions" || mode === "means") && (
               <g clipPath="url(#bb-plot-clip)">
                 {points.map((p, i) => (
                   <g key={`w${i}`} stroke={p.color} strokeOpacity={0.5} strokeWidth={1}>

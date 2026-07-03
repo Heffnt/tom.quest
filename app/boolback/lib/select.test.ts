@@ -59,6 +59,37 @@ describe("select", () => {
     }
   });
 
+  it("per-method metric ids (base@method) read that method's value, null elsewhere", () => {
+    const defended = rows.find((r) => (r.defense?.methods?.length ?? 0) > 0)!;
+    const m = defended.defense!.methods.find((x) => typeof x.asr_drop === "number")!;
+    expect(numericValue(defended, `asr_drop@${m.method}`)).toBe(m.asr_drop);
+    expect(numericValue(defended, "asr_drop@no_such_method")).toBeNull();
+    const undefended = rows.find((r) => r.defense === null)!;
+    expect(numericValue(undefended, `asr_drop@${m.method}`)).toBeNull();
+  });
+
+  it("per-kind interp ids read the headline kind, and prefer the measurements list", () => {
+    const interp = rows.find((r) => r.interp?.measurement_kind != null)!;
+    const kind = interp.interp!.measurement_kind!;
+    expect(numericValue(interp, `interp_measurement@${kind}`)).toBe(interp.interp!.value);
+    expect(numericValue(interp, "interp_measurement@other_kind")).toBeNull();
+
+    // Newer builders ship ALL kinds; the list wins over the headline fields.
+    const withList: RunRow = {
+      ...interp,
+      interp: {
+        ...interp.interp!,
+        measurements: [
+          { kind, value: 0.5, null_control: 0.1 },
+          { kind: "other_kind", value: 7, null_control: 2 },
+        ],
+      },
+    };
+    expect(numericValue(withList, `interp_measurement@${kind}`)).toBe(0.5);
+    expect(numericValue(withList, "interp_measurement@other_kind")).toBe(7);
+    expect(numericValue(withList, "interp_null_control@other_kind")).toBe(2);
+  });
+
   it("applyFilters tolerates a stale/partial persisted FilterState (missing sub-keys)", () => {
     // A view saved by an older shape can deserialize without facets/ranges/status/
     // subtreeDirs; the shallow persisted-merge then yields a partial object. This must
