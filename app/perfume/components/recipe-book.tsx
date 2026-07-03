@@ -286,6 +286,7 @@ export default function RecipeBook({
             key={recipe.key}
             recipe={recipe}
             res={res}
+            brewEmpty={brew.ingredients.length === 0}
             onAddIngredient={onAddIngredient}
           />
         ))}
@@ -401,7 +402,10 @@ function IngredientPill({
 // The card's brew formula: 🫕 + [what to add] — a mini cauldron (the current
 // brew), a plus, and a box holding the missing frequencies on top and one ⊖
 // icon per strike needed below. Perfect matches show the brewed seal instead.
-function BrewFormula({ res }: { res: EvalResult }) {
+function BrewFormula({ res, brewEmpty }: { res: EvalResult; brewEmpty: boolean }) {
+  // an empty cauldron "misses" the whole recipe — the box would just repeat
+  // the requirement row, so show nothing until something is brewing
+  if (brewEmpty && res.status !== "perfect") return null;
   if (res.status === "perfect")
     return (
       <span className="inline-block shrink-0 self-center rounded border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[11px] text-success">
@@ -437,10 +441,10 @@ function BrewFormula({ res }: { res: EvalResult }) {
             {Array.from({ length: res.exN }, (_, i) => (
               <span
                 key={i}
-                className="grid h-[15px] w-[15px] place-items-center rounded-full border text-[10px] font-bold"
+                className="grid h-[15px] w-[15px] place-items-center rounded-full border text-[11px] font-bold"
                 style={{ color: STRIKE, borderColor: STRIKE, background: "#a855f71a" }}
               >
-                ⊖
+                −
               </span>
             ))}
           </span>
@@ -490,10 +494,12 @@ function ComboRow({
 function RecipeCard({
   recipe,
   res,
+  brewEmpty,
   onAddIngredient,
 }: {
   recipe: Recipe;
   res: EvalResult;
+  brewEmpty: boolean;
   onAddIngredient?: (key: string, qty?: number) => void;
 }) {
   const integ = integrateRecipe(recipe);
@@ -586,7 +592,7 @@ function RecipeCard({
           )}
         </div>
 
-        <BrewFormula res={res} />
+        <BrewFormula res={res} brewEmpty={brewEmpty} />
       </div>
 
       {moreOpen && (

@@ -1552,26 +1552,7 @@
      "N"
     ]
    ],
-   "combos": [
-    {
-     "ings": [
-      "Shadow Demon Liver",
-      "Ichorberries"
-     ],
-     "req": 0,
-     "trim": 1,
-     "wildAdd": 0
-    },
-    {
-     "ings": [
-      "Shadow Demon Liver",
-      "Bitterhearts"
-     ],
-     "req": 0,
-     "trim": 1,
-     "wildAdd": 0
-    }
-   ]
+   "combos": []
   },
   {
    "id": "pepperpop-mixture",

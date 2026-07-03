@@ -61,13 +61,13 @@ export const SUMMON_ONLY = new Set<string>([
   "Saspacian",
 ]);
 
-// Display ordering: fundamentals then named, alphabetical within each category.
-export const FUND_ORDER: string[] = fundamentals
-  .map((f) => f.id)
-  .sort((a, b) => a.localeCompare(b));
-const NAMED_ORDER: string[] = named
-  .map((n) => n.id)
-  .sort((a, b) => a.localeCompare(b));
+// Display ordering is by WEIGHT: fundamentals (weight 1, in the source's
+// canonical order) first, then named frequencies lightest-to-heaviest
+// (ties keep the source order).
+export const FUND_ORDER: string[] = fundamentals.map((f) => f.id);
+const NAMED_ORDER: string[] = [...named]
+  .sort((a, b) => a.weight - b.weight)
+  .map((n) => n.id);
 
 export const isNamed = (id: string): boolean => !!NAMED[id];
 export const isFundamental = (id: string): boolean => !!FUND[id];

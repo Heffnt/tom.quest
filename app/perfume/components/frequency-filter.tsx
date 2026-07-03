@@ -12,7 +12,7 @@ import { FrequencyGlyph, STRIKE, COPPER } from "../lib/frequencies";
 export function freqLabel(id: string): string {
   if (id === "strike") return "Strike ⊖";
   if (id === "wild") return "Wild ⊕";
-  return isNamed(id) ? id : `${id} — ${FUND[id]?.school ?? id}`;
+  return isNamed(id) ? id : (FUND[id]?.school ?? id);
 }
 
 // Chip for the two charge pseudo-filters (⊖ / ⊕), circle-ringed like the
@@ -32,7 +32,7 @@ export function ChargeGlyph({ id, size }: { id: "strike" | "wild"; size: number 
         fontSize: Math.round(size * 0.55),
       }}
     >
-      {id === "strike" ? "⊖" : "⊕"}
+      {id === "strike" ? "−" : "+"}
     </span>
   );
 }

@@ -194,7 +194,7 @@ function IngredientVisual({
             fontSize: Math.round(size * 0.45),
           }}
         >
-          {id === "strike" ? "⊖" : "⊕"}
+          {id === "strike" ? "−" : "+"}
         </span>
       );
     }
@@ -607,7 +607,7 @@ export default function Cauldron({
                     ...(armed ? ({ ["--tw-ring-color" as string]: STRIKE } as React.CSSProperties) : {}),
                   }}
                 >
-                  ⊖
+                  −
                 </button>
               );
             } else if (f.kind === "wild") {
@@ -626,7 +626,7 @@ export default function Cauldron({
                     boxShadow: `0 0 14px ${COPPER}55`,
                   }}
                 >
-                  ⊕
+                  +
                 </button>
               );
             } else {
@@ -696,7 +696,7 @@ export default function Cauldron({
                       className="absolute -right-1 -top-1 grid h-3.5 w-3.5 place-items-center rounded-full text-[8px] font-bold"
                       style={{ background: COPPER, color: "#14132B" }}
                     >
-                      ⊕
+                      +
                     </span>
                   )}
                   {ghost && (
@@ -915,7 +915,7 @@ export default function Cauldron({
             boxShadow: `0 0 18px ${STRIKE}aa`,
           }}
         >
-          ⊖
+          −
         </div>
       )}
 

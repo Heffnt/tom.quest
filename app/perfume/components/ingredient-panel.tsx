@@ -12,17 +12,21 @@
 import { useMemo, useRef, useState } from "react";
 import type { Ingredient } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
-import { FUND, isNamed, isPureKey, ingredientWeight } from "../data/base";
+import { ALL_FREQUENCIES, FUND, isPureKey, ingredientWeight } from "../data/base";
 import FrequencyFilterButton, { freqLabel } from "./frequency-filter";
 import { FrequencyGlyph, FrequencySymbol, STRIKE, COPPER } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
 
-// Frequencies-tab order: pure strike/wild first, then the fundamentals, then
-// the named frequencies — alphabetical within each category.
+// Frequencies-tab order: pure strike/wild first, then everything by WEIGHT
+// (ALL_FREQUENCIES is already weight-ordered: fundamentals, then named
+// lightest-to-heaviest).
+const FREQ_INDEX = new Map(ALL_FREQUENCIES.map((t, i) => [t.id, i]));
 function pureRank(ing: Ingredient): number {
-  if (ing.strike > 0 || ing.wild > 0) return 0;
-  return isNamed(ing.key.slice(5)) ? 2 : 1;
+  return ing.strike > 0 || ing.wild > 0 ? 0 : 1;
+}
+function freqOrder(ing: Ingredient): number {
+  return FREQ_INDEX.get(ing.key.slice(5)) ?? 99;
 }
 
 // Ingredients-tab order: emitters lightest-first; the ⊖/⊕ charge carriers
@@ -80,7 +84,7 @@ export default function IngredientPanel({
       })
       .sort((a, b) =>
         tab === "frequencies"
-          ? pureRank(a) - pureRank(b) || a.name.localeCompare(b.name)
+          ? pureRank(a) - pureRank(b) || freqOrder(a) - freqOrder(b)
           : ingredientRank(a) - ingredientRank(b) ||
             ingredientWeight(a) - ingredientWeight(b) ||
             a.name.localeCompare(b.name),
@@ -314,7 +318,7 @@ function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeg
               className="grid h-[21px] w-[21px] place-items-center rounded-full border text-[12px] font-bold"
               style={{ color: STRIKE, borderColor: STRIKE, background: "#a855f71a" }}
             >
-              ⊖
+              −
             </span>
           ))}
           {Array.from({ length: ing.wild }, (_, i) => (
@@ -323,7 +327,7 @@ function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeg
               className="grid h-[21px] w-[21px] place-items-center rounded-full border text-[12px] font-bold"
               style={{ color: COPPER, borderColor: COPPER, background: "#c98a3c1a" }}
             >
-              ⊕
+              +
             </span>
           ))}
           {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
@@ -381,7 +385,7 @@ function FrequencyRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBegi
               background: id === "strike" ? "#a855f71a" : "#c98a3c1a",
             }}
           >
-            {id === "strike" ? "⊖" : "⊕"}
+            {id === "strike" ? "−" : "+"}
           </span>
         ) : (
           <FrequencyGlyph id={id} size={30} />
