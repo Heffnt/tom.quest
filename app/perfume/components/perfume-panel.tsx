@@ -11,10 +11,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Multiset, Perfume, EvalResult, PerfumeSlotEntry } from "../lib/types";
+import type { Multiset, Perfume, EvalResult, PerfumeSlotEntry, BrewState } from "../lib/types";
 import type { PerfumePanelProps } from "./contracts";
 import {
   evaluate,
+  evalReq,
+  brewTally,
   msToList,
   msFromList,
   msDiff,
@@ -27,7 +29,7 @@ import {
   baseIngredients,
   perfumeWeight,
 } from "../data/base";
-import { FrequencySymbol, FrequencyGlyph, COPPER, STRIKE } from "../lib/frequencies";
+import { FrequencySymbol, FrequencyGlyph, ChargeSymbol, COPPER, STRIKE } from "../lib/frequencies";
 import FrequencyFilterButton from "./frequency-filter";
 
 const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
@@ -250,13 +252,19 @@ export default function PerfumePanel({
   );
   // "in reach" counts brewed perfumes too — they're trivially reachable
   const inReach = evaluated.filter((e) => e.res.status !== "off").length;
+  // the brew's frequencies (after combination) — shown on every card while
+  // something is brewing
+  const brewList = useMemo(() => msToList(brewTally(brew)), [brew]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return evaluated
-      .filter(({ perfume }) => matchesQuery(perfume, q))
-      .filter(({ perfume }) =>
-        freqFilter ? perfume.reqs.some((req) => req.includes(freqFilter)) : true,
+      // pinned perfumes stay visible no matter the search or filter
+      .filter(
+        ({ perfume }) =>
+          pinned.has(perfume.key) ||
+          (matchesQuery(perfume, q) &&
+            (!freqFilter || perfume.reqs.some((req) => req.includes(freqFilter)))),
       )
       .sort((a, b) => {
         const p =
@@ -307,6 +315,8 @@ export default function PerfumePanel({
             key={perfume.key}
             perfume={perfume}
             res={res}
+            brew={brew}
+            brewList={brewList}
             brewEmpty={brew.ingredients.length === 0}
             pinned={pinned.has(perfume.key)}
             onTogglePin={togglePin}
@@ -422,60 +432,59 @@ function IngredientPill({
   );
 }
 
-// The card's brew formula: 🫕 + [what to add] — a mini cauldron (the current
-// brew), a plus, and a box holding the missing frequencies on top and one ⊖
-// icon per strike needed below. Perfect matches show the brewed seal instead.
-function BrewFormula({ res, brewEmpty }: { res: EvalResult; brewEmpty: boolean }) {
-  // an empty cauldron "misses" the whole perfume — the box would just repeat
-  // the requirement row, so show nothing until something is brewing
-  if (brewEmpty && res.status !== "perfect") return null;
-  if (res.status === "perfect")
-    return (
-      <span className="inline-block shrink-0 self-center rounded border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[11px] text-success">
-        ✦ Brewed
-      </span>
-    );
+// What the brew still needs for this perfume, per reachable tuning: the
+// missing frequencies as symbols plus one ⊖ chip per strike to spend,
+// alternatives joined with "or". Boxed, accent-tinted while in reach.
+function NeededOptions({
+  perfume,
+  brew,
+  res,
+  size,
+}: {
+  perfume: Perfume;
+  brew: BrewState;
+  res: EvalResult;
+  size: number;
+}) {
   const reach = res.status === "craftable";
-  const missing = groupFrequencies(msToList(res.missing));
+  // per-tuning needs, deduped; unreachable tunings drop out unless none reach
+  const evs = perfume.reqs.map((req, ri) => evalReq(brew, req, ri));
+  const reachable = evs.filter((e) => e.status === "craftable");
+  const pool = reachable.length ? reachable : [res];
+  const seen = new Set<string>();
+  const options: EvalResult[] = [];
+  for (const e of pool) {
+    const key = canon(msToList(e.missing)) + "|" + e.exN;
+    if (!seen.has(key)) {
+      seen.add(key);
+      options.push(e);
+    }
+  }
   return (
-    <span className="flex shrink-0 items-center gap-1.5 self-center">
-      <MiniCauldron size={18} />
-      <span className={`font-mono text-xs ${reach ? "text-accent" : "text-text-faint"}`}>+</span>
-      <span
-        className={`flex flex-col items-start gap-1 rounded border px-2 py-1 ${
-          reach ? "border-accent/40 bg-accent/10" : "border-border"
-        }`}
-        title="what the brew still needs for this perfume"
-      >
-        {missing.length > 0 && (
-          <span className="flex max-w-40 flex-wrap items-center gap-1">
-            {missing.flatMap(({ id, count }) =>
-              Array.from({ length: count }, (_, i) => (
-                <FrequencySymbol key={`${id}:${i}`} id={id} size={16} />
-              )),
-            )}
-          </span>
-        )}
-        {res.exN > 0 && (
-          <span
-            className="flex max-w-40 flex-wrap items-center gap-0.5"
-            title={`${res.exN} strike${res.exN > 1 ? "s" : ""} needed to remove excess frequencies`}
-          >
-            {Array.from({ length: res.exN }, (_, i) => (
-              <span
-                key={i}
-                className="grid h-[15px] w-[15px] place-items-center rounded-full border text-[11px] font-bold"
-                style={{ color: STRIKE, borderColor: STRIKE, background: "#a855f71a" }}
-              >
-                −
-              </span>
-            ))}
-          </span>
-        )}
-        {missing.length === 0 && res.exN === 0 && (
-          <span className="font-mono text-[10px] text-accent">in reach</span>
-        )}
-      </span>
+    <span
+      className={`flex min-w-0 flex-wrap items-center gap-1.5 rounded border px-2 py-1 ${
+        reach ? "border-accent/40 bg-accent/10" : "border-border"
+      }`}
+      title="what the brew still needs for this perfume"
+    >
+      {options.slice(0, 3).map((e, oi) => (
+        <span key={oi} className="flex flex-wrap items-center gap-1">
+          {oi > 0 && (
+            <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
+          )}
+          {groupFrequencies(msToList(e.missing)).flatMap(({ id, count }) =>
+            Array.from({ length: count }, (_, i) => (
+              <FrequencySymbol key={`${id}:${i}`} id={id} size={size} />
+            )),
+          )}
+          {Array.from({ length: e.exN }, (_, i) => (
+            <ChargeSymbol key={`s${i}`} kind="strike" size={size} />
+          ))}
+          {msToList(e.missing).length === 0 && e.exN === 0 && (
+            <span className="font-mono text-[10px] text-accent">in reach</span>
+          )}
+        </span>
+      ))}
     </span>
   );
 }
@@ -517,6 +526,8 @@ function ComboRow({
 function PerfumeCard({
   perfume,
   res,
+  brew,
+  brewList,
   brewEmpty,
   pinned,
   onTogglePin,
@@ -524,6 +535,8 @@ function PerfumeCard({
 }: {
   perfume: Perfume;
   res: EvalResult;
+  brew: BrewState;
+  brewList: string[];
   brewEmpty: boolean;
   pinned: boolean;
   onTogglePin: (key: string) => void;
@@ -591,49 +604,71 @@ function PerfumeCard({
           </button>
         </div>
 
-        {/* the integrated requirement: shared frequencies, interchangeable
-            alternatives in parentheses, optional extras in a dashed box */}
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 self-center">
-          <FrequencyRow req={integ.core} size={20} />
-          {integ.groups.map((g, gi) =>
-            g.optional ? (
-              <span
-                key={gi}
-                title="optional — either version brews the perfume"
-                className="flex flex-col items-center gap-0.5"
-              >
-                <span className="flex items-center gap-1.5">
+        {/* idle: the integrated requirement. Brewing: ONE unified line —
+            the cauldron's frequencies + what's still needed (per-tuning
+            options) — no separate needs box repeating anything. */}
+        {brewEmpty ? (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 self-center">
+            <FrequencyRow req={integ.core} size={22} />
+            {integ.groups.map((g, gi) =>
+              g.optional ? (
+                <span
+                  key={gi}
+                  title="optional — either version brews the perfume"
+                  className="flex flex-col items-center gap-0.5"
+                >
+                  <span className="flex items-center gap-1.5">
+                    {g.options.map((opt, oi) => (
+                      <span key={oi} className="flex items-center gap-1.5">
+                        {oi > 0 && (
+                          <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
+                        )}
+                        <FrequencyRow req={opt} size={17} />
+                      </span>
+                    ))}
+                  </span>
+                  <span className="font-mono text-[8px] uppercase tracking-wider text-text-faint">
+                    optional
+                  </span>
+                </span>
+              ) : (
+                <span key={gi} className="flex items-center gap-1.5">
+                  <span className="font-mono text-sm text-text-faint">(</span>
                   {g.options.map((opt, oi) => (
                     <span key={oi} className="flex items-center gap-1.5">
                       {oi > 0 && (
                         <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
                       )}
-                      <FrequencyRow req={opt} size={16} />
+                      <FrequencyRow req={opt} size={22} />
                     </span>
                   ))}
+                  <span className="font-mono text-sm text-text-faint">)</span>
                 </span>
-                <span className="font-mono text-[8px] uppercase tracking-wider text-text-faint">
-                  optional
-                </span>
+              ),
+            )}
+          </div>
+        ) : (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 self-center">
+            <MiniCauldron size={20} />
+            <FrequencyRow req={brewList} size={22} />
+            {res.status === "perfect" ? (
+              <span className="inline-block rounded border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[11px] text-success">
+                ✦ Brewed
               </span>
             ) : (
-              <span key={gi} className="flex items-center gap-1.5">
-                <span className="font-mono text-sm text-text-faint">(</span>
-                {g.options.map((opt, oi) => (
-                  <span key={oi} className="flex items-center gap-1.5">
-                    {oi > 0 && (
-                      <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
-                    )}
-                    <FrequencyRow req={opt} size={20} />
-                  </span>
-                ))}
-                <span className="font-mono text-sm text-text-faint">)</span>
-              </span>
-            ),
-          )}
-        </div>
-
-        <BrewFormula res={res} brewEmpty={brewEmpty} />
+              <>
+                <span
+                  className={`font-mono text-sm ${
+                    res.status === "craftable" ? "text-accent" : "text-text-faint"
+                  }`}
+                >
+                  +
+                </span>
+                <NeededOptions perfume={perfume} brew={brew} res={res} size={22} />
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {moreOpen && (

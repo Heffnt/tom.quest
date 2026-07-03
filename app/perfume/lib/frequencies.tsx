@@ -108,6 +108,51 @@ export function EmblemSvg({
 
 const EMBLEM_SCALE: Record<string, number> = { sparkle: 1.3 };
 
+// --- strike / wild charges ------------------------------------------------
+
+/** The ⊖/⊕ charge chip, rendered EXACTLY like a frequency glyph: the same
+ * ring, with the dash (strike) or plus (wild) spanning edge to edge of the
+ * circle — the one chip for charges everywhere in the app. */
+export function ChargeSymbol({
+  kind,
+  size = 28,
+  className,
+}: {
+  kind: "strike" | "wild";
+  size?: number;
+  className?: string;
+}) {
+  const color = kind === "strike" ? STRIKE : COPPER;
+  return (
+    <span
+      className={className}
+      title={kind}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        border: `1.5px solid ${color}`,
+        boxShadow: `inset 0 0 0 1px ${color}22`,
+        background: `${color}1a`,
+        color,
+        lineHeight: 0,
+        flex: "0 0 auto",
+      }}
+    >
+      <svg viewBox="0 0 24 24" style={{ width: "100%", height: "100%", display: "block" }} aria-hidden="true">
+        <path
+          d={kind === "strike" ? "M2.2 12h19.6" : "M2.2 12h19.6M12 2.2v19.6"}
+          stroke="currentColor"
+          strokeWidth="2.1"
+        />
+      </svg>
+    </span>
+  );
+}
+
 // --- ingredient types ---------------------------------------------------------
 
 export const TYPE_COLORS: Record<IngredientType, string> = {

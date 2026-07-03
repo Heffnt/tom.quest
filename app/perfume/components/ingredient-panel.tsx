@@ -14,7 +14,7 @@ import type { Ingredient } from "../lib/types";
 import type { IngredientPanelProps } from "./contracts";
 import { ALL_FREQUENCIES, FUND, isPureKey, ingredientWeight } from "../data/base";
 import FrequencyFilterButton, { freqLabel, isTypeFilter } from "./frequency-filter";
-import { FrequencyGlyph, FrequencySymbol, TypeGlyph, STRIKE, COPPER } from "../lib/frequencies";
+import { FrequencyGlyph, FrequencySymbol, TypeGlyph, ChargeSymbol } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 
 
@@ -332,22 +332,10 @@ function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeg
             <FrequencySymbol key={`${t}:${i}`} id={t} size={21} />
           ))}
           {Array.from({ length: ing.strike }, (_, i) => (
-            <span
-              key={`s${i}`}
-              className="grid h-[21px] w-[21px] place-items-center rounded-full border text-[12px] font-bold"
-              style={{ color: STRIKE, borderColor: STRIKE, background: "#a855f71a" }}
-            >
-              −
-            </span>
+            <ChargeSymbol key={`s${i}`} kind="strike" size={21} />
           ))}
           {Array.from({ length: ing.wild }, (_, i) => (
-            <span
-              key={`w${i}`}
-              className="grid h-[21px] w-[21px] place-items-center rounded-full border text-[12px] font-bold"
-              style={{ color: COPPER, borderColor: COPPER, background: "#c98a3c1a" }}
-            >
-              +
-            </span>
+            <ChargeSymbol key={`w${i}`} kind="wild" size={21} />
           ))}
           {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
         </span>
@@ -396,16 +384,7 @@ function FrequencyRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBegi
         }
       >
         {charge ? (
-          <span
-            className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-full border-2 text-base font-bold"
-            style={{
-              color: id === "strike" ? STRIKE : COPPER,
-              borderColor: id === "strike" ? STRIKE : COPPER,
-              background: id === "strike" ? "#a855f71a" : "#c98a3c1a",
-            }}
-          >
-            {id === "strike" ? "−" : "+"}
-          </span>
+          <ChargeSymbol kind={id as "strike" | "wild"} size={30} />
         ) : (
           <FrequencyGlyph id={id} size={30} />
         )}

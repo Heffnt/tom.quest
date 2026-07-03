@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ALL_FREQUENCIES, FUND, isNamed, INGREDIENT_TYPES } from "../data/base";
-import { FrequencyGlyph, TypeGlyph, STRIKE, COPPER } from "../lib/frequencies";
+import { FrequencyGlyph, TypeGlyph, ChargeSymbol } from "../lib/frequencies";
 import type { IngredientType } from "../lib/types";
 
 export const isTypeFilter = (v: string): boolean => v.startsWith("type:");
@@ -19,26 +19,9 @@ export function freqLabel(id: string): string {
   return isNamed(id) ? id : (FUND[id]?.school ?? id);
 }
 
-// Chip for the two charge pseudo-filters (⊖ / ⊕), circle-ringed like the
-// frequency glyphs.
+// Chip for the two charge pseudo-filters — the app-wide charge chip.
 export function ChargeGlyph({ id, size }: { id: "strike" | "wild"; size: number }) {
-  const c = id === "strike" ? STRIKE : COPPER;
-  return (
-    <span
-      aria-hidden="true"
-      className="grid shrink-0 place-items-center rounded-full border-2 font-bold"
-      style={{
-        width: size,
-        height: size,
-        color: c,
-        borderColor: c,
-        background: `${c}1a`,
-        fontSize: Math.round(size * 0.55),
-      }}
-    >
-      {id === "strike" ? "−" : "+"}
-    </span>
-  );
+  return <ChargeSymbol kind={id} size={size} />;
 }
 
 export default function FrequencyFilterButton({

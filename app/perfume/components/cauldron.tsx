@@ -27,6 +27,7 @@ import {
 import { MinusMark, PlusMark } from "./ingredient-panel";
 import {
   FrequencySymbol,
+  ChargeSymbol,
   STRIKE,
   COPPER,
   namedColor,
@@ -183,23 +184,7 @@ function IngredientVisual({
   if (keyId.startsWith("pure:")) {
     const id = keyId.slice(5);
     if (id === "strike" || id === "wild") {
-      const c = id === "strike" ? STRIKE : COPPER;
-      return (
-        <span
-          aria-hidden="true"
-          className="grid shrink-0 place-items-center rounded-full border font-bold"
-          style={{
-            width: size,
-            height: size,
-            borderColor: c,
-            color: c,
-            background: `${c}1a`,
-            fontSize: Math.round(size * 0.45),
-          }}
-        >
-          {id === "strike" ? "−" : "+"}
-        </span>
-      );
+      return <ChargeSymbol kind={id} size={size} />;
     }
     return <FrequencySymbol id={id} size={size} />;
   }
@@ -637,18 +622,16 @@ export default function Cauldron({
                   onPointerCancel={onStrikePointerCancel}
                   aria-label="Strike — drag onto a frequency to remove it"
                   title={`Strike: drag onto a frequency to remove it${f.src ? ` (granted by ${f.src.name})` : ""}`}
-                  className={`grid h-8 w-8 cursor-grab touch-none select-none place-items-center rounded-full border text-sm font-bold active:cursor-grabbing ${
+                  className={`cursor-grab touch-none select-none rounded-full active:cursor-grabbing ${
                     armed ? "ring-2 ring-offset-2 ring-offset-bg" : ""
                   }`}
                   style={{
-                    borderColor: STRIKE,
-                    color: STRIKE,
-                    background: "#a855f71a",
                     boxShadow: `0 0 14px ${STRIKE}55`,
+                    borderRadius: "50%",
                     ...(armed ? ({ ["--tw-ring-color" as string]: STRIKE } as React.CSSProperties) : {}),
                   }}
                 >
-                  −
+                  <ChargeSymbol kind="strike" size={44} />
                 </button>
               );
             } else if (f.kind === "wild") {
@@ -659,15 +642,10 @@ export default function Cauldron({
                   onClick={openPicker}
                   aria-label="Wildcard — click to choose a frequency to summon"
                   title={`Wildcard: click to summon any frequency${f.src ? ` (granted by ${f.src.name})` : ""}`}
-                  className="grid h-8 w-8 cursor-pointer place-items-center rounded-full border text-sm font-bold"
-                  style={{
-                    borderColor: COPPER,
-                    color: COPPER,
-                    background: "#c98a3c1a",
-                    boxShadow: `0 0 14px ${COPPER}55`,
-                  }}
+                  className="cursor-pointer rounded-full"
+                  style={{ boxShadow: `0 0 14px ${COPPER}55`, borderRadius: "50%" }}
                 >
-                  +
+                  <ChargeSymbol kind="wild" size={44} />
                 </button>
               );
             } else {
@@ -946,17 +924,10 @@ export default function Cauldron({
       {/* drag ghost following the cursor */}
       {drag && (
         <div
-          className="pointer-events-none fixed z-50 grid h-9 w-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border text-base font-bold"
-          style={{
-            left: drag.x,
-            top: drag.y,
-            borderColor: STRIKE,
-            color: STRIKE,
-            background: "#14132B",
-            boxShadow: `0 0 18px ${STRIKE}aa`,
-          }}
+          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{ left: drag.x, top: drag.y, boxShadow: `0 0 18px ${STRIKE}aa` }}
         >
-          −
+          <ChargeSymbol kind="strike" size={38} />
         </div>
       )}
 
