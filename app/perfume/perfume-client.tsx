@@ -1,31 +1,243 @@
 "use client";
 
+// The bench orchestrator (integrator seat — DESIGN.md "The model", "Live
+// layer", "Local mode"). Mode splits into two subcomponents because hooks
+// cannot be conditional: LivePerfume mounts the Convex store, tabs, presence
+// and the nickname flow; LocalPerfume (?local=1, or no NEXT_PUBLIC_CONVEX_URL)
+// mounts the localStorage store and nothing networked. Both feed the same
+// BenchView, which wires the three panels, the hand and the brew math.
+
 import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
-import type { Ingredient, BrewState } from "./lib/types";
-import { baseIngredients, pureIngredients, basePerfumes } from "./data/base";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { useAuth } from "../lib/auth";
+import type { Ingredient } from "./lib/types";
+import type {
+  BenchActions,
+  BenchPermissions,
+  BenchSnapshot,
+} from "./lib/bench-types";
+import { baseIngredients, basePerfumes, pureIngredients } from "./data/base";
+import { brewableOptions } from "./lib/brewable";
 import {
-  baseTally,
-  chargeTotals,
-  availableCharges,
-  evaluate,
-} from "./lib/engine";
+  PARTY_KEY,
+  brewOf,
+  hypotheticalBlockers,
+  isIngredientKey,
+  itemInfo,
+  potCounts,
+  sectionForKey,
+  useConvexBenchStore,
+  useLocalBenchStore,
+} from "./lib/bench-store";
+import {
+  colorFor,
+  getAnonId,
+  loadProfile,
+  saveProfile,
+  type StoredProfile,
+} from "./lib/anon";
+import { useHand, HandGhost, type BenchHand } from "./lib/use-hand";
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
-import IngredientThumb from "./components/ingredient-thumb";
 import PerfumePanel from "./components/perfume-panel";
+import Tabs, { ProfilePrompt, type BenchTab } from "./components/tabs";
+import Cursors from "./components/cursors";
+
+// ── mode split ───────────────────────────────────────────────────────────────
+
+export default function PerfumeClient() {
+  // decided after mount so SSR needs neither the query string nor storage
+  const [mode, setMode] = useState<"local" | "live" | null>(null);
+  useEffect(() => {
+    const local =
+      new URLSearchParams(window.location.search).get("local") === "1" ||
+      !process.env.NEXT_PUBLIC_CONVEX_URL;
+    setMode(local ? "local" : "live");
+  }, []);
+  if (mode === null) return <Shell header={null}>{null}</Shell>;
+  return mode === "local" ? <LocalPerfume /> : <LivePerfume />;
+}
+
+// ── local mode (?local=1): no Convex hooks mounted, no tabs, no presence ─────
+
+function LocalPerfume() {
+  const store = useLocalBenchStore();
+  const hand = useBenchHand(store.snapshot, store.actions, store.permissions.moveItems);
+  return (
+    <BenchView
+      snapshot={store.snapshot}
+      permissions={store.permissions}
+      actions={store.actions}
+      loading={store.loading}
+      hand={hand}
+      isAnon={false}
+      members={[]}
+    />
+  );
+}
+
+// ── live mode ────────────────────────────────────────────────────────────────
+
+function LivePerfume() {
+  const { user, isTom, loading: authLoading } = useAuth();
+
+  // anonymous identity: minted (and persisted) once auth resolves logged-out
+  const [anonId, setAnonId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<StoredProfile | null>(null);
+  useEffect(() => {
+    setProfile(loadProfile());
+  }, []);
+  useEffect(() => {
+    if (!authLoading && !user) setAnonId(getAnonId());
+  }, [authLoading, user]);
+
+  const viewerKey = user ? `user:${user._id}` : anonId;
+  const isAnon = !authLoading && !user;
+  const needsProfile = isAnon && profile === null;
+
+  // which bench is on stage: your own once known, else the party pot
+  const [viewKey, setViewKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (viewKey === null && viewerKey) setViewKey(user ? viewerKey : PARTY_KEY);
+  }, [viewKey, viewerKey, user]);
+
+  // the nickname gate: the intercepted mutation waits behind the prompt
+  const [pendingRun, setPendingRun] = useState<{ run: () => void } | null>(null);
+  const onNeedProfile = useCallback((run: () => void) => setPendingRun({ run }), []);
+
+  const store = useConvexBenchStore(viewKey ?? PARTY_KEY, {
+    viewerKey,
+    anonId,
+    isTom,
+    needsProfile,
+    onNeedProfile,
+    profileName: profile?.name,
+    profileColor: profile?.color,
+  });
+
+  const hand = useBenchHand(store.snapshot, store.actions, store.permissions.moveItems);
+
+  // tabs: party first (from the server), plus a synthetic own tab until
+  // ensureBench persists the real one
+  const benchList = useQuery(api.perfume.listBenches);
+  const tabs = useMemo<BenchTab[]>(() => {
+    const list: BenchTab[] = benchList
+      ? [...benchList]
+      : [{ benchKey: PARTY_KEY, ownerName: "Party", color: "#C98A3C" }];
+    if (user) {
+      const own = `user:${user._id}`;
+      if (!list.some((b) => b.benchKey === own)) {
+        list.push({ benchKey: own, ownerName: user.name, color: colorFor(own) });
+      }
+    }
+    return list;
+  }, [benchList, user]);
+
+  const members = useMemo(
+    () =>
+      tabs
+        .filter((b) => b.benchKey !== PARTY_KEY && b.benchKey !== viewerKey)
+        .map((b) => ({ benchKey: b.benchKey, name: b.ownerName })),
+    [tabs, viewerKey],
+  );
+
+  const ownTab = tabs.find((b) => b.benchKey === viewerKey);
+  const presenceName = profile?.name ?? user?.name ?? "Visitor";
+  const presenceColor =
+    ownTab?.color ?? profile?.color ?? (viewerKey ? colorFor(viewerKey) : "#6FE3C4");
+
+  const savedProfile = useCallback(
+    (name: string, color: string) => {
+      saveProfile({ name, color });
+      setProfile({ name, color });
+      store.actions.setProfile({ name, color });
+      const run = pendingRun?.run;
+      setPendingRun(null);
+      run?.();
+    },
+    [store.actions, pendingRun],
+  );
+
+  return (
+    <BenchView
+      snapshot={store.snapshot}
+      permissions={store.permissions}
+      actions={store.actions}
+      loading={store.loading || viewKey === null}
+      hand={hand}
+      isAnon={isAnon}
+      members={members}
+      header={
+        <Tabs
+          tabs={tabs}
+          activeKey={viewKey ?? PARTY_KEY}
+          ownKey={viewerKey}
+          onSelect={setViewKey}
+          onColor={(color) => store.actions.setProfile({ color })}
+        />
+      }
+      overlays={
+        <>
+          {viewKey && (
+            <Cursors
+              benchKey={viewKey}
+              identified={!!viewerKey}
+              anonId={anonId}
+              name={presenceName}
+              color={presenceColor}
+              hand={hand.hand}
+            />
+          )}
+          {pendingRun && (
+            <ProfilePrompt
+              defaultName=""
+              defaultColor={presenceColor}
+              onSave={savedProfile}
+              onClose={() => setPendingRun(null)}
+            />
+          )}
+        </>
+      }
+    />
+  );
+}
+
+// ── the hand, bound to whichever store is live ───────────────────────────────
+
+function useBenchHand(
+  snapshot: BenchSnapshot | null,
+  actions: BenchActions,
+  canMoveItems: boolean,
+): BenchHand {
+  const counts = useMemo(() => potCounts(snapshot?.pot ?? []), [snapshot]);
+  return useHand({
+    benchActions: actions,
+    potCountOf: (itemKey) => counts[itemKey] ?? 0,
+    availableOf: (itemKey, from) => {
+      if (from === "catalog") return Number.POSITIVE_INFINITY;
+      if (from === "brew") return counts[itemKey] ?? 0;
+      if (from === "output") return snapshot?.outputTray[itemKey] ?? 0;
+      return snapshot?.inventory[sectionForKey(itemKey)][itemKey] ?? 0;
+    },
+    canMoveItems,
+  });
+}
+
+// ── the bench itself ─────────────────────────────────────────────────────────
 
 // Side-panel resizing (wide layout only): each panel keeps its width in state,
 // clamped so neither the panel nor the cauldron stage can collapse, and
-// remembered across visits. The left default fits the WIDEST ingredient row
-// (thumb + type + name + frequency chips + steppers) with nothing truncated;
-// the storage key is versioned so a new default wins over stale saved widths.
+// remembered across visits. The left default fits the WIDEST catalog row with
+// nothing truncated; the storage key is versioned so a new default wins over
+// stale saved widths.
 const PANEL_DEFAULTS = { left: 480, right: 420 } as const;
 const PANEL_STORE = "pf:panel2";
 const PANEL_MIN = 240;
@@ -35,207 +247,67 @@ function clampPanel(w: number): number {
   return Math.min(PANEL_MAX, Math.max(PANEL_MIN, Math.round(w)));
 }
 
-function arraysEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
+const ING_BY_KEY = new Map<string, Ingredient>(
+  [...baseIngredients, ...pureIngredients].map((i) => [i.key, i]),
+);
+const PANEL_CATALOG = [...baseIngredients, ...pureIngredients];
 
-// Clamp manual plays to what the brew can support: no more ⊖/⊕ than charges, and
-// a ⊖ may only target a frequency present in the BASE tally (the engine applies
-// strikes before wilds, so a strike on a frequency only present via a wild
-// would waste the charge — wild frequencies are dispelled with onRemoveWild).
-function reconcile(ings: Ingredient[], strikePlays: string[], wildPlays: string[]) {
-  const totals = chargeTotals(ings);
-  const nextWild = wildPlays.slice(0, totals.wild);
-  const capped = strikePlays.slice(0, totals.strike);
-  const avail: Record<string, number> = { ...baseTally(ings) };
-  const nextStrike: string[] = [];
-  for (const id of capped) {
-    if ((avail[id] || 0) > 0) {
-      avail[id]--;
-      nextStrike.push(id);
-    }
-  }
-  return { strike: nextStrike, wild: nextWild };
-}
+type BenchViewProps = {
+  snapshot: BenchSnapshot | null;
+  permissions: BenchPermissions;
+  actions: BenchActions;
+  loading: boolean;
+  hand: BenchHand;
+  isAnon: boolean;
+  members: { benchKey: string; name: string }[];
+  header?: ReactNode;
+  overlays?: ReactNode;
+};
 
-export default function PerfumeClient() {
-  const ingByKey = useMemo(() => {
-    const m = new Map<string, Ingredient>();
-    for (const ing of [...baseIngredients, ...pureIngredients]) m.set(ing.key, ing);
-    return m;
-  }, []);
-
-  // ---- brew state ----
-  const [brewKeys, setBrewKeys] = useState<string[]>([]);
-  const [strikePlays, setStrikePlays] = useState<string[]>([]);
-  const [wildPlays, setWildPlays] = useState<string[]>([]);
-
-  const brewIngredients = useMemo(
-    () => brewKeys.map((k) => ingByKey.get(k)).filter((x): x is Ingredient => !!x),
-    [brewKeys, ingByKey],
+function BenchView({
+  snapshot,
+  permissions,
+  actions,
+  loading,
+  hand,
+  isAnon,
+  members,
+  header,
+  overlays,
+}: BenchViewProps) {
+  // ---- brew derivation: BenchSnapshot -> engine state + brew-bar inputs ----
+  const brew = useMemo(
+    () =>
+      snapshot ? brewOf(snapshot) : { ingredients: [], strikePlays: [], wildPlays: [] },
+    [snapshot],
   );
-
-  // keep plays valid as the brew changes
-  const sane = useMemo(
-    () => reconcile(brewIngredients, strikePlays, wildPlays),
-    [brewIngredients, strikePlays, wildPlays],
+  const brewCounts = useMemo(() => potCounts(snapshot?.pot ?? []), [snapshot]);
+  const brewOptions = useMemo(
+    () => (brew.ingredients.length ? brewableOptions(brew, basePerfumes) : []),
+    [brew],
   );
-  useEffect(() => {
-    if (!arraysEqual(sane.strike, strikePlays)) setStrikePlays(sane.strike);
-    if (!arraysEqual(sane.wild, wildPlays)) setWildPlays(sane.wild);
-  }, [sane, strikePlays, wildPlays]);
-
-  const brew = useMemo<BrewState>(
-    () => ({ ingredients: brewIngredients, strikePlays: sane.strike, wildPlays: sane.wild }),
-    [brewIngredients, sane],
-  );
-
-  const avail = useMemo(() => availableCharges(brew), [brew]);
-  const base = useMemo(() => baseTally(brewIngredients), [brewIngredients]);
-
-  const brewCounts = useMemo(() => {
-    const order: string[] = [];
-    const counts = new Map<string, number>();
-    for (const k of brewKeys) {
-      if (!ingByKey.has(k)) continue;
-      if (!counts.has(k)) order.push(k);
-      counts.set(k, (counts.get(k) ?? 0) + 1);
-    }
-    return order.map((k) => {
-      const ing = ingByKey.get(k)!;
-      return { key: k, name: ing.name, color: ing.color, count: counts.get(k)! };
-    });
-  }, [brewKeys, ingByKey]);
-
-  // ---- brew actions ----
-  const addKey = useCallback((key: string) => setBrewKeys((p) => [...p, key]), []);
-  const addKeyN = useCallback(
-    (key: string, qty = 1) =>
-      setBrewKeys((p) => [...p, ...Array<string>(Math.max(1, qty)).fill(key)]),
-    [],
-  );
-  const decKey = useCallback(
-    (key: string) =>
-      setBrewKeys((p) => {
-        const idx = p.lastIndexOf(key);
-        if (idx === -1) return p;
-        return [...p.slice(0, idx), ...p.slice(idx + 1)];
-      }),
-    [],
-  );
-  const removeAllOfKey = useCallback(
-    (key: string) => setBrewKeys((p) => p.filter((k) => k !== key)),
-    [],
-  );
-  const clear = useCallback(() => {
-    setBrewKeys([]);
-    setStrikePlays([]);
-    setWildPlays([]);
-  }, []);
-
-  const strike = useCallback(
-    (id: string) => {
-      const alreadyStruck = brew.strikePlays.filter((x) => x === id).length;
-      if (avail.strike > 0 && (base[id] ?? 0) - alreadyStruck > 0) {
-        setStrikePlays((p) => [...p, id]);
-      }
-    },
-    [avail.strike, base, brew.strikePlays],
-  );
-  const unstrike = useCallback(
-    (id: string) =>
-      setStrikePlays((p) => {
-        const i = p.indexOf(id);
-        return i === -1 ? p : [...p.slice(0, i), ...p.slice(i + 1)];
-      }),
-    [],
-  );
-  const addWild = useCallback(
-    (id: string) => {
-      if (avail.wild > 0) setWildPlays((p) => [...p, id]);
-    },
-    [avail.wild],
-  );
-  const removeWild = useCallback(
-    (id: string) =>
-      setWildPlays((p) => {
-        const i = p.indexOf(id);
-        return i === -1 ? p : [...p.slice(0, i), ...p.slice(i + 1)];
-      }),
-    [],
-  );
-
-  // perfumes the current brew makes exactly (with copy counts — a tally equal
-  // to k× a tuning brews k copies) — named on the cauldron panel
-  const brewed = useMemo(() => {
-    if (brew.ingredients.length === 0) return [];
-    const out: string[] = [];
-    for (const r of basePerfumes) {
-      const e = evaluate(brew, r);
-      if (e.status === "perfect") out.push(e.k > 1 ? `${r.name} ×${e.k}` : r.name);
-    }
+  const blockers = useMemo(() => {
+    const out = hypotheticalBlockers(snapshot?.pot ?? []);
+    if (!permissions.brewAndTake) out.push("only the bench owner may brew and take");
     return out;
-  }, [brew]);
+  }, [snapshot, permissions.brewAndTake]);
 
-  // per-key counts for the ingredients panel (amber highlight + −/count/+)
-  const countsByKey = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const k of brewKeys) m[k] = (m[k] ?? 0) + 1;
-    return m;
-  }, [brewKeys]);
-
-  const panelIngredients = useMemo(
-    () => [...baseIngredients, ...pureIngredients],
-    [],
-  );
-
-  // ---- hover preview + drag-out ----
-  // Hovering a panel row previews the brew with that ingredient added; while
-  // a row is dragged, the preview follows the pointer INTO the cauldron panel
-  // and dropping there commits the add.
+  // ---- hover: panels report keys; ONLY the brew bar previews them ----
   const [hoverKey, setHoverKey] = useState<string | null>(null);
-  const [drag, setDrag] = useState<{ key: string; x: number; y: number; over: boolean } | null>(null);
+  const onHover = useCallback((key: string | null) => setHoverKey(key), []);
+  const hoverIngredient = hoverKey ? (ING_BY_KEY.get(hoverKey) ?? null) : null;
 
-  const onPreview = useCallback((key: string | null) => setHoverKey(key), []);
-  const onBeginDrag = useCallback((key: string, x: number, y: number) => {
-    setDrag({ key, x, y, over: false });
-  }, []);
-
-  useEffect(() => {
-    if (!drag) return;
-    document.body.style.userSelect = "none";
-    const overCauldron = (x: number, y: number) =>
-      !!document.elementFromPoint(x, y)?.closest("[data-cauldron-drop]");
-    const onMove = (e: PointerEvent) => {
-      setDrag((d) => d && { ...d, x: e.clientX, y: e.clientY, over: overCauldron(e.clientX, e.clientY) });
-    };
-    const onUp = (e: PointerEvent) => {
-      if (overCauldron(e.clientX, e.clientY)) {
-        setBrewKeys((p) => [...p, drag.key]);
-      }
-      setDrag(null);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-    return () => {
-      document.body.style.userSelect = "";
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-    };
-    // drag.key is stable for the life of one drag; re-binding on every move
-    // would thrash listeners
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drag !== null]);
-
-  // what the cauldron previews: the dragged ingredient while it hovers the
-  // cauldron panel, else the hovered row
-  const previewKey = drag ? (drag.over ? drag.key : null) : hoverKey;
-  const previewIng = previewKey ? (ingByKey.get(previewKey) ?? null) : null;
-  const dragIng = drag ? ingByKey.get(drag.key) : null;
+  // ---- shift-click teleports: direct one-unit moves, no hand involved ----
+  const onShiftToBrew = useCallback(
+    (itemKey: string) => {
+      if (isIngredientKey(itemKey)) actions.moveToBrew(itemKey, 1);
+    },
+    [actions],
+  );
+  const onUnbrewOne = useCallback(
+    (itemKey: string) => actions.moveToInventory(itemKey, 1),
+    [actions],
+  );
 
   // ---- panel resizing ----
   const [leftW, setLeftW] = useState<number>(PANEL_DEFAULTS.left);
@@ -248,7 +320,12 @@ export default function PerfumeClient() {
     if (r > 0) setRightW(clampPanel(r));
   }, []);
 
-  const resize = useRef<{ side: "left" | "right"; startX: number; startW: number; lastW: number } | null>(null);
+  const [resize, setResize] = useState<{
+    side: "left" | "right";
+    startX: number;
+    startW: number;
+    lastW: number;
+  } | null>(null);
   const onResizeDown = useCallback(
     (side: "left" | "right") => (e: ReactPointerEvent<HTMLDivElement>) => {
       e.preventDefault();
@@ -258,128 +335,141 @@ export default function PerfumeClient() {
         // no active pointer (synthetic events) — moves over the handle still work
       }
       const startW = side === "left" ? leftW : rightW;
-      resize.current = { side, startX: e.clientX, startW, lastW: startW };
+      setResize({ side, startX: e.clientX, startW, lastW: startW });
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
     },
     [leftW, rightW],
   );
-  const onResizeMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    const d = resize.current;
-    if (!d) return;
-    const dx = e.clientX - d.startX;
-    const w = clampPanel(d.side === "left" ? d.startW + dx : d.startW - dx);
-    d.lastW = w;
-    (d.side === "left" ? setLeftW : setRightW)(w);
-  }, []);
+  const onResizeMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (!resize) return;
+      const dx = e.clientX - resize.startX;
+      const w = clampPanel(resize.side === "left" ? resize.startW + dx : resize.startW - dx);
+      setResize({ ...resize, lastW: w });
+      (resize.side === "left" ? setLeftW : setRightW)(w);
+    },
+    [resize],
+  );
   const onResizeUp = useCallback(() => {
-    const d = resize.current;
-    if (!d) return;
-    resize.current = null;
+    if (!resize) return;
+    setResize(null);
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
-    localStorage.setItem(`${PANEL_STORE}:${d.side}`, String(d.lastW));
-  }, []);
+    localStorage.setItem(`${PANEL_STORE}:${resize.side}`, String(resize.lastW));
+  }, [resize]);
   const resetPanel = useCallback((side: "left" | "right") => {
     (side === "left" ? setLeftW : setRightW)(PANEL_DEFAULTS[side]);
     localStorage.removeItem(`${PANEL_STORE}:${side}`);
   }, []);
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
-      {/* the Byobu bench layout: ingredients panel | cauldron panel | perfume panel
-          as three working columns on wide screens; on small screens the page
-          scrolls through cauldron panel, then perfume panel, then ingredients
-          panel. The page banner is gone — the cauldron panel's own status bar
-          carries the Perfumer's Bench name. */}
-      <div
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden"
-        style={{
-          ["--pf-lw" as string]: `${leftW}px`,
-          ["--pf-rw" as string]: `${rightW}px`,
-        }}
-      >
-        {/* ingredients panel */}
-        <aside className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[var(--pf-lw)] lg:flex-none lg:border-t-0">
-          <IngredientPanel
-            ingredients={panelIngredients}
-            brewCounts={countsByKey}
-            onAdd={addKey}
-            onDec={decKey}
-            onRemoveAll={removeAllOfKey}
-            onPreview={onPreview}
-            onBeginDrag={onBeginDrag}
-          />
-        </aside>
-
-        {/* drag to resize the ingredients panel (wide layout) */}
-        <PanelResizer
-          label="Resize the ingredients panel"
-          className="lg:order-1"
-          onPointerDown={onResizeDown("left")}
-          onPointerMove={onResizeMove}
-          onPointerUp={onResizeUp}
-          onDoubleClick={() => resetPanel("left")}
-        />
-
-        {/* cauldron panel */}
-        <section
-          data-cauldron-drop
-          className={`order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1 ${
-            drag ? (drag.over ? "ring-2 ring-inset ring-accent/60" : "ring-2 ring-inset ring-border") : ""
-          }`}
-        >
-          <Cauldron
-            brew={brew}
-            brewCounts={brewCounts}
-            brewed={brewed}
-            preview={previewIng}
-            onInc={addKey}
-            onDec={decKey}
-            onStrike={strike}
-            onUnstrike={unstrike}
-            onAddWild={addWild}
-            onRemoveWild={removeWild}
-            onClear={clear}
-          />
-        </section>
-
-        {/* drag to resize the perfume panel (wide layout) */}
-        <PanelResizer
-          label="Resize the perfume panel"
-          className="lg:order-2"
-          onPointerDown={onResizeDown("right")}
-          onPointerMove={onResizeMove}
-          onPointerUp={onResizeUp}
-          onDoubleClick={() => resetPanel("right")}
-        />
-
-        {/* perfume panel */}
-        <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[var(--pf-rw)] lg:flex-none lg:border-t-0">
-          <PerfumePanel
-            perfumes={basePerfumes}
-            brew={brew}
-            onAddIngredient={addKeyN}
-          />
-        </aside>
-      </div>
-
-      {/* drag ghost following the pointer */}
-      {drag && dragIng && (
+    <Shell header={header}>
+      {loading || !snapshot ? (
+        <div className="grid flex-1 place-items-center font-mono text-sm text-text-faint">
+          lighting the fire…
+        </div>
+      ) : (
         <div
-          className="pointer-events-none fixed z-[90] flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full border bg-surface py-1 pl-1 pr-2.5 text-xs text-text shadow-xl"
-          style={{ left: drag.x, top: drag.y, borderColor: dragIng.color }}
-          aria-hidden="true"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden"
+          style={{
+            ["--pf-lw" as string]: `${leftW}px`,
+            ["--pf-rw" as string]: `${rightW}px`,
+          }}
         >
-          <IngredientThumb
-            name={dragIng.name}
-            source={dragIng.source}
-            color={dragIng.color}
-            size={24}
+          {/* input panel — data-input-drop is where output phials settle */}
+          <aside
+            data-input-drop=""
+            className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[var(--pf-lw)] lg:flex-none lg:border-t-0"
+          >
+            <IngredientPanel
+              catalog={PANEL_CATALOG}
+              inventory={snapshot.inventory}
+              brewCounts={brewCounts}
+              ui={snapshot.ui}
+              onUI={actions.updateUI}
+              hand={hand}
+              permissions={permissions}
+              isAnon={isAnon}
+              members={members}
+              onImport={actions.importInventory}
+              onTransfer={actions.transfer}
+              onHover={onHover}
+              onShiftToBrew={onShiftToBrew}
+              onUnbrewOne={onUnbrewOne}
+            />
+          </aside>
+
+          {/* drag to resize the input panel (wide layout) */}
+          <PanelResizer
+            label="Resize the input panel"
+            className="lg:order-1"
+            onPointerDown={onResizeDown("left")}
+            onPointerMove={onResizeMove}
+            onPointerUp={onResizeUp}
+            onDoubleClick={() => resetPanel("left")}
           />
-          <span className="max-w-[140px] truncate">{dragIng.name}</span>
+
+          {/* cauldron panel (its root carries data-cauldron-drop) */}
+          <section className="order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1">
+            <Cauldron
+              snapshot={snapshot}
+              brew={brew}
+              permissions={permissions}
+              hand={hand}
+              hoverIngredient={hoverIngredient}
+              brewOptions={brewOptions}
+              blockers={blockers}
+              onBrew={actions.brewPerfume}
+              onTake={actions.takeOutput}
+              onStrike={actions.playStrike}
+              onUnstrike={actions.unplayStrike}
+              onAddWild={actions.playWild}
+              onRemoveWild={actions.unplayWild}
+              onClear={actions.clearPot}
+            />
+          </section>
+
+          {/* drag to resize the perfume panel (wide layout) */}
+          <PanelResizer
+            label="Resize the perfume panel"
+            className="lg:order-2"
+            onPointerDown={onResizeDown("right")}
+            onPointerMove={onResizeMove}
+            onPointerUp={onResizeUp}
+            onDoubleClick={() => resetPanel("right")}
+          />
+
+          {/* perfume panel */}
+          <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[var(--pf-rw)] lg:flex-none lg:border-t-0">
+            <PerfumePanel
+              perfumes={basePerfumes}
+              brew={brew}
+              ui={snapshot.ui}
+              onUI={actions.updateUI}
+              permissions={permissions}
+              hand={hand}
+              onHover={onHover}
+              brewCounts={brewCounts}
+              onShiftToBrew={onShiftToBrew}
+            />
+          </aside>
         </div>
       )}
+
+      {/* the held stack at the cursor */}
+      <HandGhost hand={hand.hand} itemInfo={itemInfo} />
+      {overlays}
+    </Shell>
+  );
+}
+
+// The page frame: tab strip (live mode) above the three working columns.
+function Shell({ header, children }: { header: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
+      {header}
+      {children}
     </div>
   );
 }

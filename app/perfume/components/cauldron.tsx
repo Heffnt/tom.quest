@@ -10,6 +10,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { BrewState, Ingredient } from "../lib/types";
+import type { BenchPermissions, BenchSnapshot } from "../lib/bench-types";
+import type { BrewableOption } from "../lib/brewable";
+import { type BenchHand, ItemIcon } from "../lib/use-hand";
 import {
   effectiveTally,
   availableCharges,
@@ -24,7 +27,6 @@ import {
   freqWeight,
   NAMED,
 } from "../data/base";
-import { MinusMark, PlusMark } from "./ingredient-panel";
 import {
   FrequencySymbol,
   ChargeSymbol,
@@ -34,7 +36,8 @@ import {
   fundColor,
   tokenColor,
 } from "../lib/frequencies";
-import IngredientThumb from "./ingredient-thumb";
+import BrewBar from "./brew-bar";
+import OutputShelf from "./output-shelf";
 
 // The name printed under a floating frequency: school for fundamentals, the
 // frequency's own name for named frequencies.
@@ -43,15 +46,18 @@ function frequencyName(id: string): string {
 }
 
 export interface CauldronProps {
+  snapshot: BenchSnapshot;
+  // the engine view of snapshot.pot (BrewOf applied by the orchestrator)
   brew: BrewState;
-  brewCounts: { key: string; name: string; color: string; count: number }[];
-  // names of the perfumes the current brew brews exactly (perfect matches)
-  brewed: string[];
-  // a hovered/dragged ingredient — the stage renders the brew AS IF it were
-  // already added (the committed brew state is untouched)
-  preview?: Ingredient | null;
-  onInc: (key: string) => void;
-  onDec: (key: string) => void;
+  permissions: BenchPermissions;
+  hand: BenchHand;
+  // hovered catalog/inventory row — forwarded to the brew bar ONLY (hover
+  // never touches the graph)
+  hoverIngredient: Ingredient | null;
+  brewOptions: BrewableOption[];
+  blockers: string[];
+  onBrew: (perfumeKey: string, tuningIndex: number, k: number) => void;
+  onTake: (perfumeKey: string, n: number) => void;
   onStrike: (id: string) => void;
   onUnstrike: (id: string) => void;
   onAddWild: (id: string) => void;
@@ -72,6 +78,9 @@ function hash01(str: string, salt = 0): number {
 }
 
 type Src = { key: string; name: string; color: string };
+
+// src key of the held stack while committed — its splines run to the cursor
+const HAND_SRC = "__hand__";
 
 type FloatKind = "freq" | "ghost" | "strike" | "wild";
 type Floater = {
@@ -167,94 +176,139 @@ function driftStyle(uid: string): React.CSSProperties {
   };
 }
 
-// How an ingredient looks in the arc / tray: base ingredients show their PDF
-// crest; pure frequencies show the frequency symbol itself (or the ⊖/⊕ glyph
-// for a pure strike / pure wild).
-function IngredientVisual({
-  keyId,
-  name,
-  color,
-  size,
+type IngNode = Src & { count: number; hypo: number; hypoBy: string[] };
+
+// One settled stack springing from the cursor into its arc slot: mount at the
+// cursor offset, then release into place with an overshoot curve.
+function SpringFrom({
+  dx,
+  dy,
+  children,
 }: {
-  keyId: string;
-  name: string;
-  color: string;
-  size: number;
+  dx: number;
+  dy: number;
+  children: React.ReactNode;
 }) {
-  if (keyId.startsWith("pure:")) {
-    const id = keyId.slice(5);
-    if (id === "strike" || id === "wild") {
-      return <ChargeSymbol kind={id} size={size} />;
-    }
-    return <FrequencySymbol id={id} size={size} />;
-  }
+  const [offset, setOffset] = useState(true);
+  useEffect(() => {
+    // double rAF: the offset transform must hit the DOM before the release
+    let id2 = 0;
+    const id1 = requestAnimationFrame(() => {
+      id2 = requestAnimationFrame(() => setOffset(false));
+    });
+    return () => {
+      cancelAnimationFrame(id1);
+      cancelAnimationFrame(id2);
+    };
+  }, []);
   return (
-    <IngredientThumb
-      name={name}
-      source={
-        keyId.startsWith("base:")
-          ? { kind: "base" }
-          : { kind: "user", userId: "", name: "" }
+    <div
+      style={
+        offset
+          ? { transform: `translate(${dx}px, ${dy}px)`, transition: "none" }
+          : {
+              transform: "translate(0, 0)",
+              transition: "transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1)",
+            }
       }
-      color={color}
-      size={size}
-    />
+    >
+      {children}
+    </div>
   );
 }
 
 export default function Cauldron({
-  brew: committedBrew,
-  brewCounts,
-  brewed,
-  preview,
-  onInc,
-  onDec,
+  snapshot,
+  brew,
+  permissions,
+  hand,
+  hoverIngredient,
+  brewOptions,
+  blockers,
+  onBrew,
+  onTake,
   onStrike,
   onUnstrike,
   onAddWild,
   onRemoveWild,
   onClear,
 }: CauldronProps) {
-  // The stage renders the previewed brew (hover/drag "what if") — everything
-  // downstream of here treats it as THE brew; only the banner and the play
-  // callbacks belong to the committed one.
-  const brew = useMemo<BrewState>(
-    () =>
-      preview
-        ? { ...committedBrew, ingredients: [...committedBrew.ingredients, preview] }
-        : committedBrew,
-    [committedBrew, preview],
-  );
   const eff = useMemo(() => effectiveTally(brew), [brew]);
   const avail = useMemo(() => availableCharges(brew), [brew]);
   const struckMs = useMemo(() => msFromList(brew.strikePlays), [brew.strikePlays]);
 
-  // One arc node per distinct ingredient in the pot (with a ×n count).
-  const ingNodes = useMemo(() => {
+  // a committed held stack participates in the arcs (splines to the cursor);
+  // an un-committed one is the ghost's business alone
+  const held = hand.hand?.committed ? hand.hand : null;
+
+  // One arc node per distinct ingredient in the pot (with a ×n count), plus
+  // how many of its copies are hypothetical (beyond stock) and whose.
+  const ingNodes = useMemo<IngNode[]>(() => {
     const order: string[] = [];
-    const info = new Map<string, Src & { count: number }>();
+    const info = new Map<string, IngNode & { by: Set<string> }>();
     for (const ing of brew.ingredients) {
       if (!info.has(ing.key)) {
         order.push(ing.key);
-        info.set(ing.key, { key: ing.key, name: ing.name, color: ing.color, count: 0 });
+        info.set(ing.key, {
+          key: ing.key,
+          name: ing.name,
+          color: ing.color,
+          count: 0,
+          hypo: 0,
+          hypoBy: [],
+          by: new Set(),
+        });
       }
       info.get(ing.key)!.count++;
     }
-    return order.map((k) => info.get(k)!);
-  }, [brew.ingredients]);
+    for (const item of snapshot.pot) {
+      if (item.real) continue;
+      const g = info.get(item.key);
+      if (g) {
+        g.hypo++;
+        g.by.add(item.contributorName);
+      }
+    }
+    return order.map((k) => {
+      const g = info.get(k)!;
+      return { key: g.key, name: g.name, color: g.color, count: g.count, hypo: g.hypo, hypoBy: [...g.by] };
+    });
+  }, [brew.ingredients, snapshot.pot]);
+
+  // the arc renders the pot MINUS the held stack — its copies ride the cursor
+  // as a temporary participant ("you take the icon")
+  const arcNodes = useMemo<IngNode[]>(() => {
+    if (!held) return ingNodes;
+    return ingNodes
+      .map((g) =>
+        g.key === held.itemKey ? { ...g, count: Math.max(0, g.count - held.count) } : g,
+      )
+      .filter((g) => g.count > 0);
+  }, [ingNodes, held]);
 
   // Build the floaters for the frequency arc: every emitted frequency attributed
   // to the ingredient that contributed it (strikes ghost the LAST instances of
   // a frequency id, mirroring the engine's id-level strikes), then wild
   // frequencies (attributed to the ⊕-granting ingredient), then unspent ⊖/⊕
   // charges (attributed to their granting ingredient; charges are spent in brew order).
+  // The LAST held.count copies of the held key attribute to the hand instead.
   const floaters = useMemo<Floater[]>(() => {
     const out: Floater[] = [];
     const instances: Record<string, Src[]> = {};
     const strikeSources: Src[] = [];
     const wildSources: Src[] = [];
+    const heldKey = held?.itemKey;
+    const heldTotal = heldKey
+      ? brew.ingredients.reduce((n, i) => n + (i.key === heldKey ? 1 : 0), 0)
+      : 0;
+    const heldStart = held ? Math.max(0, heldTotal - held.count) : 0;
+    let heldSeen = 0;
     for (const ing of brew.ingredients) {
-      const src: Src = { key: ing.key, name: ing.name, color: ing.color };
+      let src: Src = { key: ing.key, name: ing.name, color: ing.color };
+      if (heldKey && ing.key === heldKey) {
+        heldSeen++;
+        if (heldSeen > heldStart) src = { key: HAND_SRC, name: ing.name, color: ing.color };
+      }
       for (const tok of ing.emits) (instances[tok] ??= []).push(src);
       for (let i = 0; i < ing.strike; i++) strikeSources.push(src);
       for (let i = 0; i < ing.wild; i++) wildSources.push(src);
@@ -284,7 +338,7 @@ export default function Cauldron({
       out.push({ uid: `w:${i}`, kind: "wild", src: wildSources[i] });
     }
     return out;
-  }, [brew.ingredients, brew.wildPlays, brew.strikePlays, struckMs]);
+  }, [brew.ingredients, brew.wildPlays, brew.strikePlays, struckMs, held]);
 
   const combined = useMemo(() => combineFrequencies(eff), [eff]);
   // what the brew counts for recipes: the tally AFTER auto-combination
@@ -348,14 +402,28 @@ export default function Cauldron({
     return { consumedBy, nodes, links };
   }, [combined, floaters]);
 
+  // ---- the held stack's stage position (percent space) ----
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const handSlot = useMemo<Slot | null>(() => {
+    if (!held) return null;
+    const r = stageRef.current?.getBoundingClientRect();
+    if (!r || r.width === 0 || r.height === 0) return null;
+    return {
+      x: Math.min(100, Math.max(0, ((held.x - r.left) / r.width) * 100)),
+      y: Math.min(100, Math.max(0, ((held.y - r.top) / r.height) * 100)),
+      angle: 0,
+    };
+  }, [held]);
+
   // ---- layout: slots for all three arcs + the connective lines ----
   const layout = useMemo(() => {
     const tokenSlots = floaters.map((_, i) => freqArcSlot(i, floaters.length));
-    const ingSlots = ingNodes.map((_, i) => ingArcSlot(i, ingNodes.length));
+    const ingSlots = arcNodes.map((_, i) => ingArcSlot(i, arcNodes.length));
     const derivedSlots = derivedLayer.nodes.map((_, i) =>
       derivedArcSlot(i, derivedLayer.nodes.length),
     );
-    const slotByIng = new Map(ingNodes.map((g, i) => [g.key, ingSlots[i]]));
+    const slotByIng = new Map(arcNodes.map((g, i) => [g.key, ingSlots[i]]));
+    if (handSlot) slotByIng.set(HAND_SRC, handSlot);
     const slotByUid = new Map<string, Slot>();
     floaters.forEach((f, i) => slotByUid.set(f.uid, tokenSlots[i]));
     derivedLayer.nodes.forEach((n, i) => slotByUid.set(n.uid, derivedSlots[i]));
@@ -369,8 +437,9 @@ export default function Cauldron({
       ingKey?: string;
     };
     const edges: Edge[] = [];
-    // stems: cauldron mouth -> each ingredient
-    ingNodes.forEach((g, i) => {
+    // stems: cauldron mouth -> each ingredient (the held stack included —
+    // its stem chases the cursor)
+    arcNodes.forEach((g, i) => {
       const s = ingSlots[i];
       edges.push({
         key: `stem:${g.key}`,
@@ -382,6 +451,17 @@ export default function Cauldron({
         ingKey: g.key,
       });
     });
+    if (handSlot) {
+      edges.push({
+        key: "stem:hand",
+        d: `M ${MOUTH.x} ${MOUTH.y} C ${MOUTH.x} ${MOUTH.y - 8}, ${handSlot.x} ${handSlot.y + 16}, ${handSlot.x} ${handSlot.y + 7}`,
+        color: "#4b4980",
+        dashed: false,
+        opacity: 0.55,
+        width: 2,
+        ingKey: HAND_SRC,
+      });
+    }
     // ingredient -> its frequencies / charges
     floaters.forEach((f, i) => {
       if (!f.src) return;
@@ -422,14 +502,34 @@ export default function Cauldron({
       });
     }
     return { tokenSlots, ingSlots, derivedSlots, edges };
-  }, [floaters, ingNodes, derivedLayer]);
+  }, [floaters, arcNodes, derivedLayer, handSlot]);
+
+  // ---- settle spring: the icon flies from the cursor into its slot ----
+  const [spring, setSpring] = useState<{ key: string; seq: number; dx: number; dy: number } | null>(null);
+  const layoutRef = useRef<{ nodes: IngNode[]; slots: Slot[] }>({ nodes: [], slots: [] });
+  layoutRef.current = { nodes: arcNodes, slots: layout.ingSlots };
+  const settleFx = hand.settleFx;
+  useEffect(() => {
+    if (!settleFx) return;
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    const { nodes, slots } = layoutRef.current;
+    const i = nodes.findIndex((g) => g.key === settleFx.itemKey);
+    if (i === -1) return;
+    const sx = rect.left + (slots[i].x / 100) * rect.width;
+    const sy = rect.top + (slots[i].y / 100) * rect.height;
+    setSpring({ key: settleFx.itemKey, seq: settleFx.seq, dx: settleFx.x - sx, dy: settleFx.y - sy });
+    // the spring is one-shot: drop it so later arc reflows don't replay it
+    const t = setTimeout(() => setSpring(null), 700);
+    return () => clearTimeout(t);
+  }, [settleFx]);
 
   // ---- strike drag-and-drop ----
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const [hoverTarget, setHoverTarget] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
-  // ingredient under the pointer (arc node or tray chip) — its frequencies and
-  // lines light up while everything else dims
+  // ingredient under the pointer (arc node) — its frequencies and lines light
+  // up while everything else dims
   const [hoverIng, setHoverIng] = useState<string | null>(null);
   const dragInfo = useRef<{ moved: boolean; startX: number; startY: number }>({
     moved: false,
@@ -444,6 +544,7 @@ export default function Cauldron({
   };
 
   const onStrikePointerDown = (e: ReactPointerEvent) => {
+    if (!permissions.moveItems) return;
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragInfo.current = { moved: false, startX: e.clientX, startY: e.clientY };
@@ -479,7 +580,7 @@ export default function Cauldron({
   };
 
   const onFreqClick = (f: Floater) => {
-    if (!f.id) return;
+    if (!f.id || !permissions.moveItems) return;
     // A wild frequency is dispelled (refunds the ⊕), never struck — striking it
     // would waste a ⊖ since the engine applies strikes before wilds.
     if (f.fromWild) {
@@ -504,16 +605,22 @@ export default function Cauldron({
   // ---- wildcard picker ----
   const [picker, setPicker] = useState<{ x: number; y: number } | null>(null);
   const openPicker = (e: ReactMouseEvent) => {
+    if (!permissions.moveItems) return;
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setPicker({ x: r.left + r.width / 2, y: r.bottom + 6 });
   };
+
+  const hasOutput = useMemo(
+    () => Object.values(snapshot.outputTray).some((n) => n > 0),
+    [snapshot.outputTray],
+  );
 
   const labelShadow: React.CSSProperties = {
     textShadow: "0 1px 3px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.7)",
   };
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div data-cauldron-drop="" className="relative flex h-full flex-col">
       {/* status bar */}
       <div className="flex items-center justify-between gap-3 px-4 py-2 font-mono text-xs text-text-muted">
         <span className="uppercase tracking-[0.3em] text-text-faint">
@@ -550,9 +657,13 @@ export default function Cauldron({
           <button
             type="button"
             onClick={onClear}
-            disabled={brewCounts.length === 0}
+            disabled={brew.ingredients.length === 0 || !permissions.clearPot}
             aria-label="Empty the cauldron"
-            title="Empty the cauldron"
+            title={
+              permissions.clearPot
+                ? "Empty the cauldron"
+                : "You may not clear this pot"
+            }
             className="grid h-7 w-7 place-items-center rounded-md border border-border text-text-muted transition-colors duration-150 hover:border-error hover:text-error disabled:opacity-40 disabled:hover:border-border disabled:hover:text-text-muted"
           >
             <svg viewBox="0 0 16 16" width={13} height={13} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
@@ -562,8 +673,13 @@ export default function Cauldron({
         </div>
       </div>
 
-      {/* stage: frequency arc, ingredient arc, connective lines, the vessel */}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      {/* stage: frequency arc, ingredient arc, connective lines, the vessel.
+          data-pf-surface: presence cursors travel in this box's 0-100 space */}
+      <div
+        ref={stageRef}
+        data-pf-surface="stage"
+        className="relative min-h-0 flex-1 overflow-hidden"
+      >
         {/* the vessel */}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-0 flex h-[40%] items-end justify-center">
           <CauldronVessel active={totalFreq > 0} />
@@ -621,7 +737,7 @@ export default function Cauldron({
                   onPointerUp={onStrikePointerUp}
                   onPointerCancel={onStrikePointerCancel}
                   aria-label="Strike — drag onto a frequency to remove it"
-                  title={`Strike: drag onto a frequency to remove it${f.src ? ` (granted by ${f.src.name})` : ""}`}
+                  title={`Strike: drag onto a frequency to remove it${f.src && f.src.key !== HAND_SRC ? ` (granted by ${f.src.name})` : ""}`}
                   className={`cursor-grab touch-none select-none rounded-full active:cursor-grabbing ${
                     armed ? "ring-2 ring-offset-2 ring-offset-bg" : ""
                   }`}
@@ -641,7 +757,7 @@ export default function Cauldron({
                   type="button"
                   onClick={openPicker}
                   aria-label="Wild — click to choose a frequency to add"
-                  title={`Wild: click to add any frequency${f.src ? ` (granted by ${f.src.name})` : ""}`}
+                  title={`Wild: click to add any frequency${f.src && f.src.key !== HAND_SRC ? ` (granted by ${f.src.name})` : ""}`}
                   className="cursor-pointer rounded-full"
                   style={{ boxShadow: `0 0 14px ${COPPER}55`, borderRadius: "50%" }}
                 >
@@ -658,6 +774,7 @@ export default function Cauldron({
                 <div
                   {...(!ghost && !f.fromWild ? { "data-drop-freq": f.uid } : {})}
                   onClick={() => {
+                    if (!permissions.moveItems) return;
                     if (ghost) {
                       onUnstrike(f.id!);
                       setArmed(false);
@@ -670,6 +787,7 @@ export default function Cauldron({
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
+                      if (!permissions.moveItems) return;
                       if (ghost) {
                         onUnstrike(f.id!);
                         setArmed(false);
@@ -682,7 +800,7 @@ export default function Cauldron({
                     ghost
                       ? `${f.id} removed — click to restore`
                       : `${f.id} frequency${f.fromWild ? ", wild — click to dispel" : ""}${
-                          f.src ? `, from ${f.src.name}` : ""
+                          f.src && f.src.key !== HAND_SRC ? `, from ${f.src.name}` : ""
                         }${consumedId ? `, combined into ${consumedId}` : ""}`
                   }
                   title={
@@ -692,7 +810,7 @@ export default function Cauldron({
                         ? `${f.id} — combined into ${consumedId}`
                         : f.fromWild
                           ? `${f.id} — wild (click to dispel)`
-                          : f.src
+                          : f.src && f.src.key !== HAND_SRC
                             ? `${f.id} — from ${f.src.name}`
                             : f.id
                   }
@@ -732,6 +850,9 @@ export default function Cauldron({
             return (
               <div
                 key={f.uid}
+                data-testid="freq-float"
+                data-kind={f.kind}
+                data-freq={f.id}
                 className="pf-slot absolute"
                 style={{
                   left: `${slot.x}%`,
@@ -756,12 +877,71 @@ export default function Cauldron({
             );
           })}
 
-          {/* ingredient arc */}
-          {ingNodes.map((g, i) => {
+          {/* ingredient arc — every node speaks the hand grammar: left picks
+              up from the brew, right (empty hand) returns one, shift-click
+              sends one home, press-drag carries one */}
+          {arcNodes.map((g, i) => {
             const slot = layout.ingSlots[i];
             const linked = hoverIng === g.key;
             const dimmed = hoverIng !== null && !linked;
-            const isPreview = preview?.key === g.key;
+            const hypothetical = g.hypo > 0;
+            const title = hypothetical
+              ? `${g.name} ×${g.count} — ${g.hypo} hypothetical (${g.hypoBy.join(", ")} past stock); hypotheticals block brewing`
+              : `${g.name}${g.count > 1 ? ` ×${g.count}` : ""} — click to pick up`;
+            const node = (
+              <>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  data-testid="arc-ingredient"
+                  data-item-key={g.key}
+                  onClick={(e) => {
+                    if (e.shiftKey) {
+                      hand.moveHome(g.key, 1);
+                      return;
+                    }
+                    hand.pickUp(g.key, "brew", g.count);
+                  }}
+                  onContextMenu={(e) => {
+                    // holding: the hand's own listener returns one (and eats
+                    // the menu); empty hand: one home, per the grammar
+                    if (hand.hand) return;
+                    e.preventDefault();
+                    hand.moveHome(g.key, 1);
+                  }}
+                  onPointerDown={(e) => hand.beginPress(e, g.key, "brew", g.count)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      hand.pickUp(g.key, "brew", g.count);
+                    }
+                  }}
+                  onDragStart={(e) => e.preventDefault()}
+                  aria-label={`${g.name} ×${g.count} in the brew — click to pick up, right-click to return one, shift-click to send one home`}
+                  title={title}
+                  className={`relative cursor-grab touch-none rounded-lg ${
+                    linked
+                      ? "ring-2 ring-accent ring-offset-2 ring-offset-bg"
+                      : hypothetical
+                        ? "outline-dashed outline-2 outline-offset-2 outline-amber-400/80"
+                        : ""
+                  }`}
+                >
+                  <ItemIcon itemKey={g.key} name={g.name} color={g.color} size={56} />
+                  {g.count > 1 && (
+                    <span className="absolute -right-2 -top-2 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
+                      ×{g.count}
+                    </span>
+                  )}
+                </div>
+                <span
+                  className="pointer-events-none max-w-[96px] text-center font-mono text-[10.5px] uppercase leading-tight tracking-wide text-text"
+                  style={labelShadow}
+                >
+                  {g.name}
+                </span>
+              </>
+            );
             return (
               <div
                 key={g.key}
@@ -775,37 +955,17 @@ export default function Cauldron({
               >
                 <div
                   className="pf-float flex flex-col items-center gap-1"
-                  style={{ ...driftStyle(`ing:${g.key}`), opacity: dimmed ? 0.35 : isPreview ? 0.85 : 1 }}
+                  style={{ ...driftStyle(`ing:${g.key}`), opacity: dimmed ? 0.35 : 1 }}
                   onMouseEnter={() => setHoverIng(g.key)}
                   onMouseLeave={() => setHoverIng(null)}
                 >
-                  <div
-                    className={`relative rounded-lg ${
-                      linked
-                        ? "ring-2 ring-accent ring-offset-2 ring-offset-bg"
-                        : isPreview
-                          ? "outline-dashed outline-2 outline-offset-2 outline-accent/80"
-                          : ""
-                    }`}
-                    title={
-                      isPreview
-                        ? `${g.name} — previewing`
-                        : `${g.name}${g.count > 1 ? ` ×${g.count}` : ""}`
-                    }
-                  >
-                    <IngredientVisual keyId={g.key} name={g.name} color={g.color} size={56} />
-                    {g.count > 1 && (
-                      <span className="absolute -right-2 -top-2 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
-                        ×{g.count}
-                      </span>
-                    )}
-                  </div>
-                  <span
-                    className="pointer-events-none max-w-[96px] text-center font-mono text-[10.5px] uppercase leading-tight tracking-wide text-text"
-                    style={labelShadow}
-                  >
-                    {g.name}
-                  </span>
+                  {spring && spring.key === g.key ? (
+                    <SpringFrom key={spring.seq} dx={spring.dx} dy={spring.dy}>
+                      {node}
+                    </SpringFrom>
+                  ) : (
+                    node
+                  )}
                 </div>
               </div>
             );
@@ -857,69 +1017,28 @@ export default function Cauldron({
           })}
         </div>
 
-      </div>
-
-      {/* brew banner — the ingredients in the pot, and when they land exactly
-          on a recipe, what they brewed: "these ingredients = this perfume".
-          Hovering a chip lights up its node and frequencies in the arcs. */}
-      <div className="border-t border-border px-3 py-2">
-        {brewCounts.length === 0 ? (
-          <p className="py-1 text-center font-mono text-xs text-text-faint">
-            the cauldron is empty
-          </p>
-        ) : (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {brewCounts.map((b) => (
-              <span
-                key={b.key}
-                onMouseEnter={() => setHoverIng(b.key)}
-                onMouseLeave={() => setHoverIng(null)}
-                onFocus={() => setHoverIng(b.key)}
-                onBlur={() => setHoverIng(null)}
-                className={`inline-flex items-center gap-1.5 rounded-full border bg-surface py-1 pl-1 pr-1 text-xs transition-colors ${
-                  hoverIng === b.key ? "border-accent/60" : "border-border"
-                }`}
-              >
-                <IngredientVisual keyId={b.key} name={b.name} color={b.color} size={22} />
-                <span className="max-w-[150px] truncate text-text">{b.name}</span>
-                <span className="flex items-center gap-0.5 font-mono">
-                  <button
-                    type="button"
-                    onClick={() => onDec(b.key)}
-                    aria-label={`Remove one ${b.name}`}
-                    className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
-                  >
-                    <MinusMark size={12} />
-                  </button>
-                  <span className="w-4 text-center tabular-nums text-text-muted">{b.count}</span>
-                  <button
-                    type="button"
-                    onClick={() => onInc(b.key)}
-                    aria-label={`Add another ${b.name}`}
-                    className="grid h-5 w-5 place-items-center rounded text-text-muted hover:bg-surface-alt hover:text-text"
-                  >
-                    <PlusMark size={12} />
-                  </button>
-                </span>
-              </span>
-            ))}
-            {brewed.length > 0 && (
-              <span className="flex items-center gap-2 pl-1">
-                <span className="font-mono text-sm text-success">=</span>
-                <span
-                  className="font-display text-lg leading-none text-text"
-                  style={{ textShadow: "0 0 14px rgba(111,227,196,.5)" }}
-                >
-                  {brewed.join(" · ")}
-                </span>
-                <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-success">
-                  ✦ brewed
-                </span>
-              </span>
-            )}
+        {/* output shelf — brewed phials float over the stage top */}
+        {(hasOutput || hand.hand?.from === "output") && (
+          <div className="absolute inset-x-0 top-2 z-[70] flex justify-center px-3">
+            <OutputShelf
+              outputTray={snapshot.outputTray}
+              hand={hand}
+              canTake={permissions.brewAndTake}
+              onTake={onTake}
+            />
           </div>
         )}
       </div>
+
+      {/* brew bar — the read-only frequency math (replaces the old tray) */}
+      <BrewBar
+        brew={brew}
+        hoverIngredient={hoverIngredient}
+        options={brewOptions}
+        blockers={blockers}
+        canBrew={blockers.length === 0 && permissions.brewAndTake}
+        onBrew={onBrew}
+      />
 
       {/* drag ghost following the cursor */}
       {drag && (

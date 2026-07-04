@@ -1,9 +1,14 @@
 "use client";
 
-// The square frequency-filter control shared by the ingredients panel and
-// the recipe panel: an empty light-grey ring until a frequency is chosen,
-// then that frequency's icon. Clicking opens a searchable listbox; the
-// ingredients panel also gets Strike ⊖ / Wild ⊕ entries (charge carriers).
+// The frequency-filter control shared by the input panel and the perfume
+// panel — MULTI-select. Empty: a square button holding an unfilled light-grey
+// ring. With selections: the button grows horizontally into a rounded
+// rectangle of the selected chips side by side (type glyphs for "type:*",
+// charge chips for strike/wild). Dropdown rows TOGGLE membership and stay
+// open for multi-picking; the "all frequencies" / "all types/frequencies"
+// row clears everything and closes. Matching semantics (frequencies AND,
+// types OR among themselves — see DESIGN.md) belong to the callers; this
+// control only edits the `values` list.
 
 import { useEffect, useRef, useState } from "react";
 import { ALL_FREQUENCIES, FUND, isNamed, INGREDIENT_TYPES } from "../data/base";
@@ -24,18 +29,29 @@ export function ChargeGlyph({ id, size }: { id: "strike" | "wild"; size: number 
   return <ChargeSymbol kind={id} size={size} />;
 }
 
-export default function FrequencyFilterButton({
-  value,
-  onChange,
-  includeCharges = false,
-  includeTypes = false,
-}: {
-  value: string;
-  onChange: (id: string) => void;
+// One filter value as its chip: type glyph for "type:*", charge chip for
+// strike/wild, frequency glyph otherwise.
+export function FilterChip({ id, size }: { id: string; size: number }) {
+  if (isTypeFilter(id)) return <TypeGlyph type={id.slice(5) as IngredientType} size={size} />;
+  if (id === "strike" || id === "wild") return <ChargeGlyph id={id} size={size} />;
+  return <FrequencyGlyph id={id} size={size} />;
+}
+
+export interface FrequencyFilterProps {
+  // frequency ids, plus "type:<t>" and "strike"/"wild" entries where offered
+  values: string[];
+  onChange: (values: string[]) => void;
   includeCharges?: boolean;
   // offer the ingredient TYPES (animal/plant/mineral) at the top of the list
   includeTypes?: boolean;
-}) {
+}
+
+export default function FrequencyFilterButton({
+  values,
+  onChange,
+  includeCharges = false,
+  includeTypes = false,
+}: FrequencyFilterProps) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -59,6 +75,11 @@ export default function FrequencyFilterButton({
     };
   }, [open]);
 
+  // toggle membership; the dropdown stays open so several filters can be
+  // picked in one visit
+  const toggle = (id: string) =>
+    onChange(values.includes(id) ? values.filter((v) => v !== id) : [...values, id]);
+
   const query = q.trim().toLowerCase();
   const items = ALL_FREQUENCIES.filter(
     (t) =>
@@ -67,6 +88,17 @@ export default function FrequencyFilterButton({
       (FUND[t.id]?.school ?? "").toLowerCase().includes(query),
   );
 
+  const label = values.length
+    ? `Filtering by ${values.map(freqLabel).join(", ")}`
+    : includeTypes
+      ? "Filter by type or frequency"
+      : "Filter by frequency";
+
+  const rowClass = (selected: boolean) =>
+    `flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
+      selected ? "bg-surface-alt text-text" : "text-text-muted"
+    }`;
+
   return (
     <div ref={ref} className="relative shrink-0">
       <button
@@ -74,19 +106,15 @@ export default function FrequencyFilterButton({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={value ? `Filtering by ${freqLabel(value)}` : "Filter by frequency"}
-        title={value ? `Filtering by ${freqLabel(value)} — click to change` : "Filter by frequency"}
-        className={`grid h-full w-[42px] place-items-center rounded-lg border bg-bg transition-colors duration-150 ${
-          value ? "border-accent" : "border-border hover:border-text-muted"
+        aria-label={label}
+        title={values.length ? `${label} — click to change` : label}
+        // grows with the selection; max-w + wrap guard the search input's
+        // room when many filters are on at once
+        className={`flex h-full min-w-[42px] max-w-[220px] flex-wrap items-center justify-center gap-1 rounded-lg border bg-bg px-2 py-1 transition-colors duration-150 ${
+          values.length ? "border-accent" : "border-border hover:border-text-muted"
         }`}
       >
-        {isTypeFilter(value) ? (
-          <TypeGlyph type={value.slice(5) as IngredientType} size={24} />
-        ) : value === "strike" || value === "wild" ? (
-          <ChargeGlyph id={value} size={24} />
-        ) : value ? (
-          <FrequencyGlyph id={value} size={24} />
-        ) : (
+        {values.length === 0 ? (
           // the "empty frequency": an unfilled ring in the site's light grey
           <span
             aria-hidden="true"
@@ -98,11 +126,14 @@ export default function FrequencyFilterButton({
               opacity: 0.9,
             }}
           />
+        ) : (
+          values.map((v) => <FilterChip key={v} id={v} size={20} />)
         )}
       </button>
       {open && (
         <div
           role="listbox"
+          aria-multiselectable="true"
           className="absolute right-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
         >
           <div className="border-b border-border p-2">
@@ -119,13 +150,13 @@ export default function FrequencyFilterButton({
             <button
               type="button"
               role="option"
-              aria-selected={value === ""}
+              aria-selected={values.length === 0}
               onClick={() => {
-                onChange("");
+                onChange([]);
                 setOpen(false);
               }}
               className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-                value === "" ? "text-text" : "text-text-muted"
+                values.length === 0 ? "text-text" : "text-text-muted"
               }`}
             >
               <span
@@ -143,14 +174,9 @@ export default function FrequencyFilterButton({
                   key={t}
                   type="button"
                   role="option"
-                  aria-selected={value === `type:${t}`}
-                  onClick={() => {
-                    onChange(`type:${t}`);
-                    setOpen(false);
-                  }}
-                  className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-                    value === `type:${t}` ? "bg-surface-alt text-text" : "text-text-muted"
-                  }`}
+                  aria-selected={values.includes(`type:${t}`)}
+                  onClick={() => toggle(`type:${t}`)}
+                  className={rowClass(values.includes(`type:${t}`))}
                 >
                   <TypeGlyph type={t} size={18} />
                   <span>{t}</span>
@@ -164,14 +190,9 @@ export default function FrequencyFilterButton({
                     key={id}
                     type="button"
                     role="option"
-                    aria-selected={value === id}
-                    onClick={() => {
-                      onChange(id);
-                      setOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-                      value === id ? "bg-surface-alt text-text" : "text-text-muted"
-                    }`}
+                    aria-selected={values.includes(id)}
+                    onClick={() => toggle(id)}
+                    className={rowClass(values.includes(id))}
                   >
                     <ChargeGlyph id={id} size={18} />
                     <span>{freqLabel(id)}</span>
@@ -185,14 +206,9 @@ export default function FrequencyFilterButton({
                 key={t.id}
                 type="button"
                 role="option"
-                aria-selected={value === t.id}
-                onClick={() => {
-                  onChange(t.id);
-                  setOpen(false);
-                }}
-                className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-                  value === t.id ? "bg-surface-alt text-text" : "text-text-muted"
-                }`}
+                aria-selected={values.includes(t.id)}
+                onClick={() => toggle(t.id)}
+                className={rowClass(values.includes(t.id))}
               >
                 <FrequencyGlyph id={t.id} size={18} />
                 <span>{freqLabel(t.id)}</span>

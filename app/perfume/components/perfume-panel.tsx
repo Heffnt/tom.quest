@@ -1,18 +1,24 @@
 "use client";
 
 // The perfume panel: a vertical, searchable book of the 41 d40 perfumes, one
-// COMPACT strip each: name + weight (with the "perfumes" fold button under
+// COMPACT strip each: name + weight (with the "recipes" fold button under
 // them), the integrated frequency requirement as bare symbols (shared core,
 // interchangeable alternatives in parentheses, optional extras dashed), and
 // the brew formula — a mini cauldron + the box of frequencies still missing
 // (strikes needed shown as that many ⊖ icons). The fold lists every
 // ingredient combination (common d40 ones first), grouped by the outside
 // strikes required: strike-free first, then ⊖1 / ⊖2 behind reveal buttons.
+//
+// PURE REFERENCE — brewed output lives on the cauldron's shelf, never here.
+// Search, the multi-select frequency filter, expanded folds and pins are
+// shared browse UI (SharedUI) written through onUI; pins are owner-only.
+// The ingredient pills in the folds are real grabbable items wired to the
+// hand grammar (see DESIGN.md).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Multiset, Perfume, EvalResult, PerfumeSlotEntry, BrewState } from "../lib/types";
-import type { PerfumePanelProps } from "./contracts";
+import type { SharedUI, BenchPermissions, HandApi } from "../lib/bench-types";
 import {
   evaluate,
   evalReq,
@@ -30,7 +36,30 @@ import {
   perfumeWeight,
 } from "../data/base";
 import { FrequencySymbol, FrequencyGlyph, ChargeSymbol, COPPER, STRIKE } from "../lib/frequencies";
-import FrequencyFilterButton from "./frequency-filter";
+import FrequencyFilterButton, { isTypeFilter } from "./frequency-filter";
+import IngredientThumb from "./ingredient-thumb";
+
+export interface PerfumePanelProps {
+  perfumes: Perfume[];
+  // Current brew, for live per-perfume evaluation.
+  brew: BrewState;
+  // Shared browse UI: perfumeSearch, perfumeFilters, expanded, pins.
+  ui: SharedUI;
+  onUI: (patch: Partial<SharedUI>) => void;
+  // Pins toggle only when editInventory (owner-only per WHERE-not-WHAT).
+  permissions: BenchPermissions;
+  // The cursor stack; recipe pills pick up from origin "catalog".
+  hand: HandApi;
+  // Hover preview for the brew bar (never the cauldron graph); null on leave.
+  onHover: (itemKey: string | null) => void;
+  // Copies of each catalog item in the brew — a pill's icon ghosts to 35%
+  // while its ingredient has copies in the pot ("you took the icon").
+  brewCounts: Record<string, number>;
+  // Shift-click teleport: one copy straight to the brew (the grammar's
+  // unambiguous destination for an input-side item; HandApi has no direct
+  // path, so the client supplies it).
+  onShiftToBrew: (itemKey: string) => void;
+}
 
 const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
@@ -181,7 +210,7 @@ function computeIntegrated(perfume: Perfume): Integrated {
   return { core: msToList(inter), groups: g ? [g] : [] };
 }
 
-// ── the "perfumes" fold ───────────────────────────────────────────────────────
+// ── the "recipes" fold ────────────────────────────────────────────────────────
 // Per tuning, EVERY combo — the common d40 ones plus everything the solver
 // finds — grouped by the strikes the perfumer must supply: tier 0 is
 // self-sufficient, tiers 1 and 2 over-emit and need that many ⊖ from
@@ -223,28 +252,31 @@ function recipesFor(perfume: Perfume): FoundRecipe[][][] {
 export default function PerfumePanel({
   perfumes,
   brew,
-  onAddIngredient,
+  ui,
+  onUI,
+  permissions,
+  hand,
+  onHover,
+  brewCounts,
+  onShiftToBrew,
 }: PerfumePanelProps) {
-  const [query, setQuery] = useState("");
-  const [freqFilter, setFreqFilter] = useState("");
-  // pinned perfumes float to the top; remembered across visits
-  const [pinned, setPinned] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    try {
-      setPinned(new Set(JSON.parse(localStorage.getItem("pf:pins") ?? "[]")));
-    } catch {
-      // corrupted storage: start unpinned
-    }
-  }, []);
-  const togglePin = useCallback((key: string) => {
-    setPinned((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      localStorage.setItem("pf:pins", JSON.stringify([...next]));
-      return next;
+  // pinned perfumes float to the top; owner-only (WHERE-not-WHAT)
+  const togglePin = (key: string) => {
+    if (!permissions.editInventory) return;
+    onUI({
+      pins: ui.pins.includes(key)
+        ? ui.pins.filter((k) => k !== key)
+        : [...ui.pins, key],
     });
-  }, []);
+  };
+  // recipes-fold state is shared browse UI — spectators see the same folds
+  const toggleExpanded = (key: string) => {
+    onUI({
+      expanded: ui.expanded.includes(key)
+        ? ui.expanded.filter((k) => k !== key)
+        : [...ui.expanded, key],
+    });
+  };
 
   const evaluated = useMemo(
     () => perfumes.map((r) => ({ perfume: r, res: evaluate(brew, r) })),
@@ -257,18 +289,23 @@ export default function PerfumePanel({
   const brewList = useMemo(() => msToList(brewTally(brew)), [brew]);
 
   const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = ui.perfumeSearch.trim().toLowerCase();
+    // types never apply to perfumes; strip them defensively — the filter list
+    // is shared state another surface could have written
+    const filters = ui.perfumeFilters.filter((v) => !isTypeFilter(v));
     return evaluated
       // pinned perfumes stay visible no matter the search or filter
       .filter(
         ({ perfume }) =>
-          pinned.has(perfume.key) ||
+          ui.pins.includes(perfume.key) ||
           (matchesQuery(perfume, q) &&
-            (!freqFilter || perfume.reqs.some((req) => req.includes(freqFilter)))),
+            // AND semantics: SOME tuning contains ALL selected frequencies
+            perfume.reqs.some((req) => filters.every((id) => req.includes(id)))),
       )
       .sort((a, b) => {
         const p =
-          (pinned.has(b.perfume.key) ? 1 : 0) - (pinned.has(a.perfume.key) ? 1 : 0);
+          (ui.pins.includes(b.perfume.key) ? 1 : 0) -
+          (ui.pins.includes(a.perfume.key) ? 1 : 0);
         if (p !== 0) return p;
         const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
         if (s !== 0) return s;
@@ -277,7 +314,7 @@ export default function PerfumePanel({
         if (w !== 0) return w;
         return a.perfume.name.localeCompare(b.perfume.name);
       });
-  }, [evaluated, query, freqFilter, pinned]);
+  }, [evaluated, ui.perfumeSearch, ui.perfumeFilters, ui.pins]);
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
@@ -289,22 +326,26 @@ export default function PerfumePanel({
         </span>
       </div>
 
-      {/* controls: search with the square frequency-filter button beside it */}
+      {/* controls: search with the multi-select frequency filter beside it */}
       <div className="border-b border-border p-3">
         <div className="flex items-stretch gap-2">
           <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={ui.perfumeSearch}
+            onChange={(e) => onUI({ perfumeSearch: e.target.value })}
             placeholder="search perfumes…"
             spellCheck={false}
             className="w-full min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
           />
-          <FrequencyFilterButton value={freqFilter} onChange={setFreqFilter} />
+          <FrequencyFilterButton
+            values={ui.perfumeFilters}
+            onChange={(values) => onUI({ perfumeFilters: values })}
+          />
         </div>
       </div>
 
-      {/* the book */}
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+      {/* the book. data-pf-surface: presence coordinates are content-space of
+          this scroll container, so spectators track cards, not pixels */}
+      <div data-pf-surface="book" className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
         {shown.length === 0 && (
           <p className="px-2 py-6 text-center font-mono text-xs text-text-faint">
             no perfumes match
@@ -318,9 +359,15 @@ export default function PerfumePanel({
             brew={brew}
             brewList={brewList}
             brewEmpty={brew.ingredients.length === 0}
-            pinned={pinned.has(perfume.key)}
+            pinned={ui.pins.includes(perfume.key)}
+            canPin={permissions.editInventory}
             onTogglePin={togglePin}
-            onAddIngredient={onAddIngredient}
+            expanded={ui.expanded.includes(perfume.key)}
+            onToggleExpanded={toggleExpanded}
+            hand={hand}
+            onHover={onHover}
+            brewCounts={brewCounts}
+            onShiftToBrew={onShiftToBrew}
           />
         ))}
       </div>
@@ -360,18 +407,31 @@ function FrequencyRow({ req, size = 16 }: { req: string[]; size?: number }) {
   );
 }
 
-// A clickable ingredient pill; hovering shows the frequencies it contains.
+// A recipe-fold ingredient pill is a REAL grabbable item: the ingredient's
+// icon + name, wired to the hand grammar — left-click picks up 1 (+1 per
+// repeat), shift-click teleports 1 straight to the brew, right-click while
+// holding returns 1 to origin, press-move starts a 1-unit drag (the hand's
+// global tracking owns the boundary rule and the release), hover previews
+// through onHover. The icon ghosts to 35% while copies are in the brew —
+// "you took the icon". Hovering also shows the frequencies it contains.
 // Lore-only names render as plain text.
 function IngredientPill({
   entry,
-  onAdd,
+  hand,
+  onHover,
+  brewCounts,
+  onShiftToBrew,
 }: {
   entry: PerfumeSlotEntry;
-  onAdd?: (key: string, qty?: number) => void;
+  hand: HandApi;
+  onHover: (itemKey: string | null) => void;
+  brewCounts: Record<string, number>;
+  onShiftToBrew: (itemKey: string) => void;
 }) {
   const ing = ING_BY_NAME.get(entry.name);
   const label = entry.qty > 1 ? `${entry.name} ×${entry.qty}` : entry.name;
   const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
+  const drag = useRef({ x: 0, y: 0, active: false, moved: false });
 
   if (!entry.known || !ing) {
     return (
@@ -383,6 +443,7 @@ function IngredientPill({
       </span>
     );
   }
+  const inBrew = (brewCounts[ing.key] ?? 0) > 0;
   // the tip self-centers on the pill via translateX; clamp its anchor so it
   // can't spill past a (floored, for degenerate windows) viewport edge
   const vw = Math.max(typeof window !== "undefined" ? window.innerWidth : 1024, 360);
@@ -390,16 +451,54 @@ function IngredientPill({
   return (
     <button
       type="button"
-      onClick={() => onAdd?.(ing.key, entry.qty)}
+      onClick={(e) => {
+        // the click that ends a drag is not a pick-up
+        if (drag.current.moved) {
+          drag.current.moved = false;
+          return;
+        }
+        if (e.shiftKey) onShiftToBrew(ing.key);
+        // the catalog is an unbounded reference — stock runs out into
+        // hypotheticals, so nothing caps the pick-up here
+        else hand.pickUp(ing.key, "catalog", Number.POSITIVE_INFINITY);
+      }}
+      onContextMenu={(e) => {
+        // right-click while holding: return 1 to origin (no-op empty-handed —
+        // a reference pill is not an in-brew row)
+        e.preventDefault();
+        hand.returnOne();
+      }}
       onMouseEnter={(e) => {
+        onHover(ing.key);
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
         setTip({ x: r.left + r.width / 2, y: r.bottom });
       }}
-      onMouseLeave={() => setTip(null)}
-      title="Add to the brew"
-      className="rounded-full border border-border bg-bg px-2 py-0.5 text-xs text-text transition-colors duration-150 hover:border-accent hover:text-accent"
+      onMouseLeave={() => {
+        onHover(null);
+        setTip(null);
+      }}
+      onPointerDown={(e) => {
+        drag.current = { x: e.clientX, y: e.clientY, active: true, moved: false };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d.active || d.moved) return;
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 7) {
+          // press-move: a 1-unit hand with the button held
+          d.moved = true;
+          hand.pickUp(ing.key, "catalog", Number.POSITIVE_INFINITY);
+        }
+      }}
+      onPointerUp={() => {
+        drag.current.active = false;
+      }}
+      title="Click to pick up — shift-click sends one straight to the brew"
+      className="inline-flex touch-none items-center gap-1.5 rounded-full border border-border bg-bg py-0.5 pl-1 pr-2 text-xs text-text transition-colors duration-150 hover:border-accent hover:text-accent"
       style={{ borderLeftWidth: 3, borderLeftColor: ing.color }}
     >
+      <span aria-hidden="true" style={{ lineHeight: 0, opacity: inBrew ? 0.35 : 1 }}>
+        <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={22} />
+      </span>
       {label}
       {tip &&
         typeof document !== "undefined" &&
@@ -486,13 +585,19 @@ function NeededOptions({
   );
 }
 
-// One dynamically-found combo as a row of clickable ingredient pills.
+// One dynamically-found combo as a row of grabbable ingredient pills.
 function ComboRow({
   combo,
-  onAdd,
+  hand,
+  onHover,
+  brewCounts,
+  onShiftToBrew,
 }: {
   combo: FoundRecipe;
-  onAdd?: (key: string, qty?: number) => void;
+  hand: HandApi;
+  onHover: (itemKey: string | null) => void;
+  brewCounts: Record<string, number>;
+  onShiftToBrew: (itemKey: string) => void;
 }) {
   const counts = new Map<string, number>();
   for (const n of combo.ings) counts.set(n, (counts.get(n) ?? 0) + 1);
@@ -504,7 +609,13 @@ function ComboRow({
           {i > 0 && (
             <span className="px-0.5 font-mono text-[9px] uppercase text-text-faint">+</span>
           )}
-          <IngredientPill entry={{ name, qty, known: true }} onAdd={onAdd} />
+          <IngredientPill
+            entry={{ name, qty, known: true }}
+            hand={hand}
+            onHover={onHover}
+            brewCounts={brewCounts}
+            onShiftToBrew={onShiftToBrew}
+          />
         </span>
       ))}
       {combo.strikes > 0 && (
@@ -527,8 +638,14 @@ function PerfumeCard({
   brewList,
   brewEmpty,
   pinned,
+  canPin,
   onTogglePin,
-  onAddIngredient,
+  expanded,
+  onToggleExpanded,
+  hand,
+  onHover,
+  brewCounts,
+  onShiftToBrew,
 }: {
   perfume: Perfume;
   res: EvalResult;
@@ -536,8 +653,14 @@ function PerfumeCard({
   brewList: string[];
   brewEmpty: boolean;
   pinned: boolean;
+  canPin: boolean;
   onTogglePin: (key: string) => void;
-  onAddIngredient?: (key: string, qty?: number) => void;
+  expanded: boolean;
+  onToggleExpanded: (key: string) => void;
+  hand: HandApi;
+  onHover: (itemKey: string | null) => void;
+  brewCounts: Record<string, number>;
+  onShiftToBrew: (itemKey: string) => void;
 }) {
   const integ = integrateRecipe(perfume);
   const more = recipesFor(perfume);
@@ -545,8 +668,8 @@ function PerfumeCard({
   const tiersWithCombos = Array.from({ length: MAX_STRIKES + 1 }, (_, t) => t).filter(
     (t) => more.some((tiers) => tiers[t].length > 0),
   );
-  const [moreOpen, setMoreOpen] = useState(false);
-  // strike tiers revealed so far (0 = only strike-free combos)
+  // strike tiers revealed so far (0 = only strike-free combos) — local, like
+  // scroll: SharedUI only tracks which folds are open
   const [strikesShown, setStrikesShown] = useState(0);
   const nextTier = tiersWithCombos.find((t) => t > strikesShown);
 
@@ -563,18 +686,23 @@ function PerfumeCard({
       <button
         type="button"
         onClick={() => onTogglePin(perfume.key)}
+        disabled={!canPin}
         aria-pressed={pinned}
         aria-label={pinned ? `Unpin ${perfume.name}` : `Pin ${perfume.name}`}
-        title={pinned ? "Unpin" : "Pin to the top"}
+        title={!canPin ? "pins are owner-only" : pinned ? "Unpin" : "Pin to the top"}
         className={`absolute right-1 top-1 z-10 grid h-5 w-5 place-items-center rounded transition-colors duration-150 ${
-          pinned ? "text-accent" : "text-text-faint opacity-40 hover:opacity-100 hover:text-text-muted"
+          pinned
+            ? "text-accent"
+            : canPin
+              ? "text-text-faint opacity-40 hover:opacity-100 hover:text-text-muted"
+              : "text-text-faint opacity-25"
         }`}
       >
         <svg viewBox="0 0 16 16" width={13} height={13} fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden="true">
           <path d="M9.5 1.8 14.2 6.5 12.7 8l-.5-.2-2.7 2.7c.3 1.2 0 2.4-.8 3.2L5.4 10.4 2 13.8l-.9.3.3-.9 3.4-3.4-3.3-3.3c.8-.8 2-1.1 3.2-.8l2.7-2.7-.2-.5z" />
         </svg>
       </button>
-      {/* one compact strip: name + weight (perfumes button beneath), the
+      {/* one compact strip: name + weight (recipes button beneath), the
           required frequencies (symbols only, wrapping as needed), then the
           brew formula — 🫕 + box of what's still missing */}
       <div className="flex items-start gap-2.5 p-2.5">
@@ -591,13 +719,13 @@ function PerfumeCard({
           <button
             type="button"
             onClick={() => {
-              setMoreOpen((o) => !o);
+              onToggleExpanded(perfume.key);
               setStrikesShown(0);
             }}
-            aria-expanded={moreOpen}
+            aria-expanded={expanded}
             className="mt-1 rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
           >
-            recipes {moreOpen ? "▴" : "▾"}
+            recipes {expanded ? "▴" : "▾"}
           </button>
         </div>
 
@@ -673,7 +801,7 @@ function PerfumeCard({
         {perfume.effect}
       </p>
 
-      {moreOpen && (
+      {expanded && (
         <div className="space-y-2 border-t border-border/60 px-3 py-2.5">
           {tiersWithCombos.filter((t) => t <= strikesShown).length === 0 && (
             <p className="font-mono text-[10px] italic text-text-faint">
@@ -700,7 +828,14 @@ function PerfumeCard({
                       )}
                       <div className="space-y-1">
                         {more[ri][t].slice(0, 30).map((combo, ci) => (
-                          <ComboRow key={ci} combo={combo} onAdd={onAddIngredient} />
+                          <ComboRow
+                            key={ci}
+                            combo={combo}
+                            hand={hand}
+                            onHover={onHover}
+                            brewCounts={brewCounts}
+                            onShiftToBrew={onShiftToBrew}
+                          />
                         ))}
                         {more[ri][t].length > 30 && (
                           <p className="font-mono text-[10px] italic text-text-faint">…and more</p>

@@ -1,26 +1,75 @@
 "use client";
 
-// The ingredients panel, in two tabs: the 96 base ingredients and the pure
-// frequencies. Search matches names or any emitted frequency (id or school
-// name — e.g. "transmutation" finds every T-emitter); the square button by
-// the search filters by frequency (its icon shows the active filter). Rows
-// in the brew are ringed amber and carry −/count/+ controls; clicking the
-// row body adds one when absent, or removes every copy when present.
-// Hovering a row previews it in the cauldron; dragging a row toward the
-// cauldron carries it there.
+// The input panel (left column of the bench): the viewer's INVENTORY as an
+// icon grid on top — three auto-growing sections — and the full CATALOG (96
+// ingredients + pures, two tabs) as rows below. Slots and rows are grabbable
+// per the hand grammar (DESIGN.md): pointer-down picks up (the hand handles
+// drag + the boundary rule), shift-click teleports one unit to the brew,
+// right-click returns one; hover only reports the hovered key — the brew bar
+// renders the preview, never the cauldron graph. Header actions: Import
+// (tolerant paste -> preview -> merge/replace) and Copy (clipboard export),
+// plus per-slot Send — Import/Send owner-only. Search and the multi-select
+// frequency/type filter narrow BOTH the grid and the catalog (AND semantics).
 
-import { useMemo, useRef, useState } from "react";
-import type { Ingredient } from "../lib/types";
-import type { IngredientPanelProps } from "./contracts";
-import { ALL_FREQUENCIES, FUND, isPureKey, ingredientWeight } from "../data/base";
-import FrequencyFilterButton, { freqLabel, isTypeFilter } from "./frequency-filter";
-import { FrequencyGlyph, FrequencySymbol, TypeGlyph, ChargeSymbol } from "../lib/frequencies";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Ingredient, Perfume } from "../lib/types";
+import type {
+  BenchPermissions,
+  Inventory,
+  SharedUI,
+} from "../lib/bench-types";
+import type { BenchHand } from "../lib/use-hand";
+import {
+  ALL_FREQUENCIES,
+  FUND,
+  basePerfumes,
+  ingredientWeight,
+  isPureKey,
+} from "../data/base";
+import { formatInventory, getCount, type CatalogEntry } from "../lib/inventory";
+import {
+  ChargeSymbol,
+  FrequencyGlyph,
+  FrequencySymbol,
+  TypeGlyph,
+} from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
+import FrequencyFilterButton from "./frequency-filter";
+import InventoryGrid, {
+  CountBadge,
+  grabHandlers,
+  type InventorySlotItem,
+} from "./inventory-grid";
+import ImportDialog from "./import-dialog";
 
+export interface IngredientPanelProps {
+  // ingredients + pures (the 96 + pure frequencies); perfume display names
+  // resolve through data/base.
+  catalog: Ingredient[];
+  inventory: Inventory;
+  // copies of each catalog key currently in the brew — ghosts icons here
+  brewCounts: Record<string, number>;
+  ui: SharedUI;
+  onUI: (patch: Partial<SharedUI>) => void;
+  hand: BenchHand;
+  permissions: BenchPermissions;
+  isAnon: boolean;
+  members: { benchKey: string; name: string }[];
+  onImport: (rows: { itemKey: string; count: number }[], mode: "merge" | "replace") => void;
+  onTransfer: (toBenchKey: string, itemKey: string, n: number) => void;
+  // hover reporting only — the client decides what previews where
+  onHover: (itemKey: string | null) => void;
+  // DESIGN teleports HandApi cannot express: shift-click sends one unit
+  // input -> brew; right-click with an empty hand on an in-brew item returns
+  // one unit brew -> inventory. Wire to moveToBrew / moveToInventory, n=1.
+  onShiftToBrew?: (itemKey: string) => void;
+  onUnbrewOne?: (itemKey: string) => void;
+}
 
+// ── ordering (unchanged from the stepper-era panel) ──────────────────────────
 // Frequencies-tab order: pure strike/wild first, then everything by WEIGHT
-// (ALL_FREQUENCIES is already weight-ordered: fundamentals, then named
-// lightest-to-heaviest).
+// (ALL_FREQUENCIES is already weight-ordered). Ingredients-tab order: emitters
+// lightest-first; the ⊖/⊕ charge carriers sort to the very end.
 const FREQ_INDEX = new Map(ALL_FREQUENCIES.map((t, i) => [t.id, i]));
 function pureRank(ing: Ingredient): number {
   return ing.strike > 0 || ing.wild > 0 ? 0 : 1;
@@ -28,192 +77,333 @@ function pureRank(ing: Ingredient): number {
 function freqOrder(ing: Ingredient): number {
   return FREQ_INDEX.get(ing.key.slice(5)) ?? 99;
 }
-
-// Ingredients-tab order: emitters lightest-first; the ⊖/⊕ charge carriers
-// sort to the very end.
 function ingredientRank(ing: Ingredient): number {
   return ing.strike > 0 || ing.wild > 0 ? 1 : 0;
 }
 
-// "Pure A" -> "A — Abjuration", "Pure Ignetium" -> "Ignetium",
-// "Pure Strike" -> "Strike"
-function pureName(ing: Ingredient): string {
-  const id = ing.key.slice(5);
-  if (id === "strike") return "Strike";
-  if (id === "wild") return "Wild";
-  return freqLabel(id);
+// ── filtering ────────────────────────────────────────────────────────────────
+// ui.inputFilters mixes frequency ids (plus the strike/wild pseudo-filters)
+// with "type:<t>" entries. Semantics per DESIGN.md: every selected frequency
+// must match (AND); types OR among themselves, AND with the frequencies.
+
+function splitFilters(values: string[]): { types: string[]; freqs: string[] } {
+  const types: string[] = [];
+  const freqs: string[] = [];
+  for (const v of values) {
+    if (v.startsWith("type:")) types.push(v.slice(5));
+    else freqs.push(v);
+  }
+  return { types, freqs };
 }
 
-type Tab = "ingredients" | "frequencies";
+function ingredientPasses(ing: Ingredient, types: string[], freqs: string[]): boolean {
+  if (types.length > 0 && (!ing.type || !types.includes(ing.type))) return false;
+  return freqs.every((f) =>
+    f === "strike" ? ing.strike > 0 : f === "wild" ? ing.wild > 0 : ing.emits.includes(f),
+  );
+}
+
+// A perfume passes when SOME tuning contains every selected frequency; type
+// filters are ingredient-only, so any type selection hides perfumes.
+function perfumePasses(perfume: Perfume | undefined, types: string[], freqs: string[]): boolean {
+  if (types.length > 0) return false;
+  if (freqs.length === 0) return true;
+  if (!perfume) return false;
+  return perfume.reqs.some((req) => freqs.every((f) => req.includes(f)));
+}
+
+// Search matches names or any emitted frequency (id or school name — e.g.
+// "transmutation" finds every T-emitter); perfumes match name or any tuning.
+function ingredientMatchesSearch(ing: Ingredient, q: string): boolean {
+  if (!q) return true;
+  if (ing.name.toLowerCase().includes(q)) return true;
+  if (ing.emits.some((t) => t.toLowerCase().includes(q))) return true;
+  return ing.emits.some((t) => (FUND[t]?.school ?? "").toLowerCase().includes(q));
+}
+
+function perfumeMatchesSearch(perfume: Perfume | undefined, name: string, q: string): boolean {
+  if (!q) return true;
+  if (name.toLowerCase().includes(q)) return true;
+  if (!perfume) return false;
+  return perfume.reqs.some((req) =>
+    req.some(
+      (id) => id.toLowerCase().includes(q) || (FUND[id]?.school ?? "").toLowerCase().includes(q),
+    ),
+  );
+}
+
+const ACTION_BTN =
+  "rounded-md border border-border px-2 py-1 font-mono text-[11px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text";
 
 export default function IngredientPanel({
-  ingredients,
+  catalog,
+  inventory,
   brewCounts,
-  onAdd,
-  onDec,
-  onRemoveAll,
-  onPreview,
-  onBeginDrag,
+  ui,
+  onUI,
+  hand,
+  permissions,
+  isAnon,
+  members,
+  onImport,
+  onTransfer,
+  onHover,
+  onShiftToBrew,
+  onUnbrewOne,
 }: IngredientPanelProps) {
-  const [tab, setTab] = useState<Tab>("ingredients");
-  const [search, setSearch] = useState("");
-  const [freqFilter, setFreqFilter] = useState<string>("");
-
-  const tabItems = useMemo(
-    () => ingredients.filter((i) => (tab === "frequencies") === isPureKey(i.key)),
-    [ingredients, tab],
+  const [importOpen, setImportOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    [],
   );
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    // the frequency filter only applies (and only shows) on the ingredients tab
-    return tabItems
-      .filter((ing) => {
-        if (tab !== "ingredients" || !freqFilter) return true;
-        if (isTypeFilter(freqFilter)) return ing.type === freqFilter.slice(5);
-        if (freqFilter === "strike") return ing.strike > 0;
-        if (freqFilter === "wild") return ing.wild > 0;
-        return ing.emits.includes(freqFilter);
-      })
-      .filter((ing) => {
-        if (!q) return true;
-        if (ing.name.toLowerCase().includes(q)) return true;
-        // by emitted frequency: id ("En") or school name ("transmutation")
-        if (ing.emits.some((t) => t.toLowerCase().includes(q))) return true;
-        if (ing.emits.some((t) => (FUND[t]?.school ?? "").toLowerCase().includes(q))) return true;
-        return false;
-      })
-      .sort((a, b) =>
-        tab === "frequencies"
-          ? pureRank(a) - pureRank(b) || freqOrder(a) - freqOrder(b)
-          : ingredientRank(a) - ingredientRank(b) ||
-            ingredientWeight(a) - ingredientWeight(b) ||
+  const ingByKey = useMemo(() => new Map(catalog.map((i) => [i.key, i])), [catalog]);
+  const perfumeByKey = useMemo(() => new Map(basePerfumes.map((p) => [p.key, p])), []);
+
+  // names the importer/exporter can resolve: the item catalog + perfumes
+  const nameCatalog = useMemo<CatalogEntry[]>(
+    () => [
+      ...catalog.map(({ key, name }) => ({ key, name })),
+      ...basePerfumes.map(({ key, name }) => ({ key, name })),
+    ],
+    [catalog],
+  );
+
+  const q = ui.inputSearch.trim().toLowerCase();
+  const { types, freqs } = useMemo(() => splitFilters(ui.inputFilters), [ui.inputFilters]);
+
+  // ---- the grid: inventory ∪ in-brew keys, so a fully-brewed stack keeps its
+  // slot (ghosted icon, no badge — "you took the icon") ----
+  const gridSections = useMemo(() => {
+    const itemSlots = (section: "ingredients" | "pures") => {
+      const keys = new Set(Object.keys(inventory[section]));
+      for (const [k, n] of Object.entries(brewCounts)) {
+        if (n > 0 && (section === "pures") === isPureKey(k)) keys.add(k);
+      }
+      const items: InventorySlotItem[] = [];
+      for (const key of keys) {
+        const ing = ingByKey.get(key);
+        if (!ing) continue;
+        if (!ingredientPasses(ing, types, freqs) || !ingredientMatchesSearch(ing, q)) continue;
+        items.push({
+          key,
+          name: ing.name,
+          count: inventory[section][key] ?? 0,
+          inBrew: brewCounts[key] ?? 0,
+          ing,
+        });
+      }
+      items.sort((a, b) =>
+        section === "pures"
+          ? pureRank(a.ing!) - pureRank(b.ing!) || freqOrder(a.ing!) - freqOrder(b.ing!)
+          : ingredientRank(a.ing!) - ingredientRank(b.ing!) ||
+            ingredientWeight(a.ing!) - ingredientWeight(b.ing!) ||
             a.name.localeCompare(b.name),
       );
-  }, [tab, tabItems, freqFilter, search]);
+      return items;
+    };
+
+    const perfumeItems: InventorySlotItem[] = Object.entries(inventory.perfumes)
+      .filter(([, n]) => n > 0)
+      .map(([key, count]) => ({
+        key,
+        name: perfumeByKey.get(key)?.name ?? key,
+        count,
+        inBrew: 0,
+      }))
+      .filter(
+        (item) =>
+          perfumePasses(perfumeByKey.get(item.key), types, freqs) &&
+          perfumeMatchesSearch(perfumeByKey.get(item.key), item.name, q),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const units = (rec: Record<string, number>) =>
+      Object.values(rec).reduce((s, n) => s + n, 0);
+
+    return [
+      {
+        id: "ingredients" as const,
+        label: "ingredients",
+        items: itemSlots("ingredients"),
+        owned: units(inventory.ingredients),
+      },
+      {
+        id: "pures" as const,
+        label: "pure frequencies",
+        items: itemSlots("pures"),
+        owned: units(inventory.pures),
+      },
+      {
+        id: "perfumes" as const,
+        label: "perfumes",
+        items: perfumeItems,
+        owned: units(inventory.perfumes),
+      },
+    ];
+  }, [inventory, brewCounts, ingByKey, perfumeByKey, types, freqs, q]);
+
+  // ---- the catalog ----
+  const tabItems = useMemo(
+    () => catalog.filter((i) => (ui.inputTab === "frequencies") === isPureKey(i.key)),
+    [catalog, ui.inputTab],
+  );
+
+  const filtered = useMemo(
+    () =>
+      tabItems
+        .filter((ing) => ingredientPasses(ing, types, freqs) && ingredientMatchesSearch(ing, q))
+        .sort((a, b) =>
+          ui.inputTab === "frequencies"
+            ? pureRank(a) - pureRank(b) || freqOrder(a) - freqOrder(b)
+            : ingredientRank(a) - ingredientRank(b) ||
+              ingredientWeight(a) - ingredientWeight(b) ||
+              a.name.localeCompare(b.name),
+        ),
+    [tabItems, types, freqs, q, ui.inputTab],
+  );
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(formatInventory(inventory, nameCatalog));
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // clipboard unavailable (permissions / insecure context): no confirmation
+    }
+  };
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
-      {/* header + tabs */}
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="flex items-center gap-1">
-          {(["ingredients", "frequencies"] as Tab[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              aria-pressed={tab === t}
-              className={`rounded-md px-2.5 py-1.5 text-sm font-semibold transition-colors duration-150 ${
-                tab === t
-                  ? "bg-surface-alt text-text"
-                  : "text-text-faint hover:text-text-muted"
-              }`}
-            >
-              {t === "ingredients" ? "Ingredients" : "Frequencies"}
-            </button>
-          ))}
-        </div>
-        <span className="font-mono text-xs tabular-nums text-text-faint">
-          {filtered.length}/{tabItems.length}
-        </span>
-      </div>
-
-      {/* controls: search with the square frequency-filter button beside it */}
+      {/* search + the multi frequency/type filter — narrows grid AND catalog */}
       <div className="border-b border-border p-3">
         <div className="flex items-stretch gap-2">
           <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="search ingredients or frequencies…"
+            value={ui.inputSearch}
+            onChange={(e) => onUI({ inputSearch: e.target.value })}
+            placeholder="search ingredients, frequencies, perfumes…"
             spellCheck={false}
             className="w-full min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
           />
-          {tab === "ingredients" && (
-            <FrequencyFilterButton value={freqFilter} onChange={setFreqFilter} includeCharges includeTypes />
-          )}
+          <FrequencyFilterButton
+            values={ui.inputFilters}
+            onChange={(values) => onUI({ inputFilters: values })}
+            includeCharges
+            includeTypes
+          />
         </div>
       </div>
 
-      {/* list */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {filtered.length === 0 ? (
-          <p className="px-4 py-6 text-center font-mono text-xs text-text-faint">
-            {tab === "ingredients" ? "no ingredients match" : "no frequencies match"}
-          </p>
-        ) : (
-          <ul className="divide-y divide-border/50">
-            {filtered.map((ing) =>
-              tab === "frequencies" ? (
-                <FrequencyRow
+      {/* data-pf-surface: presence coordinates are content-space of this
+          scroll container, so spectators track rows, not pixels */}
+      <div data-pf-surface="input" className="min-h-0 flex-1 overflow-y-auto">
+        {/* ── inventory ── */}
+        <section aria-label="Inventory">
+          <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
+            <h2 className="text-sm font-semibold text-text-muted">Inventory</h2>
+            <div className="flex items-center gap-1.5">
+              {permissions.editInventory && (
+                <button
+                  type="button"
+                  onClick={() => setImportOpen(true)}
+                  title="Paste an inventory as text"
+                  className={ACTION_BTN}
+                >
+                  import
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={copy}
+                title="Copy the inventory as text"
+                className={`${ACTION_BTN} ${copied ? "border-success/60 text-success hover:border-success/60 hover:text-success" : ""}`}
+              >
+                {copied ? "copied ✓" : "copy"}
+              </button>
+            </div>
+          </div>
+          {isAnon && (
+            <p className="mx-3 mt-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-[11px] leading-snug text-warning">
+              Anonymous bench — it&apos;s keyed to this browser&apos;s storage and won&apos;t
+              follow you elsewhere. Sign in to keep it.
+            </p>
+          )}
+          <InventoryGrid
+            sections={gridSections}
+            hand={hand}
+            canMove={permissions.moveItems}
+            canTransfer={permissions.editInventory}
+            members={members}
+            onHover={onHover}
+            onTransfer={onTransfer}
+            onShiftToBrew={onShiftToBrew}
+            onUnbrewOne={onUnbrewOne}
+          />
+        </section>
+
+        {/* ── catalog ── */}
+        <section aria-label="Catalog" className="border-t border-border">
+          <div className="flex items-center justify-between px-3 py-2">
+            <div className="flex items-center gap-1">
+              {(["ingredients", "frequencies"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => onUI({ inputTab: t })}
+                  aria-pressed={ui.inputTab === t}
+                  className={`rounded-md px-2.5 py-1.5 text-sm font-semibold transition-colors duration-150 ${
+                    ui.inputTab === t
+                      ? "bg-surface-alt text-text"
+                      : "text-text-faint hover:text-text-muted"
+                  }`}
+                >
+                  {t === "ingredients" ? "Ingredients" : "Frequencies"}
+                </button>
+              ))}
+            </div>
+            <span className="font-mono text-xs tabular-nums text-text-faint">
+              {filtered.length}/{tabItems.length}
+            </span>
+          </div>
+          {filtered.length === 0 ? (
+            <p className="px-4 py-6 text-center font-mono text-xs text-text-faint">
+              {ui.inputTab === "ingredients" ? "no ingredients match" : "no frequencies match"}
+            </p>
+          ) : (
+            <ul className="divide-y divide-border/50">
+              {filtered.map((ing) => (
+                <CatalogRow
                   key={ing.key}
                   ing={ing}
-                  count={brewCounts[ing.key] ?? 0}
-                  onAdd={onAdd}
-                  onDec={onDec}
-                  onRemoveAll={onRemoveAll}
-                  onPreview={onPreview}
-                  onBeginDrag={onBeginDrag}
+                  owned={getCount(inventory, ing.key)}
+                  inBrew={brewCounts[ing.key] ?? 0}
+                  hand={hand}
+                  canMove={permissions.moveItems}
+                  onHover={onHover}
+                  onShiftToBrew={onShiftToBrew}
+                  onUnbrewOne={onUnbrewOne}
                 />
-              ) : (
-                <IngredientRow
-                  key={ing.key}
-                  ing={ing}
-                  count={brewCounts[ing.key] ?? 0}
-                  onAdd={onAdd}
-                  onDec={onDec}
-                  onRemoveAll={onRemoveAll}
-                  onPreview={onPreview}
-                  onBeginDrag={onBeginDrag}
-                />
-              ),
-            )}
-          </ul>
-        )}
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
+
+      {importOpen && (
+        <ImportDialog catalog={nameCatalog} onImport={onImport} onClose={() => setImportOpen(false)} />
+      )}
     </div>
   );
 }
 
-// Shared hover-preview + drag-out behavior for a row body. Click keeps its
-// add/remove semantics; moving >7px turns the press into a drag handled by
-// the client (window-level listeners), and the click that follows a drag is
-// swallowed.
-function useRowGestures(
-  key: string,
-  onPreview?: (key: string | null) => void,
-  onBeginDrag?: (key: string, x: number, y: number) => void,
-) {
-  const drag = useRef({ x: 0, y: 0, active: false, moved: false });
-  return {
-    onMouseEnter: () => onPreview?.(key),
-    onMouseLeave: () => onPreview?.(null),
-    onPointerDown: (e: React.PointerEvent) => {
-      drag.current = { x: e.clientX, y: e.clientY, active: true, moved: false };
-    },
-    onPointerMove: (e: React.PointerEvent) => {
-      const d = drag.current;
-      if (!d.active || d.moved) return;
-      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 7) {
-        d.moved = true;
-        onBeginDrag?.(key, e.clientX, e.clientY);
-      }
-    },
-    onPointerUp: () => {
-      drag.current.active = false;
-    },
-    // true -> this click ended a drag; the caller should ignore it
-    consumeDragClick: () => {
-      if (drag.current.moved) {
-        drag.current.moved = false;
-        return true;
-      }
-      return false;
-    },
-  };
-}
-
-// Geometric −/+ marks: SVG paths center perfectly where text glyphs sit on
-// a baseline and drift.
+// Geometric −/+ marks: SVG paths center perfectly where text glyphs sit on a
+// baseline and drift. The steppers are gone from this panel (the hand replaced
+// them) but the cauldron's charge controls still render these.
 export function MinusMark({ size = 14 }: { size?: number }) {
   return (
     <svg viewBox="0 0 14 14" width={size} height={size} aria-hidden="true">
@@ -229,169 +419,113 @@ export function PlusMark({ size = 14 }: { size?: number }) {
   );
 }
 
-// The −/count/+ cluster, bold enough to read at a glance.
-function CountControls({
-  ing,
-  count,
-  onAdd,
-  onDec,
-}: {
-  ing: Ingredient;
-  count: number;
-  onAdd: (key: string) => void;
-  onDec: (key: string) => void;
-}) {
-  const inBrew = count > 0;
-  return (
-    <span className="flex shrink-0 items-center gap-1 self-center font-mono">
-      <button
-        type="button"
-        onClick={() => onDec(ing.key)}
-        disabled={!inBrew}
-        aria-label={`Remove one ${ing.name}`}
-        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border-2 border-border text-text transition-colors duration-150 hover:border-accent hover:text-accent disabled:opacity-30 disabled:hover:border-border disabled:hover:text-text"
-      >
-        <MinusMark size={15} />
-      </button>
-      <span
-        className={`w-5 text-center text-sm font-bold tabular-nums ${
-          inBrew ? "text-amber-400" : "text-text-muted"
-        }`}
-      >
-        {count}
-      </span>
-      <button
-        type="button"
-        onClick={() => onAdd(ing.key)}
-        aria-label={`Add one ${ing.name}`}
-        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border-2 border-border text-text transition-colors duration-150 hover:border-accent hover:text-accent"
-      >
-        <PlusMark size={15} />
-      </button>
-    </span>
-  );
-}
-
-type RowProps = {
-  ing: Ingredient;
-  count: number;
-  onAdd: (key: string) => void;
-  onDec: (key: string) => void;
-  onRemoveAll: (key: string) => void;
-  onPreview?: (key: string | null) => void;
-  onBeginDrag?: (key: string, x: number, y: number) => void;
-};
+// ── catalog rows ─────────────────────────────────────────────────────────────
+// The stepper-era visuals, minus the −/count/+ cluster and the add/remove-all
+// click toggle: the whole row body is a grab target. In-brew rows keep the
+// amber ring, ghost their icon, and show the in-brew count.
 
 const IN_BREW_ROW =
   "border-l-2 border-amber-400 bg-amber-400/10 ring-1 ring-inset ring-amber-400/50 hover:bg-amber-400/15";
 const OUT_ROW = "border-l-2 border-transparent hover:bg-surface-alt";
 
-function IngredientRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeginDrag }: RowProps) {
+function CatalogRow({
+  ing,
+  owned,
+  inBrew,
+  hand,
+  canMove,
+  onHover,
+  onShiftToBrew,
+  onUnbrewOne,
+}: {
+  ing: Ingredient;
+  owned: number;
+  inBrew: number;
+  hand: BenchHand;
+  canMove: boolean;
+  onHover: (itemKey: string | null) => void;
+  onShiftToBrew?: (itemKey: string) => void;
+  onUnbrewOne?: (itemKey: string) => void;
+}) {
+  const g = grabHandlers({
+    itemKey: ing.key,
+    from: "catalog",
+    // the catalog is boundless — beyond stock the brew marks hypotheticals
+    available: Number.POSITIVE_INFINITY,
+    inBrew,
+    hand,
+    canMove,
+    onHover,
+    onShiftToBrew,
+    onUnbrewOne,
+  });
+  const pure = isPureKey(ing.key);
+  const pureId = pure ? ing.key.slice(5) : null;
   const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
-  const inBrew = count > 0;
-  const g = useRowGestures(ing.key, onPreview, onBeginDrag);
 
   return (
     <li
-      className={`group flex items-center justify-between gap-2 px-4 py-2.5 transition-colors ${
-        inBrew ? IN_BREW_ROW : OUT_ROW
+      data-testid="catalog-row"
+      data-item-key={ing.key}
+      className={`group flex items-center gap-2 px-4 ${pure ? "py-2" : "py-2.5"} transition-colors ${
+        inBrew > 0 ? IN_BREW_ROW : OUT_ROW
       }`}
     >
-      {/* row body: add one when absent, remove all when present */}
       <button
         type="button"
-        onClick={() => {
-          if (g.consumeDragClick()) return;
-          if (inBrew) onRemoveAll(ing.key);
-          else onAdd(ing.key);
-        }}
-        onMouseEnter={g.onMouseEnter}
-        onMouseLeave={g.onMouseLeave}
-        onPointerDown={g.onPointerDown}
-        onPointerMove={g.onPointerMove}
-        onPointerUp={g.onPointerUp}
-        className="flex min-w-0 flex-1 touch-none items-center gap-2.5 text-left"
-        aria-label={
-          inBrew
-            ? `Remove all ${ing.name} from the brew`
-            : `Add ${ing.name} to the brew`
-        }
+        {...g}
+        aria-label={`Pick up ${ing.name}`}
+        aria-disabled={!canMove || undefined}
         title={
-          inBrew
-            ? "Click to remove all from the brew — or drag toward the cauldron"
-            : "Click to add to the brew — or drag toward the cauldron"
+          canMove
+            ? `${ing.name} — click to pick up (again for +1); shift-click sends one to the brew; right-click puts one back`
+            : ing.name
         }
+        className="flex min-w-0 flex-1 touch-none select-none items-center gap-2.5 text-left"
       >
-        <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
-        {ing.type && <TypeGlyph type={ing.type} size={20} />}
+        <span className="relative shrink-0">
+          <span
+            className={`inline-flex transition-opacity duration-150 ${inBrew > 0 ? "opacity-35" : ""}`}
+          >
+            {pure ? (
+              pureId === "strike" || pureId === "wild" ? (
+                <ChargeSymbol kind={pureId} size={30} />
+              ) : (
+                <FrequencyGlyph id={pureId!} size={30} />
+              )
+            ) : (
+              <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
+            )}
+          </span>
+          {owned > 0 && <CountBadge n={owned} className="absolute -bottom-1 -right-1" />}
+        </span>
+        {!pure && ing.type && <TypeGlyph type={ing.type} size={20} />}
         <span className="min-w-0 flex-1 truncate text-base font-semibold text-text">
           {ing.name}
         </span>
-        <span className="flex shrink-0 items-center gap-1">
-          {ing.emits.map((t, i) => (
-            <FrequencySymbol key={`${t}:${i}`} id={t} size={21} />
-          ))}
-          {Array.from({ length: ing.strike }, (_, i) => (
-            <ChargeSymbol key={`s${i}`} kind="strike" size={21} />
-          ))}
-          {Array.from({ length: ing.wild }, (_, i) => (
-            <ChargeSymbol key={`w${i}`} kind="wild" size={21} />
-          ))}
-          {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
-        </span>
-      </button>
-
-      <CountControls ing={ing} count={count} onAdd={onAdd} onDec={onDec} />
-    </li>
-  );
-}
-
-// A pure-frequency row: just the symbol and the full name, centered.
-function FrequencyRow({ ing, count, onAdd, onDec, onRemoveAll, onPreview, onBeginDrag }: RowProps) {
-  const id = ing.key.slice(5);
-  const charge = id === "strike" || id === "wild";
-  const inBrew = count > 0;
-  const g = useRowGestures(ing.key, onPreview, onBeginDrag);
-
-  return (
-    <li
-      className={`group flex items-center justify-between gap-2 px-4 py-2 transition-colors ${
-        inBrew ? IN_BREW_ROW : OUT_ROW
-      }`}
-    >
-      <button
-        type="button"
-        onClick={() => {
-          if (g.consumeDragClick()) return;
-          if (inBrew) onRemoveAll(ing.key);
-          else onAdd(ing.key);
-        }}
-        onMouseEnter={g.onMouseEnter}
-        onMouseLeave={g.onMouseLeave}
-        onPointerDown={g.onPointerDown}
-        onPointerMove={g.onPointerMove}
-        onPointerUp={g.onPointerUp}
-        className="flex min-w-0 flex-1 touch-none items-center gap-2.5 text-left"
-        aria-label={
-          inBrew
-            ? `Remove all ${pureName(ing)} from the brew`
-            : `Add ${pureName(ing)} to the brew`
-        }
-        title={
-          inBrew
-            ? "Click to remove all from the brew — or drag toward the cauldron"
-            : "Click to add to the brew — or drag toward the cauldron"
-        }
-      >
-        {charge ? (
-          <ChargeSymbol kind={id as "strike" | "wild"} size={30} />
-        ) : (
-          <FrequencyGlyph id={id} size={30} />
+        {!pure && (
+          <span className="flex shrink-0 items-center gap-1">
+            {ing.emits.map((t, i) => (
+              <FrequencySymbol key={`${t}:${i}`} id={t} size={21} />
+            ))}
+            {Array.from({ length: ing.strike }, (_, i) => (
+              <ChargeSymbol key={`s${i}`} kind="strike" size={21} />
+            ))}
+            {Array.from({ length: ing.wild }, (_, i) => (
+              <ChargeSymbol key={`w${i}`} kind="wild" size={21} />
+            ))}
+            {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
+          </span>
         )}
-        <span className="truncate text-base font-semibold text-text">{pureName(ing)}</span>
+        {inBrew > 0 && (
+          <span
+            className="shrink-0 font-mono text-sm font-bold tabular-nums text-amber-400"
+            title={`${inBrew} in the brew`}
+          >
+            ×{inBrew}
+          </span>
+        )}
       </button>
-
-      <CountControls ing={ing} count={count} onAdd={onAdd} onDec={onDec} />
     </li>
   );
 }

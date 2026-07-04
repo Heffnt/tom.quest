@@ -8,6 +8,14 @@ export const USER_ROLES = v.union(
   v.literal("tom"),
 );
 
+// One item in a brew pot (bench or party). See bench-types.ts `PotItem`.
+const perfumePotItem = v.object({
+  key: v.string(), // catalog item key ("base:<name>" | "pure:<id>")
+  contributorKey: v.string(),
+  contributorName: v.string(),
+  real: v.boolean(),
+});
+
 export default defineSchema({
   ...authTables,
   users: defineTable({
@@ -195,4 +203,64 @@ export default defineSchema({
     content: v.string(),
     createdAt: v.number(),
   }).index("by_job_created", ["jobId", "createdAt"]),
+
+  // ── Perfumer's Bench (/perfume) — see app/perfume/DESIGN.md "Backend" ──────
+  // Shapes mirror app/perfume/lib/bench-types.ts (PotItem/Inventory/SharedUI).
+  // The pot is PotItem[] rather than bare keys: `real=false` marks a
+  // hypothetical (added beyond the contributor's stock — visible, blocks
+  // brewing) and `contributorKey` lets party removals return items home.
+  perfumeBenches: defineTable({
+    ownerKey: v.string(), // "user:<id>" | "anon:<uuid>"
+    ownerName: v.string(),
+    color: v.string(),
+    pot: v.array(perfumePotItem),
+    strikePlays: v.array(v.string()),
+    wildPlays: v.array(v.string()),
+    inventory: v.object({
+      ingredients: v.record(v.string(), v.number()),
+      pures: v.record(v.string(), v.number()),
+      perfumes: v.record(v.string(), v.number()),
+    }),
+    outputTray: v.record(v.string(), v.number()), // perfume key -> count
+    ui: v.object({
+      inputTab: v.union(v.literal("ingredients"), v.literal("frequencies")),
+      inputSearch: v.string(),
+      inputFilters: v.array(v.string()),
+      perfumeSearch: v.string(),
+      perfumeFilters: v.array(v.string()),
+      expanded: v.array(v.string()),
+      pins: v.array(v.string()), // owner-only writes
+    }),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerKey"]),
+
+  // Singleton (accessed via .first()): the shared party pot.
+  perfumePartyBrew: defineTable({
+    items: v.array(perfumePotItem),
+    strikePlays: v.array(v.string()),
+    wildPlays: v.array(v.string()),
+    outputTray: v.record(v.string(), v.number()),
+    updatedAt: v.number(),
+  }),
+
+  perfumePresence: defineTable({
+    benchKey: v.string(), // ownerKey | "party"
+    clientId: v.string(),
+    name: v.string(),
+    color: v.string(),
+    surface: v.union(v.literal("input"), v.literal("stage"), v.literal("book")),
+    x: v.number(),
+    y: v.number(),
+    hand: v.optional(v.object({ key: v.string(), count: v.number() })),
+    updatedAt: v.number(),
+  }).index("by_bench", ["benchKey"]),
+
+  perfumeEvents: defineTable({
+    benchKey: v.string(),
+    actorKey: v.string(),
+    actorName: v.string(),
+    action: v.string(),
+    detail: v.any(),
+    at: v.number(),
+  }).index("by_bench_at", ["benchKey", "at"]),
 });
