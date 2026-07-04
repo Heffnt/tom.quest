@@ -111,6 +111,67 @@ describe("asBundle (v1 embedded-function blob)", () => {
   });
 });
 
+describe("per-method metric synthesis", () => {
+  const bundle = asBundle(structuredClone(sample));
+
+  it("synthesizes DEFENSE per-method entries from rows[].defense.methods", () => {
+    const defended = bundle.rows.find((r) => (r.defense?.methods?.length ?? 0) > 0)!;
+    const m = defended.defense!.methods.find((x) => typeof x.asr_drop === "number")!;
+    const name = `asr_drop@${m.method}`;
+    const entry = bundle.metric_schema.find((e) => e.name === name)!;
+    expect(entry).toBeTruthy();
+    expect(entry.group).toBe("DEFENSE");
+    expect(entry.label).toContain(m.method);
+    // fraction floor/ceiling like the builder's scalar entries
+    expect(entry.min).toBeLessThanOrEqual(0);
+    expect(entry.max).toBeGreaterThanOrEqual(m.asr_drop!);
+    // the new name rides in the DEFENSE column group, right of the generics
+    const grp = bundle.column_groups.find((g) => g.group === "DEFENSE")!;
+    expect(grp.columns).toContain(name);
+  });
+
+  it("synthesizes INTERP per-kind entries and qualifies the generic labels", () => {
+    const interp = bundle.rows.find((r) => r.interp?.measurement_kind != null)!;
+    const kind = interp.interp!.measurement_kind!;
+    expect(bundle.metric_schema.some((e) => e.name === `interp_measurement@${kind}`)).toBe(true);
+    const generic = bundle.metric_schema.find((e) => e.name === "interp_measurement")!;
+    expect(generic.label).toMatch(/headline/);
+    const genericDrop = bundle.metric_schema.find((e) => e.name === "asr_drop")!;
+    expect(genericDrop.label).toMatch(/best method/);
+  });
+
+  it("is a no-op when the builder already ships @-entries", () => {
+    const raw = structuredClone(sample) as { metric_schema: Array<{ name: string }> };
+    raw.metric_schema.push({
+      name: "asr_drop@builder_method",
+      label: "asr drop · builder method",
+      suite: "outcome",
+      group: "DEFENSE",
+      dtype: "fraction",
+      min: 0,
+      max: 1,
+      format: ".3f",
+    } as never);
+    const b = asBundle(raw);
+    const atNames = b.metric_schema.filter((e) => e.name.includes("@"));
+    expect(atNames).toHaveLength(1); // only the builder's own entry
+    expect(b.metric_schema.find((e) => e.name === "asr_drop")!.label).not.toMatch(/best method/);
+  });
+
+  it("synthesizes SCAN per-family entries from headline scan fields", () => {
+    const raw = structuredClone(sample) as unknown as {
+      rows: Array<{ scan: unknown; status: { has_scan: boolean } }>;
+    };
+    raw.rows[0].scan = { auroc: 0.9, far_at_frr: 0.2, method_family: "weight_probe", scheme: null };
+    raw.rows[0].status.has_scan = true;
+    const b = asBundle(raw as never);
+    const entry = b.metric_schema.find((e) => e.name === "scan_auroc@weight_probe")!;
+    expect(entry).toBeTruthy();
+    expect(entry.group).toBe("SCAN");
+    expect(b.rows.some((r) => r.scan !== null)).toBe(true);
+  });
+});
+
 describe("fnHex compact text", () => {
   it("encodes the arity-3 majority as the classic E8", () => {
     // rows LSB-first: f=1 on 110,101,011,111 -> "00010111"

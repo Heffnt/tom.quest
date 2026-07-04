@@ -104,14 +104,30 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   the backdoor.
 - **Chart** — the same filtered rows: any metric vs any metric (Y select
   lists OUTCOME/DEFENSE first, X lists FUNCTION first), color by facet, one
-  point per run (click → drawer) or per-function mean sized by run count
-  with ±1 SD whiskers (click → scope chip). Optional per-axis log10, an OLS
-  trend toggle (per-color fit lines, r in the legend, overall r/ρ readout —
-  descriptive only; inferential stats stay CMT-side), clickable legend keys
-  (toggle that facet value), box-select drag → X+Y range chips (which also
-  zooms), generous hover targets, edge-flipping tooltip, and a highlight
-  ring on the row hovered/selected elsewhere. This is the RQ1/RQ4
-  instrument: outcome vs complexity, moderated by context.
+  point per run (click → drawer), per-function mean sized by run count
+  with ±1 SD whiskers (click → scope chip), or MEANS — mean Y ± 1 SD per
+  (X value × color) group over the filtered runs, connected per color, so
+  "the average effect of X on Y across everything else" reads directly
+  (continuous X falls back to 12 equal-width bins; the r/ρ readout is
+  computed over the underlying runs, never over the means). Optional
+  per-axis log10, an OLS trend toggle (per-color fit lines, r in the
+  legend, overall r/ρ readout — descriptive only; inferential stats stay
+  CMT-side), clickable legend keys (toggle that facet value), box-select
+  drag → X+Y range chips (which also zooms), generous hover targets,
+  edge-flipping tooltip, and a highlight ring on the row hovered/selected
+  elsewhere. This is the RQ1/RQ4 instrument: outcome vs complexity,
+  moderated by context.
+- **Per-method DEFENSE/INTERP/SCAN metrics** — the generic scalars are
+  HEADLINE rollups (`asr_drop` = best over the run's methods, interp = one
+  headline kind), so per-method values are first-class metrics named
+  `<base>@<method>` (`asr_drop@beear`, `interp_measurement@caa_ablation`;
+  `lib/method-metrics.ts` owns the convention). They ride the ordinary
+  metric_schema/column_groups surface — chart axes, range filters, table
+  columns, exports — with the generic entries relabeled "(best method)" /
+  "(headline)". Newer builders emit them; for older blobs
+  `data/normalize.ts` synthesizes them from `rows[].defense.methods` /
+  `interp.measurement_kind` / `scan.method_family` (a no-op once the
+  builder ships any `@` name — builder extents are then authoritative).
 - **Export menu** (filter bar) — chart: copy plotted CSV / download SVG /
   download PNG (2×, CSS vars resolved). Table: CSV of visible rows ×
   columns. Summary table: group-by facet × chosen metrics, mean ± sd + n

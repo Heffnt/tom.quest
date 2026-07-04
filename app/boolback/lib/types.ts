@@ -225,11 +225,26 @@ export interface Defense {
   methods: DefenseMethod[];
 }
 
+export interface InterpMeasurement {
+  kind: string;
+  value: number | null;
+  null_control: number | null;
+}
+
 export interface Interp {
   measurement_kind: string | null;
   value: number | null;
   null_control: number | null;
   reference_model_diff: number | null;
+  /** ALL measurement kinds on the run (newer builders; headline fields keep one). */
+  measurements?: InterpMeasurement[];
+}
+
+export interface ScanMethod {
+  method: string;
+  scheme?: unknown;
+  auroc: number | null;
+  far_at_frr: number | null;
 }
 
 export interface Scan {
@@ -237,6 +252,8 @@ export interface Scan {
   far_at_frr: number | null;
   method_family: unknown;
   scheme: unknown;
+  /** Per-method detail (newer builders; headline fields keep first-observed). */
+  methods?: ScanMethod[];
 }
 
 export interface Epoch0Baseline {
@@ -330,7 +347,8 @@ export interface ChartConfig extends Record<string, unknown> {
   x: string; // metric_schema name
   y: string; // metric_schema name
   color: FacetKey | "none";
-  mode: "runs" | "functions";
+  /** runs = scatter; functions = mean per function; means = mean y per (x, color) group. */
+  mode: "runs" | "functions" | "means";
   logX: boolean;
   logY: boolean;
   trend: boolean; // OLS line + r/ρ readout

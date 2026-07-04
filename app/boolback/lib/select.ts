@@ -21,6 +21,7 @@ import type {
 } from "./types";
 import { fnText } from "./format";
 import { METRIC_COLUMN_IDS } from "./columns";
+import { METHOD_SEP, methodMetricValue, parseMethodMetric } from "./method-metrics";
 
 export type MetricIndex = Record<string, MetricSchemaEntry>;
 
@@ -76,11 +77,16 @@ const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | nul
 };
 
 /** Read a value for any column for sorting/display (string|number|bool|null).
- * Accepts dotted column ids AND bare non-FUNCTION metric_schema names (range
- * filters / the chart store metrics under their schema names). */
+ * Accepts dotted column ids, bare non-FUNCTION metric_schema names (range
+ * filters / the chart store metrics under their schema names), and per-method
+ * "<base>@<method>" names (lib/method-metrics). */
 export function cellValue(row: RunRow, col: string): string | number | boolean | null {
   const getter = COL_GETTERS[col] ?? COL_GETTERS[METRIC_COLUMN_IDS[col] ?? ""];
   if (getter) return getter(row);
+  if (col.includes(METHOD_SEP)) {
+    const ref = parseMethodMetric(col);
+    if (ref) return methodMetricValue(row, ref);
+  }
   const m = row.function.complexity[col];
   return m === undefined ? null : m;
 }

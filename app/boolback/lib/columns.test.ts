@@ -48,6 +48,19 @@ describe("columns bridge", () => {
     expect(cellValue(r, def.id)).toBe(r.defense!.asr_drop);
   });
 
+  it("per-method DEFENSE names resolve to themselves and read the method value", () => {
+    const r = rowWith((x) => (x.defense?.methods?.length ?? 0) > 0);
+    const m = r.defense!.methods.find((x) => typeof x.asr_drop === "number")!;
+    const name = `asr_drop@${m.method}`;
+    expect(index[name]).toBeTruthy(); // synthesized into metric_schema
+    const def = resolveColumn("DEFENSE", name, index);
+    expect(def.id).toBe(name);
+    expect(def.kind).toBe("numeric");
+    expect(def.metricName).toBe(name);
+    expect(def.label).toBe(index[name].label);
+    expect(cellValue(r, def.id)).toBe(m.asr_drop);
+  });
+
   it("SCAN scan_auroc reads scan.auroc on a scanned run", () => {
     const r = rowWith((x) => x.status.has_scan && x.scan !== null);
     const def = resolveColumn("SCAN", "scan_auroc", index);
