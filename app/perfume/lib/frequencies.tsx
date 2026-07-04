@@ -9,18 +9,19 @@
 // Two kinds of frequency render here:
 //   - FUNDAMENTAL  -> a filled rounded chip with its letter id (A, C, En, ...).
 //   - NAMED        -> a transparent ringed chip showing its emblem glyph,
-//                     copper if summon-only, otherwise phial-green.
+//                     copper if no known ingredient emits it, otherwise
+//                     phial-green.
 
 import React from "react";
 import { createPortal } from "react-dom";
-import { FUND, SUMMON_ONLY, isNamed, NAMED, TYPE_GLYPHS } from "../data/base";
+import { FUND, NO_DIRECT_EMITTER, isNamed, NAMED, TYPE_GLYPHS } from "../data/base";
 import type { IngredientType } from "./types";
 import { GLYPH } from "./emblems";
 
 // --- palette ----------------------------------------------------------------
 
 export const PHIAL = "#6FE3C4"; // phial-green: ordinary named frequencies
-export const COPPER = "#C98A3C"; // copper: summon-only (⊕-only) frequencies
+export const COPPER = "#C98A3C"; // copper: frequencies with no direct emitter
 export const STRIKE = "#a855f7"; // purple: ⊖ strikes
 
 // --- emblem dictionary ------------------------------------------------------
@@ -32,14 +33,15 @@ export { GLYPH };
 
 // --- color helpers ----------------------------------------------------------
 
-/** A named frequency emitted by NO ingredient — only summonable via ⊕. */
-export function isSummonOnly(id: string): boolean {
-  return SUMMON_ONLY.has(id);
+/** A named frequency emitted directly by NO known ingredient — still
+ * reachable by combining emitted frequencies, or by a wild ⊕. */
+export function hasNoDirectEmitter(id: string): boolean {
+  return NO_DIRECT_EMITTER.has(id);
 }
 
-/** Display color for a named frequency: copper if summon-only, else phial. */
+/** Display color for a named frequency: copper if no direct emitter, else phial. */
 export function namedColor(id: string): string {
-  return isSummonOnly(id) ? COPPER : PHIAL;
+  return hasNoDirectEmitter(id) ? COPPER : PHIAL;
 }
 
 /** Display color for a fundamental, falling back to grey for unknown ids.

@@ -188,31 +188,31 @@ function computeIntegrated(perfume: Perfume): Integrated {
 // elsewhere. A common combo whose own ingredients carry the strikes it
 // spends (Black Gas's liver) counts as tier 0. Cached — static inputs.
 
-const MAX_TRIM = 2;
+const MAX_STRIKES = 2;
 
-// tiers[req index][trim] -> combos needing exactly that many outside strikes
+// tiers[req index][strikes] -> combos needing exactly that many outside strikes
 const RECIPES_CACHE = new Map<string, FoundRecipe[][][]>();
 
 function recipesFor(perfume: Perfume): FoundRecipe[][][] {
   const cached = RECIPES_CACHE.get(perfume.key);
   if (cached) return cached;
   const result = perfume.reqs.map((_, ri) => {
-    const tiers: FoundRecipe[][] = Array.from({ length: MAX_TRIM + 1 }, () => []);
+    const tiers: FoundRecipe[][] = Array.from({ length: MAX_STRIKES + 1 }, () => []);
     const seen = new Set<string>();
     // the common d40 combos lead their tier
     for (const c of perfume.combos) {
-      if (c.req !== ri || c.wildAdd > 0) continue;
+      if (c.req !== ri) continue;
       const carried = c.ings.reduce(
         (s, n) => s + (ING_BY_NAME.get(n)?.strike ?? 0),
         0,
       );
-      const ext = Math.max(0, c.trim - carried);
-      if (ext > MAX_TRIM) continue;
+      const ext = Math.max(0, c.strikes - carried);
+      if (ext > MAX_STRIKES) continue;
       seen.add(canon(c.ings));
-      tiers[ext].push({ ings: c.ings, trim: c.trim });
+      tiers[ext].push({ ings: c.ings, strikes: c.strikes });
     }
-    for (const c of findRecipes(perfume.reqs[ri], baseIngredients, MAX_TRIM, 120)) {
-      if (!seen.has(canon(c.ings))) tiers[c.trim].push(c);
+    for (const c of findRecipes(perfume.reqs[ri], baseIngredients, MAX_STRIKES, 120)) {
+      if (!seen.has(canon(c.ings))) tiers[c.strikes].push(c);
     }
     return tiers;
   });
@@ -507,13 +507,13 @@ function ComboRow({
           <IngredientPill entry={{ name, qty, known: true }} onAdd={onAdd} />
         </span>
       ))}
-      {combo.trim > 0 && (
+      {combo.strikes > 0 && (
         <span
           className="font-mono text-[10px]"
           style={{ color: STRIKE }}
-          title={`spend ${combo.trim} strike${combo.trim > 1 ? "s" : ""} to remove the excess`}
+          title={`spend ${combo.strikes} strike${combo.strikes > 1 ? "s" : ""} to remove the excess`}
         >
-          · ⊖{combo.trim}
+          · ⊖{combo.strikes}
         </span>
       )}
     </div>
@@ -541,14 +541,14 @@ function PerfumeCard({
 }) {
   const integ = integrateRecipe(perfume);
   const more = recipesFor(perfume);
-  // trims that actually have combos in some tuning, in reveal order
-  const tiersWithCombos = Array.from({ length: MAX_TRIM + 1 }, (_, t) => t).filter(
+  // strike tiers that actually have combos in some tuning, in reveal order
+  const tiersWithCombos = Array.from({ length: MAX_STRIKES + 1 }, (_, t) => t).filter(
     (t) => more.some((tiers) => tiers[t].length > 0),
   );
   const [moreOpen, setMoreOpen] = useState(false);
   // strike tiers revealed so far (0 = only strike-free combos)
-  const [trimShown, setTrimShown] = useState(0);
-  const nextTier = tiersWithCombos.find((t) => t > trimShown);
+  const [strikesShown, setStrikesShown] = useState(0);
+  const nextTier = tiersWithCombos.find((t) => t > strikesShown);
 
   return (
     <article
@@ -592,7 +592,7 @@ function PerfumeCard({
             type="button"
             onClick={() => {
               setMoreOpen((o) => !o);
-              setTrimShown(0);
+              setStrikesShown(0);
             }}
             aria-expanded={moreOpen}
             className="mt-1 rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
@@ -650,7 +650,7 @@ function PerfumeCard({
             <FrequencyRow req={brewList} size={22} />
             {res.status === "perfect" ? (
               <span className="inline-block rounded border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[11px] text-success">
-                ✦ Brewed
+                ✦ Brewed{res.k > 1 ? ` ×${res.k}` : ""}
               </span>
             ) : (
               <>
@@ -668,14 +668,19 @@ function PerfumeCard({
         )}
       </div>
 
+      {/* what the perfume DOES — "unknown" until discovered in play */}
+      <p className="px-2.5 pb-2 text-[11px] italic leading-snug text-text-muted">
+        {perfume.effect}
+      </p>
+
       {moreOpen && (
         <div className="space-y-2 border-t border-border/60 px-3 py-2.5">
-          {tiersWithCombos.filter((t) => t <= trimShown).length === 0 && (
+          {tiersWithCombos.filter((t) => t <= strikesShown).length === 0 && (
             <p className="font-mono text-[10px] italic text-text-faint">
               no strike-free recipes
             </p>
           )}
-          {Array.from({ length: trimShown + 1 }, (_, t) => t)
+          {Array.from({ length: strikesShown + 1 }, (_, t) => t)
             .filter((t) => tiersWithCombos.includes(t))
             .map((t) => (
               <div key={t} className="space-y-1.5">
@@ -709,7 +714,7 @@ function PerfumeCard({
           {nextTier !== undefined && (
             <button
               type="button"
-              onClick={() => setTrimShown(nextTier)}
+              onClick={() => setStrikesShown(nextTier)}
               className="rounded-md border border-dashed px-2 py-0.5 font-mono text-[10px] transition-colors duration-150 hover:border-solid"
               style={{ borderColor: `${STRIKE}88`, color: STRIKE }}
             >

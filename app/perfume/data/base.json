@@ -17,7 +17,7 @@
   },
   {
    "id": "E",
-   "school": "Evocation*",
+   "school": "Unknown",
    "color": "#7E57C2"
   },
   {
@@ -56,11 +56,6 @@
     "En",
     "C"
    ],
-   "expanded": {
-    "Ev": 2,
-    "En": 1,
-    "C": 1
-   },
    "weight": 4
   },
   {
@@ -72,11 +67,6 @@
     "A",
     "C"
    ],
-   "expanded": {
-    "D": 2,
-    "A": 1,
-    "C": 1
-   },
    "weight": 4
   },
   {
@@ -88,11 +78,6 @@
     "N",
     "T"
    ],
-   "expanded": {
-    "I": 1,
-    "N": 2,
-    "T": 1
-   },
    "weight": 4
   },
   {
@@ -104,11 +89,6 @@
     "D",
     "T"
    ],
-   "expanded": {
-    "A": 2,
-    "D": 1,
-    "T": 1
-   },
    "weight": 4
   },
   {
@@ -120,14 +100,6 @@
     "C",
     "C"
    ],
-   "expanded": {
-    "I": 1,
-    "N": 2,
-    "T": 1,
-    "Ev": 2,
-    "En": 1,
-    "C": 3
-   },
    "weight": 10
   },
   {
@@ -139,12 +111,6 @@
     "Crallax",
     "I"
    ],
-   "expanded": {
-    "D": 6,
-    "A": 3,
-    "C": 3,
-    "I": 1
-   },
    "weight": 13
   },
   {
@@ -156,13 +122,6 @@
     "Ignetium",
     "Crallax"
    ],
-   "expanded": {
-    "Ev": 4,
-    "En": 3,
-    "C": 3,
-    "D": 2,
-    "A": 1
-   },
    "weight": 13
   },
   {
@@ -174,13 +133,6 @@
     "Chrysipil",
     "Yonescope"
    ],
-   "expanded": {
-    "T": 4,
-    "A": 4,
-    "D": 2,
-    "I": 1,
-    "N": 2
-   },
    "weight": 13
   },
   {
@@ -191,16 +143,6 @@
     "Chrysipil",
     "Chrysipil"
    ],
-   "expanded": {
-    "I": 1,
-    "N": 2,
-    "T": 3,
-    "Ev": 2,
-    "En": 1,
-    "C": 3,
-    "A": 4,
-    "D": 2
-   },
    "weight": 18
   },
   {
@@ -211,13 +153,6 @@
     "Myddenic",
     "T"
    ],
-   "expanded": {
-    "T": 9,
-    "A": 8,
-    "D": 4,
-    "I": 2,
-    "N": 4
-   },
    "weight": 27
   },
   {
@@ -228,13 +163,6 @@
     "Ignetium",
     "Crallax"
    ],
-   "expanded": {
-    "Ev": 6,
-    "En": 4,
-    "C": 5,
-    "D": 4,
-    "A": 2
-   },
    "weight": 21
   },
   {
@@ -245,14 +173,6 @@
     "Yonescope",
     "N"
    ],
-   "expanded": {
-    "D": 6,
-    "A": 3,
-    "C": 3,
-    "I": 2,
-    "N": 3,
-    "T": 1
-   },
    "weight": 18
   },
   {
@@ -262,14 +182,6 @@
     "Albutian",
     "Lythillious"
    ],
-   "expanded": {
-    "T": 10,
-    "A": 11,
-    "D": 10,
-    "I": 4,
-    "N": 7,
-    "C": 3
-   },
    "weight": 45
   },
   {
@@ -279,16 +191,6 @@
     "Persimmious",
     "Korastic"
    ],
-   "expanded": {
-    "I": 1,
-    "N": 2,
-    "T": 3,
-    "Ev": 8,
-    "En": 5,
-    "C": 8,
-    "A": 6,
-    "D": 6
-   },
    "weight": 39
   },
   {
@@ -298,16 +200,6 @@
     "Yonescope",
     "Korastic"
    ],
-   "expanded": {
-    "I": 1,
-    "N": 2,
-    "T": 1,
-    "Ev": 6,
-    "En": 4,
-    "C": 5,
-    "D": 4,
-    "A": 2
-   },
    "weight": 25
   },
   {
@@ -317,13 +209,6 @@
     "Albutian",
     "Chrysipil"
    ],
-   "expanded": {
-    "T": 10,
-    "A": 10,
-    "D": 5,
-    "I": 2,
-    "N": 4
-   },
    "weight": 31
   },
   {
@@ -334,16 +219,6 @@
     "Thurmistic",
     "Ontoligin"
    ],
-   "expanded": {
-    "I": 4,
-    "N": 8,
-    "T": 14,
-    "Ev": 14,
-    "En": 9,
-    "C": 13,
-    "A": 18,
-    "D": 15
-   },
    "weight": 95
   }
  ],
@@ -371,8 +246,8 @@
     "N",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Thistle Goblin Tooth",
@@ -383,8 +258,8 @@
     "C",
     "Yonescope"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Blistermoss",
@@ -395,8 +270,8 @@
     "T",
     "Ev"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Aphasia Flower",
@@ -407,8 +282,8 @@
     "Crallax",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Noble Roses",
@@ -419,8 +294,8 @@
     "A",
     "A"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Wailing Thrush Egg",
@@ -431,8 +306,8 @@
     "Myddenic",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Mourningweep",
@@ -443,8 +318,8 @@
     "En",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Shadow Demon Liver",
@@ -452,8 +327,8 @@
    "color": "#000000",
    "type": "animal",
    "emits": [],
-   "minus": 2,
-   "plus": 0
+   "strike": 2,
+   "wild": 0
   },
   {
    "name": "Bitterhearts",
@@ -464,8 +339,8 @@
     "N",
     "D"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Olgrumast Mushroom",
@@ -476,8 +351,8 @@
     "I",
     "A"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Fjeldling Scale",
@@ -488,8 +363,8 @@
     "Draconil",
     "Ignetium"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Northman's Beard",
@@ -500,8 +375,8 @@
     "Ignetium",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Pepperpops",
@@ -512,8 +387,8 @@
     "Ev",
     "Ev"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Banshee's Hair",
@@ -524,8 +399,8 @@
     "N",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Razorclam Pearl",
@@ -536,8 +411,8 @@
     "Silentix",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Brightflower",
@@ -548,8 +423,8 @@
     "Ev",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Sheensacks",
@@ -557,8 +432,8 @@
    "color": "#030100",
    "type": "plant",
    "emits": [],
-   "minus": 1,
-   "plus": 0
+   "strike": 1,
+   "wild": 0
   },
   {
    "name": "Moonchalk",
@@ -569,8 +444,8 @@
     "D",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Ferrenocht Crystals",
@@ -581,8 +456,8 @@
     "N",
     "A"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Redcaps",
@@ -593,8 +468,8 @@
     "En",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Owlbear Saliva",
@@ -605,8 +480,8 @@
     "C",
     "Silentix"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Elves Ear",
@@ -617,8 +492,8 @@
     "D",
     "A"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Bulezau Horn",
@@ -629,8 +504,8 @@
     "Letchettin",
     "D"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Bubble Blossoms",
@@ -641,8 +516,8 @@
     "Chrysipil",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Glitterflies",
@@ -653,8 +528,8 @@
     "T",
     "D"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Great Cold Shard",
@@ -665,8 +540,8 @@
     "Albutian",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Pemneath Peat",
@@ -677,8 +552,8 @@
     "N",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Blood Demon Eye",
@@ -689,8 +564,8 @@
     "Letchettin",
     "Ev"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Jotuun Heart",
@@ -701,8 +576,8 @@
     "A",
     "Silentix"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Cloud Lavender",
@@ -713,8 +588,8 @@
     "C",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Undead Heart",
@@ -725,8 +600,8 @@
     "Myddenic",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Melting Dewdrops",
@@ -737,8 +612,8 @@
     "Chrysipil",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Icecap Crabs",
@@ -749,8 +624,8 @@
     "A",
     "A"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Lady's Gold",
@@ -761,8 +636,8 @@
     "Korastic",
     "Ignetium"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Weird Dog Foot",
@@ -773,8 +648,8 @@
     "D",
     "Ev"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Sanguipoles",
@@ -785,8 +660,8 @@
     "Ignetium",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Quickfish",
@@ -797,8 +672,8 @@
     "D",
     "Crallax"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Green Dragon Venom",
@@ -809,8 +684,8 @@
     "Lythillious",
     "Draconil"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Mandrake",
@@ -821,8 +696,8 @@
     "Yonescope",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Ionillic Eggs",
@@ -833,8 +708,8 @@
     "Yonescope",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Oracite",
@@ -846,8 +721,8 @@
     "D",
     "D"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Lumpkins",
@@ -858,8 +733,8 @@
     "C",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Hyannis Syrup",
@@ -870,8 +745,8 @@
     "D",
     "Ev"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Tekachapi Berries",
@@ -882,8 +757,8 @@
     "Ignetium",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Amiglia Core",
@@ -895,8 +770,8 @@
     "Chrysipil",
     "Ignetium"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Flumph Core",
@@ -908,8 +783,8 @@
     "Chrysipil",
     "Crallax"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Ennerx Core",
@@ -917,8 +792,8 @@
    "color": "#000000",
    "type": "animal",
    "emits": [],
-   "minus": 3,
-   "plus": 0
+   "strike": 3,
+   "wild": 0
   },
   {
    "name": "Lemiwinkles",
@@ -929,8 +804,8 @@
     "C",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Klyst",
@@ -942,8 +817,8 @@
     "T",
     "Silentix"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Aurum",
@@ -954,8 +829,8 @@
     "A",
     "Draconil"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Deadly Moonbloom",
@@ -966,8 +841,8 @@
     "Ev",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Rindergrapes",
@@ -978,8 +853,8 @@
     "Ignetium",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Mara Nur Cap",
@@ -991,8 +866,8 @@
     "E",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Glass",
@@ -1003,8 +878,8 @@
     "Chrysipil",
     "Letchettin"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Evengeist Ear",
@@ -1015,8 +890,8 @@
     "N",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Arcanavore Organ",
@@ -1027,8 +902,8 @@
     "Myddenic",
     "Crallax"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Ogre Hand",
@@ -1038,8 +913,8 @@
    "emits": [
     "Letchettin"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Katowician Honeyhive",
@@ -1050,8 +925,8 @@
     "T",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Sphynx Paw",
@@ -1062,8 +937,8 @@
     "Ev",
     "Ontoligin"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Wraith Whisps",
@@ -1074,8 +949,8 @@
     "Ignetium",
     "Yonescope"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Creeping Coriand",
@@ -1086,8 +961,8 @@
     "E",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Seacursed Scale",
@@ -1098,8 +973,8 @@
     "C",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Lake Gar Eye",
@@ -1110,8 +985,8 @@
     "Ev",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Fulmiles",
@@ -1122,8 +997,8 @@
     "Ignetium",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Goat Fat",
@@ -1133,8 +1008,8 @@
    "emits": [
     "A"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Golden Trilobite",
@@ -1145,8 +1020,8 @@
     "A",
     "Yonescope"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Trihorn",
@@ -1157,8 +1032,8 @@
     "Ev",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Chromatic Corpustules",
@@ -1169,8 +1044,8 @@
     "Ignetium",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Penchant Jellies",
@@ -1182,8 +1057,8 @@
     "E",
     "D"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Bramblechoke",
@@ -1194,8 +1069,8 @@
     "Letchettin",
     "Letchettin"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Scourge of the Inlet",
@@ -1206,8 +1081,8 @@
     "T",
     "D"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Brain Lemming",
@@ -1218,8 +1093,8 @@
     "Myddenic",
     "E"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Sevan Lotus",
@@ -1231,8 +1106,8 @@
     "E",
     "Persimmious"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Southollow Royal Tulip",
@@ -1240,8 +1115,8 @@
    "color": "#D30606",
    "type": "plant",
    "emits": [],
-   "minus": 0,
-   "plus": 1
+   "strike": 0,
+   "wild": 1
   },
   {
    "name": "Treakbug",
@@ -1252,8 +1127,8 @@
     "Ev",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Sanguivore Organ",
@@ -1264,8 +1139,8 @@
     "Lythillious",
     "I"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Baleful Rockfish",
@@ -1277,8 +1152,8 @@
     "E",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Verdaux",
@@ -1289,8 +1164,8 @@
     "E",
     "En"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Rotgulp Eggs",
@@ -1301,8 +1176,8 @@
     "N",
     "Silentix"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Spearfisher Horns",
@@ -1313,8 +1188,8 @@
     "A",
     "Yonescope"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Great Owl Egg",
@@ -1326,8 +1201,8 @@
     "I",
     "Silentix"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Amber",
@@ -1338,8 +1213,8 @@
     "T",
     "Ignetium"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Dwarf Tubers",
@@ -1350,8 +1225,8 @@
     "C",
     "Chrysipil"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Symbiotic Barnacles",
@@ -1362,8 +1237,8 @@
     "Ev",
     "Korastic"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Ooze Cube",
@@ -1375,8 +1250,8 @@
     "E",
     "N"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Lornlarch",
@@ -1387,8 +1262,8 @@
     "Ignetium",
     "Letchettin"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Cave Spider Venom",
@@ -1399,8 +1274,8 @@
     "N",
     "Ignetium"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Stasis Muck",
@@ -1411,8 +1286,8 @@
     "Albutian",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Amethyst",
@@ -1423,8 +1298,8 @@
     "A",
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Emerald",
@@ -1435,8 +1310,8 @@
     "En",
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Sapphire",
@@ -1447,8 +1322,8 @@
     "D",
     "Ev"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Ruby",
@@ -1459,8 +1334,8 @@
     "A",
     "Ev"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Silver",
@@ -1470,8 +1345,8 @@
    "emits": [
     "C"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Gold",
@@ -1481,8 +1356,8 @@
    "emits": [
     "T"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Chrythsmeum",
@@ -1492,8 +1367,8 @@
    "emits": [
     "D"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   },
   {
    "name": "Platinum",
@@ -1503,16 +1378,16 @@
    "emits": [
     "A"
    ],
-   "minus": 0,
-   "plus": 0
+   "strike": 0,
+   "wild": 0
   }
  ],
- "recipes": [
+ "perfumes": [
   {
    "id": "corpse-gas",
    "roll": 1,
    "name": "Corpse Gas",
-   "desc": "A miasma of the freshly turned grave. Crowds part; carrion birds follow.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1544,8 +1419,7 @@
       "Blistermoss"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1553,7 +1427,7 @@
    "id": "swanas-serum",
    "roll": 2,
    "name": "Swana's Serum",
-   "desc": "Swana's gentle restorative -- enchantment folded into a sparkling Crallax heart.",
+   "effect": "Provides 1d6 hp each turn and allows the user to fly. Lasts for an hour.",
    "slots": [
     [
      {
@@ -1585,8 +1459,7 @@
       "Noble Roses"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1594,7 +1467,7 @@
    "id": "mourningweep-oil",
    "roll": 3,
    "name": "Mourningweep Oil",
-   "desc": "Anoint the brow and grieve beautifully. Sorrow, doubled and bound in Necromancy.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1626,8 +1499,7 @@
       "Mourningweep"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1635,7 +1507,7 @@
    "id": "black-gas",
    "roll": 4,
    "name": "Black Gas",
-   "desc": "The liver's hollows strip every stray tone away, leaving one pure necrotic note.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1662,13 +1534,30 @@
      "N"
     ]
    ],
-   "combos": []
+   "combos": [
+    {
+     "ings": [
+      "Shadow Demon Liver",
+      "Ichorberries"
+     ],
+     "req": 0,
+     "strikes": 1
+    },
+    {
+     "ings": [
+      "Shadow Demon Liver",
+      "Bitterhearts"
+     ],
+     "req": 0,
+     "strikes": 1
+    }
+   ]
   },
   {
    "id": "pepperpop-mixture",
    "roll": 5,
    "name": "Pepperpop Mixture",
-   "desc": "Crackles on the skin like chewed embers. Sneeze fire, politely.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1711,8 +1600,7 @@
       "Pepperpops"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -1720,8 +1608,7 @@
       "Pepperpops"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1729,7 +1616,7 @@
    "id": "saltpearl-spray",
    "roll": 6,
    "name": "Saltpearl Spray",
-   "desc": "Brine, hush, and mother-of-pearl -- the quiet of the tide going out.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1761,8 +1648,7 @@
       "Razorclam Pearl"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1770,7 +1656,7 @@
    "id": "auroniels-aroma",
    "roll": 7,
    "name": "Auroniel's Aroma",
-   "desc": "Auroniel's own moonlit glamour; chalk-light over a warm bright bloom.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1802,8 +1688,7 @@
       "Brightflower"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1811,7 +1696,7 @@
    "id": "mindlock-mixture",
    "roll": 8,
    "name": "Mindlock Mixture",
-   "desc": "Twin enchantments bolted to cold iron thought. The mind stays shut.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1843,8 +1728,7 @@
       "Redcaps"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1852,7 +1736,7 @@
    "id": "owlbear-pheromones",
    "roll": 9,
    "name": "Owlbear Pheromones",
-   "desc": "Irresistible to owlbears. Wear at your own considerable risk.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1884,8 +1768,7 @@
       "Elves Ear"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1893,7 +1776,7 @@
    "id": "hags-tincture",
    "roll": 10,
    "name": "Hag's Tincture",
-   "desc": "A crone's disguise in a bottle -- horn-musk sweetened with bubble blossom.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1930,8 +1813,7 @@
       "Bubble Blossoms"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1939,7 +1821,7 @@
    "id": "calming-cologne",
    "roll": 11,
    "name": "Calming Cologne",
-   "desc": "Glitterwing dust over aphasia bloom. The pulse slows; the words come easy.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -1971,8 +1853,7 @@
       "Glitterflies"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -1980,7 +1861,7 @@
    "id": "pensive-perfume",
    "roll": 12,
    "name": "Pensive Perfume",
-   "desc": "Cold-shard clarity with a dewdrop melt. For long thoughts by short candles.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2012,8 +1893,7 @@
       "Melting Dewdrops"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2021,7 +1901,7 @@
    "id": "slippery-serum",
    "roll": 13,
    "name": "Slippery Serum",
-   "desc": "Nothing grips the wearer -- not hands, not ropes, not consequences.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2081,8 +1961,7 @@
       "Quickfish"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2090,8 +1969,7 @@
       "Moonchalk"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2099,8 +1977,7 @@
       "Quickfish"
      ],
      "req": 2,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2108,8 +1985,7 @@
       "Moonchalk"
      ],
      "req": 3,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2117,7 +1993,7 @@
    "id": "solemn-stink",
    "roll": 14,
    "name": "Solemn Stink",
-   "desc": "Peat and old horn. Commands a funeral's gravity in any room.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2160,8 +2036,7 @@
       "Pemneath Peat"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2169,8 +2044,7 @@
       "Pemneath Peat"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2178,7 +2052,7 @@
    "id": "ghostwalk-grog",
    "roll": 15,
    "name": "Ghostwalk Grog",
-   "desc": "Lavender over cold stillness; the dead mistake you for weather.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2221,8 +2095,7 @@
       "Cloud Lavender"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2230,8 +2103,7 @@
       "Cloud Lavender"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2239,7 +2111,7 @@
    "id": "bright",
    "roll": 16,
    "name": "Bright",
-   "desc": "A single brightflower, distilled. Radiance you can wear.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2261,8 +2133,7 @@
       "Brightflower"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2270,7 +2141,7 @@
    "id": "frenzy",
    "roll": 16,
    "name": "Frenzy",
-   "desc": "Brightflower stoked with a northman's fire-beard -- brilliance tipped into mania.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2302,8 +2173,7 @@
       "Brightflower"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2311,7 +2181,7 @@
    "id": "second-spark",
    "roll": 17,
    "name": "Second Spark",
-   "desc": "For engines, hearts, and arguments that have gone out. Reignition guaranteed.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2343,8 +2213,7 @@
       "Lady's Gold"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2352,7 +2221,7 @@
    "id": "potion-of-peril",
    "roll": 18,
    "name": "Potion of Peril",
-   "desc": "Dragon venom on a moss fuse. Handle with tongs and good insurance.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2384,8 +2253,7 @@
       "Blistermoss"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2393,7 +2261,7 @@
    "id": "magnis-mixture",
    "roll": 19,
    "name": "Magnis Mixture",
-   "desc": "Platinum-bound moon-pull. Small metal objects (and admirers) drift closer.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2424,8 +2292,7 @@
       "Platinum"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2433,7 +2300,7 @@
    "id": "ox-odor",
    "roll": 20,
    "name": "Ox Odor",
-   "desc": "Tuber starch and ogre grip. Smell like you can carry the cart yourself.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2464,8 +2331,7 @@
       "Ogre Hand"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2473,7 +2339,7 @@
    "id": "frenetic-fragrance",
    "roll": 21,
    "name": "Frenetic Fragrance",
-   "desc": "Redcap fury lashed to burning larch -- the nose's equivalent of a war drum.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2505,8 +2371,7 @@
       "Lornlarch"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2514,7 +2379,7 @@
    "id": "dribbleblight-draught",
    "roll": 22,
    "name": "Dribbleblight Draught",
-   "desc": "It drips. It blights. The scent arrives three seconds after the dread.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2557,8 +2422,7 @@
       "Undead Heart"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2566,8 +2430,7 @@
       "Mandrake"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2575,7 +2438,7 @@
    "id": "griminal-gas",
    "roll": 23,
    "name": "Griminal Gas",
-   "desc": "Mandrake scream settled over banshee hair. Strictly graveside wear.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2607,8 +2470,7 @@
       "Banshee's Hair"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2616,7 +2478,7 @@
    "id": "regenerative-reek",
    "roll": 24,
    "name": "Regenerative Reek",
-   "desc": "Foul going on, marvelous coming off -- flesh knits under the stench.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2649,8 +2511,7 @@
       "Blistermoss"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2658,7 +2519,7 @@
    "id": "bombastic-brew",
    "roll": 25,
    "name": "Bombastic Brew",
-   "desc": "Twinned conjured winks with a glitter fuse. Loud in every language.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2690,8 +2551,7 @@
       "Glitterflies"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2699,7 +2559,7 @@
    "id": "redroot-derivative",
    "roll": 26,
    "name": "Redroot Derivative",
-   "desc": "The sanguivore's table wine, rooted red and faintly pulsing.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2759,8 +2619,7 @@
       "Sanguivore Organ"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2768,8 +2627,7 @@
       "Sanguipoles"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2777,8 +2635,7 @@
       "Sanguivore Organ"
      ],
      "req": 2,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2786,8 +2643,7 @@
       "Sanguipoles"
      ],
      "req": 3,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2795,7 +2651,7 @@
    "id": "shimmerskin-succulence",
    "roll": 27,
    "name": "Shimmerskin Succulence",
-   "desc": "Scales of light across the skin. Best applied under a full moon.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2840,8 +2696,7 @@
       "Oracite"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2849,8 +2704,7 @@
       "Klyst"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2858,7 +2712,7 @@
    "id": "parasitic-perfume",
    "roll": 28,
    "name": "Parasitic Perfume",
-   "desc": "Symbiotes find you charming. Everything else finds you occupied.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2901,8 +2755,7 @@
       "Treakbug"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -2910,8 +2763,7 @@
       "Symbiotic Barnacles"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2919,7 +2771,7 @@
    "id": "awakening-auroma",
    "roll": 29,
    "name": "Awakening Auroma",
-   "desc": "Smelling salts of the inlet -- divination doubled through a cold snap.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2951,8 +2803,7 @@
       "Scourge of the Inlet"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -2960,7 +2811,7 @@
    "id": "liquidation-liquer",
    "roll": 30,
    "name": "Liquidation Liquer",
-   "desc": "Everything solid remembers it was once soup. Assets included.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -2993,8 +2844,7 @@
       "Stasis Muck"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3002,7 +2852,7 @@
    "id": "antimagic-auroma",
    "roll": 31,
    "name": "Antimagic Auroma",
-   "desc": "A null-scent that eats spellwork; the arcanavore's hunger, bottled.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3066,8 +2916,7 @@
       "Seacursed Scale"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -3075,8 +2924,7 @@
       "Arcanavore Organ"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -3087,8 +2935,7 @@
       "Seacursed Scale"
      ],
      "req": 2,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -3099,8 +2946,7 @@
       "Arcanavore Organ"
      ],
      "req": 3,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3108,7 +2954,7 @@
    "id": "energestic-emulsion",
    "roll": 32,
    "name": "Energestic Emulsion",
-   "desc": "Golden dragon-oil charged with fulmile spark. Vigor with a metallic bite.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3140,8 +2986,7 @@
       "Aurum"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3149,7 +2994,7 @@
    "id": "puppetry-perfumette",
    "roll": 33,
    "name": "Puppetry Perfumette",
-   "desc": "A dab behind the ears -- theirs, not yours. Strings sold separately.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3181,8 +3026,7 @@
       "Brain Lemming"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3190,7 +3034,7 @@
    "id": "invulnerability-ichor",
    "roll": 34,
    "name": "Invulnerability Ichor",
-   "desc": "Trilobite patience in jellied meteor-fire. Blades change the subject.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3223,8 +3067,7 @@
       "Golden Trilobite"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3232,7 +3075,7 @@
    "id": "nocturnal-nectar",
    "roll": 35,
    "name": "Nocturnal Nectar",
-   "desc": "The night in three vintages -- choose your darkness, wear till dawn.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3286,8 +3129,7 @@
       "Great Cold Shard"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -3295,8 +3137,7 @@
       "Evengeist Ear"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -3304,8 +3145,7 @@
       "Cloud Lavender"
      ],
      "req": 2,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3313,7 +3153,7 @@
    "id": "histological-hairoil",
    "roll": 36,
    "name": "Histological Hairoil",
-   "desc": "Sphynx-blessed follicle scripture. Regrows what the wraiths whisked away.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3345,8 +3185,7 @@
       "Wraith Whisps"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3354,7 +3193,7 @@
    "id": "redroot-deconcoctual",
    "roll": 37,
    "name": "Redroot Deconcoctual Derivative",
-   "desc": "The antidote's antidote -- lotus logic unwinding the redroot knot.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3387,8 +3226,7 @@
       "Tekachapi Berries"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3396,7 +3234,7 @@
    "id": "valuers-vapor",
    "roll": 38,
    "name": "Valuers Vapor",
-   "desc": "One sniff prices anything: amber honesty against a golden hunch.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3438,8 +3276,7 @@
       "Amber"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     },
     {
      "ings": [
@@ -3447,8 +3284,7 @@
       "Gold"
      ],
      "req": 1,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3456,7 +3292,7 @@
    "id": "greenery-gas",
    "roll": 39,
    "name": "Greenery Gas",
-   "desc": "Glass-cut chlorophyll. Rooms sprout; ledgers turn over new leaves.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3488,8 +3324,7 @@
       "Glass"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   },
@@ -3497,7 +3332,7 @@
    "id": "swimmers-serum",
    "roll": 40,
    "name": "Swimmer's Serum",
-   "desc": "Gar-eyed and rock-calm below the surface. Breathe easy; swim rude.",
+   "effect": "unknown",
    "slots": [
     [
      {
@@ -3530,8 +3365,7 @@
       "Baleful Rockfish"
      ],
      "req": 0,
-     "trim": 0,
-     "wildAdd": 0
+     "strikes": 0
     }
    ]
   }

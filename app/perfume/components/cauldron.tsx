@@ -54,8 +54,8 @@ export interface CauldronProps {
   onDec: (key: string) => void;
   onStrike: (id: string) => void;
   onUnstrike: (id: string) => void;
-  onSummon: (id: string) => void;
-  onUnsummon: (id: string) => void;
+  onAddWild: (id: string) => void;
+  onRemoveWild: (id: string) => void;
   onClear: () => void;
 }
 
@@ -78,8 +78,8 @@ type Floater = {
   uid: string;
   kind: FloatKind;
   id?: string; // frequency id for freq/ghost
-  summoned?: boolean; // freq summoned via a wildcard (undo-able)
-  // the ingredient this frequency came from; for summoned frequencies and unspent
+  fromWild?: boolean; // frequency added via a wild ⊕ (undo-able)
+  // the ingredient this frequency came from; for wild frequencies and unspent
   // charges it is the ingredient that GRANTED the ⊕/⊖ (charges are spent in
   // brew order, matching how the engine caps plays to charge totals)
   src?: Src;
@@ -211,8 +211,8 @@ export default function Cauldron({
   onDec,
   onStrike,
   onUnstrike,
-  onSummon,
-  onUnsummon,
+  onAddWild,
+  onRemoveWild,
   onClear,
 }: CauldronProps) {
   // The stage renders the previewed brew (hover/drag "what if") — everything
@@ -245,7 +245,7 @@ export default function Cauldron({
 
   // Build the floaters for the frequency arc: every emitted frequency attributed
   // to the ingredient that contributed it (strikes ghost the LAST instances of
-  // a frequency id, mirroring the engine's id-level strikes), then summoned
+  // a frequency id, mirroring the engine's id-level strikes), then wild
   // frequencies (attributed to the ⊕-granting ingredient), then unspent ⊖/⊕
   // charges (attributed to their granting ingredient; charges are spent in brew order).
   const floaters = useMemo<Floater[]>(() => {
@@ -275,7 +275,7 @@ export default function Cauldron({
     const perId: Record<string, number> = {};
     brew.wildPlays.forEach((id, i) => {
       const n = (perId[id] = (perId[id] ?? 0) + 1);
-      out.push({ uid: `p:${id}:${n}`, kind: "freq", id, summoned: true, src: wildSources[i] });
+      out.push({ uid: `p:${id}:${n}`, kind: "freq", id, fromWild: true, src: wildSources[i] });
     });
     for (let i = brew.strikePlays.length; i < strikeSources.length; i++) {
       out.push({ uid: `s:${i}`, kind: "strike", src: strikeSources[i] });
@@ -394,14 +394,14 @@ export default function Cauldron({
           ? STRIKE
           : f.kind === "wild"
             ? COPPER
-            : f.summoned
+            : f.fromWild
               ? COPPER
               : tokenColor(f.id!);
       edges.push({
         key: `e:${f.uid}`,
         d: `M ${from.x} ${from.y - 7} C ${from.x} ${from.y - 18}, ${to.x} ${to.y + 18}, ${to.x} ${to.y + 6}`,
         color,
-        dashed: charge || !!f.summoned || f.kind === "ghost",
+        dashed: charge || !!f.fromWild || f.kind === "ghost",
         opacity: f.kind === "ghost" ? 0.16 : charge ? 0.4 : 0.5,
         width: 1.4,
         ingKey: f.src.key,
@@ -480,10 +480,10 @@ export default function Cauldron({
 
   const onFreqClick = (f: Floater) => {
     if (!f.id) return;
-    // A summoned frequency is dispelled (refunds the ⊕), never struck — striking it
-    // would waste a ⊖ since the engine applies strikes before summons.
-    if (f.summoned) {
-      onUnsummon(f.id);
+    // A wild frequency is dispelled (refunds the ⊕), never struck — striking it
+    // would waste a ⊖ since the engine applies strikes before wilds.
+    if (f.fromWild) {
+      onRemoveWild(f.id);
       setArmed(false);
       return;
     }
@@ -640,8 +640,8 @@ export default function Cauldron({
                 <button
                   type="button"
                   onClick={openPicker}
-                  aria-label="Wildcard — click to choose a frequency to summon"
-                  title={`Wildcard: click to summon any frequency${f.src ? ` (granted by ${f.src.name})` : ""}`}
+                  aria-label="Wild — click to choose a frequency to add"
+                  title={`Wild: click to add any frequency${f.src ? ` (granted by ${f.src.name})` : ""}`}
                   className="cursor-pointer rounded-full"
                   style={{ boxShadow: `0 0 14px ${COPPER}55`, borderRadius: "50%" }}
                 >
@@ -656,7 +656,7 @@ export default function Cauldron({
               const consumedId = consumedInto ? consumedInto.split(":")[1] : null;
               inner = (
                 <div
-                  {...(!ghost && !f.summoned ? { "data-drop-freq": f.uid } : {})}
+                  {...(!ghost && !f.fromWild ? { "data-drop-freq": f.uid } : {})}
                   onClick={() => {
                     if (ghost) {
                       onUnstrike(f.id!);
@@ -681,7 +681,7 @@ export default function Cauldron({
                   aria-label={
                     ghost
                       ? `${f.id} removed — click to restore`
-                      : `${f.id} frequency${f.summoned ? ", summoned — click to dispel" : ""}${
+                      : `${f.id} frequency${f.fromWild ? ", wild — click to dispel" : ""}${
                           f.src ? `, from ${f.src.name}` : ""
                         }${consumedId ? `, combined into ${consumedId}` : ""}`
                   }
@@ -690,8 +690,8 @@ export default function Cauldron({
                       ? `${f.id} — struck out (click to restore)`
                       : consumedId
                         ? `${f.id} — combined into ${consumedId}`
-                        : f.summoned
-                          ? `${f.id} — summoned (click to dispel)`
+                        : f.fromWild
+                          ? `${f.id} — wild (click to dispel)`
                           : f.src
                             ? `${f.id} — from ${f.src.name}`
                             : f.id
@@ -710,7 +710,7 @@ export default function Cauldron({
                   }}
                 >
                   <FrequencySymbol id={f.id!} size={44} />
-                  {f.summoned && (
+                  {f.fromWild && (
                     <span
                       className="absolute -right-1 -top-1 grid h-3.5 w-3.5 place-items-center rounded-full text-[8px] font-bold"
                       style={{ background: COPPER, color: "#14132B" }}
@@ -936,7 +936,7 @@ export default function Cauldron({
           x={picker.x}
           y={picker.y}
           onPick={(id) => {
-            onSummon(id);
+            onAddWild(id);
             setPicker(null);
           }}
           onClose={() => setPicker(null)}
@@ -1125,14 +1125,14 @@ function WildcardPicker({
       className="fixed z-50 w-[260px] rounded-lg border border-border bg-surface shadow-xl"
       style={{ left, top }}
       role="dialog"
-      aria-label="Summon a frequency"
+      aria-label="Add a wild frequency"
     >
       <div className="border-b border-border p-2">
         <input
           ref={inputRef}
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="summon frequency…"
+          placeholder="wild frequency…"
           spellCheck={false}
           className="w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
         />

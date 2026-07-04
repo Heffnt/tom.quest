@@ -97,13 +97,13 @@ describe("pure frequencies", () => {
     expect(wild.wild).toBe(1);
   });
 
-  it("can bottle a perfume with no real ingredients at all", () => {
+  it("can brew a perfume with no real ingredients at all", () => {
     // Bright = {Ev, En} from two pure frequencies
     const b = brew(["Pure Evocation", "Pure Enchantment"]);
     expect(evaluate(b, perfume("bright")).status).toBe("perfect");
   });
 
-  it("a pure wild's summon counts toward the tally", () => {
+  it("a wild play counts toward the tally", () => {
     const b = brew(["Pure Evocation", "Pure Wild"], [], ["En"]);
     expect(effectiveTally(b)).toEqual({ Ev: 1, En: 1 });
     expect(evaluate(b, perfume("bright")).status).toBe("perfect");
@@ -120,9 +120,10 @@ describe("Swana's Serum", () => {
   });
 });
 
-// ── 3. Black Gas: the wildcard perfume ────────────────────────────────────────
-// Shadow Demon Liver emits nothing but grants ⊖×2; either berry works because
-// the perfume IS the lone Necromancy frequency left after striking the off-frequency.
+// ── 3. Black Gas: the ruled requirement ──────────────────────────────────────
+// The common recipe carries wildcards (Shadow Demon Liver ⊖×2), so the
+// requirement comes from Joe's ruling: the perfume IS the lone Necromancy
+// frequency. Its combos are published with their strike cost.
 
 describe("Black Gas", () => {
   it("is defined as the single tuning [N]", () => {
@@ -145,7 +146,7 @@ describe("Black Gas", () => {
   });
 });
 
-// ── 4. Multi-tuning: either slashed alternative bottles the perfume ──────────
+// ── 4. Multi-tuning: either slashed alternative brews the perfume ────────────
 
 describe("Pepperpop Mixture (2 tunings)", () => {
   it("is perfect via Fjeldling Scale AND via Northman's Beard", () => {
@@ -167,7 +168,7 @@ describe("Pepperpop Mixture (2 tunings)", () => {
 // ── 5. Bright vs Frenzy (both are roll 16) ───────────────────────────────────
 
 describe("Bright and Frenzy", () => {
-  it("Brightflower alone bottles Bright; Frenzy stays in reach (a superset)", () => {
+  it("Brightflower alone brews Bright; Frenzy stays in reach (a superset)", () => {
     const b = brew(["Brightflower"]);
     expect(evaluate(b, perfume("bright")).status).toBe("perfect");
     expect(evaluate(b, perfume("frenzy")).status).toBe("craftable");
@@ -282,7 +283,7 @@ describe("findRecipes", () => {
     ).toBe(true);
   });
 
-  it("never uses strike/wild-carrying or pure ingredients, even with trim allowed", () => {
+  it("never uses strike/wild-carrying or pure ingredients, even with strikes allowed", () => {
     const all = [...baseIngredients, ...pureIngredients];
     const banned = new Set(
       all.filter((i) => i.strike > 0 || i.wild > 0 || i.key.startsWith("pure:")).map((i) => i.name),
@@ -290,7 +291,7 @@ describe("findRecipes", () => {
     for (const r of basePerfumes) {
       for (const req of r.reqs) {
         for (const combo of findRecipes(req, all, 2, 12)) {
-          expect(combo.trim).toBeLessThanOrEqual(2);
+          expect(combo.strikes).toBeLessThanOrEqual(2);
           for (const name of combo.ings) {
             expect(banned.has(name), `${name} in a combo for ${r.key}`).toBe(false);
           }
@@ -299,33 +300,33 @@ describe("findRecipes", () => {
     }
   });
 
-  it("with maxTrim, finds over-emitting combos whose trim counts the strikes needed", () => {
+  it("with maxStrikes, finds over-emitting combos that report their strike cost", () => {
     // Black Gas is a single Necromancy note; the berries over-emit around it
     const combos = findRecipes(["N"], baseIngredients, 2, 120);
-    // trim 0 means exact — nothing to strike
-    for (const c of combos.filter((x) => x.trim === 0)) {
+    // strikes 0 means exact — nothing to strike
+    for (const c of combos.filter((x) => x.strikes === 0)) {
       expect(c.ings.length).toBeGreaterThan(0);
     }
     // over-emitting alternatives exist and report their strike cost, but the
     // strike CARRIERS themselves (Shadow Demon Liver) never join a combo
-    expect(combos.some((c) => c.trim > 0)).toBe(true);
+    expect(combos.some((c) => c.strikes > 0)).toBe(true);
     for (const c of combos) {
       expect(c.ings.includes("Shadow Demon Liver")).toBe(false);
       expect(c.ings.includes("Southollow Royal Tulip")).toBe(false);
     }
     // Ichorberries emit N plus one off frequency -> a 1-strike solo combo
-    expect(combos.some((c) => c.ings.join("+") === "Ichorberries" && c.trim === 1)).toBe(true);
+    expect(combos.some((c) => c.ings.join("+") === "Ichorberries" && c.strikes === 1)).toBe(true);
   });
 
-  it("with maxTrim 0, combos sum exactly to the tuning", () => {
+  it("with maxStrikes 0, combos sum exactly to the tuning", () => {
     const combos = findRecipes(["Ev", "En"], baseIngredients, 0, 50);
-    for (const c of combos) expect(c.trim).toBe(0);
+    for (const c of combos) expect(c.strikes).toBe(0);
   });
 
-  it("every trim-free d40 combo is rediscovered by the solver", () => {
+  it("every strike-free d40 combo is rediscovered by the solver", () => {
     for (const r of basePerfumes) {
       for (const combo of r.combos) {
-        if (combo.trim > 0 || combo.wildAdd > 0) continue;
+        if (combo.strikes > 0) continue;
         const found = findRecipes(r.reqs[combo.req], baseIngredients, 0, 24);
         const want = combo.ings.slice().sort().join("+");
         expect(
@@ -366,7 +367,7 @@ describe("combineFrequencies", () => {
     expect(evaluate(b, perfume("pensive-perfume")).status).toBe("perfect");
   });
 
-  it("brewTally applies strikes/summons first, then combination", () => {
+  it("brewTally applies strikes/wilds first, then combination", () => {
     // Pepperpops (Ev,Ev) + Brightflower (Ev,En) + Silver (C) -> raw {Ev×3,En,C}
     // -> Ignetium consumes Ev×2,En,C leaving {Ignetium, Ev}
     const b = brew(["Pepperpops", "Brightflower", "Silver"]);
@@ -379,5 +380,114 @@ describe("combineFrequencies", () => {
     // {Ignetium, C, Ev, Ev} tuning -> in reach, not off
     const b = brew(["Pepperpops", "Brightflower", "Silver"]);
     expect(evaluate(b, perfume("pepperpop-mixture")).status).toBe("craftable");
+  });
+});
+
+// ── 11. Multiples: a brew makes one type of perfume but many copies ──────────
+
+describe("multiples (B = k·R brews k copies)", () => {
+  it("Pemneath Peat {N,N} brews 2× Black Gas with no strike", () => {
+    const b = brew(["Pemneath Peat"]);
+    const res = evaluate(b, perfume("black-gas"));
+    expect(res.status).toBe("perfect");
+    expect(res.k).toBe(2);
+  });
+
+  it("a doubled common recipe brews 2 copies (Swana's Serum ×2)", () => {
+    const b = brew([
+      "Aphasia Flower", "Noble Roses",
+      "Aphasia Flower", "Noble Roses",
+    ]);
+    const res = evaluate(b, perfume("swanas-serum"));
+    expect(res.status).toBe("perfect");
+    expect(res.k).toBe(2);
+  });
+
+  it("single matches report k = 1", () => {
+    const b = brew(["Brightflower"]);
+    expect(evaluate(b, perfume("bright")).k).toBe(1);
+  });
+
+  it("a brew between multiples is in reach of the next copy", () => {
+    // {N,N,N} = Pemneath Peat + Pure Necromancy: perfect at k=3
+    const b = brew(["Pemneath Peat", "Pure Necromancy"]);
+    const res = evaluate(b, perfume("black-gas"));
+    expect(res.status).toBe("perfect");
+    expect(res.k).toBe(3);
+  });
+
+  it("excess beyond any multiple still needs strikes", () => {
+    // {N, N, En}: k=2 leaves En excess — off without a strike, in reach with one
+    const b = brew(["Pemneath Peat", "Pure Enchantment"]);
+    expect(evaluate(b, perfume("black-gas")).status).toBe("off");
+    const withStrike = brew(["Pemneath Peat", "Pure Enchantment", "Pure Strike"]);
+    const res = evaluate(withStrike, perfume("black-gas"));
+    expect(res.status).toBe("craftable");
+    expect(res.k).toBe(2);
+  });
+});
+
+// ── 12. Engine invariants ─────────────────────────────────────────────────────
+
+describe("engine invariants", () => {
+  it("E2: combination conserves total fundamental weight", async () => {
+    const { freqWeight } = await import("../data/base");
+    const weightOf = (ms: Record<string, number>) =>
+      Object.entries(ms).reduce((s, [id, n]) => s + freqWeight(id) * n, 0);
+    const pools = [
+      ["Ev", "Ev", "En", "C"],
+      ["I", "N", "N", "T", "Ev", "Ev", "En", "C", "C", "C"],
+      ["A", "A", "D", "T", "A", "A", "D", "T", "T", "I", "N", "N", "T"],
+      ["N"],
+    ];
+    for (const pool of pools) {
+      const raw = msFromList(pool);
+      const { tally } = combineFrequencies(raw);
+      expect(weightOf(tally), pool.join(",")).toBe(weightOf(raw));
+    }
+  });
+
+  it("E3: combination is a fixpoint (idempotent, no complete component set left)", async () => {
+    const { named } = await import("../data/base");
+    const pools = [
+      ["Ev", "Ev", "En", "C", "Ev", "En"],
+      ["I", "N", "N", "T", "Ev", "Ev", "En", "C", "C", "C", "D", "D", "A", "C"],
+    ];
+    for (const pool of pools) {
+      const once = combineFrequencies(msFromList(pool)).tally;
+      const twice = combineFrequencies(once).tally;
+      expect(msEqual(once, twice)).toBe(true);
+      for (const n of named) {
+        expect(
+          msIsSubset(msFromList(n.components), once),
+          `${n.id} components still loose`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("E1: no operation produces zero or negative counts", () => {
+    const b = brew(["Brightflower"], ["Ev"]);
+    for (const v of Object.values(effectiveTally(b))) expect(v).toBeGreaterThan(0);
+    for (const v of Object.values(msDiff({ A: 1 }, { A: 5 }))) expect(v).toBeGreaterThan(0);
+  });
+
+  it("E6: every no-direct-emitter frequency is reachable by combining emitted ones", async () => {
+    const { NO_DIRECT_EMITTER, NAMED } = await import("../data/base");
+    // expand a named frequency one level into DIRECTLY EMITTED parts, recursing
+    // through components that are themselves unemitted
+    const emitted = new Set(baseIngredients.flatMap((i) => i.emits));
+    const emittedParts = (id: string): string[] =>
+      NAMED[id].components.flatMap((c) =>
+        emitted.has(c) || !NAMED[c] ? [c] : emittedParts(c),
+      );
+    for (const id of NO_DIRECT_EMITTER) {
+      const parts = emittedParts(id);
+      // every leaf of the expansion is emitted by some known ingredient…
+      for (const p of parts) expect(emitted.has(p), `${id} needs unemitted ${p}`).toBe(true);
+      // …and combining those parts yields the frequency itself
+      const { tally } = combineFrequencies(msFromList(parts));
+      expect(tally[id], `${id} from [${parts.join(",")}]`).toBe(1);
+    }
   });
 });

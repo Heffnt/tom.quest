@@ -43,8 +43,8 @@ function arraysEqual(a: string[], b: string[]): boolean {
 
 // Clamp manual plays to what the brew can support: no more ⊖/⊕ than charges, and
 // a ⊖ may only target a frequency present in the BASE tally (the engine applies
-// strikes before summons, so a strike on a summon-only frequency would waste the
-// charge — summoned frequencies are dispelled with onUnsummon instead).
+// strikes before wilds, so a strike on a frequency only present via a wild
+// would waste the charge — wild frequencies are dispelled with onRemoveWild).
 function reconcile(ings: Ingredient[], strikePlays: string[], wildPlays: string[]) {
   const totals = chargeTotals(ings);
   const nextWild = wildPlays.slice(0, totals.wild);
@@ -152,13 +152,13 @@ export default function PerfumeClient() {
       }),
     [],
   );
-  const summon = useCallback(
+  const addWild = useCallback(
     (id: string) => {
       if (avail.wild > 0) setWildPlays((p) => [...p, id]);
     },
     [avail.wild],
   );
-  const unsummon = useCallback(
+  const removeWild = useCallback(
     (id: string) =>
       setWildPlays((p) => {
         const i = p.indexOf(id);
@@ -167,16 +167,17 @@ export default function PerfumeClient() {
     [],
   );
 
-  // perfumes the current brew matches exactly — named on the cauldron panel
-  const brewed = useMemo(
-    () =>
-      brew.ingredients.length === 0
-        ? []
-        : basePerfumes
-            .filter((r) => evaluate(brew, r).status === "perfect")
-            .map((r) => r.name),
-    [brew],
-  );
+  // perfumes the current brew makes exactly (with copy counts — a tally equal
+  // to k× a tuning brews k copies) — named on the cauldron panel
+  const brewed = useMemo(() => {
+    if (brew.ingredients.length === 0) return [];
+    const out: string[] = [];
+    for (const r of basePerfumes) {
+      const e = evaluate(brew, r);
+      if (e.status === "perfect") out.push(e.k > 1 ? `${r.name} ×${e.k}` : r.name);
+    }
+    return out;
+  }, [brew]);
 
   // per-key counts for the ingredients panel (amber highlight + −/count/+)
   const countsByKey = useMemo(() => {
@@ -337,8 +338,8 @@ export default function PerfumeClient() {
             onDec={decKey}
             onStrike={strike}
             onUnstrike={unstrike}
-            onSummon={summon}
-            onUnsummon={unsummon}
+            onAddWild={addWild}
+            onRemoveWild={removeWild}
             onClear={clear}
           />
         </section>

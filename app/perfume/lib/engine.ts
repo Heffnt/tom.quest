@@ -1,7 +1,13 @@
 // Matching engine for the Perfumer's Bench (/perfume).
-// Pure-TypeScript port of the Three Feifs matching logic from the Byobu repo
-// (index.html lines 2314-2369). Named frequencies are ATOMIC frequencies —
-// they are never unpacked into their fundamental components for matching.
+// Pure TypeScript, shared by the client and (eventually) Convex mutations —
+// there is exactly ONE implementation of the Three Feifs rules.
+//
+// The rules (see Byobu docs/SYSTEM.md and app/transcription.py RULINGS):
+// - Frequencies COMBINE: a multiset equal to a named frequency's components is
+//   interchangeable with it, so brews and requirements are compared as
+//   combination-equivalence classes.
+// - MULTIPLES: a brew makes one type of perfume but many copies — a tally
+//   equal to k× a tuning brews k perfumes.
 
 import type {
   Multiset,
@@ -43,6 +49,14 @@ export function msDiff(a: Multiset, b: Multiset): Multiset {
   return r;
 }
 
+// Every count multiplied by k (k >= 1).
+export function msScale(ms: Multiset, k: number): Multiset {
+  if (k === 1) return ms;
+  const r: Multiset = {};
+  for (const key in ms) r[key] = ms[key] * k;
+  return r;
+}
+
 // Equality over the union of keys, treating a missing key as count 0.
 export function msEqual(a: Multiset, b: Multiset): boolean {
   const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
@@ -60,9 +74,17 @@ export function msToList(ms: Multiset): string[] {
   return list;
 }
 
+// True when every count in `a` fits inside `b`.
+export function msIsSubset(a: Multiset, b: Multiset): boolean {
+  for (const k in a) {
+    if (a[k] > (b[k] || 0)) return false;
+  }
+  return true;
+}
+
 // ── Brew tallies ─────────────────────────────────────────────────────────────
 
-// Sum of every ingredient's emitted frequencies (each frequency atomic).
+// Sum of every ingredient's emitted frequencies.
 export function baseTally(ingredients: Ingredient[]): Multiset {
   const ms: Multiset = {};
   for (const ing of ingredients) {
@@ -85,7 +107,7 @@ export function chargeTotals(ingredients: Ingredient[]): {
   return { strike, wild };
 }
 
-// The brew's frequency multiset after applying ⊖ strikes and ⊕ summons.
+// The brew's frequency multiset after applying ⊖ strikes and ⊕ wilds.
 export function effectiveTally(brew: BrewState): Multiset {
   const ms = baseTally(brew.ingredients);
   for (const id of brew.strikePlays) {
@@ -151,7 +173,7 @@ export function combineFrequencies(pool: Multiset): {
   return { tally, derived };
 }
 
-// The frequencies the brew counts for perfumes: strikes and summons applied
+// The frequencies the brew counts for perfumes: strikes and wilds applied
 // to the raw emissions, then auto-combination.
 export function brewTally(brew: BrewState): Multiset {
   return combineFrequencies(effectiveTally(brew)).tally;
@@ -167,12 +189,17 @@ const STATUS_ORDER: Record<string, number> = { perfect: 0, craftable: 1, off: 2 
 // wins. (Pensive Perfume's own tuning {Albutian,Chrysipil,N,T} self-combines
 // into {Ontoligin,N,T}; raw-vs-raw keeps its common combo a perfect brew.)
 //
-// - "perfect": some form of the brew equals some form of the tuning — brewed.
+// MULTIPLES: for each pairing, every copy-count k = 1..k* is tried, where
+// k* = max over the tuning's frequencies of ceil(B_f / R_f) — beyond k* the
+// excess cannot shrink further and missing only grows.
+//
+// - "perfect": some form of the brew equals k× some form of the tuning —
+//   the brew makes k copies of the perfume.
 // - "craftable" (shown as "in reach"): the perfume can still be made from
 //   here by ADDING frequencies (more ingredients or pure frequencies fill
 //   `missing`), provided any excess can be struck with the ⊖ charges on hand.
 //   An empty cauldron therefore has every perfume in reach.
-// - "off": the brew carries excess the available strikes can't remove.
+// - "off": the brew carries excess the available strikes can't remove at any k.
 export function evalReq(
   brew: BrewState,
   req: string[],
@@ -190,31 +217,39 @@ export function evalReq(
   let best: EvalResult | null = null;
   for (const B of Bs) {
     for (const R of Rs) {
-      const excess = msDiff(B, R);
-      const missing = msDiff(R, B);
-      const exN = msSize(excess);
-      const miN = msSize(missing);
-      const status: EvalResult["status"] = msEqual(B, R)
-        ? "perfect"
-        : exN <= S
-          ? "craftable"
-          : "off";
-      const cand: EvalResult = { status, excess, missing, exN, miN, S, W, reqIndex };
-      if (
-        !best ||
-        STATUS_ORDER[cand.status] < STATUS_ORDER[best.status] ||
-        (STATUS_ORDER[cand.status] === STATUS_ORDER[best.status] &&
-          cand.exN + cand.miN < best.exN + best.miN)
-      ) {
-        best = cand;
+      let kMax = 1;
+      for (const f in R) {
+        kMax = Math.max(kMax, Math.ceil((B[f] || 0) / R[f]));
+      }
+      for (let k = 1; k <= kMax; k++) {
+        const kR = msScale(R, k);
+        const excess = msDiff(B, kR);
+        const missing = msDiff(kR, B);
+        const exN = msSize(excess);
+        const miN = msSize(missing);
+        const status: EvalResult["status"] = msEqual(B, kR)
+          ? "perfect"
+          : exN <= S
+            ? "craftable"
+            : "off";
+        const cand: EvalResult = { status, k, excess, missing, exN, miN, S, W, reqIndex };
+        if (
+          !best ||
+          STATUS_ORDER[cand.status] < STATUS_ORDER[best.status] ||
+          (STATUS_ORDER[cand.status] === STATUS_ORDER[best.status] &&
+            cand.exN + cand.miN < best.exN + best.miN)
+        ) {
+          best = cand;
+        }
       }
     }
   }
   return best!;
 }
 
-// Evaluate a brew against a perfume: the brew matches if it matches ANY tuning,
-// so return the result for the closest one (best status, then least distance).
+// Evaluate a brew against a perfume: the brew matches if it matches ANY tuning
+// at ANY copy-count, so return the result for the closest one (best status,
+// then least distance).
 export function evaluate(brew: BrewState, perfume: Perfume): EvalResult {
   let best: EvalResult | null = null;
   for (let ri = 0; ri < perfume.reqs.length; ri++) {
@@ -231,15 +266,7 @@ export function evaluate(brew: BrewState, perfume: Perfume): EvalResult {
   return best!; // reqs is never empty
 }
 
-// True when every count in `a` fits inside `b`.
-export function msIsSubset(a: Multiset, b: Multiset): boolean {
-  for (const k in a) {
-    if (a[k] > (b[k] || 0)) return false;
-  }
-  return true;
-}
-
-export type FoundRecipe = { ings: string[]; trim: number };
+export type FoundRecipe = { ings: string[]; strikes: number };
 
 // Every combination of ingredients that lands on the target tuning, found by
 // depth-first search over the catalog (repeats allowed, e.g. Chrythsmeum ×4;
@@ -247,15 +274,15 @@ export type FoundRecipe = { ings: string[]; trim: number };
 // strike-carrying and wild-carrying ingredients are always excluded — a combo
 // is emitted frequencies only.
 //
-// `maxTrim` is how far a combo may over-emit: `trim` is the number of ⊖
-// strikes the perfumer must supply FROM ELSEWHERE (a Shadow Demon Liver, a
-// pure strike) to remove the excess. With maxTrim 0 combos sum exactly to
-// the tuning; every ingredient must contribute at least one needed frequency,
-// so no combo carries a purely useless ingredient.
+// `maxStrikes` is how far a combo may over-emit: `strikes` is the number of ⊖
+// the brewer must supply FROM ELSEWHERE (a Shadow Demon Liver, a pure strike)
+// to remove the excess. With maxStrikes 0 combos sum exactly to the tuning;
+// every ingredient must contribute at least one needed frequency, so no combo
+// carries a purely useless ingredient.
 export function findRecipes(
   req: string[],
   ingredients: Ingredient[],
-  maxTrim = 0,
+  maxStrikes = 0,
   cap = 24,
 ): FoundRecipe[] {
   const target = msFromList(req);
@@ -269,7 +296,7 @@ export function findRecipes(
         i.emits.length > 0,
     )
     .filter((i) =>
-      maxTrim > 0
+      maxStrikes > 0
         ? i.emits.some((t) => (target[t] || 0) > 0)
         : msIsSubset(msFromList(i.emits), target),
     )
@@ -279,7 +306,7 @@ export function findRecipes(
   const dfs = (remaining: Multiset, excess: number, start: number): void => {
     if (results.length >= cap) return;
     if (msSize(remaining) === 0) {
-      results.push({ ings: [...cur], trim: excess });
+      results.push({ ings: [...cur], strikes: excess });
       return;
     }
     if (cur.length >= reqSize + 2) return;
@@ -298,7 +325,7 @@ export function findRecipes(
         over += c.ms[id] - take;
       }
       if (!consumed) continue; // contributes nothing toward the tuning
-      if (excess + over > maxTrim) continue;
+      if (excess + over > maxStrikes) continue;
       cur.push(c.name);
       dfs(next, excess + over, k);
       cur.pop();
@@ -307,12 +334,13 @@ export function findRecipes(
   };
   dfs(target, 0, 0);
   return results.sort(
-    (a, b) => a.trim - b.trim || a.ings.length - b.ings.length,
+    (a, b) => a.strikes - b.strikes || a.ings.length - b.ings.length,
   );
 }
 
 // Greedily spend ⊖ on excess and ⊕ on missing until `ingredients` matches the
-// target tuning exactly (or charges run out). Pure: returns the plays to apply.
+// target tuning exactly at k=1 (or charges run out). Pure: returns the plays
+// to apply.
 export function autoResolvePlays(
   ingredients: Ingredient[],
   req: string[],
