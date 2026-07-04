@@ -8,6 +8,7 @@
 // list) is the whole point of the redesign — it cannot drift from the builder.
 
 import type { Bundle, MetricSchemaEntry, MetricSuite } from "./types";
+import { parseMethodMetric } from "./method-metrics";
 
 /** Index metric_schema by metric name. */
 export function indexMetricSchema(
@@ -97,6 +98,50 @@ export function groupedMetricOptions(
   }
   for (const [g, arr] of by) groups.push([g, arr]); // any group not named in order
   return { groups, empty };
+}
+
+// ---------------------------------------------------------------------------
+// Per-method collapsing for metric pickers: "<base>@<method>" entries fold
+// under their base metric the way facet values fold in the + Filter menu.
+// ---------------------------------------------------------------------------
+
+export interface MetricBaseRow {
+  baseName: string;
+  label: string;
+  /** The selectable generic entry (undefined for per-method-only bases). */
+  entry?: MetricSchemaEntry;
+  children: MetricSchemaEntry[];
+}
+
+/** Fold a group's entries into base rows with their per-method children. */
+export function collapseMethodEntries(entries: MetricSchemaEntry[]): MetricBaseRow[] {
+  const rows: MetricBaseRow[] = [];
+  const byBase = new Map<string, MetricBaseRow>();
+  for (const e of entries) {
+    const ref = parseMethodMetric(e.name);
+    if (!ref) {
+      const existing = byBase.get(e.name);
+      if (existing) {
+        existing.entry = e;
+        existing.label = e.label;
+      } else {
+        const row: MetricBaseRow = { baseName: e.name, label: e.label, entry: e, children: [] };
+        rows.push(row);
+        byBase.set(e.name, row);
+      }
+      continue;
+    }
+    let row = byBase.get(ref.base);
+    if (!row) {
+      // Per-method-only base (no generic entry): label from the child's prefix.
+      const cut = e.label.lastIndexOf(" · ");
+      row = { baseName: ref.base, label: cut > 0 ? e.label.slice(0, cut) : ref.base, children: [] };
+      rows.push(row);
+      byBase.set(ref.base, row);
+    }
+    row.children.push(e);
+  }
+  return rows;
 }
 
 // ---------------------------------------------------------------------------

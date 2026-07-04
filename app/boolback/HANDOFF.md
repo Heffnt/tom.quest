@@ -11,7 +11,7 @@ CommandBar   stats(+ⓘ run def) · Table|Chart · ⧉ Copy link · "built 2h ag
 │ (mirrors  ├──────────────────────────────────────┤  any row /   │
 │ the disk  │ TABLE (one row per training run)     │  point click)│
 │ tree)     │   — or —                             │ + raw        │
-│           │ CHART (y vs x, color, runs/functions)│   artifacts  │
+│           │ CHART (y vs x · dimensions panel)    │   artifacts  │
 └───────────┴──────────────────────────────────────┴──────────────┘
 ```
 
@@ -102,32 +102,43 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   (1 = full, 2 = 50/50, 3 = thirds; the all-zeros row is empty), near-black
   outlines separate the colors, and an amber ring means that row ACTIVATES
   the backdoor.
-- **Chart** — the same filtered rows: any metric vs any metric (Y select
-  lists OUTCOME/DEFENSE first, X lists FUNCTION first), color by facet, one
-  point per run (click → drawer), per-function mean sized by run count
-  with ±1 SD whiskers (click → scope chip), or MEANS — mean Y ± 1 SD per
-  (X value × color) group over the filtered runs, connected per color, so
-  "the average effect of X on Y across everything else" reads directly
-  (continuous X falls back to 12 equal-width bins; the r/ρ readout is
-  computed over the underlying runs, never over the means). Optional
-  per-axis log10, an OLS trend toggle (per-color fit lines, r in the
-  legend, overall r/ρ readout — descriptive only; inferential stats stay
-  CMT-side), clickable legend keys (toggle that facet value), box-select
-  drag → X+Y range chips (which also zooms), generous hover targets,
-  edge-flipping tooltip, and a highlight ring on the row hovered/selected
-  elsewhere. This is the RQ1/RQ4 instrument: outcome vs complexity,
-  moderated by context.
+- **Chart** — the same filtered rows: any metric vs any metric via
+  searchable pickers (Y lists OUTCOME/DEFENSE first, X FUNCTION first;
+  per-method entries collapse under their base metric like facet values in
+  `+ Filter`). THE DIMENSIONS PANEL (`lib/dimensions.ts`) replaces the old
+  runs|functions|means toggle and the color dropdown: every run dimension
+  (function identity, model, arity, seed, lr, …) is either SHARED across
+  the filtered view (shown as the points' common context, right side) or
+  DIFFERING (one chip each, biggest split first). A differing dimension is
+  split onto a visual channel (color / shape / size — auto-assigned biggest
+  first under legibility caps, override per chip), filtered to one value
+  (emits an ORDINARY filter chip — one filter mechanism, shared with the
+  table; `fn=` scope chip for the function dimension), or averaged. Points
+  group by (split values × X bucket): mean ± 1 SD whiskers, n-sized points,
+  per-combo connecting lines; a continuous X falls back to 12 equal-width
+  bins; single-run points click through to the drawer. The r/ρ readout and
+  the OLS trend fits are ALWAYS computed over the underlying runs
+  (descriptive only; inferential stats stay CMT-side). Legend rows per
+  channel (keys toggle that value's filter), box-select drag → X+Y range
+  chips (which also zooms), edge-flipping tooltip, and a highlight ring on
+  the row hovered/selected elsewhere. This is the RQ1/RQ4 instrument:
+  outcome vs complexity, moderated by context.
 - **Per-method DEFENSE/INTERP/SCAN metrics** — the generic scalars are
   HEADLINE rollups (`asr_drop` = best over the run's methods, interp = one
   headline kind), so per-method values are first-class metrics named
   `<base>@<method>` (`asr_drop@beear`, `interp_measurement@caa_ablation`;
-  `lib/method-metrics.ts` owns the convention). They ride the ordinary
+  `lib/method-metrics.ts` owns the convention). Defense methods carry the
+  FULL `*_drop` self-join family (`ftr_drop`, `triggerless_correctness_drop`
+  — the utility cost — target/correctness rate drops) per method only (no
+  generic headline exists for those). They ride the ordinary
   metric_schema/column_groups surface — chart axes, range filters, table
   columns, exports — with the generic entries relabeled "(best method)" /
   "(headline)". Newer builders emit them; for older blobs
   `data/normalize.ts` synthesizes them from `rows[].defense.methods` /
   `interp.measurement_kind` / `scan.method_family` (a no-op once the
   builder ships any `@` name — builder extents are then authoritative).
+  Registry-less relic methods (caa/repe/geometry_cone/rome_edit → interp,
+  onion deleted) carry their historical contract + a `legacy` note.
 - **Export menu** (filter bar) — chart: copy plotted CSV / download SVG /
   download PNG (2×, CSS vars resolved). Table: CSV of visible rows ×
   columns. Summary table: group-by facet × chosen metrics, mean ± sd + n

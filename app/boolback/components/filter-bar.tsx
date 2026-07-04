@@ -33,7 +33,13 @@ import {
   FACET_KEYS, FACET_LABELS, countSummary, facetOptions, histogramBins,
   metricRange, statusCounts, type MetricIndex,
 } from "../lib/select";
-import { Y_GROUP_ORDER, formatValue, groupedMetricOptions } from "../lib/metrics";
+import { Y_GROUP_ORDER, collapseMethodEntries, formatValue, groupedMetricOptions } from "../lib/metrics";
+import { parseMethodMetric } from "../lib/method-metrics";
+
+/** The method half of a "<base>@<method>" name (null for plain metrics). */
+function methodPart(name: string): string | null {
+  return parseMethodMetric(name)?.method ?? null;
+}
 import { resolveById, type ColumnDef } from "../lib/columns";
 import { ColumnGroupMenu } from "./column-group-menu";
 import { ExportMenu } from "./export-menu";
@@ -81,7 +87,6 @@ export function FilterBar(props: FilterBarProps) {
   const visibleCols = useBoolbackStore((s) => s.visibleCols);
   const setFacet = useBoolbackStore((s) => s.setFacet);
   const toggleStatus = useBoolbackStore((s) => s.toggleStatus);
-  const addRange = useBoolbackStore((s) => s.addRange);
   const updateRange = useBoolbackStore((s) => s.updateRange);
   const removeRange = useBoolbackStore((s) => s.removeRange);
   const removeSubtreeDir = useBoolbackStore((s) => s.removeSubtreeDir);
@@ -542,6 +547,7 @@ function AddFilterMenu({
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [expandedFacet, setExpandedFacet] = useState<FacetKey | null>(null);
+  const [expandedMetricBase, setExpandedMetricBase] = useState<string | null>(null);
 
   const toggleStatus = useBoolbackStore((s) => s.toggleStatus);
   const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
@@ -598,6 +604,7 @@ function AddFilterMenu({
     setOpen(false);
     setQ("");
     setExpandedFacet(null);
+    setExpandedMetricBase(null);
   };
 
   const statusEntries = STATUS_OPTIONS.filter((o) => matches(o.label));
@@ -729,20 +736,68 @@ function AddFilterMenu({
 
               {(metricEntries.length > 0 || emptyEntries.length > 0) && (
                 <Section label="metric ranges">
-                  {metricEntries.map(({ group, entries }) => (
-                    <div key={group}>
-                      {entries.map((e) => (
-                        <button
-                          key={e.name}
-                          onClick={() => pickMetric(e.name)}
-                          className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
-                        >
-                          <span className="truncate">{e.label}</span>
-                          <span className="text-[10px] uppercase text-text-faint">{group}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ))}
+                  {query !== ""
+                    ? metricEntries.map(({ group, entries }) => (
+                      <div key={group}>
+                        {entries.map((e) => (
+                          <button
+                            key={e.name}
+                            onClick={() => pickMetric(e.name)}
+                            className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
+                          >
+                            <span className="truncate">{e.label}</span>
+                            <span className="text-[10px] uppercase text-text-faint">{group}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))
+                    : metricEntries.map(({ group, entries }) => (
+                      <div key={group}>
+                        {collapseMethodEntries(entries).map((base) => (
+                          <div key={base.baseName}>
+                            <div className="flex items-center">
+                              {base.entry ? (
+                                <button
+                                  onClick={() => pickMetric(base.entry!.name)}
+                                  className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
+                                >
+                                  <span className="truncate">{base.label}</span>
+                                  {base.children.length === 0 && (
+                                    <span className="text-[10px] uppercase text-text-faint">{group}</span>
+                                  )}
+                                </button>
+                              ) : (
+                                <span className="min-w-0 flex-1 truncate px-1.5 py-1 text-text-muted">{base.label}</span>
+                              )}
+                              {base.children.length > 0 && (
+                                <button
+                                  onClick={() => setExpandedMetricBase(
+                                    expandedMetricBase === base.baseName ? null : base.baseName,
+                                  )}
+                                  className="shrink-0 rounded px-1.5 py-1 text-xs text-text-faint hover:text-accent"
+                                  title={`${base.children.length} per-method values`}
+                                >
+                                  {expandedMetricBase === base.baseName ? "▾" : "▸"} {base.children.length}
+                                </button>
+                              )}
+                            </div>
+                            {expandedMetricBase === base.baseName && (
+                              <div className="mb-1 ml-2 border-l border-border/60 pl-2">
+                                {base.children.map((c) => (
+                                  <button
+                                    key={c.name}
+                                    onClick={() => pickMetric(c.name)}
+                                    className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
+                                  >
+                                    <span className="truncate">{methodPart(c.name) ?? c.label}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
                   {emptyEntries.map((e) => (
                     <div
                       key={e.name}

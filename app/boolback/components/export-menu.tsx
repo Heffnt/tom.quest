@@ -191,11 +191,13 @@ function SummaryDialog({
   filters: FilterState;
   onDone: (msg: string) => void;
 }) {
-  // The plan's default group-by is the chart's color facet.
-  const chartColor = useBoolbackStore((s) => s.chart.color);
-  const [groupBy, setGroupBy] = useState<FacetKey>(
-    chartColor === "none" ? "baseModel" : chartColor,
-  );
+  // Default group-by: the chart's color-channel OVERRIDE when it names a
+  // facet (auto-assignments live chart-side), else model.
+  const chartDims = useBoolbackStore((s) => s.chart.dims);
+  const [groupBy, setGroupBy] = useState<FacetKey>(() => {
+    const colorKey = Object.entries(chartDims ?? {}).find(([, t]) => t === "color")?.[0];
+    return colorKey && colorKey !== "function" ? (colorKey as FacetKey) : "baseModel";
+  });
 
   // Outcome-first metric candidates (only those with observed data).
   const candidates = useMemo(() => {

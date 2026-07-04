@@ -7,43 +7,53 @@
 // "does outcome Y move with function-complexity X, and does the context
 // moderate it?"
 //
-//   X = any snapshot metric (FUNCTION group listed first in its select)
-//   Y = any snapshot metric (OUTCOME/DEFENSE listed first in its select) —
-//       per-method DEFENSE/INTERP/SCAN entries ("asr drop · beear") plot one
-//       method's values instead of the generic best-of-methods rollup
-//   color = a facet (arity, trigger form, model, …); legend keys CLICK to
-//           toggle that value in the facet filter
-//   mode = one point per RUN; one point per FUNCTION (mean over its runs,
-//          sized by run count, ±1 SD whiskers); or MEANS — mean Y per
-//          (X value × color) group over the filtered runs, connected per
-//          color, so "the average effect of X on Y across everything else"
-//          reads directly (continuous X falls back to equal-width bins)
-//   trend = per-color OLS fit lines + Pearson r (overall r/ρ in the readout;
-//           in means mode the readout is computed over the underlying runs)
+//   X / Y = any snapshot metric (searchable pickers; per-method
+//       DEFENSE/INTERP/SCAN entries collapse under their base metric)
 //   log   = per-axis log10 toggles (non-positive values dropped, counted)
+//   trend = per-color OLS fit lines + Pearson r (r/ρ readout is ALWAYS
+//       computed over the underlying runs)
 //
-// Hover a point for its identity + values; click a run point to open its
-// drawer; click a function point to scope the filters to that function.
-// Drag a rectangle on the background to add X+Y range filters (which also
-// zooms, since the chart rescales to the filtered set). The row hovered or
-// selected elsewhere (table/tree) is ring-highlighted here.
+// THE DIMENSIONS PANEL (replacing the old runs|functions|means toggle and the
+// color dropdown): every run dimension (function, model, arity, seed, …) is
+// either SHARED across the filtered view (shown as the points' common
+// context) or DIFFERING. Each differing dimension is
+//
+//   split onto a visual channel — color / shape / size — so its values are
+//     distinguishable point-by-point;
+//   filtered to one value via the chip's value list (this emits an ORDINARY
+//     filter chip in the bar above — one filter mechanism, shared with the
+//     table); or
+//   averaged — collapsed into mean ± 1 SD groups (whiskers, n-sized points,
+//     per-group connecting lines across X).
+//
+// Auto-assignment: biggest split first onto color → shape → size (legibility
+// caps in lib/dimensions); everything left is averaged. Chip menus override
+// per dimension. Points group by (split values × X bucket) so averaging never
+// smears across X; a continuous X falls back to equal-width bins.
+//
+// Hover a point for its identity + values; click a single-run point to open
+// its drawer. Drag a rectangle on the background to add X+Y range filters
+// (which also zooms, since the chart rescales to the filtered set). The row
+// hovered or selected elsewhere (table/tree) is ring-highlighted here.
 //
 // Pure SVG — no chart library. Descriptive stats only (lib/stats.ts): the
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, ChartConfig, FacetKey, MetricSchemaEntry, RunRow } from "../lib/types";
+import type { Bundle, DimTreatment, RunRow } from "../lib/types";
 import { DEFAULT_CHART } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
-import { facetValue, numericValue, type MetricIndex } from "../lib/select";
+import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
+import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import {
-  groupedMetricOptions, X_GROUP_ORDER, Y_GROUP_ORDER, type MetricGroupName,
-} from "../lib/metrics";
-import { mean, niceTicks, olsFit, pearson, spearman, stdDev } from "../lib/stats";
-import { groupMeans } from "../lib/aggregate";
+  assignTreatments, summarizeDimensions, type Channel, type DimValues,
+} from "../lib/dimensions";
+import { groupRuns, type GroupedPoint, type RunPoint } from "../lib/aggregate";
+import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
 import { toCsv } from "../lib/export";
-import { fnText, hash01, shortModel } from "../lib/format";
+import { fnText, hash01 } from "../lib/format";
+import { MetricPicker } from "./metric-picker";
 
 /** What the shared Export menu needs from the mounted chart. */
 export interface ChartExportHandle {
@@ -51,22 +61,13 @@ export interface ChartExportHandle {
   getCsv: () => string;
 }
 
-const COLOR_FACETS: Array<{ key: ChartConfig["color"]; label: string }> = [
-  { key: "none", label: "single color" },
-  { key: "arity", label: "arity" },
-  { key: "triggerForm", label: "trigger form" },
-  { key: "source", label: "source" },
-  { key: "targetBehavior", label: "target behavior" },
-  { key: "task", label: "task" },
-  { key: "baseModel", label: "model" },
-  { key: "tuning", label: "tuning" },
-  { key: "judge", label: "judge" },
-];
-
 const PALETTE = [
   "#e8a040", "#38bdf8", "#4ade80", "#e879f9",
   "#f87171", "#c9b35f", "#6fb6a6", "#b48ad6",
+  "#f0abfc", "#86efac", "#fca5a5", "#7dd3fc",
 ];
+
+const SINGLE_COLOR = "#e8a040";
 
 // Geometry (viewBox units; the SVG scales to the pane).
 const W = 820;
@@ -74,22 +75,44 @@ const H = 430;
 const PAD = { l: 56, r: 16, t: 14, b: 40 };
 const MIN_DRAG = 8; // viewBox units before a drag counts as a box-select
 
-interface Pt {
-  rx: number; // raw x value (CSV / tooltip)
-  ry: number;
-  tx: number; // transformed (log?) value — stats + position
-  ty: number;
-  jx: number; // display-only jitter offset (count metrics, linear axis)
-  r: number;
-  color: string;
-  key: string; // legend key (display)
-  raw: string | null; // raw facet value behind the key (legend click target)
-  label: string[];
-  runId?: string; // runs mode -> open drawer
-  fh?: string; // functions mode -> scope chip
-  n?: number; // functions mode: run count
-  ex?: number | null; // functions mode: ±1 SD whisker half-lengths (transformed)
-  ey?: number | null;
+const CHANNEL_GLYPH: Record<Channel | "avg", string> = {
+  color: "●",
+  shape: "▲",
+  size: "◔",
+  avg: "x̄",
+};
+
+// The shape channel's glyph cycle (index 0 = plain circle).
+const SHAPE_COUNT = 6;
+
+function shapeNode(
+  idx: number, cx: number, cy: number, r: number,
+  props: { fill: string; fillOpacity: number; stroke: string; strokeOpacity: number },
+): React.ReactElement {
+  const k = idx % SHAPE_COUNT;
+  if (k === 1) {
+    return <rect x={cx - r} y={cy - r} width={2 * r} height={2 * r} {...props} pointerEvents="none" />;
+  }
+  if (k === 2) {
+    return <path d={`M${cx},${cy - r * 1.2} L${cx + r * 1.1},${cy + r * 0.9} L${cx - r * 1.1},${cy + r * 0.9} Z`} {...props} pointerEvents="none" />;
+  }
+  if (k === 3) {
+    return <path d={`M${cx},${cy - r * 1.3} L${cx + r * 1.3},${cy} L${cx},${cy + r * 1.3} L${cx - r * 1.3},${cy} Z`} {...props} pointerEvents="none" />;
+  }
+  if (k === 4) {
+    return <path d={`M${cx},${cy + r * 1.2} L${cx + r * 1.1},${cy - r * 0.9} L${cx - r * 1.1},${cy - r * 0.9} Z`} {...props} pointerEvents="none" />;
+  }
+  if (k === 5) {
+    const a = r * 0.9;
+    return (
+      <path
+        d={`M${cx - a},${cy - a} L${cx + a},${cy + a} M${cx - a},${cy + a} L${cx + a},${cy - a}`}
+        fill="none" stroke={props.stroke} strokeOpacity={props.strokeOpacity}
+        strokeWidth={Math.max(1.5, r * 0.5)} pointerEvents="none"
+      />
+    );
+  }
+  return <circle cx={cx} cy={cy} r={r} {...props} pointerEvents="none" />;
 }
 
 function tickFmt(v: number): string {
@@ -101,50 +124,13 @@ function tickFmt(v: number): string {
   return v.toExponential(0);
 }
 
-function MetricSelect({
-  value,
-  onChange,
-  schema,
-  ariaLabel,
-  order,
-}: {
-  value: string;
-  onChange: (name: string) => void;
-  schema: MetricSchemaEntry[];
-  ariaLabel: string;
-  order: MetricGroupName[];
-}) {
-  const { groups, empty } = useMemo(
-    () => groupedMetricOptions(schema, order),
-    [schema, order],
-  );
-  return (
-    <select
-      value={value}
-      aria-label={ariaLabel}
-      onChange={(e) => onChange(e.target.value)}
-      className="max-w-44 rounded-md border border-border bg-surface px-1 py-0.5 text-xs text-text focus:border-accent/60 focus:outline-none"
-    >
-      {groups.map(([group, entries]) => (
-        <optgroup key={group} label={group}>
-          {entries.map((e) => (
-            <option key={e.name} value={e.name}>
-              {e.label}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-      {empty.length > 0 && (
-        <optgroup label="no data yet">
-          {empty.map((e) => (
-            <option key={e.name} value={e.name}>
-              {e.label}
-            </option>
-          ))}
-        </optgroup>
-      )}
-    </select>
-  );
+interface VisualPoint {
+  gp: GroupedPoint;
+  jx: number; // deterministic jitter (single-run points on a count x-axis)
+  color: string;
+  shapeIdx: number;
+  r: number;
+  label: string[];
 }
 
 export function ChartBody({
@@ -162,6 +148,7 @@ export function ChartBody({
   const expandChain = useBoolbackStore((s) => s.expandChain);
   const addSubtreeDir = useBoolbackStore((s) => s.addSubtreeDir);
   const addRange = useBoolbackStore((s) => s.addRange);
+  const setFacet = useBoolbackStore((s) => s.setFacet);
   const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
   const filters = useBoolbackStore((s) => s.filters);
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
@@ -169,7 +156,7 @@ export function ChartBody({
   const config = useBoolbackStore((s) => s.chart);
   const setChart = useBoolbackStore((s) => s.setChart);
 
-  const [hover, setHover] = useState<Pt | null>(null);
+  const [hover, setHover] = useState<VisualPoint | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const dragMoved = useRef(false);
@@ -177,168 +164,148 @@ export function ChartBody({
   // Guard a persisted/shared config whose metric no longer exists in the schema.
   const x = index[config.x] ? config.x : DEFAULT_CHART.x in index ? DEFAULT_CHART.x : (bundle.metric_schema[0]?.name ?? "");
   const y = index[config.y] ? config.y : DEFAULT_CHART.y in index ? DEFAULT_CHART.y : (bundle.metric_schema[0]?.name ?? "");
-  const mode = config.mode === "functions" || config.mode === "means" ? config.mode : "runs";
   const logX = !!config.logX;
   const logY = !!config.logY;
+  const rawDims = config.dims;
+  const dimOverrides = useMemo(
+    () => (rawDims ?? {}) as Record<string, DimTreatment>,
+    [rawDims],
+  );
 
-  const { points, colorKeys, droppedLog, legendFacet, underlying, binned } = useMemo(() => {
+  // ---- the dimension model over the filtered rows ---------------------------
+  const summary = useMemo(() => summarizeDimensions(rows), [rows]);
+  const treatments = useMemo(
+    () => assignTreatments(summary.differing, dimOverrides),
+    [summary, dimOverrides],
+  );
+  const channelDims = useMemo(() => {
+    const byChannel = new Map<Channel, DimValues>();
+    for (const d of summary.differing) {
+      const t = treatments.get(d.dim.key);
+      if (t && t !== "avg") byChannel.set(t, d);
+    }
+    return byChannel;
+  }, [summary, treatments]);
+  const colorDim = channelDims.get("color");
+  const shapeDim = channelDims.get("shape");
+  const sizeDim = channelDims.get("size");
+  // Split dims in RunPoint.dims order: color, shape, size (whichever exist).
+  const splitDims = useMemo(
+    () => [colorDim, shapeDim, sizeDim].filter((d): d is DimValues => d !== undefined),
+    [colorDim, shapeDim, sizeDim],
+  );
+  const averaging = useMemo(
+    () => summary.differing.some((d) => treatments.get(d.dim.key) === "avg"),
+    [summary, treatments],
+  );
+
+  // value -> ordinal per channel dim (values are pre-sorted in DimValues).
+  const valueIndex = (d: DimValues | undefined) => {
+    const m = new Map<string, number>();
+    d?.values.forEach((v, i) => m.set(v.value, i));
+    return m;
+  };
+  const colorIdx = useMemo(() => valueIndex(colorDim), [colorDim]);
+  const shapeIdx = useMemo(() => valueIndex(shapeDim), [shapeDim]);
+  const sizeIdx = useMemo(() => valueIndex(sizeDim), [sizeDim]);
+
+  // function display text -> function hash (scope-chip filters, legend clicks).
+  const fnHashByText = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of rows) {
+      m.set(fnText(r.function.arity, r.function.truth_table), r.identity.function_hash);
+    }
+    return m;
+  }, [rows]);
+
+  // ---- points ---------------------------------------------------------------
+  const { points, pairs, droppedLog, binned, rowByPath } = useMemo(() => {
     const xId = metricColumnId(x, index);
     const yId = metricColumnId(y, index);
-    // Count metrics stack points on integer columns; a small deterministic
-    // per-run jitter keeps them readable without lying about the value much.
-    // (Suppressed on a log axis, where a fixed offset would distort.)
-    const jitterX = mode === "runs" && index[x]?.dtype === "count" && !logX;
-    const facet: FacetKey | null =
-      mode === "functions" ? "arity" : config.color === "none" ? null : (config.color as FacetKey);
-    const colorOf = new Map<string, string>();
-    const rawOf = new Map<string, string | null>();
-    const keyOf = (r: RunRow): { key: string; raw: string | null } => {
-      if (mode === "functions") {
-        return { key: `arity ${r.function.arity}`, raw: String(r.function.arity) };
-      }
-      if (facet === null) return { key: "runs", raw: null };
-      const v = facetValue(r, facet);
-      if (v === null) return { key: "—", raw: null };
-      return { key: facet === "baseModel" ? shortModel(v) : v, raw: v };
-    };
-
     let dropped = 0;
-    const tXY = (r: RunRow): { rx: number; ry: number; tx: number; ty: number } | null => {
+    const runPts: RunPoint[] = [];
+    // Underlying (run-level) pairs for r/ρ and the OLS fits, with the color value.
+    const rawPairs: Array<{ x: number; y: number; color: string | null }> = [];
+    const byPath = new Map<string, RunRow>();
+    for (const r of rows) {
       const vx = numericValue(r, xId);
       const vy = numericValue(r, yId);
-      if (vx === null || vy === null) return null;
+      if (vx === null || vy === null) continue;
       if ((logX && vx <= 0) || (logY && vy <= 0)) {
         dropped++;
-        return null;
+        continue;
+      }
+      const tx = logX ? Math.log10(vx) : vx;
+      const ty = logY ? Math.log10(vy) : vy;
+      runPts.push({
+        x: tx,
+        y: ty,
+        runId: r.identity.node_path,
+        dims: splitDims.map((d) => d.dim.raw(r) ?? "—"),
+      });
+      rawPairs.push({ x: tx, y: ty, color: colorDim ? colorDim.dim.raw(r) : null });
+      byPath.set(r.identity.node_path, r);
+    }
+    const grouped = groupRuns(runPts, averaging);
+    return {
+      points: grouped.points,
+      pairs: rawPairs,
+      droppedLog: dropped,
+      binned: grouped.binned,
+      rowByPath: byPath,
+    };
+  }, [rows, x, y, index, logX, logY, splitDims, colorDim, averaging]);
+
+  // Jitter single-run points on a linear count x-axis (stacked integers).
+  const jitter = !averaging && index[x]?.dtype === "count" && !logX;
+
+  const visual: VisualPoint[] = useMemo(() => {
+    const xL = index[x]?.label ?? x;
+    const yL = index[y]?.label ?? y;
+    const ci = splitDims.indexOf(colorDim!);
+    const si = splitDims.indexOf(shapeDim!);
+    const zi = splitDims.indexOf(sizeDim!);
+    return points.map((gp) => {
+      const color = colorDim ? PALETTE[(colorIdx.get(gp.dims[ci]) ?? 0) % PALETTE.length] : SINGLE_COLOR;
+      const shape = shapeDim ? (shapeIdx.get(gp.dims[si]) ?? 0) : 0;
+      const r = sizeDim
+        ? 2.5 + Math.min(5.5, (sizeIdx.get(gp.dims[zi]) ?? 0) * 1.4)
+        : gp.n > 1 ? Math.min(10, 3 + Math.sqrt(gp.n)) : 3;
+      const dimsDesc = splitDims
+        .map((d, i) => `${d.dim.label} ${d.dim.display ? d.dim.display(gp.dims[i]) : gp.dims[i]}`)
+        .join(" · ");
+      const label: string[] = [];
+      if (gp.n === 1 && gp.runId) {
+        const row = rowByPath.get(gp.runId);
+        label.push(row ? `${fnText(row.function.arity, row.function.truth_table)} · ${row.identity.run_id}` : gp.runId);
+        if (dimsDesc) label.push(dimsDesc);
+        label.push(`${xL}: ${tickFmt(gp.x)}${logX ? " (log10)" : ""}`);
+        label.push(`${yL}: ${tickFmt(gp.y)}${logY ? " (log10)" : ""}`);
+      } else {
+        label.push(`${dimsDesc || "all runs"} · n=${gp.n}`);
+        label.push(`${xL}: ${tickFmt(gp.x)}${gp.sdX !== null && gp.sdX > 0 ? ` ± ${tickFmt(gp.sdX)}` : ""}${binned ? " (bin)" : ""}${logX ? " (log10)" : ""}`);
+        label.push(`mean ${yL}: ${tickFmt(gp.y)}${gp.sdY !== null ? ` ± ${tickFmt(gp.sdY)}` : ""}${logY ? " (log10)" : ""}`);
       }
       return {
-        rx: vx,
-        ry: vy,
-        tx: logX ? Math.log10(vx) : vx,
-        ty: logY ? Math.log10(vy) : vy,
+        gp,
+        jx: jitter && gp.runId ? (hash01(gp.runId) - 0.5) * 0.5 : 0,
+        color,
+        shapeIdx: shape,
+        r,
+        label,
       };
-    };
-
-    const raw: Pt[] = [];
-    const pairs: Array<{ x: number; y: number; key: string }> = []; // means-mode input
-    let isBinned = false;
-    if (mode === "runs") {
-      for (const r of rows) {
-        const v = tXY(r);
-        if (!v) continue;
-        const k = keyOf(r);
-        raw.push({
-          ...v,
-          jx: jitterX ? (hash01(r.identity.run_id) - 0.5) * 0.5 : 0,
-          r: 3,
-          color: "",
-          key: k.key,
-          raw: k.raw,
-          runId: r.identity.node_path,
-          label: [
-            `${fnText(r.function.arity, r.function.truth_table)} · ${r.identity.run_id}`,
-            `${index[x]?.label ?? x}: ${tickFmt(v.rx)}`,
-            `${index[y]?.label ?? y}: ${tickFmt(v.ry)}`,
-          ],
-        });
-      }
-    } else if (mode === "means") {
-      // Mean Y per (X value × color) group over the filtered runs — "the
-      // average effect of X on Y" with everything unfaceted averaged over.
-      for (const r of rows) {
-        const v = tXY(r);
-        if (!v) continue;
-        const k = keyOf(r);
-        pairs.push({ x: v.tx, y: v.ty, key: k.key });
-        if (!rawOf.has(k.key)) rawOf.set(k.key, k.raw);
-      }
-      const grouped = groupMeans(pairs);
-      isBinned = grouped.binned;
-      for (const p of grouped.points) {
-        raw.push({
-          rx: p.x,
-          ry: p.mean,
-          tx: p.x,
-          ty: p.mean,
-          jx: 0,
-          r: Math.min(10, 3 + Math.sqrt(p.n)),
-          color: "",
-          key: p.key,
-          raw: rawOf.get(p.key) ?? null,
-          n: p.n,
-          ex: null,
-          ey: p.sd,
-          label: [
-            `${p.key} · ${p.n} run${p.n === 1 ? "" : "s"}`,
-            `${index[x]?.label ?? x}: ${tickFmt(p.x)}${isBinned ? " (bin center)" : ""}${logX ? " (log10)" : ""}`,
-            `mean ${index[y]?.label ?? y}: ${tickFmt(p.mean)}${p.sd !== null ? ` ± ${tickFmt(p.sd)}` : ""}${logY ? " (log10)" : ""}`,
-          ],
-        });
-      }
-    } else {
-      const byFn = new Map<string, { xs: number[]; ys: number[]; rxs: number[]; rys: number[]; row: RunRow }>();
-      for (const r of rows) {
-        const v = tXY(r);
-        if (!v) continue;
-        const slot = byFn.get(r.identity.function_hash) ?? { xs: [], ys: [], rxs: [], rys: [], row: r };
-        slot.xs.push(v.tx);
-        slot.ys.push(v.ty);
-        slot.rxs.push(v.rx);
-        slot.rys.push(v.ry);
-        byFn.set(r.identity.function_hash, slot);
-      }
-      for (const [fh, { xs, ys, rxs, rys, row }] of byFn) {
-        const mx = mean(xs)!;
-        const my = mean(ys)!;
-        const k = keyOf(row);
-        raw.push({
-          rx: mean(rxs)!,
-          ry: mean(rys)!,
-          tx: mx,
-          ty: my,
-          jx: 0,
-          r: Math.min(10, 3 + Math.sqrt(xs.length)),
-          color: "",
-          key: k.key,
-          raw: k.raw,
-          fh,
-          n: xs.length,
-          ex: stdDev(xs),
-          ey: stdDev(ys),
-          label: [
-            `${fnText(row.function.arity, row.function.truth_table)} · ${xs.length} run${xs.length === 1 ? "" : "s"}`,
-            `${index[x]?.label ?? x}: ${tickFmt(mx)}`,
-            `mean ${index[y]?.label ?? y}: ${tickFmt(my)}${ys.length > 1 && stdDev(ys) !== null ? ` ± ${tickFmt(stdDev(ys)!)}` : ""}`,
-          ],
-        });
-      }
-    }
-
-    const keys = [...new Set(raw.map((p) => p.key))].sort();
-    keys.forEach((k, i) => colorOf.set(k, PALETTE[i % PALETTE.length]));
-    for (const p of raw) {
-      p.color = colorOf.get(p.key) ?? PALETTE[0];
-      if (!rawOf.has(p.key)) rawOf.set(p.key, p.raw);
-    }
-    return {
-      points: raw,
-      colorKeys: keys.map((k) => ({ key: k, color: colorOf.get(k)!, raw: rawOf.get(k) ?? null })),
-      droppedLog: dropped,
-      legendFacet: facet,
-      underlying: mode === "means" ? pairs : null,
-      binned: isBinned,
-    };
-  }, [rows, x, y, mode, config.color, logX, logY, index]);
+    });
+  }, [points, splitDims, colorDim, shapeDim, sizeDim, colorIdx, shapeIdx, sizeIdx, rowByPath, index, x, y, logX, logY, binned, jitter]);
 
   // Scales over the TRANSFORMED values.
   const scale = useMemo(() => {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const p of points) {
-      const px = p.tx + p.jx;
+    for (const p of visual) {
+      const px = p.gp.x + p.jx;
       if (px < x0) x0 = px;
       if (px > x1) x1 = px;
-      if (p.ty < y0) y0 = p.ty;
-      if (p.ty > y1) y1 = p.ty;
+      if (p.gp.y < y0) y0 = p.gp.y;
+      if (p.gp.y > y1) y1 = p.gp.y;
     }
     if (!Number.isFinite(x0)) { x0 = 0; x1 = 1; y0 = 0; y1 = 1; }
     if (x1 - x0 < 1e-9) { x0 -= 0.5; x1 += 0.5; }
@@ -350,63 +317,81 @@ export function ChartBody({
     const sy = (v: number) => H - PAD.b - ((v - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
     const ix = (px: number) => x0 + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (x1 - x0);
     const iy = (py: number) => y0 + ((H - PAD.b - py) / (H - PAD.t - PAD.b)) * (y1 - y0);
-    return { sx, sy, ix, iy, x0, x1, y0, y1, xTicks: niceTicks(x0, x1, 5), yTicks: niceTicks(y0, y1, 5) };
-  }, [points]);
+    return { sx, sy, ix, iy, xTicks: niceTicks(x0, x1, 5), yTicks: niceTicks(y0, y1, 5) };
+  }, [visual]);
 
-  // Trend fits (per color group) + the overall correlation readout. In means
-  // mode r/ρ come from the UNDERLYING runs (r over group means would overstate
-  // the association) and the per-color connecting lines replace the OLS fits.
+  // Trend fits + the r/ρ readout — ALWAYS over the underlying runs (a fit over
+  // group means would overstate the association).
   const stats = useMemo(() => {
-    if (mode === "means") {
-      if (!underlying || underlying.length < 2) return null;
-      const xs = underlying.map((p) => p.x);
-      const ys = underlying.map((p) => p.y);
-      return {
-        overall: { r: pearson(xs, ys), rho: spearman(xs, ys), n: underlying.length },
-        lines: [] as Array<{ key: string; fit: { slope: number; intercept: number }; lo: number; hi: number; r: number | null }>,
-      };
+    if (pairs.length < 2) return null;
+    const xs = pairs.map((p) => p.x);
+    const ys = pairs.map((p) => p.y);
+    const overall = { r: pearson(xs, ys), rho: spearman(xs, ys), n: pairs.length };
+    if (!config.trend) return { overall, lines: [] };
+    const byColor = new Map<string, { xs: number[]; ys: number[] }>();
+    for (const p of pairs) {
+      const k = p.color ?? "";
+      const slot = byColor.get(k) ?? { xs: [], ys: [] };
+      slot.xs.push(p.x);
+      slot.ys.push(p.y);
+      byColor.set(k, slot);
     }
-    if (!config.trend || points.length < 2) return null;
-    const xsAll = points.map((p) => p.tx);
-    const ysAll = points.map((p) => p.ty);
-    const overall = { r: pearson(xsAll, ysAll), rho: spearman(xsAll, ysAll), n: points.length };
-    const perKey = new Map<string, { xs: number[]; ys: number[] }>();
-    for (const p of points) {
-      const slot = perKey.get(p.key) ?? { xs: [], ys: [] };
-      slot.xs.push(p.tx);
-      slot.ys.push(p.ty);
-      perKey.set(p.key, slot);
-    }
-    const lines = [...perKey.entries()]
-      .map(([key, { xs, ys }]) => {
-        const fit = olsFit(xs, ys);
+    const lines = [...byColor.entries()]
+      .map(([key, { xs: lx, ys: ly }]) => {
+        const fit = olsFit(lx, ly);
         if (!fit) return null;
-        const lo = Math.min(...xs);
-        const hi = Math.max(...xs);
-        return { key, fit, lo, hi, r: pearson(xs, ys) };
+        return { key, fit, lo: Math.min(...lx), hi: Math.max(...lx), r: pearson(lx, ly) };
       })
       .filter((l): l is NonNullable<typeof l> => l !== null);
     return { overall, lines };
-  }, [config.trend, points, mode, underlying]);
+  }, [pairs, config.trend]);
 
-  const rByKey = useMemo(() => {
+  const rByColorValue = useMemo(() => {
     const m = new Map<string, number | null>();
     for (const l of stats?.lines ?? []) m.set(l.key, l.r);
     return m;
   }, [stats]);
 
-  // Tick labels un-transform on a log axis (positions stay in log space).
-  const xTickLabel = (t: number) => (logX ? tickFmt(Math.pow(10, t)) : tickFmt(t));
-  const yTickLabel = (t: number) => (logY ? tickFmt(Math.pow(10, t)) : tickFmt(t));
+  // ---- dimension treatment setter (channels stay unique) ---------------------
+  const setDim = (key: string, t: DimTreatment | null) => {
+    const next: Record<string, DimTreatment> = { ...dimOverrides };
+    if (t === null) {
+      delete next[key];
+    } else {
+      if (t !== "avg") {
+        for (const k of Object.keys(next)) {
+          if (next[k] === t && k !== key) delete next[k];
+        }
+      }
+      next[key] = t;
+    }
+    setChart({ dims: next });
+  };
 
-  const onPointClick = (p: Pt) => {
+  // "filter to one value" — the ORDINARY filter mechanism, never chart state.
+  const filterDimTo = (d: DimValues, value: string) => {
+    if (d.dim.fnScope) {
+      const hash = fnHashByText.get(value);
+      if (hash) addSubtreeDir(`fn=${hash}`);
+    } else if (d.dim.facetKey) {
+      setFacet(d.dim.facetKey, [value]);
+    }
+  };
+  const legendToggle = (d: DimValues, value: string) => {
+    if (d.dim.fnScope) {
+      const hash = fnHashByText.get(value);
+      if (hash) addSubtreeDir(`fn=${hash}`);
+    } else if (d.dim.facetKey) {
+      toggleFacetValue(d.dim.facetKey, value);
+    }
+  };
+
+  const onPointClick = (p: VisualPoint) => {
     if (dragMoved.current) return; // a box-select drag just ended
-    if (p.runId) {
-      openDetail(p.runId);
-      const r = rows.find((row) => row.identity.node_path === p.runId);
+    if (p.gp.runId && p.gp.n === 1) {
+      openDetail(p.gp.runId);
+      const r = rowByPath.get(p.gp.runId);
       if (r) expandChain(r.identity.chain_dirs);
-    } else if (p.fh) {
-      addSubtreeDir(`fn=${p.fh}`);
     }
   };
 
@@ -461,111 +446,87 @@ export function ChartBody({
     exportRef.current = {
       getSvg: () => svgRef.current,
       getCsv: () => {
-        const xL = index[x]?.label ?? x;
-        const yL = index[y]?.label ?? y;
-        if (mode === "runs") {
-          const head = ["run_id", xL, yL, legendFacet ?? "color"];
-          return toCsv([head, ...points.map((p) => [p.runId ?? "", p.rx, p.ry, p.key])]);
+        const xL = `${index[x]?.label ?? x}${logX ? " (log10)" : ""}`;
+        const yL = `${index[y]?.label ?? y}${logY ? " (log10)" : ""}`;
+        const dimHead = splitDims.map((d) => d.dim.label);
+        if (averaging) {
+          const head = [xL, ...dimHead, "n", `${yL} (mean)`, `${yL} (sd)`];
+          return toCsv([head, ...points.map((p) => [p.x, ...p.dims, p.n, p.y, p.sdY ?? ""])]);
         }
-        if (mode === "means") {
-          // Values are in plotted space (log10 when that axis is logged).
-          const head = [
-            `${xL}${logX ? " (log10)" : ""}`,
-            legendFacet ?? "group",
-            "n",
-            `${yL}${logY ? " (log10)" : ""} (mean)`,
-            `${yL} (sd)`,
-          ];
-          return toCsv([head, ...points.map((p) => [p.tx, p.key, p.n ?? 0, p.ty, p.ey ?? ""])]);
-        }
-        const head = ["function", "runs", `${xL} (mean)`, `${yL} (mean)`, `${xL} (sd)`, `${yL} (sd)`];
-        return toCsv([head, ...points.map((p) => [p.fh ?? "", p.n ?? 0, p.rx, p.ry, p.ex ?? "", p.ey ?? ""])]);
+        const head = ["run_id", xL, yL, ...dimHead];
+        return toCsv([head, ...points.map((p) => [p.runId ?? "", p.x, p.y, ...p.dims])]);
       },
     };
     return () => { exportRef.current = null; };
-  }, [exportRef, points, x, y, mode, index, legendFacet, logX, logY]);
+  }, [exportRef, points, x, y, index, logX, logY, splitDims, averaging]);
 
   // The point linked to the row hovered/selected elsewhere (table / tree).
-  const linked = useMemo(() => {
-    if (mode !== "runs") return [];
-    return points.filter(
-      (p) => p.runId !== undefined && (p.runId === selectedDir || p.runId === hoveredDir),
-    );
-  }, [points, hoveredDir, selectedDir, mode]);
+  const linked = useMemo(
+    () => visual.filter((p) => p.gp.runId !== undefined && (p.gp.runId === selectedDir || p.gp.runId === hoveredDir)),
+    [visual, hoveredDir, selectedDir],
+  );
 
-  const legendSelected = legendFacet ? (filters.facets[legendFacet] ?? []) : [];
+  // Tick labels un-transform on a log axis (positions stay in log space).
+  const xTickLabel = (t: number) => (logX ? tickFmt(Math.pow(10, t)) : tickFmt(t));
+  const yTickLabel = (t: number) => (logY ? tickFmt(Math.pow(10, t)) : tickFmt(t));
+
+  // Per-split-combo connecting lines (averaging only): the mean trajectory of
+  // each combination across X.
+  const meanLines = useMemo(() => {
+    if (!averaging) return [];
+    const byCombo = new Map<string, VisualPoint[]>();
+    for (const p of visual) {
+      const k = p.gp.dims.join("\u0000");
+      const arr = byCombo.get(k) ?? [];
+      arr.push(p);
+      byCombo.set(k, arr);
+    }
+    return [...byCombo.values()].filter((arr) => arr.length > 1);
+  }, [visual, averaging]);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* axis / color / mode controls */}
+      {/* axis / trend controls */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-border/60">
         <span className="text-xs text-text-faint font-mono">y</span>
-        <MetricSelect value={y} onChange={(v) => setChart({ y: v })} schema={bundle.metric_schema} ariaLabel="y metric" order={Y_GROUP_ORDER} />
+        <MetricPicker value={y} onChange={(v) => setChart({ y: v })} schema={bundle.metric_schema} ariaLabel="y metric" order={Y_GROUP_ORDER} />
         <AxisToggle label="log" checked={logY} onChange={(b) => setChart({ logY: b })} />
         <span className="text-xs text-text-faint font-mono">vs x</span>
-        <MetricSelect value={x} onChange={(v) => setChart({ x: v })} schema={bundle.metric_schema} ariaLabel="x metric" order={X_GROUP_ORDER} />
+        <MetricPicker value={x} onChange={(v) => setChart({ x: v })} schema={bundle.metric_schema} ariaLabel="x metric" order={X_GROUP_ORDER} />
         <AxisToggle label="log" checked={logX} onChange={(b) => setChart({ logX: b })} />
-        <span className="text-xs text-text-faint font-mono">color</span>
-        <select
-          value={mode === "functions" ? "arity" : config.color}
-          disabled={mode === "functions"}
-          aria-label="color facet"
-          onChange={(e) => setChart({ color: e.target.value as ChartConfig["color"] })}
-          className="rounded-md border border-border bg-surface px-1 py-0.5 text-xs text-text disabled:opacity-50 focus:border-accent/60 focus:outline-none"
-          title={mode === "functions" ? "function points are colored by arity" : undefined}
-        >
-          {COLOR_FACETS.map((c) => (
-            <option key={c.key} value={c.key}>{c.label}</option>
-          ))}
-        </select>
-        <div className="flex overflow-hidden rounded-md border border-border text-xs">
-          {([
-            { m: "runs", label: "runs", title: "one point per training run" },
-            { m: "functions", label: "functions (mean)", title: "one point per function — mean over its runs, sized by run count" },
-            { m: "means", label: "means", title: "mean ± SD of Y per (X × color) group over the filtered runs — the average effect of X on Y" },
-          ] as const).map(({ m, label, title }) => (
-            <button
-              key={m}
-              type="button"
-              title={title}
-              onClick={() => setChart({ mode: m })}
-              className={`px-2 py-0.5 transition-colors ${mode === m ? "bg-accent/15 text-accent" : "bg-surface text-text-muted hover:text-text"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {mode !== "means" && (
-          <AxisToggle label="trend" checked={!!config.trend} onChange={(b) => setChart({ trend: b })} />
-        )}
+        <AxisToggle label="trend" checked={!!config.trend} onChange={(b) => setChart({ trend: b })} />
         <span className="ml-auto text-xs text-text-faint font-mono">
           {stats?.overall && (
             <span
               className="text-text-muted"
-              title={
-                mode === "means"
-                  ? `Pearson r · Spearman ρ over the ${stats.overall.n.toLocaleString()} underlying runs (descriptive)`
-                  : "Pearson r · Spearman ρ over the plotted points (descriptive — see plan §5)"
-              }
+              title={`Pearson r · Spearman ρ over the ${stats.overall.n.toLocaleString()} underlying runs (descriptive)`}
             >
               r={stats.overall.r === null ? "—" : stats.overall.r.toFixed(2)}
               {" · "}ρ={stats.overall.rho === null ? "—" : stats.overall.rho.toFixed(2)}
-              {mode === "means" && " (runs)"}
               {" · "}
             </span>
           )}
-          {points.length.toLocaleString()} {mode === "means" ? `group${points.length === 1 ? "" : "s"} of ${(underlying?.length ?? 0).toLocaleString()} runs` : `point${points.length === 1 ? "" : "s"}`}
-          {binned && <span title="X has too many distinct values — grouped into 12 equal-width bins (points at bin centers)"> · x binned</span>}
+          {averaging
+            ? `${points.length.toLocaleString()} group${points.length === 1 ? "" : "s"} of ${pairs.length.toLocaleString()} runs`
+            : `${points.length.toLocaleString()} point${points.length === 1 ? "" : "s"}`}
+          {binned && <span title="X has too many distinct values — grouped into 12 equal-width bins"> · x binned</span>}
           {droppedLog > 0 && <span title="values ≤ 0 cannot be shown on a log axis"> · {droppedLog} dropped (log)</span>}
-          {mode === "runs" && " · click a point for details · drag to filter"}
-          {mode === "functions" && " · click a point to scope · drag to filter"}
-          {mode === "means" && " · drag to filter"}
+          {" · drag to filter"}
         </span>
       </div>
 
+      {/* dimensions panel — shared context + differing dims with treatments */}
+      <DimensionsBar
+        summary={summary}
+        treatments={treatments}
+        setDim={setDim}
+        filterDimTo={filterDimTo}
+        overrides={dimOverrides}
+      />
+
       {/* plot */}
       <div className="relative flex-1 min-h-0 px-2 py-1">
-        {points.length === 0 ? (
+        {visual.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs text-text-faint font-mono">
             {droppedLog > 0
               ? "No plottable points — every value is ≤ 0 on a log axis."
@@ -611,33 +572,30 @@ export function ChartBody({
               transform={`rotate(-90 14 ${(PAD.t + H - PAD.b) / 2})`}
               fill="var(--color-text-muted)">{(index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
 
-            {/* means-mode per-color connecting lines (under points + whiskers) */}
-            {mode === "means" && (
+            {/* per-combo connecting lines (averaging; under points + whiskers) */}
+            {meanLines.length > 0 && (
               <g clipPath="url(#bb-plot-clip)">
-                {colorKeys.map(({ key, color }) => {
-                  const line = points.filter((p) => p.key === key); // already x-sorted
-                  if (line.length < 2) return null;
-                  const d = line
-                    .map((p, i) => `${i === 0 ? "M" : "L"}${scale.sx(p.tx)},${scale.sy(p.ty)}`)
-                    .join(" ");
-                  return (
-                    <path key={key} d={d} fill="none" stroke={color}
-                      strokeWidth={1.5} strokeOpacity={0.85} pointerEvents="none" />
-                  );
-                })}
+                {meanLines.map((line, i) => (
+                  <path
+                    key={i}
+                    d={line.map((p, j) => `${j === 0 ? "M" : "L"}${scale.sx(p.gp.x)},${scale.sy(p.gp.y)}`).join(" ")}
+                    fill="none" stroke={line[0].color} strokeWidth={1.5} strokeOpacity={0.85}
+                    pointerEvents="none"
+                  />
+                ))}
               </g>
             )}
 
-            {/* ±1 SD whiskers (functions + means modes; under the points) */}
-            {(mode === "functions" || mode === "means") && (
+            {/* ±1 SD whiskers (grouped points; under the points) */}
+            {averaging && (
               <g clipPath="url(#bb-plot-clip)">
-                {points.map((p, i) => (
+                {visual.map((p, i) => (
                   <g key={`w${i}`} stroke={p.color} strokeOpacity={0.5} strokeWidth={1}>
-                    {p.ey !== null && p.ey !== undefined && p.ey > 0 && (
-                      <line x1={scale.sx(p.tx)} y1={scale.sy(p.ty - p.ey)} x2={scale.sx(p.tx)} y2={scale.sy(p.ty + p.ey)} />
+                    {p.gp.sdY !== null && p.gp.sdY > 0 && (
+                      <line x1={scale.sx(p.gp.x)} y1={scale.sy(p.gp.y - p.gp.sdY)} x2={scale.sx(p.gp.x)} y2={scale.sy(p.gp.y + p.gp.sdY)} />
                     )}
-                    {p.ex !== null && p.ex !== undefined && p.ex > 0 && (
-                      <line x1={scale.sx(p.tx - p.ex)} y1={scale.sy(p.ty)} x2={scale.sx(p.tx + p.ex)} y2={scale.sy(p.ty)} />
+                    {p.gp.sdX !== null && p.gp.sdX > 0 && (
+                      <line x1={scale.sx(p.gp.x - p.gp.sdX)} y1={scale.sy(p.gp.y)} x2={scale.sx(p.gp.x + p.gp.sdX)} y2={scale.sy(p.gp.y)} />
                     )}
                   </g>
                 ))}
@@ -646,18 +604,12 @@ export function ChartBody({
 
             {/* visible points */}
             <g>
-              {points.map((p, i) => (
-                <circle
-                  key={i}
-                  cx={scale.sx(p.tx + p.jx)}
-                  cy={scale.sy(p.ty)}
-                  r={p.r}
-                  fill={p.color}
-                  fillOpacity={0.6}
-                  stroke={p.color}
-                  strokeOpacity={0.9}
-                  pointerEvents="none"
-                />
+              {visual.map((p, i) => (
+                <g key={i}>
+                  {shapeNode(p.shapeIdx, scale.sx(p.gp.x + p.jx), scale.sy(p.gp.y), p.r, {
+                    fill: p.color, fillOpacity: 0.6, stroke: p.color, strokeOpacity: 0.9,
+                  })}
+                </g>
               ))}
             </g>
 
@@ -665,8 +617,8 @@ export function ChartBody({
             {linked.map((p, i) => (
               <circle
                 key={`h${i}`}
-                cx={scale.sx(p.tx + p.jx)}
-                cy={scale.sy(p.ty)}
+                cx={scale.sx(p.gp.x + p.jx)}
+                cy={scale.sy(p.gp.y)}
                 r={p.r + 3}
                 fill="none"
                 stroke="var(--color-text)"
@@ -675,11 +627,12 @@ export function ChartBody({
               />
             ))}
 
-            {/* trend lines */}
-            {stats && (
+            {/* trend lines (over the underlying runs, per color value) */}
+            {stats && stats.lines.length > 0 && colorDim && (
               <g clipPath="url(#bb-plot-clip)">
                 {stats.lines.map((l) => {
-                  const color = colorKeys.find((c) => c.key === l.key)?.color ?? PALETTE[0];
+                  const idx = colorIdx.get(l.key);
+                  const color = idx === undefined ? SINGLE_COLOR : PALETTE[idx % PALETTE.length];
                   return (
                     <line
                       key={l.key}
@@ -697,17 +650,35 @@ export function ChartBody({
                 })}
               </g>
             )}
+            {stats && stats.lines.length > 0 && !colorDim && (
+              <g clipPath="url(#bb-plot-clip)">
+                {stats.lines.map((l) => (
+                  <line
+                    key={l.key}
+                    x1={scale.sx(l.lo)}
+                    y1={scale.sy(l.fit.intercept + l.fit.slope * l.lo)}
+                    x2={scale.sx(l.hi)}
+                    y2={scale.sy(l.fit.intercept + l.fit.slope * l.hi)}
+                    stroke={SINGLE_COLOR}
+                    strokeWidth={1.5}
+                    strokeDasharray="6 3"
+                    strokeOpacity={0.9}
+                    pointerEvents="none"
+                  />
+                ))}
+              </g>
+            )}
 
-            {/* invisible hit targets (on top; generous radius — #6) */}
+            {/* invisible hit targets (on top; generous radius) */}
             <g>
-              {points.map((p, i) => (
+              {visual.map((p, i) => (
                 <circle
                   key={`t${i}`}
-                  cx={scale.sx(p.tx + p.jx)}
-                  cy={scale.sy(p.ty)}
+                  cx={scale.sx(p.gp.x + p.jx)}
+                  cy={scale.sy(p.gp.y)}
                   r={Math.max(9, p.r + 5)}
                   fill="transparent"
-                  className="cursor-pointer"
+                  className={p.gp.n === 1 ? "cursor-pointer" : undefined}
                   onMouseEnter={() => setHover(p)}
                   onMouseLeave={() => setHover(null)}
                   onClick={() => onPointClick(p)}
@@ -733,10 +704,10 @@ export function ChartBody({
           </svg>
         )}
 
-        {/* tooltip (flips sides near the right edge — #6) */}
+        {/* tooltip (flips sides near the right edge) */}
         {hover && (() => {
-          const px = scale.sx(hover.tx + hover.jx);
-          const py = scale.sy(hover.ty);
+          const px = scale.sx(hover.gp.x + hover.jx);
+          const py = scale.sy(hover.gp.y);
           const flip = px > W * 0.62;
           return (
             <div
@@ -755,38 +726,163 @@ export function ChartBody({
         })()}
       </div>
 
-      {/* legend — keys CLICK to toggle the facet filter (#5) */}
-      {points.length > 0 && colorKeys.length > 1 && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-3 py-1.5 text-[11px] text-text-muted">
-          {colorKeys.slice(0, 12).map(({ key, color, raw }) => {
-            const clickable = legendFacet !== null && raw !== null;
-            const active = clickable && legendSelected.includes(raw);
-            const dimmed = clickable && legendSelected.length > 0 && !active;
-            const r = rByKey.get(key);
-            return (
-              <button
-                key={key}
-                type="button"
-                disabled={!clickable}
-                onClick={() => clickable && toggleFacetValue(legendFacet, raw)}
-                title={clickable ? `toggle ${legendFacet}: ${raw}` : undefined}
-                className={[
-                  "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 transition-colors",
-                  clickable ? "cursor-pointer hover:bg-surface-alt" : "cursor-default",
-                  active ? "ring-1 ring-accent/60 text-text" : "",
-                  dimmed ? "opacity-40" : "",
-                ].join(" ")}
-              >
-                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-                {key}
-                {r !== undefined && r !== null && (
-                  <span className="text-text-faint">r={r.toFixed(2)}</span>
-                )}
-              </button>
-            );
-          })}
-          {colorKeys.length > 12 && <span>+{colorKeys.length - 12} more</span>}
+      {/* legend — one row per active channel; keys CLICK to toggle that filter */}
+      {visual.length > 0 && (colorDim || shapeDim || sizeDim) && (
+        <div className="border-t border-border/60 px-3 py-1.5 text-[11px] text-text-muted">
+          {([["color", colorDim], ["shape", shapeDim], ["size", sizeDim]] as const)
+            .filter((e): e is [Channel, DimValues] => e[1] !== undefined)
+            .map(([channel, d]) => (
+              <div key={channel} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <span className="text-text-faint">{CHANNEL_GLYPH[channel]} {d.dim.label}:</span>
+                {d.values.slice(0, 14).map(({ value }, i) => {
+                  const selected = d.dim.facetKey ? (filters.facets[d.dim.facetKey] ?? []) : [];
+                  const active = selected.includes(value);
+                  const dimmed = selected.length > 0 && !active;
+                  const disp = d.dim.display ? d.dim.display(value) : value;
+                  const r = channel === "color" ? rByColorValue.get(value) : undefined;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => legendToggle(d, value)}
+                      title={`toggle ${d.dim.label}: ${disp}`}
+                      className={[
+                        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 transition-colors cursor-pointer hover:bg-surface-alt",
+                        active ? "ring-1 ring-accent/60 text-text" : "",
+                        dimmed ? "opacity-40" : "",
+                      ].join(" ")}
+                    >
+                      {channel === "color" && (
+                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: PALETTE[i % PALETTE.length] }} />
+                      )}
+                      {channel === "shape" && (
+                        <svg width={10} height={10} viewBox="-6 -6 12 12">
+                          {shapeNode(i, 0, 0, 4, {
+                            fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
+                          })}
+                        </svg>
+                      )}
+                      {channel === "size" && (
+                        <span
+                          className="inline-block rounded-full bg-current opacity-70"
+                          style={{ width: 4 + Math.min(8, i * 2), height: 4 + Math.min(8, i * 2) }}
+                        />
+                      )}
+                      {disp}
+                      {r !== undefined && r !== null && (
+                        <span className="text-text-faint">r={r.toFixed(2)}</span>
+                      )}
+                    </button>
+                  );
+                })}
+                {d.values.length > 14 && <span>+{d.values.length - 14} more</span>}
+              </div>
+            ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dimensions bar — the shared line + one chip per differing dimension.
+// ---------------------------------------------------------------------------
+
+function DimensionsBar({
+  summary,
+  treatments,
+  setDim,
+  filterDimTo,
+  overrides,
+}: {
+  summary: ReturnType<typeof summarizeDimensions>;
+  treatments: Map<string, DimTreatment>;
+  setDim: (key: string, t: DimTreatment | null) => void;
+  filterDimTo: (d: DimValues, value: string) => void;
+  overrides: Record<string, DimTreatment>;
+}) {
+  const [openKey, setOpenKey] = useState<string | null>(null);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-3 py-1.5 text-[11px]">
+      {summary.differing.length > 0 && (
+        <span className="text-text-faint" title="Differing dimensions: split onto a channel (color/shape/size), filter to one value, or average across. Auto assigns the biggest splits to channels first; the rest are averaged.">
+          differs by
+        </span>
+      )}
+      {summary.differing.map((d) => {
+        const t = treatments.get(d.dim.key) ?? "avg";
+        const overridden = d.dim.key in overrides;
+        const open = openKey === d.dim.key;
+        return (
+          <span key={d.dim.key} className="relative inline-block">
+            <button
+              type="button"
+              onClick={() => setOpenKey(open ? null : d.dim.key)}
+              title={`${d.dim.label}: ${d.values.length} values — ${t === "avg" ? "averaged" : `split by ${t}`}${overridden ? "" : " (auto)"}`}
+              className={[
+                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:border-accent/50",
+                t === "avg" ? "border-border text-text-muted" : "border-accent/40 text-text",
+              ].join(" ")}
+            >
+              <span className={t === "avg" ? "text-text-faint" : "text-accent"}>{CHANNEL_GLYPH[t]}</span>
+              {d.dim.label}
+              <span className="text-text-faint">×{d.values.length}</span>
+            </button>
+            {open && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setOpenKey(null)} />
+                <div className="absolute left-0 top-full z-30 mt-1 w-60 rounded-lg border border-border bg-surface/95 p-2 shadow-lg backdrop-blur-md">
+                  <div className="mb-1 flex flex-wrap gap-1">
+                    {(["color", "shape", "size", "avg"] as const).map((opt) => (
+                      <button
+                        key={opt}
+                        onClick={() => { setDim(d.dim.key, opt); setOpenKey(null); }}
+                        className={[
+                          "rounded-md border px-1.5 py-0.5 transition-colors",
+                          t === opt ? "border-accent/60 text-accent" : "border-border text-text-muted hover:text-text",
+                        ].join(" ")}
+                      >
+                        {CHANNEL_GLYPH[opt]} {opt === "avg" ? "average" : opt}
+                      </button>
+                    ))}
+                    {overridden && (
+                      <button
+                        onClick={() => { setDim(d.dim.key, null); setOpenKey(null); }}
+                        className="rounded-md border border-border px-1.5 py-0.5 text-text-muted hover:text-text"
+                        title="return to automatic assignment"
+                      >
+                        auto
+                      </button>
+                    )}
+                  </div>
+                  <div className="mb-0.5 text-[10px] uppercase tracking-wide text-text-faint">filter to</div>
+                  <div className="max-h-48 overflow-y-auto">
+                    {d.values.map(({ value, count }) => (
+                      <button
+                        key={value}
+                        onClick={() => { filterDimTo(d, value); setOpenKey(null); }}
+                        className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
+                      >
+                        <span className="truncate">{d.dim.display ? d.dim.display(value) : value}</span>
+                        <span className="text-[10px] text-text-faint tabular-nums">{count}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </span>
+        );
+      })}
+      {summary.shared.length > 0 && (
+        <span
+          className="ml-auto truncate text-text-faint"
+          title={`Shared by every plotted run:\n${summary.shared.map((s) => `${s.dim.label}: ${s.dim.display ? s.dim.display(s.value) : s.value}`).join("\n")}`}
+        >
+          shared: {summary.shared.slice(0, 5).map((s) => (s.dim.display ? s.dim.display(s.value) : s.value)).join(" · ")}
+          {summary.shared.length > 5 && ` +${summary.shared.length - 5}`}
+        </span>
       )}
     </div>
   );

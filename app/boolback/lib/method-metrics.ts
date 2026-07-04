@@ -18,22 +18,35 @@ import type { RunRow } from "./types";
 
 export const METHOD_SEP = "@";
 
+// The defense fields a method slot can carry: recovery_rate + the full *_drop
+// self-join family (asr + ftr + utility-cost drops; newer builders ship all).
+const DEFENSE_FIELDS = [
+  "asr_drop",
+  "recovery_rate",
+  "ftr_drop",
+  "triggerless_correctness_drop",
+  "target_rate_drop",
+  "correctness_rate_drop",
+] as const;
+type DefenseField = (typeof DEFENSE_FIELDS)[number];
+
 /** base metric name -> how to read one method's value off a row. */
 const BASE_ACCESSORS: Record<string, (r: RunRow, method: string) => number | null> = {
-  asr_drop: (r, m) => defenseMethodValue(r, m, "asr_drop"),
-  recovery_rate: (r, m) => defenseMethodValue(r, m, "recovery_rate"),
   interp_measurement: (r, m) => interpKindValue(r, m, "value"),
   interp_null_control: (r, m) => interpKindValue(r, m, "null_control"),
   scan_auroc: (r, m) => scanMethodValue(r, m, "auroc"),
   scan_far_at_frr: (r, m) => scanMethodValue(r, m, "far_at_frr"),
 };
+for (const field of DEFENSE_FIELDS) {
+  BASE_ACCESSORS[field] = (r, m) => defenseMethodValue(r, m, field);
+}
 
 export const PER_METHOD_BASES = Object.keys(BASE_ACCESSORS);
 
 function defenseMethodValue(
   r: RunRow,
   method: string,
-  field: "asr_drop" | "recovery_rate",
+  field: DefenseField,
 ): number | null {
   const entry = r.defense?.methods?.find((m) => m.method === method);
   const v = entry?.[field];

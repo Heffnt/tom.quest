@@ -214,9 +214,16 @@ export interface DefenseMethod {
   method: string;
   asr_drop?: number;
   recovery_rate?: number;
+  // The rest of the *_drop self-join family (newer builders; per-method only).
+  ftr_drop?: number;
+  triggerless_correctness_drop?: number;
+  target_rate_drop?: number;
+  correctness_rate_drop?: number;
   info_tier?: unknown;
   contract?: unknown;
   demands?: unknown;
+  /** Note on a registry-less relic slug (pre-reclassification defenses). */
+  legacy?: string;
 }
 
 export interface Defense {
@@ -301,8 +308,16 @@ export type FacetKey =
   | "targetBehavior"
   | "triggerForm"
   | "rowDistribution"
+  | "scheme"
+  | "targetPhrase"
+  | "samplesPerRow"
+  | "backdoorRatio"
   | "baseModel"
   | "tuning"
+  | "backend"
+  | "lr"
+  | "epochs"
+  | "seed"
   | "judge"
   | "split"
   | "arity";
@@ -343,12 +358,16 @@ export const EMPTY_FILTER: FilterState = {
 // share-URL encoder can reach it; ChartBody renders from it)
 // ---------------------------------------------------------------------------
 
+/** How the chart treats one DIFFERING dimension: split onto a visual channel,
+ * or averaged over. Dims without an override are auto-assigned (biggest split
+ * first, channels in color→shape→size order; leftovers averaged). */
+export type DimTreatment = "color" | "shape" | "size" | "avg";
+
 export interface ChartConfig extends Record<string, unknown> {
   x: string; // metric_schema name
   y: string; // metric_schema name
-  color: FacetKey | "none";
-  /** runs = scatter; functions = mean per function; means = mean y per (x, color) group. */
-  mode: "runs" | "functions" | "means";
+  /** Per-dimension treatment OVERRIDES (dimension key → treatment); absent = auto. */
+  dims: Record<string, DimTreatment>;
   logX: boolean;
   logY: boolean;
   trend: boolean; // OLS line + r/ρ readout
@@ -357,8 +376,7 @@ export interface ChartConfig extends Record<string, unknown> {
 export const DEFAULT_CHART: ChartConfig = {
   x: "avg_sensitivity",
   y: "plantedness",
-  color: "arity",
-  mode: "runs",
+  dims: {},
   logX: false,
   logY: false,
   trend: false,
