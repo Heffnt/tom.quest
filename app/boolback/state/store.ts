@@ -8,6 +8,18 @@ import type {
 } from "../lib/types";
 import { DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
 
+/** The mounted chart's live descriptive readout (r/ρ/counts), published for
+ *  the shared top bar to render. Null whenever no chart is mounted. */
+export interface ChartReadout {
+  r: number | null;
+  rho: number | null;
+  runs: number;    // underlying run pairs behind the stats
+  points: number;  // rendered points (or groups when averaging)
+  averaging: boolean;
+  binned: boolean;
+  droppedLog: number;
+}
+
 interface BoolbackState {
   // selection / hover (path-keyed; views resolve locally)
   selectedDir: string | null;
@@ -24,6 +36,7 @@ interface BoolbackState {
   // bridge and the share-URL encoder can reach them)
   centerView: "table" | "chart";
   chart: ChartConfig;
+  chartReadout: ChartReadout | null; // published by the mounted ChartBody
   // detail panel (decoupled from selection — opened ONLY by a Details button)
   detailOpen: boolean;
   detailWidth: number;               // px
@@ -33,6 +46,7 @@ interface BoolbackState {
   hover: (dir: string | null) => void;
   setCenterView: (v: "table" | "chart") => void;
   setChart: (patch: Partial<ChartConfig>) => void;
+  setChartReadout: (r: ChartReadout | null) => void;
   toggleExpand: (dir: string) => void;
   setExpanded: (next: Set<string>) => void;
   expandChain: (dirs: string[]) => void;       // open all ancestors to reveal a node
@@ -93,6 +107,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       columnWidths: {},
       centerView: "table" as const,
       chart: DEFAULT_CHART,
+      chartReadout: null,
       detailOpen: false,
       detailWidth: DEFAULT_DETAIL_WIDTH,
 
@@ -100,6 +115,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       hover: (dir) => set({ hoveredDir: dir }),
       setCenterView: (v) => set({ centerView: v }),
       setChart: (patch) => set((s) => ({ chart: { ...s.chart, ...patch } })),
+      setChartReadout: (r) => set({ chartReadout: r }),
       toggleExpand: (dir) => set((s) => {
         const next = new Set(s.expanded);
         if (next.has(dir)) next.delete(dir); else next.add(dir);

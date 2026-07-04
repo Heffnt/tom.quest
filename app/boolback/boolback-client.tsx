@@ -2,22 +2,24 @@
 
 // app/boolback/boolback-client.tsx
 //
-// Root client component for /boolback. Lays out a three-zone shell:
-//   CommandBar (stats + Table|Chart view switcher + freshness + Refresh)
+// Root client component for /boolback. Lays out a one-strip shell (there is
+// no separate command bar — the view switcher, share link, freshness and
+// Refresh live in the single top bar inside TablePane, components/filter-bar):
 //   [ TreePane (dir viewer) | divider | TablePane or ChartBody | DetailPanel ]
 //
 // ONE fetch loads the whole bundle (useArtifactSource; dir pinned to
 // "artifacts", ?dir= overrides). The center is either the run table or the
 // explore chart — switched, never stacked — under the same filter bar. The
 // detail panel docks on the right and opens from any row/point click (or a
-// Details button). Tree + detail widths persist via usePersistedSettings.
+// Details button). Tree + detail widths persist via usePersistedSettings,
+// as does the tree's collapsed state — remembered PER center view (chart
+// defaults collapsed: the plot wants the width, the table wants the tree).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useArtifactSource } from "./data/source";
 import { useBoolbackStore } from "./state/store";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { readSharedView } from "./lib/share";
-import { CommandBar } from "./components/command-bar";
 import { TreePane } from "./components/tree-pane";
 import { TablePane } from "./components/table-pane";
 import { DetailPanel } from "./components/detail-panel";
@@ -30,9 +32,16 @@ const DEFAULT_LEFT = 360;
 interface LayoutSettings extends Record<string, unknown> {
   leftW: number;
   detailWidth: number;
+  /** Tree pane collapsed to the slim rail, remembered PER center view. */
+  treeCollapsed: { table: boolean; chart: boolean };
 }
 
-const LAYOUT_DEFAULTS: LayoutSettings = { leftW: DEFAULT_LEFT, detailWidth: 480 };
+const LAYOUT_DEFAULTS: LayoutSettings = {
+  leftW: DEFAULT_LEFT,
+  detailWidth: 480,
+  // The chart wants every horizontal pixel; the table leans on the tree.
+  treeCollapsed: { table: false, chart: true },
+};
 
 export default function BoolbackClient() {
   const source = useArtifactSource();
@@ -73,6 +82,22 @@ export default function BoolbackClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailWidth]);
 
+  // ----- tree collapse (per center view; chart defaults collapsed) ---------
+  const treeCollapsed =
+    layout.treeCollapsed?.[view] ?? LAYOUT_DEFAULTS.treeCollapsed[view];
+  const setTreeCollapsed = useCallback(
+    (collapsed: boolean) => {
+      updateLayout({
+        treeCollapsed: {
+          ...LAYOUT_DEFAULTS.treeCollapsed,
+          ...layout.treeCollapsed,
+          [view]: collapsed,
+        },
+      });
+    },
+    [updateLayout, layout.treeCollapsed, view],
+  );
+
   // ----- tree divider drag -------------------------------------------------
   const dragging = useRef(false);
   const onDividerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -94,56 +119,88 @@ export default function BoolbackClient() {
   );
 
   // ----- pre-bundle states (loading / empty / error) -----------------------
+  // No command bar exists anymore, so these render standalone (with their own
+  // Refresh — the in-bar one only mounts once a bundle is up).
   if (!bundle) {
     return (
-      <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
-        <CommandBar source={source} />
-        <div className="flex-1 flex flex-col items-center justify-center gap-3">
-          {source.status === "loading" ? (
-            <>
-              <div className="h-6 w-6 rounded-full border-2 border-border border-t-accent animate-spin" />
-              <div className="font-mono text-sm text-text-muted">Loading snapshot…</div>
-            </>
-          ) : source.status === "empty" ? (
-            <div className="font-mono text-sm text-text-muted max-w-md text-center">
-              No snapshot has been built for “{source.dir}” yet.
-              {source.canRebuild
-                ? " Click ↻ Refresh to build one (runs on a compute node, ~2 min)."
-                : " A periodic build will produce one shortly."}
-            </div>
-          ) : (
-            <div className="font-mono text-sm text-warning max-w-md text-center">
-              {source.statusDetail ?? "snapshot error"}
-            </div>
-          )}
-        </div>
+      <div className="h-[calc(100vh-4rem)] flex flex-col items-center justify-center gap-3 bg-bg text-text">
+        {source.status === "loading" ? (
+          <>
+            <div className="h-6 w-6 rounded-full border-2 border-border border-t-accent animate-spin" />
+            <div className="font-mono text-sm text-text-muted">Loading snapshot…</div>
+          </>
+        ) : (
+          <>
+            {source.status === "empty" ? (
+              <div className="font-mono text-sm text-text-muted max-w-md text-center">
+                No snapshot has been built for “{source.dir}” yet.
+                {source.canRebuild
+                  ? " Click ↻ Refresh to build one (runs on a compute node, ~2 min)."
+                  : " A periodic build will produce one shortly."}
+              </div>
+            ) : (
+              <div className="font-mono text-sm text-warning max-w-md text-center">
+                {source.statusDetail ?? "snapshot error"}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={source.refresh}
+              className="rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text-muted hover:text-text hover:border-accent/40 transition-colors"
+            >
+              ↻ Refresh
+            </button>
+            {source.rebuildNote && (
+              <span className="text-[11px] text-text-faint">{source.rebuildNote}</span>
+            )}
+          </>
+        )}
       </div>
     );
   }
 
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
-      <CommandBar source={source} />
       <div className="flex-1 flex min-h-0">
-        {/* left: dir viewer */}
-        <div
-          style={{ width: leftW }}
-          className="border-r border-border bg-surface/40 shrink-0 min-h-0"
-        >
-          <TreePane bundle={bundle} />
-        </div>
-        {/* tree | center divider */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          onPointerDown={onDividerDown}
-          onPointerMove={onDividerMove}
-          onPointerUp={onDividerUp}
-          className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
-        />
-        {/* center: table OR chart (same filter bar) */}
+        {/* left: dir viewer, or the slim expand rail when collapsed */}
+        {treeCollapsed ? (
+          <button
+            type="button"
+            onClick={() => setTreeCollapsed(false)}
+            title="Show the artifact tree"
+            aria-label="Show the artifact tree"
+            className="flex w-7 shrink-0 flex-col items-center gap-2 border-r border-border bg-surface/40 pt-2 text-text-faint transition-colors hover:bg-surface/70 hover:text-accent"
+          >
+            <span className="text-xs leading-none">»</span>
+            <span
+              className="font-mono text-[10px] tracking-widest"
+              style={{ writingMode: "vertical-rl" }}
+            >
+              artifacts
+            </span>
+          </button>
+        ) : (
+          <>
+            <div
+              style={{ width: leftW }}
+              className="border-r border-border bg-surface/40 shrink-0 min-h-0"
+            >
+              <TreePane bundle={bundle} onCollapse={() => setTreeCollapsed(true)} />
+            </div>
+            {/* tree | center divider */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              onPointerDown={onDividerDown}
+              onPointerMove={onDividerMove}
+              onPointerUp={onDividerUp}
+              className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
+            />
+          </>
+        )}
+        {/* center: table OR chart (same top bar) */}
         <div className="flex-1 min-w-0 relative">
-          <TablePane bundle={bundle} view={view} />
+          <TablePane bundle={bundle} view={view} source={source} />
         </div>
         {/* right: detail panel (self-resizing; renders null when closed) */}
         <DetailPanel bundle={bundle} dir={source.dir} />

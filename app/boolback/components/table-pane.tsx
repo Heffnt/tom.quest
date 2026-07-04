@@ -34,6 +34,7 @@ import {
 import { indexMetricSchema, formatValue } from "../lib/metrics";
 import { resolveById, type ColumnDef } from "../lib/columns";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
+import type { ArtifactSource } from "../data/source";
 import { useResizable } from "../lib/use-resizable";
 import { readSharedView } from "../lib/share";
 import { mean } from "../lib/stats";
@@ -78,9 +79,11 @@ export interface TablePaneProps {
   bundle: Bundle;
   /** "table" (default) or "chart" — same filter bar, swapped body. */
   view?: CenterView;
+  /** Snapshot source — the top bar renders its status dot / Refresh. */
+  source: ArtifactSource;
 }
 
-export function TablePane({ bundle, view = "table" }: TablePaneProps) {
+export function TablePane({ bundle, view = "table", source }: TablePaneProps) {
   const rows = bundle.rows;
   const index = useMemo<MetricIndex>(
     () => indexMetricSchema(bundle.metric_schema),
@@ -339,6 +342,7 @@ export function TablePane({ bundle, view = "table" }: TablePaneProps) {
         colDefs={colDefs}
         view={view}
         chartRef={chartRef}
+        source={source}
       />
 
       {view === "chart" ? (

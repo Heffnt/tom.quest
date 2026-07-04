@@ -22,6 +22,8 @@ import { TreeTypeahead } from "./tree-typeahead";
 
 interface TreePaneProps {
   bundle: Bundle;
+  /** Collapse the pane to the client's slim rail (button beside the typeahead). */
+  onCollapse?: () => void;
 }
 
 const ROOT_PATH = "__artifacts__";
@@ -193,7 +195,7 @@ function TreeRow({
 // ---------------------------------------------------------------------------
 // TreePane
 // ---------------------------------------------------------------------------
-export function TreePane({ bundle }: TreePaneProps) {
+export function TreePane({ bundle, onCollapse }: TreePaneProps) {
   const roots = bundle.tree;
 
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
@@ -241,12 +243,27 @@ export function TreePane({ bundle }: TreePaneProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <TreeTypeahead
-        tree={roots}
-        cursor={treeCursor}
-        onPick={onTypeaheadPick}
-        onCursorChange={setTreeCursor}
-      />
+      <div className="flex items-stretch">
+        <div className="min-w-0 flex-1">
+          <TreeTypeahead
+            tree={roots}
+            cursor={treeCursor}
+            onPick={onTypeaheadPick}
+            onCursorChange={setTreeCursor}
+          />
+        </div>
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="Collapse the artifact tree"
+            aria-label="Collapse the artifact tree"
+            className="shrink-0 border-b border-border px-1.5 text-xs text-text-faint transition-colors hover:text-accent"
+          >
+            «
+          </button>
+        )}
+      </div>
       <div
         role="tree"
         aria-label="Artifact tree"

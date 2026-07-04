@@ -7,15 +7,15 @@
 // "does outcome Y move with function-complexity X, and does the context
 // moderate it?"
 //
-//   X / Y = any snapshot metric (searchable pickers; per-method
-//       DEFENSE/INTERP/SCAN entries collapse under their base metric)
-//   log   = per-axis log10 toggles (non-positive values dropped, counted)
-//   trend = per-color OLS fit lines + Pearson r (r/ρ readout is ALWAYS
-//       computed over the underlying runs)
+//   X / Y = any snapshot metric; the pickers, log toggles and trend toggle
+//       render in the SHARED top bar (filter-bar.tsx) off the store-owned
+//       chart config — this component only reads it. The r/ρ readout is
+//       published back to the bar via store.chartReadout (ALWAYS computed
+//       over the underlying runs).
 //
-// THE DIMENSIONS PANEL (replacing the old runs|functions|means toggle and the
-// color dropdown): every run dimension (function, model, arity, seed, …) is
-// either SHARED across the filtered view (shown as the points' common
+// THE LEGEND PANEL (docked right of the plot; replaces the old top dims
+// strip + bottom legend): every run dimension (function, model, arity,
+// seed, …) is either SHARED across the filtered view (the points' common
 // context) or DIFFERING. Each differing dimension is
 //
 //   split onto a visual channel — color / shape / size — so its values are
@@ -39,13 +39,12 @@
 // Pure SVG — no chart library. Descriptive stats only (lib/stats.ts): the
 // boundary rule says inferential statistics come from CMT, never the browser.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, DimTreatment, RunRow } from "../lib/types";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { Bundle, DimTreatment, FilterState, RunRow } from "../lib/types";
 import { DEFAULT_CHART } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
-import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import {
   assignTreatments, summarizeDimensions, type Channel, type DimValues,
 } from "../lib/dimensions";
@@ -53,12 +52,22 @@ import { groupRuns, type GroupedPoint, type RunPoint } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
-import { MetricPicker } from "./metric-picker";
 
 /** What the shared Export menu needs from the mounted chart. */
 export interface ChartExportHandle {
   getSvg: () => SVGSVGElement | null;
   getCsv: () => string;
+}
+
+/** Guard a persisted/shared metric name whose metric no longer exists in the
+ *  schema (also used by the top bar's axis pickers so both agree). */
+export function effectiveAxis(
+  name: string,
+  index: MetricIndex,
+  schema: Bundle["metric_schema"],
+  fallback: string,
+): string {
+  return index[name] ? name : fallback in index ? fallback : (schema[0]?.name ?? "");
 }
 
 const PALETTE = [
@@ -69,18 +78,13 @@ const PALETTE = [
 
 const SINGLE_COLOR = "#e8a040";
 
-// Geometry (viewBox units; the SVG scales to the pane).
-const W = 820;
-const H = 430;
-const PAD = { l: 56, r: 16, t: 14, b: 40 };
-const MIN_DRAG = 8; // viewBox units before a drag counts as a box-select
-
-const CHANNEL_GLYPH: Record<Channel | "avg", string> = {
-  color: "●",
-  shape: "▲",
-  size: "◔",
-  avg: "x̄",
-};
+// Geometry: the SVG viewBox tracks the plot container 1:1 (ResizeObserver;
+// 1 viewBox unit = 1 CSS px), so in-SVG font sizes are literal pixel sizes
+// and the plot fills the pane at any aspect ratio — no letterboxing, no
+// shrinking text. FALLBACK covers the first pre-measure render only.
+const FALLBACK = { w: 820, h: 430 };
+const PAD = { l: 64, r: 16, t: 14, b: 44 };
+const MIN_DRAG = 8; // px before a drag counts as a box-select
 
 // The shape channel's glyph cycle (index 0 = plain circle).
 const SHAPE_COUNT = 6;
@@ -155,15 +159,34 @@ export function ChartBody({
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
   const config = useBoolbackStore((s) => s.chart);
   const setChart = useBoolbackStore((s) => s.setChart);
+  const setChartReadout = useBoolbackStore((s) => s.setChartReadout);
 
   const [hover, setHover] = useState<VisualPoint | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const dragMoved = useRef(false);
 
-  // Guard a persisted/shared config whose metric no longer exists in the schema.
-  const x = index[config.x] ? config.x : DEFAULT_CHART.x in index ? DEFAULT_CHART.x : (bundle.metric_schema[0]?.name ?? "");
-  const y = index[config.y] ? config.y : DEFAULT_CHART.y in index ? DEFAULT_CHART.y : (bundle.metric_schema[0]?.name ?? "");
+  // The SVG draws at the plot container's real pixel size (see FALLBACK note).
+  const plotRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState(FALLBACK);
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (!r || r.width < 80 || r.height < 80) return; // hidden/degenerate pane
+      const w = Math.round(r.width);
+      const h = Math.round(r.height);
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const W = size.w;
+  const H = size.h;
+
+  const x = effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_CHART.x);
+  const y = effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_CHART.y);
   const logX = !!config.logX;
   const logY = !!config.logY;
   const rawDims = config.dims;
@@ -318,7 +341,7 @@ export function ChartBody({
     const ix = (px: number) => x0 + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (x1 - x0);
     const iy = (py: number) => y0 + ((H - PAD.b - py) / (H - PAD.t - PAD.b)) * (y1 - y0);
     return { sx, sy, ix, iy, xTicks: niceTicks(x0, x1, 5), yTicks: niceTicks(y0, y1, 5) };
-  }, [visual]);
+  }, [visual, W, H]);
 
   // Trend fits + the r/ρ readout — ALWAYS over the underlying runs (a fit over
   // group means would overstate the association).
@@ -351,6 +374,20 @@ export function ChartBody({
     for (const l of stats?.lines ?? []) m.set(l.key, l.r);
     return m;
   }, [stats]);
+
+  // Publish the descriptive readout for the shared top bar (cleared on unmount).
+  useEffect(() => {
+    setChartReadout({
+      r: stats?.overall.r ?? null,
+      rho: stats?.overall.rho ?? null,
+      runs: pairs.length,
+      points: points.length,
+      averaging,
+      binned,
+      droppedLog,
+    });
+  }, [stats, pairs.length, points.length, averaging, binned, droppedLog, setChartReadout]);
+  useEffect(() => () => setChartReadout(null), [setChartReadout]);
 
   // ---- dimension treatment setter (channels stay unique) ---------------------
   const setDim = (key: string, t: DimTreatment | null) => {
@@ -485,47 +522,9 @@ export function ChartBody({
   }, [visual, averaging]);
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      {/* axis / trend controls */}
-      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-border/60">
-        <span className="text-xs text-text-faint font-mono">y</span>
-        <MetricPicker value={y} onChange={(v) => setChart({ y: v })} schema={bundle.metric_schema} ariaLabel="y metric" order={Y_GROUP_ORDER} />
-        <AxisToggle label="log" checked={logY} onChange={(b) => setChart({ logY: b })} />
-        <span className="text-xs text-text-faint font-mono">vs x</span>
-        <MetricPicker value={x} onChange={(v) => setChart({ x: v })} schema={bundle.metric_schema} ariaLabel="x metric" order={X_GROUP_ORDER} />
-        <AxisToggle label="log" checked={logX} onChange={(b) => setChart({ logX: b })} />
-        <AxisToggle label="trend" checked={!!config.trend} onChange={(b) => setChart({ trend: b })} />
-        <span className="ml-auto text-xs text-text-faint font-mono">
-          {stats?.overall && (
-            <span
-              className="text-text-muted"
-              title={`Pearson r · Spearman ρ over the ${stats.overall.n.toLocaleString()} underlying runs (descriptive)`}
-            >
-              r={stats.overall.r === null ? "—" : stats.overall.r.toFixed(2)}
-              {" · "}ρ={stats.overall.rho === null ? "—" : stats.overall.rho.toFixed(2)}
-              {" · "}
-            </span>
-          )}
-          {averaging
-            ? `${points.length.toLocaleString()} group${points.length === 1 ? "" : "s"} of ${pairs.length.toLocaleString()} runs`
-            : `${points.length.toLocaleString()} point${points.length === 1 ? "" : "s"}`}
-          {binned && <span title="X has too many distinct values — grouped into 12 equal-width bins"> · x binned</span>}
-          {droppedLog > 0 && <span title="values ≤ 0 cannot be shown on a log axis"> · {droppedLog} dropped (log)</span>}
-          {" · drag to filter"}
-        </span>
-      </div>
-
-      {/* dimensions panel — shared context + differing dims with treatments */}
-      <DimensionsBar
-        summary={summary}
-        treatments={treatments}
-        setDim={setDim}
-        filterDimTo={filterDimTo}
-        overrides={dimOverrides}
-      />
-
+    <div className="flex-1 min-h-0 flex">
       {/* plot */}
-      <div className="relative flex-1 min-h-0 px-2 py-1">
+      <div ref={plotRef} className="relative flex-1 min-w-0 px-2 py-1">
         {visual.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs text-text-faint font-mono">
             {droppedLog > 0
@@ -549,12 +548,14 @@ export function ChartBody({
               </clipPath>
             </defs>
             <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={H - PAD.t - PAD.b}
-              fill="var(--color-surface)" stroke="var(--color-border)" strokeWidth={1} />
+              fill="var(--color-surface)" stroke="var(--color-border)" strokeWidth={1}>
+              <title>drag a box to filter to that X/Y range</title>
+            </rect>
             {scale.yTicks.map((t, i) => (
               <g key={`y${i}`}>
                 <line x1={PAD.l} y1={scale.sy(t)} x2={W - PAD.r} y2={scale.sy(t)}
                   stroke="var(--color-border)" strokeOpacity={0.5} strokeWidth={0.5} />
-                <text x={PAD.l - 5} y={scale.sy(t) + 3} fontSize={10} textAnchor="end"
+                <text x={PAD.l - 6} y={scale.sy(t) + 4} fontSize={12} textAnchor="end"
                   fill="var(--color-text-faint)" className="font-mono">{yTickLabel(t)}</text>
               </g>
             ))}
@@ -562,14 +563,14 @@ export function ChartBody({
               <g key={`x${i}`}>
                 <line x1={scale.sx(t)} y1={PAD.t} x2={scale.sx(t)} y2={H - PAD.b}
                   stroke="var(--color-border)" strokeOpacity={0.35} strokeWidth={0.5} />
-                <text x={scale.sx(t)} y={H - PAD.b + 14} fontSize={10} textAnchor="middle"
+                <text x={scale.sx(t)} y={H - PAD.b + 16} fontSize={12} textAnchor="middle"
                   fill="var(--color-text-faint)" className="font-mono">{xTickLabel(t)}</text>
               </g>
             ))}
-            <text x={(PAD.l + W - PAD.r) / 2} y={H - 6} fontSize={11} textAnchor="middle"
+            <text x={(PAD.l + W - PAD.r) / 2} y={H - 8} fontSize={13} textAnchor="middle"
               fill="var(--color-text-muted)">{(index[x]?.label ?? x) + (logX ? " (log)" : "")}</text>
-            <text x={14} y={(PAD.t + H - PAD.b) / 2} fontSize={11} textAnchor="middle"
-              transform={`rotate(-90 14 ${(PAD.t + H - PAD.b) / 2})`}
+            <text x={16} y={(PAD.t + H - PAD.b) / 2} fontSize={13} textAnchor="middle"
+              transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
               fill="var(--color-text-muted)">{(index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
 
             {/* per-combo connecting lines (averaging; under points + whiskers) */}
@@ -711,7 +712,7 @@ export function ChartBody({
           const flip = px > W * 0.62;
           return (
             <div
-              className="pointer-events-none absolute z-20 max-w-96 rounded-md border border-border bg-surface-alt px-2 py-1 font-mono text-[11px] text-text shadow-lg"
+              className="pointer-events-none absolute z-20 max-w-96 rounded-md border border-border bg-surface-alt px-2 py-1 font-mono text-xs text-text shadow-lg"
               style={{
                 left: `calc(${(px / W) * 100}% + ${flip ? -12 : 12}px)`,
                 top: `${(py / H) * 100}%`,
@@ -726,184 +727,266 @@ export function ChartBody({
         })()}
       </div>
 
-      {/* legend — one row per active channel; keys CLICK to toggle that filter */}
-      {visual.length > 0 && (colorDim || shapeDim || sizeDim) && (
-        <div className="border-t border-border/60 px-3 py-1.5 text-[11px] text-text-muted">
-          {([["color", colorDim], ["shape", shapeDim], ["size", sizeDim]] as const)
-            .filter((e): e is [Channel, DimValues] => e[1] !== undefined)
-            .map(([channel, d]) => (
-              <div key={channel} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                <span className="text-text-faint">{CHANNEL_GLYPH[channel]} {d.dim.label}:</span>
-                {d.values.slice(0, 14).map(({ value }, i) => {
-                  const selected = d.dim.facetKey ? (filters.facets[d.dim.facetKey] ?? []) : [];
-                  const active = selected.includes(value);
-                  const dimmed = selected.length > 0 && !active;
-                  const disp = d.dim.display ? d.dim.display(value) : value;
-                  const r = channel === "color" ? rByColorValue.get(value) : undefined;
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => legendToggle(d, value)}
-                      title={`toggle ${d.dim.label}: ${disp}`}
-                      className={[
-                        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 transition-colors cursor-pointer hover:bg-surface-alt",
-                        active ? "ring-1 ring-accent/60 text-text" : "",
-                        dimmed ? "opacity-40" : "",
-                      ].join(" ")}
-                    >
-                      {channel === "color" && (
-                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: PALETTE[i % PALETTE.length] }} />
-                      )}
-                      {channel === "shape" && (
-                        <svg width={10} height={10} viewBox="-6 -6 12 12">
-                          {shapeNode(i, 0, 0, 4, {
-                            fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
-                          })}
-                        </svg>
-                      )}
-                      {channel === "size" && (
-                        <span
-                          className="inline-block rounded-full bg-current opacity-70"
-                          style={{ width: 4 + Math.min(8, i * 2), height: 4 + Math.min(8, i * 2) }}
-                        />
-                      )}
-                      {disp}
-                      {r !== undefined && r !== null && (
-                        <span className="text-text-faint">r={r.toFixed(2)}</span>
-                      )}
-                    </button>
-                  );
-                })}
-                {d.values.length > 14 && <span>+{d.values.length - 14} more</span>}
-              </div>
-            ))}
-        </div>
-      )}
+      {/* legend panel — the dimension model, docked right of the plot */}
+      <LegendPanel
+        summary={summary}
+        treatments={treatments}
+        overrides={dimOverrides}
+        setDim={setDim}
+        filterDimTo={filterDimTo}
+        legendToggle={legendToggle}
+        channelDims={channelDims}
+        facets={filters.facets}
+        rByColorValue={rByColorValue}
+      />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Dimensions bar — the shared line + one chip per differing dimension.
+// Legend panel — the dimension model as a vertical panel right of the plot.
+// One section per SPLIT dimension: its chip is the section header (opens the
+// treatment/filter popover) and its value keys list below (click toggles the
+// facet filter; the swatch itself shows the channel). Averaged dims get a
+// chip row (no keys — no visual encoding), and the constant context is a
+// collapsible section at the bottom.
 // ---------------------------------------------------------------------------
 
-function DimensionsBar({
+function LegendPanel({
   summary,
   treatments,
+  overrides,
   setDim,
   filterDimTo,
-  overrides,
+  legendToggle,
+  channelDims,
+  facets,
+  rByColorValue,
 }: {
   summary: ReturnType<typeof summarizeDimensions>;
   treatments: Map<string, DimTreatment>;
+  overrides: Record<string, DimTreatment>;
   setDim: (key: string, t: DimTreatment | null) => void;
   filterDimTo: (d: DimValues, value: string) => void;
-  overrides: Record<string, DimTreatment>;
+  legendToggle: (d: DimValues, value: string) => void;
+  channelDims: Map<Channel, DimValues>;
+  facets: FilterState["facets"];
+  rByColorValue: Map<string, number | null>;
 }) {
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [constantOpen, setConstantOpen] = useState(false);
+  const averaged = summary.differing.filter(
+    (d) => (treatments.get(d.dim.key) ?? "avg") === "avg",
+  );
+
+  if (summary.differing.length === 0 && summary.shared.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-3 py-1.5 text-[11px]">
-      {summary.differing.length > 0 && (
-        <span className="text-text-faint" title="Differing dimensions: split onto a channel (color/shape/size), filter to one value, or average across. Auto assigns the biggest splits to channels first; the rest are averaged.">
-          differs by
-        </span>
-      )}
-      {summary.differing.map((d) => {
-        const t = treatments.get(d.dim.key) ?? "avg";
-        const overridden = d.dim.key in overrides;
-        const open = openKey === d.dim.key;
+    <aside className="w-60 shrink-0 overflow-y-auto border-l border-border/60 px-2 py-2 text-xs text-text-muted">
+      {(["color", "shape", "size"] as const).map((channel) => {
+        const d = channelDims.get(channel);
+        if (!d) return null;
         return (
-          <span key={d.dim.key} className="relative inline-block">
-            <button
-              type="button"
-              onClick={() => setOpenKey(open ? null : d.dim.key)}
-              title={`${d.dim.label}: ${d.values.length} values — ${t === "avg" ? "averaged" : `split by ${t}`}${overridden ? "" : " (auto)"}`}
-              className={[
-                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:border-accent/50",
-                t === "avg" ? "border-border text-text-muted" : "border-accent/40 text-text",
-              ].join(" ")}
-            >
-              <span className={t === "avg" ? "text-text-faint" : "text-accent"}>{CHANNEL_GLYPH[t]}</span>
-              {d.dim.label}
-              <span className="text-text-faint">×{d.values.length}</span>
-            </button>
-            {open && (
-              <>
-                <div className="fixed inset-0 z-20" onClick={() => setOpenKey(null)} />
-                <div className="absolute left-0 top-full z-30 mt-1 w-60 rounded-lg border border-border bg-surface/95 p-2 shadow-lg backdrop-blur-md">
-                  <div className="mb-1 flex flex-wrap gap-1">
-                    {(["color", "shape", "size", "avg"] as const).map((opt) => (
-                      <button
-                        key={opt}
-                        onClick={() => { setDim(d.dim.key, opt); setOpenKey(null); }}
-                        className={[
-                          "rounded-md border px-1.5 py-0.5 transition-colors",
-                          t === opt ? "border-accent/60 text-accent" : "border-border text-text-muted hover:text-text",
-                        ].join(" ")}
-                      >
-                        {CHANNEL_GLYPH[opt]} {opt === "avg" ? "average" : opt}
-                      </button>
-                    ))}
-                    {overridden && (
-                      <button
-                        onClick={() => { setDim(d.dim.key, null); setOpenKey(null); }}
-                        className="rounded-md border border-border px-1.5 py-0.5 text-text-muted hover:text-text"
-                        title="return to automatic assignment"
-                      >
-                        auto
-                      </button>
+          <section key={channel} className="mb-3">
+            <DimChip
+              d={d}
+              t={channel}
+              overridden={d.dim.key in overrides}
+              setDim={setDim}
+              filterDimTo={filterDimTo}
+            />
+            <div className="mt-1">
+              {d.values.slice(0, 14).map(({ value }, i) => {
+                const selected = d.dim.facetKey ? (facets[d.dim.facetKey] ?? []) : [];
+                const active = selected.includes(value);
+                const dimmed = selected.length > 0 && !active;
+                const disp = d.dim.display ? d.dim.display(value) : value;
+                const r = channel === "color" ? rByColorValue.get(value) : undefined;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => legendToggle(d, value)}
+                    title={`toggle ${d.dim.label}: ${disp}`}
+                    className={[
+                      "flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-alt",
+                      active ? "ring-1 ring-accent/60 text-text" : "",
+                      dimmed ? "opacity-40" : "",
+                    ].join(" ")}
+                  >
+                    {channel === "color" && (
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
+                      />
                     )}
-                  </div>
-                  <div className="mb-0.5 text-[10px] uppercase tracking-wide text-text-faint">filter to</div>
-                  <div className="max-h-48 overflow-y-auto">
-                    {d.values.map(({ value, count }) => (
-                      <button
-                        key={value}
-                        onClick={() => { filterDimTo(d, value); setOpenKey(null); }}
-                        className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
-                      >
-                        <span className="truncate">{d.dim.display ? d.dim.display(value) : value}</span>
-                        <span className="text-[10px] text-text-faint tabular-nums">{count}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-          </span>
+                    {channel === "shape" && (
+                      <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0">
+                        {shapeNode(i, 0, 0, 4, {
+                          fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
+                        })}
+                      </svg>
+                    )}
+                    {channel === "size" && (
+                      <span className="flex w-3.5 shrink-0 justify-center">
+                        <span
+                          className="rounded-full bg-current opacity-70"
+                          style={{ width: 5 + Math.min(9, i * 2), height: 5 + Math.min(9, i * 2) }}
+                        />
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{disp}</span>
+                    {r !== undefined && r !== null && (
+                      <span className="shrink-0 text-text-faint">r={r.toFixed(2)}</span>
+                    )}
+                  </button>
+                );
+              })}
+              {d.values.length > 14 && (
+                <div className="px-1 text-text-faint">+{d.values.length - 14} more</div>
+              )}
+            </div>
+          </section>
         );
       })}
-      {summary.shared.length > 0 && (
-        <span
-          className="ml-auto truncate text-text-faint"
-          title={`Shared by every plotted run:\n${summary.shared.map((s) => `${s.dim.label}: ${s.dim.display ? s.dim.display(s.value) : s.value}`).join("\n")}`}
-        >
-          shared: {summary.shared.slice(0, 5).map((s) => (s.dim.display ? s.dim.display(s.value) : s.value)).join(" · ")}
-          {summary.shared.length > 5 && ` +${summary.shared.length - 5}`}
-        </span>
+
+      {averaged.length > 0 && (
+        <section className="mb-3">
+          <div
+            className="mb-1 text-[10px] uppercase tracking-wide text-text-faint"
+            title="Varying dimensions without a channel — collapsed into mean ± 1 SD groups. Click a chip to split or filter it."
+          >
+            averaged
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {averaged.map((d) => (
+              <DimChip
+                key={d.dim.key}
+                d={d}
+                t="avg"
+                overridden={d.dim.key in overrides}
+                setDim={setDim}
+                filterDimTo={filterDimTo}
+              />
+            ))}
+          </div>
+        </section>
       )}
-    </div>
+
+      {summary.shared.length > 0 && (
+        <section>
+          <button
+            type="button"
+            onClick={() => setConstantOpen((o) => !o)}
+            title="Dimensions with a single value across every plotted run — the points' common context"
+            className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-text-faint transition-colors hover:text-text"
+          >
+            constant ×{summary.shared.length} <span aria-hidden>{constantOpen ? "▾" : "▸"}</span>
+          </button>
+          {constantOpen && (
+            <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+              {summary.shared.map((s) => {
+                const disp = s.dim.display ? s.dim.display(s.value) : s.value;
+                return (
+                  <Fragment key={s.dim.key}>
+                    <span className="text-text-faint">{s.dim.label}</span>
+                    <span className="truncate text-text/90" title={disp}>{disp}</span>
+                  </Fragment>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+    </aside>
   );
 }
 
-function AxisToggle({
-  label, checked, onChange,
+// A dimension chip + its treatment/filter popover. The popover positions
+// FIXED (anchor captured on open, clamped to the viewport): the legend panel
+// is an overflow-y scroller, which would clip an absolutely-positioned child.
+function DimChip({
+  d, t, overridden, setDim, filterDimTo,
 }: {
-  label: string;
-  checked: boolean;
-  onChange: (b: boolean) => void;
+  d: DimValues;
+  t: DimTreatment;
+  overridden: boolean;
+  setDim: (key: string, t: DimTreatment | null) => void;
+  filterDimTo: (d: DimValues, value: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const toggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({
+        top: Math.min(r.bottom + 4, Math.max(8, window.innerHeight - 300)),
+        right: Math.max(8, window.innerWidth - r.right),
+      });
+    }
+    setOpen((o) => !o);
+  };
   return (
-    <label className="inline-flex cursor-pointer items-center gap-1 text-xs text-text-muted hover:text-text">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="accent-accent"
-      />
-      {label}
-    </label>
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={toggle}
+        title={`${d.dim.label}: ${d.values.length} values — ${t === "avg" ? "averaged" : `split by ${t}`}${overridden ? "" : " (auto)"}`}
+        className={[
+          "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:border-accent/50",
+          t === "avg" ? "border-border text-text-muted" : "border-accent/40 text-text",
+        ].join(" ")}
+      >
+        <span className="truncate">{d.dim.label}</span>
+        <span className="shrink-0 text-text-faint">×{d.values.length}</span>
+      </button>
+      {open && pos && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div
+            className="fixed z-30 w-60 rounded-lg border border-border bg-surface/95 p-2 shadow-lg backdrop-blur-md"
+            style={{ top: pos.top, right: pos.right }}
+          >
+            <div className="mb-1 flex flex-wrap gap-1">
+              {(["color", "shape", "size", "avg"] as const).map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => { setDim(d.dim.key, opt); setOpen(false); }}
+                  className={[
+                    "rounded-md border px-1.5 py-0.5 transition-colors",
+                    t === opt ? "border-accent/60 text-accent" : "border-border text-text-muted hover:text-text",
+                  ].join(" ")}
+                >
+                  {opt === "avg" ? "average" : opt}
+                </button>
+              ))}
+              {overridden && (
+                <button
+                  onClick={() => { setDim(d.dim.key, null); setOpen(false); }}
+                  className="rounded-md border border-border px-1.5 py-0.5 text-text-muted hover:text-text"
+                  title="return to automatic assignment"
+                >
+                  auto
+                </button>
+              )}
+            </div>
+            <div className="mb-0.5 text-[10px] uppercase tracking-wide text-text-faint">filter to</div>
+            <div className="max-h-48 overflow-y-auto">
+              {d.values.map(({ value, count }) => (
+                <button
+                  key={value}
+                  onClick={() => { filterDimTo(d, value); setOpen(false); }}
+                  className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
+                >
+                  <span className="truncate">{d.dim.display ? d.dim.display(value) : value}</span>
+                  <span className="text-[10px] text-text-faint tabular-nums">{count}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </>
   );
 }

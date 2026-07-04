@@ -4,16 +4,19 @@ The public explorer for the ComplexMultiTrigger (CMT) boolean-backdoor
 experiments at <https://www.tom.quest/boolback>. One page, three panes:
 
 ```
-CommandBar   stats(+ⓘ run def) · Table|Chart · ⧉ Copy link · "built 2h ago" · ↻ Refresh
 ┌───────────┬──────────────────────────────────────┬──────────────┐
-│ dir       │ filter bar ( [+ Filter] · chips ·    │ detail panel │
-│ viewer    │   search · Export · Columns · Reset )│ (opens on    │
-│ (mirrors  ├──────────────────────────────────────┤  any row /   │
-│ the disk  │ TABLE (one row per training run)     │  point click)│
-│ tree)     │   — or —                             │ + raw        │
-│           │ CHART (y vs x · dimensions panel)    │   artifacts  │
+│ dir       │ top bar ( Table|Chart · [+ Filter] · │ detail panel │
+│ viewer    │   chips · y/x axes(chart) · ⌕ · N of │ (opens on    │
+│ (mirrors  │   M runs ⓘ · Export · Reset · ⧉ ● ↻ )│  any row /   │
+│ the disk  ├──────────────────────────────────────┤  point click)│
+│ tree;     │ TABLE (one row per training run)     │ + raw        │
+│ collapses │   — or —                             │   artifacts  │
+│ to a rail)│ CHART (y vs x │ legend panel right)  │              │
 └───────────┴──────────────────────────────────────┴──────────────┘
 ```
+(There is no separate command bar — the single top bar in
+`components/filter-bar.tsx` carries everything; corpus totals live in its
+ⓘ popover, snapshot freshness in the status dot's tooltip.)
 
 **What is a run (the fundamental unit).** One row = one run = one
 fine-tuning execution = one `training+…` dir, keyed by
@@ -44,7 +47,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 ```
 
 - **One fetch.** The page loads the blob and nothing else. Freshness is
-  `meta.built_at` inside the blob ("built 2h ago" in the command bar). There is
+  `meta.built_at` inside the blob (the status dot's tooltip). There is
   no status round-trip, and nothing walks the 700 GB tree on a page load (the
   old status endpoint globbed `**/done.json` per call — removed).
 - **Serve-latest.** GET always returns the newest cached snapshot instantly.
@@ -86,10 +89,10 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   chip up only while active — nothing shows when off. A quick-search box
   matches run id / fn hex / DNF / dir path / facet values (AND across
   tokens). Sort chips appear only with ≥2 keys. Right side: count + ⓘ,
-  Export menu, Columns, Reset. Z-scale: table internals ≤ z-20, the filter
-  bar (a stacking context capping its popovers) z-30, command-bar popovers
-  z-40 — a bar popover must never tie the frozen headers' z-20 or DOM order
-  paints the table over it.
+  Export menu, Columns (table view), Reset. Z-scale: table internals ≤ z-20,
+  the top bar (a stacking context capping its popovers) z-30, the ⓘ popover
+  (position: fixed) z-40 — a bar popover must never tie the frozen headers'
+  z-20 or DOM order paints the table over it.
 - **Table** — WINDOWED rendering (every filtered row reachable; no 500-row
   cap), sortable (multi-key, drag chips), resizable columns, per-group
   column menus. Leading arity/`Fn` columns freeze sticky-left. A summary
@@ -144,7 +147,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   columns. Summary table: group-by facet × chosen metrics, mean ± sd + n
   over the filtered runs, as booktabs LaTeX (paste into the paper; carries a
   provenance comment with built_at + active filters) or CSV.
-- **⧉ Copy link** (command bar) — the whole view (filters, sorts, columns,
+- **⧉ Copy link** (top bar) — the whole view (filters, sorts, columns,
   chart config, center view) round-trips through `?v=`; a shared URL
   overrides the per-browser persisted view for that load.
 - **Detail panel** — everything about a run: per-judge × epoch scores, audited
@@ -167,7 +170,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 | `app/boolback/data/source.ts` | the one blob fetch + admin rebuild |
 | `app/boolback/data/normalize.ts` | v1/v2 → one Bundle; derives the tree; injects `fn_hex` |
 | `app/boolback/lib/` | `types` (pinned contract), `select` (filter/sort/facet), `columns` (bare→dotted bridge), `metrics` (schema index), `format` (hex, sizes, model names) |
-| `app/boolback/components/` | `table-pane` (filter bar + table + chart mount), `chart-panel`, `tree-pane` (dir viewer), `detail-panel` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline`, `command-bar` |
+| `app/boolback/components/` | `table-pane` (top bar + table + chart mount), `chart-panel` (plot + legend panel), `tree-pane` (dir viewer), `detail-panel` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline` |
 | `app/api/boolback/{blob,node,file}` | public read-only proxies (explicit endpoints, never a catch-all) |
 | `turing-api/main.py` + `boolback_snapshot.py` | blob/status/node/file endpoints + sbatch submit + cache |
 | CMT `tom.quest/tom_quest/{build,reshape,schema,trajectory}.py` | the snapshot builder |

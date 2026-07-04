@@ -1,12 +1,11 @@
 "use client";
 
-// app/boolback/components/filter-bar.tsx — the simplified filter bar
-// (plan §2, item #18): "every active filter is a chip; everything else lives
-// behind one button."
+// app/boolback/components/filter-bar.tsx — THE top bar: the only horizontal
+// chrome above the center view (the old command bar and the chart's axis
+// strip folded into it). One wrap-row:
 //
-// Default state is ONE row:
-//
-//   [+ Filter] [Planted] (active filter chips…)   search · N of M runs ⓘ · Export · Columns · Reset
+//   [Table|Chart] [+ Filter] (active filter chips…) | y ▾ [log] × x ▾ [log]
+//   [trend] r/ρ |   ⌕ · N of M runs ⓘ · Export · Columns(table) · Reset · ⧉ · ● ↻
 //
 // - `+ Filter` is a single CLICK-open searchable menu replacing the old status
 //   pills / ten facet buttons / "+ add metric": type to match facet VALUES
@@ -16,25 +15,33 @@
 // - Every active filter renders as a uniform chip: status, `model: Llama +2`,
 //   `avg sensitivity 0.5–1.2`, `scope: fn=…`. Clicking a chip's body opens its
 //   editor (checkbox list / histogram slider) as a popover; × clears it.
-// - Planted stays as a permanent quick-toggle (the headline flag).
+// - The axis cluster renders on CHART view only, off the store-owned chart
+//   config; the r/ρ readout comes from store.chartReadout (published by the
+//   mounted ChartBody).
+// - The ⓘ popover carries the run definition + the unfiltered corpus totals;
+//   the status dot's tooltip carries snapshot freshness. Search is a ⌕ icon
+//   until it holds a query.
 // - The sort-chip row appears only with ≥2 keys — a single sort is already
 //   shown by the header arrow.
 //
 // FilterState and applyFilters are untouched; this is presentation only.
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Bundle, FacetKey, FilterState, RangeFilter, StatusFlag,
 } from "../lib/types";
-import { plantedThreshold } from "../lib/types";
+import { DEFAULT_CHART, plantedThreshold } from "../lib/types";
 import type { RunRow } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
+import type { ArtifactSource } from "../data/source";
 import {
   FACET_KEYS, FACET_LABELS, countSummary, facetOptions, histogramBins,
   metricRange, statusCounts, type MetricIndex,
 } from "../lib/select";
-import { Y_GROUP_ORDER, collapseMethodEntries, formatValue, groupedMetricOptions } from "../lib/metrics";
+import { X_GROUP_ORDER, Y_GROUP_ORDER, collapseMethodEntries, formatValue, groupedMetricOptions } from "../lib/metrics";
 import { parseMethodMetric } from "../lib/method-metrics";
+import { buildShareUrl } from "../lib/share";
+import { copyText } from "../lib/export";
 
 /** The method half of a "<base>@<method>" name (null for plain metrics). */
 function methodPart(name: string): string | null {
@@ -43,9 +50,10 @@ function methodPart(name: string): string | null {
 import { resolveById, type ColumnDef } from "../lib/columns";
 import { ColumnGroupMenu } from "./column-group-menu";
 import { ExportMenu } from "./export-menu";
-import { RunInfo } from "./run-info";
-import type { ChartExportHandle } from "./chart-panel";
-import { shortModel } from "../lib/format";
+import { RunInfo, type RunInfoStat } from "./run-info";
+import { effectiveAxis, type ChartExportHandle } from "./chart-panel";
+import { MetricPicker } from "./metric-picker";
+import { relTime, shortModel, thousands } from "../lib/format";
 
 const HIST_BINS = 24;
 
@@ -74,12 +82,13 @@ export interface FilterBarProps {
   colDefs: ColumnDef[]; // visible table columns (export)
   view: "table" | "chart";
   chartRef: React.MutableRefObject<ChartExportHandle | null>;
+  source: ArtifactSource; // status dot / freshness / Refresh
 }
 
 export function FilterBar(props: FilterBarProps) {
   const {
     rows, scopedRows, visibleRows, visibleCount, totalCount,
-    bundle, index, colDefs, view, chartRef,
+    bundle, index, colDefs, view, chartRef, source,
   } = props;
 
   const filters = useBoolbackStore((s) => s.filters);
@@ -96,6 +105,58 @@ export function FilterBar(props: FilterBarProps) {
   const toggleSortDir = useBoolbackStore((s) => s.toggleSortDir);
   const removeSort = useBoolbackStore((s) => s.removeSort);
   const reorderSorts = useBoolbackStore((s) => s.reorderSorts);
+  const setCenterView = useBoolbackStore((s) => s.setCenterView);
+  const chart = useBoolbackStore((s) => s.chart);
+  const setChart = useBoolbackStore((s) => s.setChart);
+  const readout = useBoolbackStore((s) => s.chartReadout);
+
+  // Guarded axis names (same helper the chart uses, so picker and plot agree).
+  const effX = effectiveAxis(chart.x, index, bundle.metric_schema, DEFAULT_CHART.x);
+  const effY = effectiveAxis(chart.y, index, bundle.metric_schema, DEFAULT_CHART.y);
+
+  const threshold = plantedThreshold(bundle.meta);
+
+  // Unfiltered corpus totals — live inside the ⓘ popover, not the bar.
+  const corpusStats = useMemo<RunInfoStat[]>(() => {
+    let planted = 0, defense = 0, interp = 0, scan = 0, inProgress = 0;
+    for (const r of rows) {
+      if (r.status.planted) planted++;
+      if (r.status.has_defense) defense++;
+      if (r.status.has_interp) interp++;
+      if (r.status.has_scan) scan++;
+      if (r.status.in_progress) inProgress++;
+    }
+    const pct = rows.length ? Math.round((100 * planted) / rows.length) : 0;
+    const list: RunInfoStat[] = [
+      { label: "runs", value: thousands(rows.length) },
+      { label: "functions", value: thousands(Object.keys(bundle.functions).length) },
+      {
+        label: "planted",
+        value: `${thousands(planted)} (${pct}%)`,
+        title: `runs at plantedness ≥ ${threshold}`,
+      },
+      { label: "defended", value: thousands(defense) },
+    ];
+    if (interp > 0) list.push({ label: "interp", value: thousands(interp) });
+    if (scan > 0) list.push({ label: "scanned", value: thousands(scan) });
+    if (inProgress > 0) list.push({ label: "in progress", value: thousands(inProgress) });
+    return list;
+  }, [rows, bundle.functions, threshold]);
+
+  // Shareable view URL (filters + sorts + columns + chart + view).
+  const [copied, setCopied] = useState(false);
+  const copyLink = async () => {
+    const s = useBoolbackStore.getState();
+    await copyText(buildShareUrl({
+      filters: s.filters,
+      sorts: s.sorts,
+      visibleCols: s.visibleCols,
+      chart: s.chart,
+      view: s.centerView,
+    }));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
 
   const facetSelections = useMemo(
     () =>
@@ -133,7 +194,23 @@ export function FilterBar(props: FilterBarProps) {
     // container — the bar must sit ABOVE the table's whole z range (<= 20)
     // or its dropdowns paint underneath the arity/Fn headers.
     <div className="sticky top-0 z-30 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
-      <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5">
+        {/* Table | Chart view switcher (store-owned) */}
+        <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-xs">
+          {(["table", "chart"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setCenterView(v)}
+              className={`px-2.5 py-0.5 transition-colors ${
+                view === v ? "bg-accent/15 text-accent" : "bg-surface text-text-muted hover:text-text"
+              }`}
+            >
+              {v === "table" ? "Table" : "Chart"}
+            </button>
+          ))}
+        </div>
+
         <AddFilterMenu
           rows={rows}
           scopedRows={scopedRows}
@@ -183,12 +260,40 @@ export function FilterBar(props: FilterBarProps) {
           />
         ))}
 
+        {/* axis cluster — chart view only; config is store-owned */}
+        {view === "chart" && (
+          <>
+            <span className="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden />
+            <span className="text-xs text-text-faint font-mono">y</span>
+            <MetricPicker value={effY} onChange={(v) => setChart({ y: v })} schema={bundle.metric_schema} ariaLabel="y metric" order={Y_GROUP_ORDER} />
+            <AxisToggle label="log" checked={!!chart.logY} onChange={(b) => setChart({ logY: b })} />
+            <span className="text-xs text-text-faint font-mono">×</span>
+            <MetricPicker value={effX} onChange={(v) => setChart({ x: v })} schema={bundle.metric_schema} ariaLabel="x metric" order={X_GROUP_ORDER} />
+            <AxisToggle label="log" checked={!!chart.logX} onChange={(b) => setChart({ logX: b })} />
+            <AxisToggle label="trend" checked={!!chart.trend} onChange={(b) => setChart({ trend: b })} />
+            {readout && (readout.r !== null || readout.binned || readout.droppedLog > 0) && (
+              <span
+                className="text-xs font-mono text-text-faint whitespace-nowrap"
+                title={`Pearson r · Spearman ρ over the ${readout.runs.toLocaleString()} underlying runs (descriptive) · ${readout.points.toLocaleString()} ${readout.averaging ? "groups" : "points"} drawn · drag a box on the plot to range-filter`}
+              >
+                {readout.r !== null && (
+                  <span className="text-text-muted">
+                    r {readout.r.toFixed(2)} · ρ {readout.rho === null ? "—" : readout.rho.toFixed(2)}
+                  </span>
+                )}
+                {readout.binned && <span title="X has too many distinct values — grouped into 12 equal-width bins"> · x binned</span>}
+                {readout.droppedLog > 0 && <span title="values ≤ 0 cannot be shown on a log axis"> · {readout.droppedLog} dropped (log)</span>}
+              </span>
+            )}
+          </>
+        )}
+
         <span className="ml-auto flex items-center gap-1.5">
           <QuickSearch value={filters.search ?? ""} onCommit={setSearch} />
           <span className="text-xs font-mono text-text-muted whitespace-nowrap">
             {countSummary(visibleCount, totalCount)} runs
           </span>
-          <RunInfo plantedThreshold={plantedThreshold(bundle.meta)} />
+          <RunInfo plantedThreshold={threshold} stats={corpusStats} />
           <ExportMenu
             bundle={bundle}
             index={index}
@@ -198,12 +303,14 @@ export function FilterBar(props: FilterBarProps) {
             chartRef={chartRef}
             filters={filters}
           />
-          <ColumnsMenuButton
-            bundle={bundle}
-            index={index}
-            visibleCols={visibleCols}
-            setVisibleCols={setVisibleCols}
-          />
+          {view === "table" && (
+            <ColumnsMenuButton
+              bundle={bundle}
+              index={index}
+              visibleCols={visibleCols}
+              setVisibleCols={setVisibleCols}
+            />
+          )}
           {hasAnyFilter && (
             <button
               onClick={resetView}
@@ -211,6 +318,41 @@ export function FilterBar(props: FilterBarProps) {
             >
               Reset
             </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void copyLink()}
+            title="Copy a link that reproduces exactly this view (filters, sort, columns, chart)"
+            className="shrink-0 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-text-muted hover:text-text hover:border-accent/40 transition-colors"
+          >
+            {copied ? "✓" : "⧉"}
+          </button>
+          <span
+            className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+              source.status === "ready"
+                ? "bg-success"
+                : source.status === "loading"
+                  ? "bg-warning animate-pulse"
+                  : "bg-error"
+            }`}
+            title={`snapshot: ${source.status} · built ${relTime(bundle.meta.built_at)} from ${bundle.meta.source_dir}`}
+          />
+          <button
+            type="button"
+            onClick={source.refresh}
+            title={
+              source.canRebuild
+                ? "Re-fetch the latest snapshot AND submit a rebuild on Turing (~2 min)"
+                : "Re-fetch the latest snapshot"
+            }
+            className="shrink-0 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-text-muted hover:text-text hover:border-accent/40 transition-colors"
+          >
+            ↻
+          </button>
+          {source.rebuildNote && (
+            <span className="shrink-0 text-[11px] text-text-faint whitespace-nowrap">
+              {source.rebuildNote}
+            </span>
           )}
         </span>
       </div>
@@ -499,6 +641,9 @@ function QuickSearch({
   onCommit: (q: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
+  // Collapsed to a ⌕ icon until it holds a query (or is explicitly opened).
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCommitted = useRef(value);
 
@@ -516,8 +661,28 @@ function QuickSearch({
     }, 150);
   };
 
+  const expanded = open || draft.trim() !== "" || value.trim() !== "";
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title="search runs"
+        aria-label="search runs"
+        className="shrink-0 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-text-muted hover:text-text hover:border-accent/40 transition-colors"
+      >
+        ⌕
+      </button>
+    );
+  }
+
   return (
     <input
+      ref={inputRef}
       type="search"
       value={draft}
       placeholder="search runs…"
@@ -526,8 +691,32 @@ function QuickSearch({
         setDraft(e.target.value);
         commit(e.target.value);
       }}
+      onBlur={() => {
+        if (draft.trim() === "") setOpen(false);
+      }}
       className="w-40 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text placeholder:text-text-faint caret-accent focus:border-accent/60 focus:outline-none"
     />
+  );
+}
+
+// Tiny labeled checkbox for the axis cluster (log / trend).
+function AxisToggle({
+  label, checked, onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (b: boolean) => void;
+}) {
+  return (
+    <label className="inline-flex cursor-pointer items-center gap-1 text-xs text-text-muted hover:text-text">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="accent-accent"
+      />
+      {label}
+    </label>
   );
 }
 
