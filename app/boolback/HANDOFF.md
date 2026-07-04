@@ -6,17 +6,19 @@ experiments at <https://www.tom.quest/boolback>. One page, three panes:
 ```
 ┌───────────┬──────────────────────────────────────┬──────────────┐
 │ dir       │ top bar ( Table|Chart · [+ Filter] · │ detail panel │
-│ viewer    │   chips · y/x axes(chart) · ⌕ · N of │ (opens on    │
-│ (mirrors  │   M runs ⓘ · Export · Reset · ⧉ ● ↻ )│  any row /   │
+│ viewer    │   chips · trend(chart) · ⌕ · N of    │ (opens on    │
+│ (mirrors  │   M runs · Export · Reset · ⧉ ● ↻ )  │  any row /   │
 │ the disk  ├──────────────────────────────────────┤  point click)│
 │ tree;     │ TABLE (one row per training run)     │ + raw        │
 │ collapses │   — or —                             │   artifacts  │
-│ to a rail)│ CHART (y vs x │ legend panel right)  │              │
+│ to a bar  │ CHART (y vs x │ legend panel right;  │              │
+│ button)   │   axis pickers + log ON the axes)    │              │
 └───────────┴──────────────────────────────────────┴──────────────┘
 ```
 (There is no separate command bar — the single top bar in
-`components/filter-bar.tsx` carries everything; corpus totals live in its
-ⓘ popover, snapshot freshness in the status dot's tooltip.)
+`components/filter-bar.tsx` carries everything; snapshot freshness lives in
+the status dot's tooltip. A collapsed dir viewer leaves NO rail: the bar
+grows a header-height `» artifacts` re-open button instead.)
 
 **What is a run (the fundamental unit).** One row = one run = one
 fine-tuning execution = one `training+…` dir, keyed by
@@ -27,8 +29,7 @@ training folds INTO the row (epochs → trajectories, judges → per_judge,
 headline = primary judge at the display epoch). NOT runs: the `-none`
 epoch-0 base-eval (folds into `epoch0_baseline`) and dataset-scoped scans
 (attached to every run sharing the (function, dataset)). CMT-enforced:
-`_node_key` grouping + build_test's no-over-rowing assertions. The ⓘ next
-to the runs stat and the filter-bar count states this in-product.
+`_node_key` grouping + build_test's no-over-rowing assertions.
 
 It spans two repos: **tom.quest** (this page, the public proxies, the FastAPI
 `turing-api`) and **ComplexMultiTrigger** (`~/booleanbackdoors/ComplexMultiTrigger`,
@@ -88,11 +89,11 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   slider), × clears it. Status flags (incl. Planted) live in the menu and
   chip up only while active — nothing shows when off. A quick-search box
   matches run id / fn hex / DNF / dir path / facet values (AND across
-  tokens). Sort chips appear only with ≥2 keys. Right side: count + ⓘ,
+  tokens). Sort chips appear only with ≥2 keys. Right side: count,
   Export menu, Columns (table view), Reset. Z-scale: table internals ≤ z-20,
-  the top bar (a stacking context capping its popovers) z-30, the ⓘ popover
-  (position: fixed) z-40 — a bar popover must never tie the frozen headers'
-  z-20 or DOM order paints the table over it.
+  the top bar (a stacking context capping its popovers) z-30 — a bar popover
+  must never tie the frozen headers' z-20 or DOM order paints the table
+  over it.
 - **Table** — WINDOWED rendering (every filtered row reachable; no 500-row
   cap), sortable (multi-key, drag chips), resizable columns, per-group
   column menus. Leading arity/`Fn` columns freeze sticky-left. A summary
@@ -106,17 +107,22 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   outlines separate the colors, and an amber ring means that row ACTIVATES
   the backdoor.
 - **Chart** — the same filtered rows: any metric vs any metric via
-  searchable pickers (Y lists OUTCOME/DEFENSE first, X FUNCTION first;
-  per-method entries collapse under their base metric like facet values in
-  `+ Filter`). THE DIMENSIONS PANEL (`lib/dimensions.ts`) replaces the old
-  runs|functions|means toggle and the color dropdown: every run dimension
-  (function identity, model, arity, seed, lr, …) is either SHARED across
-  the filtered view (shown as the points' common context, right side) or
-  DIFFERING (one chip each, biggest split first). A differing dimension is
+  searchable pickers that live ON the axes (the x picker under the x axis,
+  the y picker rotated along the y axis; both log toggles by the origin,
+  the y one rotated — the exported SVG/PNG keeps plain axis labels via a
+  `[data-export-only]` group). Y lists OUTCOME/DEFENSE first, X FUNCTION
+  first; per-method entries collapse under their base metric like facet
+  values in `+ Filter`. THE DIMENSIONS PANEL (`lib/dimensions.ts`) replaces
+  the old runs|functions|means toggle and the color dropdown: every run
+  dimension (function identity, model, arity, seed, lr, …) is either SHARED
+  across the filtered view (shown as the points' common context, right side)
+  or DIFFERING (one chip each, biggest split first). A differing dimension is
   split onto a visual channel (color / shape / size — auto-assigned biggest
-  first under legibility caps, override per chip), filtered to one value
-  (emits an ORDINARY filter chip — one filter mechanism, shared with the
-  table; `fn=` scope chip for the function dimension), or averaged. Points
+  first under legibility caps, override per chip), filtered via the chip's
+  CHECKBOX list — the same multi-select editor as the bar's facet chips,
+  over subtree-scoped candidate values, emitting ORDINARY filter state (one
+  filter mechanism, shared with the table; `fn=` scope chips for the
+  function dimension) — or averaged. Points
   group by (split values × X bucket): mean ± 1 SD whiskers, n-sized points,
   per-combo connecting lines; a continuous X falls back to 12 equal-width
   bins; single-run points click through to the drawer. The r/ρ readout and

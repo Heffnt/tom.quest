@@ -162,24 +162,9 @@ export default function BoolbackClient() {
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
       <div className="flex-1 flex min-h-0">
-        {/* left: dir viewer, or the slim expand rail when collapsed */}
-        {treeCollapsed ? (
-          <button
-            type="button"
-            onClick={() => setTreeCollapsed(false)}
-            title="Show the artifact tree"
-            aria-label="Show the artifact tree"
-            className="flex w-7 shrink-0 flex-col items-center gap-2 border-r border-border bg-surface/40 pt-2 text-text-faint transition-colors hover:bg-surface/70 hover:text-accent"
-          >
-            <span className="text-xs leading-none">»</span>
-            <span
-              className="font-mono text-[10px] tracking-widest"
-              style={{ writingMode: "vertical-rl" }}
-            >
-              artifacts
-            </span>
-          </button>
-        ) : (
+        {/* left: dir viewer. Collapsed: NO rail — the top bar inside TablePane
+            carries the header-height `» artifacts` re-open button instead. */}
+        {!treeCollapsed && (
           <>
             <div
               style={{ width: leftW }}
@@ -200,7 +185,12 @@ export default function BoolbackClient() {
         )}
         {/* center: table OR chart (same top bar) */}
         <div className="flex-1 min-w-0 relative">
-          <TablePane bundle={bundle} view={view} source={source} />
+          <TablePane
+            bundle={bundle}
+            view={view}
+            source={source}
+            onShowTree={treeCollapsed ? () => setTreeCollapsed(false) : undefined}
+          />
         </div>
         {/* right: detail panel (self-resizing; renders null when closed) */}
         <DetailPanel bundle={bundle} dir={source.dir} />

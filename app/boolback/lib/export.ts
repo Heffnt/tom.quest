@@ -162,6 +162,12 @@ export function svgToString(svg: SVGSVGElement): string {
     }
   }
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  // Elements marked data-export-only are display:none on the page (the live
+  // view renders them as interactive HTML instead — e.g. the chart's on-axis
+  // metric pickers) but belong in the standalone figure: un-hide them here.
+  for (const el of Array.from(clone.querySelectorAll("[data-export-only]"))) {
+    (el as SVGElement).style.removeProperty("display");
+  }
   // An opaque background so the figure reads on any page.
   const bg = window.getComputedStyle(document.body).backgroundColor;
   if (bg) clone.style.setProperty("background-color", bg);

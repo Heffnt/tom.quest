@@ -4,9 +4,11 @@
 // chrome above the center view (the old command bar and the chart's axis
 // strip folded into it). One wrap-row:
 //
-//   [Table|Chart] [+ Filter] (active filter chips…) | y ▾ [log] × x ▾ [log]
-//   [trend] r/ρ |   ⌕ · N of M runs ⓘ · Export · Columns(table) · Reset · ⧉ · ● ↻
+//   [» artifacts] [Table|Chart] [+ Filter] (active filter chips…) | [trend] r/ρ
+//   ⌕ · N of M runs · Export · Columns(table) · Reset · ⧉ · ● ↻
 //
+// - `» artifacts` shows only while the tree pane is collapsed — the bar IS the
+//   re-open affordance (no full-height rail stealing horizontal space).
 // - `+ Filter` is a single CLICK-open searchable menu replacing the old status
 //   pills / ten facet buttons / "+ add metric": type to match facet VALUES
 //   ("llama" → Model: Llama-3.2-1B), facet names, metric names, and status
@@ -15,11 +17,11 @@
 // - Every active filter renders as a uniform chip: status, `model: Llama +2`,
 //   `avg sensitivity 0.5–1.2`, `scope: fn=…`. Clicking a chip's body opens its
 //   editor (checkbox list / histogram slider) as a popover; × clears it.
-// - The axis cluster renders on CHART view only, off the store-owned chart
-//   config; the r/ρ readout comes from store.chartReadout (published by the
-//   mounted ChartBody).
-// - The ⓘ popover carries the run definition + the unfiltered corpus totals;
-//   the status dot's tooltip carries snapshot freshness. Search is a ⌕ icon
+// - The chart's X/Y metric pickers and log toggles live ON the plot's axes
+//   (chart-panel.tsx); only the trend toggle and the r/ρ readout (published
+//   to store.chartReadout by the mounted ChartBody) render here, on CHART
+//   view only.
+// - The status dot's tooltip carries snapshot freshness. Search is a ⌕ icon
 //   until it holds a query.
 // - The sort-chip row appears only with ≥2 keys — a single sort is already
 //   shown by the header arrow.
@@ -30,7 +32,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Bundle, FacetKey, FilterState, RangeFilter, StatusFlag,
 } from "../lib/types";
-import { DEFAULT_CHART, plantedThreshold } from "../lib/types";
 import type { RunRow } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import type { ArtifactSource } from "../data/source";
@@ -38,7 +39,7 @@ import {
   FACET_KEYS, FACET_LABELS, countSummary, facetOptions, histogramBins,
   metricRange, statusCounts, type MetricIndex,
 } from "../lib/select";
-import { X_GROUP_ORDER, Y_GROUP_ORDER, collapseMethodEntries, formatValue, groupedMetricOptions } from "../lib/metrics";
+import { Y_GROUP_ORDER, collapseMethodEntries, formatValue, groupedMetricOptions } from "../lib/metrics";
 import { parseMethodMetric } from "../lib/method-metrics";
 import { buildShareUrl } from "../lib/share";
 import { copyText } from "../lib/export";
@@ -50,10 +51,8 @@ function methodPart(name: string): string | null {
 import { resolveById, type ColumnDef } from "../lib/columns";
 import { ColumnGroupMenu } from "./column-group-menu";
 import { ExportMenu } from "./export-menu";
-import { RunInfo, type RunInfoStat } from "./run-info";
-import { effectiveAxis, type ChartExportHandle } from "./chart-panel";
-import { MetricPicker } from "./metric-picker";
-import { relTime, shortModel, thousands } from "../lib/format";
+import type { ChartExportHandle } from "./chart-panel";
+import { relTime, shortModel } from "../lib/format";
 
 const HIST_BINS = 24;
 
@@ -83,12 +82,14 @@ export interface FilterBarProps {
   view: "table" | "chart";
   chartRef: React.MutableRefObject<ChartExportHandle | null>;
   source: ArtifactSource; // status dot / freshness / Refresh
+  /** Set while the tree pane is collapsed — renders the `» artifacts` re-open button. */
+  onShowTree?: () => void;
 }
 
 export function FilterBar(props: FilterBarProps) {
   const {
     rows, scopedRows, visibleRows, visibleCount, totalCount,
-    bundle, index, colDefs, view, chartRef, source,
+    bundle, index, colDefs, view, chartRef, source, onShowTree,
   } = props;
 
   const filters = useBoolbackStore((s) => s.filters);
@@ -109,39 +110,6 @@ export function FilterBar(props: FilterBarProps) {
   const chart = useBoolbackStore((s) => s.chart);
   const setChart = useBoolbackStore((s) => s.setChart);
   const readout = useBoolbackStore((s) => s.chartReadout);
-
-  // Guarded axis names (same helper the chart uses, so picker and plot agree).
-  const effX = effectiveAxis(chart.x, index, bundle.metric_schema, DEFAULT_CHART.x);
-  const effY = effectiveAxis(chart.y, index, bundle.metric_schema, DEFAULT_CHART.y);
-
-  const threshold = plantedThreshold(bundle.meta);
-
-  // Unfiltered corpus totals — live inside the ⓘ popover, not the bar.
-  const corpusStats = useMemo<RunInfoStat[]>(() => {
-    let planted = 0, defense = 0, interp = 0, scan = 0, inProgress = 0;
-    for (const r of rows) {
-      if (r.status.planted) planted++;
-      if (r.status.has_defense) defense++;
-      if (r.status.has_interp) interp++;
-      if (r.status.has_scan) scan++;
-      if (r.status.in_progress) inProgress++;
-    }
-    const pct = rows.length ? Math.round((100 * planted) / rows.length) : 0;
-    const list: RunInfoStat[] = [
-      { label: "runs", value: thousands(rows.length) },
-      { label: "functions", value: thousands(Object.keys(bundle.functions).length) },
-      {
-        label: "planted",
-        value: `${thousands(planted)} (${pct}%)`,
-        title: `runs at plantedness ≥ ${threshold}`,
-      },
-      { label: "defended", value: thousands(defense) },
-    ];
-    if (interp > 0) list.push({ label: "interp", value: thousands(interp) });
-    if (scan > 0) list.push({ label: "scanned", value: thousands(scan) });
-    if (inProgress > 0) list.push({ label: "in progress", value: thousands(inProgress) });
-    return list;
-  }, [rows, bundle.functions, threshold]);
 
   // Shareable view URL (filters + sorts + columns + chart + view).
   const [copied, setCopied] = useState(false);
@@ -195,6 +163,19 @@ export function FilterBar(props: FilterBarProps) {
     // or its dropdowns paint underneath the arity/Fn headers.
     <div className="sticky top-0 z-30 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
       <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5">
+        {/* re-open the collapsed tree pane — header-height, no side rail */}
+        {onShowTree && (
+          <button
+            type="button"
+            onClick={onShowTree}
+            title="Show the artifact tree"
+            aria-label="Show the artifact tree"
+            className="shrink-0 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
+          >
+            » artifacts
+          </button>
+        )}
+
         {/* Table | Chart view switcher (store-owned) */}
         <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-xs">
           {(["table", "chart"] as const).map((v) => (
@@ -260,16 +241,11 @@ export function FilterBar(props: FilterBarProps) {
           />
         ))}
 
-        {/* axis cluster — chart view only; config is store-owned */}
+        {/* trend + readout — chart view only; the X/Y pickers and log toggles
+            live on the plot's axes (chart-panel.tsx) */}
         {view === "chart" && (
           <>
             <span className="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden />
-            <span className="text-xs text-text-faint font-mono">y</span>
-            <MetricPicker value={effY} onChange={(v) => setChart({ y: v })} schema={bundle.metric_schema} ariaLabel="y metric" order={Y_GROUP_ORDER} />
-            <AxisToggle label="log" checked={!!chart.logY} onChange={(b) => setChart({ logY: b })} />
-            <span className="text-xs text-text-faint font-mono">×</span>
-            <MetricPicker value={effX} onChange={(v) => setChart({ x: v })} schema={bundle.metric_schema} ariaLabel="x metric" order={X_GROUP_ORDER} />
-            <AxisToggle label="log" checked={!!chart.logX} onChange={(b) => setChart({ logX: b })} />
             <AxisToggle label="trend" checked={!!chart.trend} onChange={(b) => setChart({ trend: b })} />
             {readout && (readout.r !== null || readout.binned || readout.droppedLog > 0) && (
               <span
@@ -293,7 +269,6 @@ export function FilterBar(props: FilterBarProps) {
           <span className="text-xs font-mono text-text-muted whitespace-nowrap">
             {countSummary(visibleCount, totalCount)} runs
           </span>
-          <RunInfo plantedThreshold={threshold} stats={corpusStats} />
           <ExportMenu
             bundle={bundle}
             index={index}
@@ -699,7 +674,7 @@ function QuickSearch({
   );
 }
 
-// Tiny labeled checkbox for the axis cluster (log / trend).
+// Tiny labeled checkbox (the chart's trend toggle).
 function AxisToggle({
   label, checked, onChange,
 }: {

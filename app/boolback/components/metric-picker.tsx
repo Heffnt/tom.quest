@@ -20,12 +20,18 @@ export function MetricPicker({
   schema,
   order,
   ariaLabel,
+  vertical = false,
+  placement = "down",
 }: {
   value: string;
   onChange: (name: string) => void;
   schema: MetricSchemaEntry[];
   order: MetricGroupName[];
   ariaLabel: string;
+  /** Rotate the trigger button for a y-axis mount (text reads bottom→top). */
+  vertical?: boolean;
+  /** Where the popover opens relative to the trigger (axis mounts need up/right). */
+  placement?: "down" | "up" | "right";
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -75,13 +81,27 @@ export function MetricPicker({
     </button>
   );
 
+  // The button rotates for a y-axis mount (writing-mode flips its box to
+  // tall-and-narrow in layout; rotate-180 makes the text read bottom→top like
+  // a conventional y-axis label). The popover stays horizontal either way.
+  const popPos =
+    placement === "up"
+      ? "bottom-full left-1/2 mb-1 -translate-x-1/2"
+      : placement === "right"
+        ? "left-full top-1/2 ml-1 -translate-y-1/2"
+        : "left-0 top-full mt-1";
+
   return (
     <span className="relative inline-block">
       <button
         type="button"
         aria-label={ariaLabel}
         onClick={() => (open ? close() : setOpen(true))}
-        className="max-w-44 truncate rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-text hover:border-accent/40 focus:border-accent/60 focus:outline-none"
+        className={[
+          "truncate rounded-md border border-border bg-surface text-xs text-text hover:border-accent/40 focus:border-accent/60 focus:outline-none",
+          vertical ? "max-h-44 rotate-180 px-0.5 py-1.5" : "max-w-44 px-1.5 py-0.5",
+        ].join(" ")}
+        style={vertical ? { writingMode: "vertical-rl" } : undefined}
         title={currentLabel}
       >
         {currentLabel} <span className="text-text-faint">▾</span>
@@ -89,7 +109,7 @@ export function MetricPicker({
       {open && (
         <>
           <div className="fixed inset-0 z-20" onClick={close} />
-          <div className="absolute left-0 top-full z-30 mt-1 w-72 rounded-lg border border-border bg-surface/95 p-2 text-xs shadow-lg backdrop-blur-md">
+          <div className={`absolute z-30 w-72 rounded-lg border border-border bg-surface/95 p-2 text-xs shadow-lg backdrop-blur-md ${popPos}`}>
             <input
               type="text"
               autoFocus

@@ -2,9 +2,8 @@
 
 // app/boolback/components/table-pane.tsx
 //
-// The ONLY center view. One row per RunRow (one training run / NODE_KEY —
-// see the run-info ⓘ for the definition). Columns are resolved from
-// bundle.column_groups via lib/columns.resolveColumn.
+// The ONLY center view. One row per RunRow (one training run / NODE_KEY).
+// Columns are resolved from bundle.column_groups via lib/columns.resolveColumn.
 //
 // Table mechanics (plan slices 3–5):
 //   * WINDOWED rendering — every filtered row is reachable by scroll; only the
@@ -81,9 +80,11 @@ export interface TablePaneProps {
   view?: CenterView;
   /** Snapshot source — the top bar renders its status dot / Refresh. */
   source: ArtifactSource;
+  /** Set while the tree pane is collapsed — the top bar renders the re-open button. */
+  onShowTree?: () => void;
 }
 
-export function TablePane({ bundle, view = "table", source }: TablePaneProps) {
+export function TablePane({ bundle, view = "table", source, onShowTree }: TablePaneProps) {
   const rows = bundle.rows;
   const index = useMemo<MetricIndex>(
     () => indexMetricSchema(bundle.metric_schema),
@@ -343,6 +344,7 @@ export function TablePane({ bundle, view = "table", source }: TablePaneProps) {
         view={view}
         chartRef={chartRef}
         source={source}
+        onShowTree={onShowTree}
       />
 
       {view === "chart" ? (

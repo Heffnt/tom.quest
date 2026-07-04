@@ -7,11 +7,13 @@
 // "does outcome Y move with function-complexity X, and does the context
 // moderate it?"
 //
-//   X / Y = any snapshot metric; the pickers, log toggles and trend toggle
-//       render in the SHARED top bar (filter-bar.tsx) off the store-owned
-//       chart config — this component only reads it. The r/ρ readout is
-//       published back to the bar via store.chartReadout (ALWAYS computed
-//       over the underlying runs).
+//   X / Y = any snapshot metric; the pickers live ON the axes (the x picker
+//       under the x axis, the y picker rotated along the y axis) and both
+//       log toggles hug the origin — all off the store-owned chart config.
+//       Only the trend toggle stays in the SHARED top bar (filter-bar.tsx);
+//       the r/ρ readout is published back to the bar via store.chartReadout
+//       (ALWAYS computed over the underlying runs). The exported figure
+//       keeps plain axis labels via a [data-export-only] SVG group.
 //
 // THE LEGEND PANEL (docked right of the plot; replaces the old top dims
 // strip + bottom legend): every run dimension (function, model, arity,
@@ -20,9 +22,9 @@
 //
 //   split onto a visual channel — color / shape / size — so its values are
 //     distinguishable point-by-point;
-//   filtered to one value via the chip's value list (this emits an ORDINARY
-//     filter chip in the bar above — one filter mechanism, shared with the
-//     table); or
+//   filtered via the chip's CHECKBOX list — the same multi-select editor as
+//     the bar's facet chips, emitting ORDINARY filter state (one filter
+//     mechanism, shared with the table); or
 //   averaged — collapsed into mean ± 1 SD groups (whiskers, n-sized points,
 //     per-group connecting lines across X).
 //
@@ -40,18 +42,21 @@
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, DimTreatment, FilterState, RunRow } from "../lib/types";
+import type { Bundle, DimTreatment, RunRow } from "../lib/types";
 import { DEFAULT_CHART } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
+import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import {
-  assignTreatments, summarizeDimensions, type Channel, type DimValues,
+  DIMENSIONS, assignTreatments, summarizeDimensions,
+  type Channel, type DimensionDef, type DimValues,
 } from "../lib/dimensions";
 import { groupRuns, type GroupedPoint, type RunPoint } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
+import { MetricPicker } from "./metric-picker";
 
 /** What the shared Export menu needs from the mounted chart. */
 export interface ChartExportHandle {
@@ -83,7 +88,8 @@ const SINGLE_COLOR = "#e8a040";
 // and the plot fills the pane at any aspect ratio — no letterboxing, no
 // shrinking text. FALLBACK covers the first pre-measure render only.
 const FALLBACK = { w: 820, h: 430 };
-const PAD = { l: 64, r: 16, t: 14, b: 44 };
+// PAD.l leaves room for the rotated y-axis picker + tick labels side by side.
+const PAD = { l: 72, r: 16, t: 14, b: 44 };
 const MIN_DRAG = 8; // px before a drag counts as a box-select
 
 // The shape channel's glyph cycle (index 0 = plain circle).
@@ -150,7 +156,8 @@ export function ChartBody({
 }) {
   const openDetail = useBoolbackStore((s) => s.openDetail);
   const expandChain = useBoolbackStore((s) => s.expandChain);
-  const addSubtreeDir = useBoolbackStore((s) => s.addSubtreeDir);
+  const toggleSubtreeDir = useBoolbackStore((s) => s.toggleSubtreeDir);
+  const removeSubtreeDir = useBoolbackStore((s) => s.removeSubtreeDir);
   const addRange = useBoolbackStore((s) => s.addRange);
   const setFacet = useBoolbackStore((s) => s.setFacet);
   const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
@@ -232,14 +239,34 @@ export function ChartBody({
   const shapeIdx = useMemo(() => valueIndex(shapeDim), [shapeDim]);
   const sizeIdx = useMemo(() => valueIndex(sizeDim), [sizeDim]);
 
-  // function display text -> function hash (scope-chip filters, legend clicks).
+  // function display text -> function hash (fn= scope chips from the legend).
+  // Built over ALL rows so the legend's checkbox editors can resolve values
+  // the current filters exclude.
   const fnHashByText = useMemo(() => {
     const m = new Map<string, string>();
-    for (const r of rows) {
+    for (const r of bundle.rows) {
       m.set(fnText(r.function.arity, r.function.truth_table), r.identity.function_hash);
     }
     return m;
-  }, [rows]);
+  }, [bundle.rows]);
+
+  // Rows in subtree scope — the same base the filter bar's facet editors use.
+  // The legend's checkbox lists draw candidate values from here rather than
+  // the filtered rows, so checking one value doesn't collapse the list to
+  // just itself.
+  const scopedRows = useMemo(() => {
+    const dirs = filters.subtreeDirs ?? [];
+    if (dirs.length === 0) return bundle.rows;
+    return bundle.rows.filter((r) => dirs.some((d) => r.identity.chain_dirs.includes(d)));
+  }, [bundle.rows, filters.subtreeDirs]);
+
+  // For the function dimension the top-level fn= scope chips ARE its filter,
+  // so its candidate list ignores them (deeper subtree chips still scope).
+  const fnScopeRows = useMemo(() => {
+    const dirs = (filters.subtreeDirs ?? []).filter((d) => !/^fn=[^/]+$/.test(d));
+    if (dirs.length === 0) return bundle.rows;
+    return bundle.rows.filter((r) => dirs.some((d) => r.identity.chain_dirs.includes(d)));
+  }, [bundle.rows, filters.subtreeDirs]);
 
   // ---- points ---------------------------------------------------------------
   const { points, pairs, droppedLog, binned, rowByPath } = useMemo(() => {
@@ -405,21 +432,55 @@ export function ChartBody({
     setChart({ dims: next });
   };
 
-  // "filter to one value" — the ORDINARY filter mechanism, never chart state.
-  const filterDimTo = (d: DimValues, value: string) => {
-    if (d.dim.fnScope) {
+  // ---- legend filtering — the ORDINARY filter mechanism, never chart state
+  // (facet selections, or fn= scope chips for the function dimension) --------
+
+  /** Candidate values (with in-scope counts) for a dimension's checkbox list. */
+  const dimOptions = (dim: DimensionDef): Array<{ value: string; count: number }> => {
+    const base = dim.fnScope ? fnScopeRows : scopedRows;
+    const counts = new Map<string, number>();
+    for (const r of base) {
+      const v = dim.raw(r);
+      if (v === null) continue;
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    const values = [...counts.entries()].map(([value, count]) => ({ value, count }));
+    values.sort(
+      dim.numericSort
+        ? (a, b) => Number(a.value) - Number(b.value)
+        : (a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0),
+    );
+    return values;
+  };
+
+  /** The dimension's currently filter-selected values. */
+  const dimSelection = (dim: DimensionDef): string[] => {
+    if (dim.fnScope) {
+      const dirs = filters.subtreeDirs ?? [];
+      return [...fnHashByText.entries()]
+        .filter(([, hash]) => dirs.includes(`fn=${hash}`))
+        .map(([text]) => text);
+    }
+    return dim.facetKey ? (filters.facets[dim.facetKey] ?? []) : [];
+  };
+
+  /** Checkbox semantics: toggle one value in/out of the dimension's filter. */
+  const toggleDimValue = (dim: DimensionDef, value: string) => {
+    if (dim.fnScope) {
       const hash = fnHashByText.get(value);
-      if (hash) addSubtreeDir(`fn=${hash}`);
-    } else if (d.dim.facetKey) {
-      setFacet(d.dim.facetKey, [value]);
+      if (hash) toggleSubtreeDir(`fn=${hash}`);
+    } else if (dim.facetKey) {
+      toggleFacetValue(dim.facetKey, value);
     }
   };
-  const legendToggle = (d: DimValues, value: string) => {
-    if (d.dim.fnScope) {
-      const hash = fnHashByText.get(value);
-      if (hash) addSubtreeDir(`fn=${hash}`);
-    } else if (d.dim.facetKey) {
-      toggleFacetValue(d.dim.facetKey, value);
+
+  const clearDimFilter = (dim: DimensionDef) => {
+    if (dim.fnScope) {
+      for (const d of filters.subtreeDirs ?? []) {
+        if (/^fn=[^/]+$/.test(d)) removeSubtreeDir(d);
+      }
+    } else if (dim.facetKey) {
+      setFacet(dim.facetKey, []);
     }
   };
 
@@ -567,11 +628,16 @@ export function ChartBody({
                   fill="var(--color-text-faint)" className="font-mono">{xTickLabel(t)}</text>
               </g>
             ))}
-            <text x={(PAD.l + W - PAD.r) / 2} y={H - 8} fontSize={13} textAnchor="middle"
-              fill="var(--color-text-muted)">{(index[x]?.label ?? x) + (logX ? " (log)" : "")}</text>
-            <text x={16} y={(PAD.t + H - PAD.b) / 2} fontSize={13} textAnchor="middle"
-              transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
-              fill="var(--color-text-muted)">{(index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
+            {/* axis labels — export-only: the live view renders the on-axis
+                pickers instead; svgToString un-hides [data-export-only] so the
+                standalone figure keeps plain labels */}
+            <g data-export-only style={{ display: "none" }}>
+              <text x={(PAD.l + W - PAD.r) / 2} y={H - 8} fontSize={13} textAnchor="middle"
+                fill="var(--color-text-muted)">{(index[x]?.label ?? x) + (logX ? " (log)" : "")}</text>
+              <text x={16} y={(PAD.t + H - PAD.b) / 2} fontSize={13} textAnchor="middle"
+                transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
+                fill="var(--color-text-muted)">{(index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
+            </g>
 
             {/* per-combo connecting lines (averaging; under points + whiskers) */}
             {meanLines.length > 0 && (
@@ -705,6 +771,49 @@ export function ChartBody({
           </svg>
         )}
 
+        {/* on-axis controls — the pickers ARE the axis labels (x under the x
+            axis, y rotated along the y axis) and both log toggles hug the
+            origin. HTML overlays on the plot container, rendered even when
+            nothing is plottable so a dead metric can be picked away from. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0.5 z-10 flex justify-center">
+          <div className="pointer-events-auto">
+            <MetricPicker
+              value={x}
+              onChange={(v) => setChart({ x: v })}
+              schema={bundle.metric_schema}
+              ariaLabel="x metric"
+              order={X_GROUP_ORDER}
+              placement="up"
+            />
+          </div>
+        </div>
+        <div className="pointer-events-none absolute inset-y-0 left-0.5 z-10 flex items-center">
+          <div className="pointer-events-auto">
+            <MetricPicker
+              value={y}
+              onChange={(v) => setChart({ y: v })}
+              schema={bundle.metric_schema}
+              ariaLabel="y metric"
+              order={Y_GROUP_ORDER}
+              placement="right"
+              vertical
+            />
+          </div>
+        </div>
+        <LogToggle
+          checked={logX}
+          onChange={(b) => setChart({ logX: b })}
+          ariaLabel="x log scale"
+          style={{ left: PAD.l + 8, bottom: 4 }}
+        />
+        <LogToggle
+          vertical
+          checked={logY}
+          onChange={(b) => setChart({ logY: b })}
+          ariaLabel="y log scale"
+          style={{ left: 4, bottom: PAD.b + 8 }}
+        />
+
         {/* tooltip (flips sides near the right edge) */}
         {hover && (() => {
           const px = scale.sx(hover.gp.x + hover.jx);
@@ -733,13 +842,45 @@ export function ChartBody({
         treatments={treatments}
         overrides={dimOverrides}
         setDim={setDim}
-        filterDimTo={filterDimTo}
-        legendToggle={legendToggle}
+        dimOptions={dimOptions}
+        dimSelection={dimSelection}
+        toggleDimValue={toggleDimValue}
+        clearDimFilter={clearDimFilter}
         channelDims={channelDims}
-        facets={filters.facets}
         rByColorValue={rByColorValue}
       />
     </div>
+  );
+}
+
+// A small absolutely-positioned log-scale checkbox. Both live by the plot's
+// origin; the y one rotates vertical so it costs no horizontal padding.
+function LogToggle({
+  checked, onChange, ariaLabel, vertical = false, style,
+}: {
+  checked: boolean;
+  onChange: (b: boolean) => void;
+  ariaLabel: string;
+  vertical?: boolean;
+  style: React.CSSProperties;
+}) {
+  return (
+    <label
+      className={[
+        "absolute z-10 inline-flex cursor-pointer items-center gap-1 text-[11px] text-text-muted hover:text-text",
+        vertical ? "rotate-180" : "",
+      ].join(" ")}
+      style={vertical ? { ...style, writingMode: "vertical-rl" } : style}
+    >
+      <input
+        type="checkbox"
+        aria-label={ariaLabel}
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="accent-accent"
+      />
+      log
+    </label>
   );
 }
 
@@ -747,9 +888,14 @@ export function ChartBody({
 // Legend panel — the dimension model as a vertical panel right of the plot.
 // One section per SPLIT dimension: its chip is the section header (opens the
 // treatment/filter popover) and its value keys list below (click toggles the
-// facet filter; the swatch itself shows the channel). Averaged dims get a
-// chip row (no keys — no visual encoding), and the constant context is a
-// collapsible section at the bottom.
+// value in/out of the filter; the swatch itself shows the channel). Averaged
+// dims get a chip row (no keys — no visual encoding), and the constant
+// context is a collapsible section at the bottom.
+//
+// The chip popover is owned HERE (not by the chip): its filter list is a
+// checkbox multi-select, and checking values can turn the dimension shared —
+// which unmounts its chip. An editor owned by the panel survives that and
+// stays open for further toggling, matching the bar's facet editors.
 // ---------------------------------------------------------------------------
 
 function LegendPanel({
@@ -757,46 +903,52 @@ function LegendPanel({
   treatments,
   overrides,
   setDim,
-  filterDimTo,
-  legendToggle,
+  dimOptions,
+  dimSelection,
+  toggleDimValue,
+  clearDimFilter,
   channelDims,
-  facets,
   rByColorValue,
 }: {
   summary: ReturnType<typeof summarizeDimensions>;
   treatments: Map<string, DimTreatment>;
   overrides: Record<string, DimTreatment>;
   setDim: (key: string, t: DimTreatment | null) => void;
-  filterDimTo: (d: DimValues, value: string) => void;
-  legendToggle: (d: DimValues, value: string) => void;
+  dimOptions: (dim: DimensionDef) => Array<{ value: string; count: number }>;
+  dimSelection: (dim: DimensionDef) => string[];
+  toggleDimValue: (dim: DimensionDef, value: string) => void;
+  clearDimFilter: (dim: DimensionDef) => void;
   channelDims: Map<Channel, DimValues>;
-  facets: FilterState["facets"];
   rByColorValue: Map<string, number | null>;
 }) {
   const [constantOpen, setConstantOpen] = useState(false);
+  const [popover, setPopover] = useState<{ key: string; top: number; right: number } | null>(null);
   const averaged = summary.differing.filter(
     (d) => (treatments.get(d.dim.key) ?? "avg") === "avg",
   );
 
   if (summary.differing.length === 0 && summary.shared.length === 0) return null;
 
+  const togglePopover = (key: string, pos: { top: number; right: number }) =>
+    setPopover((p) => (p?.key === key ? null : { key, ...pos }));
+  const popDim = popover ? DIMENSIONS.find((d) => d.key === popover.key) : undefined;
+
   return (
     <aside className="w-60 shrink-0 overflow-y-auto border-l border-border/60 px-2 py-2 text-xs text-text-muted">
       {(["color", "shape", "size"] as const).map((channel) => {
         const d = channelDims.get(channel);
         if (!d) return null;
+        const selected = dimSelection(d.dim);
         return (
           <section key={channel} className="mb-3">
             <DimChip
               d={d}
               t={channel}
               overridden={d.dim.key in overrides}
-              setDim={setDim}
-              filterDimTo={filterDimTo}
+              onToggle={togglePopover}
             />
             <div className="mt-1">
               {d.values.slice(0, 14).map(({ value }, i) => {
-                const selected = d.dim.facetKey ? (facets[d.dim.facetKey] ?? []) : [];
                 const active = selected.includes(value);
                 const dimmed = selected.length > 0 && !active;
                 const disp = d.dim.display ? d.dim.display(value) : value;
@@ -805,8 +957,8 @@ function LegendPanel({
                   <button
                     key={value}
                     type="button"
-                    onClick={() => legendToggle(d, value)}
-                    title={`toggle ${d.dim.label}: ${disp}`}
+                    onClick={() => toggleDimValue(d.dim, value)}
+                    title={`toggle filter — ${d.dim.label}: ${disp}`}
                     className={[
                       "flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-alt",
                       active ? "ring-1 ring-accent/60 text-text" : "",
@@ -864,8 +1016,7 @@ function LegendPanel({
                 d={d}
                 t="avg"
                 overridden={d.dim.key in overrides}
-                setDim={setDim}
-                filterDimTo={filterDimTo}
+                onToggle={togglePopover}
               />
             ))}
           </div>
@@ -897,96 +1048,143 @@ function LegendPanel({
           )}
         </section>
       )}
+
+      {popover && popDim && (
+        <DimPopover
+          dim={popDim}
+          pos={popover}
+          differing={summary.differing.some((d) => d.dim.key === popDim.key)}
+          treatment={treatments.get(popDim.key) ?? "avg"}
+          overridden={popDim.key in overrides}
+          setDim={setDim}
+          options={dimOptions(popDim)}
+          selected={dimSelection(popDim)}
+          onToggleValue={(v) => toggleDimValue(popDim, v)}
+          onClear={() => clearDimFilter(popDim)}
+          close={() => setPopover(null)}
+        />
+      )}
     </aside>
   );
 }
 
-// A dimension chip + its treatment/filter popover. The popover positions
-// FIXED (anchor captured on open, clamped to the viewport): the legend panel
-// is an overflow-y scroller, which would clip an absolutely-positioned child.
+// A dimension chip — the section header. Its popover is LegendPanel-owned
+// (see DimPopover); the chip just reports its anchor rect on click.
 function DimChip({
-  d, t, overridden, setDim, filterDimTo,
+  d, t, overridden, onToggle,
 }: {
   d: DimValues;
   t: DimTreatment;
   overridden: boolean;
-  setDim: (key: string, t: DimTreatment | null) => void;
-  filterDimTo: (d: DimValues, value: string) => void;
+  onToggle: (key: string, pos: { top: number; right: number }) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement | null>(null);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
-  const toggle = () => {
-    if (!open && btnRef.current) {
-      const r = btnRef.current.getBoundingClientRect();
-      setPos({
-        top: Math.min(r.bottom + 4, Math.max(8, window.innerHeight - 300)),
-        right: Math.max(8, window.innerWidth - r.right),
-      });
-    }
-    setOpen((o) => !o);
+  const click = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    onToggle(d.dim.key, {
+      top: Math.min((r?.bottom ?? 0) + 4, Math.max(8, window.innerHeight - 320)),
+      right: Math.max(8, window.innerWidth - (r?.right ?? window.innerWidth)),
+    });
   };
   return (
+    <button
+      ref={btnRef}
+      type="button"
+      onClick={click}
+      title={`${d.dim.label}: ${d.values.length} values — ${t === "avg" ? "averaged" : `split by ${t}`}${overridden ? "" : " (auto)"}`}
+      className={[
+        "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:border-accent/50",
+        t === "avg" ? "border-border text-text-muted" : "border-accent/40 text-text",
+      ].join(" ")}
+    >
+      <span className="truncate">{d.dim.label}</span>
+      <span className="shrink-0 text-text-faint">×{d.values.length}</span>
+    </button>
+  );
+}
+
+// The chip popover: treatment buttons (only while the dimension still differs
+// across the plotted rows) + the filter CHECKBOX list — the same multi-select
+// editor as the filter bar's facet chips, over the subtree-scoped candidate
+// values. It positions FIXED (anchor captured on open, clamped to the
+// viewport): the legend panel is an overflow-y scroller, which would clip an
+// absolutely-positioned child. Checking values down to one turns the
+// dimension shared and unmounts its chip — the panel-owned popover survives
+// that and stays open for further toggling.
+function DimPopover({
+  dim, pos, differing, treatment, overridden, setDim, options, selected,
+  onToggleValue, onClear, close,
+}: {
+  dim: DimensionDef;
+  pos: { top: number; right: number };
+  differing: boolean;
+  treatment: DimTreatment;
+  overridden: boolean;
+  setDim: (key: string, t: DimTreatment | null) => void;
+  options: Array<{ value: string; count: number }>;
+  selected: string[];
+  onToggleValue: (value: string) => void;
+  onClear: () => void;
+  close: () => void;
+}) {
+  return (
     <>
-      <button
-        ref={btnRef}
-        type="button"
-        onClick={toggle}
-        title={`${d.dim.label}: ${d.values.length} values — ${t === "avg" ? "averaged" : `split by ${t}`}${overridden ? "" : " (auto)"}`}
-        className={[
-          "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:border-accent/50",
-          t === "avg" ? "border-border text-text-muted" : "border-accent/40 text-text",
-        ].join(" ")}
+      <div className="fixed inset-0 z-20" onClick={close} />
+      <div
+        className="fixed z-30 w-60 rounded-lg border border-border bg-surface/95 p-2 shadow-lg backdrop-blur-md"
+        style={{ top: pos.top, right: pos.right }}
       >
-        <span className="truncate">{d.dim.label}</span>
-        <span className="shrink-0 text-text-faint">×{d.values.length}</span>
-      </button>
-      {open && pos && (
-        <>
-          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div
-            className="fixed z-30 w-60 rounded-lg border border-border bg-surface/95 p-2 shadow-lg backdrop-blur-md"
-            style={{ top: pos.top, right: pos.right }}
-          >
-            <div className="mb-1 flex flex-wrap gap-1">
-              {(["color", "shape", "size", "avg"] as const).map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => { setDim(d.dim.key, opt); setOpen(false); }}
-                  className={[
-                    "rounded-md border px-1.5 py-0.5 transition-colors",
-                    t === opt ? "border-accent/60 text-accent" : "border-border text-text-muted hover:text-text",
-                  ].join(" ")}
-                >
-                  {opt === "avg" ? "average" : opt}
-                </button>
-              ))}
-              {overridden && (
-                <button
-                  onClick={() => { setDim(d.dim.key, null); setOpen(false); }}
-                  className="rounded-md border border-border px-1.5 py-0.5 text-text-muted hover:text-text"
-                  title="return to automatic assignment"
-                >
-                  auto
-                </button>
-              )}
-            </div>
-            <div className="mb-0.5 text-[10px] uppercase tracking-wide text-text-faint">filter to</div>
-            <div className="max-h-48 overflow-y-auto">
-              {d.values.map(({ value, count }) => (
-                <button
-                  key={value}
-                  onClick={() => { filterDimTo(d, value); setOpen(false); }}
-                  className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent"
-                >
-                  <span className="truncate">{d.dim.display ? d.dim.display(value) : value}</span>
-                  <span className="text-[10px] text-text-faint tabular-nums">{count}</span>
-                </button>
-              ))}
-            </div>
+        {differing && (
+          <div className="mb-1 flex flex-wrap gap-1">
+            {(["color", "shape", "size", "avg"] as const).map((opt) => (
+              <button
+                key={opt}
+                onClick={() => { setDim(dim.key, opt); close(); }}
+                className={[
+                  "rounded-md border px-1.5 py-0.5 transition-colors",
+                  treatment === opt ? "border-accent/60 text-accent" : "border-border text-text-muted hover:text-text",
+                ].join(" ")}
+              >
+                {opt === "avg" ? "average" : opt}
+              </button>
+            ))}
+            {overridden && (
+              <button
+                onClick={() => { setDim(dim.key, null); close(); }}
+                className="rounded-md border border-border px-1.5 py-0.5 text-text-muted hover:text-text"
+                title="return to automatic assignment"
+              >
+                auto
+              </button>
+            )}
           </div>
-        </>
-      )}
+        )}
+        <div className="mb-0.5 flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-wide text-text-faint">filter</span>
+          {selected.length > 0 && (
+            <button onClick={onClear} className="text-[10px] text-text-muted hover:text-accent">
+              clear
+            </button>
+          )}
+        </div>
+        <div className="max-h-48 overflow-y-auto">
+          {options.map(({ value, count }) => (
+            <label
+              key={value}
+              className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-0.5 text-text/90 hover:bg-surface-alt hover:text-accent"
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(value)}
+                onChange={() => onToggleValue(value)}
+                className="accent-accent"
+              />
+              <span className="min-w-0 flex-1 truncate">{dim.display ? dim.display(value) : value}</span>
+              <span className="text-[10px] text-text-faint tabular-nums">{count}</span>
+            </label>
+          ))}
+        </div>
+      </div>
     </>
   );
 }
