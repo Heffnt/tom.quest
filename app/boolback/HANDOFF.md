@@ -56,6 +56,15 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   POSTs `/api/turing/boolback-snapshot` → sbatch on a CPU compute node).
 - **Dir is pinned** to `artifacts` (the one real tree). `?dir=` overrides;
   there is no picker.
+- **Turing-down fallback (the page ALWAYS loads).** If the blob fetch fails
+  (Turing/proxy 502 — the cluster disappears for days at a time), `data/source.ts`
+  falls back to (1) the last good blob cached in the browser (Cache API,
+  written after every successful parse), then (2) the bundled
+  `data/sample-snapshot.json` (dynamic import). `source.origin`
+  (`live|cache|sample`) drives an amber banner in `boolback-client.tsx` naming
+  the fallback + why + a Retry. A failed REFRESH never downgrades: the on-screen
+  bundle is kept and only the status dot goes error. The full-screen error
+  remains only for first-load-failed + no cache + sample import failed.
 
 ## Snapshot schema v2 (built by `ComplexMultiTrigger/tom.quest/tom_quest/`)
 

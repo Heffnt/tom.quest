@@ -161,6 +161,26 @@ export default function BoolbackClient() {
 
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col bg-bg text-text">
+      {/* Fallback banner: the bundle on screen is NOT live data (Turing/proxy
+          unreachable — see data/source.ts fallback chain). The page still
+          works; this strip says what it's showing and why. */}
+      {source.origin !== "live" && (
+        <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-3 py-1 font-mono text-xs text-warning">
+          <span className="truncate">
+            {source.origin === "cache"
+              ? `Turing unreachable — showing the last snapshot this browser fetched (built ${new Date(bundle.meta.built_at).toLocaleString()})`
+              : "Turing unreachable — showing bundled sample data (not real runs)"}
+            {source.statusDetail ? ` · ${source.statusDetail}` : ""}
+          </span>
+          <button
+            type="button"
+            onClick={source.refresh}
+            className="ml-auto shrink-0 rounded border border-warning/40 px-1.5 py-0.5 hover:bg-warning/20 transition-colors"
+          >
+            ↻ Retry
+          </button>
+        </div>
+      )}
       <div className="flex-1 flex min-h-0">
         {/* left: dir viewer. Collapsed: NO rail — the top bar inside TablePane
             carries the header-height `» artifacts` re-open button instead. */}
