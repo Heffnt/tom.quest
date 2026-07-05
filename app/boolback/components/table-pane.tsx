@@ -33,6 +33,7 @@ import {
 } from "../lib/select";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
 import { resolveById, type ColumnDef } from "../lib/columns";
+import { sanitizeAnatomyConfig } from "../lib/anatomy";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import type { ArtifactSource } from "../data/source";
 import { useResizable } from "../lib/use-resizable";
@@ -153,7 +154,12 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
       visibleCols: src.visibleCols?.length ? src.visibleCols : visibleCols,
       columnWidths: shared ? {} : (persisted.columnWidths ?? {}),
       chart: { ...DEFAULT_CHART, ...(src.chart ?? {}) },
-      anatomy: { ...DEFAULT_ANATOMY, ...(src.anatomy ?? {}) },
+      // Value-TYPE sanitation, not a spread: a crafted ?v= ({"focus": null})
+      // or a stale persisted blob must not override a field with the wrong
+      // type — buildScale/defaultKbLayer read focus on first render and a
+      // null/primitive killed the whole page (the filters deep-merge above
+      // guards the same class; anatomy needs per-field checks).
+      anatomy: sanitizeAnatomyConfig(src.anatomy),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHydrated]);

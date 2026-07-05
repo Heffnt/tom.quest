@@ -54,7 +54,8 @@ import type {
   InterpMode,
   RunRow,
 } from "./types";
-import { rowLayerCount } from "./method-metrics";
+import { DEFAULT_ANATOMY } from "./types";
+import { MAX_MODEL_LAYERS, rowLayerCount } from "./method-metrics";
 
 // ---------------------------------------------------------------------------
 // Shared shapes
@@ -130,6 +131,19 @@ export const BAND_BAR_PX = 16; // residual bar height (run + twin)
 const RUN_ZONE_FRAC = 0.4; // interior split: run structure / middle / twin
 const MIDDLE_FRAC = 0.2;
 
+/** Sanity ceiling on head counts (method-metrics' MAX_MODEL_LAYERS twin):
+ * headSpan and the pane's slot loops iterate nHeads, so one junk blob value
+ * (`1e999` → Infinity, or 1e8) must never hang a frame or the whole tab. */
+export const MAX_MODEL_HEADS = 4096;
+export { MAX_MODEL_LAYERS };
+
+/** Positive-integer clamp for model unit counts; null on junk (NaN/∞/<1). */
+function sanitizeCount(v: number | null | undefined, max: number): number | null {
+  if (typeof v !== "number" || !Number.isFinite(v)) return null;
+  const n = Math.floor(v);
+  return n >= 1 ? Math.min(n, max) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Unit-path grammar
 // ---------------------------------------------------------------------------
@@ -173,12 +187,45 @@ function round2(v: number): number {
   return Math.round(v * 100) / 100;
 }
 
+/**
+ * Coerce an UNTRUSTED AnatomyConfig-shaped value (?v= share payloads, stale
+ * persisted-view blobs) into a safe config. Hydration used to shallow-spread
+ * it over DEFAULT_ANATOMY, which let `{"focus": null}` (or a primitive)
+ * override the default map and crash the pane's first render — the exact
+ * stale-shape class the filters deep-merge guards against. Every field is
+ * value-TYPE checked; focus entries keep only finite >1 weights on real unit
+ * paths (clamped like every other weight read).
+ */
+export function sanitizeAnatomyConfig(raw: unknown): AnatomyConfig {
+  const src = (
+    typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {}
+  ) as Partial<Record<keyof AnatomyConfig, unknown>>;
+  const focus: Focus = {};
+  if (typeof src.focus === "object" && src.focus !== null && !Array.isArray(src.focus)) {
+    for (const [k, v] of Object.entries(src.focus as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v) && v > 1 && parseUnitPath(k)) {
+        focus[k] = Math.min(v, FOCUS_MAX);
+      }
+    }
+  }
+  return {
+    ...DEFAULT_ANATOMY,
+    focus,
+    twin: typeof src.twin === "boolean" ? src.twin : DEFAULT_ANATOMY.twin,
+    sel: typeof src.sel === "string" && src.sel !== "" ? src.sel : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // buildScale — cumulative-weight piecewise mapping with pinned ends
 // ---------------------------------------------------------------------------
 
 export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Scale {
-  const nL = Math.max(1, Math.floor(shape.nLayers || 1));
+  // Shape counts arrive from blob data: clamp BEFORE they size an allocation
+  // (`new Array(Infinity + 2)` is a RangeError; 1e9 layers is ~8 GB) or bound
+  // a loop (headSpan over Infinity heads never terminates).
+  const nL = sanitizeCount(shape.nLayers, MAX_MODEL_LAYERS) ?? 1;
+  const nHeads = sanitizeCount(shape.nHeads, MAX_MODEL_HEADS);
   const width = Math.max(0, widthPx);
   const inner = Math.max(0, width - 2 * SCALE_EDGE_PAD);
   const mult = (path: string) => sanitizeWeight(focus[path]);
@@ -203,8 +250,13 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
 
   const embedSpan: Span = { x0: bounds[0], x1: bounds[1] };
   const unembedSpan: Span = { x0: bounds[nL + 1], x1: bounds[nL + 2] };
+  // Integer-only: a fractional index would slice bounds at a non-existent
+  // slot and yield {undefined, undefined} → NaN positions instead of the
+  // contract's null.
   const layerSpan = (i: number): Span | null =>
-    i >= 0 && i < nL ? { x0: bounds[i + 1], x1: bounds[i + 2] } : null;
+    Number.isInteger(i) && i >= 0 && i < nL
+      ? { x0: bounds[i + 1], x1: bounds[i + 2] }
+      : null;
 
   // Within a layer: attn | mlp split the span (equal base weights — position
   // legibility over parameter-count fidelity), each scaled by its focus.
@@ -218,20 +270,28 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
   };
 
   // Within attn: nHeads slots by index, each scaled by its focus. Unknown
-  // head count → no head-level subdivision exists.
+  // head count → no head-level subdivision exists. Cumulative head weights
+  // are memoized per layer per SCALE: the naive version re-walked all nHeads
+  // template-string keys per CALL, and at per-head-battery scale (80L × 64H,
+  // ~1k head-locus measurements × ~10 layout passes) that alone cost tens of
+  // ms per tween frame. The memo makes repeat calls O(1) per head.
+  const headCums = new Map<number, number[]>();
   const headSpan = (i: number, h: number): Span | null => {
-    const nHeads = shape.nHeads;
-    if (typeof nHeads !== "number" || nHeads <= 0 || h < 0 || h >= nHeads) return null;
+    if (nHeads === null || !Number.isInteger(h) || h < 0 || h >= nHeads) return null;
     const as = componentSpan(i, "attn");
     if (!as) return null;
-    let totalH = 0;
-    for (let j = 0; j < nHeads; j++) totalH += mult(`L${i}/attn/h${j}`);
-    let cumH = 0;
-    for (let j = 0; j < h; j++) cumH += mult(`L${i}/attn/h${j}`);
+    let cum = headCums.get(i);
+    if (!cum) {
+      cum = new Array<number>(nHeads + 1);
+      cum[0] = 0;
+      for (let j = 0; j < nHeads; j++) cum[j + 1] = cum[j] + mult(`L${i}/attn/h${j}`);
+      headCums.set(i, cum);
+    }
+    const totalH = cum[nHeads];
     const w = as.x1 - as.x0;
     return {
-      x0: as.x0 + (cumH / totalH) * w,
-      x1: as.x0 + ((cumH + mult(`L${i}/attn/h${h}`)) / totalH) * w,
+      x0: as.x0 + (cum[h] / totalH) * w,
+      x1: as.x0 + (cum[h + 1] / totalH) * w,
     };
   };
 
@@ -249,7 +309,7 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
   const mid = (s: Span) => (s.x0 + s.x1) / 2;
 
   const xForNode = (node: CircuitNode): number | null => {
-    if (typeof node?.layer !== "number") return null;
+    if (!Number.isInteger(node?.layer)) return null; // fractional = junk, not NaN
     if (node.component === "embed") return mid(embedSpan);
     if (node.component === "unembed") return mid(unembedSpan);
     const ls = layerSpan(node.layer);
@@ -272,7 +332,7 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
     if (m.locus_component === "embed") return mid(embedSpan);
     if (m.locus_component === "unembed") return mid(unembedSpan);
     const layer =
-      typeof m.layer === "number" && Number.isFinite(m.layer) ? m.layer : null;
+      typeof m.layer === "number" && Number.isInteger(m.layer) ? m.layer : null;
     if (layer === null || layer < 0 || layer >= nL) {
       // Layer-less: whole-model loci anchor at a FIXED x by the global lane's
       // left gutter caption (no locus = no honest position ON the scale, so
@@ -297,7 +357,7 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
 
   return {
     width,
-    shape: { nLayers: nL, nHeads: shape.nHeads ?? null, dMlp: shape.dMlp ?? null },
+    shape: { nLayers: nL, nHeads, dMlp: shape.dMlp ?? null },
     xForPath,
     xForMeasurement,
     xForNode,
@@ -501,7 +561,7 @@ const clampW = (w: number) => round2(Math.min(Math.max(w, 1), FOCUS_MAX));
  * path to its attn component.
  */
 export function blowUp(focus: Focus, path: string, shape: ModelShape): Focus {
-  const nL = Math.max(1, Math.floor(shape.nLayers || 1));
+  const nL = sanitizeCount(shape.nLayers, MAX_MODEL_LAYERS) ?? 1;
   const p = parseUnitPath(path);
   if (!p) return focus;
   if (p.kind === "embed" || p.kind === "unembed") {
@@ -511,7 +571,7 @@ export function blowUp(focus: Focus, path: string, shape: ModelShape): Focus {
   }
   const layer = p.layer as number;
   if (layer < 0 || layer >= nL) return focus;
-  const nHeads = shape.nHeads;
+  const nHeads = sanitizeCount(shape.nHeads, MAX_MODEL_HEADS);
   const withHead =
     p.head !== undefined &&
     typeof nHeads === "number" &&
@@ -532,12 +592,12 @@ export function blowUp(focus: Focus, path: string, shape: ModelShape): Focus {
  * they hold ~FIT_SHARE of the pane. Fresh focus, like blowUp.
  */
 export function fitCircuit(focus: Focus, nodes: CircuitNode[], shape: ModelShape): Focus {
-  const nL = Math.max(1, Math.floor(shape.nLayers || 1));
+  const nL = sanitizeCount(shape.nLayers, MAX_MODEL_LAYERS) ?? 1;
   const layers = [
     ...new Set(
       (nodes ?? [])
         .map((n) => n?.layer)
-        .filter((l): l is number => typeof l === "number" && l >= 0 && l < nL),
+        .filter((l): l is number => typeof l === "number" && Number.isInteger(l) && l >= 0 && l < nL),
     ),
   ];
   if (layers.length === 0) return {};
@@ -574,11 +634,15 @@ export function measurementsOf(row: RunRow): InterpMeasurement[] {
   return [];
 }
 
-/** delta = value − null_control; prefer the builder-shipped field. */
+/** delta = value − null_control; prefer the builder-shipped field. Never
+ * returns a non-finite number: an Infinity delta (value 1e999 in the blob)
+ * would flatten every |delta|-normalized encoding pane-wide, so junk math
+ * degrades to null (honest INTERP NULL) exactly like the shipped branch. */
 export function deltaOf(m: InterpMeasurement): number | null {
   if (typeof m.delta === "number" && Number.isFinite(m.delta)) return m.delta;
   if (typeof m.value === "number" && typeof m.null_control === "number") {
-    return m.value - m.null_control;
+    const d = m.value - m.null_control;
+    return Number.isFinite(d) ? d : null;
   }
   return null;
 }
@@ -687,16 +751,18 @@ export function profilePeak(ms: InterpMeasurement[]): number {
 export function rowShape(row: RunRow): ModelShape | null {
   const nLayers = rowLayerCount(row);
   if (nLayers === null) return null;
-  let nHeads = typeof row.n_heads === "number" && row.n_heads > 0 ? row.n_heads : null;
+  // Same clamps as rowLayerCount: junk head counts (Infinity, 1e8) must never
+  // bound a loop — non-finite shipped values fall through to inference.
+  let nHeads = sanitizeCount(row.n_heads, MAX_MODEL_HEADS);
   if (nHeads === null) {
     let top = -1;
     for (const m of measurementsOf(row)) {
-      if (typeof m.head === "number") top = Math.max(top, m.head);
+      if (typeof m.head === "number" && Number.isFinite(m.head)) top = Math.max(top, m.head);
       for (const n of m.nodes ?? []) {
-        if (typeof n?.head === "number") top = Math.max(top, n.head);
+        if (typeof n?.head === "number" && Number.isFinite(n.head)) top = Math.max(top, n.head);
       }
     }
-    nHeads = top >= 0 ? top + 1 : null;
+    nHeads = top >= 0 ? Math.min(Math.floor(top) + 1, MAX_MODEL_HEADS) : null;
   }
   const dMlp = typeof row.d_mlp === "number" && row.d_mlp > 0 ? row.d_mlp : null;
   return { nLayers, nHeads, dMlp };
@@ -707,8 +773,12 @@ export function rowShape(row: RunRow): ModelShape | null {
  * twin_hash names the OTHER function's hash; resolve it against
  * identity.function_hash, preferring the candidate that shares the run's
  * dataset/training hashes (twins share every non-function facet, so the
- * same-facets candidate IS the pair when several seeds exist). Null when the
- * row carries no twin_hash or no loaded row matches.
+ * same-facets candidate IS the pair when several seeds exist). Candidates on
+ * a DIFFERENT base model are never twins (ANATOMY-SPEC "same base model"):
+ * both bands render on the run's one accordion scale, so a cross-model hash
+ * match can't align layer-for-layer — its out-of-range layers would silently
+ * drop from the canvas while still steering the shared normalizers. Null
+ * when the row carries no twin_hash or no loaded row qualifies.
  */
 export function findTwinRow(run: RunRow, rows: RunRow[]): RunRow | null {
   let hash: string | null = null;
@@ -722,6 +792,7 @@ export function findTwinRow(run: RunRow, rows: RunRow[]): RunRow | null {
   let first: RunRow | null = null;
   for (const r of rows) {
     if (r === run || r.identity.function_hash !== hash) continue;
+    if (r.training.base_model !== run.training.base_model) continue;
     if (
       r.identity.dataset_hash === run.identity.dataset_hash &&
       r.identity.training_hash === run.identity.training_hash
@@ -744,10 +815,21 @@ export function findTwinRow(run: RunRow, rows: RunRow[]): RunRow | null {
  * sweep point (sweeps are per-layer resid sweeps by definition). Component
  * loci (attn/mlp/head) are excluded — they light their own structures, not
  * the bar. This is the run/twin bar's heat-cell data at model LOD.
+ *
+ * `nLayers` (when known) clamps the aggregate to the scale's layer range:
+ * the renderer only ever draws cells for layers 0..nL−1, so an out-of-range
+ * junk/mismatched-twin layer must not dominate the heat normalizer for cells
+ * that can never appear on screen.
  */
-export function residLayerHeat(ms: InterpMeasurement[]): Map<number, number> {
+export function residLayerHeat(
+  ms: InterpMeasurement[],
+  nLayers?: number | null,
+): Map<number, number> {
   const out = new Map<number, number>();
   const bump = (layer: number, d: number) => {
+    if (!Number.isInteger(layer) || layer < 0) return;
+    if (nLayers != null && layer >= nLayers) return;
+    if (!Number.isFinite(d)) return;
     const a = Math.abs(d);
     const prev = out.get(layer);
     if (prev === undefined || a > prev) out.set(layer, a);
@@ -756,13 +838,7 @@ export function residLayerHeat(ms: InterpMeasurement[]): Map<number, number> {
     const d = deltaOf(m);
     const comp = m.locus_component ?? "resid";
     const shapeKind = m.locus_shape ?? "point";
-    if (
-      d !== null &&
-      comp === "resid" &&
-      shapeKind === "point" &&
-      typeof m.layer === "number" &&
-      Number.isFinite(m.layer)
-    ) {
+    if (d !== null && comp === "resid" && shapeKind === "point" && typeof m.layer === "number") {
       bump(m.layer, d);
     }
     for (const p of m.layer_profile ?? []) {
@@ -835,7 +911,14 @@ export interface MeasurementMatch {
   deltaMax: number;
 }
 
-export function matchMeasurements(run: RunRow, twin: RunRow | null): MeasurementMatch {
+/** `nLayers` (when known) clamps layerDeltas to the scale's range, exactly
+ * like residLayerHeat: the diff strip's excess normalizer and gutter captions
+ * must never be dominated by a layer the cell renderer skips. */
+export function matchMeasurements(
+  run: RunRow,
+  twin: RunRow | null,
+  nLayers?: number | null,
+): MeasurementMatch {
   const runMs = measurementsOf(run);
   const twinMs = twin ? measurementsOf(twin) : [];
 
@@ -859,6 +942,8 @@ export function matchMeasurements(run: RunRow, twin: RunRow | null): Measurement
   let deltaMax = 0;
   const track = (side: "run" | "twin", layer: number, delta: number | null) => {
     if (delta === null || !Number.isFinite(delta)) return;
+    if (!Number.isInteger(layer) || layer < 0) return;
+    if (nLayers != null && layer >= nLayers) return;
     const a = Math.abs(delta);
     let entry = agg.get(layer);
     if (!entry) {
@@ -870,10 +955,10 @@ export function matchMeasurements(run: RunRow, twin: RunRow | null): Measurement
   const trackAll = (side: "run" | "twin", ms: InterpMeasurement[]) => {
     for (const m of ms) {
       const d = deltaOf(m);
-      if (typeof m.layer === "number" && Number.isFinite(m.layer)) {
+      if (typeof m.layer === "number") {
         track(side, m.layer, d);
       }
-      if (d !== null) deltaMax = Math.max(deltaMax, Math.abs(d));
+      if (d !== null && Number.isFinite(d)) deltaMax = Math.max(deltaMax, Math.abs(d));
       for (const p of m.layer_profile ?? []) {
         if (typeof p?.[0] === "number" && typeof p?.[1] === "number") {
           track(side, p[0], p[1]);

@@ -160,24 +160,34 @@ function depthCom(sweep: [number, number][], nLayers: number | null): number | n
   return Number.isFinite(com) ? Math.min(1, Math.max(0, com)) : null;
 }
 
+/** Sanity ceiling on any layer count read or inferred from blob data — far
+ * above every real model, but a hard wall so ONE junk value (`1e999` parses
+ * to Infinity; `1e9` is a multi-GB allocation) can never size an array or a
+ * render loop. anatomy.ts's MAX_MODEL_HEADS mirrors it for head counts. */
+export const MAX_MODEL_LAYERS = 4096;
+
 /**
  * Effective layer count for a row: builder-shipped n_layers, else max
  * observed measurement layer + 1 (point loci, sweep layers, circuit nodes —
- * the types.ts fallback contract), else null on layer-less rows.
+ * the types.ts fallback contract), else null on layer-less rows. Non-finite
+ * values are junk and ignored (inference takes over); finite counts clamp to
+ * MAX_MODEL_LAYERS.
  */
 export function rowLayerCount(r: RunRow): number | null {
-  if (typeof r.n_layers === "number" && r.n_layers > 0) return r.n_layers;
+  if (typeof r.n_layers === "number" && Number.isFinite(r.n_layers) && r.n_layers > 0) {
+    return Math.min(Math.floor(r.n_layers), MAX_MODEL_LAYERS);
+  }
   let top = -1;
   for (const m of r.interp?.measurements ?? []) {
-    if (typeof m.layer === "number") top = Math.max(top, m.layer);
+    if (typeof m.layer === "number" && Number.isFinite(m.layer)) top = Math.max(top, m.layer);
     for (const p of m.layer_profile ?? []) {
-      if (typeof p?.[0] === "number") top = Math.max(top, p[0]);
+      if (typeof p?.[0] === "number" && Number.isFinite(p[0])) top = Math.max(top, p[0]);
     }
     for (const n of m.nodes ?? []) {
-      if (typeof n?.layer === "number") top = Math.max(top, n.layer);
+      if (typeof n?.layer === "number" && Number.isFinite(n.layer)) top = Math.max(top, n.layer);
     }
   }
-  return top >= 0 ? top + 1 : null;
+  return top >= 0 ? Math.min(Math.floor(top) + 1, MAX_MODEL_LAYERS) : null;
 }
 
 function scanMethodValue(

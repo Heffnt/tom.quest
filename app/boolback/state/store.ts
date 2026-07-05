@@ -120,7 +120,16 @@ export const useBoolbackStore = create<BoolbackState>()(
       setCenterView: (v) => set({ centerView: v }),
       setChart: (patch) => set((s) => ({ chart: { ...s.chart, ...patch } })),
       setChartReadout: (r) => set({ chartReadout: r }),
-      setAnatomy: (patch) => set((s) => ({ anatomy: { ...s.anatomy, ...patch } })),
+      // Skip no-op patches: every anatomy change fans out to table-pane's
+      // persist effect (synchronous full-settings localStorage write + a
+      // scheduled Convex mutation), so a background click re-asserting
+      // sel:null must not rebuild the object and trigger that chain.
+      setAnatomy: (patch) => set((s) => {
+        const keys = Object.keys(patch) as (keyof AnatomyConfig)[];
+        return keys.every((k) => Object.is(s.anatomy[k], patch[k]))
+          ? s
+          : { anatomy: { ...s.anatomy, ...patch } };
+      }),
       toggleExpand: (dir) => set((s) => {
         const next = new Set(s.expanded);
         if (next.has(dir)) next.delete(dir); else next.add(dir);

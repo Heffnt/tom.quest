@@ -141,6 +141,30 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   chips (which also zooms), edge-flipping tooltip, and a highlight ring on
   the row hovered/selected elsewhere. This is the RQ1/RQ4 instrument:
   outcome vs complexity, moderated by context.
+- **Anatomy** — the third center view (see `ANATOMY-SPEC.md` for the frozen
+  design contract): the selected run's transformer drawn as a horizontal
+  residual-stream bar (embed left → unembed right), its function-false twin
+  (`twin_hash`) mirrored along the bottom, a per-layer run-vs-twin diff strip
+  between them. One ACCORDION x-scale with pinned ends (`lib/anatomy.ts`,
+  pure + heavily tested) zooms from whole-model heat down to a single head
+  slot or neuron bin (icicle nesting: layer → attn|mlp → head|neuron-bin;
+  wheel / click-to-blow-up / dbl-click reset / arrow keys), LOD swaps at px
+  thresholds, positions never jump. Encodings: carrier→color (markers only),
+  mode→glyph (circle observe / diamond intervene, tap-arrow direction),
+  |Δ|→size, null_control→fixed ghost (INTERP NULL faint, never hidden);
+  run/twin identity = amber/cyan on header chips, heat, diff strip, and
+  circuit-diff arcs (shared edges neutral). Circuits render as
+  span-proportional arcs bar-to-bar; selecting one enables "fit circuit"
+  (accordion expands all its layers); side-exclusive edges expose trigger
+  rewiring. Measurement click → detail-panel anatomy section
+  (`anatomy-detail.tsx`: full record, CDE curve sparkline, top-k component
+  bars); `AnatomyConfig` {focus, twin, sel} rides `?v=` share links and the
+  persisted view like ChartConfig. Everything degrades structurally on
+  pre-anatomy blobs (spine renders, honest "no locus data" copy). Derived
+  per-run scalars `interp_peak_layer/loc_width/depth_com@<kind>` are
+  synthesized in `normalize.withAnatomyMetrics` (separate, guard-proof,
+  idempotent step) so Chart can plot localization depth against the 61
+  function-complexity metrics.
 - **Per-method DEFENSE/INTERP/SCAN metrics** — the generic scalars are
   HEADLINE rollups (`asr_drop` = best over the run's methods, interp = one
   headline kind), so per-method values are first-class metrics named
@@ -184,8 +208,8 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 |---|---|
 | `app/boolback/data/source.ts` | the one blob fetch + admin rebuild |
 | `app/boolback/data/normalize.ts` | v1/v2 → one Bundle; derives the tree; injects `fn_hex` |
-| `app/boolback/lib/` | `types` (pinned contract), `select` (filter/sort/facet), `columns` (bare→dotted bridge), `metrics` (schema index), `format` (hex, sizes, model names) |
-| `app/boolback/components/` | `table-pane` (top bar + table + chart mount), `chart-panel` (plot + legend panel), `tree-pane` (dir viewer), `detail-panel` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline` |
+| `app/boolback/lib/` | `types` (pinned contract), `select` (filter/sort/facet), `columns` (bare→dotted bridge), `metrics` (schema index), `format` (hex, sizes, model names), `anatomy` (accordion scale, LOD, palettes, twin matching — pure) |
+| `app/boolback/components/` | `table-pane` (top bar + table + chart/anatomy mount), `chart-panel` (plot + legend panel), `anatomy-pane` (+ `anatomy-legend`, `anatomy-detail`), `tree-pane` (dir viewer), `detail-panel` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline` |
 | `app/api/boolback/{blob,node,file}` | public read-only proxies (explicit endpoints, never a catch-all) |
 | `turing-api/main.py` + `boolback_snapshot.py` | blob/status/node/file endpoints + sbatch submit + cache |
 | CMT `tom.quest/tom_quest/{build,reshape,schema,trajectory}.py` | the snapshot builder |

@@ -54,7 +54,15 @@
 // may be filtered out of view yet still contrastable). The root carries
 // data-anatomy-ready once rows exist — the screenshot harness waits on it.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   Bundle,
   CircuitNode,
@@ -285,14 +293,17 @@ function TapArrow({
 // code mirrored via dirn = −1 (structure grows UP from its bar).
 // ---------------------------------------------------------------------------
 
-interface PlacedMarker {
+export interface PlacedMarker {
   m: InterpMeasurement;
   key: string;
   x: number;
   cy: number;
   r: number;
   delta: number | null;
-  layer: number | null; // null = global/parameter lane
+  layer: number | null; // the layer span it stacks under; null for caps/global
+  /** Which stacking home the marker got: a layer container, an embed/unembed
+   * end cap, or the layer-less global lane. */
+  lane: "layer" | "cap" | "global";
 }
 
 /** A compressed layer's marker stack collapsed to one ×N count badge —
@@ -321,24 +332,48 @@ function slotBlockFor(lod: Lod): number {
   return 5 + SLOT_H + 10 + 5;
 }
 
+/** One band's full marker layout — placeBandMarkers' return shape, computed
+ * once per side per frame by the pane and shared by BandView (visible
+ * glyphs) and the top-most hit layer. */
+export interface BandLayout {
+  placed: PlacedMarker[];
+  badges: MarkerBadge[];
+  containerRows: Map<number, { n: number; pitch: number }>;
+}
+
+/** The stacking home a measurement groups under: its layer span when it has
+ * an in-range integer layer, the embed/unembed end cap for cap loci (they
+ * have an exact x — parking them in the "global" lane would mislabel a
+ * precisely-located probe as unlocatable), else the global lane. */
+type GroupKey = number | "embed" | "unembed" | "global";
+
+function groupKeyFor(m: InterpMeasurement, nL: number): GroupKey {
+  const layer =
+    typeof m.layer === "number" && Number.isInteger(m.layer) && m.layer >= 0 && m.layer < nL
+      ? m.layer
+      : null;
+  if (layer !== null) return layer;
+  if (m.locus_component === "embed" || m.locus_component === "unembed") {
+    return m.locus_component;
+  }
+  return "global";
+}
+
 /**
- * Marker layout for one band: group placeable measurements by layer, stack
- * them below/above the bar. ONE function shared by BandView (visible glyphs)
- * and the pane's top-most hit layer (transparent targets painted after the
- * circuit hit arcs, so a precise marker hover/click always beats them) —
- * both must agree on coordinates exactly.
+ * Marker layout for one band: group placeable measurements by stacking home
+ * (layer / end cap / global lane), stack them below/above the bar. ONE
+ * function (exported for tests) shared by BandView (visible glyphs) and the
+ * pane's top-most hit layer (transparent targets painted after the circuit
+ * hit arcs, so a precise marker hover/click always beats them) — both read
+ * the SAME BandLayout, so coordinates agree exactly.
  */
-function placeBandMarkers(
+export function placeBandMarkers(
   row: RunRow,
   side: "run" | "twin",
   scale: Scale,
   bands: AnatomyBands,
   deltaMax: number,
-): {
-  placed: PlacedMarker[];
-  badges: MarkerBadge[];
-  containerRows: Map<number, { n: number; pitch: number }>;
-} {
+): BandLayout {
   const dirn: 1 | -1 = side === "run" ? 1 : -1;
   const bar = side === "run" ? bands.runBar : bands.twinBar;
   const zone = side === "run" ? bands.runZone : bands.twinZone;
@@ -348,15 +383,13 @@ function placeBandMarkers(
   const ms = measurementsOf(row);
   const lods: Lod[] = Array.from({ length: nL }, (_, i) => lodForLayer(scale, i));
 
-  const groups = new Map<number | "global", InterpMeasurement[]>();
+  const groups = new Map<GroupKey, InterpMeasurement[]>();
   for (const m of ms) {
     if (m.locus_shape === "subgraph" || m.locus_shape === "path") continue; // arcs render circuits
     const x = scale.xForMeasurement(m);
     if (x === null) continue;
-    const layer =
-      typeof m.layer === "number" && m.layer >= 0 && m.layer < nL ? m.layer : null;
-    if (layer !== null && lods[layer] === "model") continue; // aggregated into heat
-    const key = layer ?? "global";
+    const key = groupKeyFor(m, nL);
+    if (typeof key === "number" && lods[key] === "model") continue; // aggregated into heat
     const arr = groups.get(key);
     if (arr) arr.push(m);
     else groups.set(key, [m]);
@@ -367,9 +400,10 @@ function placeBandMarkers(
   const containerRows = new Map<number, { n: number; pitch: number }>();
   for (const [gkey, arr] of groups) {
     arr.sort((a, b) => Math.abs(deltaOf(b) ?? 0) - Math.abs(deltaOf(a) ?? 0));
-    const off = gkey === "global" ? 0 : slotBlockFor(lods[gkey]);
+    const isLayer = typeof gkey === "number";
+    const off = isLayer ? slotBlockFor(lods[gkey]) : 0; // caps/global: no slot block
     const first = off + STACK_FIRST;
-    if (gkey !== "global" && collapseToBadge(scale, gkey, arr.length)) {
+    if (isLayer && collapseToBadge(scale, gkey, arr.length)) {
       // Compressed layer: one ×N badge at the first stack slot instead of a
       // pile of overlapping glyphs/ghosts wider than the layer itself.
       const s = scale.xForPath(`L${gkey}`)!;
@@ -388,7 +422,7 @@ function placeBandMarkers(
     const avail = zoneH - first - 18;
     const pitch =
       arr.length > 1 ? Math.min(STACK_PITCH, Math.max(18, avail / (arr.length - 1))) : 0;
-    if (gkey !== "global") containerRows.set(gkey, { n: arr.length, pitch });
+    if (isLayer) containerRows.set(gkey, { n: arr.length, pitch });
     arr.forEach((m, idx) => {
       const x = scale.xForMeasurement(m)!;
       const d = deltaOf(m);
@@ -397,7 +431,7 @@ function placeBandMarkers(
           ? side === "run"
             ? zone.y1 - 14 - idx * GLOBAL_LANE_PITCH
             : zone.y0 + 14 + idx * GLOBAL_LANE_PITCH
-          : barEdge + dirn * (first + idx * pitch);
+          : barEdge + dirn * (first + idx * pitch); // caps stack like layers
       const cy = Math.min(zone.y1 - 6, Math.max(zone.y0 + 6, raw));
       placed.push({
         m,
@@ -406,7 +440,8 @@ function placeBandMarkers(
         cy,
         r: deltaRadius(d, deltaMax),
         delta: d,
-        layer: gkey === "global" ? null : gkey,
+        layer: isLayer ? gkey : null,
+        lane: isLayer ? "layer" : gkey === "global" ? "global" : "cap",
       });
     });
   }
@@ -424,25 +459,24 @@ function placeBandMarkers(
 function bandContentNeed(row: RunRow, scale: Scale): number {
   const nL = scale.shape.nLayers;
   const ms = measurementsOf(row);
-  const counts = new Map<number | "global", number>();
+  const counts = new Map<GroupKey, number>();
   for (const m of ms) {
     if (m.locus_shape === "subgraph" || m.locus_shape === "path") continue;
     if (scale.xForMeasurement(m) === null) continue;
-    const layer =
-      typeof m.layer === "number" && m.layer >= 0 && m.layer < nL ? m.layer : null;
-    if (layer !== null && lodForLayer(scale, layer) === "model") continue;
-    const key = layer ?? "global";
+    const key = groupKeyFor(m, nL);
+    if (typeof key === "number" && lodForLayer(scale, key) === "model") continue;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   let need = 40; // floor: node rings + shallow arcs want a little air
   for (const [key, n] of counts) {
     // Mirror placeBandMarkers' badge collapse: a badged layer is one row deep.
-    const rows = key !== "global" && collapseToBadge(scale, key, n) ? 1 : n;
+    const isLayer = typeof key === "number";
+    const rows = isLayer && collapseToBadge(scale, key, n) ? 1 : n;
     need = Math.max(
       need,
       key === "global"
         ? 14 + (n - 1) * GLOBAL_LANE_PITCH + 14
-        : slotBlockFor(lodForLayer(scale, key)) +
+        : (isLayer ? slotBlockFor(lodForLayer(scale, key)) : 0) +
             STACK_FIRST +
             (rows - 1) * STACK_PITCH +
             24,
@@ -459,6 +493,7 @@ function BandView({
   side,
   scale,
   bands,
+  layout,
   deltaMax,
   profileMax,
   heat,
@@ -470,6 +505,9 @@ function BandView({
   side: "run" | "twin";
   scale: Scale;
   bands: AnatomyBands;
+  /** The pane's per-side placeBandMarkers result — passed in (not re-derived
+   * here) so glyphs and hit targets share ONE layout pass per frame. */
+  layout: BandLayout;
   deltaMax: number;
   /** Shared run+twin layer_profile peak — the ridgeline normalizer. */
   profileMax: number;
@@ -496,13 +534,7 @@ function BandView({
   const lods: Lod[] = Array.from({ length: nL }, (_, i) => lodForLayer(scale, i));
   const slotBlock = (i: number): number => slotBlockFor(lods[i]);
 
-  const { placed, badges, containerRows } = placeBandMarkers(
-    row,
-    side,
-    scale,
-    bands,
-    deltaMax,
-  );
+  const { placed, badges, containerRows } = layout;
 
   // Head slots carrying measurements (layer → head → carrier color).
   const headHits = new Map<number, Map<number, string>>();
@@ -950,7 +982,7 @@ function BandView({
       {/* global/parameter lane: a dashed baseline + gutter caption gives the
           layer-less markers a visible home — a lone ghost floating mid-void
           read as rendering debris, not data (r2 critique) */}
-      {placed.some((p) => p.layer === null) &&
+      {placed.some((p) => p.lane === "global") &&
         (() => {
           const laneY = side === "run" ? zone.y1 - 14 : zone.y0 + 14;
           return (
@@ -980,13 +1012,15 @@ function BandView({
           );
         })()}
 
-      {/* tap arrows (decorative; under the markers) */}
+      {/* tap arrows (decorative; under the markers) — layers AND caps get
+          them (a cap-locus marker taps the stream at the cap); only the
+          layer-less global lane goes without */}
       {placed.map((p, i) =>
-        p.layer !== null ? (
+        p.lane !== "global" ? (
           <TapArrow
             key={`a${i}`}
             x={p.x}
-            barEdge={barEdge + dirn * (slotBlock(p.layer) + 2)}
+            barEdge={barEdge + dirn * ((p.layer !== null ? slotBlock(p.layer) : 0) + 2)}
             markerEdge={p.cy - dirn * (p.r + 2)}
             dirn={dirn}
             mode={p.m.mode}
@@ -1117,6 +1151,67 @@ function MarkerHits({
 }
 
 // ---------------------------------------------------------------------------
+// HoverTip — the HTML hover tooltip, isolated in its own leaf component.
+// Marker/arc mouseenter+mouseleave used to setState at the PANE root, so
+// every hover event re-ran the band layouts and reconciled the full SVG tree
+// (tens of ms at battery scale). The pane feeds it imperatively through a
+// ref; showing/hiding the tooltip now re-renders only this component.
+// ---------------------------------------------------------------------------
+
+interface HoverInfo {
+  m: InterpMeasurement;
+  x: number;
+  y: number;
+}
+
+export interface HoverTipHandle {
+  show(info: HoverInfo | null): void;
+}
+
+const HoverTip = forwardRef<HoverTipHandle, { w: number; h: number }>(
+  function HoverTip({ w, h }, ref) {
+    const [info, setInfo] = useState<HoverInfo | null>(null);
+    useImperativeHandle(ref, () => ({ show: setInfo }), []);
+    if (!info) return null;
+    const flipX = info.x > w * 0.6;
+    const flipY = info.y > h * 0.65;
+    const m = info.m;
+    const d = deltaOf(m);
+    return (
+      <div
+        className="pointer-events-none absolute z-20 max-w-80 rounded-md border border-border bg-surface-alt px-2 py-1 font-mono text-[11px] text-text shadow-lg"
+        style={{
+          left: info.x + (flipX ? -12 : 12),
+          top: info.y + (flipY ? -10 : 10),
+          transform: `${flipX ? "translateX(-100%)" : ""} ${
+            flipY ? "translateY(-100%)" : ""
+          }`,
+        }}
+      >
+        <div className="flex items-center gap-1.5 text-text-muted">
+          <span
+            className="inline-block h-2 w-2 shrink-0 rounded-full"
+            style={{ backgroundColor: carrierColor(m.carrier) }}
+          />
+          <span className="truncate">
+            {m.method || m.kind}
+            {m.metric_name ? ` · ${m.metric_name}` : ""}
+          </span>
+        </div>
+        <div className="tabular-nums">
+          value {fmtNum(m.value)} · null {fmtNum(m.null_control)} · Δ {fmtNum(d)}
+        </div>
+        <div className="text-text-faint">
+          {locusLabel(m)}
+          {m.mode ? ` · ${m.mode}` : ""}
+          {m.carrier ? ` · ${m.carrier}` : ""}
+        </div>
+      </div>
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Circuit arcs — nodes ringed at their loci on the bars, edges as beziers
 // dipping through the middle zone, always earlier → later (left → right).
 // Edges are neutral wires; COLOR is reserved for the diff verdict: run-only
@@ -1224,32 +1319,11 @@ export function AnatomyBody({
 }) {
   const anatomy = useBoolbackStore((s) => s.anatomy);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
-  const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const setAnatomy = useBoolbackStore((s) => s.setAnatomy);
+  const select = useBoolbackStore((s) => s.select);
   const openDetail = useBoolbackStore((s) => s.openDetail);
   const expandChain = useBoolbackStore((s) => s.expandChain);
   const hover = useBoolbackStore((s) => s.hover);
-
-  // The SVG draws at the plot container's real pixel size (see FALLBACK note).
-  const plotRef = useRef<HTMLDivElement | null>(null);
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const [size, setSize] = useState(FALLBACK);
-  useEffect(() => {
-    const el = plotRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const r = entries[0]?.contentRect;
-      if (!r || r.width < 80 || r.height < 80) return; // hidden/degenerate pane
-      const w = Math.round(r.width);
-      const h = Math.round(r.height);
-      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  const W = size.w;
-  const H = size.h;
 
   // Run selection: the selected row when visible, else the first visible row
   // that actually CARRIES anatomy measurements (an unselected default landing
@@ -1269,6 +1343,34 @@ export function AnatomyBody({
     [run, bundle.rows],
   );
   const twinOn = Boolean(anatomy.twin && twinRow);
+
+  // The SVG draws at the plot container's real pixel size (see FALLBACK note).
+  // The observer effect is KEYED on the plot div's existence (table-pane's
+  // [view] idiom): the div only renders when a run exists, so an effect that
+  // ran once could mount against the "no runs" branch (el = null, nothing
+  // ever observed) or keep watching a detached node after the pane passed
+  // through the empty state — leaving the viewBox frozen at FALLBACK while
+  // wheel targets/tooltips/hit tests mapped through the stale width.
+  const plotRef = useRef<HTMLDivElement | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState(FALLBACK);
+  const hasPane = run !== null;
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (!r || r.width < 80 || r.height < 80) return; // hidden/degenerate pane
+      const w = Math.round(r.width);
+      const h = Math.round(r.height);
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasPane]);
+  const W = size.w;
+  const H = size.h;
 
   const shape = useMemo(() => (run ? rowShape(run) : null), [run]);
 
@@ -1370,18 +1472,21 @@ export function AnatomyBody({
     [H, twinOn, scale, run, twinRow],
   );
   // Match against the twin whenever one EXISTS (deltaMax and marker sizes
-  // stay stable across the twin toggle); pairs render only when shown.
+  // stay stable across the twin toggle); pairs render only when shown. Both
+  // aggregates clamp to the RUN's layer range — everything renders on the
+  // run's scale, so junk/mismatched out-of-range layers must not steer the
+  // normalizers or the gutter captions.
   const match = useMemo(
-    () => (run ? matchMeasurements(run, twinRow) : null),
-    [run, twinRow],
+    () => (run ? matchMeasurements(run, twinRow, shape?.nLayers) : null),
+    [run, twinRow, shape],
   );
   const runHeat = useMemo(
-    () => residLayerHeat(run ? measurementsOf(run) : []),
-    [run],
+    () => residLayerHeat(run ? measurementsOf(run) : [], shape?.nLayers),
+    [run, shape],
   );
   const twinHeat = useMemo(
-    () => residLayerHeat(twinRow ? measurementsOf(twinRow) : []),
-    [twinRow],
+    () => residLayerHeat(twinRow ? measurementsOf(twinRow) : [], shape?.nLayers),
+    [twinRow, shape],
   );
   const heatMax = useMemo(() => {
     let max = 0;
@@ -1396,18 +1501,21 @@ export function AnatomyBody({
     return p;
   }, [run, twinRow]);
 
-  // Marker layouts (shared with BandView's glyphs) for the top-most hit layer.
-  const runPlaced = useMemo(
+  // Marker layouts — computed ONCE per side per frame and passed both to
+  // BandView (visible glyphs) and the top-most hit layer. BandView used to
+  // re-derive the identical layout internally, doubling the per-frame engine
+  // cost during tweens for outputs that had to agree exactly anyway.
+  const runLayout = useMemo(
     () =>
       run && scale && match
-        ? placeBandMarkers(run, "run", scale, bands, match.deltaMax).placed
+        ? placeBandMarkers(run, "run", scale, bands, match.deltaMax)
         : null,
     [run, scale, bands, match],
   );
-  const twinPlaced = useMemo(
+  const twinLayout = useMemo(
     () =>
       twinOn && twinRow && scale && match
-        ? placeBandMarkers(twinRow, "twin", scale, bands, match.deltaMax).placed
+        ? placeBandMarkers(twinRow, "twin", scale, bands, match.deltaMax)
         : null,
     [twinOn, twinRow, scale, bands, match],
   );
@@ -1474,20 +1582,28 @@ export function AnatomyBody({
     [setAnatomy, openDetail, expandChain],
   );
 
-  // HTML tooltip state (pane-space coords; the plot div is padding-less so
-  // SVG x/y map 1:1 onto absolute offsets).
-  const [hoverInfo, setHoverInfo] = useState<{
-    m: InterpMeasurement;
-    x: number;
-    y: number;
-  } | null>(null);
+  // HTML tooltip (pane-space coords; the plot div is padding-less so SVG x/y
+  // map 1:1 onto absolute offsets). Fed imperatively through a ref so hover
+  // churn re-renders ONLY the HoverTip leaf, never this pane (see HoverTip).
+  const tipRef = useRef<HoverTipHandle | null>(null);
   const handleMarkerHover = useCallback(
     (p: { m: InterpMeasurement; x: number; y: number } | null, row: RunRow | null) => {
-      setHoverInfo(p);
+      tipRef.current?.show(p);
       publishHover(p && row ? row.identity.node_path : null);
     },
     [publishHover],
   );
+
+  // Hover is normally cleared by mouseleave on the hit node — but React
+  // fires no mouseleave when zoom/LOD collapse or the twin toggle UNMOUNTS
+  // that node under the cursor, which froze the tooltip mid-pane and left
+  // hoveredDir ringing rows indefinitely. Clear both whenever the geometry
+  // the hover was anchored to changes (scale covers every focus/resize
+  // frame; run/twinOn cover row switches and the twin toggle).
+  useEffect(() => {
+    tipRef.current?.show(null);
+    publishHover(null);
+  }, [scale, run, twinOn, publishHover]);
 
   // Wheel zoom — non-passive listener (React's synthetic wheel can't
   // preventDefault), targeting the unit chain under the cursor.
@@ -1533,7 +1649,15 @@ export function AnatomyBody({
     }
     return best ?? Math.floor(shape.nLayers / 2);
   }, [anatomy.focus, shape]);
-  const cursorLayer = kbLayer ?? defaultKbLayer;
+  // The cursor is per-run state: a run switch resets it (a 12-layer model
+  // must not inherit L40 — the ring would silently vanish while +/- writes
+  // out-of-range junk weights into the committed focus and share links),
+  // and the clamp guards any shape change in between.
+  useEffect(() => setKbLayer(null), [run]);
+  const cursorLayer = Math.min(
+    kbLayer ?? defaultKbLayer,
+    Math.max(0, (shape?.nLayers ?? 1) - 1),
+  );
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1548,11 +1672,19 @@ export function AnatomyBody({
       } else if (e.key === "+" || e.key === "=") {
         e.preventDefault();
         setKbLayer(cursorLayer);
-        applyFocus(zoomChain(targetRef.current, [`L${cursorLayer}`], KB_ZOOM));
+        // debounceCommit: key REPEAT fires ~30Hz on a held key, and every
+        // undebounced commit synchronously rewrites the whole persisted
+        // settings blob (localStorage + scheduled Convex) — same gesture
+        // semantics as wheel: animate per press, commit once at the end.
+        applyFocus(zoomChain(targetRef.current, [`L${cursorLayer}`], KB_ZOOM), {
+          debounceCommit: true,
+        });
       } else if (e.key === "-" || e.key === "_") {
         e.preventDefault();
         setKbLayer(cursorLayer);
-        applyFocus(zoomChain(targetRef.current, [`L${cursorLayer}`], 1 / KB_ZOOM));
+        applyFocus(zoomChain(targetRef.current, [`L${cursorLayer}`], 1 / KB_ZOOM), {
+          debounceCommit: true,
+        });
       } else if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation(); // pane-local reset; don't also close the detail panel
@@ -1598,14 +1730,17 @@ export function AnatomyBody({
   );
 
   // Cross-view rings on the header run/twin ids (chart-point precedent).
-  const runLinked = Boolean(
-    run &&
-      (hoveredDir === run.identity.node_path || selectedDir === run.identity.node_path),
+  // Subscribed as derived BOOLEANS, not the raw hoveredDir: hovering rows in
+  // the tree/table used to re-render this whole pane (full SVG reconcile)
+  // per hovered row just to maybe move a header ring — the boolean selector
+  // only re-renders when a ring actually flips.
+  const runDir = run?.identity.node_path ?? null;
+  const twinDir = twinRow?.identity.node_path ?? null;
+  const runLinked = useBoolbackStore(
+    (s) => runDir !== null && (s.hoveredDir === runDir || s.selectedDir === runDir),
   );
-  const twinLinked = Boolean(
-    twinRow &&
-      (hoveredDir === twinRow.identity.node_path ||
-        selectedDir === twinRow.identity.node_path),
+  const twinLinked = useBoolbackStore(
+    (s) => twinDir !== null && (s.hoveredDir === twinDir || s.selectedDir === twinDir),
   );
 
   // Diff strip data: per-layer excess + paired whiskers.
@@ -1628,6 +1763,133 @@ export function AnatomyBody({
     return { run, twin, max: Math.max(run, twin) };
   }, [match]);
   const excessMax = excess.max;
+
+  // Paired-marker whiskers at LAYER+ LOD: per-pair |Δ| up (run) / down
+  // (twin) from the centerline; an open dot marks a side with no partner.
+  // Memoized (hover/selection re-renders must not re-sort ~2k pairs), and
+  // LOD-COLLAPSED: below the badge width a layer's whisker fan folds into
+  // ONE per-side aggregate whisker — full fans at battery scale mounted
+  // ~11.5k SVG nodes per tween frame, and the 8px pitch relaxation smeared
+  // fans across neighboring hairline layers.
+  const whiskerNodes = useMemo(() => {
+    if (!scale || !match || !twinOn || !(match.deltaMax > 0)) return null;
+    const middleH = bands.middle.y1 - bands.middle.y0;
+    if (middleH <= 8) return null;
+    const middleCy = (bands.middle.y0 + bands.middle.y1) / 2;
+    const halfW = middleH / 2 - 4;
+    const byLayer = new Map<number, MatchedPair[]>();
+    for (const p of match.pairs) {
+      const src = p.run ?? p.twin!;
+      if (src.locus_shape === "subgraph" || src.locus_shape === "path") continue;
+      const layer =
+        typeof src.layer === "number" &&
+        Number.isInteger(src.layer) &&
+        src.layer >= 0 &&
+        src.layer < scale.shape.nLayers
+          ? src.layer
+          : null;
+      if (layer === null) continue;
+      if (lodForLayer(scale, layer) === "model") continue;
+      const arr = byLayer.get(layer) ?? [];
+      arr.push(p);
+      byLayer.set(layer, arr);
+    }
+    const out: React.ReactNode[] = [];
+    const capTicks = (x: number, up: number | null, down: number | null) => (
+      <>
+        {up !== null ? (
+          <>
+            <line x1={x} y1={middleCy} x2={x} y2={middleCy - up} strokeWidth={1.5} />
+            <line x1={x - 2.5} y1={middleCy - up} x2={x + 2.5} y2={middleCy - up} strokeWidth={1.5} />
+          </>
+        ) : (
+          <circle cx={x} cy={middleCy - 5} r={2.5} fill="none" strokeWidth={1.25} />
+        )}
+        {down !== null ? (
+          <>
+            <line x1={x} y1={middleCy} x2={x} y2={middleCy + down} strokeWidth={1.5} />
+            <line x1={x - 2.5} y1={middleCy + down} x2={x + 2.5} y2={middleCy + down} strokeWidth={1.5} />
+          </>
+        ) : (
+          <circle cx={x} cy={middleCy + 5} r={2.5} fill="none" strokeWidth={1.25} />
+        )}
+      </>
+    );
+    const len = (d: number | null): number | null =>
+      d !== null ? Math.max(2, (Math.abs(d) / match.deltaMax) * halfW) : null;
+    for (const [layer, pairs] of byLayer) {
+      // Collapse mirror of collapseToBadge: a compressed layer renders one
+      // aggregate whisker (max |Δ| per side) instead of a relaxed fan.
+      if (pairs.length >= 2 && scale.layerLod(layer) < BADGE_COLLAPSE_PX) {
+        const s = scale.xForPath(`L${layer}`)!;
+        let maxRun: number | null = null;
+        let maxTwin: number | null = null;
+        for (const p of pairs) {
+          const dRun = p.run ? deltaOf(p.run) : null;
+          const dTwin = p.twin ? deltaOf(p.twin) : null;
+          if (dRun !== null) maxRun = Math.max(maxRun ?? 0, Math.abs(dRun));
+          if (dTwin !== null) maxTwin = Math.max(maxTwin ?? 0, Math.abs(dTwin));
+        }
+        // Carrier color only when the pile agrees (badge convention).
+        let color: string | null = carrierColor((pairs[0].run ?? pairs[0].twin!).carrier);
+        for (const p of pairs) {
+          if (carrierColor((p.run ?? p.twin!).carrier) !== color) color = null;
+        }
+        const x = (s.x0 + s.x1) / 2;
+        out.push(
+          <g
+            key={`wagg${layer}`}
+            stroke={color ?? "var(--color-text-muted)"}
+            strokeOpacity={0.85}
+          >
+            <title>{`L${layer} — ${pairs.length} pairs (collapsed)\nmax run Δ ${fmtNum(
+              maxRun,
+            )} · max twin Δ ${fmtNum(maxTwin)}`}</title>
+            {capTicks(x, len(maxRun), len(maxTwin))}
+          </g>,
+        );
+        continue;
+      }
+      // Whiskers keep their own locus x when there's room; crowded ones
+      // relax to a minimum pitch (sorted by locus then key — deterministic)
+      // and the drift re-centers, so the peak cell's pile fans into
+      // separable strokes (r3 critique).
+      const entries = pairs
+        .map((p) => ({
+          p,
+          src: p.run ?? p.twin!,
+          x: scale.xForMeasurement(p.run ?? p.twin!),
+        }))
+        .filter((e) => e.x !== null) as Array<{
+        p: MatchedPair;
+        src: InterpMeasurement;
+        x: number;
+      }>;
+      entries.sort((a, b) => a.x - b.x || a.p.key.localeCompare(b.p.key));
+      const xs = entries.map((e) => e.x);
+      for (let k = 1; k < xs.length; k++) {
+        xs[k] = Math.max(xs[k], xs[k - 1] + WHISKER_PITCH);
+      }
+      const drift = xs.length
+        ? xs.reduce((a, v, k) => a + (v - entries[k].x), 0) / xs.length
+        : 0;
+      entries.forEach(({ p, src }, idx) => {
+        const x = xs[idx] - drift;
+        const color = carrierColor(src.carrier);
+        const dRun = p.run ? deltaOf(p.run) : null;
+        const dTwin = p.twin ? deltaOf(p.twin) : null;
+        out.push(
+          <g key={`w${layer}-${idx}`} stroke={color} strokeOpacity={0.85}>
+            <title>{`${src.kind}${
+              src.metric_name ? ` · ${src.metric_name}` : ""
+            } @ ${locusLabel(src)}\nrun Δ ${fmtNum(dRun)} · twin Δ ${fmtNum(dTwin)}`}</title>
+            {capTicks(x, len(dRun), len(dTwin))}
+          </g>,
+        );
+      });
+    }
+    return out;
+  }, [scale, match, twinOn, bands]);
 
   return (
     <div
@@ -1672,9 +1934,24 @@ export function AnatomyBody({
               <span style={{ color: RUN_COLOR }}>
                 {fnText(run.function.arity, run.function.truth_table)}
               </span>
-              <span className="truncate text-text" title={run.identity.run_id}>
-                {run.identity.run_id}
-              </span>
+              {/* the spec's compact run selector: switch the dissected run
+                  without leaving the pane (model is a facet of the run —
+                  never two at once). Options are the SAME filtered rows the
+                  table/chart see; picking one selects it store-wide, exactly
+                  like a table-row click minus the drawer. */}
+              <select
+                data-anatomy-run-select=""
+                value={run.identity.node_path}
+                onChange={(e) => select(e.target.value)}
+                title={`run ${run.identity.run_id} — switch the dissected run`}
+                className="min-w-0 max-w-56 cursor-pointer truncate rounded border border-border bg-transparent px-1 font-mono text-[11px] text-text transition-colors hover:bg-surface-alt/60"
+              >
+                {rows.map((r) => (
+                  <option key={r.identity.node_path} value={r.identity.node_path}>
+                    {r.identity.run_id}
+                  </option>
+                ))}
+              </select>
             </span>
             {twinOn && twinRow ? (
               /* the twin chip IS the band toggle — same quiet bordered-chip
@@ -1818,18 +2095,21 @@ export function AnatomyBody({
                     handleReset();
                   }}
                 />
-                <BandView
-                  row={run}
-                  side="run"
-                  scale={scale}
-                  bands={bands}
-                  deltaMax={match.deltaMax}
-                  profileMax={profileMax}
-                  heat={runHeat}
-                  heatMax={heatMax}
-                  sel={sel}
-                  onUnitClick={handleUnitClick}
-                />
+                {runLayout && (
+                  <BandView
+                    row={run}
+                    side="run"
+                    scale={scale}
+                    bands={bands}
+                    layout={runLayout}
+                    deltaMax={match.deltaMax}
+                    profileMax={profileMax}
+                    heat={runHeat}
+                    heatMax={heatMax}
+                    sel={sel}
+                    onUnitClick={handleUnitClick}
+                  />
+                )}
                 {/* spine-only runs: one line of faint copy under the ruler so
                     the composition reads intentional, not like a failed load */}
                 {!hasAnatomyFields && (
@@ -1845,12 +2125,13 @@ export function AnatomyBody({
                     no locus data — structural spine only
                   </text>
                 )}
-                {twinOn && twinRow && (
+                {twinOn && twinRow && twinLayout && (
                   <BandView
                     row={twinRow}
                     side="twin"
                     scale={scale}
                     bands={bands}
+                    layout={twinLayout}
                     deltaMax={match.deltaMax}
                     profileMax={profileMax}
                     heat={twinHeat}
@@ -1947,103 +2228,9 @@ export function AnatomyBody({
                         );
                       })}
 
-                    {/* paired-marker whiskers at LAYER+ LOD: per-pair |Δ| up
-                        (run) / down (twin) from the centerline; an open dot
-                        marks a side with no partner */}
-                    {match.deltaMax > 0 &&
-                      (() => {
-                        const byLayer = new Map<number, MatchedPair[]>();
-                        for (const p of match.pairs) {
-                          const src = p.run ?? p.twin!;
-                          if (
-                            src.locus_shape === "subgraph" ||
-                            src.locus_shape === "path"
-                          )
-                            continue;
-                          const layer =
-                            typeof src.layer === "number" &&
-                            src.layer >= 0 &&
-                            src.layer < scale.shape.nLayers
-                              ? src.layer
-                              : null;
-                          if (layer === null) continue;
-                          if (lodForLayer(scale, layer) === "model") continue;
-                          const arr = byLayer.get(layer) ?? [];
-                          arr.push(p);
-                          byLayer.set(layer, arr);
-                        }
-                        const out: React.ReactNode[] = [];
-                        const halfW = middleH / 2 - 4;
-                        for (const [layer, pairs] of byLayer) {
-                          // Whiskers keep their own locus x when there's
-                          // room; crowded ones relax to a minimum pitch
-                          // (sorted by locus then key — deterministic) and
-                          // the drift re-centers, so the peak cell's pile
-                          // fans into separable strokes (r3 critique).
-                          const entries = pairs
-                            .map((p) => ({
-                              p,
-                              src: p.run ?? p.twin!,
-                              x: scale.xForMeasurement(p.run ?? p.twin!),
-                            }))
-                            .filter((e) => e.x !== null) as Array<{
-                            p: MatchedPair;
-                            src: InterpMeasurement;
-                            x: number;
-                          }>;
-                          entries.sort(
-                            (a, b) => a.x - b.x || a.p.key.localeCompare(b.p.key),
-                          );
-                          const xs = entries.map((e) => e.x);
-                          for (let k = 1; k < xs.length; k++) {
-                            xs[k] = Math.max(xs[k], xs[k - 1] + WHISKER_PITCH);
-                          }
-                          const drift = xs.length
-                            ? xs.reduce((a, v, k) => a + (v - entries[k].x), 0) /
-                              xs.length
-                            : 0;
-                          entries.forEach(({ p, src }, idx) => {
-                            const x = xs[idx] - drift;
-                            const color = carrierColor(src.carrier);
-                            const dRun = p.run ? deltaOf(p.run) : null;
-                            const dTwin = p.twin ? deltaOf(p.twin) : null;
-                            const upLen =
-                              dRun !== null
-                                ? Math.max(2, (Math.abs(dRun) / match.deltaMax) * halfW)
-                                : null;
-                            const downLen =
-                              dTwin !== null
-                                ? Math.max(2, (Math.abs(dTwin) / match.deltaMax) * halfW)
-                                : null;
-                            out.push(
-                              <g key={`w${layer}-${idx}`} stroke={color} strokeOpacity={0.85}>
-                                <title>{`${src.kind}${
-                                  src.metric_name ? ` · ${src.metric_name}` : ""
-                                } @ ${locusLabel(src)}\nrun Δ ${fmtNum(dRun)} · twin Δ ${fmtNum(
-                                  dTwin,
-                                )}`}</title>
-                                {upLen !== null ? (
-                                  <>
-                                    <line x1={x} y1={middleCy} x2={x} y2={middleCy - upLen} strokeWidth={1.5} />
-                                    <line x1={x - 2.5} y1={middleCy - upLen} x2={x + 2.5} y2={middleCy - upLen} strokeWidth={1.5} />
-                                  </>
-                                ) : (
-                                  <circle cx={x} cy={middleCy - 5} r={2.5} fill="none" strokeWidth={1.25} />
-                                )}
-                                {downLen !== null ? (
-                                  <>
-                                    <line x1={x} y1={middleCy} x2={x} y2={middleCy + downLen} strokeWidth={1.5} />
-                                    <line x1={x - 2.5} y1={middleCy + downLen} x2={x + 2.5} y2={middleCy + downLen} strokeWidth={1.5} />
-                                  </>
-                                ) : (
-                                  <circle cx={x} cy={middleCy + 5} r={2.5} fill="none" strokeWidth={1.25} />
-                                )}
-                              </g>,
-                            );
-                          });
-                        }
-                        return out;
-                      })()}
+                    {/* paired-marker whiskers (memoized + LOD-collapsed —
+                        see the whiskerNodes memo above) */}
+                    {whiskerNodes}
                   </g>
                 )}
 
@@ -2131,17 +2318,17 @@ export function AnatomyBody({
 
                 {/* marker hit targets — after the circuit hit arcs, so a
                     precise marker always beats a generous arc stroke */}
-                {runPlaced && (
+                {runLayout && (
                   <MarkerHits
-                    placed={runPlaced}
+                    placed={runLayout.placed}
                     side="run"
                     onMarkerClick={(m) => selectMeasurement(m, run, "run")}
                     onMarkerHover={(p) => handleMarkerHover(p, run)}
                   />
                 )}
-                {twinPlaced && twinRow && (
+                {twinLayout && twinRow && (
                   <MarkerHits
-                    placed={twinPlaced}
+                    placed={twinLayout.placed}
                     side="twin"
                     onMarkerClick={(m) => selectMeasurement(m, twinRow, "twin")}
                     onMarkerHover={(p) => handleMarkerHover(p, twinRow)}
@@ -2176,46 +2363,9 @@ export function AnatomyBody({
               </svg>
             )}
 
-            {/* HTML tooltip — absolute z-20, flipped/clamped inside the pane */}
-            {hoverInfo &&
-              (() => {
-                const flipX = hoverInfo.x > W * 0.6;
-                const flipY = hoverInfo.y > H * 0.65;
-                const d = deltaOf(hoverInfo.m);
-                const m = hoverInfo.m;
-                return (
-                  <div
-                    className="pointer-events-none absolute z-20 max-w-80 rounded-md border border-border bg-surface-alt px-2 py-1 font-mono text-[11px] text-text shadow-lg"
-                    style={{
-                      left: hoverInfo.x + (flipX ? -12 : 12),
-                      top: hoverInfo.y + (flipY ? -10 : 10),
-                      transform: `${flipX ? "translateX(-100%)" : ""} ${
-                        flipY ? "translateY(-100%)" : ""
-                      }`,
-                    }}
-                  >
-                    <div className="flex items-center gap-1.5 text-text-muted">
-                      <span
-                        className="inline-block h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: carrierColor(m.carrier) }}
-                      />
-                      <span className="truncate">
-                        {m.method || m.kind}
-                        {m.metric_name ? ` · ${m.metric_name}` : ""}
-                      </span>
-                    </div>
-                    <div className="tabular-nums">
-                      value {fmtNum(m.value)} · null {fmtNum(m.null_control)} · Δ{" "}
-                      {fmtNum(d)}
-                    </div>
-                    <div className="text-text-faint">
-                      {locusLabel(m)}
-                      {m.mode ? ` · ${m.mode}` : ""}
-                      {m.carrier ? ` · ${m.carrier}` : ""}
-                    </div>
-                  </div>
-                );
-              })()}
+            {/* HTML tooltip — absolute z-20, flipped/clamped inside the pane;
+                an isolated leaf fed via ref (see HoverTip) */}
+            <HoverTip ref={tipRef} w={W} h={H} />
           </div>
         </>
       )}

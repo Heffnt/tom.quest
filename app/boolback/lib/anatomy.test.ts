@@ -18,6 +18,8 @@ import {
   LOD_LAYER_PX,
   MARKER_R_MAX,
   MARKER_R_MIN,
+  MAX_MODEL_HEADS,
+  MAX_MODEL_LAYERS,
   MODE_GLYPH,
   SCALE_EDGE_PAD,
   TOP_SLACK_MAX_PX,
@@ -46,6 +48,7 @@ import {
   rowHasAnatomy,
   rowShape,
   rulerLabelLayers,
+  sanitizeAnatomyConfig,
   unitChainAtX,
   wheelZoom,
   zoomChain,
@@ -53,6 +56,8 @@ import {
   type ModelShape,
   type Scale,
 } from "./anatomy";
+import { rowLayerCount } from "./method-metrics";
+import { DEFAULT_ANATOMY } from "./types";
 import type { InterpMeasurement, RunRow } from "./types";
 
 const bundle = asBundle(structuredClone(sample));
@@ -991,5 +996,209 @@ describe("rowShape", () => {
   it("returns null when even the layer count is unknowable", () => {
     const bare: RunRow = { ...noInterpRow, n_layers: null, n_heads: null, d_mlp: null };
     expect(rowShape(bare)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hostile blob data — the engine header's "never a crash" promise, proven.
+// JSON.parse turns 1e999 into Infinity, so every count/value read from a
+// snapshot must clamp/degrade instead of hanging a loop, throwing a
+// RangeError allocation, or poisoning a normalizer.
+// ---------------------------------------------------------------------------
+
+/** Minimal RunRow for junk-data cases the fixture can't (shouldn't) carry. */
+const mkRow = (over: Partial<RunRow>): RunRow =>
+  ({
+    identity: {
+      node_path: "junk", run_id: "junk", function_hash: "f",
+      dataset_hash: "d", training_hash: "t", chain_dirs: [],
+    },
+    function: { arity: 2, truth_table: "0110" },
+    training: { base_model: "m" },
+    ...over,
+  }) as unknown as RunRow;
+
+describe("hostile shape counts (n_layers / n_heads)", () => {
+  it("buildScale clamps/degrades junk layer counts instead of allocating or throwing", () => {
+    // Non-finite = junk = ABSENT (degenerate 1-layer spine, like a missing
+    // count); huge-but-finite clamps to the sanity ceiling. Neither ever
+    // reaches `new Array(nL + 2)` unclamped (Infinity threw RangeError,
+    // 1e9 was a multi-GB allocation).
+    for (const nLayers of [Infinity, 1e999, NaN, -5]) {
+      let s: Scale | undefined;
+      expect(() => {
+        s = buildScale({}, { nLayers, nHeads: null, dMlp: null }, 800);
+      }).not.toThrow();
+      expect(s!.shape.nLayers).toBe(1);
+    }
+    expect(buildScale({}, { nLayers: 1e9, nHeads: null, dMlp: null }, 800).shape.nLayers).toBe(MAX_MODEL_LAYERS);
+  });
+
+  it("headSpan terminates on junk head counts (Infinity / huge / fractional)", () => {
+    // Non-finite head count = junk = UNKNOWN (no head subdivision — the
+    // shape's existing "refuses to subdivide" degrade); huge finite clamps.
+    const inf = buildScale({}, { nLayers: 8, nHeads: Infinity, dMlp: null }, 800);
+    expect(inf.shape.nHeads).toBeNull();
+    const headM: InterpMeasurement = {
+      kind: "x", value: 1, null_control: 0,
+      layer: 3, head: 5, locus_component: "attn", locus_shape: "head",
+    };
+    // Places at a finite x (attn center degrade) — the unclamped loop never
+    // returned at all.
+    expect(Number.isFinite(inf.xForMeasurement(headM)!)).toBe(true);
+    const huge = buildScale({}, { nLayers: 8, nHeads: 1e8, dMlp: null }, 800);
+    expect(huge.shape.nHeads).toBe(MAX_MODEL_HEADS);
+    expect(Number.isFinite(huge.xForMeasurement(headM)!)).toBe(true);
+    const frac = buildScale({}, { nLayers: 8, nHeads: 4.7, dMlp: null }, 800);
+    expect(frac.shape.nHeads).toBe(4);
+  });
+
+  it("rowShape/rowLayerCount: non-finite shipped counts fall to inference; big finite ones clamp", () => {
+    // n_layers Infinity is ignored → the run's own measurements infer 32.
+    expect(rowShape({ ...run, n_layers: 1e999 } as RunRow)!.nLayers).toBe(32);
+    expect(rowLayerCount({ ...run, n_layers: 1e9 } as RunRow)).toBe(MAX_MODEL_LAYERS);
+    // Head inference from a junk measurement head clamps too.
+    const junkHeads = mkRow({
+      n_layers: 8,
+      interp: { measurements: [
+        { kind: "x", value: 1, null_control: 0, layer: 3, head: 1e999, locus_shape: "head" },
+        { kind: "y", value: 1, null_control: 0, layer: 4 },
+      ] },
+    } as Partial<RunRow>);
+    expect(rowShape(junkHeads)!.nHeads).toBeNull(); // non-finite head ignored
+    // A row whose ONLY layer evidence is junk degrades to null (no spine),
+    // never an Infinity-sized scale.
+    const junkOnly = mkRow({
+      interp: { measurements: [{ kind: "x", value: 1, null_control: 0, layer: 1e999 }] },
+    } as Partial<RunRow>);
+    expect(rowLayerCount(junkOnly)).toBeNull();
+  });
+});
+
+describe("hostile measurement values", () => {
+  it("fractional layers are unplaceable — null, never NaN", () => {
+    const scale = buildScale({}, shape, W);
+    expect(
+      scale.xForMeasurement({ kind: "x", value: 1, null_control: 0, layer: 2.5 }),
+    ).toBeNull();
+    expect(scale.xForNode({ layer: 2.5, component: "mlp" })).toBeNull();
+    // Fractional heads degrade to the attn center instead of a NaN slot.
+    const fracHead: InterpMeasurement = {
+      kind: "x", value: 1, null_control: 0,
+      layer: 14, head: 9.5, locus_component: "attn", locus_shape: "head",
+    };
+    expect(scale.xForMeasurement(fracHead)).toBeCloseTo(
+      mid(scale.xForPath("L14/attn")!), 6,
+    );
+  });
+
+  it("deltaOf never returns a non-finite delta", () => {
+    expect(deltaOf({ kind: "x", value: 1e999, null_control: 0 })).toBeNull();
+    expect(deltaOf({ kind: "x", value: 1, null_control: NaN })).toBeNull();
+    expect(deltaOf({ kind: "x", value: 1, null_control: 0.25 })).toBe(0.75);
+  });
+
+  it("one Infinity value cannot flatten the |Δ| normalizer pane-wide", () => {
+    const junkRun = mkRow({
+      n_layers: 8,
+      interp: { measurements: [
+        { kind: "x", metric_name: "m", value: 1e999, null_control: 0, layer: 3 },
+        { kind: "y", metric_name: "m", delta: 0.5, value: 0.5, null_control: 0, layer: 4 },
+      ] },
+    } as Partial<RunRow>);
+    const res = matchMeasurements(junkRun, null);
+    expect(res.deltaMax).toBe(0.5); // finite marker keeps its full radius
+    expect(res.layerDeltas.find((d) => d.layer === 3)).toBeUndefined();
+  });
+});
+
+describe("out-of-range layer clamping (nLayers param)", () => {
+  // Run on an 8-layer scale; the twin carries junk at layer 20 with |Δ| 5.0
+  // while every in-range layer sits ≤ 0.5 — the exact mismatched-twin shape
+  // that used to shrink all visible diff cells to ≤10% and caption a phantom
+  // "twin ↓ +5" peak no cell on screen could show.
+  const runRow = mkRow({
+    n_layers: 8,
+    interp: { measurements: [
+      { kind: "probe", method: "lp", metric_name: "auroc", layer: 3, delta: 0.5, locus_shape: "point" },
+    ] },
+  } as Partial<RunRow>);
+  const twinRow = mkRow({
+    n_layers: 8,
+    interp: { measurements: [
+      { kind: "probe", method: "lp", metric_name: "auroc", layer: 20, delta: 5.0, locus_shape: "point" },
+      { kind: "sweep", method: "lens", metric_name: "kl", value: null, null_control: null,
+        layer_profile: [[2, 0.3], [20, 5.0]] },
+    ] },
+  } as Partial<RunRow>);
+
+  it("matchMeasurements drops layers the renderer can never draw", () => {
+    const m = matchMeasurements(runRow, twinRow, 8);
+    expect(m.layerDeltas.some((d) => d.layer === 20)).toBe(false);
+    expect(m.layerDeltas.find((d) => d.layer === 3)!.run).toBe(0.5);
+    expect(m.layerDeltas.find((d) => d.layer === 2)!.twin).toBe(0.3);
+    // The pairs themselves still exist (matching is locus-keyed, not clamped).
+    expect(m.pairs).toHaveLength(3);
+    // Without the range hint the legacy aggregate keeps everything.
+    expect(matchMeasurements(runRow, twinRow).layerDeltas.some((d) => d.layer === 20)).toBe(true);
+  });
+
+  it("residLayerHeat drops out-of-range and non-integer layers", () => {
+    const heat = residLayerHeat(measurementsOf(twinRow), 8);
+    expect(heat.has(20)).toBe(false);
+    expect(heat.get(2)).toBe(0.3);
+    const junk = residLayerHeat([
+      { kind: "x", value: 1, null_control: 0, layer: 2.5 },
+      { kind: "y", value: 1, null_control: 0, layer: -1 },
+      { kind: "z", value: null, null_control: null, layer_profile: [[3, 1e999]] },
+    ], 8);
+    expect(junk.size).toBe(0); // fractional / negative / non-finite all dropped
+  });
+});
+
+describe("sanitizeAnatomyConfig — untrusted ?v= / persisted payloads", () => {
+  it("junk roots and wrong-typed fields degrade to the defaults", () => {
+    expect(sanitizeAnatomyConfig(undefined)).toEqual(DEFAULT_ANATOMY);
+    expect(sanitizeAnatomyConfig(null)).toEqual(DEFAULT_ANATOMY);
+    expect(sanitizeAnatomyConfig("junk")).toEqual(DEFAULT_ANATOMY);
+    expect(sanitizeAnatomyConfig([1, 2])).toEqual(DEFAULT_ANATOMY);
+    // The crash class: focus null / primitive overriding the default map.
+    expect(sanitizeAnatomyConfig({ focus: null })).toEqual(DEFAULT_ANATOMY);
+    expect(sanitizeAnatomyConfig({ focus: "junk", twin: "yes", sel: 42 })).toEqual(DEFAULT_ANATOMY);
+  });
+
+  it("keeps valid fields; drops junk focus entries; clamps weights", () => {
+    const cfg = sanitizeAnatomyConfig({
+      focus: { L3: 8, L9: 1e999, bogus: 9, L4: "x", L5: 0.2, "L2/attn/h1": 3 },
+      twin: false,
+      sel: "a|b|3||",
+    });
+    expect(cfg.twin).toBe(false);
+    expect(cfg.sel).toBe("a|b|3||");
+    // Infinity, junk paths, non-numbers and ≤1 weights all dropped.
+    expect(cfg.focus).toEqual({ L3: 8, "L2/attn/h1": 3 });
+  });
+
+  it("the sanitized config renders and zooms without throwing", () => {
+    const cfg = sanitizeAnatomyConfig({ focus: null });
+    expect(() => buildScale(cfg.focus, shape, W)).not.toThrow();
+    expect(() => wheelZoom(cfg.focus, "L3", 2)).not.toThrow();
+    expect(() => Object.entries(cfg.focus)).not.toThrow(); // defaultKbLayer's read
+  });
+});
+
+describe("findTwinRow — same-base-model constraint", () => {
+  it("never falls back to a hash match on a different base model", () => {
+    const crossModel: RunRow = {
+      ...twin,
+      identity: { ...twin.identity, node_path: "xmodel", training_hash: "zz" },
+      training: { ...twin.training, base_model: "other-base-7b" },
+      n_layers: 64,
+    };
+    // Only the cross-model candidate loaded → no twin at all: both bands
+    // render on ONE scale, so a different model can't align layer-for-layer.
+    expect(findTwinRow(run, [run, crossModel])).toBeNull();
+    // It never shadows the true same-model twin either.
+    expect(findTwinRow(run, [crossModel, ...rows])).toBe(twin);
   });
 });

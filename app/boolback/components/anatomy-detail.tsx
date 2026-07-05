@@ -23,7 +23,7 @@
 // data collapses to nothing rather than em-dash noise, matching how the
 // pane degrades structurally.
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { InterpMeasurement, RunRow } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import {
@@ -49,6 +49,13 @@ const fmtAny = (v: unknown): string => {
 const nodeLabel = (n: { layer: number; component: string; head?: number }): string =>
   `L${n.layer}/${n.component}${typeof n.head === "number" ? `/h${n.head}` : ""}`;
 
+/** Measurement rows mounted at once. Scale-test rows carry ~2k measurements
+ * (~5 DOM nodes each) — mounting them all into the 224px scroll box stalled
+ * the panel open >100ms and re-reconciled every row per selection change.
+ * Beyond the cap the list pages via quiet earlier/later rows; the window
+ * auto-follows the selection so pane clicks always reveal their row. */
+const LIST_WINDOW = 100;
+
 export function AnatomySection({ row }: { row: RunRow }) {
   const ms = useMemo(() => measurementsOf(row), [row]);
   const sel = useBoolbackStore((s) => s.anatomy.sel);
@@ -60,6 +67,20 @@ export function AnatomySection({ row }: { row: RunRow }) {
     [ms, sel],
   );
 
+  // Windowed list slice: [start, end) of ms, clamped to the row's length.
+  const [winStart, setWinStart] = useState(0);
+  const start = Math.max(0, Math.min(winStart, Math.max(0, ms.length - LIST_WINDOW)));
+  const end = Math.min(ms.length, start + LIST_WINDOW);
+  const selIdx = useMemo(
+    () => (sel === null ? -1 : ms.findIndex((m) => measurementKey(m) === sel)),
+    [ms, sel],
+  );
+  useEffect(() => {
+    if (selIdx >= 0 && (selIdx < start || selIdx >= end)) {
+      setWinStart(Math.max(0, selIdx - Math.floor(LIST_WINDOW / 2)));
+    }
+  }, [selIdx, start, end]);
+
   // Keep the highlighted row visible; "center" (not "nearest") so the full
   // record right below the list tends to come along into view.
   useEffect(() => {
@@ -68,6 +89,9 @@ export function AnatomySection({ row }: { row: RunRow }) {
 
   if (ms.length === 0) return null;
 
+  const pagerClass =
+    "w-full rounded px-1.5 py-0.5 text-left font-mono text-[10px] text-text-faint transition-colors hover:bg-surface-alt/60 hover:text-text";
+
   return (
     <section className="rounded border border-border bg-surface/40" data-anatomy-section="">
       <h3 className="px-2 py-1.5 font-display text-[11px] uppercase tracking-wide text-text-muted border-b border-border/60">
@@ -75,14 +99,24 @@ export function AnatomySection({ row }: { row: RunRow }) {
       </h3>
       <div className="px-2 py-2 space-y-2">
         <div className="max-h-56 space-y-px overflow-y-auto pr-0.5">
-          {ms.map((m, i) => {
+          {start > 0 && (
+            <button
+              type="button"
+              onClick={() => setWinStart(Math.max(0, start - LIST_WINDOW))}
+              className={pagerClass}
+            >
+              ↑ {start} earlier
+            </button>
+          )}
+          {ms.slice(start, end).map((m, i) => {
+            const idx = start + i;
             const key = measurementKey(m);
             const isSel = key === sel;
             const d = deltaOf(m);
             return (
               <button
                 type="button"
-                key={`${key}#${i}`}
+                key={`${key}#${idx}`}
                 ref={isSel ? selRef : undefined}
                 onClick={() => setAnatomy({ sel: isSel ? null : key })}
                 className={`flex w-full items-baseline gap-2 rounded px-1.5 py-0.5 text-left font-mono text-[11px] transition-colors ${
@@ -106,6 +140,15 @@ export function AnatomySection({ row }: { row: RunRow }) {
               </button>
             );
           })}
+          {end < ms.length && (
+            <button
+              type="button"
+              onClick={() => setWinStart(end)}
+              className={pagerClass}
+            >
+              ↓ {ms.length - end} more
+            </button>
+          )}
         </div>
 
         {selM && <SelectedMeasurement m={selM} />}
