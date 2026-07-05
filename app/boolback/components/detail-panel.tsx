@@ -32,6 +32,7 @@ import { TruthStrip, TruthBox } from "./truth-strip";
 import { dnfLabel } from "./fn-hex";
 import { EpochPlot } from "./epoch-sparkline";
 import { ArtifactBrowser } from "./artifact-browser";
+import { AnatomySection } from "./anatomy-detail";
 
 const MIN_W = 320;
 const MAX_W = 860;
@@ -227,6 +228,10 @@ function RunDetail({
           <span className="text-text-muted break-all">{row.function.truth_table}</span>
         </div>
       </Section>
+
+      {/* anatomy: where in the model the interp evidence sits (renders
+          nothing when the row has no measurements at all) */}
+      <AnatomySection row={row} />
 
       {/* plantedness-over-epoch */}
       <Section title="plantedness over epochs">
