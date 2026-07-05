@@ -10,7 +10,13 @@
 //   * row.function: a SHARED REFERENCE into bundle.functions (attached at
 //     normalize — never a copy), so select.ts/columns.ts read it directly;
 //   * identity.dir_path: the run's on-disk node path relative to the artifacts
-//     root (v2 only; null on v1 blobs — the raw-artifact browser hides itself).
+//     root (v2 only; null on v1 blobs — the raw-artifact browser hides itself);
+//   * anatomy fields (2026-07, Anatomy view): the per-run model shape
+//     (n_layers/n_heads/d_mlp) and the InterpMeasurement locus/taxonomy/
+//     circuit fields are ADDITIVE and OPTIONAL — v1 blobs, older v2 blobs,
+//     and the browser-cached last-good blob all predate them, so every
+//     consumer must tolerate their absence. normalize passes them through
+//     verbatim (measurements are never rewritten).
 
 // ---------------------------------------------------------------------------
 // Snapshot envelope (tom_quest/build.py, normalized)
@@ -117,6 +123,12 @@ export interface RunRow {
   scan: Scan | null;
   epoch0_baseline: Epoch0Baseline | null;
   twins: Twins | null;
+  /** Model shape (newer builders; absent on pre-anatomy blobs — the Anatomy
+   * view infers n_layers as max observed measurement layer + 1 when missing).
+   * Top-level builder-emitted fields; NOT renamed in memory. */
+  n_layers?: number | null;
+  n_heads?: number | null;
+  d_mlp?: number | null;
   status: Status;
 }
 
@@ -232,10 +244,79 @@ export interface Defense {
   methods: DefenseMethod[];
 }
 
+// ---------------------------------------------------------------------------
+// Interp measurements — the Anatomy view's data source. The builder has always
+// shipped {kind, value, null_control}; everything else below is ADDITIVE
+// (2026-07, Anatomy view) and OPTIONAL, because v1 blobs, older v2 blobs and
+// the browser-cached last-good blob predate the fields. normalize passes
+// measurements through verbatim (observedMethodExtents only READS
+// kind/value/null_control), so these are type declarations, not code.
+// ---------------------------------------------------------------------------
+
+/** Which stream/site a measurement (or circuit node) reads or writes. */
+export type LocusComponent = "resid" | "attn" | "mlp" | "embed" | "unembed";
+
+/** Spatial extent of the locus — drives the marker/arc representation. */
+export type LocusShape = "point" | "head" | "subgraph" | "path" | "parameter" | "global";
+
+/** Read-out-of vs. write-into the stream (circle vs. diamond marker). */
+export type InterpMode = "observational" | "interventional";
+
+/** One node of a circuit measurement (locus_shape "subgraph" | "path"). */
+export interface CircuitNode {
+  layer: number;
+  component: LocusComponent;
+  head?: number; // attn nodes only
+}
+
+/** Kind-specific scalars. Open-ended on purpose: the taxonomy is CMT-side
+ * SSOT, so unknown keys must survive the round trip. */
+export interface InterpExtras {
+  rotation_rank?: number;
+  sparsity?: number;
+  reconstruction?: number;
+  auroc?: number;
+  direction_norm?: number;
+  model_diff?: number;
+  model_specific_features?: number;
+  /** CDE dose-response: [dose, effect][] pairs (detail-panel sparkline). */
+  curve?: [number, number][];
+  [key: string]: unknown;
+}
+
 export interface InterpMeasurement {
   kind: string;
   value: number | null;
   null_control: number | null;
+  // --- anatomy locus/taxonomy (ALL optional — see section comment) ---
+  method?: string;
+  metric_name?: string;
+  /** value − null_control (marker size/intensity; ≈0 = honest INTERP NULL,
+   * rendered faint on purpose — never hidden). */
+  delta?: number | null;
+  layer?: number | null; // null/absent for global/parameter loci
+  locus_component?: LocusComponent;
+  locus_shape?: LocusShape;
+  head?: number | null; // locus_shape "head" only
+  /** CMT taxonomy carrier. Known values today: direction | subspace |
+   * feature | circuit | lens | other — but the set is OPEN (CMT-side SSOT);
+   * display maps need a deterministic fallback for unknown carriers. */
+  carrier?: string;
+  mode?: InterpMode;
+  op?: string;
+  metric?: string;
+  /** function_hash of the run's function-false twin — pairs this
+   * measurement with the twin run's for the contrast band / diff strip. */
+  twin_hash?: string;
+  /** Per-layer sweep: [layer, delta][]. */
+  layer_profile?: [number, number][];
+  /** Circuit nodes (locus_shape "subgraph" | "path"). */
+  nodes?: CircuitNode[];
+  /** Circuit edges as [from, to] indices into nodes; earlier layer → later. */
+  edges?: [number, number][];
+  /** Top-k [neuron_index, weight] pairs (directions/features). */
+  components?: [number, number][];
+  extras?: InterpExtras;
 }
 
 export interface Interp {
@@ -380,6 +461,28 @@ export const DEFAULT_CHART: ChartConfig = {
   logX: false,
   logY: false,
   trend: false,
+};
+
+// ---------------------------------------------------------------------------
+// Anatomy config (store-owned for the same reason as ChartConfig: the
+// share-URL encoder and the persisted-view blob both need to reach it;
+// AnatomyBody renders from it)
+// ---------------------------------------------------------------------------
+
+export interface AnatomyConfig extends Record<string, unknown> {
+  /** Accordion focus: unit path ("L17", "L17/attn/h9") → weight multiplier.
+   * Empty = uniform layout (every layer weight 1). */
+  focus: Record<string, number>;
+  /** Show the function-false twin's contrast band when a twin exists. */
+  twin: boolean;
+  /** Selected measurement id (null = nothing selected). */
+  sel: string | null;
+}
+
+export const DEFAULT_ANATOMY: AnatomyConfig = {
+  focus: {},
+  twin: true,
+  sel: null,
 };
 
 // ---------------------------------------------------------------------------

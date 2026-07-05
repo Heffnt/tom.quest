@@ -27,6 +27,7 @@ import {
   svgToString, toCsv, type SummaryTableSpec,
 } from "../lib/export";
 import type { ChartExportHandle } from "./chart-panel";
+import type { CenterView } from "./table-pane";
 import { shortModel } from "../lib/format";
 import { useBoolbackStore } from "../state/store";
 
@@ -64,7 +65,7 @@ export function ExportMenu({
   index: MetricIndex;
   visibleRows: RunRow[];
   colDefs: ColumnDef[];
-  view: "table" | "chart";
+  view: CenterView;
   chartRef: React.MutableRefObject<ChartExportHandle | null>;
   filters: FilterState;
 }) {

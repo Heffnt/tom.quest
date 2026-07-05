@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import { encodeSharedView, decodeSharedView, type SharedView } from "./share";
-import { DEFAULT_CHART, EMPTY_FILTER } from "./types";
+import { DEFAULT_ANATOMY, DEFAULT_CHART, EMPTY_FILTER } from "./types";
 
 describe("share codec", () => {
   it("round-trips a full view (unicode-safe)", () => {
@@ -19,6 +19,20 @@ describe("share codec", () => {
       visibleCols: ["function.arity", "function.fn_hex"],
       chart: { ...DEFAULT_CHART, y: "asr", logX: true, trend: true },
       view: "chart",
+    };
+    const decoded = decodeSharedView(encodeSharedView(view));
+    expect(decoded).toEqual(view);
+  });
+
+  it("round-trips an anatomy view (focus weights + twin + selection)", () => {
+    const view: SharedView = {
+      anatomy: {
+        ...DEFAULT_ANATOMY,
+        focus: { L17: 30, "L17/attn/h9": 900 },
+        twin: false,
+        sel: "cde:L17/attn/h9",
+      },
+      view: "anatomy",
     };
     const decoded = decodeSharedView(encodeSharedView(view));
     expect(decoded).toEqual(view);

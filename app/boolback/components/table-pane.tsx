@@ -17,14 +17,15 @@
 //     toggle it into its facet). Headers carry a ⌄ menu: sort asc/desc, hide,
 //     add range filter, plot on chart X/Y (the table↔chart bridge).
 //
-// The filter bar above both views is components/filter-bar.tsx (chip model);
-// the chart is components/chart-panel.tsx, mounted here under the same bar.
+// The filter bar above all views is components/filter-bar.tsx (chip model);
+// the chart (components/chart-panel.tsx) and the anatomy view
+// (components/anatomy-pane.tsx) mount here under the same bar.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  Bundle, RunRow, FilterState, SortKey, ChartConfig, SortDir,
+  Bundle, RunRow, FilterState, SortKey, AnatomyConfig, ChartConfig, SortDir,
 } from "../lib/types";
-import { DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
+import { DEFAULT_ANATOMY, DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import {
   applyFilters, applySorts, metricRange, normalizeToRange, numericValue,
@@ -41,6 +42,7 @@ import { TruthStrip } from "./truth-strip";
 import { FnHex } from "./fn-hex";
 import { EpochSparkline } from "./epoch-sparkline";
 import { ChartBody, type ChartExportHandle } from "./chart-panel";
+import { AnatomyBody } from "./anatomy-pane";
 import { FilterBar } from "./filter-bar";
 
 // ---------------------------------------------------------------------------
@@ -59,24 +61,25 @@ const MAX_COL_WIDTH = 520;
 const FROZEN_IDS = new Set(["function.arity", "function.fn_hex"]);
 
 // Persisted-view shape (boolback:view): filters + sorts + visibleCols +
-// widths + chart config. A ?v= share URL overrides it for that load.
+// widths + chart/anatomy config. A ?v= share URL overrides it for that load.
 interface PersistedView extends Record<string, unknown> {
   filters: FilterState;
   sorts: SortKey[];
   visibleCols: string[];
   columnWidths: Record<string, number>;
   chart: ChartConfig;
+  anatomy: AnatomyConfig;
 }
 
 // ===========================================================================
 // TablePane
 // ===========================================================================
 
-export type CenterView = "table" | "chart";
+export type CenterView = "table" | "chart" | "anatomy";
 
 export interface TablePaneProps {
   bundle: Bundle;
-  /** "table" (default) or "chart" — same filter bar, swapped body. */
+  /** "table" (default), "chart" or "anatomy" — same filter bar, swapped body. */
   view?: CenterView;
   /** Snapshot source — the top bar renders its status dot / Refresh. */
   source: ArtifactSource;
@@ -99,6 +102,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
   const chart = useBoolbackStore((s) => s.chart);
+  const anatomy = useBoolbackStore((s) => s.anatomy);
 
   const select = useBoolbackStore((s) => s.select);
   const openDetail = useBoolbackStore((s) => s.openDetail);
@@ -124,7 +128,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
   const persistDefaults = useMemo<PersistedView>(
     () => ({
       filters: EMPTY_FILTER, sorts: [], visibleCols, columnWidths: {},
-      chart: DEFAULT_CHART,
+      chart: DEFAULT_CHART, anatomy: DEFAULT_ANATOMY,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -149,15 +153,16 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
       visibleCols: src.visibleCols?.length ? src.visibleCols : visibleCols,
       columnWidths: shared ? {} : (persisted.columnWidths ?? {}),
       chart: { ...DEFAULT_CHART, ...(src.chart ?? {}) },
+      anatomy: { ...DEFAULT_ANATOMY, ...(src.anatomy ?? {}) },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHydrated]);
 
   useEffect(() => {
     if (!isHydrated || !didHydrate.current) return;
-    updatePersisted({ filters, sorts, visibleCols, columnWidths, chart });
+    updatePersisted({ filters, sorts, visibleCols, columnWidths, chart, anatomy });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, sorts, visibleCols, columnWidths, chart, isHydrated]);
+  }, [filters, sorts, visibleCols, columnWidths, chart, anatomy, isHydrated]);
 
   // ---- column defs -------------------------------------------------------
   const colDefs = useMemo(
@@ -349,6 +354,8 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
 
       {view === "chart" ? (
         <ChartBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
+      ) : view === "anatomy" ? (
+        <AnatomyBody rows={visibleRows} bundle={bundle} index={index} />
       ) : (
       <div
         ref={scrollRef}

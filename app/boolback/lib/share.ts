@@ -1,12 +1,12 @@
 // app/boolback/lib/share.ts — shareable view URLs (?v=…).
 //
-// The whole view state (filters + sorts + visible columns + chart config +
-// which center view is showing) round-trips through one base64url query param
+// The whole view state (filters + sorts + visible columns + chart/anatomy
+// config + which center view is showing) round-trips through one base64url query param
 // so a link reproduces exactly what the sender is looking at. Persistence via
 // usePersistedSettings stays per-browser; a shared URL OVERRIDES it for that
 // load (table-pane hydrates from the shared view instead of the saved one).
 
-import type { ChartConfig, FilterState, SortKey } from "./types";
+import type { AnatomyConfig, ChartConfig, FilterState, SortKey } from "./types";
 import type { CenterView } from "../components/table-pane";
 
 export interface SharedView {
@@ -14,6 +14,7 @@ export interface SharedView {
   sorts?: SortKey[];
   visibleCols?: string[];
   chart?: ChartConfig;
+  anatomy?: AnatomyConfig;
   view?: CenterView;
 }
 

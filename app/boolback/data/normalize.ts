@@ -15,19 +15,30 @@
 //
 // Both paths also inject the client-side synthetic "fn_hex" column (the compact
 // arity:hex function text) into the FUNCTION column group so the column menus
-// and table resolve it like any builder column.
+// and table resolve it like any builder column, and append the CLIENT-DERIVED
+// anatomy scalars (interp_peak_layer/loc_width/depth_com @<kind>) to
+// metric_schema — a separate per-name-guarded step, because those never come
+// from the builder and must survive the per-method synthesis' all-or-nothing
+// "@"-guard.
 //
 // Fails loud on any other schema_version or a row referencing a missing function.
 
 import type {
   Bundle,
+  MetricDtype,
   FunctionBlock,
   MetricSchemaEntry,
   RunRow,
   TreeLevel,
   TreeNode,
 } from "../lib/types";
-import { METHOD_SEP, methodMetricName } from "../lib/method-metrics";
+import {
+  ANATOMY_BASES,
+  METHOD_SEP,
+  methodMetricName,
+  methodMetricValue,
+  rowLayerCount,
+} from "../lib/method-metrics";
 
 interface RawEnvelope {
   schema_version?: unknown;
@@ -94,12 +105,16 @@ export function asBundle(json: unknown): Bundle {
     withFnHexColumn(raw.column_groups ?? []),
     rows,
   );
+  // Chained AFTER (never inside) the per-method step: its all-or-nothing
+  // "@"-guard would erase these client-derived entries the day the builder
+  // ships its first "@" name.
+  const expanded = withAnatomyMetrics(perMethod.metric_schema, perMethod.column_groups, rows);
 
   return {
     schema_version: version,
     meta: raw.meta as Bundle["meta"],
-    metric_schema: perMethod.metric_schema,
-    column_groups: perMethod.column_groups,
+    metric_schema: expanded.metric_schema,
+    column_groups: expanded.column_groups,
     friendly: (raw.friendly ?? {
       column_labels: {},
       facet_labels: {},
@@ -218,6 +233,92 @@ function withPerMethodMetrics(
 
   const column_groups = groups.map((g) =>
     added[g.group] ? { ...g, columns: [...g.columns, ...added[g.group]] } : g,
+  );
+  return { metric_schema, column_groups };
+}
+
+// ---------------------------------------------------------------------------
+// Derived anatomy scalars ("interp_peak_layer@linear_probe") — CLIENT-derived
+// from each kind's layer_profile / single-layer locus (lib/method-metrics owns
+// the math), so unlike the per-method back-fill above they are appended
+// whenever the NAME is absent: idempotent on re-normalized bundles, and safe
+// on (future) builder-shipped blobs, whose own entries win per name. Kept in
+// group INTERP — no new MetricGroup, so ordering/columns plumbing is untouched.
+// ---------------------------------------------------------------------------
+
+// anatomy base -> synthesized-entry shape (labels keep the " · " prefix that
+// collapseMethodEntries uses as the picker base label for parentless bases).
+const ANATOMY_BASE_INFO: Record<
+  (typeof ANATOMY_BASES)[number],
+  { label: string; dtype: MetricDtype; format: string }
+> = {
+  interp_peak_layer: { label: "Peak layer", dtype: "count", format: "d" },
+  interp_loc_width: { label: "Locus width", dtype: "count", format: "d" },
+  interp_depth_com: { label: "Depth center of mass", dtype: "fraction", format: ".3f" },
+};
+
+/** Append schema entries + INTERP columns for observed (anatomy base, kind) pairs. */
+function withAnatomyMetrics(
+  schema: MetricSchemaEntry[],
+  groups: Bundle["column_groups"],
+  rows: RunRow[],
+): { metric_schema: MetricSchemaEntry[]; column_groups: Bundle["column_groups"] } {
+  // Extents tracked through the SAME accessor the chart/table/filters read,
+  // so slider bounds can never disagree with cell values.
+  const observed = new Map<string, Map<string, [number, number]>>();
+  let maxLayers = 0; // max effective layer count over contributing rows
+  for (const r of rows) {
+    const kinds = new Set((r.interp?.measurements ?? []).map((m) => m.kind));
+    let contributed = false;
+    for (const kind of kinds) {
+      for (const base of ANATOMY_BASES) {
+        const v = methodMetricValue(r, { base, method: kind });
+        if (v === null) continue;
+        const byKind = observed.get(base) ?? new Map<string, [number, number]>();
+        const ext = byKind.get(kind);
+        byKind.set(kind, ext ? [Math.min(ext[0], v), Math.max(ext[1], v)] : [v, v]);
+        observed.set(base, byKind);
+        contributed = true;
+      }
+    }
+    if (contributed) maxLayers = Math.max(maxLayers, rowLayerCount(r) ?? 0);
+  }
+  if (observed.size === 0) return { metric_schema: schema, column_groups: groups };
+
+  const have = new Set(schema.map((e) => e.name));
+  const metric_schema = [...schema];
+  const added: string[] = [];
+  for (const base of ANATOMY_BASES) {
+    const byKind = observed.get(base);
+    if (!byKind) continue;
+    const info = ANATOMY_BASE_INFO[base];
+    for (const [kind, [lo, hi]] of [...byKind.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      const name = methodMetricName(base, kind);
+      if (have.has(name)) continue; // idempotent; builder's own entry wins
+      metric_schema.push({
+        name,
+        label: `${info.label} · ${kind}`,
+        suite: "outcome",
+        group: "INTERP",
+        dtype: info.dtype,
+        format: info.format,
+        min: Math.min(lo, 0),
+        // Counts span the model: peak in [0, n_layers-1], width up to n_layers
+        // ("n_layers-ish observed"); fractions get the builder's 0..1 ceiling.
+        max:
+          info.dtype === "fraction"
+            ? hi <= 1
+              ? 1
+              : hi
+            : Math.max(hi, base === "interp_peak_layer" ? maxLayers - 1 : maxLayers),
+      });
+      added.push(name);
+    }
+  }
+  if (added.length === 0) return { metric_schema, column_groups: groups };
+
+  const column_groups = groups.map((g) =>
+    g.group === "INTERP" ? { ...g, columns: [...g.columns, ...added] } : g,
   );
   return { metric_schema, column_groups };
 }

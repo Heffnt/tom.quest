@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import sample from "./sample-snapshot.json";
 import { asBundle } from "./normalize";
 import { fnHex, fnText } from "../lib/format";
+import { ANATOMY_BASES } from "../lib/method-metrics";
 import type { TreeNode } from "../lib/types";
 
 describe("asBundle (v2 builder fixture)", () => {
@@ -153,7 +154,13 @@ describe("per-method metric synthesis", () => {
       format: ".3f",
     } as never);
     const b = asBundle(raw);
-    const atNames = b.metric_schema.filter((e) => e.name.includes("@"));
+    // Scoped to per-method synthesis: the client-DERIVED anatomy scalars
+    // (interp_peak_layer/…@kind) deliberately survive this guard — they never
+    // come from the builder — so they're excluded from the count.
+    const atNames = b.metric_schema.filter(
+      (e) =>
+        e.name.includes("@") && !ANATOMY_BASES.some((base) => e.name.startsWith(`${base}@`)),
+    );
     expect(atNames).toHaveLength(1); // only the builder's own entry
     expect(b.metric_schema.find((e) => e.name === "asr_drop")!.label).not.toMatch(/best method/);
   });
@@ -169,6 +176,93 @@ describe("per-method metric synthesis", () => {
     expect(entry).toBeTruthy();
     expect(entry.group).toBe("SCAN");
     expect(b.rows.some((r) => r.scan !== null)).toBe(true);
+  });
+});
+
+describe("anatomy derived-metric synthesis", () => {
+  const bundle = asBundle(structuredClone(sample));
+
+  it("synthesizes all three bases per observed kind with anatomy-shaped extents", () => {
+    for (const base of ANATOMY_BASES) {
+      const entry = bundle.metric_schema.find((e) => e.name === `${base}@linear_probe`)!;
+      expect(entry).toBeTruthy();
+      expect(entry.group).toBe("INTERP");
+      expect(entry.label).toContain("linear_probe");
+    }
+    // counts span the model (fixture rows: n_layers 32)…
+    const peak = bundle.metric_schema.find((e) => e.name === "interp_peak_layer@linear_probe")!;
+    expect(peak.dtype).toBe("count");
+    expect(peak.format).toBe("d");
+    expect(peak.min).toBe(0);
+    expect(peak.max).toBe(31);
+    const width = bundle.metric_schema.find((e) => e.name === "interp_loc_width@linear_probe")!;
+    expect(width.dtype).toBe("count");
+    expect(width.max).toBe(32);
+    // …and the normalized depth rides the builder's fraction floor/ceiling
+    const com = bundle.metric_schema.find((e) => e.name === "interp_depth_com@linear_probe")!;
+    expect(com.dtype).toBe("fraction");
+    expect(com.format).toBe(".3f");
+    expect(com.min).toBe(0);
+    expect(com.max).toBe(1);
+  });
+
+  it("appends the new names to the INTERP column group", () => {
+    const grp = bundle.column_groups.find((g) => g.group === "INTERP")!;
+    for (const base of ANATOMY_BASES) {
+      expect(grp.columns).toContain(`${base}@linear_probe`);
+    }
+  });
+
+  it("derives nothing for kinds without locus data (global / circuit loci)", () => {
+    for (const base of ANATOMY_BASES) {
+      expect(bundle.metric_schema.some((e) => e.name === `${base}@weight_norm_diff`)).toBe(false);
+      expect(bundle.metric_schema.some((e) => e.name === `${base}@circuit`)).toBe(false);
+    }
+  });
+
+  it("survives builder-shipped @-entries (unlike the per-method back-fill)", () => {
+    const raw = structuredClone(sample) as { metric_schema: Array<{ name: string }> };
+    raw.metric_schema.push({
+      name: "asr_drop@builder_method",
+      label: "asr drop · builder method",
+      suite: "outcome",
+      group: "DEFENSE",
+      dtype: "fraction",
+      min: 0,
+      max: 1,
+      format: ".3f",
+    } as never);
+    const b = asBundle(raw as never);
+    expect(b.metric_schema.some((e) => e.name === "interp_peak_layer@linear_probe")).toBe(true);
+  });
+
+  it("keeps a builder-shipped anatomy entry authoritative (per-name guard)", () => {
+    const raw = structuredClone(sample) as { metric_schema: Array<{ name: string }> };
+    raw.metric_schema.push({
+      name: "interp_peak_layer@linear_probe",
+      label: "Peak layer · linear_probe",
+      suite: "outcome",
+      group: "INTERP",
+      dtype: "count",
+      min: 0,
+      max: 99,
+      format: "d",
+    } as never);
+    const b = asBundle(raw as never);
+    const entries = b.metric_schema.filter((e) => e.name === "interp_peak_layer@linear_probe");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].max).toBe(99); // the builder's empirical extents win
+    // sibling bases the builder did NOT ship are still filled in
+    expect(b.metric_schema.some((e) => e.name === "interp_loc_width@linear_probe")).toBe(true);
+  });
+
+  it("is idempotent when re-normalizing an already-expanded bundle", () => {
+    const again = asBundle(structuredClone(bundle) as never);
+    expect(again.metric_schema.map((e) => e.name)).toEqual(
+      bundle.metric_schema.map((e) => e.name),
+    );
+    const grp = again.column_groups.find((g) => g.group === "INTERP")!;
+    expect(new Set(grp.columns).size).toBe(grp.columns.length);
   });
 });
 

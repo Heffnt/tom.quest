@@ -13,8 +13,14 @@
 // normalize for older blobs), so every schema-driven surface — chart axis
 // selects, range filters, table columns, exports — picks them up unchanged.
 // This module owns the name convention and the row-value accessor.
+//
+// It also owns the DERIVED anatomy bases (ANATOMY-SPEC.md "Derived scalars →
+// Chart"): interp_peak_layer / interp_loc_width / interp_depth_com reduce a
+// kind's locus (layer_profile sweep or single-layer point) to chartable
+// scalars. They are CLIENT-derived — never builder-shipped — and get their
+// metric_schema entries from data/normalize.withAnatomyMetrics.
 
-import type { RunRow } from "./types";
+import type { InterpMeasurement, RunRow } from "./types";
 
 export const METHOD_SEP = "@";
 
@@ -34,6 +40,9 @@ type DefenseField = (typeof DEFENSE_FIELDS)[number];
 const BASE_ACCESSORS: Record<string, (r: RunRow, method: string) => number | null> = {
   interp_measurement: (r, m) => interpKindValue(r, m, "value"),
   interp_null_control: (r, m) => interpKindValue(r, m, "null_control"),
+  interp_peak_layer: (r, m) => interpAnatomyValue(r, m, "peak"),
+  interp_loc_width: (r, m) => interpAnatomyValue(r, m, "width"),
+  interp_depth_com: (r, m) => interpAnatomyValue(r, m, "com"),
   scan_auroc: (r, m) => scanMethodValue(r, m, "auroc"),
   scan_far_at_frr: (r, m) => scanMethodValue(r, m, "far_at_frr"),
 };
@@ -42,6 +51,13 @@ for (const field of DEFENSE_FIELDS) {
 }
 
 export const PER_METHOD_BASES = Object.keys(BASE_ACCESSORS);
+
+/** The client-derived anatomy bases (normalize synthesizes their schema entries). */
+export const ANATOMY_BASES = [
+  "interp_peak_layer",
+  "interp_loc_width",
+  "interp_depth_com",
+] as const;
 
 function defenseMethodValue(
   r: RunRow,
@@ -70,6 +86,98 @@ function interpKindValue(
     return typeof v === "number" ? v : null;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Derived anatomy scalars — where a kind's measurements sit in the stream:
+//   interp_peak_layer  argmax-delta layer of the sweep (or the point's layer)
+//   interp_loc_width   # layers with delta ≥ 50% of the peak delta (point: 1)
+//   interp_depth_com   delta-weighted mean layer / (n_layers − 1), clamped 0..1
+// Missing locus data (no sweep, no numeric layer — circuits, global loci,
+// headline-only interp) -> null, never a fabricated position.
+// ---------------------------------------------------------------------------
+
+/** The measurement's usable [layer, delta] sweep (typeof-guarded), or null. */
+function sweepOf(m: InterpMeasurement): [number, number][] | null {
+  const prof = m.layer_profile?.filter(
+    (p) => typeof p?.[0] === "number" && typeof p?.[1] === "number",
+  );
+  return prof?.length ? prof : null;
+}
+
+/**
+ * The measurement a kind's anatomy scalars derive from: prefer the sweep
+ * (layer_profile), else the first single-layer measurement of that kind — a
+ * kind can appear at several layers (probes at L8/L12/L16/…), and find-first
+ * would pin the peak to the lowest probed layer instead of the sweep's.
+ */
+function interpAnatomyMeasurement(r: RunRow, kind: string): InterpMeasurement | null {
+  const ofKind = (r.interp?.measurements ?? []).filter((m) => m.kind === kind);
+  return (
+    ofKind.find((m) => sweepOf(m) !== null) ??
+    ofKind.find((m) => typeof m.layer === "number") ??
+    null
+  );
+}
+
+function interpAnatomyValue(
+  r: RunRow,
+  kind: string,
+  field: "peak" | "width" | "com",
+): number | null {
+  const m = interpAnatomyMeasurement(r, kind);
+  if (!m) return null;
+  const sweep = sweepOf(m);
+  if (sweep) {
+    // Signed delta on purpose (spec: argmax delta / ≥50% of peak) — a
+    // suppression sweep (all-negative deltas) reads degenerately rather than
+    // silently switching to |delta|.
+    const peak = sweep.reduce((best, p) => (p[1] > best[1] ? p : best));
+    if (field === "peak") return peak[0];
+    if (field === "width") return sweep.filter((p) => p[1] >= peak[1] * 0.5).length;
+    return depthCom(sweep, rowLayerCount(r));
+  }
+  if (typeof m.layer !== "number") return null;
+  if (field === "peak") return m.layer;
+  if (field === "width") return 1;
+  return depthCom([[m.layer, 1]], rowLayerCount(r));
+}
+
+/** Delta-weighted mean layer / (n_layers − 1), clamped 0..1. Null when the
+ * layer count is unknown/degenerate or the total mass is non-positive (a
+ * ≤0 mass leaves the center of mass undefined; clamping a negative-total
+ * quotient would fabricate a locus). */
+function depthCom(sweep: [number, number][], nLayers: number | null): number | null {
+  if (nLayers === null || nLayers < 2) return null;
+  let mass = 0;
+  let moment = 0;
+  for (const [layer, delta] of sweep) {
+    mass += delta;
+    moment += layer * delta;
+  }
+  if (!(mass > 0)) return null;
+  const com = moment / mass / (nLayers - 1);
+  return Number.isFinite(com) ? Math.min(1, Math.max(0, com)) : null;
+}
+
+/**
+ * Effective layer count for a row: builder-shipped n_layers, else max
+ * observed measurement layer + 1 (point loci, sweep layers, circuit nodes —
+ * the types.ts fallback contract), else null on layer-less rows.
+ */
+export function rowLayerCount(r: RunRow): number | null {
+  if (typeof r.n_layers === "number" && r.n_layers > 0) return r.n_layers;
+  let top = -1;
+  for (const m of r.interp?.measurements ?? []) {
+    if (typeof m.layer === "number") top = Math.max(top, m.layer);
+    for (const p of m.layer_profile ?? []) {
+      if (typeof p?.[0] === "number") top = Math.max(top, p[0]);
+    }
+    for (const n of m.nodes ?? []) {
+      if (typeof n?.layer === "number") top = Math.max(top, n.layer);
+    }
+  }
+  return top >= 0 ? top + 1 : null;
 }
 
 function scanMethodValue(

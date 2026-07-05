@@ -61,6 +61,21 @@ describe("columns bridge", () => {
     expect(cellValue(r, def.id)).toBe(m.asr_drop);
   });
 
+  it("derived anatomy INTERP names resolve to themselves and read the derived value", () => {
+    const name = "interp_peak_layer@linear_probe";
+    expect(index[name]).toBeTruthy(); // synthesized into metric_schema at normalize
+    const def = resolveColumn("INTERP", name, index);
+    expect(def.id).toBe(name);
+    expect(def.kind).toBe("numeric");
+    expect(def.metricName).toBe(name);
+    expect(def.label).toBe(index[name].label);
+    // the planted run's linear_probe sweep peaks at L16
+    const r = rowWith(
+      (x) => x.interp?.measurements?.some((m) => m.kind === "sae_feature") ?? false,
+    );
+    expect(cellValue(r, def.id)).toBe(16);
+  });
+
   it("SCAN scan_auroc reads scan.auroc on a scanned run", () => {
     const r = rowWith((x) => x.status.has_scan && x.scan !== null);
     const def = resolveColumn("SCAN", "scan_auroc", index);

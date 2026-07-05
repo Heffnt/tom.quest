@@ -4,9 +4,10 @@
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import type {
-  ChartConfig, FilterState, SortKey, SortDir, FacetKey, RangeFilter, StatusFlag,
+  AnatomyConfig, ChartConfig, FilterState, SortKey, SortDir, FacetKey, RangeFilter, StatusFlag,
 } from "../lib/types";
-import { DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
+import { DEFAULT_ANATOMY, DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
+import type { CenterView } from "../components/table-pane";
 
 /** The mounted chart's live descriptive readout (r/ρ/counts), published for
  *  the shared top bar to render. Null whenever no chart is mounted. */
@@ -32,11 +33,12 @@ interface BoolbackState {
   sorts: SortKey[];                  // ordered multi-key
   visibleCols: string[];             // chosen column ids (dotted paths + metric names)
   columnWidths: Record<string, number>; // per-column px widths (resizable)
-  // center view + chart config (store-owned so the per-header "plot on X/Y"
-  // bridge and the share-URL encoder can reach them)
-  centerView: "table" | "chart";
+  // center view + chart/anatomy config (store-owned so the per-header "plot
+  // on X/Y" bridge and the share-URL encoder can reach them)
+  centerView: CenterView;
   chart: ChartConfig;
   chartReadout: ChartReadout | null; // published by the mounted ChartBody
+  anatomy: AnatomyConfig;
   // detail panel (decoupled from selection — opened ONLY by a Details button)
   detailOpen: boolean;
   detailWidth: number;               // px
@@ -44,9 +46,10 @@ interface BoolbackState {
   // actions
   select: (dir: string | null) => void;   // selection only; does NOT open detail
   hover: (dir: string | null) => void;
-  setCenterView: (v: "table" | "chart") => void;
+  setCenterView: (v: CenterView) => void;
   setChart: (patch: Partial<ChartConfig>) => void;
   setChartReadout: (r: ChartReadout | null) => void;
+  setAnatomy: (patch: Partial<AnatomyConfig>) => void;
   toggleExpand: (dir: string) => void;
   setExpanded: (next: Set<string>) => void;
   expandChain: (dirs: string[]) => void;       // open all ancestors to reveal a node
@@ -108,6 +111,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       centerView: "table" as const,
       chart: DEFAULT_CHART,
       chartReadout: null,
+      anatomy: DEFAULT_ANATOMY,
       detailOpen: false,
       detailWidth: DEFAULT_DETAIL_WIDTH,
 
@@ -116,6 +120,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       setCenterView: (v) => set({ centerView: v }),
       setChart: (patch) => set((s) => ({ chart: { ...s.chart, ...patch } })),
       setChartReadout: (r) => set({ chartReadout: r }),
+      setAnatomy: (patch) => set((s) => ({ anatomy: { ...s.anatomy, ...patch } })),
       toggleExpand: (dir) => set((s) => {
         const next = new Set(s.expanded);
         if (next.has(dir)) next.delete(dir); else next.add(dir);

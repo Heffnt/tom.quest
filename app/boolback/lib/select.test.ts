@@ -90,6 +90,59 @@ describe("select", () => {
     expect(numericValue(withList, "interp_null_control@other_kind")).toBe(2);
   });
 
+  it("anatomy ids (base@kind) derive from the sweep, preferring it over point loci", () => {
+    // The planted run: 5 linear_probe point measurements (L8..L24) with the
+    // 32-layer sweep on the L16 one — the sweep must win over find-first.
+    const planted = rows.find((r) =>
+      r.interp?.measurements?.some((m) => m.kind === "sae_feature"),
+    )!;
+    expect(numericValue(planted, "interp_peak_layer@linear_probe")).toBe(16);
+    expect(numericValue(planted, "interp_loc_width@linear_probe")).toBe(11);
+    const com = numericValue(planted, "interp_depth_com@linear_probe");
+    expect(com).toBeGreaterThan(0.5); // sweep is near-symmetric around L16/31
+    expect(com).toBeLessThan(0.53);
+
+    // Single-layer fallback: first measurement with a numeric layer (tuned
+    // lens at L8/L16/L24, no sweep) -> point semantics.
+    expect(numericValue(planted, "interp_peak_layer@tuned_lens")).toBe(8);
+    expect(numericValue(planted, "interp_loc_width@tuned_lens")).toBe(1);
+    expect(numericValue(planted, "interp_depth_com@tuned_lens")).toBeCloseTo(8 / 31, 6);
+
+    // The weaker twin sweeps the same kind but peaks elsewhere.
+    const twin = rows.find(
+      (r) =>
+        r !== planted && r.interp?.measurements?.some((m) => m.layer_profile),
+    )!;
+    expect(numericValue(twin, "interp_peak_layer@linear_probe")).toBe(11);
+
+    // No locus data -> null: global (layer-less) and circuit (nodes-only)
+    // loci, unknown kinds, rows without a measurements list.
+    expect(numericValue(planted, "interp_peak_layer@weight_norm_diff")).toBeNull();
+    expect(numericValue(planted, "interp_peak_layer@circuit")).toBeNull();
+    expect(numericValue(planted, "interp_peak_layer@no_such_kind")).toBeNull();
+    const headlineOnly = rows.find((r) => r.interp && !r.interp.measurements)!;
+    expect(numericValue(headlineOnly, "interp_peak_layer@linear_probe")).toBeNull();
+  });
+
+  it("anatomy depth_com falls back to max-observed-layer+1 when n_layers is absent", () => {
+    const src = rows.find((r) => r.interp !== null)!;
+    const bare: RunRow = {
+      ...src,
+      n_layers: null, // pre-anatomy blobs ship no model shape
+      interp: {
+        ...src.interp!,
+        measurements: [
+          { kind: "probe_a", value: 1, null_control: 0, layer: 5 },
+          { kind: "probe_b", value: 1, null_control: 0, layer: 9 },
+        ],
+      },
+    };
+    // max observed layer 9 -> effective n_layers 10 -> denominator 9
+    expect(numericValue(bare, "interp_peak_layer@probe_a")).toBe(5);
+    expect(numericValue(bare, "interp_depth_com@probe_a")).toBeCloseTo(5 / 9, 6);
+    expect(numericValue(bare, "interp_depth_com@probe_b")).toBe(1);
+  });
+
   it("applyFilters tolerates a stale/partial persisted FilterState (missing sub-keys)", () => {
     // A view saved by an older shape can deserialize without facets/ranges/status/
     // subtreeDirs; the shallow persisted-merge then yields a partial object. This must

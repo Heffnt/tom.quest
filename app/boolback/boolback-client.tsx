@@ -8,12 +8,13 @@
 //   [ TreePane (dir viewer) | divider | TablePane or ChartBody | DetailPanel ]
 //
 // ONE fetch loads the whole bundle (useArtifactSource; dir pinned to
-// "artifacts", ?dir= overrides). The center is either the run table or the
-// explore chart — switched, never stacked — under the same filter bar. The
-// detail panel docks on the right and opens from any row/point click (or a
-// Details button). Tree + detail widths persist via usePersistedSettings,
-// as does the tree's collapsed state — remembered PER center view (chart
-// defaults collapsed: the plot wants the width, the table wants the tree).
+// "artifacts", ?dir= overrides). The center is the run table, the explore
+// chart or the anatomy view — switched, never stacked — under the same filter
+// bar. The detail panel docks on the right and opens from any row/point click
+// (or a Details button). Tree + detail widths persist via usePersistedSettings,
+// as does the tree's collapsed state — remembered PER center view (chart and
+// anatomy default collapsed: the plot wants the width, the table wants the
+// tree).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useArtifactSource } from "./data/source";
@@ -32,15 +33,18 @@ const DEFAULT_LEFT = 360;
 interface LayoutSettings extends Record<string, unknown> {
   leftW: number;
   detailWidth: number;
-  /** Tree pane collapsed to the slim rail, remembered PER center view. */
-  treeCollapsed: { table: boolean; chart: boolean };
+  /** Tree pane collapsed to the slim rail, remembered PER center view.
+   * Persisted blobs may predate a view (no anatomy key) — reads fall back to
+   * LAYOUT_DEFAULTS and the setter's defaults-spread heals the record. */
+  treeCollapsed: { table: boolean; chart: boolean; anatomy: boolean };
 }
 
 const LAYOUT_DEFAULTS: LayoutSettings = {
   leftW: DEFAULT_LEFT,
   detailWidth: 480,
-  // The chart wants every horizontal pixel; the table leans on the tree.
-  treeCollapsed: { table: false, chart: true },
+  // The chart wants every horizontal pixel (the anatomy spine even more so);
+  // the table leans on the tree.
+  treeCollapsed: { table: false, chart: true, anatomy: true },
 };
 
 export default function BoolbackClient() {
@@ -53,7 +57,9 @@ export default function BoolbackClient() {
   // applied by table-pane's hydration (which prefers the shared view too).
   useEffect(() => {
     const shared = readSharedView();
-    if (shared?.view === "table" || shared?.view === "chart") setCenterView(shared.view);
+    if (shared?.view === "table" || shared?.view === "chart" || shared?.view === "anatomy") {
+      setCenterView(shared.view);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

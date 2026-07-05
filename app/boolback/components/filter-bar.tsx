@@ -4,7 +4,7 @@
 // chrome above the center view (the old command bar and the chart's axis
 // strip folded into it). One wrap-row:
 //
-//   [» artifacts] [Table|Chart] [+ Filter] (active filter chips…) | [trend] r/ρ
+//   [» artifacts] [Table|Chart|Anatomy] [+ Filter] (active filter chips…) | [trend] r/ρ
 //   ⌕ · N of M runs · Export · Columns(table) · Reset · ⧉ · ● ↻
 //
 // - `» artifacts` shows only while the tree pane is collapsed — the bar IS the
@@ -52,6 +52,7 @@ import { resolveById, type ColumnDef } from "../lib/columns";
 import { ColumnGroupMenu } from "./column-group-menu";
 import { ExportMenu } from "./export-menu";
 import type { ChartExportHandle } from "./chart-panel";
+import type { CenterView } from "./table-pane";
 import { relTime, shortModel } from "../lib/format";
 
 const HIST_BINS = 24;
@@ -79,7 +80,7 @@ export interface FilterBarProps {
   bundle: Bundle;
   index: MetricIndex;
   colDefs: ColumnDef[]; // visible table columns (export)
-  view: "table" | "chart";
+  view: CenterView;
   chartRef: React.MutableRefObject<ChartExportHandle | null>;
   source: ArtifactSource; // status dot / freshness / Refresh
   /** Set while the tree pane is collapsed — renders the `» artifacts` re-open button. */
@@ -111,7 +112,7 @@ export function FilterBar(props: FilterBarProps) {
   const setChart = useBoolbackStore((s) => s.setChart);
   const readout = useBoolbackStore((s) => s.chartReadout);
 
-  // Shareable view URL (filters + sorts + columns + chart + view).
+  // Shareable view URL (filters + sorts + columns + chart + anatomy + view).
   const [copied, setCopied] = useState(false);
   const copyLink = async () => {
     const s = useBoolbackStore.getState();
@@ -120,6 +121,7 @@ export function FilterBar(props: FilterBarProps) {
       sorts: s.sorts,
       visibleCols: s.visibleCols,
       chart: s.chart,
+      anatomy: s.anatomy,
       view: s.centerView,
     }));
     setCopied(true);
@@ -176,9 +178,9 @@ export function FilterBar(props: FilterBarProps) {
           </button>
         )}
 
-        {/* Table | Chart view switcher (store-owned) */}
+        {/* Table | Chart | Anatomy view switcher (store-owned) */}
         <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-xs">
-          {(["table", "chart"] as const).map((v) => (
+          {(["table", "chart", "anatomy"] as const).map((v) => (
             <button
               key={v}
               type="button"
@@ -187,7 +189,7 @@ export function FilterBar(props: FilterBarProps) {
                 view === v ? "bg-accent/15 text-accent" : "bg-surface text-text-muted hover:text-text"
               }`}
             >
-              {v === "table" ? "Table" : "Chart"}
+              {{ table: "Table", chart: "Chart", anatomy: "Anatomy" }[v]}
             </button>
           ))}
         </div>
