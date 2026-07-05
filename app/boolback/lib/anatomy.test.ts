@@ -14,11 +14,13 @@ import {
   CARRIER_PALETTE,
   FOCUS_MAX,
   GHOST_RADIUS,
+  GLOBAL_LANE_X_PX,
   LOD_LAYER_PX,
   MARKER_R_MAX,
   MARKER_R_MIN,
   MODE_GLYPH,
   SCALE_EDGE_PAD,
+  TOP_SLACK_MAX_PX,
   blowUp,
   buildScale,
   carrierColor,
@@ -38,9 +40,12 @@ import {
   neuronBins,
   parseMeasurementKey,
   parseUnitPath,
+  profilePeak,
   reset,
   residLayerHeat,
+  rowHasAnatomy,
   rowShape,
+  rulerLabelLayers,
   unitChainAtX,
   wheelZoom,
   zoomChain,
@@ -438,9 +443,14 @@ describe("xForMeasurement — every fixture locus type", () => {
     expect(x).toBeGreaterThan(mid(scale.xForPath("L16/attn")!));
   });
 
-  it("global loci center on the pane; circuits have no single locus", () => {
+  it("global loci anchor at the left global-lane gutter; circuits have no single locus", () => {
     const globalM = ms.find((m) => m.locus_shape === "global")!;
-    expect(scale.xForMeasurement(globalM)).toBe(W / 2);
+    // Fixed x by the "global" gutter caption — their honest no-locus home
+    // (pane-centering collided with the mid-stack marker piles).
+    expect(scale.xForMeasurement(globalM)).toBe(GLOBAL_LANE_X_PX);
+    // The anchor never leaves a degenerate pane.
+    const tiny = buildScale({}, shape, 60);
+    expect(tiny.xForMeasurement(globalM)).toBe(30);
     const circuit = ms.find((m) => m.kind === "circuit")!;
     expect(scale.xForMeasurement(circuit)).toBeNull();
   });
@@ -657,6 +667,169 @@ describe("computeBands", () => {
         }
       }
     }
+  });
+
+  it("adaptive: zones hug their content need; top slack is capped, rest falls below", () => {
+    const b = computeBands(600, true, { runNeed: 100, twinNeed: 60 });
+    expect(b.runZone.y1 - b.runZone.y0).toBeCloseTo(100, 6);
+    expect(b.twinZone.y1 - b.twinZone.y0).toBeCloseTo(60, 6);
+    // Middle is capped; of the leftover, at most TOP_SLACK_MAX_PX floats
+    // above the figure (here slack*0.4 > the cap) and the rest sinks below.
+    const topSlack = b.runBar.y0 - BAND_PAD_PX;
+    const bottomSlack = 600 - BAND_PAD_PX - b.twinBar.y1;
+    expect(topSlack).toBeCloseTo(TOP_SLACK_MAX_PX, 6);
+    expect(bottomSlack).toBeGreaterThan(topSlack); // remainder accumulates below
+    // Contiguous top to bottom.
+    expect(b.runZone.y0).toBe(b.runBar.y1);
+    expect(b.middle.y0).toBe(b.runZone.y1);
+    expect(b.twinZone.y0).toBe(b.middle.y1);
+    expect(b.twinBar.y0).toBe(b.twinZone.y1);
+  });
+
+  it("run bar y is anchored: identical across very different focus states", () => {
+    // Two focus states produce very different content needs (leaf stacks vs
+    // uniform badges) — the bar must not drift vertically between them.
+    const uniform = computeBands(600, true, { runNeed: 40, twinNeed: 40 });
+    const blown = computeBands(600, true, { runNeed: 150, twinNeed: 90 });
+    expect(uniform.runBar.y0).toBeCloseTo(BAND_PAD_PX + TOP_SLACK_MAX_PX, 6);
+    expect(blown.runBar.y0).toBeCloseTo(uniform.runBar.y0, 6);
+    // Twin-off parity: the collapsed-band figure anchors at the same y, so
+    // toggling the twin doesn't bounce the run bar either.
+    const off = computeBands(600, false, { runNeed: 40, twinNeed: 0 });
+    const offBlown = computeBands(600, false, { runNeed: 250, twinNeed: 0 });
+    expect(off.runBar.y0).toBeCloseTo(uniform.runBar.y0, 6);
+    expect(offBlown.runBar.y0).toBeCloseTo(uniform.runBar.y0, 6);
+  });
+
+  it("adaptive twin-off: the zone hugs content + a fixed gap, top slack capped", () => {
+    const b = computeBands(800, false, { runNeed: 120, twinNeed: 0 });
+    const zoneH = b.runZone.y1 - b.runZone.y0;
+    expect(zoneH).toBeCloseTo(120 + 48, 6); // need + fixed lane/arc gap
+    // Sparse content still gets the absolute floor, never a squashed sliver.
+    const sparse = computeBands(800, false, { runNeed: 40, twinNeed: 0 });
+    expect(sparse.runZone.y1 - sparse.runZone.y0).toBeCloseTo(120, 6);
+    // The figure anchors near the top: at most TOP_SLACK_MAX_PX of slack
+    // floats above (40% of it here is far larger), the rest falls below —
+    // no more stranded mid-pane strip.
+    const topSlack = b.runBar.y0 - BAND_PAD_PX;
+    const bottomSlack = 800 - BAND_PAD_PX - b.runZone.y1;
+    expect(topSlack).toBeCloseTo(TOP_SLACK_MAX_PX, 6);
+    expect(bottomSlack).toBeCloseTo(800 - 2 * BAND_PAD_PX - BAND_BAR_PX - zoneH - TOP_SLACK_MAX_PX, 6);
+    for (const band of [b.middle, b.twinZone, b.twinBar]) {
+      expect(band.y1 - band.y0).toBe(0);
+    }
+    // Legacy (no content) still pins to the top and takes everything.
+    const legacy = computeBands(800, false);
+    expect(legacy.runBar.y0).toBe(BAND_PAD_PX);
+    expect(legacy.runZone.y1).toBe(800 - BAND_PAD_PX);
+  });
+
+  it("adaptive: over-asking zones shrink proportionally, middle keeps a floor", () => {
+    const b = computeBands(400, true, { runNeed: 500, twinNeed: 500 });
+    const midH = b.middle.y1 - b.middle.y0;
+    expect(midH).toBeGreaterThanOrEqual(32 - 1e-6); // MIDDLE_MIN_CLAMP floor
+    // Everything still fits and stays monotone.
+    const ys = [
+      b.runBar.y0, b.runBar.y1, b.runZone.y0, b.runZone.y1,
+      b.middle.y0, b.middle.y1, b.twinZone.y0, b.twinZone.y1,
+      b.twinBar.y0, b.twinBar.y1,
+    ];
+    for (let i = 1; i < ys.length; i++) {
+      expect(ys[i]).toBeGreaterThanOrEqual(ys[i - 1] - 1e-6);
+      expect(ys[i]).toBeLessThanOrEqual(400);
+    }
+  });
+
+  it("adaptive: junk needs degrade to the zone minimum, never NaN", () => {
+    const b = computeBands(600, true, { runNeed: Number.NaN, twinNeed: -50 });
+    for (const v of [
+      b.runBar.y0, b.runZone.y1, b.middle.y0, b.middle.y1, b.twinBar.y1,
+    ]) {
+      expect(Number.isFinite(v)).toBe(true);
+    }
+    expect(b.runZone.y1 - b.runZone.y0).toBeGreaterThanOrEqual(24 - 1e-6);
+    expect(b.twinZone.y1 - b.twinZone.y0).toBeGreaterThanOrEqual(24 - 1e-6);
+  });
+});
+
+describe("rulerLabelLayers", () => {
+  it("uniform: every layer is wide enough — all labeled", () => {
+    const scale = buildScale({}, shape, 1440);
+    const labeled = rulerLabelLayers(scale);
+    expect(labeled.size).toBe(32);
+  });
+
+  it("fit-circuit: every expanded layer labeled AND every gap gets an anchor", () => {
+    const circuit = measurementsOf(run).find((m) => m.locus_shape === "subgraph")!;
+    const focus = fitCircuit({}, circuit.nodes!, shape);
+    const circuitLayers = [...new Set(circuit.nodes!.map((n) => n.layer))];
+    // The regression width: compressed layers sat at ~15.8px (< the old 16px
+    // cutoff) at 1440 and ~14.1px at 1280 — both must stay countable now.
+    for (const width of [1440, 1280]) {
+      const scale = buildScale(focus, shape, width);
+      const labeled = rulerLabelLayers(scale);
+      for (const l of circuitLayers) expect(labeled.has(l)).toBe(true);
+      // No unlabeled gap between consecutive circuit layers: each compressed
+      // run between them is 1–3 layers (≥14px total) → at least one anchor.
+      const sorted = [...circuitLayers].sort((a, b) => a - b);
+      for (let k = 0; k + 1 < sorted.length; k++) {
+        if (sorted[k + 1] - sorted[k] < 2) continue; // adjacent, no gap
+        const gap = [];
+        for (let l = sorted[k] + 1; l < sorted[k + 1]; l++) gap.push(l);
+        expect(gap.some((l) => labeled.has(l))).toBe(true);
+      }
+    }
+  });
+
+  it("blow-up: compressed flanks get evenly spaced anchors, not silence", () => {
+    const scale = buildScale(blowUp({}, "L16", shape), shape, 1440);
+    const labeled = rulerLabelLayers(scale);
+    expect(labeled.has(16)).toBe(true);
+    // Both flanks (L0–15, L17–31) are wide runs → several anchors each.
+    const left = [...labeled].filter((l) => l < 16);
+    const right = [...labeled].filter((l) => l > 16);
+    expect(left.length).toBeGreaterThanOrEqual(2);
+    expect(right.length).toBeGreaterThanOrEqual(2);
+    // Anchors never crowd: label centers stay ≥ ~24px apart.
+    const centers = [...labeled]
+      .sort((a, b) => a - b)
+      .map((l) => mid(scale.xForPath(`L${l}`)!));
+    for (let k = 1; k < centers.length; k++) {
+      expect(centers[k] - centers[k - 1]).toBeGreaterThanOrEqual(24);
+    }
+  });
+
+  it("runs too thin for any number stay silent; wide hairline runs get one anchor", () => {
+    // Extreme focus: L5 takes ~everything; flank layers are ~1.7px each.
+    const scale = buildScale({ L5: 500 }, shape, 900);
+    const labeled = rulerLabelLayers(scale);
+    expect(labeled.has(5)).toBe(true);
+    // Left run (L0–4, ~8px total) cannot hold a number → unlabeled.
+    for (let l = 0; l < 5; l++) expect(labeled.has(l)).toBe(false);
+    // Right run (L6–31, ~44px total) holds exactly one mid-run anchor.
+    const right = [...labeled].filter((l) => l > 5);
+    expect(right).toHaveLength(1);
+  });
+});
+
+describe("profilePeak / rowHasAnatomy", () => {
+  it("profilePeak: max |sweep value| across measurements; junk skipped", () => {
+    const peak = profilePeak(measurementsOf(run));
+    expect(peak).toBeCloseTo(0.42, 6); // the probe sweep's L16 apex
+    expect(
+      profilePeak([
+        { kind: "x", value: null, null_control: null, layer_profile: [[0, Number.NaN], [1, -0.9]] },
+        { kind: "y", value: null, null_control: null },
+      ]),
+    ).toBeCloseTo(0.9, 6);
+    expect(profilePeak([])).toBe(0);
+  });
+
+  it("rowHasAnatomy: true for the planted run, false for legacy/no-interp rows", () => {
+    expect(rowHasAnatomy(run)).toBe(true);
+    expect(rowHasAnatomy(twin)).toBe(true);
+    expect(rowHasAnatomy(legacyRow)).toBe(false);
+    expect(rowHasAnatomy(noInterpRow)).toBe(false);
   });
 });
 

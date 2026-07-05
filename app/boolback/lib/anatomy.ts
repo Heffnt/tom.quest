@@ -28,7 +28,8 @@
 //  * measurement plumbing: measurementsOf normalizes the LEGACY single-record
 //    interp shape into a list; xForMeasurement/xForNode place every locus
 //    type on the scale (degrading — unknown heads center on attn, layer-less
-//    global/parameter loci center on the pane, circuits return null and
+//    global/parameter loci anchor at the left global-lane gutter, circuits
+//    return null and
 //    render via their nodes); matchMeasurements pairs run/twin measurements
 //    and aggregates per-layer max |delta| for the diff strip; circuitDiff
 //    compares circuit edges by node SIGNATURE (layer:component:head), not
@@ -117,6 +118,11 @@ export const MARKER_R_MIN = 2.5;
 export const MARKER_R_MAX = 14;
 /** Fixed radius of the always-visible faint null-control ghost. */
 export const GHOST_RADIUS = 2;
+/** Fixed x-anchor for layer-less (global/parameter) markers — just right of
+ * the global lane's left "global" gutter caption, their honest no-locus home.
+ * Pane-centering piled them exactly where mid-stack marker piles peak (r4
+ * critique); xForMeasurement clamps this into degenerate panes. */
+export const GLOBAL_LANE_X_PX = 48;
 
 // Vertical band geometry.
 export const BAND_PAD_PX = 8; // top/bottom inset
@@ -268,9 +274,13 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
     const layer =
       typeof m.layer === "number" && Number.isFinite(m.layer) ? m.layer : null;
     if (layer === null || layer < 0 || layer >= nL) {
-      // Layer-less: whole-model loci center on the pane; anything else is
-      // unplaceable (never fabricate a position).
-      return shapeKind === "global" || shapeKind === "parameter" ? width / 2 : null;
+      // Layer-less: whole-model loci anchor at a FIXED x by the global lane's
+      // left gutter caption (no locus = no honest position ON the scale, so
+      // they live in the gutter; pane-centering collided with the mid-stack
+      // marker piles); anything else is unplaceable (never fabricate).
+      return shapeKind === "global" || shapeKind === "parameter"
+        ? Math.min(GLOBAL_LANE_X_PX, width / 2)
+        : null;
     }
     const ls = layerSpan(layer) as Span;
     const comp = m.locus_component ?? (shapeKind === "head" ? "attn" : "resid");
@@ -311,6 +321,73 @@ export function lodForLayer(scale: Scale, i: number): Lod {
     if (attn && (attn.x1 - attn.x0) / nHeads >= LOD_LEAF_SLOT_PX) return "leaf";
   }
   return "component";
+}
+
+// ---------------------------------------------------------------------------
+// Ruler labels — which layers get a number inside the residual bar
+// ---------------------------------------------------------------------------
+
+/** Mono digit width at the 9px ruler font; with padding this is the "does
+ * the number physically fit in the span" test. */
+const RULER_DIGIT_PX = 5.5;
+const RULER_LABEL_PAD_PX = 4;
+/** Gap anchors inside compressed runs aim for roughly this spacing. */
+const RULER_ANCHOR_SPACING_PX = 40;
+
+/**
+ * The set of layers that get a ruler number under the current scale.
+ * Two passes:
+ *  1. every layer whose span fits its number (digit-aware via the model's MAX
+ *     index, so 1-digit layers don't label denser than 2-digit ones);
+ *  2. gap anchors — each maximal run of unlabeled layers gets evenly spaced
+ *     labels (~RULER_ANCHOR_SPACING_PX apart, snapped to the nearest layer
+ *     centers), at least one whenever the run can physically hold a number.
+ * Guarantees the accordion's compressed flanks stay COUNTABLE: a marker or
+ * circuit ring between two expanded layers is identifiable without hovering
+ * (r2 critique: fit-circuit's 15.8px gaps all fell under a fixed 16px cutoff
+ * and even a careful reader misassigned rings to the wrong layers).
+ */
+export function rulerLabelLayers(scale: Scale): Set<number> {
+  const nL = scale.shape.nLayers;
+  const digits = String(Math.max(0, nL - 1)).length;
+  const minW = RULER_LABEL_PAD_PX + RULER_DIGIT_PX * digits;
+  const spans: Span[] = [];
+  for (let i = 0; i < nL; i++) spans.push(scale.xForPath(`L${i}`)!);
+  const labeled = new Set<number>();
+  for (let i = 0; i < nL; i++) {
+    if (spans[i].x1 - spans[i].x0 >= minW) labeled.add(i);
+  }
+  for (let i = 0; i < nL; ) {
+    if (labeled.has(i)) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < nL && !labeled.has(j)) j++;
+    const x0 = spans[i].x0;
+    const w = spans[j - 1].x1 - x0;
+    // A slightly squeezed single anchor (minW − 2) beats an unlabeled gap.
+    const n = Math.min(
+      j - i,
+      Math.max(w >= minW - 2 ? 1 : 0, Math.floor(w / RULER_ANCHOR_SPACING_PX)),
+    );
+    for (let k = 0; k < n; k++) {
+      const target = x0 + ((k + 0.5) / n) * w;
+      let best = i;
+      let bestD = Infinity;
+      for (let l = i; l < j; l++) {
+        const c = (spans[l].x0 + spans[l].x1) / 2;
+        const d = Math.abs(c - target);
+        if (d < bestD) {
+          bestD = d;
+          best = l;
+        }
+      }
+      labeled.add(best);
+    }
+    i = j;
+  }
+  return labeled;
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +648,37 @@ export function locusLabel(m: InterpMeasurement): string {
     return `circuit (${m.locus_shape})`;
   }
   return "unlocated";
+}
+
+/** True when any measurement carries anatomy locus/taxonomy fields — the
+ * pane prefers such a row when nothing is selected (a legacy row's empty
+ * structural spine is a poor first impression), and keys its header note. */
+export function rowHasAnatomy(row: RunRow): boolean {
+  return measurementsOf(row).some(
+    (m) =>
+      m.layer != null ||
+      m.locus_component != null ||
+      m.locus_shape != null ||
+      m.layer_profile != null ||
+      m.nodes != null ||
+      m.carrier != null,
+  );
+}
+
+/** Max |value| over every layer_profile sweep point — the ridgeline's OWN
+ * normalizer. Ridges are depth profiles: their shape must stay legible even
+ * when a single discrete delta dwarfs the sweep, so they are NOT scaled by
+ * the global deltaMax. Sharing one peak across run+twin keeps the two bands'
+ * ridges honestly comparable. */
+export function profilePeak(ms: InterpMeasurement[]): number {
+  let peak = 0;
+  for (const m of ms) {
+    for (const p of m.layer_profile ?? []) {
+      const v = p?.[1];
+      if (typeof v === "number" && Number.isFinite(v)) peak = Math.max(peak, Math.abs(v));
+    }
+  }
+  return peak;
 }
 
 /** Model shape for a row: builder-shipped n_layers/n_heads/d_mlp, falling
@@ -845,19 +953,66 @@ export interface AnatomyBands {
   twinBar: Band;
 }
 
+/** Content-driven band sizing input: the natural (uncompressed) px depth
+ * each structure zone wants — deepest marker stack, sweep ribbon, globals. */
+export interface BandContent {
+  runNeed: number;
+  twinNeed: number;
+}
+
+/** Cap on the slack floated ABOVE the figure (40% share up to this): the run
+ * bar's y stays near-stationary across focus states — uncapped, the whole
+ * figure swung ~108px vertically as zoom changed the zones' content needs
+ * (r4 critique) — while all remaining slack accumulates below, where the eye
+ * expects margin. Applies to both adaptive branches (twin on AND off). */
+export const TOP_SLACK_MAX_PX = 48;
+
+// Adaptive-geometry clamps (twin-on + content only).
+const ZONE_MIN_PX = 24; // a zone never fully collapses (tap arrows need room)
+const ZONE_MAX_FRAC = 0.45; // one zone never starves the middle + other zone
+const MIDDLE_MIN_FRAC = 0.14; // diff ribbon stays legible …
+const MIDDLE_MIN_CLAMP: [number, number] = [32, 88]; // … within these px
+const MIDDLE_MAX_PX = 210; // beyond this the strip reads as a void
+const MIDDLE_MAX_FRAC = 0.34;
+
 /**
  * y-geometry for the three bands. Twin off → the run zone takes everything
  * below the bar and the twin spans collapse to zero height at the bottom
  * edge (consistent shapes; the renderer just skips empty bands). Boundaries
  * are cumulative and capped at the pane height, so they are always monotone
  * and finite even for absurdly small panes.
+ *
+ * With `content` (twin on): ADAPTIVE geometry — each zone hugs its content
+ * need (clamped), the middle gets what remains within [min, max], and any
+ * leftover becomes symmetric outer margins so the whole figure centers
+ * vertically instead of stranding dead space between structure and the diff
+ * strip. Without `content` the legacy fixed 40/20/40 split applies.
  */
-export function computeBands(heightPx: number, twinOn: boolean): AnatomyBands {
+export function computeBands(
+  heightPx: number,
+  twinOn: boolean,
+  content?: BandContent,
+): AnatomyBands {
   const H = Math.max(0, heightPx);
   const cap = (v: number) => Math.min(v, H);
-  const runBar: Band = { y0: cap(BAND_PAD_PX), y1: cap(BAND_PAD_PX + BAND_BAR_PX) };
+  const safe = (v: number) => (Number.isFinite(v) ? v : 0);
   if (!twinOn) {
-    const bottom = Math.max(runBar.y1, cap(H - BAND_PAD_PX));
+    const avail = Math.max(0, cap(H - BAND_PAD_PX) - cap(BAND_PAD_PX + BAND_BAR_PX));
+    // With content: the zone hugs its need + a FIXED gap (the global lane
+    // pins to the zone bottom, so the gap between the deepest structure and
+    // the lane stays constant instead of proportional — the r2 300px floor
+    // left the lane floating ~130px below the figure with a void beneath).
+    // A small absolute floor keeps arcs/copy breathing room on sparse runs.
+    // Leftover floats the figure 40/60 top/bottom (twin-on parity) but the
+    // top share is capped at TOP_SLACK_MAX_PX — the bar anchors near the
+    // header instead of stranding a mid-pane strip when slack is large.
+    const zoneH = content
+      ? Math.min(avail, Math.max(safe(content.runNeed) + 48, 120))
+      : avail;
+    const slack = content ? Math.max(0, avail - zoneH) : 0;
+    const top = cap(BAND_PAD_PX + Math.min(slack * 0.4, TOP_SLACK_MAX_PX));
+    const runBar: Band = { y0: top, y1: cap(top + BAND_BAR_PX) };
+    const bottom = Math.max(runBar.y1, cap(runBar.y1 + zoneH));
     return {
       runBar,
       runZone: { y0: runBar.y1, y1: bottom },
@@ -867,19 +1022,53 @@ export function computeBands(heightPx: number, twinOn: boolean): AnatomyBands {
     };
   }
   const interior = Math.max(0, H - 2 * (BAND_PAD_PX + BAND_BAR_PX));
-  const runZone: Band = {
-    y0: runBar.y1,
-    y1: cap(runBar.y1 + interior * RUN_ZONE_FRAC),
-  };
-  const middle: Band = {
-    y0: runZone.y1,
-    y1: cap(runZone.y1 + interior * MIDDLE_FRAC),
-  };
-  const twinBar: Band = {
-    y0: Math.max(middle.y1, cap(H - BAND_PAD_PX - BAND_BAR_PX)),
-    y1: Math.max(middle.y1, cap(H - BAND_PAD_PX)),
-  };
-  return { runBar, runZone, middle, twinZone: { y0: middle.y1, y1: twinBar.y0 }, twinBar };
+
+  if (!content) {
+    const runBar: Band = { y0: cap(BAND_PAD_PX), y1: cap(BAND_PAD_PX + BAND_BAR_PX) };
+    const runZone: Band = {
+      y0: runBar.y1,
+      y1: cap(runBar.y1 + interior * RUN_ZONE_FRAC),
+    };
+    const middle: Band = {
+      y0: runZone.y1,
+      y1: cap(runZone.y1 + interior * MIDDLE_FRAC),
+    };
+    const twinBar: Band = {
+      y0: Math.max(middle.y1, cap(H - BAND_PAD_PX - BAND_BAR_PX)),
+      y1: Math.max(middle.y1, cap(H - BAND_PAD_PX)),
+    };
+    return { runBar, runZone, middle, twinZone: { y0: middle.y1, y1: twinBar.y0 }, twinBar };
+  }
+
+  const clampN = (v: number, lo: number, hi: number) =>
+    Math.min(Math.max(v, lo), Math.max(lo, hi));
+  const midMin = clampN(interior * MIDDLE_MIN_FRAC, MIDDLE_MIN_CLAMP[0], MIDDLE_MIN_CLAMP[1]);
+  const midMax = Math.max(midMin, Math.min(MIDDLE_MAX_PX, interior * MIDDLE_MAX_FRAC));
+  let runH = clampN(safe(content.runNeed), ZONE_MIN_PX, interior * ZONE_MAX_FRAC);
+  let twinH = clampN(safe(content.twinNeed), ZONE_MIN_PX, interior * ZONE_MAX_FRAC);
+  let midH = interior - runH - twinH;
+  if (midH < midMin) {
+    // Zones over-ask: shrink them proportionally until the middle floor holds.
+    const scaleDown = Math.max(0, (interior - midMin) / Math.max(1, runH + twinH));
+    runH *= scaleDown;
+    twinH *= scaleDown;
+    midH = Math.max(0, interior - runH - twinH);
+  }
+  let slack = 0;
+  if (midH > midMax) {
+    slack = midH - midMax;
+    midH = midMax;
+  }
+  // Slack splits 40/60 top/bottom (figure floats slightly high) but the top
+  // share is capped at TOP_SLACK_MAX_PX: the run bar y is near-stationary
+  // across focus states, and everything past the cap accumulates below.
+  const top = cap(BAND_PAD_PX + Math.min(slack * 0.4, TOP_SLACK_MAX_PX));
+  const runBar: Band = { y0: top, y1: cap(top + BAND_BAR_PX) };
+  const runZone: Band = { y0: runBar.y1, y1: cap(runBar.y1 + runH) };
+  const middle: Band = { y0: runZone.y1, y1: cap(runZone.y1 + midH) };
+  const twinZone: Band = { y0: middle.y1, y1: cap(middle.y1 + twinH) };
+  const twinBar: Band = { y0: twinZone.y1, y1: cap(twinZone.y1 + BAND_BAR_PX) };
+  return { runBar, runZone, middle, twinZone, twinBar };
 }
 
 // ---------------------------------------------------------------------------
@@ -900,11 +1089,22 @@ export function deltaRadius(delta: number | null | undefined, deltaMax: number):
 // Display maps — carrier → color, mode → glyph
 // ---------------------------------------------------------------------------
 
+/** Run/twin side identity — the contrast system's two poles, applied
+ * consistently to header chips, band heat, diff-strip cells and circuit-diff
+ * exclusive arcs. Warm amber (the site accent's hex) = run; a hard COOL cyan
+ * = twin. Deliberately NON-carrier hues so the middle strip never reads as a
+ * carrier, and warm-vs-cool keeps the two unmistakable on the dark bg. */
+export const RUN_COLOR = "#e8a040";
+export const TWIN_COLOR = "#22d3ee";
+
 /** Hard-coded hex (data-series colors never come from CSS vars — chart
  * PALETTE precedent). Chosen mid-value so they read on both themes. */
 export const CARRIER_PALETTE: Record<string, string> = {
   direction: "#10b981", // emerald
-  subspace: "#38bdf8", // sky
+  // Spec says "≈sky"; pushed to a deeper, more saturated blue so subspace
+  // markers can never be mistaken for TWIN_COLOR cyan (#22d3ee) — the two sat
+  // one hue-step apart at marker size on the dark bg (r2 critique, must-fix).
+  subspace: "#3b82f6", // blue
   feature: "#a78bfa", // violet
   circuit: "#f97316", // orange
   lens: "#ec4899", // pink

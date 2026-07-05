@@ -66,6 +66,8 @@ import { fnText } from "../lib/format";
 import { useBoolbackStore } from "../state/store";
 import {
   GHOST_RADIUS,
+  RUN_COLOR,
+  TWIN_COLOR,
   type AnatomyBands,
   type Focus,
   type Lod,
@@ -88,12 +90,16 @@ import {
   measurementsOf,
   modeGlyph,
   neuronBins,
+  profilePeak,
   reset,
   residLayerHeat,
+  rowHasAnatomy,
   rowShape,
+  rulerLabelLayers,
   unitChainAtX,
   zoomChain,
 } from "../lib/anatomy";
+import { AnatomyLegend } from "./anatomy-legend";
 
 // Geometry: the SVG viewBox tracks the plot container 1:1 (ResizeObserver;
 // 1 viewBox unit = 1 CSS px) — same idiom as chart-panel.tsx. FALLBACK
@@ -101,8 +107,8 @@ import {
 const FALLBACK = { w: 820, h: 430 };
 
 // Presentational constants (px). Ruler/labels appear only where they fit —
-// the accordion squeezes layers arbitrarily thin.
-const RULER_LABEL_MIN_PX = 16; // layer number inside the bar
+// the accordion squeezes layers arbitrarily thin. (Which layers get a ruler
+// number is the engine's rulerLabelLayers — digit-aware fit + gap anchors.)
 const RULER_TICK_MIN_PX = 5; // min gap between drawn layer boundaries
 const CAP_LABEL_MIN_PX = 34; // "embed"/"unembed" text inside the caps
 const SLOT_H = 11; // head-slot / neuron-strip row height
@@ -110,8 +116,20 @@ const SLOT_LABEL_MIN_PX = 14; // leaf head index label
 const BIN_LABEL_MIN_PX = 20; // leaf neuron index label
 const STACK_PITCH = 30; // marker stack row pitch (fits MARKER_R_MAX)
 const STACK_FIRST = 18; // bar edge → first marker center
+const BADGE_COLLAPSE_PX = 22; // below this layer width, multi-marker stacks
+// collapse into one ×N count badge — full glyphs + ghosts smear at ~13px
+const BADGE_R = 6.5; // count badge radius (fits "×5" at font 7)
 const EMPTY_CONTAINER_H = 10; // structural stub for measurement-less layers
-const RIBBON_MAX_PX = 24; // layer_profile ribbon peak height
+const RIBBON_MAX_PX = 34; // layer_profile ridgeline peak height
+const GLOBAL_LANE_PITCH = 24; // layer-less (global/parameter) marker pitch
+const DIFF_CELL_MAX_W = 40; // diff-strip cell width cap — a focused layer's
+// aggregate stays a centered column, never a pane-wide slab drowning whiskers
+const WHISKER_PITCH = 8; // min x-gap between whiskers sharing a layer cell
+const ARC_SLOPE = 0.22; // circuit arc depth per px of horizontal span
+const ARC_MIN_DEPTH = 6; // even adjacent-node edges arch visibly
+const ARC_DIP_FRAC = 0.5; // max arc depth as a fraction of the dip zone —
+// deeper and a long arc's apex sits on the diff strip and dominates the pane
+const ARC_LONG_FRAC = 0.4; // spans beyond this fraction of pane width thin out
 
 // Interaction constants.
 const FOCUS_ANIM_MS = 180; // accordion weight tween
@@ -277,11 +295,30 @@ interface PlacedMarker {
   layer: number | null; // null = global/parameter lane
 }
 
-/** Vertical room the component sub-band (head slots / neuron strip + leaf
- * labels) claims at the top of a layer container. */
+/** A compressed layer's marker stack collapsed to one ×N count badge —
+ * "stuff lives here" scent without the glyph smear (r3 critique). */
+interface MarkerBadge {
+  layer: number;
+  x: number;
+  cy: number;
+  ms: InterpMeasurement[];
+  /** The shared carrier color when every collapsed measurement agrees;
+   * null = mixed carriers → neutral chrome. */
+  color: string | null;
+}
+
+/** True when a layer's markers collapse into a count badge: several
+ * measurements on a span too thin for glyph+ghost anatomy. */
+function collapseToBadge(scale: Scale, layer: number, count: number): boolean {
+  return count >= 2 && scale.layerLod(layer) < BADGE_COLLAPSE_PX;
+}
+
+/** Vertical room the component sub-band (head slots / neuron strip + its
+ * label row — attn/mlp captions at component LOD, head/neuron indices at
+ * leaf) claims at the top of a layer container. */
 function slotBlockFor(lod: Lod): number {
   if (lod !== "component" && lod !== "leaf") return 0;
-  return 5 + SLOT_H + (lod === "leaf" ? 10 : 0) + 5;
+  return 5 + SLOT_H + 10 + 5;
 }
 
 /**
@@ -297,7 +334,11 @@ function placeBandMarkers(
   scale: Scale,
   bands: AnatomyBands,
   deltaMax: number,
-): { placed: PlacedMarker[]; containerRows: Map<number, { n: number; pitch: number }> } {
+): {
+  placed: PlacedMarker[];
+  badges: MarkerBadge[];
+  containerRows: Map<number, { n: number; pitch: number }>;
+} {
   const dirn: 1 | -1 = side === "run" ? 1 : -1;
   const bar = side === "run" ? bands.runBar : bands.twinBar;
   const zone = side === "run" ? bands.runZone : bands.twinZone;
@@ -322,11 +363,28 @@ function placeBandMarkers(
   }
 
   const placed: PlacedMarker[] = [];
+  const badges: MarkerBadge[] = [];
   const containerRows = new Map<number, { n: number; pitch: number }>();
   for (const [gkey, arr] of groups) {
     arr.sort((a, b) => Math.abs(deltaOf(b) ?? 0) - Math.abs(deltaOf(a) ?? 0));
     const off = gkey === "global" ? 0 : slotBlockFor(lods[gkey]);
     const first = off + STACK_FIRST;
+    if (gkey !== "global" && collapseToBadge(scale, gkey, arr.length)) {
+      // Compressed layer: one ×N badge at the first stack slot instead of a
+      // pile of overlapping glyphs/ghosts wider than the layer itself.
+      const s = scale.xForPath(`L${gkey}`)!;
+      let color: string | null = carrierColor(arr[0].carrier);
+      for (const m of arr) if (carrierColor(m.carrier) !== color) color = null;
+      badges.push({
+        layer: gkey,
+        x: (s.x0 + s.x1) / 2,
+        cy: Math.min(zone.y1 - 6, Math.max(zone.y0 + 6, barEdge + dirn * first)),
+        ms: arr,
+        color,
+      });
+      containerRows.set(gkey, { n: 1, pitch: 0 });
+      continue;
+    }
     const avail = zoneH - first - 18;
     const pitch =
       arr.length > 1 ? Math.min(STACK_PITCH, Math.max(18, avail / (arr.length - 1))) : 0;
@@ -337,8 +395,8 @@ function placeBandMarkers(
       const raw =
         gkey === "global"
           ? side === "run"
-            ? zone.y1 - 14 - idx * 24
-            : zone.y0 + 14 + idx * 24
+            ? zone.y1 - 14 - idx * GLOBAL_LANE_PITCH
+            : zone.y0 + 14 + idx * GLOBAL_LANE_PITCH
           : barEdge + dirn * (first + idx * pitch);
       const cy = Math.min(zone.y1 - 6, Math.max(zone.y0 + 6, raw));
       placed.push({
@@ -352,7 +410,48 @@ function placeBandMarkers(
       });
     });
   }
-  return { placed, containerRows };
+  return { placed, badges, containerRows };
+}
+
+/**
+ * Natural (uncompressed) px depth one band's structure wants below/above its
+ * bar: the deepest marker stack (with its component slot block), the sweep
+ * ridgeline, and the layer-less global lane. Feeds computeBands' adaptive
+ * geometry so the diff strip pulls up toward the content instead of leaving
+ * a dead void at low zoom. Grouping mirrors placeBandMarkers (counts only —
+ * no band geometry needed, so there is no circularity).
+ */
+function bandContentNeed(row: RunRow, scale: Scale): number {
+  const nL = scale.shape.nLayers;
+  const ms = measurementsOf(row);
+  const counts = new Map<number | "global", number>();
+  for (const m of ms) {
+    if (m.locus_shape === "subgraph" || m.locus_shape === "path") continue;
+    if (scale.xForMeasurement(m) === null) continue;
+    const layer =
+      typeof m.layer === "number" && m.layer >= 0 && m.layer < nL ? m.layer : null;
+    if (layer !== null && lodForLayer(scale, layer) === "model") continue;
+    const key = layer ?? "global";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  let need = 40; // floor: node rings + shallow arcs want a little air
+  for (const [key, n] of counts) {
+    // Mirror placeBandMarkers' badge collapse: a badged layer is one row deep.
+    const rows = key !== "global" && collapseToBadge(scale, key, n) ? 1 : n;
+    need = Math.max(
+      need,
+      key === "global"
+        ? 14 + (n - 1) * GLOBAL_LANE_PITCH + 14
+        : slotBlockFor(lodForLayer(scale, key)) +
+            STACK_FIRST +
+            (rows - 1) * STACK_PITCH +
+            24,
+    );
+  }
+  if (ms.some((m) => (m.layer_profile?.length ?? 0) > 1)) {
+    need = Math.max(need, RIBBON_MAX_PX + 12);
+  }
+  return need;
 }
 
 function BandView({
@@ -361,6 +460,7 @@ function BandView({
   scale,
   bands,
   deltaMax,
+  profileMax,
   heat,
   heatMax,
   sel,
@@ -371,12 +471,15 @@ function BandView({
   scale: Scale;
   bands: AnatomyBands;
   deltaMax: number;
+  /** Shared run+twin layer_profile peak — the ridgeline normalizer. */
+  profileMax: number;
   heat: Map<number, number>;
   heatMax: number;
   sel: string | null;
   /** Blow-up request for a clicked unit path. */
   onUnitClick?: (path: string) => void;
 }) {
+  const sideColor = side === "run" ? RUN_COLOR : TWIN_COLOR;
   const dirn: 1 | -1 = side === "run" ? 1 : -1;
   const bar = side === "run" ? bands.runBar : bands.twinBar;
   const zone = side === "run" ? bands.runZone : bands.twinZone;
@@ -393,7 +496,13 @@ function BandView({
   const lods: Lod[] = Array.from({ length: nL }, (_, i) => lodForLayer(scale, i));
   const slotBlock = (i: number): number => slotBlockFor(lods[i]);
 
-  const { placed, containerRows } = placeBandMarkers(row, side, scale, bands, deltaMax);
+  const { placed, badges, containerRows } = placeBandMarkers(
+    row,
+    side,
+    scale,
+    bands,
+    deltaMax,
+  );
 
   // Head slots carrying measurements (layer → head → carrier color).
   const headHits = new Map<number, Map<number, string>>();
@@ -415,6 +524,9 @@ function BandView({
     });
   }
 
+  // Ruler numbers: digit-aware fit + gap anchors (engine; both bands agree).
+  const labeledLayers = rulerLabelLayers(scale);
+
   // Ruler ticks: layer boundaries, thinned to ≥ RULER_TICK_MIN_PX apart.
   const ticks: number[] = [];
   let lastTick = -Infinity;
@@ -427,7 +539,7 @@ function BandView({
   }
 
   const ribbons = ms.filter((m) => (m.layer_profile?.length ?? 0) > 1);
-  const ribbonH = Math.min(RIBBON_MAX_PX, Math.max(6, zoneH * 0.4));
+  const ribbonH = Math.min(RIBBON_MAX_PX, Math.max(10, zoneH * 0.45));
 
   return (
     <g>
@@ -458,7 +570,7 @@ function BandView({
                 y={bar.y0 + 1}
                 width={Math.max(0.5, s.x1 - s.x0)}
                 height={barH - 2}
-                fill="var(--color-accent)"
+                fill={sideColor}
                 fillOpacity={0.1 + 0.8 * Math.min(1, v / heatMax)}
                 pointerEvents="none"
               />
@@ -481,7 +593,7 @@ function BandView({
         />
       ))}
       {layerSpans.map((s, i) =>
-        s.x1 - s.x0 >= RULER_LABEL_MIN_PX ? (
+        labeledLayers.has(i) ? (
           <text
             key={`n${i}`}
             x={(s.x0 + s.x1) / 2}
@@ -518,6 +630,10 @@ function BandView({
       {/* pinned end caps */}
       {(["embed", "unembed"] as const).map((cap) => {
         const s = cap === "embed" ? embed : unembed;
+        const capW = s.x1 - s.x0;
+        // Full word where it fits; a single letter below that (the caps are
+        // self-identifying at every width — a title carries the full name).
+        const capLabel = capW >= CAP_LABEL_MIN_PX ? cap : capW >= 9 ? cap[0] : null;
         return (
           <g key={cap}>
             <rect
@@ -533,7 +649,7 @@ function BandView({
             >
               <title>{cap}</title>
             </rect>
-            {s.x1 - s.x0 >= CAP_LABEL_MIN_PX && (
+            {capLabel !== null && (
               <text
                 x={(s.x0 + s.x1) / 2}
                 y={(bar.y0 + bar.y1) / 2 + 3}
@@ -543,47 +659,50 @@ function BandView({
                 className="font-mono"
                 pointerEvents="none"
               >
-                {cap}
+                {capLabel}
               </text>
             )}
           </g>
         );
       })}
 
-      {/* layer_profile sweep ribbons — the per-layer story at every LOD */}
-      {ribbons.map((m, ri) => {
-        const pts: string[] = [];
-        let first: number | null = null;
-        let last: number | null = null;
-        for (const p of m.layer_profile!) {
-          const l = p?.[0];
-          const v = p?.[1];
-          if (typeof l !== "number" || typeof v !== "number") continue;
-          if (l < 0 || l >= nL) continue;
-          const s = layerSpans[l];
-          const x = (s.x0 + s.x1) / 2;
-          const h =
-            deltaMax > 0 ? ribbonH * Math.min(1, Math.abs(v) / deltaMax) : 0;
-          pts.push(`L ${x} ${barEdge + dirn * h}`);
-          if (first === null) first = x;
-          last = x;
-        }
-        if (first === null || last === null || pts.length < 2) return null;
-        const d = `M ${first} ${barEdge} ${pts.join(" ")} L ${last} ${barEdge} Z`;
-        const color = carrierColor(m.carrier);
-        return (
-          <path
-            key={`rib${ri}`}
-            d={d}
-            fill={color}
-            fillOpacity={0.14}
-            stroke={color}
-            strokeOpacity={0.5}
-            strokeWidth={1}
-            pointerEvents="none"
-          />
-        );
-      })}
+      {/* layer_profile sweep ridgelines — THE full-depth story, normalized to
+          the run+twin profile peak (not the global deltaMax, which a single
+          large discrete delta would flatten them under) so their shape stays
+          legible at every zoom while run vs twin heights stay comparable */}
+      {profileMax > 0 &&
+        ribbons.map((m, ri) => {
+          const pts: string[] = [];
+          let first: number | null = null;
+          let last: number | null = null;
+          for (const p of m.layer_profile!) {
+            const l = p?.[0];
+            const v = p?.[1];
+            if (typeof l !== "number" || typeof v !== "number") continue;
+            if (l < 0 || l >= nL) continue;
+            const s = layerSpans[l];
+            const x = (s.x0 + s.x1) / 2;
+            const h = ribbonH * Math.min(1, Math.abs(v) / profileMax);
+            pts.push(`L ${x} ${barEdge + dirn * h}`);
+            if (first === null) first = x;
+            last = x;
+          }
+          if (first === null || last === null || pts.length < 2) return null;
+          const d = `M ${first} ${barEdge} ${pts.join(" ")} L ${last} ${barEdge} Z`;
+          const color = carrierColor(m.carrier);
+          return (
+            <path
+              key={`rib${ri}`}
+              d={d}
+              fill={color}
+              fillOpacity={0.22}
+              stroke={color}
+              strokeOpacity={0.85}
+              strokeWidth={1.25}
+              pointerEvents="none"
+            />
+          );
+        })}
 
       {/* layer containers hanging off the bar (LAYER LOD and deeper) */}
       {layerSpans.map((s, i) => {
@@ -621,7 +740,7 @@ function BandView({
       })}
 
       {/* COMPONENT/LEAF LOD: attn head slots + mlp neuron strip */}
-      {layerSpans.map((_, i) => {
+      {layerSpans.map((ls, i) => {
         const lod = lods[i];
         if (lod !== "component" && lod !== "leaf") return null;
         const attn = scale.xForPath(`L${i}/attn`);
@@ -631,6 +750,60 @@ function BandView({
         const labelY = side === "run" ? slotY + SLOT_H + 8 : slotY - 3;
         const hits = headHits.get(i);
         const nodes: React.ReactNode[] = [];
+
+        // Backing plate under the component sub-band: the ridgeline sweeps
+        // across every layer, so without this the head slots / neuron bins of
+        // a blown-up layer drown in its translucent fill.
+        const labelPad = 12; // caption/index label row (component AND leaf)
+        nodes.push(
+          <rect
+            key={`plate${i}`}
+            x={ls.x0 + 0.75}
+            y={side === "run" ? slotY - 2 : slotY - 2 - labelPad}
+            width={Math.max(0.5, ls.x1 - ls.x0 - 1.5)}
+            height={SLOT_H + 4 + labelPad}
+            fill="var(--color-bg)"
+            fillOpacity={0.72}
+            pointerEvents="none"
+          />,
+        );
+
+        // "attn ⎪ mlp" captions flank the boundary divider (component AND
+        // leaf LOD — the battery's real zoom states land at leaf): the
+        // subdivision is named exactly where it happens, clear of the head
+        // index labels that cluster at slot centers.
+        if (attn.x1 - attn.x0 >= 45) {
+          nodes.push(
+            <text
+              key={`cap-attn${i}`}
+              x={mlp.x0 - 5}
+              y={labelY}
+              fontSize={7}
+              textAnchor="end"
+              fill="var(--color-text-faint)"
+              className="font-mono"
+              pointerEvents="none"
+            >
+              attn
+            </text>,
+          );
+        }
+        if (mlp.x1 - mlp.x0 >= 45) {
+          nodes.push(
+            <text
+              key={`cap-mlp${i}`}
+              x={mlp.x0 + 5}
+              y={labelY}
+              fontSize={7}
+              textAnchor="start"
+              fill="var(--color-text-faint)"
+              className="font-mono"
+              pointerEvents="none"
+            >
+              mlp
+            </text>,
+          );
+        }
 
         // attn → head slots (needs a known head count; else one plain span)
         if (typeof nHeads === "number" && nHeads > 0) {
@@ -647,26 +820,31 @@ function BandView({
                 width={Math.max(0.5, w > 3 ? w - 1 : w)}
                 height={SLOT_H}
                 fill={hitColor ?? "var(--color-border)"}
-                fillOpacity={hitColor ? 0.65 : 0.3}
+                fillOpacity={hitColor ? 0.65 : 0.45}
                 className={onUnitClick ? "cursor-pointer" : undefined}
                 onClick={onUnitClick ? () => onUnitClick(`L${i}/attn/h${h}`) : undefined}
               >
                 <title>{`L${i}/attn/h${h} — click to blow up`}</title>
               </rect>,
             );
-            if (lod === "leaf" && w >= SLOT_LABEL_MIN_PX) {
+            // Leaf head labels — deliberately UNLIKE the layer ruler (which
+            // numbers every layer): only every 4th index plus measured heads,
+            // ALWAYS h-prefixed (a strip of bare numbers under the bar reads
+            // as a second layer ruler), smaller and fainter.
+            if (lod === "leaf" && w >= SLOT_LABEL_MIN_PX && (h % 4 === 0 || hitColor)) {
               nodes.push(
                 <text
                   key={`hl${i}-${h}`}
                   x={(hs.x0 + hs.x1) / 2}
                   y={labelY}
-                  fontSize={8}
+                  fontSize={7}
                   textAnchor="middle"
                   fill={hitColor ?? "var(--color-text-faint)"}
+                  fillOpacity={hitColor ? 1 : 0.75}
                   className="font-mono"
                   pointerEvents="none"
                 >
-                  {h}
+                  {`h${h}`}
                 </text>,
               );
             }
@@ -680,7 +858,7 @@ function BandView({
               width={Math.max(0.5, attn.x1 - attn.x0 - 1)}
               height={SLOT_H}
               fill="var(--color-border)"
-              fillOpacity={0.3}
+              fillOpacity={0.45}
               className={onUnitClick ? "cursor-pointer" : undefined}
               onClick={onUnitClick ? () => onUnitClick(`L${i}/attn`) : undefined}
             >
@@ -704,7 +882,7 @@ function BandView({
             width={Math.max(0.5, mlpW - 2)}
             height={SLOT_H}
             fill="var(--color-border)"
-            fillOpacity={0.2}
+            fillOpacity={0.32}
           >
             <title>{`L${i}/mlp${scale.shape.dMlp ? ` — ${scale.shape.dMlp} neurons` : ""}`}</title>
           </rect>,
@@ -752,8 +930,55 @@ function BandView({
             {mlpNodes}
           </g>,
         );
+        // attn/mlp boundary divider — painted last so lit bins never cover it.
+        nodes.push(
+          <line
+            key={`split${i}`}
+            x1={mlp.x0}
+            y1={slotY - 2}
+            x2={mlp.x0}
+            y2={slotY + SLOT_H + 2}
+            stroke="var(--color-text-muted)"
+            strokeOpacity={0.9}
+            strokeWidth={1}
+            pointerEvents="none"
+          />,
+        );
         return <FadeG key={`comp${i}-${lod}`}>{nodes}</FadeG>;
       })}
+
+      {/* global/parameter lane: a dashed baseline + gutter caption gives the
+          layer-less markers a visible home — a lone ghost floating mid-void
+          read as rendering debris, not data (r2 critique) */}
+      {placed.some((p) => p.layer === null) &&
+        (() => {
+          const laneY = side === "run" ? zone.y1 - 14 : zone.y0 + 14;
+          return (
+            <g pointerEvents="none">
+              <line
+                x1={embed.x0}
+                y1={laneY}
+                x2={unembed.x1}
+                y2={laneY}
+                stroke="var(--color-border)"
+                strokeOpacity={0.55}
+                strokeDasharray="3 4"
+              />
+              {/* muted (not faint) — the caption names the lane the markers
+                  anchor to, so it must be legible at 1x like the diff-strip
+                  gutter captions */}
+              <text
+                x={embed.x0 + 2}
+                y={laneY - 4}
+                fontSize={8}
+                fill="var(--color-text-muted)"
+                className="font-mono"
+              >
+                global
+              </text>
+            </g>
+          );
+        })()}
 
       {/* tap arrows (decorative; under the markers) */}
       {placed.map((p, i) =>
@@ -795,6 +1020,62 @@ function BandView({
           )}
         </g>
       ))}
+
+      {/* count badges — a compressed layer's collapsed marker stack. Neutral
+          chrome (carrier color only when the pile is single-carrier), a ×N
+          count, native title enumerating the pile, click = blow up the layer
+          (the zoom that un-collapses it). A selected measurement hiding in a
+          badge keeps its white ring on the badge. */}
+      {badges.map((b) => {
+        const holdsSel = sel !== null && b.ms.some((m) => measurementKey(m) === sel);
+        return (
+          <g
+            key={`bdg${b.layer}`}
+            className={onUnitClick ? "cursor-pointer" : undefined}
+            onClick={onUnitClick ? () => onUnitClick(`L${b.layer}`) : undefined}
+          >
+            <title>
+              {`L${b.layer} — ${b.ms.length} measurements (click to blow up)\n${b.ms
+                .map(
+                  (m) =>
+                    `${m.method || m.kind}${m.metric_name ? ` · ${m.metric_name}` : ""} @ ${locusLabel(m)} · Δ ${fmtNum(deltaOf(m))}`,
+                )
+                .join("\n")}`}
+            </title>
+            <circle
+              cx={b.x}
+              cy={b.cy}
+              r={BADGE_R}
+              fill="var(--color-surface-alt)"
+              stroke={b.color ?? "var(--color-text-muted)"}
+              strokeOpacity={0.9}
+              strokeWidth={1}
+            />
+            <text
+              x={b.x}
+              y={b.cy + 2.5}
+              fontSize={7}
+              textAnchor="middle"
+              fill="var(--color-text)"
+              className="font-mono"
+              pointerEvents="none"
+            >
+              {`×${b.ms.length}`}
+            </text>
+            {holdsSel && (
+              <circle
+                cx={b.x}
+                cy={b.cy}
+                r={BADGE_R + 3}
+                fill="none"
+                stroke="var(--color-text)"
+                strokeWidth={1.5}
+                pointerEvents="none"
+              />
+            )}
+          </g>
+        );
+      })}
 
     </g>
   );
@@ -838,8 +1119,9 @@ function MarkerHits({
 // ---------------------------------------------------------------------------
 // Circuit arcs — nodes ringed at their loci on the bars, edges as beziers
 // dipping through the middle zone, always earlier → later (left → right).
-// With a twin comparison, side-exclusive edges take the run/twin semantic
-// colors (accent/warning — same legend as the diff strip).
+// Edges are neutral wires; COLOR is reserved for the diff verdict: run-only
+// edges take run amber, twin-only edges twin cyan, shared/undiffed edges the
+// neutral the legend shows. Carrier color lives on the node rings/markers.
 // ---------------------------------------------------------------------------
 
 interface ArcSpec {
@@ -858,7 +1140,6 @@ function circuitArcs(
   twinOn: boolean,
 ): { arcs: ArcSpec[]; anchorY: number } {
   const anchorY = side === "run" ? bands.runBar.y1 + 3 : bands.twinBar.y0 - 3;
-  const W = scale.width;
   // Arc dip region: the middle zone when the twin band is on; the lower part
   // of the run zone when it's collapsed.
   const dip = twinOn
@@ -867,11 +1148,10 @@ function circuitArcs(
         y0: bands.runZone.y0 + (bands.runZone.y1 - bands.runZone.y0) * 0.55,
         y1: bands.runZone.y1,
       };
-  const carrier = carrierColor(m.carrier ?? "circuit");
   const diff = counterpart ? circuitDiff(side === "run" ? m : counterpart, side === "run" ? counterpart : m) : null;
   const own = diff ? (side === "run" ? diff.onlyRun : diff.onlyTwin) : null;
   const shared = diff?.shared ?? null;
-  const exclusiveColor = side === "run" ? "var(--color-accent)" : "var(--color-warning)";
+  const exclusiveColor = side === "run" ? RUN_COLOR : TWIN_COLOR;
 
   const edges: Array<{ from: CircuitNode; to: CircuitNode; cls: "plain" | "shared" | "own" }> = [];
   if (diff && own && shared) {
@@ -886,6 +1166,16 @@ function circuitArcs(
     }
   }
 
+  // Arc depth is proportional to horizontal span (gentle arches), capped to
+  // ARC_DIP_FRAC of the dip zone — a short hop between near-adjacent (or
+  // accordion-squeezed) layers arches a few px, and a long arc's apex stays
+  // clear of the diff strip instead of swallowing the middle region when a
+  // layer is expanded between its endpoints. Long spans also shed a little
+  // stroke/opacity: the emphasis budget belongs to the diff answer, not to
+  // whichever wire happens to be longest.
+  const dirn = side === "run" ? 1 : -1;
+  const maxDepth =
+    Math.max(0, side === "run" ? dip.y1 - anchorY : anchorY - dip.y0) * ARC_DIP_FRAC;
   const arcs: ArcSpec[] = [];
   for (const e of edges) {
     let x0 = scale.xForNode(e.from);
@@ -893,21 +1183,29 @@ function circuitArcs(
     if (x0 === null || x1 === null) continue;
     if (x1 < x0) [x0, x1] = [x1, x0]; // left → right, always
     const dx = Math.max(1, x1 - x0);
-    const depth = 0.3 + 0.6 * Math.min(1, dx / (W / 2));
-    const yc =
-      side === "run"
-        ? dip.y0 + (dip.y1 - dip.y0) * depth
-        : dip.y1 - (dip.y1 - dip.y0) * depth;
-    const d = `M ${x0} ${anchorY} C ${x0 + dx * 0.2} ${yc}, ${x1 - dx * 0.2} ${yc}, ${x1} ${anchorY}`;
-    if (e.cls === "own") arcs.push({ d, color: exclusiveColor, opacity: 0.95, width: 2.2 });
+    const depth = Math.max(
+      Math.min(ARC_MIN_DEPTH, maxDepth),
+      Math.min(dx * ARC_SLOPE, maxDepth),
+    );
+    const long = dx > scale.width * ARC_LONG_FRAC;
+    // Cubic with both control points at yc → apex ≈ 0.75·(yc − anchor).
+    const yc = anchorY + (dirn * depth) / 0.75;
+    const d = `M ${x0} ${anchorY} C ${x0 + dx * 0.25} ${yc}, ${x1 - dx * 0.25} ${yc}, ${x1} ${anchorY}`;
+    if (e.cls === "own")
+      arcs.push({
+        d,
+        color: exclusiveColor,
+        opacity: long ? 0.75 : 0.95,
+        width: long ? 1.7 : 2.2,
+      });
     else if (e.cls === "shared")
       arcs.push({
         d,
-        color: carrier,
-        opacity: side === "run" ? 0.38 : 0.22,
+        color: "var(--color-text-muted)",
+        opacity: side === "run" ? 0.45 : 0.3,
         width: 1.1,
       });
-    else arcs.push({ d, color: carrier, opacity: 0.6, width: 1.4 });
+    else arcs.push({ d, color: "var(--color-text-muted)", opacity: 0.55, width: 1.3 });
   }
   return { arcs, anchorY };
 }
@@ -953,9 +1251,16 @@ export function AnatomyBody({
   const W = size.w;
   const H = size.h;
 
-  // Run selection: the selected row when visible, else the first visible row.
+  // Run selection: the selected row when visible, else the first visible row
+  // that actually CARRIES anatomy measurements (an unselected default landing
+  // on a legacy row's empty spine was a dead first impression), else the
+  // first visible row.
   const run = useMemo(
-    () => rows.find((r) => r.identity.node_path === selectedDir) ?? rows[0] ?? null,
+    () =>
+      rows.find((r) => r.identity.node_path === selectedDir) ??
+      rows.find(rowHasAnatomy) ??
+      rows[0] ??
+      null,
     [rows, selectedDir],
   );
   // Twin via twin_hash — against ALL loaded rows (it may be filtered out).
@@ -1049,7 +1354,21 @@ export function AnatomyBody({
     () => (shape ? buildScale(renderFocus, shape, W) : null),
     [shape, renderFocus, W],
   );
-  const bands = useMemo(() => computeBands(H, twinOn), [H, twinOn]);
+  // Adaptive band geometry: zones hug their content, the figure centers.
+  const bands = useMemo(
+    () =>
+      computeBands(
+        H,
+        twinOn,
+        scale && run
+          ? {
+              runNeed: bandContentNeed(run, scale),
+              twinNeed: twinOn && twinRow ? bandContentNeed(twinRow, scale) : 0,
+            }
+          : undefined,
+      ),
+    [H, twinOn, scale, run, twinRow],
+  );
   // Match against the twin whenever one EXISTS (deltaMax and marker sizes
   // stay stable across the twin toggle); pairs render only when shown.
   const match = useMemo(
@@ -1070,6 +1389,12 @@ export function AnatomyBody({
     for (const v of twinHeat.values()) max = Math.max(max, v);
     return max;
   }, [runHeat, twinHeat]);
+  // One shared ridgeline normalizer (run + twin) — heights stay comparable.
+  const profileMax = useMemo(() => {
+    let p = run ? profilePeak(measurementsOf(run)) : 0;
+    if (twinRow) p = Math.max(p, profilePeak(measurementsOf(twinRow)));
+    return p;
+  }, [run, twinRow]);
 
   // Marker layouts (shared with BandView's glyphs) for the top-most hit layer.
   const runPlaced = useMemo(
@@ -1087,23 +1412,41 @@ export function AnatomyBody({
     [twinOn, twinRow, scale, bands, match],
   );
 
-  const hasAnatomyFields = useMemo(
-    () =>
-      run
-        ? measurementsOf(run).some(
-            (m) =>
-              m.layer != null ||
-              m.locus_component != null ||
-              m.locus_shape != null ||
-              m.layer_profile != null ||
-              m.nodes != null ||
-              m.carrier != null,
-          )
-        : false,
-    [run],
-  );
+  const hasAnatomyFields = useMemo(() => (run ? rowHasAnatomy(run) : false), [run]);
+
+  // Legend: carriers actually present in the current run(+twin), spec order.
+  const [legendOn, setLegendOn] = useState(true);
+  const carriersPresent = useMemo(() => {
+    const present = new Set<string>();
+    const collect = (r: RunRow | null) => {
+      if (!r) return;
+      for (const m of measurementsOf(r)) if (m.carrier) present.add(m.carrier);
+    };
+    collect(run);
+    if (twinOn) collect(twinRow);
+    const order = ["direction", "subspace", "feature", "circuit", "lens", "other"];
+    return [...present].sort((a, b) => {
+      const ia = order.indexOf(a);
+      const ib = order.indexOf(b);
+      return (
+        (ia < 0 ? order.length : ia) - (ib < 0 ? order.length : ib) ||
+        a.localeCompare(b)
+      );
+    });
+  }, [run, twinRow, twinOn]);
 
   const sel = anatomy.sel;
+
+  // The selected measurement's record (either side) — the header names it so
+  // a share-link recipient sees WHAT the white ring on the canvas means.
+  const selMeasurement = useMemo(() => {
+    if (!sel || !run) return null;
+    for (const m of measurementsOf(run)) if (measurementKey(m) === sel) return m;
+    if (twinRow) {
+      for (const m of measurementsOf(twinRow)) if (measurementKey(m) === sel) return m;
+    }
+    return null;
+  }, [sel, run, twinRow]);
 
   // ---- interaction handlers ------------------------------------------------
   const handleUnitClick = useCallback(
@@ -1115,10 +1458,15 @@ export function AnatomyBody({
   );
   const handleReset = useCallback(() => applyFocus(reset()), [applyFocus]);
 
+  // Run-side clicks select the measurement AND open the detail panel on the
+  // run row. Twin-side clicks select the MEASUREMENT only — the run stays
+  // pinned (deliberate: selecting the twin row would flip the whole view so
+  // the twin becomes the run band, which read as disorientation, not
+  // navigation; flip explicitly via the table/tree instead).
   const selectMeasurement = useCallback(
-    (m: InterpMeasurement, row: RunRow | null) => {
+    (m: InterpMeasurement, row: RunRow | null, side: "run" | "twin") => {
       setAnatomy({ sel: measurementKey(m) });
-      if (row) {
+      if (side === "run" && row) {
         openDetail(row.identity.node_path);
         expandChain(row.identity.chain_dirs);
       }
@@ -1264,12 +1612,22 @@ export function AnatomyBody({
   const middle = bands.middle;
   const middleH = middle.y1 - middle.y0;
   const middleCy = (middle.y0 + middle.y1) / 2;
-  const excessMax = useMemo(() => {
-    if (!match) return 0;
-    let max = 0;
-    for (const ld of match.layerDeltas) max = Math.max(max, Math.abs(ld.run - ld.twin));
-    return max;
+  // Per-side excess peaks: the strip's normalizer AND the gutter's magnitude
+  // captions (the tallest amber cell IS excess.run, the deepest cyan cell IS
+  // excess.twin — on-screen numbers for the how-much half of the twin story).
+  const excess = useMemo(() => {
+    let run = 0;
+    let twin = 0;
+    if (match) {
+      for (const ld of match.layerDeltas) {
+        const e = ld.run - ld.twin;
+        if (e > run) run = e;
+        if (-e > twin) twin = -e;
+      }
+    }
+    return { run, twin, max: Math.max(run, twin) };
   }, [match]);
+  const excessMax = excess.max;
 
   return (
     <div
@@ -1303,13 +1661,15 @@ export function AnatomyBody({
             data-anatomy-header=""
             className="relative z-10 flex shrink-0 items-center gap-2 overflow-hidden whitespace-nowrap border-b border-border bg-surface/50 px-2 h-7 text-[11px] font-mono"
           >
-            <span className="text-text-muted">run</span>
+            {/* side identity: warm amber = run, cool cyan = twin — the same
+                two hexes the heat, diff strip and exclusive arcs use */}
+            <span style={{ color: RUN_COLOR }}>run</span>
             <span
               className={`flex min-w-0 items-center gap-2 rounded px-1 ${
                 runLinked ? "ring-1 ring-text/40 bg-surface-alt/60" : ""
               }`}
             >
-              <span className="text-accent">
+              <span style={{ color: RUN_COLOR }}>
                 {fnText(run.function.arity, run.function.truth_table)}
               </span>
               <span className="truncate text-text" title={run.identity.run_id}>
@@ -1317,24 +1677,78 @@ export function AnatomyBody({
               </span>
             </span>
             {twinOn && twinRow ? (
-              <>
-                <span className="ml-2 text-text-muted">twin</span>
+              /* the twin chip IS the band toggle — same quiet bordered-chip
+                 dress as its "twin hidden — show" counterpart plus a × tail,
+                 so both states of the toggle read as controls */
+              <button
+                type="button"
+                data-anatomy-twin-toggle=""
+                onClick={() => setAnatomy({ twin: false })}
+                title="hide the twin band"
+                className="group ml-2 flex min-w-0 items-center gap-2 rounded border px-1.5 transition-colors hover:bg-surface-alt/60"
+                style={{ borderColor: "rgba(34, 211, 238, 0.45)" }}
+              >
+                <span style={{ color: TWIN_COLOR }}>twin</span>
                 <span
                   className={`flex min-w-0 items-center gap-2 rounded px-1 ${
                     twinLinked ? "ring-1 ring-text/40 bg-surface-alt/60" : ""
                   }`}
                 >
-                  <span className="text-warning">
+                  <span style={{ color: TWIN_COLOR }}>
                     {fnText(twinRow.function.arity, twinRow.function.truth_table)}
                   </span>
                   <span className="truncate text-text-muted" title={twinRow.identity.run_id}>
                     {twinRow.identity.run_id}
                   </span>
                 </span>
-              </>
+                <span
+                  aria-hidden
+                  className="shrink-0 text-text-faint transition-colors group-hover:text-text"
+                >
+                  ×
+                </span>
+              </button>
+            ) : !anatomy.twin && twinRow ? (
+              /* collapsed band leaves a ghost chip behind — the spec's
+                 "subtle affordance says why", and the way back on */
+              <button
+                type="button"
+                data-anatomy-twin-toggle=""
+                onClick={() => setAnatomy({ twin: true })}
+                title="show the twin band"
+                className="ml-2 shrink-0 rounded border px-1.5 py-px text-[10px] transition-colors hover:bg-surface-alt/60"
+                style={{ borderColor: "rgba(34, 211, 238, 0.45)", color: TWIN_COLOR }}
+              >
+                twin hidden — show
+              </button>
             ) : anatomy.twin && !twinRow ? (
               <span className="ml-2 text-text-faint">twin: none loaded</span>
             ) : null}
+            {selMeasurement && (
+              <span
+                data-anatomy-sel-chip=""
+                className="ml-2 flex min-w-0 items-center gap-1.5 rounded border border-border bg-surface-alt/40 px-1.5 text-[10px] text-text-muted"
+              >
+                <span
+                  aria-hidden
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: carrierColor(selMeasurement.carrier) }}
+                />
+                <span className="truncate">
+                  sel: {selMeasurement.method || selMeasurement.kind}
+                  {selMeasurement.metric_name ? ` · ${selMeasurement.metric_name}` : ""} @{" "}
+                  {locusLabel(selMeasurement)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAnatomy({ sel: null })}
+                  title="clear selection"
+                  className="shrink-0 text-text-faint transition-colors hover:text-text"
+                >
+                  ×
+                </button>
+              </span>
+            )}
             {selCircuit && shape && (
               <button
                 type="button"
@@ -1348,14 +1762,36 @@ export function AnatomyBody({
                 fit circuit
               </button>
             )}
-            {!hasAnatomyFields && (
+            {hasAnatomyFields ? (
+              <button
+                type="button"
+                data-anatomy-legend-toggle=""
+                onClick={() => setLegendOn((v) => !v)}
+                className={`ml-auto shrink-0 rounded border px-1.5 py-px text-[10px] transition-colors ${
+                  legendOn
+                    ? "border-accent/50 text-accent"
+                    : "border-border text-text-muted hover:border-accent hover:text-accent"
+                }`}
+                title="toggle the encoding legend"
+              >
+                legend
+              </button>
+            ) : (
               <span className="ml-auto text-text-faint">
                 no anatomy fields on this run&apos;s measurements — structural spine only
               </span>
             )}
           </div>
 
-          <div ref={plotRef} className="relative flex-1 min-w-0">
+          {hasAnatomyFields && legendOn && (
+            <AnatomyLegend
+              carriers={carriersPresent}
+              twinOn={twinOn}
+              hasCircuit={circuits.length > 0}
+            />
+          )}
+
+          <div ref={plotRef} className="relative flex-1 min-h-0 min-w-0">
             {!shape || !scale || !match ? (
               <div className="flex h-full items-center justify-center text-xs text-text-faint font-mono">
                 No layer count on this run — anatomy needs n_layers or layered measurements.
@@ -1388,11 +1824,27 @@ export function AnatomyBody({
                   scale={scale}
                   bands={bands}
                   deltaMax={match.deltaMax}
+                  profileMax={profileMax}
                   heat={runHeat}
                   heatMax={heatMax}
                   sel={sel}
                   onUnitClick={handleUnitClick}
                 />
+                {/* spine-only runs: one line of faint copy under the ruler so
+                    the composition reads intentional, not like a failed load */}
+                {!hasAnatomyFields && (
+                  <text
+                    x={W / 2}
+                    y={bands.runBar.y1 + 26}
+                    fontSize={10}
+                    textAnchor="middle"
+                    fill="var(--color-text-faint)"
+                    className="font-mono"
+                    pointerEvents="none"
+                  >
+                    no locus data — structural spine only
+                  </text>
+                )}
                 {twinOn && twinRow && (
                   <BandView
                     row={twinRow}
@@ -1400,6 +1852,7 @@ export function AnatomyBody({
                     scale={scale}
                     bands={bands}
                     deltaMax={match.deltaMax}
+                    profileMax={profileMax}
                     heat={twinHeat}
                     heatMax={heatMax}
                     sel={sel}
@@ -1421,6 +1874,32 @@ export function AnatomyBody({
                       strokeDasharray="2 3"
                       pointerEvents="none"
                     />
+                    {/* side hints at the strip's left edge — which way is
+                        which, and each side's PEAK excess (the tallest cell's
+                        value, same "+x.xx" grammar as the cell tooltips) so
+                        the strip carries magnitude without hovering */}
+                    {middleH > 44 && (
+                      <g pointerEvents="none" className="font-mono">
+                        <text
+                          x={4}
+                          y={middleCy - 5}
+                          fontSize={8}
+                          fill={RUN_COLOR}
+                          fillOpacity={0.85}
+                        >
+                          {`run ↑${excess.run > 0 ? ` +${fmtNum(excess.run)}` : ""}`}
+                        </text>
+                        <text
+                          x={4}
+                          y={middleCy + 11}
+                          fontSize={8}
+                          fill={TWIN_COLOR}
+                          fillOpacity={0.85}
+                        >
+                          {`twin ↓${excess.twin > 0 ? ` +${fmtNum(excess.twin)}` : ""}`}
+                        </text>
+                      </g>
+                    )}
                     {excessMax > 0 &&
                       match.layerDeltas.map((ld) => {
                         const excess = ld.run - ld.twin;
@@ -1431,20 +1910,40 @@ export function AnatomyBody({
                           1.5,
                           (Math.abs(excess) / excessMax) * (middleH / 2 - 3),
                         );
+                        // Width-capped, centered: a blown-up layer's aggregate
+                        // reads as a column, never a pane-wide slab that
+                        // drowns the per-pair whiskers on top of it.
+                        const w = Math.min(s.x1 - s.x0 - 1, DIFF_CELL_MAX_W);
+                        const cx0 = (s.x0 + s.x1 - w) / 2;
+                        const edgeY = excess > 0 ? middleCy - h : middleCy + h;
+                        const color = excess > 0 ? RUN_COLOR : TWIN_COLOR;
                         return (
-                          <rect
-                            key={`d${ld.layer}`}
-                            x={s.x0 + 0.5}
-                            y={excess > 0 ? middleCy - h : middleCy}
-                            width={Math.max(0.5, s.x1 - s.x0 - 1)}
-                            height={h}
-                            fill={excess > 0 ? "var(--color-accent)" : "var(--color-warning)"}
-                            fillOpacity={0.55}
-                          >
-                            <title>{`L${ld.layer} — run ${fmtNum(ld.run)} vs twin ${fmtNum(
-                              ld.twin,
-                            )} (${excess > 0 ? "run" : "twin"} +${fmtNum(Math.abs(excess))})`}</title>
-                          </rect>
+                          <g key={`d${ld.layer}`}>
+                            <rect
+                              x={cx0}
+                              y={excess > 0 ? middleCy - h : middleCy}
+                              width={Math.max(0.5, w)}
+                              height={h}
+                              fill={color}
+                              fillOpacity={0.65}
+                            >
+                              <title>{`L${ld.layer} — run ${fmtNum(ld.run)} vs twin ${fmtNum(
+                                ld.twin,
+                              )} (${excess > 0 ? "run" : "twin"} +${fmtNum(Math.abs(excess))})`}</title>
+                            </rect>
+                            {/* full-opacity outer edge — the cells stay quiet
+                                but unmistakably amber/cyan on the dark bg */}
+                            <line
+                              x1={cx0}
+                              y1={edgeY}
+                              x2={cx0 + Math.max(0.5, w)}
+                              y2={edgeY}
+                              stroke={color}
+                              strokeWidth={1}
+                              strokeOpacity={0.95}
+                              pointerEvents="none"
+                            />
+                          </g>
                         );
                       })}
 
@@ -1476,11 +1975,35 @@ export function AnatomyBody({
                         const out: React.ReactNode[] = [];
                         const halfW = middleH / 2 - 4;
                         for (const [layer, pairs] of byLayer) {
-                          pairs.forEach((p, idx) => {
-                            const src = p.run ?? p.twin!;
-                            const x0 = scale.xForMeasurement(src);
-                            if (x0 === null) return;
-                            const x = x0 + (idx - (pairs.length - 1) / 2) * 6;
+                          // Whiskers keep their own locus x when there's
+                          // room; crowded ones relax to a minimum pitch
+                          // (sorted by locus then key — deterministic) and
+                          // the drift re-centers, so the peak cell's pile
+                          // fans into separable strokes (r3 critique).
+                          const entries = pairs
+                            .map((p) => ({
+                              p,
+                              src: p.run ?? p.twin!,
+                              x: scale.xForMeasurement(p.run ?? p.twin!),
+                            }))
+                            .filter((e) => e.x !== null) as Array<{
+                            p: MatchedPair;
+                            src: InterpMeasurement;
+                            x: number;
+                          }>;
+                          entries.sort(
+                            (a, b) => a.x - b.x || a.p.key.localeCompare(b.p.key),
+                          );
+                          const xs = entries.map((e) => e.x);
+                          for (let k = 1; k < xs.length; k++) {
+                            xs[k] = Math.max(xs[k], xs[k - 1] + WHISKER_PITCH);
+                          }
+                          const drift = xs.length
+                            ? xs.reduce((a, v, k) => a + (v - entries[k].x), 0) /
+                              xs.length
+                            : 0;
+                          entries.forEach(({ p, src }, idx) => {
+                            const x = xs[idx] - drift;
                             const color = carrierColor(src.carrier);
                             const dRun = p.run ? deltaOf(p.run) : null;
                             const dTwin = p.twin ? deltaOf(p.twin) : null;
@@ -1551,7 +2074,7 @@ export function AnatomyBody({
                     );
                   };
                   const onLeave = () => handleMarkerHover(null, owner);
-                  const onClick = () => selectMeasurement(c.m, owner);
+                  const onClick = () => selectMeasurement(c.m, owner, c.side);
                   return (
                     <g key={`cir${ci}`}>
                       {arcs.map((a, ai) => (
@@ -1612,7 +2135,7 @@ export function AnatomyBody({
                   <MarkerHits
                     placed={runPlaced}
                     side="run"
-                    onMarkerClick={(m) => selectMeasurement(m, run)}
+                    onMarkerClick={(m) => selectMeasurement(m, run, "run")}
                     onMarkerHover={(p) => handleMarkerHover(p, run)}
                   />
                 )}
@@ -1620,13 +2143,17 @@ export function AnatomyBody({
                   <MarkerHits
                     placed={twinPlaced}
                     side="twin"
-                    onMarkerClick={(m) => selectMeasurement(m, twinRow)}
+                    onMarkerClick={(m) => selectMeasurement(m, twinRow, "twin")}
                     onMarkerHover={(p) => handleMarkerHover(p, twinRow)}
                   />
                 )}
 
-                {/* keyboard layer cursor — visible while the pane has focus */}
+                {/* keyboard layer cursor — appears once the keyboard is
+                    actually in use (kbLayer set by the first arrow/± press);
+                    focus alone painting a dashed ring on the default layer
+                    read as a mystery selection after any button click */}
                 {paneFocused &&
+                  kbLayer !== null &&
                   (() => {
                     const s = scale.xForPath(`L${cursorLayer}`);
                     if (!s) return null;
