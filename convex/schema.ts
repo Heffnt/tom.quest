@@ -8,15 +8,6 @@ export const USER_ROLES = v.union(
   v.literal("tom"),
 );
 
-// One item in a brew (owner or party). Types the DEPRECATED single-brew
-// tables below; the live shape is app/perfume/lib/brew-types.ts.
-const perfumeBrewItem = v.object({
-  key: v.string(), // catalog item key ("base:<name>" | "pure:<id>")
-  contributorKey: v.string(),
-  contributorName: v.string(),
-  real: v.boolean(),
-});
-
 export default defineSchema({
   ...authTables,
   users: defineTable({
@@ -205,58 +196,11 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_job_created", ["jobId", "createdAt"]),
 
-  // ── Perfumer's Bench (/perfume) — DEPRECATED single-bench tables ───────────
-  // Superseded by the multi-brew tables below (convex/brews.ts, Phase 3). The
-  // frontend and convex/perfume.ts have been removed; these rows now serve ONLY
-  // as the migration source (brews.ts migrateBenchesToBrews) and are dropped
-  // after the production migration runs. Do not write to them from new code.
-  // (perfumeEvents is still written by brews.ts logEvent — kept live below.)
-  perfumeBenches: defineTable({
-    ownerKey: v.string(), // "user:<id>" | "anon:<uuid>"
-    ownerName: v.string(),
-    color: v.string(),
-    pot: v.array(perfumeBrewItem),
-    strikePlays: v.array(v.string()),
-    wildPlays: v.array(v.string()),
-    inventory: v.object({
-      ingredients: v.record(v.string(), v.number()),
-      pures: v.record(v.string(), v.number()),
-      perfumes: v.record(v.string(), v.number()),
-    }),
-    outputTray: v.record(v.string(), v.number()), // perfume key -> count
-    ui: v.object({
-      inputTab: v.union(v.literal("ingredients"), v.literal("frequencies")),
-      inputSearch: v.string(),
-      inputFilters: v.array(v.string()),
-      perfumeSearch: v.string(),
-      perfumeFilters: v.array(v.string()),
-      expanded: v.array(v.string()),
-      pins: v.array(v.string()), // owner-only writes
-    }),
-    updatedAt: v.number(),
-  }).index("by_owner", ["ownerKey"]),
-
-  // Singleton (accessed via .first()): the shared party pot.
-  perfumePartyBrew: defineTable({
-    items: v.array(perfumeBrewItem),
-    strikePlays: v.array(v.string()),
-    wildPlays: v.array(v.string()),
-    outputTray: v.record(v.string(), v.number()),
-    updatedAt: v.number(),
-  }),
-
-  perfumePresence: defineTable({
-    benchKey: v.string(), // ownerKey | "party"
-    clientId: v.string(),
-    name: v.string(),
-    color: v.string(),
-    surface: v.union(v.literal("input"), v.literal("stage"), v.literal("book")),
-    x: v.number(),
-    y: v.number(),
-    hand: v.optional(v.object({ key: v.string(), count: v.number() })),
-    updatedAt: v.number(),
-  }).index("by_bench", ["benchKey"]),
-
+  // /perfume event log — written by brews.ts logEvent. (The old single-brew
+  // tables that once lived here were migrated into the multi-brew model by
+  // brews.ts migrateBenchesToBrews, run against production 2026-07-06, and
+  // then dropped from the schema; their rows persist untyped in the deployment
+  // until cleared from the dashboard.)
   perfumeEvents: defineTable({
     benchKey: v.string(),
     actorKey: v.string(),
@@ -381,10 +325,9 @@ export default defineSchema({
     at: v.number(),
   }).index("by_brew_member", ["brewId", "memberKey", "seq"]),
 
-  // Per-brew cursor/presence rows (parallel to perfumePresence, but keyed by
-  // brewId so a member's presence is scoped to the brew they are viewing —
-  // drives stage cursors AND the completion-witness set). Kept separate from
-  // perfumePresence, whose benchKey shape cannot carry a brew id.
+  // Per-brew cursor/presence rows, keyed by brewId so a member's presence is
+  // scoped to the brew they are viewing — drives stage cursors AND the
+  // completion-witness set.
   perfumeBrewPresence: defineTable({
     brewId: v.id("perfumeBrews"),
     clientId: v.string(),

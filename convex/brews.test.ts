@@ -7,7 +7,7 @@
 import { Blob as NodeBlob } from "node:buffer";
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api, internal } from "./_generated/api";
+import { api } from "./_generated/api";
 import schema from "./schema";
 
 type Harness = TestConvex<typeof schema>;
@@ -137,6 +137,17 @@ async function plantPresence(
 }
 
 // ── deep-link resolution (DESIGN.md §4 — every brew has a shareable URL) ──────
+
+describe("registration", () => {
+  it("registering ensures the party brew exists", async () => {
+    const { alice } = await setup();
+    expect(await alice.query(api.brews.getPartyBrew, {})).toBeNull();
+    await alice.mutation(api.brews.registerMember, {});
+    const party = await alice.query(api.brews.getPartyBrew, {});
+    expect(party).not.toBeNull();
+    expect(party!.owner).toBeNull();
+  });
+});
 
 describe("getBrew tolerates bad deep links (no crash)", () => {
   it("returns null for a malformed id string instead of throwing", async () => {
@@ -1196,132 +1207,5 @@ describe("listAllBrews", () => {
 
     // Bob's own see-all returns exactly his one brew.
     expect(await alice.query(api.brews.listAllBrews, { memberKey: bobKey })).toHaveLength(1);
-  });
-});
-
-// ── migration (DESIGN.md §9 — idempotent + faithful) ─────────────────────────
-
-describe("migration", () => {
-  // Seed one old bench with a pot item, a strike play, a wild play, ingredient
-  // + pure + perfume inventory, and an output tray — every field the spec maps.
-  async function seedBench(t: Harness, ownerKey: string) {
-    await t.run(async (ctx) => {
-      await ctx.db.insert("perfumeBenches", {
-        ownerKey,
-        ownerName: "alice",
-        color: "#abc123",
-        pot: [
-          { key: PURE_N, contributorKey: ownerKey, contributorName: "alice", real: true },
-          { key: ICHOR, contributorKey: ownerKey, contributorName: "alice", real: false },
-        ],
-        strikePlays: ["N"],
-        wildPlays: ["A"],
-        inventory: {
-          ingredients: { [ICHOR]: 2 },
-          pures: { [PURE_N]: 3 },
-          perfumes: { [BLACK_GAS]: 2 },
-        },
-        outputTray: { [BLACK_GAS]: 4 },
-        ui: {
-          inputTab: "ingredients",
-          inputSearch: "",
-          inputFilters: [],
-          perfumeSearch: "",
-          perfumeFilters: [],
-          expanded: [],
-          pins: [],
-        },
-        updatedAt: 123,
-      });
-    });
-  }
-
-  it("carries every bench field to where the spec says (fidelity)", async () => {
-    const t = convexTest({ schema, modules });
-    const aliceId = await t.run(async (ctx) =>
-      ctx.db.insert("users", { name: "alice", email: "a@x", role: "user" }),
-    );
-    const aliceKey = `user:${aliceId}`;
-    await seedBench(t, aliceKey);
-
-    const r = await t.mutation(internal.brews.migrateBenchesToBrews, {});
-    expect(r.membersCreated).toBe(1);
-    expect(r.brewsCreated).toBe(1);
-
-    // Member row: name + color carried.
-    const member = await t.run(async (ctx) =>
-      ctx.db.query("perfumeMembers").withIndex("by_member", (q) => q.eq("memberKey", aliceKey)).unique(),
-    );
-    expect(member?.name).toBe("alice");
-    expect(member?.color).toBe("#abc123");
-
-    // Inventory: fungible stacks carried; perfume stack (2) expanded to 2 instances.
-    const inv = await t.query(api.brews.getInventory, { memberKey: aliceKey });
-    expect(inv.ingredients[ICHOR]).toBe(2);
-    expect(inv.pures[PURE_N]).toBe(3);
-    expect(inv.perfumes).toHaveLength(2);
-    expect(inv.perfumes.every((p) => p.perfumeId === BLACK_GAS && p.brewedByKey === aliceKey)).toBe(true);
-
-    // Brew 1: pot → items (real flags preserved), plays wrapped with byMemberKey,
-    // output tray → output instance with count.
-    const brews = await t.run(async (ctx) =>
-      ctx.db.query("perfumeBrews").withIndex("by_owner", (q) => q.eq("owner", aliceKey)).collect(),
-    );
-    expect(brews).toHaveLength(1);
-    const brew = brews[0];
-    expect(brew.seq).toBe(1);
-    expect(brew.items).toHaveLength(2);
-    expect(brew.items.find((i) => i.key === PURE_N)?.real).toBe(true);
-    expect(brew.items.find((i) => i.key === ICHOR)?.real).toBe(false);
-    expect(brew.strikePlays).toEqual([{ freq: "N", byMemberKey: aliceKey }]);
-    expect(brew.wildPlays).toEqual([{ chosenFreq: "A", byMemberKey: aliceKey }]);
-    expect(brew.outputs).toHaveLength(1);
-    expect(brew.outputs[0]).toMatchObject({ perfumeId: BLACK_GAS, count: 4, brewedByKey: aliceKey });
-  });
-
-  it("migrates the old party pot into the party brew", async () => {
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("perfumePartyBrew", {
-        items: [{ key: PURE_N, contributorKey: "anon:x", contributorName: "vis", real: true }],
-        strikePlays: [],
-        wildPlays: [],
-        outputTray: { [BLACK_GAS]: 1 },
-        updatedAt: 55,
-      });
-    });
-    await t.mutation(internal.brews.migrateBenchesToBrews, {});
-    const party = await t.query(api.brews.getPartyBrew, {});
-    expect(party?.owner).toBeNull();
-    expect(party?.items).toHaveLength(1);
-    expect(party?.outputs[0]).toMatchObject({ perfumeId: BLACK_GAS, count: 1 });
-  });
-
-  it("is idempotent: running twice yields the same result (no duplicates)", async () => {
-    const t = convexTest({ schema, modules });
-    const aliceId = await t.run(async (ctx) =>
-      ctx.db.insert("users", { name: "alice", email: "a@x", role: "user" }),
-    );
-    const aliceKey = `user:${aliceId}`;
-    await seedBench(t, aliceKey);
-
-    const r1 = await t.mutation(internal.brews.migrateBenchesToBrews, {});
-    expect(r1).toEqual({ membersCreated: 1, brewsCreated: 1 });
-
-    // Snapshot the resulting tables.
-    const snap = async () =>
-      t.run(async (ctx) => ({
-        members: (await ctx.db.query("perfumeMembers").collect()).length,
-        brews: (await ctx.db.query("perfumeBrews").collect()).length,
-        invPerfumes: (
-          await ctx.db.query("perfumeInventories").withIndex("by_member", (q) => q.eq("memberKey", aliceKey)).unique()
-        )?.perfumes.length,
-      }));
-    const after1 = await snap();
-
-    const r2 = await t.mutation(internal.brews.migrateBenchesToBrews, {});
-    expect(r2).toEqual({ membersCreated: 0, brewsCreated: 0 });
-    const after2 = await snap();
-    expect(after2).toEqual(after1); // no new members/brews; perfumes not re-expanded
   });
 });

@@ -16,7 +16,7 @@
 // re-implementation of the rules here.
 
 import { v } from "convex/values";
-import { mutation, query, internalMutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { roleAccess, viewerDoc } from "./authRoles";
@@ -559,6 +559,8 @@ export const registerMember = mutation({
       lastSeenAt: now,
     });
     await ensureInventory(ctx, actor.key);
+    // The party brew exists from the moment there is a party (DESIGN.md §4).
+    await ensurePartyBrew(ctx);
     await logEvent(ctx, "members", actor, "registerMember", { created: true });
     return id;
   },
@@ -1783,144 +1785,3 @@ export const undoState = query({
   },
 });
 
-// ── migration (internal, idempotent) ─────────────────────────────────────────
-
-// Migrate the old single-bench tables into the multi-brew model. Each
-// perfumeBench becomes its owner's brew 1 (seq 1) plus their inventory; the old
-// party pot becomes the party brew; output trays become output instances
-// (brewedBy = owner, witnesses = []). Idempotent: a member/inventory/brew that
-// already exists is left as-is, so re-running does nothing new. Old tables are
-// left in place (deleted in Phase 3).
-export const migrateBenchesToBrews = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const now = Date.now();
-    let membersCreated = 0;
-    let brewsCreated = 0;
-
-    const benches = await ctx.db.query("perfumeBenches").collect();
-    for (const bench of benches) {
-      const ownerKey = bench.ownerKey;
-      // Member row (idempotent). Whether it existed already gates the
-      // inventory carry below: re-running must NOT re-expand perfume stacks or
-      // re-merge fungible stacks (that would double the owner's holdings).
-      const memberExisted = !!(await memberByKey(ctx, ownerKey));
-      if (!memberExisted) {
-        await ctx.db.insert("perfumeMembers", {
-          memberKey: ownerKey,
-          name: bench.ownerName,
-          color: bench.color,
-          registeredAt: now,
-          lastSeenAt: bench.updatedAt,
-        });
-        membersCreated++;
-      }
-      // Inventory: carry the bench's fungible stacks; perfumes were stacks in
-      // the old model — expand each into that many owner-provenanced instances.
-      // Only on the FIRST migration for this owner (idempotency): a member that
-      // already existed keeps whatever inventory it has now.
-      if (!memberExisted) {
-        const inv = await ensureInventory(ctx, ownerKey);
-        const perfumes = [...inv.perfumes];
-        for (const [perfumeId, count] of Object.entries(bench.inventory.perfumes)) {
-          for (let i = 0; i < count; i++) {
-            perfumes.push({
-              instanceId: newInstanceId(),
-              perfumeId,
-              brewedByKey: ownerKey,
-              witnesses: [],
-              brewedAt: bench.updatedAt,
-              owners: [{ key: ownerKey, at: bench.updatedAt }],
-            });
-          }
-        }
-        await ctx.db.patch(inv._id, {
-          ingredients: { ...inv.ingredients, ...bench.inventory.ingredients },
-          pures: { ...inv.pures, ...bench.inventory.pures },
-          perfumes,
-          updatedAt: now,
-        });
-      }
-      // The bench's pot + plays + tray become the owner's brew 1 — only if the
-      // owner has no brews yet (idempotent).
-      const existingOwned = await ctx.db
-        .query("perfumeBrews")
-        .withIndex("by_owner", (q) => q.eq("owner", ownerKey))
-        .first();
-      if (!existingOwned) {
-        const outputs = Object.entries(bench.outputTray).map(
-          ([perfumeId, count]) => ({
-            instanceId: newInstanceId(),
-            perfumeId,
-            count,
-            brewedByKey: ownerKey,
-            witnesses: [] as string[],
-            brewedAt: bench.updatedAt,
-            provenance: [{ key: ownerKey, at: bench.updatedAt }],
-          }),
-        );
-        await ctx.db.insert("perfumeBrews", {
-          owner: ownerKey,
-          nickname: null,
-          seq: 1,
-          items: bench.pot.map((p) => ({
-            key: p.key,
-            real: p.real,
-            contributorKey: p.contributorKey,
-            contributorName: p.contributorName,
-          })),
-          strikePlays: bench.strikePlays.map((freq) => ({
-            freq,
-            byMemberKey: ownerKey,
-          })),
-          wildPlays: bench.wildPlays.map((chosenFreq) => ({
-            chosenFreq,
-            byMemberKey: ownerKey,
-          })),
-          pinned: null,
-          outputs,
-          createdAt: now,
-          updatedAt: bench.updatedAt,
-        });
-        brewsCreated++;
-      }
-    }
-
-    // Old party pot → the party brew (only if the party brew is fresh/empty).
-    const oldParty = await ctx.db.query("perfumePartyBrew").first();
-    const partyBrew = await ensurePartyBrew(ctx);
-    if (oldParty && partyBrew.items.length === 0 && partyBrew.outputs.length === 0) {
-      const outputs = Object.entries(oldParty.outputTray).map(
-        ([perfumeId, count]) => ({
-          instanceId: newInstanceId(),
-          perfumeId,
-          count,
-          brewedByKey: "party",
-          witnesses: [] as string[],
-          brewedAt: oldParty.updatedAt,
-          provenance: [{ key: "party", at: oldParty.updatedAt }],
-        }),
-      );
-      await ctx.db.patch(partyBrew._id, {
-        items: oldParty.items.map((p) => ({
-          key: p.key,
-          real: p.real,
-          contributorKey: p.contributorKey,
-          contributorName: p.contributorName,
-        })),
-        strikePlays: oldParty.strikePlays.map((freq) => ({
-          freq,
-          byMemberKey: "party",
-        })),
-        wildPlays: oldParty.wildPlays.map((chosenFreq) => ({
-          chosenFreq,
-          byMemberKey: "party",
-        })),
-        outputs,
-        updatedAt: oldParty.updatedAt,
-      });
-    }
-
-    return { membersCreated, brewsCreated };
-  },
-});
