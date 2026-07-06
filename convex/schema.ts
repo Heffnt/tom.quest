@@ -263,4 +263,136 @@ export default defineSchema({
     detail: v.any(),
     at: v.number(),
   }).index("by_bench_at", ["benchKey", "at"]),
+
+  // ── Multi-brew /perfume (Phase 2) — see app/perfume/DESIGN.md §§4,9 ─────────
+  // NEW tables built alongside the single-bench ones above. The old tables keep
+  // serving the current frontend until Phase 3 swaps over and deletes them.
+  // The engine (app/perfume/lib/engine) is the ONE implementation of the rules;
+  // convex/brews.ts re-verifies every brew with it, never re-implementing math.
+
+  // One row per registered member. A logged-in user gets a row by clicking to
+  // join; self-removal (leaveParty) or admin removal deletes it. Admin (Tom) is
+  // NOT stored here — it is derived from users.role via authRoles, exactly as
+  // convex/perfume.ts does. memberKey follows the ownerKey convention:
+  // "user:<id>" | "anon:<uuid>".
+  perfumeMembers: defineTable({
+    memberKey: v.string(),
+    name: v.string(),
+    color: v.string(),
+    iconStorageId: v.optional(v.id("_storage")),
+    registeredAt: v.number(),
+    lastSeenAt: v.number(),
+  }).index("by_member", ["memberKey"]),
+
+  // One row per brew. owner=null is the party brew (exactly one, .first()).
+  // seq powers the default name "{owner} brew {n}" and is per-owner. items are
+  // the graph contents (each real/hypothetical, with contributor). Plays carry
+  // WHO played them (byMemberKey) so per-member undo can target its own; wild
+  // plays also carry the chosen frequency. outputs are perfume INSTANCES sitting
+  // on the cauldron, each with full provenance.
+  perfumeBrews: defineTable({
+    owner: v.union(v.string(), v.null()), // memberKey | null (party brew)
+    nickname: v.union(v.string(), v.null()),
+    seq: v.number(),
+    items: v.array(
+      v.object({
+        key: v.string(), // catalog item key ("base:<name>" | "pure:<id>")
+        real: v.boolean(),
+        contributorKey: v.string(),
+        contributorName: v.string(),
+      }),
+    ),
+    strikePlays: v.array(
+      v.object({ freq: v.string(), byMemberKey: v.string() }),
+    ),
+    wildPlays: v.array(
+      v.object({
+        chosenFreq: v.string(),
+        byMemberKey: v.string(),
+      }),
+    ),
+    pinned: v.union(
+      v.object({ perfumeId: v.string(), recipeIndex: v.number() }),
+      v.null(),
+    ),
+    // Perfume instances resting on the cauldron until taken. Each carries
+    // provenance: who brewed it, who witnessed it, and the ownership chain.
+    outputs: v.array(
+      v.object({
+        instanceId: v.string(),
+        perfumeId: v.string(),
+        count: v.number(),
+        brewedByKey: v.string(),
+        witnesses: v.array(v.string()), // memberKeys present at completion
+        brewedAt: v.number(),
+        // ownership chain, oldest→newest: [{ key, at }]
+        provenance: v.array(v.object({ key: v.string(), at: v.number() })),
+      }),
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_owner", ["owner"])
+    .index("by_owner_seq", ["owner", "seq"]),
+
+  // One inventory row per member. Ingredients/pures are fungible stacks; a
+  // stack's history is the append-only giftEvents log. Perfumes are INSTANCES,
+  // each with full provenance and an ownership chain.
+  perfumeInventories: defineTable({
+    memberKey: v.string(),
+    ingredients: v.record(v.string(), v.number()), // base:* keys
+    pures: v.record(v.string(), v.number()), // pure:* keys
+    giftEvents: v.array(
+      v.object({
+        itemKey: v.string(),
+        n: v.number(),
+        fromKey: v.string(),
+        toKey: v.string(),
+        at: v.number(),
+      }),
+    ),
+    perfumes: v.array(
+      v.object({
+        instanceId: v.string(),
+        perfumeId: v.string(),
+        brewedByKey: v.string(),
+        witnesses: v.array(v.string()),
+        brewedAt: v.number(),
+        owners: v.array(v.object({ key: v.string(), at: v.number() })),
+      }),
+    ),
+    updatedAt: v.number(),
+  }).index("by_member", ["memberKey"]),
+
+  // Per (brewId, memberKey) bounded undo/redo log (~50). Each entry is a
+  // reversible arrangement action carrying its inverse payload. Brewing,
+  // taking, and gifting are never written here (permanent). done=false marks an
+  // entry that has been undone and is redoable.
+  perfumeUndo: defineTable({
+    brewId: v.id("perfumeBrews"),
+    memberKey: v.string(),
+    seq: v.number(), // monotonic per (brewId, memberKey)
+    action: v.string(),
+    payload: v.any(), // forward args
+    inverse: v.any(), // args that reverse `action`
+    done: v.boolean(),
+    at: v.number(),
+  }).index("by_brew_member", ["brewId", "memberKey", "seq"]),
+
+  // Per-brew cursor/presence rows (parallel to perfumePresence, but keyed by
+  // brewId so a member's presence is scoped to the brew they are viewing —
+  // drives stage cursors AND the completion-witness set). Kept separate from
+  // perfumePresence, whose benchKey shape cannot carry a brew id.
+  perfumeBrewPresence: defineTable({
+    brewId: v.id("perfumeBrews"),
+    clientId: v.string(),
+    memberKey: v.string(),
+    name: v.string(),
+    color: v.string(),
+    surface: v.union(v.literal("input"), v.literal("stage"), v.literal("book")),
+    x: v.number(),
+    y: v.number(),
+    hand: v.optional(v.object({ key: v.string(), count: v.number() })),
+    updatedAt: v.number(),
+  }).index("by_brew", ["brewId"]),
 });
