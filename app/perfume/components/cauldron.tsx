@@ -9,7 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { BrewState, Ingredient } from "../lib/types";
-import type { BenchPermissions, BenchSnapshot } from "../lib/bench-types";
+import type { BenchPermissions, BenchSnapshot } from "../lib/legacy-adapter";
 import type { BrewableOption } from "../lib/brewable";
 import { type BenchHand, ItemIcon } from "../lib/use-hand";
 import {

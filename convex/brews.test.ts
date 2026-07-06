@@ -15,7 +15,6 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 // ── fixtures (concrete engine-verified data from app/perfume/data/base.json) ──
 const ANON_A = "anon:11111111-1111-4111-8111-111111111111";
-const ANON_B = "anon:22222222-2222-4222-8222-222222222222";
 const PURE_N = "pure:N"; // emits {N}
 const PURE_STRIKE = "pure:strike"; // grants 1 ⊖, emits nothing
 const PURE_WILD = "pure:wild"; // grants 1 ⊕, emits nothing
@@ -236,7 +235,7 @@ describe("multi-brew permissions matrix", () => {
   });
 
   it("caller with no identity (no login, no anonId) is rejected", async () => {
-    const { t, alice, aliceKey } = await setup();
+    const { t, alice } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
     await expect(
@@ -254,7 +253,7 @@ describe("multi-brew permissions matrix", () => {
   });
 
   it("an unregistered caller cannot arrange a brew (must join first)", async () => {
-    const { t, alice, aliceKey } = await setup();
+    const { t, alice } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
     // A well-formed anon who never joined is not a member.
@@ -264,7 +263,7 @@ describe("multi-brew permissions matrix", () => {
   });
 
   it("admin (Tom) may draw REAL stock onto another member's brew and brew it", async () => {
-    const { t, tom, alice, tomKey, aliceKey } = await setup();
+    const { t, tom, alice, aliceKey } = await setup();
     await tom.mutation(api.brews.registerMember, {});
     await alice.mutation(api.brews.registerMember, {});
     await seedStock(t, aliceKey, { [PURE_N]: 1 });
@@ -284,7 +283,7 @@ describe("multi-brew permissions matrix", () => {
 
 describe("rules of brewing", () => {
   it("a single hypothetical blocks brewing (names the blocker)", async () => {
-    const { t, alice, bob, aliceKey } = await setup();
+    const { alice, bob } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
@@ -619,7 +618,7 @@ describe("undo / redo", () => {
   });
 
   it("per-member isolation: A cannot undo B's move", async () => {
-    const { t, alice, bob, aliceKey, bobKey } = await setup();
+    const { t, alice, bob, aliceKey } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
     await seedStock(t, aliceKey, { [PURE_N]: 1 });
@@ -812,7 +811,7 @@ describe("copyBrew", () => {
   });
 
   it("the copier gets a fresh per-owner seq", async () => {
-    const { t, alice, bob, aliceKey, bobKey } = await setup();
+    const { alice, bob } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
     const src = await alice.mutation(api.brews.createBrew, {});
@@ -826,7 +825,7 @@ describe("copyBrew", () => {
 
 describe("nickname & pin", () => {
   it("any member may nickname any brew; blank clears back to default", async () => {
-    const { t, alice, bob } = await setup();
+    const { alice, bob } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
@@ -839,7 +838,7 @@ describe("nickname & pin", () => {
   });
 
   it("pin validates the perfume and recipe index; any member may pin", async () => {
-    const { t, alice, bob } = await setup();
+    const { alice, bob } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
@@ -870,7 +869,7 @@ describe("nickname & pin", () => {
 
 describe("deleteBrew & member removal", () => {
   it("owner may delete their own brew; a stranger may not; admin may delete any", async () => {
-    const { t, tom, alice, bob } = await setup();
+    const { tom, alice, bob } = await setup();
     await tom.mutation(api.brews.registerMember, {});
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});

@@ -1,24 +1,42 @@
 "use client";
 
-// The hand — the cursor stack that carries items between panels (DESIGN.md,
-// "interaction grammar"). One item type at a time. Only boundary crossings of
-// [data-cauldron-drop] and settles mutate bench state; the hand itself is
-// ephemeral client state, so a dropped connection can never strand items.
+// The hand — the drag grammar for the Perfumer (DESIGN.md §5 "Interactions").
 //
-// Origins and the boundary rule:
-// - "inventory"/"catalog": entering the cauldron commits the stack
-//   (moveToBrew), leaving un-commits it (moveToInventory) — each edge fires
-//   exactly once per crossing.
-// - "brew": picking up FROM the pot mutates nothing (the stack starts
-//   committed); carrying it out of the boundary un-commits it.
-// - "output": the boundary rule does not apply; settling over the input
-//   panel ([data-input-drop]) takes the perfumes (takeOutput).
+// The spec's grammar (DESIGN.md §1, §5): the draggable unit is an ITEM — a
+// rounded square carrying its art (an ingredient, a pure frequency, or a
+// perfume). Items drag from a SOURCE frame (or inventory) into an item FRAME.
+// The single exception to "circles don't move" is the STRIKE: an available
+// strike charge is dragged onto a frequency circle to strike it. Source context
+// decides real-vs-hypothetical: catalog/recipe frames mint HYPOTHETICAL items
+// (dashed), an inventory mints REAL ones (stock-checked); the "WHERE not WHAT"
+// boundary rules come from the store's BrewPermissions.
 //
-// Shift-clicks bypass the hand entirely — callers do direct moves (moveHome /
-// onTake) and never call pickUp with shift held.
+// This file has TWO layers:
+//
+//   1. The SPEC-GRAMMAR layer (useItemDrag + DropTarget/DragPayload/StrikeDrag
+//      below) — the item/frame drag grammar the Phase-4 brew graph consumes. It
+//      exposes the strike-circle drop capability and the real/hypothetical mint
+//      rules now; the graph registers its own frame + strike-circle drop targets
+//      against it when it lands.
+//
+//   2. The LEGACY BenchHand layer (useHand + BenchHand) — the cursor-stack hand
+//      the not-yet-rebuilt stage (cauldron.tsx / output-shelf.tsx) and the input
+//      grid still drive through the [data-cauldron-drop] boundary. FROZEN until
+//      the Phase-4 stage rebuild; kept intact so that stage and the e2e suite
+//      stay green. The pick/settle animation FEEL the new layer preserves lives
+//      here (SettleFx). Its boundary rule, verbatim:
+//        - "inventory"/"catalog": entering the cauldron commits the stack
+//          (moveToBrew), leaving un-commits it (moveToInventory).
+//        - "brew": picking up FROM the pot starts committed; carrying out
+//          un-commits.
+//        - "output": settling over the input panel takes the perfumes.
+//      Shift-clicks bypass the hand — callers do direct moves (moveHome/onTake).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { BenchActions, Hand, HandApi, HandOrigin } from "./bench-types";
+import type { BenchActions, Hand, HandApi, HandOrigin } from "./legacy-adapter";
+import type { BrewPermissions } from "./brew-types";
+import type { FrameContext } from "../components/item-frame";
+import { frameIsSource, frameMintsReal } from "../components/item-frame";
 import { ChargeSymbol, FrequencySymbol } from "./frequencies";
 import IngredientThumb from "../components/ingredient-thumb";
 import { PhialGlyph } from "../components/phial";
@@ -356,5 +374,190 @@ export function HandGhost({ hand, itemInfo }: HandGhostProps) {
         )}
       </div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SPEC-GRAMMAR LAYER (DESIGN.md §5) — the item/frame drag grammar the Phase-4
+// brew graph consumes. It carries the mint rules (real vs hypothetical) and the
+// strike-circle drop exception now, so the graph can register its own drop
+// targets against it without re-deriving any of this. The legacy BenchHand
+// above is what the frozen stage still drives; this layer is what replaces it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// What a drag is carrying. An ITEM drag moves a rounded square; a STRIKE drag is
+// the sole frequency exception — an available strike charge headed for a
+// frequency circle.
+export type DragKind = "item" | "strike";
+
+// The two DROP-TARGET kinds (DESIGN.md §1, §5): item FRAMES accept item drags;
+// a strike CIRCLE accepts the strike exception. The Phase-4 graph registers its
+// frames and frequency circles as these.
+export type DropTargetKind = "frame" | "strike-circle";
+
+// A registered drop target the graph (or a panel) hands the drag layer.
+export type DropTarget = {
+  id: string;
+  kind: DropTargetKind;
+  /** For a frame: its context (decides whether a source mints real/hypo). */
+  context?: FrameContext;
+  /** The frequency circle a strike would seal (strike-circle targets only). */
+  freq?: string;
+  /** Does this target accept the given drag right now? (stock, permission,
+   * type). Defaults to kind-compatibility when omitted. */
+  accepts?: (drag: DragPayload) => boolean;
+  /** Fired when a compatible drag is released over this target. */
+  onDrop: (drag: DragPayload) => void;
+};
+
+// The payload an item/strike drag carries from pickup to drop.
+export type DragPayload = {
+  kind: DragKind;
+  itemKey: string; // the item's catalog key, or the strike charge's source key
+  /** Where the drag originated (a frame context, or "graph" for a pick off the
+   * graph, or "charge" for a strike charge lifted off its source ingredient). */
+  from: FrameContext | "graph" | "charge";
+  /** Real vs hypothetical the mint resolved to (item drags only). */
+  real: boolean;
+  /** For a strike drag: the frequency circle it will seal is chosen at drop. */
+};
+
+/** Resolve whether a NEW item dragged out of `context` is real or hypothetical,
+ * respecting the permission matrix and available stock (DESIGN.md §1, §4).
+ *
+ * - inventory source: REAL, but only while stock remains AND the viewer may add
+ *   real ingredients here (owner scope / party / own-real). Past stock, or when
+ *   real-adds aren't permitted, it degrades to a hypothetical.
+ * - catalog / recipe source: always HYPOTHETICAL (planning placeholders).
+ * - graph / gift: not sources — never mint. */
+export function mintReal(
+  context: FrameContext,
+  permissions: Pick<BrewPermissions, "brewAndTake" | "moveItems">,
+  stockRemaining: number,
+): boolean {
+  if (!frameIsSource(context)) return false;
+  if (!frameMintsReal(context)) return false; // catalog/recipe → hypothetical
+  // inventory source: real only when the owner-scope gate (real adds) is open
+  // and stock is left; otherwise the item enters hypothetical, exactly as the
+  // store's addToBrew degrades past-stock copies.
+  return permissions.brewAndTake && stockRemaining > 0;
+}
+
+// Options for the spec-grammar drag hook.
+export type ItemDragOptions = {
+  /** The open brew's permission matrix — the WHERE/WHAT boundary rules. */
+  permissions: BrewPermissions;
+  /** Remaining stock of an item in the inventory the drag would draw from. */
+  stockOf: (itemKey: string) => number;
+};
+
+// The spec-grammar drag surface. Item picks mint real/hypothetical per source
+// context; strike picks carry the frequency-circle exception; drop targets are
+// registered by whoever owns them (the Phase-4 graph, a gift tab, an inventory).
+export interface ItemDrag {
+  drag: DragPayload | null;
+  /** Begin an ITEM drag out of a source frame/inventory. Resolves real vs
+   * hypothetical from the context + permissions + stock. Returns the payload
+   * (null if the context can't source, or permissions forbid moving). */
+  pickItem(itemKey: string, context: FrameContext): DragPayload | null;
+  /** Begin the STRIKE exception: lift an available strike charge off its source
+   * ingredient in the graph, headed for a frequency circle. */
+  pickStrike(sourceKey: string): DragPayload | null;
+  /** Register a drop target (frame or strike-circle). Returns an unregister fn.
+   * The Phase-4 graph calls this for its frames and frequency circles. */
+  registerTarget(target: DropTarget): () => void;
+  /** Whether a registered target accepts the current drag (kind + its own
+   * accepts predicate). Used to light a target's ghosted affordance. */
+  targetAccepts(target: DropTarget): boolean;
+  /** Release the current drag over a target (fires target.onDrop if accepted). */
+  dropOn(targetId: string): void;
+  /** Abandon the current drag with no drop. */
+  clear(): void;
+}
+
+const kindMatch = (target: DropTarget, drag: DragPayload): boolean =>
+  target.kind === "frame" ? drag.kind === "item" : drag.kind === "strike";
+
+/** The spec-grammar drag hook (DESIGN.md §5). Standalone: it does not touch the
+ * legacy BenchHand. The Phase-4 graph mounts this, registers its frame + strike
+ * circle targets, and renders the drag ghost; panels can mint hypothetical items
+ * off their catalog frames through it. */
+export function useItemDrag(opts: ItemDragOptions): ItemDrag {
+  const [drag, setDrag] = useState<DragPayload | null>(null);
+  const dragRef = useRef<DragPayload | null>(null);
+  const optsRef = useRef(opts);
+  optsRef.current = opts;
+  const targets = useRef(new Map<string, DropTarget>());
+
+  const set = useCallback((d: DragPayload | null) => {
+    dragRef.current = d;
+    setDrag(d);
+  }, []);
+
+  const pickItem = useCallback(
+    (itemKey: string, context: FrameContext): DragPayload | null => {
+      const o = optsRef.current;
+      // WHERE is open to any member (moveItems); a visitor cannot drag at all.
+      if (!o.permissions.moveItems) return null;
+      if (!frameIsSource(context)) return null;
+      const real = mintReal(context, o.permissions, o.stockOf(itemKey));
+      const payload: DragPayload = { kind: "item", itemKey, from: context, real };
+      set(payload);
+      return payload;
+    },
+    [set],
+  );
+
+  const pickStrike = useCallback(
+    (sourceKey: string): DragPayload | null => {
+      const o = optsRef.current;
+      // strike/wild plays gate on moveItems (WHERE-scoped, per the matrix row
+      // "Play/undo strikes & wilds" — open to any member on any brew they can
+      // reach).
+      if (!o.permissions.moveItems) return null;
+      const payload: DragPayload = {
+        kind: "strike",
+        itemKey: sourceKey,
+        from: "charge",
+        real: true,
+      };
+      set(payload);
+      return payload;
+    },
+    [set],
+  );
+
+  const registerTarget = useCallback((target: DropTarget) => {
+    targets.current.set(target.id, target);
+    return () => {
+      targets.current.delete(target.id);
+    };
+  }, []);
+
+  const targetAccepts = useCallback((target: DropTarget): boolean => {
+    const d = dragRef.current;
+    if (!d) return false;
+    if (!kindMatch(target, d)) return false;
+    return target.accepts ? target.accepts(d) : true;
+  }, []);
+
+  const dropOn = useCallback((targetId: string) => {
+    const d = dragRef.current;
+    const target = targets.current.get(targetId);
+    if (!d || !target) {
+      set(null);
+      return;
+    }
+    if (kindMatch(target, d) && (!target.accepts || target.accepts(d))) {
+      target.onDrop(d);
+    }
+    set(null);
+  }, [set]);
+
+  const clear = useCallback(() => set(null), [set]);
+
+  return useMemo<ItemDrag>(
+    () => ({ drag, pickItem, pickStrike, registerTarget, targetAccepts, dropOn, clear }),
+    [drag, pickItem, pickStrike, registerTarget, targetAccepts, dropOn, clear],
   );
 }

@@ -1,22 +1,23 @@
 "use client";
 
-// Presence (DESIGN.md, "Live layer"): everyone viewing a bench sees everyone
-// else's cursor (name + color) and held stack. Coordinates travel in
+// Presence (DESIGN.md §6): everyone viewing a brew sees everyone else's cursor
+// (name + color) and held stack, ON THE STAGE. Coordinates travel in
 // content-space per surface — input/book: x as 0..1 of content width, y as
-// px-from-content-top/1000 (scroll-aware); stage: its 0-100 percent space —
-// so viewers with different panel widths and scroll positions still see the
-// cursor over the same thing. Off-viewport activity collapses to a small
-// edge indicator. Only mounted in Convex mode.
+// px-from-content-top/1000 (scroll-aware); stage: its 0-100 percent space — so
+// viewers with different panel widths and scroll positions still see the cursor
+// over the same thing. When a member's cursor leaves the stage it freezes at
+// its last position (the store keeps returning it, marked stale) rather than
+// vanishing. Only mounted in Convex mode, and only for a real (resolved) brew.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import type { Hand, PresenceSurface } from "../lib/bench-types";
+import type { Id } from "@/convex/_generated/dataModel";
+import type { Hand, PresenceEntry, PresenceSurface } from "../lib/legacy-adapter";
 import { ItemIcon } from "../lib/use-hand";
-import { itemInfo } from "../lib/bench-store";
+import { itemInfo } from "../lib/brew-store";
 
 const SEND_MS = 50; // ~20Hz
-const FRESH_MS = 12_000; // server filters at 10s; slack for clock skew
 const SURFACE_SELECTOR = "[data-pf-surface]";
 
 function makeClientId(): string {
@@ -67,45 +68,47 @@ function project(surface: PresenceSurface, x: number, y: number): { x: number; y
 }
 
 export interface CursorsProps {
-  benchKey: string;
+  /** The resolved brew id on stage; null while the party brew resolves. */
+  brewId: string | null;
   /** false until the viewer can identify (auth resolved / anon id minted). */
   identified: boolean;
   anonId: string | null;
   name: string;
   color: string;
   hand: Hand | null;
+  /** Live presence rows from the store (fresh + frozen-stale). */
+  entries: PresenceEntry[];
 }
 
 export default function Cursors({
-  benchKey,
+  brewId,
   identified,
   anonId,
   name,
   color,
   hand,
+  entries,
 }: CursorsProps) {
   const [clientId] = useState(makeClientId);
-  const entries = useQuery(api.perfume.presenceList, { benchKey }) ?? [];
-  const update = useMutation(api.perfume.presenceUpdate);
+  const heartbeat = useMutation(api.brews.heartbeat);
 
   // ── sender: pointermove throttled to ~20Hz, plus hand-change pings ────────
   const lastPos = useRef<{ x: number; y: number } | null>(null);
   const lastSent = useRef(0);
   const trailing = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const stateRef = useRef({ benchKey, identified, anonId, name, color, hand });
-  stateRef.current = { benchKey, identified, anonId, name, color, hand };
+  const stateRef = useRef({ brewId, identified, anonId, name, color, hand });
+  stateRef.current = { brewId, identified, anonId, name, color, hand };
 
   const send = useCallback(() => {
     const s = stateRef.current;
     const pos = lastPos.current;
-    if (!s.identified || !pos) return;
+    if (!s.identified || !s.brewId || !pos) return;
     const loc = locate(pos.x, pos.y);
     if (!loc) return;
     lastSent.current = Date.now();
-    void update({
-      benchKey: s.benchKey,
+    void heartbeat({
+      brewId: s.brewId as Id<"perfumeBrews">,
       clientId,
-      name: s.name,
       color: s.color,
       surface: loc.surface,
       x: loc.x,
@@ -115,7 +118,7 @@ export default function Cursors({
     }).catch(() => {
       // presence is best-effort telemetry
     });
-  }, [update, clientId]);
+  }, [heartbeat, clientId]);
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
@@ -140,9 +143,9 @@ export default function Cursors({
   const handKey = hand ? `${hand.itemKey}:${hand.count}` : "";
   useEffect(() => {
     send();
-  }, [handKey, benchKey, send]);
+  }, [handKey, brewId, send]);
 
-  // ── renderer: re-project on scroll/resize and age entries out ─────────────
+  // ── renderer: re-project on scroll/resize ─────────────────────────────────
   const [, bump] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     const tick = () => bump();
@@ -157,14 +160,16 @@ export default function Cursors({
   }, []);
 
   if (typeof window === "undefined") return null;
-  const cutoff = Date.now() - FRESH_MS;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
 
   return (
     <>
       {entries
-        .filter((e) => e.clientId !== clientId && e.updatedAt > cutoff)
+        .filter((e) => e.clientId !== clientId)
+        // a stale cursor freezes at its last stage position (DESIGN.md §6):
+        // only render it while it is on the stage surface
+        .filter((e) => !e.stale || e.surface === "stage")
         .map((e) => {
           const p = project(e.surface, e.x, e.y);
           if (!p) return null;
@@ -176,7 +181,7 @@ export default function Cursors({
               <div
                 key={e.clientId}
                 className="pointer-events-none fixed z-[88] -translate-x-1/2 -translate-y-1/2"
-                style={{ left: x, top: y }}
+                style={{ left: x, top: y, opacity: e.stale ? 0.5 : 1 }}
                 title={`${e.name} is over here`}
                 aria-hidden="true"
               >
@@ -193,7 +198,7 @@ export default function Cursors({
             <div
               key={e.clientId}
               className="pointer-events-none fixed z-[88]"
-              style={{ left: p.x, top: p.y }}
+              style={{ left: p.x, top: p.y, opacity: e.stale ? 0.5 : 1 }}
               aria-hidden="true"
             >
               <svg

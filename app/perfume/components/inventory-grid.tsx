@@ -1,10 +1,12 @@
 "use client";
 
-// The inventory grid at the top of the input panel: three auto-growing
-// sections (ingredients / pure frequencies / perfumes) of icon slots with
-// count badges. Slots obey the hand grammar (DESIGN.md); a slot with copies
-// in the brew keeps its place but ghosts the icon — "you took the icon".
-// Owner-only per-slot Send opens a member + count popover -> onTransfer.
+// The inventory grid — an inventory rendered as a grid of item FRAMES
+// (DESIGN.md §1 "item frame", §Layout). Three auto-growing sections
+// (ingredients / pure frequencies / perfumes) of rounded-square slots with
+// count badges. Slots obey the hand grammar (DESIGN.md §5); a slot whose copies
+// all sit in the brew keeps its place but ghosts its art — "you took the icon".
+// Owner-only per-slot Send opens a member + count popover -> onTransfer (which
+// the legacy adapter routes to store.giftItem).
 
 import {
   useEffect,
@@ -16,11 +18,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { Ingredient } from "../lib/types";
-import type { HandOrigin, Inventory } from "../lib/bench-types";
+import type { HandOrigin, Inventory } from "../lib/legacy-adapter";
 import type { BenchHand } from "../lib/use-hand";
-import { isPureKey } from "../data/base";
-import { ChargeSymbol, FrequencySymbol, PHIAL } from "../lib/frequencies";
-import IngredientThumb from "./ingredient-thumb";
+import { PHIAL } from "../lib/frequencies";
+import ItemFrame, { type FrameItem } from "./item-frame";
 
 // ── the hand grammar, wired once ─────────────────────────────────────────────
 // Shared by inventory slots and catalog rows: pointer-down picks up (the hand
@@ -82,40 +83,8 @@ export function grabHandlers(spec: GrabSpec) {
 }
 
 // ── shared visual atoms ──────────────────────────────────────────────────────
-
-// The ×n badge that sits on slot and thumbnail corners.
-export function CountBadge({ n, className }: { n: number; className?: string }) {
-  return (
-    <span
-      className={`pointer-events-none rounded border border-border/70 bg-surface/95 px-1 font-mono text-[10px] font-bold leading-4 tabular-nums text-text ${className ?? ""}`}
-    >
-      ×{n}
-    </span>
-  );
-}
-
-// A simple corked phial — the icon for perfume slots (no crest art exists).
-export function PhialIcon({ size = 30, color = PHIAL }: { size?: number; color?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      aria-hidden="true"
-      style={{ flex: "0 0 auto" }}
-    >
-      <path d="M9.6 2.6h4.8v2.6H9.6z" fill={color} opacity="0.85" />
-      <path
-        d="M10.2 5.2v3.1C7.2 9.6 5.4 12.2 5.4 15.1a6.6 6.6 0 0 0 13.2 0c0-2.9-1.8-5.5-4.8-6.8V5.2Z"
-        fill={`${color}26`}
-        stroke={color}
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-      <path d="M5.7 15.7a6.4 6.4 0 0 0 12.6 0Z" fill={color} opacity="0.55" />
-    </svg>
-  );
-}
+// The ×n badge is item-frame's FrameCountBadge — the single source of truth,
+// used here through <ItemFrame count=…>; the catalog rows import it directly.
 
 function SendMark({ size = 12 }: { size?: number }) {
   return (
@@ -221,18 +190,17 @@ export default function InventoryGrid({
   );
 }
 
-function SlotIcon({ item }: { item: InventorySlotItem }) {
-  const ing = item.ing;
-  if (!ing) return <PhialIcon size={30} />;
-  if (isPureKey(ing.key)) {
-    const id = ing.key.slice(5);
-    return id === "strike" || id === "wild" ? (
-      <ChargeSymbol kind={id} size={30} />
-    ) : (
-      <FrequencySymbol id={id} size={30} />
-    );
-  }
-  return <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={44} />;
+// An inventory slot is an item frame in the "inventory" context (DESIGN.md §1):
+// a real source, stock-checked. Its art ghosts when copies sit in the brew.
+function slotFrameItem(item: InventorySlotItem): FrameItem {
+  return {
+    key: item.key,
+    name: item.name,
+    color: item.ing?.color ?? PHIAL,
+    real: true, // an inventory holds real stock
+    ing: item.ing,
+    perfume: !item.ing, // perfume slots carry no ingredient — render the phial
+  };
 }
 
 function Slot({
@@ -269,36 +237,34 @@ function Slot({
   const ghost = item.inBrew > 0;
 
   return (
-    <li className="group relative">
-      <button
-        type="button"
-        {...g}
-        data-testid="inventory-slot"
-        data-item-key={item.key}
-        aria-label={`Pick up ${item.name}`}
-        aria-disabled={!canMove || undefined}
+    <li>
+      <ItemFrame
+        context="inventory"
+        item={slotFrameItem(item)}
+        fill
+        ghosted={ghost}
+        count={item.count}
+        handlers={g}
+        label={`Pick up ${item.name}`}
         title={`${item.name} ×${item.count}${ghost ? ` — ${item.inBrew} in the brew` : ""}`}
-        className="grid h-14 w-full touch-none select-none place-items-center rounded-lg border border-border/60 bg-bg/40 transition-colors duration-150 hover:border-accent/60 hover:bg-surface-alt"
+        disabled={!canMove}
+        data-testid="inventory-slot"
       >
-        <span className={`inline-flex transition-opacity duration-150 ${ghost ? "opacity-35" : ""}`}>
-          <SlotIcon item={item} />
-        </span>
-      </button>
-      {item.count > 0 && <CountBadge n={item.count} className="absolute bottom-0.5 right-0.5" />}
-      {showSend && item.count > 0 && (
-        <button
-          type="button"
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            onSend({ itemKey: item.key, name: item.name, max: item.count, x: r.right, y: r.bottom });
-          }}
-          aria-label={`Send ${item.name} to a party member`}
-          title="Send to a party member"
-          className="absolute -right-1 -top-1 z-10 grid h-5 w-5 place-items-center rounded-full border border-border bg-surface text-text-faint opacity-0 shadow transition-opacity duration-150 hover:border-accent hover:text-accent focus-visible:opacity-100 group-hover:opacity-100"
-        >
-          <SendMark size={11} />
-        </button>
-      )}
+        {showSend && item.count > 0 && (
+          <button
+            type="button"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              onSend({ itemKey: item.key, name: item.name, max: item.count, x: r.right, y: r.bottom });
+            }}
+            aria-label={`Send ${item.name} to a party member`}
+            title="Send to a party member"
+            className="absolute -right-1 -top-1 z-10 grid h-5 w-5 place-items-center rounded-full border border-border bg-surface text-text-faint opacity-0 shadow transition-opacity duration-150 hover:border-accent hover:text-accent focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <SendMark size={11} />
+          </button>
+        )}
+      </ItemFrame>
     </li>
   );
 }

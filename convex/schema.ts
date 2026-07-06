@@ -204,11 +204,12 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_job_created", ["jobId", "createdAt"]),
 
-  // ── Perfumer's Bench (/perfume) — see app/perfume/DESIGN.md "Backend" ──────
-  // Shapes mirror app/perfume/lib/bench-types.ts (PotItem/Inventory/SharedUI).
-  // The pot is PotItem[] rather than bare keys: `real=false` marks a
-  // hypothetical (added beyond the contributor's stock — visible, blocks
-  // brewing) and `contributorKey` lets party removals return items home.
+  // ── Perfumer's Bench (/perfume) — DEPRECATED single-bench tables ───────────
+  // Superseded by the multi-brew tables below (convex/brews.ts, Phase 3). The
+  // frontend and convex/perfume.ts have been removed; these rows now serve ONLY
+  // as the migration source (brews.ts migrateBenchesToBrews) and are dropped
+  // after the production migration runs. Do not write to them from new code.
+  // (perfumeEvents is still written by brews.ts logEvent — kept live below.)
   perfumeBenches: defineTable({
     ownerKey: v.string(), // "user:<id>" | "anon:<uuid>"
     ownerName: v.string(),

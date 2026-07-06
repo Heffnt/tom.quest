@@ -1,15 +1,24 @@
 "use client";
 
-// The input panel (left column of the bench): the viewer's INVENTORY as an
-// icon grid on top — three auto-growing sections — and the full CATALOG (96
-// ingredients + pures, two tabs) as rows below. Slots and rows are grabbable
-// per the hand grammar (DESIGN.md): pointer-down picks up (the hand handles
-// drag + the boundary rule), shift-click teleports one unit to the brew,
+// The input panel (left drawer — DESIGN.md §Layout). Its slots and cards are
+// item FRAMES (components/item-frame.tsx): the viewer's INVENTORY as a grid of
+// frames on top — three auto-growing sections — and the full CATALOG (96
+// ingredients + pures, an Ingredients / Frequencies tab pair) as rows below,
+// then one gift tab per other member (drop-to-gift affordance). Every frame is
+// grabbable per the hand grammar (DESIGN.md §5): pointer-down picks up (the hand
+// handles drag + the boundary rule), shift-click teleports one unit to the brew,
 // right-click returns one; hover only reports the hovered key — the brew bar
-// renders the preview, never the cauldron graph. Header actions: Import
-// (tolerant paste -> preview -> merge/replace) and Copy (clipboard export),
-// plus per-slot Send — Import/Send owner-only. Search and the multi-select
-// frequency/type filter narrow BOTH the grid and the catalog (AND semantics).
+// renders the preview, never the graph. Header actions: Import (tolerant paste
+// -> preview -> merge/replace) and Copy (clipboard export), plus per-slot Send —
+// both owner-only. Search and the multi-select frequency/type filter narrow BOTH
+// the grid and the catalog (AND semantics). Buttons/tabs use the shell's shared
+// treatment (components/ui.tsx).
+//
+// The prop CONTRACT (IngredientPanelProps) is the legacy shape the orchestrator
+// still passes through lib/legacy-adapter — kept stable while the internals are
+// rebuilt onto item frames. The per-member INVENTORY listing (DESIGN.md §Layout
+// "one tab per member inventory") awaits the shell passing store.inventoryOf;
+// today the member tabs surface the gift target only. See integration notes.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient, Perfume } from "../lib/types";
@@ -17,7 +26,7 @@ import type {
   BenchPermissions,
   Inventory,
   SharedUI,
-} from "../lib/bench-types";
+} from "../lib/legacy-adapter";
 import type { BenchHand } from "../lib/use-hand";
 import {
   ALL_FREQUENCIES,
@@ -27,20 +36,15 @@ import {
   isPureKey,
 } from "../data/base";
 import { formatInventory, getCount, type CatalogEntry } from "../lib/inventory";
-import {
-  ChargeSymbol,
-  FrequencyGlyph,
-  FrequencySymbol,
-  TypeGlyph,
-} from "../lib/frequencies";
-import IngredientThumb from "./ingredient-thumb";
+import { ChargeSymbol, FrequencySymbol, TypeGlyph } from "../lib/frequencies";
+import ItemFrame, { ItemArt, FrameCountBadge, type FrameItem } from "./item-frame";
 import FrequencyFilterButton from "./frequency-filter";
 import InventoryGrid, {
-  CountBadge,
   grabHandlers,
   type InventorySlotItem,
 } from "./inventory-grid";
 import ImportDialog from "./import-dialog";
+import { btn, tab, cn } from "./ui";
 
 export interface IngredientPanelProps {
   // ingredients + pures (the 96 + pure frequencies); perfume display names
@@ -132,9 +136,6 @@ function perfumeMatchesSearch(perfume: Perfume | undefined, name: string, q: str
   );
 }
 
-const ACTION_BTN =
-  "rounded-md border border-border px-2 py-1 font-mono text-[11px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text";
-
 export default function IngredientPanel({
   catalog,
   inventory,
@@ -153,6 +154,12 @@ export default function IngredientPanel({
 }: IngredientPanelProps) {
   const [importOpen, setImportOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Which catalog/member tab is showing (DESIGN.md §Layout). The Ingredients /
+  // Frequencies catalog tabs stay driven by ui.inputTab (shared browse UI); a
+  // per-member gift tab is a panel-local selection ("member:<key>"), so the
+  // frozen SharedUI shape stays untouched. Selecting a member tab surfaces that
+  // member's drop-to-gift affordance (DESIGN.md §Interactions "Gifting").
+  const [memberTab, setMemberTab] = useState<string | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -312,7 +319,7 @@ export default function IngredientPanel({
                   type="button"
                   onClick={() => setImportOpen(true)}
                   title="Paste an inventory as text"
-                  className={ACTION_BTN}
+                  className={btn.outline}
                 >
                   import
                 </button>
@@ -321,7 +328,10 @@ export default function IngredientPanel({
                 type="button"
                 onClick={copy}
                 title="Copy the inventory as text"
-                className={`${ACTION_BTN} ${copied ? "border-success/60 text-success hover:border-success/60 hover:text-success" : ""}`}
+                className={cn(
+                  btn.outline,
+                  copied && "border-success/60 text-success hover:border-success/60 hover:text-success",
+                )}
               >
                 {copied ? "copied ✓" : "copy"}
               </button>
@@ -346,31 +356,55 @@ export default function IngredientPanel({
           />
         </section>
 
-        {/* ── catalog ── */}
+        {/* ── catalog + member gift tabs (DESIGN.md §Layout) ── */}
         <section aria-label="Catalog" className="border-t border-border">
           <div className="flex items-center justify-between px-3 py-2">
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               {(["ingredients", "frequencies"] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
-                  onClick={() => onUI({ inputTab: t })}
-                  aria-pressed={ui.inputTab === t}
-                  className={`rounded-md px-2.5 py-1.5 text-sm font-semibold transition-colors duration-150 ${
-                    ui.inputTab === t
-                      ? "bg-surface-alt text-text"
-                      : "text-text-faint hover:text-text-muted"
-                  }`}
+                  onClick={() => {
+                    setMemberTab(null);
+                    onUI({ inputTab: t });
+                  }}
+                  aria-pressed={memberTab === null && ui.inputTab === t}
+                  className={cn(tab.base, "text-sm font-semibold")}
                 >
                   {t === "ingredients" ? "Ingredients" : "Frequencies"}
                 </button>
               ))}
+              {/* one gift tab per other member (own inventory is the grid
+                  above; per-member inventory listings await the shell passing
+                  inventoryOf — see integration notes). */}
+              {permissions.editInventory &&
+                members.map((m) => (
+                  <button
+                    key={m.benchKey}
+                    type="button"
+                    onClick={() => setMemberTab((cur) => (cur === m.benchKey ? null : m.benchKey))}
+                    aria-pressed={memberTab === m.benchKey}
+                    title={`Gift to ${m.name}`}
+                    className={cn(tab.base, "text-sm font-semibold")}
+                  >
+                    {m.name}
+                  </button>
+                ))}
             </div>
-            <span className="font-mono text-xs tabular-nums text-text-faint">
-              {filtered.length}/{tabItems.length}
-            </span>
+            {memberTab === null && (
+              <span className="font-mono text-xs tabular-nums text-text-faint">
+                {filtered.length}/{tabItems.length}
+              </span>
+            )}
           </div>
-          {filtered.length === 0 ? (
+
+          {memberTab !== null ? (
+            <MemberGiftTab
+              member={members.find((m) => m.benchKey === memberTab) ?? null}
+              hand={hand}
+              onTransfer={onTransfer}
+            />
+          ) : filtered.length === 0 ? (
             <p className="px-4 py-6 text-center font-mono text-xs text-text-faint">
               {ui.inputTab === "ingredients" ? "no ingredients match" : "no frequencies match"}
             </p>
@@ -401,22 +435,72 @@ export default function IngredientPanel({
   );
 }
 
-// Geometric −/+ marks: SVG paths center perfectly where text glyphs sit on a
-// baseline and drift. The steppers are gone from this panel (the hand replaced
-// them) but the cauldron's charge controls still render these.
-export function MinusMark({ size = 14 }: { size?: number }) {
+// ── member gift tab (DESIGN.md §Interactions "Gifting") ──────────────────────
+// A member's tab shows a ghosted item-frame drop-to-gift affordance. Drop one
+// of your items here (drag-release or, while holding a stack, click) and it
+// gifts instantly to that member via onTransfer -> store.giftItem. The frame
+// previews the held item so the target reads as "release to gift this".
+//
+// NOTE (integrator): this surfaces the gift target only. Listing the member's
+// OWN inventory as item frames (per DESIGN.md §Layout "one tab per member
+// inventory") needs the shell to pass a per-member inventory (store.inventoryOf)
+// — the panel's current props carry only the viewer's own inventory. See the
+// integration notes.
+function MemberGiftTab({
+  member,
+  hand,
+  onTransfer,
+}: {
+  member: { benchKey: string; name: string } | null;
+  hand: BenchHand;
+  onTransfer: (toBenchKey: string, itemKey: string, n: number) => void;
+}) {
+  if (!member) return null;
+  const held = hand.hand;
+  // only your OWN items gift — the held stack must not be an output phial
+  const giftable = held && held.from !== "output";
+  const preview: FrameItem | null =
+    giftable && held
+      ? {
+          key: held.itemKey,
+          name: itemNameOf(held.itemKey),
+          color: "#6FE3C4",
+          real: false,
+          perfume: !isIngredientKeyLocal(held.itemKey),
+        }
+      : null;
+
   return (
-    <svg viewBox="0 0 14 14" width={size} height={size} aria-hidden="true">
-      <path d="M2.6 7h8.8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-    </svg>
+    <div className="flex flex-col items-center gap-2 px-4 py-6">
+      <ItemFrame
+        context="gift"
+        item={null}
+        ghostPreview={preview}
+        label={`Gift to ${member.name}`}
+        handlers={{
+          onClick: () => {
+            if (giftable && held) {
+              onTransfer(member.benchKey, held.itemKey, held.count);
+              hand.settle();
+            }
+          },
+        }}
+        data-testid="gift-target"
+      />
+      <p className="text-center font-mono text-[11px] leading-snug text-text-faint">
+        {giftable
+          ? `Release to gift to ${member.name}`
+          : `Pick up one of your items, then drop it here to gift it to ${member.name}.`}
+      </p>
+    </div>
   );
 }
-export function PlusMark({ size = 14 }: { size?: number }) {
-  return (
-    <svg viewBox="0 0 14 14" width={size} height={size} aria-hidden="true">
-      <path d="M2.6 7h8.8M7 2.6v8.8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-    </svg>
-  );
+
+function isIngredientKeyLocal(key: string): boolean {
+  return key.startsWith("base:") || key.startsWith("pure:");
+}
+function itemNameOf(key: string): string {
+  return key.replace(/^(base|pure):/, "");
 }
 
 // ── catalog rows ─────────────────────────────────────────────────────────────
@@ -460,8 +544,10 @@ function CatalogRow({
     onUnbrewOne,
   });
   const pure = isPureKey(ing.key);
-  const pureId = pure ? ing.key.slice(5) : null;
   const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
+  // the catalog is a hypothetical SOURCE (DESIGN.md §1) — its leading art is the
+  // one item-art (item-frame's ItemArt), the same square that fills the frames.
+  const art: FrameItem = { key: ing.key, name: ing.name, color: ing.color, real: false, ing };
 
   return (
     <li
@@ -487,17 +573,9 @@ function CatalogRow({
           <span
             className={`inline-flex transition-opacity duration-150 ${inBrew > 0 ? "opacity-35" : ""}`}
           >
-            {pure ? (
-              pureId === "strike" || pureId === "wild" ? (
-                <ChargeSymbol kind={pureId} size={30} />
-              ) : (
-                <FrequencyGlyph id={pureId!} size={30} />
-              )
-            ) : (
-              <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={42} />
-            )}
+            <ItemArt item={art} size={pure ? 30 : 42} />
           </span>
-          {owned > 0 && <CountBadge n={owned} className="absolute -bottom-1 -right-1" />}
+          {owned > 0 && <FrameCountBadge n={owned} className="absolute -bottom-1 -right-1" />}
         </span>
         {!pure && ing.type && <TypeGlyph type={ing.type} size={20} />}
         <span className="min-w-0 flex-1 truncate text-base font-semibold text-text">

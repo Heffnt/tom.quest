@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { baseIngredients, basePerfumes, pureIngredients } from "../data/base";
-import type { Inventory } from "./bench-types";
-import { EMPTY_INVENTORY } from "./bench-types";
+import type { Inventory } from "./brew-types";
+import { EMPTY_INVENTORY } from "./brew-types";
 import {
   addCount,
   formatInventory,

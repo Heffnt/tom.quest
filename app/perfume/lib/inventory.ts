@@ -3,8 +3,8 @@
 // import dialog. All ops are immutable: they return a new Inventory and never
 // touch the input.
 
-import type { ImportRow, Inventory } from "./bench-types";
-import { inventorySectionFor } from "./bench-types";
+import type { ImportRow, Inventory } from "./brew-types";
+import { inventorySectionFor } from "./brew-types";
 
 // The name lookup the parser/formatter needs — callers pass whatever slice of
 // the catalog the inventory may hold (ingredients + pures, plus perfumes for

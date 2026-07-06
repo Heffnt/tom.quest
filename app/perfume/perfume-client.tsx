@@ -1,11 +1,15 @@
 "use client";
 
-// The bench orchestrator (integrator seat — DESIGN.md "The model", "Live
-// layer", "Local mode"). Mode splits into two subcomponents because hooks
-// cannot be conditional: LivePerfume mounts the Convex store, tabs, presence
-// and the nickname flow; LocalPerfume (?local=1, or no NEXT_PUBLIC_CONVEX_URL)
-// mounts the localStorage store and nothing networked. Both feed the same
-// BenchView, which wires the three panels, the hand and the brew math.
+// The brew orchestrator (integrator seat — DESIGN.md §§4,6,9). Mode splits into
+// two subcomponents because hooks cannot be conditional: LivePerfume mounts the
+// Convex brew store, the top bar, presence and the nickname flow; LocalPerfume
+// (?local=1, or no NEXT_PUBLIC_CONVEX_URL) mounts the localStorage store and
+// nothing networked. Both feed BrewView, which adapts the multi-brew snapshot
+// down to the legacy stage components via lib/legacy-adapter until the Phase-4
+// stage rebuild consumes BrewSnapshot/BrewActions directly.
+//
+// Route context: /perfume opens your most recent brew (the party brew for a
+// visitor); a deep link /perfume/b/[id] passes brewId and opens that brew.
 
 import {
   useCallback,
@@ -15,28 +19,26 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { useQuery } from "convex/react";
-import { api } from "@/convex/_generated/api";
 import { useAuth } from "../lib/auth";
 import type { Ingredient } from "./lib/types";
-import type {
-  BenchActions,
-  BenchPermissions,
-  BenchSnapshot,
-} from "./lib/bench-types";
+import type { MemberInfo } from "./lib/brew-types";
 import { baseIngredients, basePerfumes, pureIngredients } from "./data/base";
 import { brewableOptions } from "./lib/brewable";
 import {
   PARTY_KEY,
-  brewOf,
-  hypotheticalBlockers,
+  itemCounts,
   isIngredientKey,
   itemInfo,
-  potCounts,
-  sectionForKey,
-  useConvexBenchStore,
-  useLocalBenchStore,
-} from "./lib/bench-store";
+  useConvexBrewStore,
+  useLocalBrewStore,
+  type BrewStoreResult,
+} from "./lib/brew-store";
+import {
+  useLegacyView,
+  type BenchActions,
+  type BenchPermissions,
+  type BenchSnapshot,
+} from "./lib/legacy-adapter";
 import {
   colorFor,
   getAnonId,
@@ -48,12 +50,15 @@ import { useHand, HandGhost, type BenchHand } from "./lib/use-hand";
 import Cauldron from "./components/cauldron";
 import IngredientPanel from "./components/ingredient-panel";
 import PerfumePanel from "./components/perfume-panel";
-import Tabs, { ProfilePrompt, type BenchTab } from "./components/tabs";
+import { ProfilePrompt } from "./components/profile-prompt";
+import TopBar from "./components/top-bar";
+import SettingsCorner from "./components/settings-corner";
+import { drawerHandle, cn } from "./components/ui";
 import Cursors from "./components/cursors";
 
 // ── mode split ───────────────────────────────────────────────────────────────
 
-export default function PerfumeClient() {
+export default function PerfumeClient({ brewId }: { brewId?: string }) {
   // decided after mount so SSR needs neither the query string nor storage
   const [mode, setMode] = useState<"local" | "live" | null>(null);
   useEffect(() => {
@@ -63,30 +68,19 @@ export default function PerfumeClient() {
     setMode(local ? "local" : "live");
   }, []);
   if (mode === null) return <Shell header={null}>{null}</Shell>;
-  return mode === "local" ? <LocalPerfume /> : <LivePerfume />;
+  return mode === "local" ? <LocalPerfume /> : <LivePerfume brewId={brewId} />;
 }
 
-// ── local mode (?local=1): no Convex hooks mounted, no tabs, no presence ─────
+// ── local mode (?local=1): no Convex hooks mounted, no top bar, no presence ──
 
 function LocalPerfume() {
-  const store = useLocalBenchStore();
-  const hand = useBenchHand(store.snapshot, store.actions, store.permissions.moveItems);
-  return (
-    <BenchView
-      snapshot={store.snapshot}
-      permissions={store.permissions}
-      actions={store.actions}
-      loading={store.loading}
-      hand={hand}
-      isAnon={false}
-      members={[]}
-    />
-  );
+  const store = useLocalBrewStore();
+  return <BrewView store={store} isAnon={false} members={[]} />;
 }
 
 // ── live mode ────────────────────────────────────────────────────────────────
 
-function LivePerfume() {
+function LivePerfume({ brewId }: { brewId?: string }) {
   const { user, isTom, loading: authLoading } = useAuth();
 
   // anonymous identity: minted (and persisted) once auth resolves logged-out
@@ -103,17 +97,19 @@ function LivePerfume() {
   const isAnon = !authLoading && !user;
   const needsProfile = isAnon && profile === null;
 
-  // which bench is on stage: your own once known, else the party pot
-  const [viewKey, setViewKey] = useState<string | null>(null);
-  useEffect(() => {
-    if (viewKey === null && viewerKey) setViewKey(user ? viewerKey : PARTY_KEY);
-  }, [viewKey, viewerKey, user]);
-
   // the nickname gate: the intercepted mutation waits behind the prompt
   const [pendingRun, setPendingRun] = useState<{ run: () => void } | null>(null);
   const onNeedProfile = useCallback((run: () => void) => setPendingRun({ run }), []);
 
-  const store = useConvexBenchStore(viewKey ?? PARTY_KEY, {
+  // which brew is on stage: a deep-link id, or resolved from route defaults
+  // (your most recent brew; the party brew for a visitor). `viewKey` is a real
+  // brew id or the PARTY_KEY sentinel.
+  const [viewKey, setViewKey] = useState<string | null>(brewId ?? null);
+  useEffect(() => {
+    if (brewId) setViewKey(brewId);
+  }, [brewId]);
+
+  const store = useConvexBrewStore(viewKey ?? PARTY_KEY, {
     viewerKey,
     anonId,
     isTom,
@@ -123,42 +119,25 @@ function LivePerfume() {
     profileColor: profile?.color,
   });
 
-  const hand = useBenchHand(store.snapshot, store.actions, store.permissions.moveItems);
+  // default route context: once identity + the brew index resolve, open the
+  // viewer's most recent brew, else the party brew (visitors and the empty
+  // state land on the party brew).
+  useEffect(() => {
+    if (brewId || viewKey !== null || !viewerKey || !store.index) return;
+    const mine = store.index.groups.find((g) => g.ownerKey === viewerKey);
+    const recent = mine?.recent[0]?.brewId;
+    setViewKey(recent ?? PARTY_KEY);
+  }, [brewId, viewKey, viewerKey, store.index]);
 
-  // tabs: party first (from the server), plus a synthetic own tab until
-  // ensureBench persists the real one
-  const benchList = useQuery(api.perfume.listBenches);
-  const tabs = useMemo<BenchTab[]>(() => {
-    const list: BenchTab[] = benchList
-      ? [...benchList]
-      : [{ benchKey: PARTY_KEY, ownerName: "Party", color: "#C98A3C" }];
-    if (user) {
-      const own = `user:${user._id}`;
-      if (!list.some((b) => b.benchKey === own)) {
-        list.push({ benchKey: own, ownerName: user.name, color: colorFor(own) });
-      }
-    }
-    return list;
-  }, [benchList, user]);
-
-  const members = useMemo(
-    () =>
-      tabs
-        .filter((b) => b.benchKey !== PARTY_KEY && b.benchKey !== viewerKey)
-        .map((b) => ({ benchKey: b.benchKey, name: b.ownerName })),
-    [tabs, viewerKey],
-  );
-
-  const ownTab = tabs.find((b) => b.benchKey === viewerKey);
   const presenceName = profile?.name ?? user?.name ?? "Visitor";
   const presenceColor =
-    ownTab?.color ?? profile?.color ?? (viewerKey ? colorFor(viewerKey) : "#6FE3C4");
+    profile?.color ?? (viewerKey ? colorFor(viewerKey) : "#6FE3C4");
 
   const savedProfile = useCallback(
     (name: string, color: string) => {
       saveProfile({ name, color });
       setProfile({ name, color });
-      store.actions.setProfile({ name, color });
+      store.actions.register(name, color);
       const run = pendingRun?.run;
       setPendingRun(null);
       run?.();
@@ -166,36 +145,70 @@ function LivePerfume() {
     [store.actions, pendingRun],
   );
 
+  // click-to-join (registration): an unnamed anon routes through the nickname
+  // prompt first, then registers; a named viewer registers immediately.
+  const onJoin = useCallback(() => {
+    if (needsProfile) onNeedProfile(() => {});
+    else store.actions.register(presenceName, presenceColor);
+  }, [needsProfile, onNeedProfile, store.actions, presenceName, presenceColor]);
+
   return (
-    <BenchView
-      snapshot={store.snapshot}
-      permissions={store.permissions}
-      actions={store.actions}
-      loading={store.loading || viewKey === null}
-      hand={hand}
+    <BrewView
+      store={store}
       isAnon={isAnon}
-      members={members}
+      members={membersForTabs(store.members, viewerKey)}
       header={
-        <Tabs
-          tabs={tabs}
-          activeKey={viewKey ?? PARTY_KEY}
-          ownKey={viewerKey}
-          onSelect={setViewKey}
-          onColor={(color) => store.actions.setProfile({ color })}
+        <TopBar
+          index={store.index}
+          members={store.members}
+          activeKey={store.brewId}
+          viewerKey={viewerKey}
+          permissions={{
+            registered: store.registered,
+            nickname: store.permissions.nickname,
+            manageBrew: store.permissions.manageBrew,
+            isAdmin: store.permissions.isAdmin,
+          }}
+          actions={{
+            onSelect: setViewKey,
+            onCreate: async () => {
+              const id = await store.actions.createBrew();
+              if (id) setViewKey(id);
+            },
+            onJoin,
+            onNickname: store.actions.nicknameBrew,
+            onHandoff: store.actions.handoffBrew,
+            onCopy: async (srcId) => {
+              const id = await store.actions.copyBrew(srcId);
+              if (id) setViewKey(id);
+            },
+            onDelete: (targetId) => {
+              store.actions.deleteBrew(targetId);
+              // if the open brew was deleted, fall back to the party brew
+              if (targetId === store.brewId) setViewKey(PARTY_KEY);
+            },
+          }}
+          settings={
+            <SettingsCorner
+              registered={store.registered}
+              canJoin={!!viewerKey}
+              onJoin={onJoin}
+              onLeave={store.actions.leave}
+            />
+          }
         />
       }
       overlays={
         <>
-          {viewKey && (
-            <Cursors
-              benchKey={viewKey}
-              identified={!!viewerKey}
-              anonId={anonId}
-              name={presenceName}
-              color={presenceColor}
-              hand={hand.hand}
-            />
-          )}
+          <Cursors
+            brewId={store.brewId === PARTY_KEY ? null : store.brewId}
+            identified={!!viewerKey}
+            anonId={anonId}
+            name={presenceName}
+            color={presenceColor}
+            hand={null}
+            entries={store.presence}
+          />
           {pendingRun && (
             <ProfilePrompt
               defaultName=""
@@ -210,34 +223,20 @@ function LivePerfume() {
   );
 }
 
-// ── the hand, bound to whichever store is live ───────────────────────────────
-
-function useBenchHand(
-  snapshot: BenchSnapshot | null,
-  actions: BenchActions,
-  canMoveItems: boolean,
-): BenchHand {
-  const counts = useMemo(() => potCounts(snapshot?.pot ?? []), [snapshot]);
-  return useHand({
-    benchActions: actions,
-    potCountOf: (itemKey) => counts[itemKey] ?? 0,
-    availableOf: (itemKey, from) => {
-      if (from === "catalog") return Number.POSITIVE_INFINITY;
-      if (from === "brew") return counts[itemKey] ?? 0;
-      if (from === "output") return snapshot?.outputTray[itemKey] ?? 0;
-      return snapshot?.inventory[sectionForKey(itemKey)][itemKey] ?? 0;
-    },
-    canMoveItems,
-  });
+// Other members (not you) as input-panel gift targets — the old "bench" prop
+// shape the ingredient panel still consumes ({benchKey, name}); benchKey is a
+// member key routed to giftItem by the legacy adapter.
+function membersForTabs(
+  members: MemberInfo[],
+  viewerKey: string | null,
+): { benchKey: string; name: string }[] {
+  return members
+    .filter((m) => m.memberKey !== viewerKey)
+    .map((m) => ({ benchKey: m.memberKey, name: m.name }));
 }
 
-// ── the bench itself ─────────────────────────────────────────────────────────
+// ── the brew view (adapts the multi-brew store to the legacy stage) ──────────
 
-// Side-panel resizing (wide layout only): each panel keeps its width in state,
-// clamped so neither the panel nor the cauldron stage can collapse, and
-// remembered across visits. The left default fits the WIDEST catalog row with
-// nothing truncated; the storage key is versioned so a new default wins over
-// stale saved widths.
 const PANEL_DEFAULTS = { left: 480, right: 420 } as const;
 const PANEL_STORE = "pf:panel2";
 const PANEL_MIN = 240;
@@ -252,43 +251,38 @@ const ING_BY_KEY = new Map<string, Ingredient>(
 );
 const PANEL_CATALOG = [...baseIngredients, ...pureIngredients];
 
-type BenchViewProps = {
-  snapshot: BenchSnapshot | null;
-  permissions: BenchPermissions;
-  actions: BenchActions;
-  loading: boolean;
-  hand: BenchHand;
+type BrewViewProps = {
+  store: BrewStoreResult;
   isAnon: boolean;
   members: { benchKey: string; name: string }[];
   header?: ReactNode;
   overlays?: ReactNode;
 };
 
-function BenchView({
-  snapshot,
-  permissions,
-  actions,
-  loading,
-  hand,
-  isAnon,
-  members,
-  header,
-  overlays,
-}: BenchViewProps) {
+function BrewView({ store, isAnon, members, header, overlays }: BrewViewProps) {
+  // legacy projection: BrewSnapshot+BrewActions -> the bench prop shapes
+  const legacy = useLegacyView(store);
+  const snapshot: BenchSnapshot | null = legacy.snapshot;
+  const permissions: BenchPermissions = legacy.permissions;
+  const actions: BenchActions = legacy.actions;
+  const loading = legacy.loading;
+
+  const hand = useBrewHand(snapshot, actions, permissions.moveItems);
+
   // ---- brew derivation: BenchSnapshot -> engine state + brew-bar inputs ----
   const brew = useMemo(
     () =>
-      snapshot ? brewOf(snapshot) : { ingredients: [], strikePlays: [], wildPlays: [] },
+      snapshot ? legacyEngineOf(snapshot) : { ingredients: [], strikePlays: [], wildPlays: [] },
     [snapshot],
   );
-  const brewCounts = useMemo(() => potCounts(snapshot?.pot ?? []), [snapshot]);
+  const brewCounts = useMemo(() => itemCounts(snapshot?.pot ?? []), [snapshot]);
   const brewOptions = useMemo(
     () => (brew.ingredients.length ? brewableOptions(brew, basePerfumes) : []),
     [brew],
   );
   const blockers = useMemo(() => {
-    const out = hypotheticalBlockers(snapshot?.pot ?? []);
-    if (!permissions.brewAndTake) out.push("only the bench owner may brew and take");
+    const out = hypotheticalBlockersOf(snapshot?.pot ?? []);
+    if (!permissions.brewAndTake) out.push("only the brew owner may brew and take");
     return out;
   }, [snapshot, permissions.brewAndTake]);
 
@@ -312,7 +306,6 @@ function BenchView({
   // ---- panel resizing ----
   const [leftW, setLeftW] = useState<number>(PANEL_DEFAULTS.left);
   const [rightW, setRightW] = useState<number>(PANEL_DEFAULTS.right);
-  // read the remembered widths after mount so SSR and first client render agree
   useEffect(() => {
     const l = Number(localStorage.getItem(`${PANEL_STORE}:left`));
     const r = Number(localStorage.getItem(`${PANEL_STORE}:right`));
@@ -363,6 +356,59 @@ function BenchView({
     localStorage.removeItem(`${PANEL_STORE}:${side}`);
   }, []);
 
+  // ---- narrow-layout drawer state: center stage is always on; the input and
+  // perfume-book drawers become edge-tab overlays, only ONE open at a time
+  // (DESIGN.md §6). On wide (lg) both are open inline and this state is unused.
+  const [openDrawer, setOpenDrawer] = useState<"left" | "right" | null>(null);
+  const toggleDrawer = useCallback(
+    (side: "left" | "right") =>
+      setOpenDrawer((cur) => (cur === side ? null : side)),
+    [],
+  );
+  // Escape closes the open narrow drawer.
+  useEffect(() => {
+    if (!openDrawer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenDrawer(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [openDrawer]);
+
+  // The panel bodies, shared by the wide (inline) and narrow (overlay) layouts.
+  // Only rendered inside the snapshot-present branch below (falsy otherwise).
+  const inputPanel = snapshot && (
+    <IngredientPanel
+      catalog={PANEL_CATALOG}
+      inventory={snapshot.inventory}
+      brewCounts={brewCounts}
+      ui={snapshot.ui}
+      onUI={actions.updateUI}
+      hand={hand}
+      permissions={permissions}
+      isAnon={isAnon}
+      members={members}
+      onImport={actions.importInventory}
+      onTransfer={actions.transfer}
+      onHover={onHover}
+      onShiftToBrew={onShiftToBrew}
+      onUnbrewOne={onUnbrewOne}
+    />
+  );
+  const perfumeBook = snapshot && (
+    <PerfumePanel
+      perfumes={basePerfumes}
+      brew={brew}
+      ui={snapshot.ui}
+      onUI={actions.updateUI}
+      permissions={permissions}
+      hand={hand}
+      onHover={onHover}
+      brewCounts={brewCounts}
+      onShiftToBrew={onShiftToBrew}
+    />
+  );
+
   return (
     <Shell header={header}>
       {loading || !snapshot ? (
@@ -371,47 +417,41 @@ function BenchView({
         </div>
       ) : (
         <div
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden"
+          className="relative flex min-h-0 flex-1 lg:flex-row lg:overflow-hidden"
           style={{
             ["--pf-lw" as string]: `${leftW}px`,
             ["--pf-rw" as string]: `${rightW}px`,
           }}
         >
-          {/* input panel — data-input-drop is where output phials settle */}
+          {/* ── input panel: inline drawer (wide) / edge overlay (narrow) ── */}
           <aside
             data-input-drop=""
-            className="order-3 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-1 lg:min-h-0 lg:w-[var(--pf-lw)] lg:flex-none lg:border-t-0"
+            aria-label="Input panel"
+            className={cn(
+              "flex flex-col overflow-hidden border-border bg-bg p-3",
+              // wide: an inline resizable drawer flanking the stage, always open
+              "lg:relative lg:z-auto lg:min-h-0 lg:w-[var(--pf-lw)] lg:flex-none lg:translate-x-0 lg:border-r lg:shadow-none",
+              // narrow: a fixed left overlay, slid off-screen unless open
+              "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-40 max-lg:w-[86vw] max-lg:max-w-[380px] max-lg:border-r max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200",
+              openDrawer === "left"
+                ? "max-lg:translate-x-0"
+                : "max-lg:-translate-x-full",
+            )}
           >
-            <IngredientPanel
-              catalog={PANEL_CATALOG}
-              inventory={snapshot.inventory}
-              brewCounts={brewCounts}
-              ui={snapshot.ui}
-              onUI={actions.updateUI}
-              hand={hand}
-              permissions={permissions}
-              isAnon={isAnon}
-              members={members}
-              onImport={actions.importInventory}
-              onTransfer={actions.transfer}
-              onHover={onHover}
-              onShiftToBrew={onShiftToBrew}
-              onUnbrewOne={onUnbrewOne}
-            />
+            {inputPanel}
           </aside>
 
-          {/* drag to resize the input panel (wide layout) */}
+          {/* drag to resize the input panel (wide layout only) */}
           <PanelResizer
             label="Resize the input panel"
-            className="lg:order-1"
             onPointerDown={onResizeDown("left")}
             onPointerMove={onResizeMove}
             onPointerUp={onResizeUp}
             onDoubleClick={() => resetPanel("left")}
           />
 
-          {/* cauldron panel (its root carries data-cauldron-drop) */}
-          <section className="order-1 flex min-w-0 flex-col max-lg:h-[56vh] max-lg:shrink-0 lg:order-2 lg:min-h-0 lg:flex-1">
+          {/* ── center stage: ALWAYS on (its root carries data-cauldron-drop) ── */}
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
             <Cauldron
               snapshot={snapshot}
               brew={brew}
@@ -430,30 +470,51 @@ function BenchView({
             />
           </section>
 
-          {/* drag to resize the perfume panel (wide layout) */}
+          {/* drag to resize the perfume panel (wide layout only) */}
           <PanelResizer
             label="Resize the perfume panel"
-            className="lg:order-2"
             onPointerDown={onResizeDown("right")}
             onPointerMove={onResizeMove}
             onPointerUp={onResizeUp}
             onDoubleClick={() => resetPanel("right")}
           />
 
-          {/* perfume panel */}
-          <aside className="order-2 flex flex-col overflow-hidden border-t border-border p-3 max-lg:h-[72vh] max-lg:shrink-0 lg:order-3 lg:min-h-0 lg:w-[var(--pf-rw)] lg:flex-none lg:border-t-0">
-            <PerfumePanel
-              perfumes={basePerfumes}
-              brew={brew}
-              ui={snapshot.ui}
-              onUI={actions.updateUI}
-              permissions={permissions}
-              hand={hand}
-              onHover={onHover}
-              brewCounts={brewCounts}
-              onShiftToBrew={onShiftToBrew}
-            />
+          {/* ── perfume book: inline drawer (wide) / edge overlay (narrow) ── */}
+          <aside
+            aria-label="Perfume book"
+            className={cn(
+              "flex flex-col overflow-hidden border-border bg-bg p-3",
+              "lg:relative lg:z-auto lg:min-h-0 lg:w-[var(--pf-rw)] lg:flex-none lg:translate-x-0 lg:border-l lg:shadow-none",
+              "max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[86vw] max-lg:max-w-[380px] max-lg:border-l max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200",
+              openDrawer === "right"
+                ? "max-lg:translate-x-0"
+                : "max-lg:translate-x-full",
+            )}
+          >
+            {perfumeBook}
           </aside>
+
+          {/* narrow-only: scrim + edge-tab handles that open one drawer at a time */}
+          {openDrawer && (
+            <button
+              type="button"
+              aria-label="Close panel"
+              onClick={() => setOpenDrawer(null)}
+              className="fixed inset-0 z-30 bg-black/50 lg:hidden"
+            />
+          )}
+          <DrawerHandle
+            side="left"
+            label="Inputs"
+            open={openDrawer === "left"}
+            onClick={() => toggleDrawer("left")}
+          />
+          <DrawerHandle
+            side="right"
+            label="Perfumes"
+            open={openDrawer === "right"}
+            onClick={() => toggleDrawer("right")}
+          />
         </div>
       )}
 
@@ -464,7 +525,84 @@ function BenchView({
   );
 }
 
-// The page frame: tab strip (live mode) above the three working columns.
+// A vertical edge-tab that opens an overlay drawer on the narrow layout. Hidden
+// on wide (both drawers are inline and always open there). Pinned to the
+// viewport edge and vertically centered; sits above the stage but below an open
+// drawer's scrim.
+function DrawerHandle({
+  side,
+  label,
+  open,
+  onClick,
+}: {
+  side: "left" | "right";
+  label: string;
+  open: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={open}
+      aria-label={`${open ? "Close" : "Open"} ${label} panel`}
+      className={cn(
+        drawerHandle,
+        "fixed top-1/2 z-40 -translate-y-1/2 lg:hidden",
+        side === "left" ? "left-0 rounded-l-none" : "right-0 rounded-r-none",
+      )}
+    >
+      <span className="[writing-mode:vertical-rl]">{label}</span>
+    </button>
+  );
+}
+
+// ── the hand, bound to whichever store is live ───────────────────────────────
+
+function useBrewHand(
+  snapshot: BenchSnapshot | null,
+  actions: BenchActions,
+  canMoveItems: boolean,
+): BenchHand {
+  const counts = useMemo(() => itemCounts(snapshot?.pot ?? []), [snapshot]);
+  return useHand({
+    benchActions: actions,
+    potCountOf: (itemKey) => counts[itemKey] ?? 0,
+    availableOf: (itemKey, from) => {
+      if (from === "catalog") return Number.POSITIVE_INFINITY;
+      if (from === "brew") return counts[itemKey] ?? 0;
+      if (from === "output") return snapshot?.outputTray[itemKey] ?? 0;
+      return snapshot?.inventory[sectionOfKey(itemKey)][itemKey] ?? 0;
+    },
+    canMoveItems,
+  });
+}
+
+// local re-derivations that avoid importing store internals the view doesn't
+// otherwise need
+function sectionOfKey(itemKey: string): "ingredients" | "pures" | "perfumes" {
+  if (itemKey.startsWith("pure:")) return "pures";
+  return basePerfumes.some((p) => p.key === itemKey) ? "perfumes" : "ingredients";
+}
+function legacyEngineOf(snap: BenchSnapshot) {
+  const cat = ING_BY_KEY;
+  return {
+    ingredients: snap.pot
+      .map((p) => cat.get(p.key))
+      .filter((i): i is Ingredient => !!i),
+    strikePlays: snap.strikePlays,
+    wildPlays: snap.wildPlays,
+  };
+}
+function hypotheticalBlockersOf(pot: { key: string; real: boolean }[]): string[] {
+  const counts = new Map<string, number>();
+  for (const p of pot) if (!p.real) counts.set(p.key, (counts.get(p.key) ?? 0) + 1);
+  return [...counts].map(
+    ([key, n]) => `${n}× ${itemInfo(key).name} ${n === 1 ? "is" : "are"} hypothetical`,
+  );
+}
+
+// The page frame: the top bar (live mode) above the three working columns.
 function Shell({ header, children }: { header: ReactNode; children: ReactNode }) {
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-bg text-text">
@@ -476,8 +614,7 @@ function Shell({ header, children }: { header: ReactNode; children: ReactNode })
 
 // The draggable divider between panels. It renders the panel border line and
 // widens/turns accent on hover; double-click restores the default width. Only
-// present in the wide (three-column) layout — the stacked layout has nothing
-// to resize.
+// present in the wide (three-column) layout.
 function PanelResizer({
   label,
   className,

@@ -18,7 +18,7 @@
 import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Multiset, Perfume, EvalResult, PerfumeSlotEntry, BrewState } from "../lib/types";
-import type { SharedUI, BenchPermissions, HandApi } from "../lib/bench-types";
+import type { LegacySharedUI as SharedUI, BenchPermissions, HandApi } from "../lib/legacy-adapter";
 import {
   evaluate,
   evalReq,
