@@ -189,15 +189,16 @@ describe("anatomy derived-metric synthesis", () => {
       expect(entry.group).toBe("INTERP");
       expect(entry.label).toContain("linear_probe");
     }
-    // counts span the model (fixture rows: n_layers 32)…
+    // counts span the LARGEST contributing model (multi-model demo roster:
+    // linear_probe measurements exist up to the qwen72 rows' n_layers 80)…
     const peak = bundle.metric_schema.find((e) => e.name === "interp_peak_layer@linear_probe")!;
     expect(peak.dtype).toBe("count");
     expect(peak.format).toBe("d");
     expect(peak.min).toBe(0);
-    expect(peak.max).toBe(31);
+    expect(peak.max).toBe(79);
     const width = bundle.metric_schema.find((e) => e.name === "interp_loc_width@linear_probe")!;
     expect(width.dtype).toBe("count");
-    expect(width.max).toBe(32);
+    expect(width.max).toBe(80);
     // …and the normalized depth rides the builder's fraction floor/ceiling
     const com = bundle.metric_schema.find((e) => e.name === "interp_depth_com@linear_probe")!;
     expect(com.dtype).toBe("fraction");
