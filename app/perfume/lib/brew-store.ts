@@ -7,7 +7,7 @@
 // - useConvexBrewStore(brewKey) renders any brew (or the party brew) live
 //   through convex/brews.ts: reactive queries + mutations, optimistic where the
 //   old bench store was optimistic (browse UI is client-local here).
-// - useLocalBrewStore() is the ?local=1 practice bench — pure client state
+// - useLocalBrewStore() is the ?local=1 practice brew — pure client state
 //   persisted to localStorage, a single practice member, brews verified with
 //   the same engine, no network.
 //
@@ -34,9 +34,11 @@ import {
   type Inventory,
   type MemberInfo,
   type OutputInstance,
+  type PerfumeInstance,
   type PinnedRecipe,
   type PresenceEntry,
   type SharedUI,
+  type StackSection,
   type StrikePlay,
   type UndoState,
   type WildPlay,
@@ -64,7 +66,7 @@ const PERFUME_BY_KEY = new Map(basePerfumes.map((p) => [p.key, p]));
 export const isIngredientKey = (key: string): boolean => CATALOG.has(key);
 
 // Ingredient and perfume keys share the "base:" prefix but never collide.
-export function sectionForKey(itemKey: string): keyof Inventory {
+export function sectionForKey(itemKey: string): StackSection {
   return PERFUME_BY_KEY.has(itemKey) ? "perfumes" : inventorySectionFor(itemKey);
 }
 
@@ -135,6 +137,7 @@ function cloneInventory(inv: Inventory): Inventory {
     ingredients: { ...inv.ingredients },
     pures: { ...inv.pures },
     perfumes: { ...inv.perfumes },
+    perfumeInstances: inv.perfumeInstances.map((i) => ({ ...i })),
   };
 }
 
@@ -258,6 +261,7 @@ const SEED_INVENTORIES: Record<string, Inventory> = {
     },
     pures: { "pure:strike": 2 },
     perfumes: {},
+    perfumeInstances: [],
   },
 };
 
@@ -436,13 +440,25 @@ export function useLocalBrewStore(): BrewStoreResult {
           else outputs.splice(idx, 1);
           const inventory = cloneInventory(s.inventory);
           addStock(inventory, output.perfumeId, 1);
+          // a taken perfume becomes a held INSTANCE carrying the brew's
+          // provenance (mirrors convex takeOutput) — one per take, so the
+          // count view and the instance list stay in step.
+          const now = Date.now();
+          inventory.perfumeInstances.push({
+            instanceId: newLocalInstanceId(),
+            perfumeId: output.perfumeId,
+            brewedByKey: output.brewedByKey,
+            witnesses: output.witnesses,
+            brewedAt: output.brewedAt,
+            owners: [...output.provenance, { key: LOCAL_MEMBER, at: now }],
+          });
           return { ...s, outputs, inventory };
         }),
       // gifting has no target locally (single practice member) — no-op
       giftItem: () => {},
       giftPerfume: () => {},
       pinRecipe: (pinned) => setState((s) => ({ ...s, pinned })),
-      // no cross-action undo log locally — the practice bench is disposable
+      // no cross-action undo log locally — the practice brew is disposable
       undo: () => {},
       redo: () => {},
       createBrew: noAsync,
@@ -841,6 +857,7 @@ export function useConvexBrewStore(
       ingredients: { ...ownInv.ingredients },
       pures: { ...ownInv.pures },
       perfumes: perfumeCountsFromInstances(ownInv.perfumes),
+      perfumeInstances: ownInv.perfumes.map(perfumeInstanceView),
     };
   }, [ownInv]);
 
@@ -854,6 +871,7 @@ export function useConvexBrewStore(
       ingredients: { ...tabInv.ingredients },
       pures: { ...tabInv.pures },
       perfumes: perfumeCountsFromInstances(tabInv.perfumes),
+      perfumeInstances: tabInv.perfumes.map(perfumeInstanceView),
     };
   }, [tabInv]);
   if (tabMember && tabInventory) invCache.current.set(tabMember, tabInventory);
@@ -966,6 +984,17 @@ export function useConvexBrewStore(
   };
 }
 
+// The raw held-perfume instance the server returns (schema.ts
+// perfumeInventories.perfumes) — instance identity + full provenance.
+type RawPerfumeInstance = {
+  instanceId: string;
+  perfumeId: string;
+  brewedByKey: string;
+  witnesses: string[];
+  brewedAt: number;
+  owners: { key: string; at: number }[];
+};
+
 // Project the instance list down to the count view the legacy input panel
 // renders. (Perfumes are instances in the multi-brew model; the count is a
 // display convenience — taking/gifting act on instance ids elsewhere.)
@@ -975,4 +1004,18 @@ function perfumeCountsFromInstances(
   const out: Record<string, number> = {};
   for (const p of perfumes) out[p.perfumeId] = (out[p.perfumeId] ?? 0) + 1;
   return out;
+}
+
+// Carry each held instance through to the Inventory view unchanged (it already
+// matches PerfumeInstance) so the perfume slots can surface its provenance on
+// hover (DESIGN.md §1,§9). Kept ALONGSIDE the count view above.
+function perfumeInstanceView(p: RawPerfumeInstance): PerfumeInstance {
+  return {
+    instanceId: p.instanceId,
+    perfumeId: p.perfumeId,
+    brewedByKey: p.brewedByKey,
+    witnesses: p.witnesses,
+    brewedAt: p.brewedAt,
+    owners: p.owners.map((o) => ({ key: o.key, at: o.at })),
+  };
 }

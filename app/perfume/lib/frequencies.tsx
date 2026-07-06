@@ -1,6 +1,6 @@
 "use client";
 
-// Visual frequency module for the Perfumer's Bench (/perfume).
+// Visual frequency module for the Perfumer (/perfume).
 //
 // Single source of truth for how a frequency *looks* — the emblem glyphs,
 // chip letters, and colors used by the cauldron panel and inline chips —

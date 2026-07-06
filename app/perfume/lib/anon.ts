@@ -1,8 +1,8 @@
-// Anonymous identity for the live bench (DESIGN.md, "The model"): visitors
-// are keyed by a generated "anon:<uuid>" kept in localStorage — the fragile
-// part the UI warns about. The nickname/color chosen at the profile prompt is
-// mirrored here so ensureBench can seed the Convex bench and so we know the
-// visitor has named themselves (named-ness gates party/other-bench mutations).
+// Anonymous identity for the live brew (DESIGN.md §4): visitors are keyed by a
+// generated "anon:<uuid>" kept in localStorage — the fragile part the UI warns
+// about. The nickname/color chosen at the profile prompt is mirrored here so
+// registration can seed the Convex member row and so we know the visitor has
+// named themselves (named-ness gates party/other-member-brew mutations).
 // Every access is SSR-safe: no window means no identity yet.
 
 import { fundamentals } from "../data/base";
@@ -68,7 +68,7 @@ export function saveProfile(profile: StoredProfile): void {
   try {
     window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
   } catch {
-    // best effort — the Convex bench doc is the real record
+    // best effort — the Convex member doc is the real record
   }
 }
 

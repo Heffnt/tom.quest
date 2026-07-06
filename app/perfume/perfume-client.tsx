@@ -49,6 +49,7 @@ import {
   type StoredProfile,
 } from "./lib/anon";
 import { useHand, HandGhost, type BrewHand, type HandActions } from "./lib/use-hand";
+import { useSound } from "./lib/sound";
 import BrewGraph from "./components/brew-graph";
 import IngredientPanel, { type MemberTab } from "./components/ingredient-panel";
 import PerfumePanel from "./components/perfume-panel";
@@ -337,6 +338,18 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
     [actions],
   );
 
+  // ---- gift: the drop plays the 'gift' cue (DESIGN.md §6; mute honoured by
+  // useSound), then delegates to the store. Gifting is instant/permanent, so the
+  // cue fires on the drop gesture — the same moment brew/take play theirs.
+  const sound = useSound();
+  const onGift = useCallback(
+    (toMemberKey: string, itemKey: string, n: number) => {
+      sound.play("gift");
+      actions.giftItem(toMemberKey, itemKey, n);
+    },
+    [sound, actions],
+  );
+
   // ---- panel resizing ----
   const [leftW, setLeftW] = useState<number>(PANEL_DEFAULTS.left);
   const [rightW, setRightW] = useState<number>(PANEL_DEFAULTS.right);
@@ -425,8 +438,9 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
       canGift={store.permissions.gift}
       isAnon={isAnon}
       memberTabs={memberTabs}
+      members={store.members}
       onImport={actions.importInventory}
-      onGift={store.actions.giftItem}
+      onGift={onGift}
       onSelectMemberTab={store.selectMemberTab}
       onHover={onHover}
       onShiftToBrew={onShiftToBrew}
@@ -443,6 +457,7 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
       onPin={actions.pinRecipe}
       canPin={permissions.pin}
       hand={hand}
+      canMove={permissions.moveItems}
       onHover={onHover}
       brewCounts={brewCounts}
       onShiftToBrew={onShiftToBrew}
@@ -516,6 +531,7 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
               brewOptions={brewOptions}
               blockers={blockers}
               deepLink={deepLink}
+              members={store.members}
               onNickname={
                 store.brewId && store.brewId !== PARTY_KEY
                   ? (nickname) => actions.nicknameBrew(store.brewId!, nickname)

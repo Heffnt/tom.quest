@@ -1,9 +1,9 @@
-// Pure inventory operations for the Perfumer's Bench (/perfume).
-// No React, no Convex — shared by the input panel, the bench stores, and the
+// Pure inventory operations for the Perfumer (/perfume).
+// No React, no Convex — shared by the input panel, the brew stores, and the
 // import dialog. All ops are immutable: they return a new Inventory and never
 // touch the input.
 
-import type { ImportRow, Inventory } from "./brew-types";
+import type { ImportRow, Inventory, StackSection } from "./brew-types";
 import { inventorySectionFor } from "./brew-types";
 
 // The name lookup the parser/formatter needs — callers pass whatever slice of
@@ -19,7 +19,7 @@ export type CatalogEntry = { key: string; name: string };
 export function getCount(
   inv: Inventory,
   itemKey: string,
-  section: keyof Inventory = inventorySectionFor(itemKey),
+  section: StackSection = inventorySectionFor(itemKey),
 ): number {
   return inv[section][itemKey] || 0;
 }
@@ -28,7 +28,7 @@ export function addCount(
   inv: Inventory,
   itemKey: string,
   n = 1,
-  section: keyof Inventory = inventorySectionFor(itemKey),
+  section: StackSection = inventorySectionFor(itemKey),
 ): Inventory {
   if (n <= 0) return inv;
   return {
@@ -42,7 +42,7 @@ export function removeCount(
   inv: Inventory,
   itemKey: string,
   n = 1,
-  section: keyof Inventory = inventorySectionFor(itemKey),
+  section: StackSection = inventorySectionFor(itemKey),
 ): Inventory {
   if (n <= 0) return inv;
   const have = inv[section][itemKey] || 0;

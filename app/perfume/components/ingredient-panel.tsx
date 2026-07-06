@@ -27,8 +27,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient, Perfume } from "../lib/types";
-import type { Inventory, SharedUI } from "../lib/brew-types";
+import type { Inventory, PerfumeInstance, SharedUI } from "../lib/brew-types";
 import type { BrewHand } from "../lib/use-hand";
+import { makeNameResolver, provenanceTooltip, type NameResolver } from "../lib/provenance";
 import {
   ALL_FREQUENCIES,
   FUND,
@@ -74,6 +75,9 @@ export interface IngredientPanelProps {
   isAnon: boolean;
   // member inventory tabs, the viewer's own FIRST (DESIGN.md §Layout).
   memberTabs: MemberTab[];
+  // registered members, for resolving perfume-instance provenance memberKeys →
+  // display names in the perfume-slot hover tooltip (DESIGN.md §1,§9).
+  members: { memberKey: string; name: string }[];
   onImport: (rows: { itemKey: string; count: number }[], mode: "merge" | "replace") => void;
   // gift one of the viewer's own items to a member (drag-drop or send popover).
   onGift: (toMemberKey: string, itemKey: string, n: number) => void;
@@ -178,6 +182,7 @@ export default function IngredientPanel({
   canGift,
   isAnon,
   memberTabs,
+  members,
   onImport,
   onGift,
   onSelectMemberTab,
@@ -186,6 +191,7 @@ export default function IngredientPanel({
   onUnbrewOne,
 }: IngredientPanelProps) {
   const [importOpen, setImportOpen] = useState(false);
+  const resolveName = useMemo(() => makeNameResolver(members), [members]);
   const [copied, setCopied] = useState(false);
   // The open tab. A catalog tab ("ingredients"/"frequencies") drives ui.inputTab
   // (shared browse UI); a member tab is a panel-local member-key selection, so
@@ -267,6 +273,7 @@ export default function IngredientPanel({
   const sectionsFor = (inv: Inventory, withBrewGhost: boolean) =>
     inventoryGridSections(inv, ingByKey, perfumeByKey, types, freqs, q, {
       brewCounts: withBrewGhost ? brewCounts : null,
+      resolveName,
     });
 
   const copy = async () => {
@@ -572,7 +579,7 @@ function ReadOnlyInventory({ sections }: { sections: InventoryGridSection[] }) {
                     }}
                     fill
                     count={item.count}
-                    title={`${item.name} ×${item.count}`}
+                    title={`${item.name} ×${item.count}${item.provenance ? `\n${item.provenance}` : ""}`}
                   />
                 </li>
               ))}
@@ -686,7 +693,7 @@ function inventoryGridSections(
   types: string[],
   freqs: string[],
   q: string,
-  opts: { brewCounts: Record<string, number> | null },
+  opts: { brewCounts: Record<string, number> | null; resolveName: NameResolver },
 ): InventoryGridSection[] {
   const brewCounts = opts.brewCounts;
   const itemSlots = (section: "ingredients" | "pures") => {
@@ -719,14 +726,30 @@ function inventoryGridSections(
     return items;
   };
 
+  // most-recent held instance per perfumeId — its provenance is the slot's
+  // hover copy (the ×n badge conveys the rest). DESIGN.md §1,§9.
+  const latestInstance = new Map<string, PerfumeInstance>();
+  for (const inst of inv.perfumeInstances) {
+    const prev = latestInstance.get(inst.perfumeId);
+    if (!prev || inst.brewedAt > prev.brewedAt) latestInstance.set(inst.perfumeId, inst);
+  }
   const perfumeItems: InventorySlotItem[] = Object.entries(inv.perfumes)
     .filter(([, n]) => n > 0)
-    .map(([key, count]) => ({
-      key,
-      name: perfumeByKey.get(key)?.name ?? key,
-      count,
-      inBrew: 0,
-    }))
+    .map(([key, count]) => {
+      const inst = latestInstance.get(key);
+      return {
+        key,
+        name: perfumeByKey.get(key)?.name ?? key,
+        count,
+        inBrew: 0,
+        provenance: inst
+          ? provenanceTooltip(
+              { brewedByKey: inst.brewedByKey, witnesses: inst.witnesses, brewedAt: inst.brewedAt, chain: inst.owners },
+              opts.resolveName,
+            )
+          : undefined,
+      };
+    })
     .filter(
       (item) =>
         perfumePasses(perfumeByKey.get(item.key), types, freqs) &&

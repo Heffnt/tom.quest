@@ -1,29 +1,41 @@
 "use client";
 
-// The perfume panel: a vertical, searchable book of the 41 d40 perfumes, one
-// COMPACT strip each: name + weight (with the "recipes" fold button under
-// them), the integrated frequency requirement as bare symbols (shared core,
-// interchangeable alternatives in parentheses, optional extras dashed), and
-// the brew formula — a mini cauldron + the box of frequencies still missing
-// (strikes needed shown as that many ⊖ icons). The fold lists every
-// ingredient combination (common d40 ones first), grouped by the outside
-// strikes required: strike-free first, then ⊖1 / ⊖2 behind reveal buttons.
+// The perfume book — the right drawer (DESIGN.md §6). A searchable list of the
+// d40 perfumes, DECLUTTERED to one clear row hierarchy (DESIGN.md §6 "keeps all
+// existing features … but decluttered"):
+//
+//   resting row   [pin] Name · w{weight} ……… [one status chip] [▾]
+//   on expand     the integrated requirement (symbols) + effect + recipe folds
+//
+// Every feature the old book carried survives: search, the frequency/type
+// filter, per-perfume status, expandable recipe folds, the single-brew PIN
+// (DESIGN.md §5 — replaces the old favorites list), the weight display, and the
+// per-recipe combos. What changed is the NOISE: the resting row no longer prints
+// the full requirement symbol row, the status is one chip instead of a card ring
+// + inline badges, and the whole surface adopts the shell's shared button/tab
+// treatment (components/ui.tsx) so the book reads as one family with the input
+// panel.
+//
+// WHICH RECIPE (DESIGN.md §Recipe): when the open brew's tally satisfies one or
+// more of a perfume's recipes, the row shows a satisfied chip naming the recipe
+// ("common recipe ✓ ×2") and the matching recipe row inside the fold lights up.
+// The naming comes from lib/recipe-label, the SAME helper the stage uses, so the
+// two surfaces agree word-for-word.
+//
+// RECIPE FOLDS AS SOURCES (DESIGN.md §1, §Interactions): each combo's
+// ingredients render as small ItemFrames in the "recipe" context — hypothetical
+// drag sources wired to the hand grammar, exactly like the input panel's catalog
+// cards. Left-click picks up one (again for +1), shift-click sends one to the
+// brew, right-click while holding returns one; the icon ghosts while copies sit
+// in the brew ("you took the icon").
 //
 // PURE REFERENCE — brewed output lives on the cauldron, never here.
-// Search, the multi-select frequency filter and expanded folds are shared
-// browse UI (SharedUI) written through onUI. The PIN (DESIGN.md §5) is a single
-// recipe pinned to the brew object — it replaces the old favorites list; the
-// pinned perfume floats to the top and the graph renders its ghost needs.
-// The ingredient pills in the folds are real grabbable items wired to the
-// hand grammar (see DESIGN.md).
 
-import { useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import type { Multiset, Perfume, EvalResult, PerfumeSlotEntry, BrewState } from "../lib/types";
+import { useMemo, useState } from "react";
+import type { Multiset, Perfume, EvalResult, BrewState } from "../lib/types";
 import type { SharedUI, PinnedRecipe } from "../lib/brew-types";
-import type { HandApi } from "../lib/use-hand";
+import type { BrewHand } from "../lib/use-hand";
 import {
-  evaluate,
   evalReq,
   brewTally,
   msToList,
@@ -38,9 +50,12 @@ import {
   baseIngredients,
   perfumeWeight,
 } from "../data/base";
-import { FrequencySymbol, FrequencyGlyph, ChargeSymbol, COPPER, STRIKE } from "../lib/frequencies";
+import { FrequencySymbol, STRIKE } from "../lib/frequencies";
+import { recipeLabel } from "../lib/recipe-label";
 import FrequencyFilterButton, { isTypeFilter } from "./frequency-filter";
-import IngredientThumb from "./ingredient-thumb";
+import ItemFrame, { type FrameItem } from "./item-frame";
+import { grabHandlers } from "./inventory-grid";
+import { btn, cn } from "./ui";
 
 export interface PerfumePanelProps {
   perfumes: Perfume[];
@@ -50,20 +65,25 @@ export interface PerfumePanelProps {
   ui: SharedUI;
   onUI: (patch: Partial<SharedUI>) => void;
   // The brew's single pinned recipe (DESIGN.md §5), and the setter. `canPin`
-  // is any registered member (the pin lives on the brew object).
+  // is any registered member (the pin lives on the brew object). A visitor
+  // (not a member) sees the pin state read-only.
   pinned: PinnedRecipe;
   onPin: (pinned: PinnedRecipe) => void;
   canPin: boolean;
-  // The cursor stack; recipe pills pick up from origin "catalog".
-  hand: HandApi;
+  // The cursor stack; recipe-fold frames pick up hypotheticals from the catalog
+  // (an unbounded reference source). A read-only visitor's hand can't move
+  // items (canMove false) — the frames stay inert affordances.
+  hand: BrewHand;
+  // WHERE-move permission (DESIGN.md §4). False for a visitor / another
+  // member's brew where the book is browse-only — the fold frames don't grab.
+  canMove: boolean;
   // Hover preview for the brew bar (never the cauldron graph); null on leave.
   onHover: (itemKey: string | null) => void;
-  // Copies of each catalog item in the brew — a pill's icon ghosts to 35%
-  // while its ingredient has copies in the pot ("you took the icon").
+  // Copies of each catalog item in the brew — a fold frame's icon ghosts while
+  // its ingredient has copies in the brew ("you took the icon").
   brewCounts: Record<string, number>;
   // Shift-click teleport: one copy straight to the brew (the grammar's
-  // unambiguous destination for an input-side item; HandApi has no direct
-  // path, so the client supplies it).
+  // unambiguous destination for an input-side item).
   onShiftToBrew: (itemKey: string) => void;
 }
 
@@ -255,6 +275,20 @@ function recipesFor(perfume: Perfume): FoundRecipe[][][] {
   return result;
 }
 
+// Which recipes the current brew's tally SATISFIES, and at what k. Per recipe
+// index, evalReq reports "perfect" with its copy-count when the brew equals k×
+// that recipe (DESIGN.md §Recipe / §Rules k-multiples). Empty for an empty or
+// unsatisfied brew.
+function satisfiedRecipes(brew: BrewState, perfume: Perfume): Map<number, number> {
+  const out = new Map<number, number>();
+  if (brew.ingredients.length === 0) return out;
+  perfume.recipes.forEach((req, ri) => {
+    const e = evalReq(brew, req, ri);
+    if (e.status === "perfect") out.set(ri, e.k);
+  });
+  return out;
+}
+
 export default function PerfumePanel({
   perfumes,
   brew,
@@ -264,6 +298,7 @@ export default function PerfumePanel({
   onPin,
   canPin,
   hand,
+  canMove,
   onHover,
   brewCounts,
   onShiftToBrew,
@@ -284,15 +319,23 @@ export default function PerfumePanel({
     });
   };
 
+  const brewEmpty = brew.ingredients.length === 0;
   const evaluated = useMemo(
-    () => perfumes.map((r) => ({ perfume: r, res: evaluate(brew, r) })),
+    () =>
+      perfumes.map((perfume) => ({
+        perfume,
+        // per-recipe satisfaction (which recipe ✓, and k) — DESIGN.md §Recipe
+        satisfied: satisfiedRecipes(brew, perfume),
+        // the overall status drives the one status chip and the sort
+        status: overallStatus(brew, perfume),
+      })),
     [perfumes, brew],
   );
   // "in reach" counts brewed perfumes too — they're trivially reachable
-  const inReach = evaluated.filter((e) => e.res.status !== "off").length;
-  // the brew's frequencies (after combination) — shown on every card while
-  // something is brewing
-  const brewList = useMemo(() => msToList(brewTally(brew)), [brew]);
+  const inReach = evaluated.filter((e) => e.status !== "off").length;
+  // the brew's frequencies (after combination) — the requirement summary
+  // overlays "have vs need" once something is brewing
+  const brewTallyList = useMemo(() => msToList(brewTally(brew)), [brew]);
 
   const shown = useMemo(() => {
     const q = ui.perfumeSearch.trim().toLowerCase();
@@ -313,7 +356,7 @@ export default function PerfumePanel({
           (pinnedKey === b.perfume.key ? 1 : 0) -
           (pinnedKey === a.perfume.key ? 1 : 0);
         if (p !== 0) return p;
-        const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
+        const s = STATUS_RANK[a.status] - STATUS_RANK[b.status];
         if (s !== 0) return s;
         // lightest resonance first
         const w = perfumeWeight(a.perfume) - perfumeWeight(b.perfume);
@@ -322,17 +365,23 @@ export default function PerfumePanel({
       });
   }, [evaluated, ui.perfumeSearch, ui.perfumeFilters, pinnedKey]);
 
+  const hasFilter = ui.perfumeSearch.trim() !== "" || ui.perfumeFilters.length > 0;
+
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
-      {/* header */}
+      {/* header — same treatment as the input panel's section headers */}
       <div className="flex items-baseline justify-between border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold text-text-muted">Perfumes</h2>
-        <span className="font-mono text-xs tabular-nums text-text-muted">
-          <span className="text-accent">{inReach}</span>/{perfumes.length} in reach
+        <span className="font-mono text-xs tabular-nums text-text-faint">
+          {!brewEmpty && <span className="text-accent">{inReach}</span>}
+          {!brewEmpty && "/"}
+          {perfumes.length}
+          {!brewEmpty ? " in reach" : " perfumes"}
         </span>
       </div>
 
-      {/* controls: search with the multi-select frequency filter beside it */}
+      {/* controls: search with the multi-select frequency filter beside it —
+          identical layout to the input panel's search row (one family) */}
       <div className="border-b border-border p-3">
         <div className="flex items-stretch gap-2">
           <input
@@ -351,57 +400,64 @@ export default function PerfumePanel({
 
       {/* the book. data-pf-surface: presence coordinates are content-space of
           this scroll container, so spectators track cards, not pixels */}
-      <div data-pf-surface="book" className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
-        {shown.length === 0 && (
-          <p className="px-2 py-6 text-center font-mono text-xs text-text-faint">
-            no perfumes match
-          </p>
+      <div data-pf-surface="book" className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2">
+        {shown.length === 0 ? (
+          <EmptyHits filtered={hasFilter} onClear={() => onUI({ perfumeSearch: "", perfumeFilters: [] })} />
+        ) : (
+          shown.map(({ perfume, satisfied, status }) => (
+            <PerfumeRow
+              key={perfume.key}
+              perfume={perfume}
+              status={status}
+              satisfied={satisfied}
+              brewEmpty={brewEmpty}
+              brewTallyList={brewTallyList}
+              pinned={pinnedKey === perfume.key}
+              canPin={canPin}
+              onTogglePin={togglePin}
+              expanded={ui.expanded.includes(perfume.key)}
+              onToggleExpanded={toggleExpanded}
+              hand={hand}
+              canMove={canMove}
+              onHover={onHover}
+              brewCounts={brewCounts}
+              onShiftToBrew={onShiftToBrew}
+            />
+          ))
         )}
-        {shown.map(({ perfume, res }) => (
-          <PerfumeCard
-            key={perfume.key}
-            perfume={perfume}
-            res={res}
-            brew={brew}
-            brewList={brewList}
-            brewEmpty={brew.ingredients.length === 0}
-            pinned={pinnedKey === perfume.key}
-            canPin={canPin}
-            onTogglePin={togglePin}
-            expanded={ui.expanded.includes(perfume.key)}
-            onToggleExpanded={toggleExpanded}
-            hand={hand}
-            onHover={onHover}
-            brewCounts={brewCounts}
-            onShiftToBrew={onShiftToBrew}
-          />
-        ))}
       </div>
     </div>
   );
 }
 
-// A tiny cauldron silhouette — stands for "the current brew" in the card's
-// brew + additions = perfume formula.
-function MiniCauldron({ size = 16 }: { size?: number }) {
+// The perfume's best status across its recipes (drives the one status chip and
+// the sort). Wraps evalReq so the panel never re-implements the rules.
+function overallStatus(brew: BrewState, perfume: Perfume): EvalResult["status"] {
+  let best: EvalResult["status"] = "off";
+  for (let ri = 0; ri < perfume.recipes.length; ri++) {
+    const s = evalReq(brew, perfume.recipes[ri], ri).status;
+    if (STATUS_RANK[s] < STATUS_RANK[best]) best = s;
+  }
+  return best;
+}
+
+// ── the empty / no-hits state (DESIGN.md §6 edge states) ─────────────────────
+function EmptyHits({ filtered, onClear }: { filtered: boolean; onClear: () => void }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      aria-label="the current brew"
-      className="shrink-0 text-text-muted"
-      fill="currentColor"
-    >
-      <ellipse cx="12" cy="8" rx="9" ry="2.6" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M3.4 9.2 C3.4 15.4 6.8 19 12 19 C17.2 19 20.6 15.4 20.6 9.2 C18.6 10.8 15.4 11.6 12 11.6 C8.6 11.6 5.4 10.8 3.4 9.2 Z" />
-      <path d="M7.6 18.4 l-1.6 2.4 M16.4 18.4 l1.6 2.4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-    </svg>
+    <div className="flex flex-col items-center gap-2 px-2 py-8 text-center">
+      <p className="font-mono text-xs text-text-faint">no perfumes match</p>
+      {filtered && (
+        <button type="button" onClick={onClear} className={cn(btn.outline, "text-[11px]")}>
+          clear search &amp; filters
+        </button>
+      )}
+    </div>
   );
 }
 
+// ── the requirement summary (symbols; shown only on expand) ──────────────────
 // Compact symbols-only row: multiplicity shows as REPEATED symbols, not ×n.
-function FrequencyRow({ req, size = 16 }: { req: string[]; size?: number }) {
+function FrequencyRow({ req, size = 20 }: { req: string[]; size?: number }) {
   return (
     <span className="flex flex-wrap items-center gap-1">
       {groupFrequencies(req).flatMap(({ id, count }) =>
@@ -413,264 +469,244 @@ function FrequencyRow({ req, size = 16 }: { req: string[]; size?: number }) {
   );
 }
 
-// A recipe-fold ingredient pill is a REAL grabbable item: the ingredient's
-// icon + name, wired to the hand grammar — left-click picks up 1 (+1 per
-// repeat), shift-click teleports 1 straight to the brew, right-click while
-// holding returns 1 to origin, press-move starts a 1-unit drag (the hand's
-// global tracking owns the boundary rule and the release), hover previews
-// through onHover. The icon ghosts to 35% while copies are in the brew —
-// "you took the icon". Hovering also shows the frequencies it contains.
-// Lore-only names render as plain text.
-function IngredientPill({
-  entry,
-  hand,
-  onHover,
-  brewCounts,
-  onShiftToBrew,
-}: {
-  entry: PerfumeSlotEntry;
-  hand: HandApi;
-  onHover: (itemKey: string | null) => void;
-  brewCounts: Record<string, number>;
-  onShiftToBrew: (itemKey: string) => void;
-}) {
-  const ing = ING_BY_NAME.get(entry.name);
-  const label = entry.qty > 1 ? `${entry.name} ×${entry.qty}` : entry.name;
-  const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
-  const drag = useRef({ x: 0, y: 0, active: false, moved: false });
-
-  if (!entry.known || !ing) {
-    return (
-      <span
-        className="cursor-help text-[11px] italic text-text-faint"
-        title="Named in the lore, but absent from the Ingredients Table — the math uses the other option."
-      >
-        {label}
-      </span>
-    );
-  }
-  const inBrew = (brewCounts[ing.key] ?? 0) > 0;
-  // the tip self-centers on the pill via translateX; clamp its anchor so it
-  // can't spill past a (floored, for degenerate windows) viewport edge
-  const vw = Math.max(typeof window !== "undefined" ? window.innerWidth : 1024, 360);
-  const left = tip ? Math.min(Math.max(tip.x, 70), vw - 70) : 0;
+// The integrated requirement (core + choice groups). Lives inside the fold now,
+// no longer on the resting row (DESIGN.md §6 declutter).
+function IntegratedRequirement({ integ }: { integ: Integrated }) {
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        // the click that ends a drag is not a pick-up
-        if (drag.current.moved) {
-          drag.current.moved = false;
-          return;
-        }
-        if (e.shiftKey) onShiftToBrew(ing.key);
-        // the catalog is an unbounded reference — stock runs out into
-        // hypotheticals, so nothing caps the pick-up here
-        else hand.pickUp(ing.key, "catalog", Number.POSITIVE_INFINITY);
-      }}
-      onContextMenu={(e) => {
-        // right-click while holding: return 1 to origin (no-op empty-handed —
-        // a reference pill is not an in-brew row)
-        e.preventDefault();
-        hand.returnOne();
-      }}
-      onMouseEnter={(e) => {
-        onHover(ing.key);
-        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        setTip({ x: r.left + r.width / 2, y: r.bottom });
-      }}
-      onMouseLeave={() => {
-        onHover(null);
-        setTip(null);
-      }}
-      onPointerDown={(e) => {
-        drag.current = { x: e.clientX, y: e.clientY, active: true, moved: false };
-      }}
-      onPointerMove={(e) => {
-        const d = drag.current;
-        if (!d.active || d.moved) return;
-        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 7) {
-          // press-move: a 1-unit hand with the button held
-          d.moved = true;
-          hand.pickUp(ing.key, "catalog", Number.POSITIVE_INFINITY);
-        }
-      }}
-      onPointerUp={() => {
-        drag.current.active = false;
-      }}
-      title="Click to pick up — shift-click sends one straight to the brew"
-      className="inline-flex touch-none items-center gap-1.5 rounded-full border border-border bg-bg py-0.5 pl-1 pr-2 text-xs text-text transition-colors duration-150 hover:border-accent hover:text-accent"
-      style={{ borderLeftWidth: 3, borderLeftColor: ing.color }}
-    >
-      <span aria-hidden="true" style={{ lineHeight: 0, opacity: inBrew ? 0.35 : 1 }}>
-        <IngredientThumb name={ing.name} source={ing.source} color={ing.color} size={22} />
-      </span>
-      {label}
-      {tip &&
-        typeof document !== "undefined" &&
-        createPortal(
-          <span
-            className="pointer-events-none fixed z-[70] flex -translate-x-1/2 items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1.5 shadow-xl"
-            style={{ left, top: tip.y + 6 }}
-            role="tooltip"
-          >
-            {ing.emits.map((t, i) => (
-              <FrequencyGlyph key={`${t}:${i}`} id={t} size={17} />
-            ))}
-            {Array.from({ length: ing.strike }, (_, i) => (
-              <span key={`s${i}`} className="font-mono text-[12px]" style={{ color: STRIKE }}>
-                ⊖
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <FrequencyRow req={integ.core} size={20} />
+      {integ.groups.map((g, gi) =>
+        g.optional ? (
+          <span key={gi} title="optional — either version brews the perfume" className="flex flex-col items-center gap-0.5">
+            <span className="flex items-center gap-1.5">
+              {g.options.map((opt, oi) => (
+                <span key={oi} className="flex items-center gap-1.5">
+                  {oi > 0 && <span className="font-mono text-[9px] uppercase text-text-faint">or</span>}
+                  <FrequencyRow req={opt} size={16} />
+                </span>
+              ))}
+            </span>
+            <span className="font-mono text-[8px] uppercase tracking-wider text-text-faint">optional</span>
+          </span>
+        ) : (
+          <span key={gi} className="flex items-center gap-1.5">
+            <span className="font-mono text-sm text-text-faint">(</span>
+            {g.options.map((opt, oi) => (
+              <span key={oi} className="flex items-center gap-1.5">
+                {oi > 0 && <span className="font-mono text-[9px] uppercase text-text-faint">or</span>}
+                <FrequencyRow req={opt} size={20} />
               </span>
             ))}
-            {Array.from({ length: ing.wild }, (_, i) => (
-              <span key={`w${i}`} className="font-mono text-[12px]" style={{ color: COPPER }}>
-                ⊕
-              </span>
-            ))}
-            {ing.emits.length === 0 && !ing.strike && !ing.wild && (
-              <span className="font-mono text-[10px] text-text-faint">inert</span>
-            )}
-          </span>,
-          document.body,
-        )}
-    </button>
+            <span className="font-mono text-sm text-text-faint">)</span>
+          </span>
+        ),
+      )}
+    </div>
   );
 }
 
-// What the brew still needs for this perfume, per reachable recipe: the
-// missing frequencies as symbols plus one ⊖ chip per strike to spend,
-// alternatives joined with "or".
-function NeededOptions({
+// ── the single status chip (DESIGN.md §6 "a single status chip") ─────────────
+// One chip on the resting row's right edge. When a recipe is SATISFIED it names
+// which one ("common recipe ✓ ×2" — DESIGN.md §Recipe), sharing lib/recipe-label
+// with the stage. Otherwise: "in reach" (accent) while reachable, "out of reach"
+// (faint) when the excess can't be struck. Nothing when the cauldron is empty.
+function StatusChip({
   perfume,
-  brew,
-  res,
-  size,
+  status,
+  satisfied,
 }: {
   perfume: Perfume;
-  brew: BrewState;
-  res: EvalResult;
-  size: number;
+  status: EvalResult["status"];
+  satisfied: Map<number, number>;
 }) {
-  // per-recipe needs, deduped; unreachable recipes drop out unless none reach
-  const evs = perfume.recipes.map((req, ri) => evalReq(brew, req, ri));
-  const reachable = evs.filter((e) => e.status === "craftable");
-  const pool = reachable.length ? reachable : [res];
-  const seen = new Set<string>();
-  const options: EvalResult[] = [];
-  for (const e of pool) {
-    const key = canon(msToList(e.missing)) + "|" + e.exN;
-    if (!seen.has(key)) {
-      seen.add(key);
-      options.push(e);
-    }
+  if (satisfied.size > 0) {
+    // the lowest satisfied recipe index leads (common recipe first)
+    const ri = Math.min(...satisfied.keys());
+    const k = satisfied.get(ri)!;
+    const which = recipeLabel(perfume.key, ri);
+    return (
+      <span
+        className="shrink-0 whitespace-nowrap rounded-full border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[10px] text-success"
+        title="this brew satisfies this recipe"
+      >
+        {which ? `${which} ✓` : "brewed ✓"}
+        {k > 1 ? ` ×${k}` : ""}
+      </span>
+    );
+  }
+  if (status === "craftable") {
+    return (
+      <span className="shrink-0 whitespace-nowrap rounded-full border border-accent/30 bg-accent/5 px-2 py-0.5 font-mono text-[10px] text-accent">
+        in reach
+      </span>
+    );
   }
   return (
-    <span
-      className="flex min-w-0 flex-wrap items-center gap-1.5"
-      title="what the brew still needs for this perfume"
-    >
-      {options.slice(0, 3).map((e, oi) => (
-        <span key={oi} className="flex flex-wrap items-center gap-1">
-          {oi > 0 && (
-            <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
-          )}
-          {groupFrequencies(msToList(e.missing)).flatMap(({ id, count }) =>
-            Array.from({ length: count }, (_, i) => (
-              <FrequencySymbol key={`${id}:${i}`} id={id} size={size} />
-            )),
-          )}
-          {Array.from({ length: e.exN }, (_, i) => (
-            <ChargeSymbol key={`s${i}`} kind="strike" size={size} />
-          ))}
-          {msToList(e.missing).length === 0 && e.exN === 0 && (
-            <span className="font-mono text-[10px] text-accent">in reach</span>
-          )}
-        </span>
-      ))}
+    <span className="shrink-0 whitespace-nowrap rounded-full border border-border/50 px-2 py-0.5 font-mono text-[10px] text-text-faint" title="the excess can't be struck at any copy-count">
+      out of reach
     </span>
   );
 }
 
-// One dynamically-found combo as a row of grabbable ingredient pills.
-function ComboRow({
-  combo,
+// ── a recipe-fold ingredient FRAME (DESIGN.md §1, §Interactions) ─────────────
+// The recipe fold's ingredient combo renders as small item FRAMES in the
+// "recipe" context — hypothetical sources, exactly like the catalog cards in the
+// input panel. The hand ORIGIN is "catalog" (an unbounded reference; recipe and
+// catalog frames both mint hypotheticals — see item-frame.frameMintsReal), so
+// picking up beyond stock keeps the item hypothetical in the brew. Lore-only
+// ingredients (named but absent from the table) render as plain italic text.
+function RecipeItemFrame({
+  name,
+  qty,
   hand,
+  canMove,
   onHover,
   brewCounts,
   onShiftToBrew,
 }: {
-  combo: FoundRecipe;
-  hand: HandApi;
+  name: string;
+  qty: number;
+  hand: BrewHand;
+  canMove: boolean;
+  onHover: (itemKey: string | null) => void;
+  brewCounts: Record<string, number>;
+  onShiftToBrew: (itemKey: string) => void;
+}) {
+  const ing = ING_BY_NAME.get(name);
+  if (!ing) {
+    return (
+      <span
+        className="cursor-help self-center text-[11px] italic text-text-faint"
+        title="Named in the lore, but absent from the Ingredients Table — the math uses the other option."
+      >
+        {name}
+        {qty > 1 ? ` ×${qty}` : ""}
+      </span>
+    );
+  }
+  const inBrew = brewCounts[ing.key] ?? 0;
+  const g = grabHandlers({
+    itemKey: ing.key,
+    from: "catalog",
+    // the recipe fold is a boundless reference source, like the catalog grid
+    available: Number.POSITIVE_INFINITY,
+    inBrew,
+    hand,
+    canMove,
+    onHover,
+    onShiftToBrew,
+  });
+  const art: FrameItem = { key: ing.key, name: ing.name, color: ing.color, real: false, ing };
+  return (
+    <ItemFrame
+      context="recipe"
+      item={art}
+      size={30}
+      showMarks
+      ghosted={inBrew > 0}
+      handlers={canMove ? g : undefined}
+      label={`Pick up ${ing.name}`}
+      title={
+        canMove
+          ? `${ing.name}${qty > 1 ? ` ×${qty}` : ""} — click to pick up; shift-click sends one to the brew`
+          : `${ing.name}${qty > 1 ? ` ×${qty}` : ""}`
+      }
+      disabled={!canMove}
+      data-testid="recipe-frame"
+    >
+      {qty > 1 && (
+        <span className="pointer-events-none absolute -left-1 -top-1 rounded bg-surface/95 px-1 font-mono text-[9px] font-bold leading-4 tabular-nums text-text-muted">
+          ×{qty}
+        </span>
+      )}
+    </ItemFrame>
+  );
+}
+
+// One combo as a row of grabbable recipe frames + the outside-strike marker.
+function ComboRow({
+  ings,
+  strikes,
+  hand,
+  canMove,
+  onHover,
+  brewCounts,
+  onShiftToBrew,
+}: {
+  ings: string[];
+  strikes: number;
+  hand: BrewHand;
+  canMove: boolean;
   onHover: (itemKey: string | null) => void;
   brewCounts: Record<string, number>;
   onShiftToBrew: (itemKey: string) => void;
 }) {
   const counts = new Map<string, number>();
-  for (const n of combo.ings) counts.set(n, (counts.get(n) ?? 0) + 1);
-  const entries = [...counts.entries()];
+  for (const n of ings) counts.set(n, (counts.get(n) ?? 0) + 1);
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      {entries.map(([name, qty], i) => (
-        <span key={name} className="flex items-center gap-1">
-          {i > 0 && (
-            <span className="px-0.5 font-mono text-[9px] uppercase text-text-faint">+</span>
-          )}
-          <IngredientPill
-            entry={{ name, qty, known: true }}
-            hand={hand}
-            onHover={onHover}
-            brewCounts={brewCounts}
-            onShiftToBrew={onShiftToBrew}
-          />
-        </span>
+    <div className="flex flex-wrap items-center gap-1.5">
+      {[...counts.entries()].map(([name, qty]) => (
+        <RecipeItemFrame
+          key={name}
+          name={name}
+          qty={qty}
+          hand={hand}
+          canMove={canMove}
+          onHover={onHover}
+          brewCounts={brewCounts}
+          onShiftToBrew={onShiftToBrew}
+        />
       ))}
-      {combo.strikes > 0 && (
+      {strikes > 0 && (
         <span
-          className="font-mono text-[10px]"
+          className="self-center font-mono text-[10px]"
           style={{ color: STRIKE }}
-          title={`spend ${combo.strikes} strike${combo.strikes > 1 ? "s" : ""} to remove the excess`}
+          title={`spend ${strikes} strike${strikes > 1 ? "s" : ""} to remove the excess`}
         >
-          · ⊖{combo.strikes}
+          · ⊖{strikes}
         </span>
       )}
     </div>
   );
 }
 
-function PerfumeCard({
+// ── one perfume row ───────────────────────────────────────────────────────────
+
+function PerfumeRow({
   perfume,
-  res,
-  brew,
-  brewList,
+  status,
+  satisfied,
   brewEmpty,
+  brewTallyList,
   pinned,
   canPin,
   onTogglePin,
   expanded,
   onToggleExpanded,
   hand,
+  canMove,
   onHover,
   brewCounts,
   onShiftToBrew,
 }: {
   perfume: Perfume;
-  res: EvalResult;
-  brew: BrewState;
-  brewList: string[];
+  status: EvalResult["status"];
+  satisfied: Map<number, number>;
   brewEmpty: boolean;
+  brewTallyList: string[];
   pinned: boolean;
   canPin: boolean;
   onTogglePin: (key: string) => void;
   expanded: boolean;
   onToggleExpanded: (key: string) => void;
-  hand: HandApi;
+  hand: BrewHand;
+  canMove: boolean;
   onHover: (itemKey: string | null) => void;
   brewCounts: Record<string, number>;
   onShiftToBrew: (itemKey: string) => void;
 }) {
   const integ = integrateRecipe(perfume);
   const more = recipesFor(perfume);
-  // strike tiers that actually have combos in some recipe, in reveal order
   const tiersWithCombos = Array.from({ length: MAX_STRIKES + 1 }, (_, t) => t).filter(
     (t) => more.some((tiers) => tiers[t].length > 0),
   );
@@ -679,191 +715,230 @@ function PerfumeCard({
   const [strikesShown, setStrikesShown] = useState(0);
   const nextTier = tiersWithCombos.find((t) => t > strikesShown);
 
+  // one calm left accent bar keyed to status — replaces the old full-card ring
+  // + tinted border (DESIGN.md §6 "kill redundant badges/borders")
+  const accent =
+    satisfied.size > 0
+      ? "var(--color-success)"
+      : status === "craftable"
+        ? "var(--color-accent)"
+        : "transparent";
+
   return (
-    <article
-      className={`relative rounded-lg border bg-bg/40 ${
-        res.status === "perfect"
-          ? "border-success/50 ring-1 ring-success/40"
-          : res.status === "craftable"
-            ? "border-accent/50"
-            : "border-border"
-      }`}
-    >
-      <button
-        type="button"
-        onClick={() => onTogglePin(perfume.key)}
-        disabled={!canPin}
-        aria-pressed={pinned}
-        aria-label={pinned ? `Unpin ${perfume.name}` : `Pin ${perfume.name}`}
-        title={!canPin ? "join to pin a recipe" : pinned ? "Unpin" : "Pin this recipe to the brew"}
-        className={`absolute right-1 top-1 z-10 grid h-5 w-5 place-items-center rounded transition-colors duration-150 ${
-          pinned
-            ? "text-accent"
-            : canPin
-              ? "text-text-faint opacity-40 hover:opacity-100 hover:text-text-muted"
-              : "text-text-faint opacity-25"
-        }`}
+    <article className="overflow-hidden rounded-lg border border-border bg-bg/40">
+      {/* resting row: [pin] name · weight ……… [status chip] [▾] */}
+      <div
+        className="flex items-center gap-2 px-2.5 py-2"
+        style={{ boxShadow: `inset 3px 0 0 ${accent}` }}
       >
-        <svg viewBox="0 0 16 16" width={13} height={13} fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden="true">
-          <path d="M9.5 1.8 14.2 6.5 12.7 8l-.5-.2-2.7 2.7c.3 1.2 0 2.4-.8 3.2L5.4 10.4 2 13.8l-.9.3.3-.9 3.4-3.4-3.3-3.3c.8-.8 2-1.1 3.2-.8l2.7-2.7-.2-.5z" />
-        </svg>
-      </button>
-      {/* one compact strip: name + weight (recipes button beneath), the
-          required frequencies (symbols only, wrapping as needed), then the
-          brew formula — 🫕 + box of what's still missing */}
-      <div className="flex items-start gap-2.5 p-2.5">
-        <div className="w-32 shrink-0">
+        <PinButton perfume={perfume} pinned={pinned} canPin={canPin} onToggle={onTogglePin} />
+        <div className="flex min-w-0 flex-1 items-baseline gap-2">
           <h3 className="truncate text-sm font-semibold leading-tight text-text" title={perfume.name}>
             {perfume.name}
           </h3>
-          <div
-            className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-text-faint"
+          <span
+            className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-text-faint"
             title="total fundamental weight of the heaviest recipe"
           >
             w · {perfumeWeight(perfume)}
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              onToggleExpanded(perfume.key);
-              setStrikesShown(0);
-            }}
-            aria-expanded={expanded}
-            className="mt-1 rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-text-muted transition-colors duration-150 hover:border-text-muted hover:text-text"
-          >
-            recipes {expanded ? "▴" : "▾"}
-          </button>
+          </span>
         </div>
-
-        {/* idle: the integrated requirement. Brewing: ONE unified line —
-            the cauldron's frequencies + what's still needed (per-recipe
-            options) — no separate needs box repeating anything. */}
-        {brewEmpty ? (
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 self-center">
-            <FrequencyRow req={integ.core} size={22} />
-            {integ.groups.map((g, gi) =>
-              g.optional ? (
-                <span
-                  key={gi}
-                  title="optional — either version brews the perfume"
-                  className="flex flex-col items-center gap-0.5"
-                >
-                  <span className="flex items-center gap-1.5">
-                    {g.options.map((opt, oi) => (
-                      <span key={oi} className="flex items-center gap-1.5">
-                        {oi > 0 && (
-                          <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
-                        )}
-                        <FrequencyRow req={opt} size={17} />
-                      </span>
-                    ))}
-                  </span>
-                  <span className="font-mono text-[8px] uppercase tracking-wider text-text-faint">
-                    optional
-                  </span>
-                </span>
-              ) : (
-                <span key={gi} className="flex items-center gap-1.5">
-                  <span className="font-mono text-sm text-text-faint">(</span>
-                  {g.options.map((opt, oi) => (
-                    <span key={oi} className="flex items-center gap-1.5">
-                      {oi > 0 && (
-                        <span className="font-mono text-[9px] uppercase text-text-faint">or</span>
-                      )}
-                      <FrequencyRow req={opt} size={22} />
-                    </span>
-                  ))}
-                  <span className="font-mono text-sm text-text-faint">)</span>
-                </span>
-              ),
-            )}
-          </div>
-        ) : (
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 self-center">
-            <MiniCauldron size={20} />
-            <FrequencyRow req={brewList} size={22} />
-            {res.status === "perfect" ? (
-              <span className="inline-block rounded border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[11px] text-success">
-                ✦ Brewed{res.k > 1 ? ` ×${res.k}` : ""}
-              </span>
-            ) : (
-              <>
-                <span
-                  className={`font-mono text-sm ${
-                    res.status === "craftable" ? "text-accent" : "text-text-faint"
-                  }`}
-                >
-                  +
-                </span>
-                <NeededOptions perfume={perfume} brew={brew} res={res} size={22} />
-              </>
-            )}
-          </div>
-        )}
+        {!brewEmpty && <StatusChip perfume={perfume} status={status} satisfied={satisfied} />}
+        <button
+          type="button"
+          onClick={() => {
+            onToggleExpanded(perfume.key);
+            setStrikesShown(0);
+          }}
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${perfume.name}` : `Expand ${perfume.name}`}
+          className={cn(btn.ghost, "h-6 shrink-0 px-1.5 text-[11px]")}
+        >
+          recipes {expanded ? "▴" : "▾"}
+        </button>
       </div>
 
-      {/* what the perfume DOES — "unknown" until discovered in play */}
-      <p className="px-2.5 pb-2 text-[11px] italic leading-snug text-text-muted">
-        {perfume.effect}
-      </p>
-
       {expanded && (
-        <div className="space-y-2 border-t border-border/60 px-3 py-2.5">
-          {tiersWithCombos.filter((t) => t <= strikesShown).length === 0 && (
-            <p className="font-mono text-[10px] italic text-text-faint">
-              no strike-free recipes
-            </p>
-          )}
-          {Array.from({ length: strikesShown + 1 }, (_, t) => t)
-            .filter((t) => tiersWithCombos.includes(t))
-            .map((t) => (
-              <div key={t} className="space-y-1.5">
-                {t > 0 && (
-                  <p className="font-mono text-[9px] uppercase tracking-wider" style={{ color: STRIKE }}>
-                    ⊖ {t} strike{t > 1 ? "s" : ""} needed
-                  </p>
-                )}
-                {perfume.recipes.map((req, ri) =>
-                  more[ri][t].length === 0 ? null : (
-                    <div key={ri} className="space-y-1">
-                      {perfume.recipes.length > 1 && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
-                          <FrequencyRow req={req} size={13} />
-                        </div>
-                      )}
-                      <div className="space-y-1">
-                        {more[ri][t].slice(0, 30).map((combo, ci) => (
-                          <ComboRow
-                            key={ci}
-                            combo={combo}
-                            hand={hand}
-                            onHover={onHover}
-                            brewCounts={brewCounts}
-                            onShiftToBrew={onShiftToBrew}
-                          />
-                        ))}
-                        {more[ri][t].length > 30 && (
-                          <p className="font-mono text-[10px] italic text-text-faint">…and more</p>
-                        )}
-                      </div>
-                    </div>
-                  ),
-                )}
+        <div className="space-y-2.5 border-t border-border/60 px-3 py-2.5">
+          {/* the requirement summary — symbols only. While brewing, the brew's
+              own tally sits beside it so "have vs need" reads at a glance. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <div className="flex flex-col gap-0.5">
+              <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">requires</span>
+              <IntegratedRequirement integ={integ} />
+            </div>
+            {!brewEmpty && brewTallyList.length > 0 && (
+              <div className="flex flex-col gap-0.5">
+                <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">brew has</span>
+                <FrequencyRow req={brewTallyList} size={18} />
               </div>
-            ))}
-          {nextTier !== undefined && (
-            <button
-              type="button"
-              onClick={() => setStrikesShown(nextTier)}
-              className="rounded-md border border-dashed px-2 py-0.5 font-mono text-[10px] transition-colors duration-150 hover:border-solid"
-              style={{ borderColor: `${STRIKE}88`, color: STRIKE }}
-            >
-              show combos needing ⊖ {nextTier} strike{nextTier > 1 ? "s" : ""} ▾
-            </button>
-          )}
+            )}
+          </div>
+
+          {/* what the perfume DOES — "unknown" until discovered in play */}
+          <p className="text-[11px] italic leading-snug text-text-muted">{perfume.effect}</p>
+
+          {/* the recipe combos, grabbable as recipe frames (DESIGN.md §1) */}
+          <RecipeFolds
+            perfume={perfume}
+            more={more}
+            tiersWithCombos={tiersWithCombos}
+            strikesShown={strikesShown}
+            nextTier={nextTier}
+            onRevealTier={setStrikesShown}
+            satisfied={satisfied}
+            hand={hand}
+            canMove={canMove}
+            onHover={onHover}
+            brewCounts={brewCounts}
+            onShiftToBrew={onShiftToBrew}
+          />
         </div>
       )}
     </article>
+  );
+}
+
+// The pin — a single recipe pinned to the brew (DESIGN.md §5). Read-only for a
+// visitor (canPin false): dimmed, non-interactive, but the pinned state still
+// shows so everyone viewing the brew sees the same pin.
+function PinButton({
+  perfume,
+  pinned,
+  canPin,
+  onToggle,
+}: {
+  perfume: Perfume;
+  pinned: boolean;
+  canPin: boolean;
+  onToggle: (key: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(perfume.key)}
+      disabled={!canPin}
+      aria-pressed={pinned}
+      aria-label={pinned ? `Unpin ${perfume.name}` : `Pin ${perfume.name}`}
+      title={!canPin ? "join to pin a recipe" : pinned ? "Unpin" : "Pin this recipe to the brew"}
+      className={cn(
+        "grid h-5 w-5 shrink-0 place-items-center rounded transition-colors duration-150",
+        pinned
+          ? "text-accent"
+          : canPin
+            ? "text-text-faint opacity-40 hover:text-text-muted hover:opacity-100"
+            : "text-text-faint opacity-25",
+      )}
+    >
+      <svg viewBox="0 0 16 16" width={13} height={13} fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9.5 1.8 14.2 6.5 12.7 8l-.5-.2-2.7 2.7c.3 1.2 0 2.4-.8 3.2L5.4 10.4 2 13.8l-.9.3.3-.9 3.4-3.4-3.3-3.3c.8-.8 2-1.1 3.2-.8l2.7-2.7-.2-.5z" />
+      </svg>
+    </button>
+  );
+}
+
+// ── the recipe folds ──────────────────────────────────────────────────────────
+// Combos grouped by outside-strike tier, revealed progressively. The recipe row
+// whose recipe the brew currently satisfies is HIGHLIGHTED (DESIGN.md §Recipe),
+// naming it with the shared recipe-label phrasing.
+function RecipeFolds({
+  perfume,
+  more,
+  tiersWithCombos,
+  strikesShown,
+  nextTier,
+  onRevealTier,
+  satisfied,
+  hand,
+  canMove,
+  onHover,
+  brewCounts,
+  onShiftToBrew,
+}: {
+  perfume: Perfume;
+  more: FoundRecipe[][][];
+  tiersWithCombos: number[];
+  strikesShown: number;
+  nextTier: number | undefined;
+  onRevealTier: (t: number) => void;
+  satisfied: Map<number, number>;
+  hand: BrewHand;
+  canMove: boolean;
+  onHover: (itemKey: string | null) => void;
+  brewCounts: Record<string, number>;
+  onShiftToBrew: (itemKey: string) => void;
+}) {
+  const multiRecipe = perfume.recipes.length > 1;
+  return (
+    <div className="space-y-2">
+      {tiersWithCombos.filter((t) => t <= strikesShown).length === 0 && (
+        <p className="font-mono text-[10px] italic text-text-faint">no strike-free recipes</p>
+      )}
+      {Array.from({ length: strikesShown + 1 }, (_, t) => t)
+        .filter((t) => tiersWithCombos.includes(t))
+        .map((t) => (
+          <div key={t} className="space-y-1.5">
+            {t > 0 && (
+              <p className="font-mono text-[9px] uppercase tracking-wider" style={{ color: STRIKE }}>
+                ⊖ {t} strike{t > 1 ? "s" : ""} needed
+              </p>
+            )}
+            {perfume.recipes.map((req, ri) =>
+              more[ri][t].length === 0 ? null : (
+                <div
+                  key={ri}
+                  className={cn(
+                    "space-y-1 rounded-md",
+                    satisfied.has(ri) && "-mx-1 border border-success/40 bg-success/5 px-1 py-1",
+                  )}
+                >
+                  {(multiRecipe || satisfied.has(ri)) && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
+                      <FrequencyRow req={req} size={13} />
+                      {satisfied.has(ri) && (
+                        <span
+                          className="ml-auto whitespace-nowrap rounded-full bg-success/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-success"
+                          title="the brew satisfies this recipe"
+                        >
+                          {recipeLabel(perfume.key, ri) ?? "satisfied"} ✓
+                          {satisfied.get(ri)! > 1 ? ` ×${satisfied.get(ri)!}` : ""}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <div className="space-y-1.5">
+                    {more[ri][t].slice(0, 30).map((combo, ci) => (
+                      <ComboRow
+                        key={ci}
+                        ings={combo.ings}
+                        strikes={combo.strikes}
+                        hand={hand}
+                        canMove={canMove}
+                        onHover={onHover}
+                        brewCounts={brewCounts}
+                        onShiftToBrew={onShiftToBrew}
+                      />
+                    ))}
+                    {more[ri][t].length > 30 && (
+                      <p className="font-mono text-[10px] italic text-text-faint">…and more</p>
+                    )}
+                  </div>
+                </div>
+              ),
+            )}
+          </div>
+        ))}
+      {nextTier !== undefined && (
+        <button
+          type="button"
+          onClick={() => onRevealTier(nextTier)}
+          className="rounded-md border border-dashed px-2 py-0.5 font-mono text-[10px] transition-colors duration-150 hover:border-solid"
+          style={{ borderColor: `${STRIKE}88`, color: STRIKE }}
+        >
+          show combos needing ⊖ {nextTier} strike{nextTier > 1 ? "s" : ""} ▾
+        </button>
+      )}
+    </div>
   );
 }

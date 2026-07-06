@@ -3,7 +3,7 @@ import base from "../data/base.json";
 import emblems from "../data/emblems.json";
 import { GLYPH } from "./emblems";
 
-// The bench renders every named frequency's emblem via GLYPH[Named.icon]. If a
+// The Perfumer renders every named frequency's emblem via GLYPH[Named.icon]. If a
 // named frequency in base.json has no emblem entry (or its icon isn't in
 // GLYPH), it would render blank — so the two synced artifacts must stay in
 // lockstep. scripts/sync-perfume-data.mjs enforces this at sync time; this test

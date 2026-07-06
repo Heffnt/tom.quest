@@ -22,6 +22,7 @@ import type { Inventory } from "../lib/brew-types";
 import type { HandOrigin, BrewHand } from "../lib/use-hand";
 import { PHIAL } from "../lib/frequencies";
 import ItemFrame, { type FrameItem } from "./item-frame";
+import { btn, cn } from "./ui";
 
 // ── the hand grammar, wired once ─────────────────────────────────────────────
 // Shared by inventory slots and catalog rows: pointer-down picks up (the hand
@@ -54,7 +55,7 @@ export function grabHandlers(spec: GrabSpec) {
     // press only ARMS a potential drag; the pickup itself happens on click so
     // it cooperates with the hand's click/drag guards (a pickup on pointerdown
     // would be canceled by its own trailing click, and a drag release would
-    // re-pick) — same split the cauldron arc and output shelf use
+    // re-pick) — same split the cauldron arc and cauldron outputs use
     onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
       if (e.button !== 0 || e.shiftKey || !spec.canMove || room <= 0) return;
       spec.hand.beginPress(e, spec.itemKey, spec.from, room);
@@ -113,6 +114,9 @@ export type InventorySlotItem = {
   count: number; // owned (still in the inventory section)
   inBrew: number; // copies currently in the brew -> ghosted icon
   ing?: Ingredient; // ingredient/pure slots; perfume slots render the phial
+  // extra hover copy appended after the "{name} ×{count}" line — perfume slots
+  // carry their instance provenance here (DESIGN.md §1,§9).
+  provenance?: string;
 };
 
 export interface InventoryGridProps {
@@ -246,7 +250,7 @@ function Slot({
         count={item.count}
         handlers={g}
         label={`Pick up ${item.name}`}
-        title={`${item.name} ×${item.count}${ghost ? ` — ${item.inBrew} in the brew` : ""}`}
+        title={`${item.name} ×${item.count}${ghost ? ` — ${item.inBrew} in the brew` : ""}${item.provenance ? `\n${item.provenance}` : ""}`}
         disabled={!canMove}
         data-testid="inventory-slot"
       >
@@ -350,7 +354,7 @@ function SendPopover({
             onTransfer(to, anchor.itemKey, count);
             onClose();
           }}
-          className="ml-auto rounded-md border border-accent/60 bg-accent/10 px-2.5 py-1 font-mono text-xs font-semibold text-accent transition-colors duration-150 hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
+          className={cn(btn.accent, "ml-auto px-2.5 py-1")}
         >
           Send
         </button>

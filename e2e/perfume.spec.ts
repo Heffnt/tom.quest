@@ -16,7 +16,7 @@ import {
   freqFloats,
   handGhost,
   invSlot,
-  openLocalBench,
+  openLocalBrew,
   pressAndDrag,
   stage,
 } from "./helpers/perfume";
@@ -26,7 +26,7 @@ import {
 // retries (against a by-then warm server) absorb it deterministically.
 test.describe.configure({ retries: 2, timeout: 60_000 });
 
-test.describe("perfume bench — local mode", () => {
+test.describe("perfume brew — local mode", () => {
   // the hand grammar needs the three-column (lg) layout: panels side by side
   test.skip(
     ({ viewport }) => !!viewport && viewport.width < 1024,
@@ -36,19 +36,21 @@ test.describe("perfume bench — local mode", () => {
   test("U1: boundary commit — frequencies join the brew before release", async ({
     page,
   }) => {
-    await openLocalBench(page);
+    await openLocalBrew(page);
     await pressAndDrag(page, invSlot(page, ROSES), stage(page));
 
-    // still holding the button: entry into the cauldron already committed
-    // the stack — its frequencies float, the stock is down one
+    // still holding the button: entry into the cauldron already committed the
+    // stack IN PLACE (DESIGN.md §3) — its frequencies float, the stock is down
+    // one, and the committed copy already stands as an ingredient node
     await expect(freqFloats(page, "A")).toHaveCount(2);
     await expect(invSlot(page, ROSES)).toHaveAttribute(
       "title",
       "Noble Roses ×2 — 1 in the brew",
     );
     await expect(handGhost(page)).toHaveAttribute("data-item-key", ROSES);
-    // the held copies ride the cursor, not the ingredient arc
-    await expect(arcNode(page, ROSES)).toHaveCount(0);
+    // the committed copy sits in the graph the moment it crosses the boundary —
+    // it does not wait for release
+    await expect(arcNode(page, ROSES)).toBeVisible();
 
     await page.mouse.up();
     await expect(arcNode(page, ROSES)).toBeVisible();
@@ -59,7 +61,7 @@ test.describe("perfume bench — local mode", () => {
   test("U1: leaving the cauldron before release un-commits", async ({
     page,
   }) => {
-    await openLocalBench(page);
+    await openLocalBrew(page);
     await pressAndDrag(page, invSlot(page, ROSES), stage(page));
     await expect(freqFloats(page, "A")).toHaveCount(2);
 
@@ -83,15 +85,15 @@ test.describe("perfume bench — local mode", () => {
   test("U2: native image drag is suppressed on grabbable art", async ({
     page,
   }) => {
-    await openLocalBench(page);
+    await openLocalBrew(page);
     await invSlot(page, ROSES).click({ modifiers: ["Shift"] });
-    const surfaces = [
-      invSlot(page, ROSES),
-      catalogRow(page, ROSES).getByRole("button"),
-      arcNode(page, ROSES),
-    ];
-    for (const surface of surfaces) {
-      const prevented = await surface
+
+    // fires a native dragstart on the surface's art and returns whether it was
+    // suppressed. The catalog art is behind the Ingredients tab and lazy-loads
+    // off-screen, so scroll it into view first (the product keeps loading="lazy"
+    // — we don't touch that; we just make the element attached/visible).
+    const dragPrevented = (surface: import("@playwright/test").Locator) =>
+      surface
         .locator("img")
         .first()
         .evaluate((img) => {
@@ -102,40 +104,46 @@ test.describe("perfume bench — local mode", () => {
           img.dispatchEvent(ev);
           return ev.defaultPrevented;
         });
-      expect(prevented).toBe(true);
-    }
+
+    // an inventory slot and the committed ingredient node are both on-screen
+    expect(await dragPrevented(invSlot(page, ROSES))).toBe(true);
+    expect(await dragPrevented(arcNode(page, ROSES))).toBe(true);
+
+    // the catalog card lives on the Ingredients tab — scroll its art on-screen
+    await page.getByRole("button", { name: "Ingredients", exact: true }).click();
+    const card = catalogRow(page, ROSES);
+    await expect(card).toBeVisible();
+    await card.locator("img").first().scrollIntoViewIfNeeded();
+    expect(await dragPrevented(card)).toBe(true);
   });
 
   test("U3: in-brew items ghost their icons in the panel", async ({ page }) => {
-    await openLocalBench(page);
+    await openLocalBrew(page);
     await invSlot(page, ROSES).click({ modifiers: ["Shift"] });
     await invSlot(page, ROSES).click({ modifiers: ["Shift"] });
 
-    await expect(invSlot(page, ROSES)).toHaveAttribute(
-      "title",
-      "Noble Roses ×1 — 2 in the brew",
-    );
-    await expect(invSlot(page, ROSES).locator(".opacity-35")).toHaveCount(1);
-    const row = catalogRow(page, ROSES);
-    await expect(row.locator(".opacity-35")).toHaveCount(1);
-    await expect(row.locator('[title="2 in the brew"]')).toHaveText("×2");
+    // two copies now sit in the brew (as their in-place item nodes, DESIGN.md
+    // §3); the inventory slot keeps its place but ghosts its art — "you took
+    // the icon" — and its title counts what's left vs. what's in the brew
+    const slot = invSlot(page, ROSES);
+    await expect(slot).toHaveAttribute("title", "Noble Roses ×1 — 2 in the brew");
+    await expect(slot.locator(".opacity-35")).toHaveCount(1);
+    await expect(arcNode(page, ROSES)).toHaveAttribute("title", /Noble Roses ×2/);
 
-    // empty-hand right-click returns one per click; ghosting clears at zero
-    await invSlot(page, ROSES).click({ button: "right" });
-    await expect(row.locator('[title="1 in the brew"]')).toHaveText("×1");
-    await row.getByRole("button").click({ button: "right" });
-    await expect(invSlot(page, ROSES)).toHaveAttribute(
-      "title",
-      "Noble Roses ×3",
-    );
-    await expect(invSlot(page, ROSES).locator(".opacity-35")).toHaveCount(0);
-    await expect(row.locator(".opacity-35")).toHaveCount(0);
+    // empty-hand right-click on the ghosted slot returns one per click; the
+    // ghosting clears once the last copy comes home
+    await slot.click({ button: "right" });
+    await expect(slot).toHaveAttribute("title", "Noble Roses ×2 — 1 in the brew");
+    await slot.click({ button: "right" });
+    await expect(slot).toHaveAttribute("title", "Noble Roses ×3");
+    await expect(slot.locator(".opacity-35")).toHaveCount(0);
+    await expect(arcNode(page, ROSES)).toHaveCount(0);
   });
 
   test("U4: hover never touches the brew graph", async ({ page }) => {
     // The graph IS the math now (the old brew-bar delta chips are gone); the
     // surviving guarantee is that hovering an input row leaves the graph alone.
-    await openLocalBench(page);
+    await openLocalBrew(page);
     await invSlot(page, PEAT).click({ modifiers: ["Shift"] });
     await expect(freqFloats(page, "N")).toHaveCount(2);
     await expect(
@@ -157,7 +165,7 @@ test.describe("perfume bench — local mode", () => {
   test("U5: the hand grammar — click stacking, right-click return, Escape, shift teleports", async ({
     page,
   }) => {
-    await openLocalBench(page);
+    await openLocalBrew(page);
     const roses = invSlot(page, ROSES);
 
     // left-click picks up one; repeats on the same stack add one each
@@ -177,7 +185,7 @@ test.describe("perfume bench — local mode", () => {
     await expect(handGhost(page).getByText("×2")).toHaveCount(0);
     await roses.click({ button: "right" });
     await expect(handGhost(page)).toHaveCount(0);
-    // pickups and returns never touched the bench
+    // pickups and returns never touched the brew
     await expect(roses).toHaveAttribute("title", "Noble Roses ×3");
 
     // clicking a different item sends the current stack home first
@@ -209,7 +217,7 @@ test.describe("perfume bench — local mode", () => {
   test("U6: brew flow — brew spawns phials, take to inventory, hypotheticals block with a reason", async ({
     page,
   }) => {
-    await openLocalBench(page);
+    await openLocalBrew(page);
     await invSlot(page, ROSES).click({ modifiers: ["Shift"] });
     await invSlot(page, APHASIA).click({ modifiers: ["Shift"] });
 
@@ -217,14 +225,18 @@ test.describe("perfume bench — local mode", () => {
     await expect(brewSerum).toBeEnabled();
     await brewSerum.click();
 
-    // the pot is consumed into phials on the output shelf
+    // brewing spawns the perfume on the cauldron rim…
     const phial = page.locator(
       `[data-testid="output-phial"][data-perfume-key="${SERUM}"]`,
     );
     await expect(phial).toHaveAttribute("aria-label", /Swana's Serum ×1 brewed/);
-    await expect(arcNode(page, ROSES)).toHaveCount(0);
-    await expect(page.getByTestId("brew-bar")).toHaveText(
-      /the cauldron is empty/,
+    // …and does NOT collapse the graph: each consumed real ingredient is left
+    // in place as its hypothetical twin (DESIGN.md §3), while its inventory
+    // stack is decremented forever (Noble Roses 3 → 2, one of them in-brew)
+    await expect(arcNode(page, ROSES)).toHaveAttribute("title", /hypothetical/);
+    await expect(invSlot(page, ROSES)).toHaveAttribute(
+      "title",
+      "Noble Roses ×2 — 1 in the brew",
     );
 
     // shift-click takes one straight to the inventory's perfume section
@@ -232,13 +244,17 @@ test.describe("perfume bench — local mode", () => {
     await expect(phial).toHaveCount(0);
     await expect(invSlot(page, SERUM)).toHaveAttribute(
       "title",
-      "Swana's Serum ×1",
+      /Swana's Serum ×1/,
     );
 
-    // the catalog is boundless — the second Peat is past stock, hypothetical
-    const peatRow = catalogRow(page, PEAT).getByRole("button");
-    await peatRow.click({ modifiers: ["Shift"] });
-    await peatRow.click({ modifiers: ["Shift"] });
+    // clear the hypothetical-twin graph, then build a fresh k-multiple brew
+    await page.getByRole("button", { name: "Empty the brew" }).click();
+    await expect(arcNode(page, ROSES)).toHaveCount(0);
+
+    // Peat stocks one; a second copy is past stock, so it enters hypothetical
+    // and blocks brewing with a named reason
+    await invSlot(page, PEAT).click({ modifiers: ["Shift"] });
+    await invSlot(page, PEAT).click({ modifiers: ["Shift"] });
     const blocked = page.getByRole("button", { name: "Brew Black Gas ×4" });
     await expect(blocked).toBeDisabled();
     await expect(blocked).toHaveAttribute(
@@ -263,7 +279,7 @@ test.describe("perfume bench — local mode", () => {
   test("U9: import dialog — exact line, typo → guess → accept, garbage rejected", async ({
     page,
   }) => {
-    await openLocalBench(page);
+    await openLocalBrew(page);
     await page.getByRole("button", { name: "import" }).click();
     const dialog = page.getByRole("dialog", { name: "Import inventory" });
     await dialog
@@ -295,7 +311,7 @@ test.describe("perfume bench — local mode", () => {
 
 // ── U7/U8: two-context live sync (real Convex deployment — opt in) ───────────
 
-test.describe("perfume bench — live sync", () => {
+test.describe("perfume brew — live sync", () => {
   test.skip(
     !process.env.E2E_CONVEX,
     "set E2E_CONVEX=1 to run the two-context specs (they touch the shared deployment)",
@@ -321,7 +337,7 @@ test.describe("perfume bench — live sync", () => {
         timeout: 15_000,
       });
 
-      // A stocks their own bench (import is a home action — no nickname gate)
+      // A stocks their own inventory (import is a home action — no nickname gate)
       await a.getByRole("button", { name: "import" }).click();
       const importDialog = a.getByRole("dialog", { name: "Import inventory" });
       await importDialog.getByRole("textbox").fill("Noble Roses x1");

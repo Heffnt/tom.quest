@@ -8,8 +8,9 @@ export const USER_ROLES = v.union(
   v.literal("tom"),
 );
 
-// One item in a brew pot (bench or party). See bench-types.ts `PotItem`.
-const perfumePotItem = v.object({
+// One item in a brew (owner or party). Types the DEPRECATED single-brew
+// tables below; the live shape is app/perfume/lib/brew-types.ts.
+const perfumeBrewItem = v.object({
   key: v.string(), // catalog item key ("base:<name>" | "pure:<id>")
   contributorKey: v.string(),
   contributorName: v.string(),
@@ -214,7 +215,7 @@ export default defineSchema({
     ownerKey: v.string(), // "user:<id>" | "anon:<uuid>"
     ownerName: v.string(),
     color: v.string(),
-    pot: v.array(perfumePotItem),
+    pot: v.array(perfumeBrewItem),
     strikePlays: v.array(v.string()),
     wildPlays: v.array(v.string()),
     inventory: v.object({
@@ -237,7 +238,7 @@ export default defineSchema({
 
   // Singleton (accessed via .first()): the shared party pot.
   perfumePartyBrew: defineTable({
-    items: v.array(perfumePotItem),
+    items: v.array(perfumeBrewItem),
     strikePlays: v.array(v.string()),
     wildPlays: v.array(v.string()),
     outputTray: v.record(v.string(), v.number()),

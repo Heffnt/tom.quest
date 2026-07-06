@@ -170,6 +170,7 @@ describe("formatInventory", () => {
     },
     pures: { "pure:strike": 2, "pure:N": 1 },
     perfumes: { "base:black-gas": 4 },
+    perfumeInstances: [],
   };
 
   it("emits Name xN — ingredients, pures, perfumes, each alphabetical", () => {
@@ -188,6 +189,7 @@ describe("formatInventory", () => {
       ingredients: { "base:Silver": 0 },
       pures: {},
       perfumes: { "base:bright": 1 },
+      perfumeInstances: [],
     };
     expect(formatInventory(sparse, FULL_CATALOG)).toBe("Bright x1");
     expect(formatInventory(EMPTY_INVENTORY, FULL_CATALOG)).toBe("");

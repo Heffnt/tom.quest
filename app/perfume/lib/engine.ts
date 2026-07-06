@@ -1,4 +1,4 @@
-// Matching engine for the Perfumer's Bench (/perfume).
+// Matching engine for the Perfumer (/perfume).
 // Pure TypeScript, shared by the client and (eventually) Convex mutations —
 // there is exactly ONE implementation of the Three Feifs rules.
 //

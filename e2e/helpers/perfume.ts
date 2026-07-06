@@ -13,7 +13,7 @@ export const PEAT = "base:Pemneath Peat";
 export const SERUM = "base:swanas-serum"; // recipe [A, A, Crallax, En]
 export const BLACK_GAS = "base:black-gas"; // recipe [N] — k-multiples
 
-export async function openLocalBench(page: Page): Promise<void> {
+export async function openLocalBrew(page: Page): Promise<void> {
   await page.goto("/perfume?local=1&seed=basic");
   await expect(invSlot(page, ROSES)).toBeVisible();
 }

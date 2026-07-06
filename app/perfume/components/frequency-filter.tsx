@@ -14,6 +14,14 @@ import { useEffect, useRef, useState } from "react";
 import { ALL_FREQUENCIES, FUND, isNamed, INGREDIENT_TYPES } from "../data/base";
 import { FrequencyGlyph, TypeGlyph, ChargeSymbol } from "../lib/frequencies";
 import type { IngredientType } from "../lib/types";
+import { cn } from "./ui";
+
+// The shared shell interaction feel (components/ui.tsx BASE): a crisp
+// keyboard-only ring and a consistent transition. Applied here so the filter
+// trigger and its dropdown rows read as one system with the rest of the shell,
+// without disturbing the trigger's load-bearing grow-with-selection layout.
+const CONTROL_FEEL =
+  "transition-[color,background-color,border-color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 
 export const isTypeFilter = (v: string): boolean => v.startsWith("type:");
 
@@ -95,9 +103,11 @@ export default function FrequencyFilterButton({
       : "Filter by frequency";
 
   const rowClass = (selected: boolean) =>
-    `flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-      selected ? "bg-surface-alt text-text" : "text-text-muted"
-    }`;
+    cn(
+      "flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs hover:bg-surface-alt",
+      CONTROL_FEEL,
+      selected ? "bg-surface-alt text-text" : "text-text-muted",
+    );
 
   return (
     <div ref={ref} className="relative shrink-0">
@@ -110,9 +120,11 @@ export default function FrequencyFilterButton({
         title={values.length ? `${label} — click to change` : label}
         // grows with the selection; max-w + wrap guard the search input's
         // room when many filters are on at once
-        className={`flex h-full min-w-[42px] max-w-[220px] flex-wrap items-center justify-center gap-1 rounded-lg border bg-bg px-2 py-1 transition-colors duration-150 ${
-          values.length ? "border-accent" : "border-border hover:border-text-muted"
-        }`}
+        className={cn(
+          "flex h-full min-w-[42px] max-w-[220px] flex-wrap items-center justify-center gap-1 rounded-lg border bg-bg px-2 py-1",
+          CONTROL_FEEL,
+          values.length ? "border-accent" : "border-border hover:border-text-muted",
+        )}
       >
         {values.length === 0 ? (
           // the "empty frequency": an unfilled ring in the site's light grey
@@ -155,9 +167,11 @@ export default function FrequencyFilterButton({
                 onChange([]);
                 setOpen(false);
               }}
-              className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs transition-colors hover:bg-surface-alt ${
-                values.length === 0 ? "text-text" : "text-text-muted"
-              }`}
+              className={cn(
+                "flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs hover:bg-surface-alt",
+                CONTROL_FEEL,
+                values.length === 0 ? "text-text" : "text-text-muted",
+              )}
             >
               <span
                 aria-hidden="true"

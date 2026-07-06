@@ -4,23 +4,46 @@
 // here is binding (brew/member/cauldron/gift, never bench/pot/tuning).
 
 // ── inventory ────────────────────────────────────────────────────────────────
+// A held perfume instance (DESIGN.md §9 "Perfumes are instances"): its
+// provenance travels with it — who brewed it, who witnessed it, when, and the
+// ownership chain (oldest→newest) as it was gifted between members. This is the
+// inventory counterpart to OutputInstance (which rests on the cauldron); the two
+// feed the SAME provenance tooltip (lib/provenance.ts).
+export type PerfumeInstance = {
+  instanceId: string;
+  perfumeId: string;
+  brewedByKey: string;
+  witnesses: string[];
+  brewedAt: number;
+  owners: OwnerHop[]; // ownership chain oldest→newest
+};
+
 // Fungible-stack counts keyed by catalog item key ("base:<name>" | "pure:<id>").
-// Perfumes are NOT stacks in the multi-brew model (they are instances, below);
-// the `perfumes` section here is the projected COUNT view the legacy input
-// panel still renders, derived from the instance list.
+// Perfumes are NOT stacks in the multi-brew model (they are instances); the
+// `perfumes` section here is the projected COUNT view the legacy input panel
+// still renders, derived from `perfumeInstances` — which is kept ALONGSIDE it so
+// the panels can surface each instance's provenance on hover (DESIGN.md §1,§9).
 export type Inventory = {
   ingredients: Record<string, number>;
   pures: Record<string, number>;
   perfumes: Record<string, number>;
+  perfumeInstances: PerfumeInstance[];
 };
 
 export const EMPTY_INVENTORY: Inventory = Object.freeze({
   ingredients: {},
   pures: {},
   perfumes: {},
+  perfumeInstances: [],
 });
 
-export function inventorySectionFor(itemKey: string): keyof Inventory {
+// The count-bearing inventory sections (the fungible-stack records). This is a
+// strict subset of `keyof Inventory` — it EXCLUDES `perfumeInstances` (an array,
+// not a count record), so anything indexing `inv[section][itemKey]` types
+// against a StackSection, never the whole key set.
+export type StackSection = "ingredients" | "pures" | "perfumes";
+
+export function inventorySectionFor(itemKey: string): StackSection {
   return itemKey.startsWith("pure:") ? "pures" : "ingredients";
 }
 

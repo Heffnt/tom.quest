@@ -1,4 +1,4 @@
-// Shared types for the Perfumer's Bench (/perfume).
+// Shared types for the Perfumer (/perfume).
 // Frequency ids are either a fundamental id (9) or a named-frequency id (17).
 // Frequencies COMBINE: a multiset equal to a named frequency's components is
 // interchangeable with it, so matching compares equivalence classes.

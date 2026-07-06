@@ -62,6 +62,8 @@ import {
 import { ItemIcon, type BrewHand } from "../lib/use-hand";
 import { PhialGlyph } from "./phial";
 import { useSound, prefersReducedMotion } from "../lib/sound";
+import { makeNameResolver, provenanceTooltip, type NameResolver } from "../lib/provenance";
+import { recipeLabel } from "../lib/recipe-label";
 import { btn, cn } from "./ui";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -78,15 +80,9 @@ function perfumeName(key: string): string {
   return PERFUME_BY_KEY.get(key)?.name ?? key.replace(/^base:/, "");
 }
 
-// WHICH recipe a completed/satisfied brew landed on (DESIGN.md §Recipe: "when a
-// brew completes, the UI shows which recipe was satisfied"). Index 0 is the
-// common recipe; the rest are numbered 1-based. Returns null when the perfume
-// carries a single recipe (there is nothing to disambiguate).
-function recipeLabel(perfumeKey: string, recipeIndex: number): string | null {
-  const p = PERFUME_BY_KEY.get(perfumeKey);
-  if (!p || p.recipes.length <= 1) return null;
-  return recipeIndex === 0 ? "common recipe" : `recipe ${recipeIndex + 1}`;
-}
+// WHICH recipe a completed/satisfied brew landed on lives in lib/recipe-label
+// so the stage and the perfume book (which both name recipes) share ONE
+// phrasing (DESIGN.md §1 recipe / §Recipe "the UI shows which recipe").
 
 // The blend tint of a perfume's common recipe — the bottle's glass colour and
 // the reference for the cauldron liquid. Reuses the layout model's blendTint
@@ -146,6 +142,9 @@ export interface BrewGraphProps {
   deepLink: string | null;
   /** Rename the open brew (any member). */
   onNickname?: (nickname: string) => void;
+  /** Members, for resolving output-provenance memberKeys → display names in the
+   * cauldron bottle hover tooltip (DESIGN.md §1,§9). */
+  members: { memberKey: string; name: string }[];
 }
 
 // ── the stage ────────────────────────────────────────────────────────────────
@@ -160,8 +159,10 @@ export default function BrewGraph({
   blockers,
   deepLink,
   onNickname,
+  members,
 }: BrewGraphProps) {
   const sound = useSound();
+  const resolveName = useMemo(() => makeNameResolver(members), [members]);
 
   // The layout model — pure, deterministic; every rule already resolved.
   const graph = useMemo<BrewGraphModel>(
@@ -415,6 +416,7 @@ export default function BrewGraph({
               outputs={snapshot.outputs}
               canTake={permissions.brewAndTake}
               onTake={takeOutput}
+              resolveName={resolveName}
             />
           </div>
         )}
@@ -1126,10 +1128,12 @@ function OutputRim({
   outputs,
   canTake,
   onTake,
+  resolveName,
 }: {
   outputs: OutputInstance[];
   canTake: boolean;
   onTake: (instanceId: string) => void;
+  resolveName: NameResolver;
 }) {
   return (
     <div className="flex flex-col items-center gap-1">
@@ -1137,6 +1141,15 @@ function OutputRim({
         {outputs.map((o) => {
           const name = perfumeName(o.perfumeId);
           const tint = perfumeTint(o.perfumeId);
+          // provenance travels with the instance (DESIGN.md §1,§9); the take
+          // affordance line follows it in the hover tooltip.
+          const provenance = provenanceTooltip(
+            { brewedByKey: o.brewedByKey, witnesses: o.witnesses, brewedAt: o.brewedAt, chain: o.provenance },
+            resolveName,
+          );
+          const take = canTake
+            ? "Click to take one into your inventory"
+            : "Only the brew owner may take perfumes";
           return (
             <button
               key={o.instanceId}
@@ -1150,7 +1163,7 @@ function OutputRim({
                   ? `${name} ×${o.count} brewed — click to take one`
                   : `${name} ×${o.count} brewed — only the brew owner may take it`
               }
-              title={canTake ? "Click to take one into your inventory" : "Only the brew owner may take perfumes"}
+              title={`${provenance}\n${take}`}
               className="touch-none rounded-lg outline-none transition-transform duration-150 focus-visible:ring-2 focus-visible:ring-accent enabled:cursor-pointer enabled:hover:scale-105 disabled:cursor-not-allowed"
             >
               <TintedBottle name={name} count={o.count} tint={tint} dimmed={!canTake} />

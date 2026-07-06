@@ -185,6 +185,12 @@ function SettingsPanel({
             hypotheticals from inventory before you can brew.
           </p>
           <p>
+            <strong className="text-text-muted">Brew controls.</strong> Three
+            controls act on the whole brew: <em>Fill</em> makes every hypothetical
+            real, <em>Return</em> sends real ingredients back to their owners, and{" "}
+            <em>Empty</em> clears the brew.
+          </p>
+          <p>
             <strong className="text-text-muted">Brewing.</strong> When a
             brew&apos;s tally matches a recipe (or a whole multiple of it), brew it
             to place the perfume(s) on the cauldron. Brewing spends your real

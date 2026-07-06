@@ -1,4 +1,4 @@
-// Named-frequency emblem artwork for the Perfumer's Bench (/perfume).
+// Named-frequency emblem artwork for the Perfumer (/perfume).
 //
 // The emblem shapes themselves live in ../data/emblems.json — extracted
 // verbatim from "Magical Frequencies.pdf" by Byobu and synced into this repo

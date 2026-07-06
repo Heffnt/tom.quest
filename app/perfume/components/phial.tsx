@@ -1,8 +1,8 @@
 "use client";
 
 // The phial — a brewed perfume as a chip: phial glyph at the frequency-chip
-// scale (44px), the perfume's name under it, ×n when the tray holds several.
-// Presentational only; the output shelf wires the hand grammar around it.
+// scale (44px), the perfume's name under it, ×n when several rest together.
+// Presentational only; the cauldron outputs wire the hand grammar around it.
 
 import { useId } from "react";
 
@@ -11,7 +11,7 @@ const PHIAL =
   "M10.4 4.2 h3.2 v3.4 c2.8 1.5 4.4 3.8 4.4 6.6 a6 6 0 0 1 -12 0 c0-2.8 1.6-5.1 4.4-6.6 Z";
 
 /** Bare phial SVG, `size` px square — also the hand ghost's icon for
- * perfumes picked up from the output tray. */
+ * perfumes picked up from the cauldron outputs. */
 export function PhialGlyph({
   size = 44,
   className,
@@ -68,7 +68,7 @@ export interface PhialProps {
   name: string;
   count: number;
   size?: number; // glyph px diameter, matching the 44px frequency chips
-  dimmed?: boolean; // takeless viewers see the shelf, faded
+  dimmed?: boolean; // takeless viewers see the cauldron outputs, faded
 }
 
 export default function Phial({ name, count, size = 44, dimmed = false }: PhialProps) {

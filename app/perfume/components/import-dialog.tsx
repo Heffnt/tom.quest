@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ImportRow } from "../lib/brew-types";
 import { parseInventoryText, type CatalogEntry } from "../lib/inventory";
+import { btn, cn } from "./ui";
 
 export interface ImportDialogProps {
   // every name an inventory line may resolve to (ingredients, pures, perfumes)
@@ -86,7 +87,7 @@ export default function ImportDialog({ catalog, onImport, onClose }: ImportDialo
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="grid h-6 w-6 shrink-0 place-items-center rounded text-text-faint transition-colors duration-150 hover:text-text"
+            className={cn(btn.ghost, "h-6 w-6 shrink-0 p-0 text-text-faint")}
           >
             ✕
           </button>
@@ -125,7 +126,7 @@ export default function ImportDialog({ catalog, onImport, onClose }: ImportDialo
                             })
                           }
                           title={`guessed from "${row.line.trim()}"`}
-                          className="shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-text-faint transition-colors duration-150 hover:border-text-muted hover:text-text"
+                          className={cn(btn.outline, "shrink-0 px-1.5 py-0.5 text-[10px] text-text-faint")}
                         >
                           undo
                         </button>
@@ -162,7 +163,10 @@ export default function ImportDialog({ catalog, onImport, onClose }: ImportDialo
               disabled={valid.length === 0}
               onClick={() => commit("replace")}
               title="Discard the current inventory and start from these rows"
-              className="rounded-md border border-error/50 px-2.5 py-1.5 font-mono text-xs font-semibold text-error/90 transition-colors duration-150 hover:bg-error/10 disabled:cursor-not-allowed disabled:opacity-40"
+              className={cn(
+                btn.outline,
+                "border-error/50 py-1.5 font-semibold text-error/90 hover:border-error hover:bg-error/10 hover:text-error",
+              )}
             >
               Replace inventory
             </button>
@@ -170,7 +174,7 @@ export default function ImportDialog({ catalog, onImport, onClose }: ImportDialo
               type="button"
               disabled={valid.length === 0}
               onClick={() => commit("merge")}
-              className="rounded-md border border-accent bg-accent/15 px-2.5 py-1.5 font-mono text-xs font-semibold text-accent transition-colors duration-150 hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-40"
+              className={cn(btn.accent, "px-2.5")}
             >
               Add to inventory
             </button>
@@ -211,7 +215,7 @@ function GuessRow({ row, onAccept }: { row: ImportRow; onAccept: (itemKey: strin
       <button
         type="button"
         onClick={() => onAccept(choice)}
-        className="shrink-0 rounded-md border border-accent/60 bg-accent/10 px-2 py-1 font-mono text-[11px] font-semibold text-accent transition-colors duration-150 hover:bg-accent/20"
+        className={cn(btn.accent, "shrink-0 px-2 py-1 text-[11px]")}
       >
         accept
       </button>

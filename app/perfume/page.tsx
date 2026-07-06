@@ -4,7 +4,7 @@ import PerfumeClient from "./perfume-client";
 export const metadata: Metadata = {
   title: "Perfume | tom.Quest",
   description:
-    "The Three Feifs perfumer's bench — drop ingredients into the cauldron, watch their magical frequencies float up, spend strikes and wildcards, and brew the perfume.",
+    "The Three Feifs perfumery — drop ingredients into the cauldron, watch their magical frequencies float up, spend strikes and wildcards, and brew the perfume.",
 };
 
 // /perfume opens the viewer's most recent brew, or the party brew for a
