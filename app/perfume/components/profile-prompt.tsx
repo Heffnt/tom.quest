@@ -63,7 +63,7 @@ export function ProfilePrompt({
         </h3>
         <p className="mt-1 text-[11px] leading-snug text-text-faint">
           Pick a nickname and color so the party can see whose hands are in the
-          pot.
+          brew.
         </p>
         <div className="mt-3 flex items-stretch gap-2">
           <input

@@ -179,6 +179,86 @@ export function brewTally(brew: BrewState): Multiset {
   return combineFrequencies(effectiveTally(brew)).tally;
 }
 
+// ── Instance-level combination trace ─────────────────────────────────────────
+// One live frequency in the pool, carrying a caller-supplied stable `ref` so the
+// trace can name exactly WHICH instances fused. Refs must be unique across the
+// input; the engine treats them as opaque.
+export type FreqInstance = { ref: string; id: string };
+
+// One combination that fired: the derived named frequency (with its own fresh
+// `ref`, usable as a component ref for a chained combination) and the refs of
+// the instances it consumed, in the source's component order.
+export type CombinationStep = {
+  ref: string; // stable ref of the derived node
+  id: string; // the named frequency produced
+  consumed: string[]; // refs of the consumed instances
+};
+
+// The full instance-level trace of auto-combination over a labeled pool.
+// `survivors` are the instance refs that remain uncombined (they still count
+// for recipes, alongside every derived step's node); `steps` is the fixpoint
+// chain, cheapest-first, in the same order combineFrequencies fires. Pure and
+// deterministic: same input refs/order → identical trace. The derived tally
+// (combineFrequencies) and this trace agree by construction — both walk
+// NAMED_BY_WEIGHT to a fixpoint — so callers never re-derive the rules.
+export function traceCombination(pool: FreqInstance[]): {
+  steps: CombinationStep[];
+  survivors: string[];
+} {
+  // live[id] = queue of refs still available at that frequency id. A consumed
+  // ref leaves its queue; a derived node's ref joins the queue for its id so it
+  // can be consumed by a heavier combination (chaining).
+  const live = new Map<string, string[]>();
+  for (const inst of pool) {
+    const q = live.get(inst.id);
+    if (q) q.push(inst.ref);
+    else live.set(inst.id, [inst.ref]);
+  }
+  const steps: CombinationStep[] = [];
+  let derivedCount = 0;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const n of NAMED_BY_WEIGHT) {
+      // does every component have a live instance to draw on?
+      const needed = msFromList(n.components);
+      let subset = true;
+      for (const id in needed) {
+        if ((live.get(id)?.length ?? 0) < needed[id]) {
+          subset = false;
+          break;
+        }
+      }
+      while (subset) {
+        const consumed: string[] = [];
+        for (const cid of n.components) {
+          // n.components lists each component once per multiplicity, so a single
+          // shift per entry draws the right number of instances.
+          const ref = live.get(cid)!.shift()!;
+          consumed.push(ref);
+        }
+        const ref = `combo:${n.id}:${derivedCount++}`;
+        steps.push({ ref, id: n.id, consumed });
+        const q = live.get(n.id);
+        if (q) q.push(ref);
+        else live.set(n.id, [ref]);
+        changed = true;
+        for (const id in needed) {
+          if ((live.get(id)?.length ?? 0) < needed[id]) {
+            subset = false;
+            break;
+          }
+        }
+      }
+    }
+  }
+  const survivors: string[] = [];
+  for (const refs of live.values()) {
+    for (const ref of refs) if (!ref.startsWith("combo:")) survivors.push(ref);
+  }
+  return { steps, survivors };
+}
+
 const STATUS_ORDER: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
 // Evaluate a brew against ONE recipe (target multiset).

@@ -1,7 +1,7 @@
-// Shared bits for the perfume bench specs (e2e/perfume.spec.ts).
-// Single-user specs run on /perfume?local=1 (LocalBenchStore — no Convex
+// Shared bits for the perfume specs (e2e/perfume.spec.ts).
+// Single-user specs run on /perfume?local=1 (the local brew store — no Convex
 // traffic) with ?seed=basic, the deterministic inventory defined in
-// app/perfume/lib/bench-store.ts: 3× Noble Roses (emits A,A), 2× Aphasia
+// app/perfume/lib/brew-store.ts: 3× Noble Roses (emits A,A), 2× Aphasia
 // Flower (Crallax,En), 1× Pemneath Peat (N,N), 1× Shadow Demon Liver (⊖⊖),
 // 2× Pure Strike.
 

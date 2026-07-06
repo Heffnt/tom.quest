@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ImportRow } from "../lib/legacy-adapter";
+import type { ImportRow } from "../lib/brew-types";
 import { parseInventoryText, type CatalogEntry } from "../lib/inventory";
 
 export interface ImportDialogProps {

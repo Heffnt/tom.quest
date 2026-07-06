@@ -1695,14 +1695,18 @@ function brewSummary(brew: Doc<"perfumeBrews">) {
 }
 
 // A brew by id, for deep links (/perfume/b/[id]). Reading is open to anyone;
-// permission gates only mutations. The party brew is created on demand when
-// listed, but getBrew of a missing id throws (deep links point at real brews).
+// permission gates only mutations. A bad deep link — a malformed id string or an
+// id pointing at a deleted/nonexistent brew — resolves to `null` rather than
+// throwing, so the client can show a graceful "brew not found" state instead of
+// crashing the whole route. `brewId` is a plain string here (not v.id) precisely
+// so a malformed value reaches this handler to be normalized, instead of being
+// rejected by the arg validator (which would throw into useQuery during render).
 export const getBrew = query({
-  args: { brewId: brewIdArg },
+  args: { brewId: v.string() },
   handler: async (ctx, { brewId }) => {
-    const brew = await ctx.db.get(brewId);
-    if (!brew) throw new Error("Brew not found");
-    return brew;
+    const id = ctx.db.normalizeId("perfumeBrews", brewId);
+    if (!id) return null;
+    return await ctx.db.get(id);
   },
 });
 

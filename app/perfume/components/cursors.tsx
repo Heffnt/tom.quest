@@ -13,8 +13,8 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import type { Hand, PresenceEntry, PresenceSurface } from "../lib/legacy-adapter";
-import { ItemIcon } from "../lib/use-hand";
+import type { PresenceEntry, PresenceSurface } from "../lib/brew-types";
+import { ItemIcon, type Hand } from "../lib/use-hand";
 import { itemInfo } from "../lib/brew-store";
 
 const SEND_MS = 50; // ~20Hz

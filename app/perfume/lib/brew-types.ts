@@ -1,16 +1,7 @@
-// Shared contracts for the multi-brew /perfume data layer (Phase 3). See
-// DESIGN.md §§1,4,5,9. This is the coordination surface between the brew
-// stores (Convex/local), the legacy adapter, and the panels — the vocabulary
+// Shared contracts for the multi-brew /perfume data layer. See DESIGN.md
+// §§1,4,5,9. This is the coordination surface between the brew stores
+// (Convex/local), the center-stage brew graph, and the panels — the vocabulary
 // here is binding (brew/member/cauldron/gift, never bench/pot/tuning).
-//
-// This file replaces the old bench-types.ts. It ALSO carries, under the
-// "Legacy prop shapes" banner at the bottom, the exact types the not-yet-
-// rebuilt components (cauldron.tsx, brew-bar.tsx, output-shelf.tsx and their
-// sub-panels) still consume through lib/legacy-adapter.ts. Those shapes are
-// frozen until the Phase-4 stage rebuild; do not extend them here — grow the
-// BrewSnapshot/BrewActions surface instead.
-
-import type { BrewState } from "./types";
 
 // ── inventory ────────────────────────────────────────────────────────────────
 // Fungible-stack counts keyed by catalog item key ("base:<name>" | "pure:<id>").
@@ -255,97 +246,3 @@ export type ImportRow = {
   itemKey: string | null; // exact/confident match: the catalog key; null when unknown
   guesses: { itemKey: string; name: string; score: number }[];
 };
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Legacy prop shapes — FROZEN until the Phase-4 stage rebuild.
-//
-// cauldron.tsx / brew-bar.tsx / output-shelf.tsx and their sub-panels
-// (ingredient-panel, perfume-panel, inventory-grid, import-dialog, use-hand,
-// cursors) still consume these. lib/legacy-adapter.ts re-exports them and
-// projects a BrewSnapshot+BrewActions down onto them. Do NOT invest here; the
-// rebuild replaces these components and this section goes with them.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// One item in the legacy "pot" view — the flattened brew graph.
-export type PotItem = {
-  key: string;
-  contributorKey: string;
-  contributorName: string;
-  real: boolean;
-};
-
-// The legacy shared UI still carries a `pins` array (the pre-Phase-3 favorites
-// surface). The adapter fills it from the brew's single pinned recipe so the
-// perfume panel's pin toggle keeps working against the old prop shape.
-export type LegacySharedUI = SharedUI & { pins: string[] };
-
-export type LegacyBenchSnapshot = {
-  benchKey: string;
-  ownerName: string;
-  color: string;
-  pot: PotItem[];
-  strikePlays: string[]; // flat frequency list (engine view)
-  wildPlays: string[];
-  inventory: Inventory;
-  outputTray: Record<string, number>; // perfume key -> count (projected from outputs)
-  ui: LegacySharedUI;
-};
-
-// What the current viewer may do on the legacy bench view.
-export type LegacyBenchPermissions = {
-  moveItems: boolean;
-  brewAndTake: boolean;
-  editInventory: boolean;
-  clearPot: boolean;
-};
-
-// Every mutation the legacy panels call. The adapter maps each onto the real
-// BrewActions / brew id. brewPerfume/takeOutput keep the old (key, index, k) /
-// (key, n) shapes; the adapter resolves them to instance ids.
-export interface LegacyBenchActions {
-  moveToBrew(itemKey: string, n: number): void;
-  moveToInventory(itemKey: string, n: number): void;
-  playStrike(freq: string): void;
-  unplayStrike(freq: string): void;
-  playWild(freq: string): void;
-  unplayWild(freq: string): void;
-  brewPerfume(perfumeKey: string, recipeIndex: number, k: number): void;
-  takeOutput(perfumeKey: string, n: number): void;
-  clearPot(): void;
-  updateUI(patch: Partial<LegacySharedUI>): void;
-  importInventory(
-    rows: { itemKey: string; count: number }[],
-    mode: "merge" | "replace",
-  ): void;
-  transfer(toBenchKey: string, itemKey: string, n: number): void;
-  setProfile(patch: { name?: string; color?: string }): void;
-}
-
-export type LegacyBenchStore = {
-  snapshot: LegacyBenchSnapshot;
-  permissions: LegacyBenchPermissions;
-  actions: LegacyBenchActions;
-};
-
-// The engine-facing view of a legacy snapshot (pot items expand to Ingredient[]).
-export type BrewOf = (snap: LegacyBenchSnapshot) => BrewState;
-
-// ── the hand ─────────────────────────────────────────────────────────────────
-export type HandOrigin = "inventory" | "catalog" | "brew" | "output";
-
-export type Hand = {
-  itemKey: string;
-  count: number;
-  from: HandOrigin;
-  committed: boolean;
-  x: number;
-  y: number;
-};
-
-export interface HandApi {
-  hand: Hand | null;
-  pickUp(itemKey: string, from: HandOrigin, available: number): void;
-  returnOne(): boolean;
-  settle(): void;
-  cancel(): void;
-}

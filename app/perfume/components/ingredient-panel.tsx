@@ -27,8 +27,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient, Perfume } from "../lib/types";
-import type { Inventory, SharedUI } from "../lib/legacy-adapter";
-import type { BenchHand } from "../lib/use-hand";
+import type { Inventory, SharedUI } from "../lib/brew-types";
+import type { BrewHand } from "../lib/use-hand";
 import {
   ALL_FREQUENCIES,
   FUND,
@@ -63,7 +63,7 @@ export interface IngredientPanelProps {
   brewCounts: Record<string, number>;
   ui: SharedUI;
   onUI: (patch: Partial<SharedUI>) => void;
-  hand: BenchHand;
+  hand: BrewHand;
   // WHERE-move permission (drag inventory ↔ brew). DESIGN.md §4.
   canMove: boolean;
   // owner-scope: may import/copy the viewer's own inventory.
@@ -286,7 +286,7 @@ export default function IngredientPanel({
     : null;
   // other members (not the viewer) — the gift targets for the Send popover
   const giftTargets = useMemo(
-    () => memberTabs.filter((m) => !m.isSelf).map((m) => ({ benchKey: m.memberKey, name: m.name })),
+    () => memberTabs.filter((m) => !m.isSelf).map((m) => ({ memberKey: m.memberKey, name: m.name })),
     [memberTabs],
   );
 
@@ -488,7 +488,7 @@ function MemberInventoryTab({
 }: {
   member: MemberTab;
   sections: InventoryGridSection[];
-  hand: BenchHand;
+  hand: BrewHand;
   canGift: boolean;
   onGift: (toMemberKey: string, itemKey: string, n: number) => void;
 }) {
@@ -604,7 +604,7 @@ function CatalogCard({
   ing: Ingredient;
   owned: number;
   inBrew: number;
-  hand: BenchHand;
+  hand: BrewHand;
   canMove: boolean;
   onHover: (itemKey: string | null) => void;
   onShiftToBrew?: (itemKey: string) => void;

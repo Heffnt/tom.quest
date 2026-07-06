@@ -9,16 +9,19 @@
 // ingredient combination (common d40 ones first), grouped by the outside
 // strikes required: strike-free first, then ⊖1 / ⊖2 behind reveal buttons.
 //
-// PURE REFERENCE — brewed output lives on the cauldron's shelf, never here.
-// Search, the multi-select frequency filter, expanded folds and pins are
-// shared browse UI (SharedUI) written through onUI; pins are owner-only.
+// PURE REFERENCE — brewed output lives on the cauldron, never here.
+// Search, the multi-select frequency filter and expanded folds are shared
+// browse UI (SharedUI) written through onUI. The PIN (DESIGN.md §5) is a single
+// recipe pinned to the brew object — it replaces the old favorites list; the
+// pinned perfume floats to the top and the graph renders its ghost needs.
 // The ingredient pills in the folds are real grabbable items wired to the
 // hand grammar (see DESIGN.md).
 
 import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Multiset, Perfume, EvalResult, PerfumeSlotEntry, BrewState } from "../lib/types";
-import type { LegacySharedUI as SharedUI, BenchPermissions, HandApi } from "../lib/legacy-adapter";
+import type { SharedUI, PinnedRecipe } from "../lib/brew-types";
+import type { HandApi } from "../lib/use-hand";
 import {
   evaluate,
   evalReq,
@@ -43,11 +46,14 @@ export interface PerfumePanelProps {
   perfumes: Perfume[];
   // Current brew, for live per-perfume evaluation.
   brew: BrewState;
-  // Shared browse UI: perfumeSearch, perfumeFilters, expanded, pins.
+  // Shared browse UI: perfumeSearch, perfumeFilters, expanded.
   ui: SharedUI;
   onUI: (patch: Partial<SharedUI>) => void;
-  // Pins toggle only when editInventory (owner-only per WHERE-not-WHAT).
-  permissions: BenchPermissions;
+  // The brew's single pinned recipe (DESIGN.md §5), and the setter. `canPin`
+  // is any registered member (the pin lives on the brew object).
+  pinned: PinnedRecipe;
+  onPin: (pinned: PinnedRecipe) => void;
+  canPin: boolean;
   // The cursor stack; recipe pills pick up from origin "catalog".
   hand: HandApi;
   // Hover preview for the brew bar (never the cauldron graph); null on leave.
@@ -254,20 +260,20 @@ export default function PerfumePanel({
   brew,
   ui,
   onUI,
-  permissions,
+  pinned,
+  onPin,
+  canPin,
   hand,
   onHover,
   brewCounts,
   onShiftToBrew,
 }: PerfumePanelProps) {
-  // pinned perfumes float to the top; owner-only (WHERE-not-WHAT)
+  // exactly one recipe pins to the brew (DESIGN.md §5). Toggling a perfume pins
+  // its common recipe (index 0), or clears the pin if it was already pinned.
+  const pinnedKey = pinned?.perfumeId ?? null;
   const togglePin = (key: string) => {
-    if (!permissions.editInventory) return;
-    onUI({
-      pins: ui.pins.includes(key)
-        ? ui.pins.filter((k) => k !== key)
-        : [...ui.pins, key],
-    });
+    if (!canPin) return;
+    onPin(pinnedKey === key ? null : { perfumeId: key, recipeIndex: 0 });
   };
   // recipes-fold state is shared browse UI — spectators see the same folds
   const toggleExpanded = (key: string) => {
@@ -297,15 +303,15 @@ export default function PerfumePanel({
       // pinned perfumes stay visible no matter the search or filter
       .filter(
         ({ perfume }) =>
-          ui.pins.includes(perfume.key) ||
+          pinnedKey === perfume.key ||
           (matchesQuery(perfume, q) &&
             // AND semantics: SOME recipe contains ALL selected frequencies
             perfume.recipes.some((req) => filters.every((id) => req.includes(id)))),
       )
       .sort((a, b) => {
         const p =
-          (ui.pins.includes(b.perfume.key) ? 1 : 0) -
-          (ui.pins.includes(a.perfume.key) ? 1 : 0);
+          (pinnedKey === b.perfume.key ? 1 : 0) -
+          (pinnedKey === a.perfume.key ? 1 : 0);
         if (p !== 0) return p;
         const s = STATUS_RANK[a.res.status] - STATUS_RANK[b.res.status];
         if (s !== 0) return s;
@@ -314,7 +320,7 @@ export default function PerfumePanel({
         if (w !== 0) return w;
         return a.perfume.name.localeCompare(b.perfume.name);
       });
-  }, [evaluated, ui.perfumeSearch, ui.perfumeFilters, ui.pins]);
+  }, [evaluated, ui.perfumeSearch, ui.perfumeFilters, pinnedKey]);
 
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
@@ -359,8 +365,8 @@ export default function PerfumePanel({
             brew={brew}
             brewList={brewList}
             brewEmpty={brew.ingredients.length === 0}
-            pinned={ui.pins.includes(perfume.key)}
-            canPin={permissions.editInventory}
+            pinned={pinnedKey === perfume.key}
+            canPin={canPin}
             onTogglePin={togglePin}
             expanded={ui.expanded.includes(perfume.key)}
             onToggleExpanded={toggleExpanded}
@@ -689,7 +695,7 @@ function PerfumeCard({
         disabled={!canPin}
         aria-pressed={pinned}
         aria-label={pinned ? `Unpin ${perfume.name}` : `Pin ${perfume.name}`}
-        title={!canPin ? "pins are owner-only" : pinned ? "Unpin" : "Pin to the top"}
+        title={!canPin ? "join to pin a recipe" : pinned ? "Unpin" : "Pin this recipe to the brew"}
         className={`absolute right-1 top-1 z-10 grid h-5 w-5 place-items-center rounded transition-colors duration-150 ${
           pinned
             ? "text-accent"

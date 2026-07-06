@@ -45,6 +45,18 @@ async function setup() {
   };
 }
 
+// getBrew now tolerates bad ids by returning null (deep-link crash guard); every
+// test here fetches a KNOWN-good brew, so this wrapper asserts non-null and hands
+// back the doc, keeping the assertions terse.
+async function getBrewDoc(
+  who: { query: Harness["query"] },
+  args: { brewId: string },
+) {
+  const brew = await who.query(api.brews.getBrew, args);
+  expect(brew).not.toBeNull();
+  return brew!;
+}
+
 // Seed a member's fungible stock directly — there is no importInventory in the
 // new API yet (a Phase-3 UI concern); mirrors the old suite's inventory writes.
 async function seedStock(
@@ -124,6 +136,36 @@ async function plantPresence(
   });
 }
 
+// ── deep-link resolution (DESIGN.md §4 — every brew has a shareable URL) ──────
+
+describe("getBrew tolerates bad deep links (no crash)", () => {
+  it("returns null for a malformed id string instead of throwing", async () => {
+    const { alice } = await setup();
+    // a syntactically invalid convex id — normalizeId rejects it → null
+    const brew = await alice.query(api.brews.getBrew, { brewId: "junk-id" });
+    expect(brew).toBeNull();
+  });
+
+  it("returns null for a well-formed id that points at no brew", async () => {
+    const { t, alice } = await setup();
+    // mint a real brew id, delete the row, then look it up: normalizeId accepts
+    // the shape but db.get finds nothing → null (a stale/deleted deep link)
+    await alice.mutation(api.brews.registerMember, {});
+    const brewId = await alice.mutation(api.brews.createBrew, {});
+    await t.run(async (ctx) => ctx.db.delete(brewId));
+    const brew = await alice.query(api.brews.getBrew, { brewId });
+    expect(brew).toBeNull();
+  });
+
+  it("returns the doc for a real id", async () => {
+    const { alice } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    const brewId = await alice.mutation(api.brews.createBrew, {});
+    const brew = await getBrewDoc(alice, { brewId });
+    expect(String(brew._id)).toBe(String(brewId));
+  });
+});
+
 // ── permission matrix (DESIGN.md §4) ─────────────────────────────────────────
 
 describe("multi-brew permissions matrix", () => {
@@ -136,13 +178,13 @@ describe("multi-brew permissions matrix", () => {
 
     // Owner draws real.
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 });
-    let brew = await alice.query(api.brews.getBrew, { brewId });
+    let brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items).toHaveLength(1);
     expect(brew.items[0].real).toBe(true);
 
     // Non-owner's add is hypothetical; Alice's stock is untouched.
     await bob.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 });
-    brew = await bob.query(api.brews.getBrew, { brewId });
+    brew = await getBrewDoc(bob,{ brewId });
     expect(brew.items).toHaveLength(2);
     expect(brew.items.filter((i) => i.real)).toHaveLength(1);
     expect(brew.items.filter((i) => !i.real)).toHaveLength(1);
@@ -162,12 +204,12 @@ describe("multi-brew permissions matrix", () => {
     // WHERE actions: Bob (non-owner) may play and unplay a strike; the play is
     // attributed to Bob (byMemberKey), not the owner.
     await bob.mutation(api.brews.playStrike, { brewId, freq: "N" });
-    let brew = await bob.query(api.brews.getBrew, { brewId });
+    let brew = await getBrewDoc(bob,{ brewId });
     expect(brew.strikePlays).toHaveLength(1);
     expect(brew.strikePlays[0].freq).toBe("N");
     expect(brew.strikePlays[0].byMemberKey).toBe(bobKey);
     await bob.mutation(api.brews.unplayStrike, { brewId, freq: "N" });
-    brew = await bob.query(api.brews.getBrew, { brewId });
+    brew = await getBrewDoc(bob,{ brewId });
     expect(brew.strikePlays).toHaveLength(0);
 
     // WHAT actions are all owner-only and reject the non-owner.
@@ -198,7 +240,7 @@ describe("multi-brew permissions matrix", () => {
 
     await alice.mutation(api.brews.moveItemToBrew, { brewId: party, itemKey: PURE_N, n: 1 });
     await bob.mutation(api.brews.moveItemToBrew, { brewId: party, itemKey: PURE_N, n: 1 });
-    const brew = await alice.query(api.brews.getBrew, { brewId: party });
+    const brew = await getBrewDoc(alice,{ brewId: party });
     expect(brew.items).toHaveLength(2);
     expect(brew.items.every((i) => i.real)).toBe(true);
     // Each item is credited to its own contributor; each spent their own stock.
@@ -213,7 +255,7 @@ describe("multi-brew permissions matrix", () => {
       recipeIndex: 0,
       k: 2,
     });
-    const after = await bob.query(api.brews.getBrew, { brewId: party });
+    const after = await getBrewDoc(bob,{ brewId: party });
     expect(after.outputs[0].count).toBe(2);
     await bob.mutation(api.brews.takeOutput, { brewId: party, instanceId });
     expect((await bob.query(api.brews.getInventory, { memberKey: bobKey })).perfumes).toHaveLength(1);
@@ -272,11 +314,11 @@ describe("multi-brew permissions matrix", () => {
 
     // Admin acts as owner: real stock (drawn from the owner's inventory) and brew.
     await tom.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 });
-    const brew = await tom.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(tom,{ brewId });
     expect(brew.items[0].real).toBe(true);
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBeUndefined();
     await tom.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
-    expect((await tom.query(api.brews.getBrew, { brewId })).outputs).toHaveLength(1);
+    expect((await getBrewDoc(tom,{ brewId })).outputs).toHaveLength(1);
   });
 });
 
@@ -294,7 +336,7 @@ describe("rules of brewing", () => {
       alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 }),
     ).rejects.toThrow(/hypothetical/);
     // Nothing consumed, no output.
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items).toHaveLength(1);
     expect(brew.outputs).toHaveLength(0);
   });
@@ -307,7 +349,7 @@ describe("rules of brewing", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 });
     await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
 
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     // The graph is left in place but every item is now a hypothetical twin.
     expect(brew.items).toHaveLength(1);
     expect(brew.items[0].real).toBe(false);
@@ -328,7 +370,7 @@ describe("rules of brewing", () => {
       alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 2 }),
     ).rejects.toThrow(/does not brew/);
     await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 3 });
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.outputs).toHaveLength(1);
     expect(brew.outputs[0].count).toBe(3);
   });
@@ -343,7 +385,7 @@ describe("rules of brewing", () => {
     await expect(
       alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 }),
     ).rejects.toThrow(/does not brew/);
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items[0].real).toBe(true); // untouched
     expect(brew.outputs).toHaveLength(0);
   });
@@ -365,7 +407,7 @@ describe("rules of brewing", () => {
       recipeIndex: 0,
       k: 1,
     });
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     const output = brew.outputs.find((o) => o.instanceId === instanceId)!;
     expect(output.brewedByKey).toBe(aliceKey);
     expect([...output.witnesses].sort()).toEqual([aliceKey, bobKey].sort());
@@ -381,7 +423,7 @@ describe("rules of brewing", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_STRIKE, n: 1 });
     await alice.mutation(api.brews.playStrike, { brewId, freq: "En" });
     await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
-    expect((await alice.query(api.brews.getBrew, { brewId })).outputs).toHaveLength(1);
+    expect((await getBrewDoc(alice,{ brewId })).outputs).toHaveLength(1);
   });
 
   it("a wild adds a frequency that lifts a brew to a k-multiple", async () => {
@@ -394,7 +436,7 @@ describe("rules of brewing", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_WILD, n: 1 });
     await alice.mutation(api.brews.playWild, { brewId, chosenFreq: "N" });
     await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 2 });
-    expect((await alice.query(api.brews.getBrew, { brewId })).outputs[0].count).toBe(2);
+    expect((await getBrewDoc(alice,{ brewId })).outputs[0].count).toBe(2);
   });
 
   it("playStrike/playWild reject an unknown frequency id (no junk in shared tally)", async () => {
@@ -412,12 +454,12 @@ describe("rules of brewing", () => {
     await expect(
       alice.mutation(api.brews.playWild, { brewId, chosenFreq: "garbage" }),
     ).rejects.toThrow(/Unknown frequency/);
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.strikePlays).toHaveLength(0);
     expect(brew.wildPlays).toHaveLength(0);
     // A real frequency still plays fine.
     await alice.mutation(api.brews.playStrike, { brewId, freq: "N" });
-    expect((await alice.query(api.brews.getBrew, { brewId })).strikePlays).toHaveLength(1);
+    expect((await getBrewDoc(alice,{ brewId })).strikePlays).toHaveLength(1);
   });
 
   it("playing past granted charges is a silent no-op", async () => {
@@ -428,7 +470,7 @@ describe("rules of brewing", () => {
     // A pure:N grants 0 strike charges — the play is ignored.
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 });
     await alice.mutation(api.brews.playStrike, { brewId, freq: "N" });
-    expect((await alice.query(api.brews.getBrew, { brewId })).strikePlays).toHaveLength(0);
+    expect((await getBrewDoc(alice,{ brewId })).strikePlays).toHaveLength(0);
   });
 
   it("removing an ingredient trims plays that its charges no longer support", async () => {
@@ -441,10 +483,10 @@ describe("rules of brewing", () => {
     // Shadow Demon Liver grants 2 ⊖; play two strikes.
     await alice.mutation(api.brews.playStrike, { brewId, freq: "N" });
     await alice.mutation(api.brews.playStrike, { brewId, freq: "En" });
-    expect((await alice.query(api.brews.getBrew, { brewId })).strikePlays).toHaveLength(2);
+    expect((await getBrewDoc(alice,{ brewId })).strikePlays).toHaveLength(2);
     // Remove the liver → 0 ⊖ charges remain → both plays trimmed.
     await alice.mutation(api.brews.moveItemToInventory, { brewId, itemKey: SHADOW_LIVER, n: 1 });
-    expect((await alice.query(api.brews.getBrew, { brewId })).strikePlays).toHaveLength(0);
+    expect((await getBrewDoc(alice,{ brewId })).strikePlays).toHaveLength(0);
   });
 });
 
@@ -462,7 +504,7 @@ describe("brew-scale controls", () => {
 
     const { filled } = await alice.mutation(api.brews.fillFromInventory, { brewId });
     expect(filled).toBe(1);
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items.filter((i) => i.real)).toHaveLength(1);
     expect(brew.items.filter((i) => !i.real)).toHaveLength(1);
     // Stock spent.
@@ -479,7 +521,7 @@ describe("brew-scale controls", () => {
     await bob.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 }); // hypothetical
 
     await alice.mutation(api.brews.returnIngredients, { brewId });
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     // The real item left; the hypothetical remains.
     expect(brew.items).toHaveLength(1);
     expect(brew.items[0].real).toBe(false);
@@ -497,7 +539,7 @@ describe("brew-scale controls", () => {
     await bob.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 }); // hypothetical
 
     await alice.mutation(api.brews.emptyBrew, { brewId });
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items).toHaveLength(0);
     expect(brew.strikePlays).toHaveLength(0);
     // Alice's two real items came back; Bob's hypothetical was destroyed (owned no stock).
@@ -520,7 +562,7 @@ describe("brew-scale controls", () => {
     await bob.mutation(api.brews.emptyBrew, { brewId: party });
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBe(1);
     expect((await bob.query(api.brews.getInventory, { memberKey: bobKey })).pures[PURE_N]).toBe(1);
-    expect((await alice.query(api.brews.getBrew, { brewId: party })).items).toHaveLength(0);
+    expect((await getBrewDoc(alice,{ brewId: party })).items).toHaveLength(0);
   });
 });
 
@@ -608,11 +650,11 @@ describe("undo / redo", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 });
 
     await alice.mutation(api.brews.undo, { brewId });
-    expect((await alice.query(api.brews.getBrew, { brewId })).items).toHaveLength(0);
+    expect((await getBrewDoc(alice,{ brewId })).items).toHaveLength(0);
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBe(1);
 
     await alice.mutation(api.brews.redo, { brewId });
-    const brew = await alice.query(api.brews.getBrew, { brewId });
+    const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items).toHaveLength(1);
     expect(brew.items[0].real).toBe(true);
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBeUndefined();
@@ -631,12 +673,12 @@ describe("undo / redo", () => {
     expect((await alice.query(api.brews.undoState, { brewId })).canUndo).toBe(false);
     const r = await alice.mutation(api.brews.undo, { brewId });
     expect(r.undone).toBe(false);
-    expect((await alice.query(api.brews.getBrew, { brewId })).items).toHaveLength(1);
+    expect((await getBrewDoc(alice,{ brewId })).items).toHaveLength(1);
 
     // Bob CAN undo his own move.
     expect((await bob.query(api.brews.undoState, { brewId })).canUndo).toBe(true);
     await bob.mutation(api.brews.undo, { brewId });
-    expect((await alice.query(api.brews.getBrew, { brewId })).items).toHaveLength(0);
+    expect((await getBrewDoc(alice,{ brewId })).items).toHaveLength(0);
   });
 
   it("undo/redo covers strike, wild, and pin actions", async () => {
@@ -651,19 +693,19 @@ describe("undo / redo", () => {
     // Pin, then undo the pin.
     await alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
     await alice.mutation(api.brews.undo, { brewId });
-    expect((await alice.query(api.brews.getBrew, { brewId })).pinned).toBeNull();
+    expect((await getBrewDoc(alice,{ brewId })).pinned).toBeNull();
 
     // Strike, then undo the strike.
     await alice.mutation(api.brews.playStrike, { brewId, freq: "En" });
-    expect((await alice.query(api.brews.getBrew, { brewId })).strikePlays).toHaveLength(1);
+    expect((await getBrewDoc(alice,{ brewId })).strikePlays).toHaveLength(1);
     await alice.mutation(api.brews.undo, { brewId });
-    expect((await alice.query(api.brews.getBrew, { brewId })).strikePlays).toHaveLength(0);
+    expect((await getBrewDoc(alice,{ brewId })).strikePlays).toHaveLength(0);
 
     // Wild, then undo the wild.
     await alice.mutation(api.brews.playWild, { brewId, chosenFreq: "A" });
-    expect((await alice.query(api.brews.getBrew, { brewId })).wildPlays).toHaveLength(1);
+    expect((await getBrewDoc(alice,{ brewId })).wildPlays).toHaveLength(1);
     await alice.mutation(api.brews.undo, { brewId });
-    expect((await alice.query(api.brews.getBrew, { brewId })).wildPlays).toHaveLength(0);
+    expect((await getBrewDoc(alice,{ brewId })).wildPlays).toHaveLength(0);
   });
 
   it("brewing is NOT undoable (no entry written; undo stack untouched)", async () => {
@@ -759,7 +801,7 @@ describe("copyBrew", () => {
     await alice.mutation(api.brews.pinRecipe, { brewId: src, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
 
     const copyId = await bob.mutation(api.brews.copyBrew, { brewId: src });
-    const copy = await bob.query(api.brews.getBrew, { brewId: copyId });
+    const copy = await getBrewDoc(bob,{ brewId: copyId });
     // Same item keys, but every copy is hypothetical and credited to Bob.
     expect(copy.owner).toBe(bobKey);
     expect(copy.items).toHaveLength(4);
@@ -770,7 +812,7 @@ describe("copyBrew", () => {
     expect(copy.pinned).toEqual({ perfumeId: BLACK_GAS, recipeIndex: 0 });
     // Copying spent none of Alice's stock, and the source is unchanged.
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).ingredients[ICHOR]).toBeUndefined();
-    const srcBrew = await alice.query(api.brews.getBrew, { brewId: src });
+    const srcBrew = await getBrewDoc(alice,{ brewId: src });
     expect(srcBrew.items.filter((i) => i.real).length).toBeGreaterThan(0);
   });
 
@@ -784,7 +826,7 @@ describe("copyBrew", () => {
     await alice.mutation(api.brews.brew, { brewId: src, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
 
     const copyId = await bob.mutation(api.brews.copyBrew, { brewId: src });
-    expect((await bob.query(api.brews.getBrew, { brewId: copyId })).outputs).toHaveLength(0);
+    expect((await getBrewDoc(bob,{ brewId: copyId })).outputs).toHaveLength(0);
   });
 
   it("drops junk-frequency plays from the source and trims to the copy's charge budget", async () => {
@@ -806,7 +848,7 @@ describe("copyBrew", () => {
       });
     });
     const copyId = await bob.mutation(api.brews.copyBrew, { brewId: src });
-    const copy = await bob.query(api.brews.getBrew, { brewId: copyId });
+    const copy = await getBrewDoc(bob,{ brewId: copyId });
     // The junk play is gone; the valid one carries over, re-attributed to Bob.
     expect(copy.strikePlays).toEqual([{ freq: "N", byMemberKey: bobKey }]);
   });
@@ -818,7 +860,7 @@ describe("copyBrew", () => {
     const src = await alice.mutation(api.brews.createBrew, {});
     await bob.mutation(api.brews.createBrew, {}); // Bob's brew 1
     const copyId = await bob.mutation(api.brews.copyBrew, { brewId: src });
-    expect((await bob.query(api.brews.getBrew, { brewId: copyId })).seq).toBe(2);
+    expect((await getBrewDoc(bob,{ brewId: copyId })).seq).toBe(2);
   });
 });
 
@@ -832,10 +874,10 @@ describe("nickname & pin", () => {
     const brewId = await alice.mutation(api.brews.createBrew, {});
     // Bob (not the owner) may nickname Alice's brew.
     await bob.mutation(api.brews.nicknameBrew, { brewId, nickname: "night bloom" });
-    expect((await alice.query(api.brews.getBrew, { brewId })).nickname).toBe("night bloom");
+    expect((await getBrewDoc(alice,{ brewId })).nickname).toBe("night bloom");
     // Blank clears the nickname.
     await alice.mutation(api.brews.nicknameBrew, { brewId, nickname: "   " });
-    expect((await alice.query(api.brews.getBrew, { brewId })).nickname).toBeNull();
+    expect((await getBrewDoc(alice,{ brewId })).nickname).toBeNull();
   });
 
   it("pin validates the perfume and recipe index; any member may pin", async () => {
@@ -844,7 +886,7 @@ describe("nickname & pin", () => {
     await bob.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
     await bob.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
-    expect((await alice.query(api.brews.getBrew, { brewId })).pinned).toEqual({
+    expect((await getBrewDoc(alice,{ brewId })).pinned).toEqual({
       perfumeId: BLACK_GAS,
       recipeIndex: 0,
     });
@@ -861,8 +903,8 @@ describe("nickname & pin", () => {
     await alice.mutation(api.brews.registerMember, {});
     const b1 = await alice.mutation(api.brews.createBrew, {});
     const b2 = await alice.mutation(api.brews.createBrew, {});
-    expect((await alice.query(api.brews.getBrew, { brewId: b1 })).seq).toBe(1);
-    expect((await alice.query(api.brews.getBrew, { brewId: b2 })).seq).toBe(2);
+    expect((await getBrewDoc(alice,{ brewId: b1 })).seq).toBe(1);
+    expect((await getBrewDoc(alice,{ brewId: b2 })).seq).toBe(2);
   });
 });
 
@@ -877,13 +919,14 @@ describe("deleteBrew & member removal", () => {
     const brewId = await alice.mutation(api.brews.createBrew, {});
 
     await expect(bob.mutation(api.brews.deleteBrew, { brewId })).rejects.toThrow(/owner or admin/);
-    // Owner deletes their own.
+    // Owner deletes their own. getBrew of the now-deleted id resolves to null
+    // (a graceful deep-link miss), not a throw.
     const own = await alice.mutation(api.brews.createBrew, {});
     await alice.mutation(api.brews.deleteBrew, { brewId: own });
-    await expect(alice.query(api.brews.getBrew, { brewId: own })).rejects.toThrow(/not found/);
+    expect(await alice.query(api.brews.getBrew, { brewId: own })).toBeNull();
     // Admin deletes Alice's remaining brew.
     await tom.mutation(api.brews.deleteBrew, { brewId });
-    await expect(alice.query(api.brews.getBrew, { brewId })).rejects.toThrow(/not found/);
+    expect(await alice.query(api.brews.getBrew, { brewId })).toBeNull();
   });
 
   it("deleteBrew cascades to undo & presence rows", async () => {
@@ -948,7 +991,7 @@ describe("handoff", () => {
     await bob.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
     await alice.mutation(api.brews.handoffBrew, { brewId, toMemberKey: bobKey });
-    expect((await bob.query(api.brews.getBrew, { brewId })).owner).toBe(bobKey);
+    expect((await getBrewDoc(bob,{ brewId })).owner).toBe(bobKey);
   });
 
   it("a non-owner cannot hand off; the party brew has no owner to hand off", async () => {

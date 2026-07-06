@@ -10,10 +10,12 @@ import {
   effectiveTally,
   brewTally,
   combineFrequencies,
+  traceCombination,
   evaluate,
   autoResolvePlays,
   findRecipes,
 } from "./engine";
+import type { FreqInstance } from "./engine";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -489,5 +491,95 @@ describe("engine invariants", () => {
       const { tally } = combineFrequencies(msFromList(parts));
       expect(tally[id], `${id} from [${parts.join(",")}]`).toBe(1);
     }
+  });
+});
+
+// ── traceCombination: instance-level combination trace ────────────────────────
+// The pure helper the brew-graph layout consumes to name WHICH frequency
+// instances fused — must agree with combineFrequencies on the resulting tally.
+
+describe("traceCombination", () => {
+  const insts = (ids: string[]): FreqInstance[] =>
+    ids.map((id, i) => ({ ref: `i${i}`, id }));
+
+  // Rebuild the tally the trace implies: surviving instances + final combined
+  // nodes (steps whose ref no later step consumed).
+  const tallyOf = (pool: FreqInstance[]) => {
+    const { steps, survivors } = traceCombination(pool);
+    const consumed = new Set(steps.flatMap((s) => s.consumed));
+    const tally: Record<string, number> = {};
+    const byRef = new Map(pool.map((p) => [p.ref, p.id]));
+    for (const ref of survivors) {
+      const id = byRef.get(ref)!;
+      tally[id] = (tally[id] ?? 0) + 1;
+    }
+    for (const s of steps) {
+      if (!consumed.has(s.ref)) tally[s.id] = (tally[s.id] ?? 0) + 1;
+    }
+    return tally;
+  };
+
+  it("leaves a non-combining pool untouched", () => {
+    const t = traceCombination(insts(["N", "N", "A"]));
+    expect(t.steps).toEqual([]);
+    expect(t.survivors.sort()).toEqual(["i0", "i1", "i2"]);
+  });
+
+  it("fuses one named frequency and names its consumed instances", () => {
+    // Ignetium = Ev,Ev,En,C
+    const pool = insts(["Ev", "Ev", "En", "C"]);
+    const t = traceCombination(pool);
+    expect(t.steps).toHaveLength(1);
+    expect(t.steps[0].id).toBe("Ignetium");
+    expect(t.steps[0].consumed.sort()).toEqual(["i0", "i1", "i2", "i3"]);
+    expect(t.survivors).toEqual([]);
+  });
+
+  it("leaves the excess instance a survivor", () => {
+    // one extra Ev survives the Ignetium fusion
+    const t = traceCombination(insts(["Ev", "Ev", "Ev", "En", "C"]));
+    expect(t.steps).toHaveLength(1);
+    expect(t.survivors).toHaveLength(1);
+    // the survivor is an Ev
+    expect(t.survivors[0]).toMatch(/^i\d$/);
+  });
+
+  it("chains: a derived frequency is consumed by a heavier one", () => {
+    // Yonescope(I,N,N,T) + Ignetium(Ev,Ev,En,C) + C + C -> Letchettin
+    const pool = insts(["I", "N", "N", "T", "Ev", "Ev", "En", "C", "C", "C"]);
+    const t = traceCombination(pool);
+    const producedIds = t.steps.map((s) => s.id);
+    expect(producedIds).toContain("Ignetium");
+    expect(producedIds).toContain("Yonescope");
+    expect(producedIds).toContain("Letchettin");
+    // the Letchettin step consumes the two combined refs plus the two C circles
+    const let_ = t.steps.find((s) => s.id === "Letchettin")!;
+    const comboRefs = let_.consumed.filter((r) => r.startsWith("combo:"));
+    expect(comboRefs).toHaveLength(2); // Yonescope + Ignetium
+  });
+
+  it("agrees with combineFrequencies on the resulting tally", () => {
+    const cases = [
+      ["N"],
+      ["Ev", "Ev", "En", "C"],
+      ["Ev", "Ev", "En", "C", "Ev", "Ev", "En", "C"],
+      ["D", "D", "A", "C", "I", "N", "N", "T"],
+      ["A", "A", "D", "T"],
+      ["I", "N", "N", "T", "Ev", "Ev", "En", "C", "C", "C"],
+    ];
+    for (const list of cases) {
+      const mine = tallyOf(insts(list));
+      const theirs = combineFrequencies(msFromList(list)).tally;
+      expect(Object.entries(mine).sort(), list.join(",")).toEqual(
+        Object.entries(theirs).sort(),
+      );
+    }
+  });
+
+  it("is deterministic for identical input", () => {
+    const pool = insts(["Ev", "Ev", "En", "C", "D", "D", "A", "C"]);
+    expect(JSON.stringify(traceCombination(pool))).toBe(
+      JSON.stringify(traceCombination(pool)),
+    );
   });
 });

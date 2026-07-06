@@ -18,8 +18,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { Ingredient } from "../lib/types";
-import type { HandOrigin, Inventory } from "../lib/legacy-adapter";
-import type { BenchHand } from "../lib/use-hand";
+import type { Inventory } from "../lib/brew-types";
+import type { HandOrigin, BrewHand } from "../lib/use-hand";
 import { PHIAL } from "../lib/frequencies";
 import ItemFrame, { type FrameItem } from "./item-frame";
 
@@ -35,7 +35,7 @@ export type GrabSpec = {
   from: HandOrigin;
   available: number; // cap for pickUp; Infinity for the boundless catalog
   inBrew: number;
-  hand: BenchHand;
+  hand: BrewHand;
   canMove: boolean;
   onHover: (itemKey: string | null) => void;
   onShiftToBrew?: (itemKey: string) => void;
@@ -122,12 +122,12 @@ export interface InventoryGridProps {
     items: InventorySlotItem[];
     owned: number; // total units owned pre-filter — tells "empty" from "hidden"
   }[];
-  hand: BenchHand;
+  hand: BrewHand;
   canMove: boolean;
   canTransfer: boolean;
-  members: { benchKey: string; name: string }[];
+  members: { memberKey: string; name: string }[];
   onHover: (itemKey: string | null) => void;
-  onTransfer: (toBenchKey: string, itemKey: string, n: number) => void;
+  onTransfer: (toMemberKey: string, itemKey: string, n: number) => void;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
 }
@@ -214,7 +214,7 @@ function Slot({
   onSend,
 }: {
   item: InventorySlotItem;
-  hand: BenchHand;
+  hand: BrewHand;
   canMove: boolean;
   showSend: boolean;
   onHover: (itemKey: string | null) => void;
@@ -278,12 +278,12 @@ function SendPopover({
   onClose,
 }: {
   anchor: SendAnchor;
-  members: { benchKey: string; name: string }[];
-  onTransfer: (toBenchKey: string, itemKey: string, n: number) => void;
+  members: { memberKey: string; name: string }[];
+  onTransfer: (toMemberKey: string, itemKey: string, n: number) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [to, setTo] = useState(members[0]?.benchKey ?? "");
+  const [to, setTo] = useState(members[0]?.memberKey ?? "");
   const [n, setN] = useState(1);
 
   useEffect(() => {
@@ -327,7 +327,7 @@ function SendPopover({
         className="mb-2 w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-xs text-text focus:border-accent focus:outline-none"
       >
         {members.map((m) => (
-          <option key={m.benchKey} value={m.benchKey}>
+          <option key={m.memberKey} value={m.memberKey}>
             {m.name}
           </option>
         ))}

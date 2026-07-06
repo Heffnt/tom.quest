@@ -1,5 +1,5 @@
-// Playwright suite for the Perfumer's Bench (DESIGN.md, "Testing"): U1–U6 and
-// U9 run single-user against ?local=1&seed=basic (LocalBenchStore, no Convex
+// Playwright suite for the Perfumer (DESIGN.md, "Testing"): U1–U6 and U9 run
+// single-user against ?local=1&seed=basic (the local brew store, no Convex
 // traffic); U7/U8 are two-context live-sync specs gated behind E2E_CONVEX=1
 // because they mutate the real shared deployment.
 
@@ -132,7 +132,9 @@ test.describe("perfume bench — local mode", () => {
     await expect(row.locator(".opacity-35")).toHaveCount(0);
   });
 
-  test("U4: hover previews touch only the brew bar", async ({ page }) => {
+  test("U4: hover never touches the brew graph", async ({ page }) => {
+    // The graph IS the math now (the old brew-bar delta chips are gone); the
+    // surviving guarantee is that hovering an input row leaves the graph alone.
     await openLocalBench(page);
     await invSlot(page, PEAT).click({ modifiers: ["Shift"] });
     await expect(freqFloats(page, "N")).toHaveCount(2);
@@ -140,21 +142,16 @@ test.describe("perfume bench — local mode", () => {
       page.getByRole("button", { name: "Brew Black Gas ×2" }),
     ).toBeEnabled();
 
+    // hovering another ingredient row must not conjure or move any graph node
     await invSlot(page, ROSES).hover();
-    const bar = page.getByTestId("brew-bar");
-    await expect(
-      bar.locator('[data-testid="brew-chip"][data-ghost="add"]'),
-    ).toHaveCount(2);
-    await expect(bar.getByText("would break Black Gas")).toBeVisible();
-    // the cauldron graph is untouched by hover
     await expect(freqFloats(page)).toHaveCount(2);
     await expect(freqFloats(page, "A")).toHaveCount(0);
     await expect(arcNode(page, PEAT)).toHaveCount(1);
 
-    // un-hover: the ghosts leave, the real chips stay
+    // un-hover leaves the graph exactly as it was
     await page.mouse.move(10, 10);
-    await expect(bar.locator('[data-testid="brew-chip"][data-ghost]')).toHaveCount(0);
-    await expect(bar.locator('[data-testid="brew-chip"]')).toHaveCount(2);
+    await expect(freqFloats(page)).toHaveCount(2);
+    await expect(arcNode(page, PEAT)).toHaveCount(1);
   });
 
   test("U5: the hand grammar — click stacking, right-click return, Escape, shift teleports", async ({

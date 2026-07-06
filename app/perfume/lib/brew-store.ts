@@ -223,6 +223,10 @@ export type BrewStoreResult = {
   /** Whether the viewer is a registered member (may act at all). */
   registered: boolean;
   loading: boolean;
+  /** A deep link pointed at a brew that does not exist (bad/deleted/malformed
+   * id). The client shows a "brew not found" state instead of crashing or
+   * hanging on the loading screen. Always false in local mode. */
+  notFound: boolean;
   /** The resolved id of the brew on stage ("local-brew" locally). */
   brewId: string | null;
 };
@@ -520,6 +524,7 @@ export function useLocalBrewStore(): BrewStoreResult {
     undo: { canUndo: false, canRedo: false },
     registered: true,
     loading: false,
+    notFound: false,
     brewId: LOCAL_BREW_ID,
   };
 }
@@ -554,14 +559,19 @@ export function useConvexBrewStore(
   // Resolve the party sentinel to a real brew id (the party brew is created on
   // demand; before that getPartyBrew returns null and we render empty).
   const partyBrew = useQuery(api.brews.getPartyBrew, isPartyKey ? {} : "skip");
-  const resolvedId: Id<"perfumeBrews"> | null = isPartyKey
-    ? (partyBrew?._id ?? null)
-    : (brewKey as Id<"perfumeBrews">);
-
+  // getBrew takes a plain string and TOLERATES a bad id (returns null instead of
+  // throwing), so a deep link is fetched by its raw key. Every OTHER brew-scoped
+  // query is v.id-typed and would throw on a malformed string, so those are gated
+  // on `resolvedId` — the id of a brew that actually exists (from the fetched
+  // doc, or the party brew), never a raw unvalidated deep-link string.
+  const brewFetchKey = isPartyKey ? (partyBrew?._id ?? null) : brewKey;
   const brewDoc = useQuery(
     api.brews.getBrew,
-    resolvedId ? { brewId: resolvedId } : "skip",
+    brewFetchKey ? { brewId: brewFetchKey } : "skip",
   );
+  const resolvedId: Id<"perfumeBrews"> | null = isPartyKey
+    ? (partyBrew?._id ?? null)
+    : (brewDoc?._id ?? null);
   const rawMembers = useQuery(api.brews.listMembers, {});
   const members = useMemo<MemberInfo[]>(() => rawMembers ?? [], [rawMembers]);
   const rawIndex = useQuery(
@@ -925,10 +935,18 @@ export function useConvexBrewStore(
   const index = rawIndex ?? null;
   const undo = rawUndo ?? { canUndo: false, canRedo: false };
 
+  // A non-party deep link whose getBrew resolved to `null` (not `undefined`)
+  // points at a brew that does not exist — a malformed, deleted, or stale id.
+  // getBrew tolerates these (returns null instead of throwing), so we surface a
+  // "not found" state rather than crashing or hanging on the loading screen.
+  // (`undefined` is still loading; only an explicit `null` means not-found.)
+  const notFound = !isPartyKey && brewDoc === null;
+
   const loading =
-    snapshot === null ||
-    (!!viewerKey && ownInv === undefined) ||
-    (isPartyKey && partyBrew === undefined);
+    !notFound &&
+    (snapshot === null ||
+      (!!viewerKey && ownInv === undefined) ||
+      (isPartyKey && partyBrew === undefined));
 
   return {
     members,
@@ -943,6 +961,7 @@ export function useConvexBrewStore(
     undo,
     registered,
     loading,
+    notFound,
     brewId: brewIdStr ?? (isPartyKey ? PARTY_KEY : null),
   };
 }
