@@ -28,6 +28,8 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import type { BrewIndex, BrewSummary, MemberInfo } from "../lib/brew-types";
 import { PARTY_KEY } from "../lib/brew-store";
 import { btn, cn, tab } from "./ui";
@@ -213,6 +215,7 @@ function MemberGroup({
         name={ownerName}
         color={color}
         fresh={member?.fresh ?? false}
+        iconUrl={member?.iconUrl ?? null}
         badge={you ? "you" : undefined}
       />
       {recent.map((b) => (
@@ -238,6 +241,7 @@ function MemberGroup({
           overflow={overflow}
           color={color}
           activeKey={activeKey}
+          members={members}
           onSelect={actions.onSelect}
         />
       )}
@@ -258,20 +262,21 @@ function MemberGroup({
 }
 
 // ── an avatar + activity dot ──────────────────────────────────────────────────
-// Uploaded icons aren't URL-resolved in the data layer yet (MemberInfo carries
-// only iconStorageId, not a URL); until an icon-URL query lands we render the
-// color+initial fallback for everyone. Wiring: add an `iconUrl` prop here and an
-// <img> branch once brews.ts exposes ctx.storage.getUrl for member icons.
+// Renders the member's uploaded icon (listMembers resolves iconStorageId to a
+// servable iconUrl server-side) when present; otherwise the color+initial
+// fallback. The party group carries no icon, so it always shows the fallback.
 
 function Avatar({
   name,
   color,
   fresh,
+  iconUrl,
   badge,
 }: {
   name: string;
   color: string;
   fresh: boolean;
+  iconUrl?: string | null;
   badge?: string;
 }) {
   const initial = name.trim().charAt(0).toUpperCase() || "?";
@@ -285,10 +290,17 @@ function Avatar({
         className="grid h-6 w-6 place-items-center overflow-hidden rounded-full border border-border font-mono text-[11px] font-semibold"
         style={{ background: `${color}22`, color }}
       >
-        {/* Always the color+initial fallback for now: MemberInfo carries only
-            iconStorageId, not a resolved URL. When brews.ts exposes an icon-URL
-            query, render <img src=…> here for members with an uploaded icon. */}
-        {initial}
+        {iconUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={iconUrl}
+            alt=""
+            className="h-full w-full object-cover"
+            draggable={false}
+          />
+        ) : (
+          initial
+        )}
       </span>
       <span
         aria-hidden="true"
@@ -595,6 +607,7 @@ function SeeAllPopover({
   overflow,
   color,
   activeKey,
+  members,
   onSelect,
 }: {
   ownerKey: string;
@@ -602,14 +615,18 @@ function SeeAllPopover({
   overflow: number;
   color: string;
   activeKey: string | null;
+  members: MemberInfo[];
   onSelect: (brewKey: string) => void;
 }) {
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const ref = useRef<HTMLButtonElement>(null);
-  // The index only carries the 5 most-recent per group; the overflow list is
-  // fetched lazily by the orchestrator when this opens. Until that query is
-  // wired the popover states the count and offers the member's group — see
-  // integration notes. We still render a real popover so the affordance exists.
+  // The top-bar index carries only each member's 5 most-recent brews; the full
+  // list (past the RECENT cap) loads lazily from listAllBrews when this opens.
+  // Selecting any brew opens it on stage — the same path as a chip click.
+  const all = useQuery(
+    api.brews.listAllBrews,
+    at ? { memberKey: ownerKey } : "skip",
+  );
   const open = () => {
     const r = ref.current?.getBoundingClientRect();
     if (r) setAt({ x: r.left, y: r.bottom + 4 });
@@ -629,24 +646,44 @@ function SeeAllPopover({
       {at && (
         <Dropdown at={at} onClose={() => setAt(null)} label={`${ownerName}'s brews`}>
           <p className="px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-text-faint">
-            {ownerName} · {overflow} more
+            {ownerName} · {all ? all.length : overflow} brews
           </p>
-          <p className="px-2 pb-1 text-[11px] leading-snug text-text-faint">
-            The full list loads from the brew index — see integration notes.
-          </p>
-          <MenuButton
-            onClick={() => {
-              // best-effort: open the owner's group key is not a brew id, so we
-              // no-op the select here; the affordance stays until the lazy
-              // overflow query is wired.
-              void ownerKey;
-              void color;
-              void activeKey;
-              void onSelect;
-            }}
-          >
-            <span className="text-text-faint">(loading…)</span>
-          </MenuButton>
+          {all === undefined ? (
+            <p className="px-2 pb-1.5 text-[11px] text-text-faint">loading…</p>
+          ) : all.length === 0 ? (
+            <p className="px-2 pb-1.5 text-[11px] text-text-faint">no brews</p>
+          ) : (
+            <div className="max-h-72 overflow-y-auto">
+              {all.map((b) => (
+                <MenuButton
+                  key={b.brewId}
+                  onClick={() => {
+                    onSelect(b.brewId);
+                    setAt(null);
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ background: color }}
+                  />
+                  <span
+                    className={cn(
+                      "truncate",
+                      activeKey === b.brewId && "font-semibold text-accent",
+                    )}
+                  >
+                    {brewName(b, members)}
+                  </span>
+                  {b.outputCount > 0 && (
+                    <span className="ml-auto rounded-full bg-accent/20 px-1 text-[9px] leading-4 text-accent">
+                      {b.outputCount}
+                    </span>
+                  )}
+                </MenuButton>
+              ))}
+            </div>
+          )}
         </Dropdown>
       )}
     </>

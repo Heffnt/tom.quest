@@ -1319,6 +1319,53 @@ export const takeOutput = mutation({
   },
 });
 
+// ── inventory import (WHAT — own stock declaration; not a gift) ──────────────
+
+// Declare the caller's OWN fungible stock from a client-parsed sheet. Ports the
+// old bench importInventory exactly: owner-only (a member may only rewrite their
+// OWN inventory), each row validated (unknown item → throw; count must be a
+// non-negative integer), and mode chooses whether to REPLACE the whole stack set
+// or MERGE additively onto the current stacks. This is a stock declaration, not
+// a transfer — no gift event is written and no other member's inventory is
+// touched. Only fungible stacks (ingredients + pures) are declarable; perfumes
+// are provenance-bearing instances, never stack counts, so they are not imported.
+export const importInventory = mutation({
+  args: {
+    rows: v.array(v.object({ key: v.string(), count: v.number() })),
+    mode: v.union(v.literal("merge"), v.literal("replace")),
+    anonId,
+  },
+  handler: async (ctx, { rows, mode, anonId }) => {
+    const actor = await identify(ctx, anonId);
+    // Owner-only: a member imports onto their OWN inventory. requireMember is
+    // the identity gate — the caller is by construction the owner of the row
+    // they write, so there is no cross-member target to authorize.
+    await requireMember(ctx, actor);
+    for (const row of rows) {
+      if (!CATALOG[row.key]) throw new Error(`Unknown item: ${row.key}`);
+      if (!Number.isInteger(row.count) || row.count < 0) {
+        throw new Error(`Invalid count for ${row.key}: ${row.count}`);
+      }
+    }
+    const inv = await ensureInventory(ctx, actor.key);
+    // replace starts from empty stacks; merge keeps the current ones.
+    const ingredients: Record<string, number> =
+      mode === "replace" ? {} : { ...inv.ingredients };
+    const pures: Record<string, number> =
+      mode === "replace" ? {} : { ...inv.pures };
+    for (const row of rows) {
+      if (row.count === 0) continue;
+      const section = stackSectionFor(row.key) === "pures" ? pures : ingredients;
+      section[row.key] = (section[row.key] ?? 0) + row.count;
+    }
+    await ctx.db.patch(inv._id, { ingredients, pures, updatedAt: Date.now() });
+    await logEvent(ctx, "members", actor, "importInventory", {
+      mode,
+      rows: rows.length,
+    });
+  },
+});
+
 // ── gifting (WHAT — own items; instant; permanent) ───────────────────────────
 
 // Gift a stack of an ingredient/pure to another member: instant, records a gift
@@ -1549,15 +1596,23 @@ export const listMembers = query({
   handler: async (ctx) => {
     const now = Date.now();
     const members = await ctx.db.query("perfumeMembers").collect();
-    return members.map((m) => ({
-      memberKey: m.memberKey,
-      name: m.name,
-      color: m.color,
-      iconStorageId: m.iconStorageId ?? null,
-      registeredAt: m.registeredAt,
-      lastSeenAt: m.lastSeenAt,
-      fresh: m.lastSeenAt > now - MEMBER_FRESH_MS,
-    }));
+    // The client can never resolve a storageId to a servable URL — only the
+    // Convex runtime can (ctx.storage.getUrl). Resolve each uploaded icon here so
+    // avatars render the image; members with no icon carry a null url.
+    return await Promise.all(
+      members.map(async (m) => ({
+        memberKey: m.memberKey,
+        name: m.name,
+        color: m.color,
+        iconStorageId: m.iconStorageId ?? null,
+        iconUrl: m.iconStorageId
+          ? await ctx.storage.getUrl(m.iconStorageId)
+          : null,
+        registeredAt: m.registeredAt,
+        lastSeenAt: m.lastSeenAt,
+        fresh: m.lastSeenAt > now - MEMBER_FRESH_MS,
+      })),
+    );
   },
 });
 
@@ -1604,6 +1659,23 @@ export const listBrews = query({
       party: party ? brewSummary(party) : null,
       groups,
     };
+  },
+});
+
+// The see-all popover opens older brews past the RECENT_BREWS listBrews returns.
+// This returns ALL of one member's brews, most-recent first, as the same brew
+// summaries — so a member with many brews can reach the ones the top bar trims.
+// Reading is open (spectating); the party brew (owner null) is never a member's.
+export const listAllBrews = query({
+  args: { memberKey: v.string() },
+  handler: async (ctx, { memberKey }) => {
+    const brews = await ctx.db
+      .query("perfumeBrews")
+      .withIndex("by_owner", (q) => q.eq("owner", memberKey))
+      .collect();
+    return brews
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map(brewSummary);
   },
 });
 

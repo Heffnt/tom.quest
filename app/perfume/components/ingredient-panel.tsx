@@ -1,32 +1,33 @@
 "use client";
 
 // The input panel (left drawer — DESIGN.md §Layout). Its slots and cards are
-// item FRAMES (components/item-frame.tsx): the viewer's INVENTORY as a grid of
-// frames on top — three auto-growing sections — and the full CATALOG (96
-// ingredients + pures, an Ingredients / Frequencies tab pair) as rows below,
-// then one gift tab per other member (drop-to-gift affordance). Every frame is
-// grabbable per the hand grammar (DESIGN.md §5): pointer-down picks up (the hand
-// handles drag + the boundary rule), shift-click teleports one unit to the brew,
-// right-click returns one; hover only reports the hovered key — the brew bar
-// renders the preview, never the graph. Header actions: Import (tolerant paste
-// -> preview -> merge/replace) and Copy (clipboard export), plus per-slot Send —
-// both owner-only. Search and the multi-select frequency/type filter narrow BOTH
-// the grid and the catalog (AND semantics). Buttons/tabs use the shell's shared
-// treatment (components/ui.tsx).
+// item FRAMES (components/item-frame.tsx). The tab model is the spec's §Layout
+// one, for real:
 //
-// The prop CONTRACT (IngredientPanelProps) is the legacy shape the orchestrator
-// still passes through lib/legacy-adapter — kept stable while the internals are
-// rebuilt onto item frames. The per-member INVENTORY listing (DESIGN.md §Layout
-// "one tab per member inventory") awaits the shell passing store.inventoryOf;
-// today the member tabs surface the gift target only. See integration notes.
+//   Ingredients | Frequencies | <you> | <each other member>…
+//
+// - Ingredients / Frequencies are the CATALOG tabs: the 96 ingredients + the
+//   pure frequencies rendered as an item-frame grid of compact cards (art, name,
+//   type glyph, emitted-frequency dots, charge marks). These frames are
+//   hypothetical SOURCES (DESIGN.md §1) — dragging out mints a dashed item.
+// - One tab per registered member's INVENTORY, the viewer's own FIRST. The
+//   viewer's own inventory is a grid of REAL drag sources (the inventory
+//   context); every other member's inventory is VISIBLE but NOT a drag source
+//   (DESIGN.md §4 matrix), rendered as inert frames, plus the ghosted gift
+//   drop-frame at the top (only where gift is permitted — DESIGN.md §Interactions
+//   "Gifting", §4).
+//
+// Every grabbable frame obeys the hand grammar (DESIGN.md §5): pointer-down picks
+// up, shift-click teleports one unit to the brew, right-click returns one; hover
+// only reports the hovered key — the brew bar renders the preview. Header
+// actions: Import (tolerant paste → preview → merge/replace) and Copy (clipboard
+// export). Search + the multi-select frequency/type filter narrow the catalog
+// grids and the inventory grids alike (AND semantics). Buttons/tabs use the
+// shell's shared treatment (components/ui.tsx).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient, Perfume } from "../lib/types";
-import type {
-  BenchPermissions,
-  Inventory,
-  SharedUI,
-} from "../lib/legacy-adapter";
+import type { Inventory, SharedUI } from "../lib/legacy-adapter";
 import type { BenchHand } from "../lib/use-hand";
 import {
   ALL_FREQUENCIES,
@@ -35,9 +36,8 @@ import {
   ingredientWeight,
   isPureKey,
 } from "../data/base";
-import { formatInventory, getCount, type CatalogEntry } from "../lib/inventory";
-import { ChargeSymbol, FrequencySymbol, TypeGlyph } from "../lib/frequencies";
-import ItemFrame, { ItemArt, FrameCountBadge, type FrameItem } from "./item-frame";
+import { formatInventory, type CatalogEntry } from "../lib/inventory";
+import ItemFrame, { type FrameItem } from "./item-frame";
 import FrequencyFilterButton from "./frequency-filter";
 import InventoryGrid, {
   grabHandlers,
@@ -46,21 +46,40 @@ import InventoryGrid, {
 import ImportDialog from "./import-dialog";
 import { btn, tab, cn } from "./ui";
 
+// A member tab entry: the viewer's own is flagged so it renders as REAL drag
+// sources and the others render inert + a gift drop-frame.
+export type MemberTab = { memberKey: string; name: string; isSelf: boolean };
+
 export interface IngredientPanelProps {
   // ingredients + pures (the 96 + pure frequencies); perfume display names
   // resolve through data/base.
   catalog: Ingredient[];
+  // the viewer's own inventory (drives the copy/import + the "you" tab grid)
   inventory: Inventory;
+  // any member's inventory, reactively subscribed for the SELECTED tab only
+  // (store.inventoryOf); other keys read the last cached projection / empty.
+  inventoryOf: (memberKey: string) => Inventory;
   // copies of each catalog key currently in the brew — ghosts icons here
   brewCounts: Record<string, number>;
   ui: SharedUI;
   onUI: (patch: Partial<SharedUI>) => void;
   hand: BenchHand;
-  permissions: BenchPermissions;
+  // WHERE-move permission (drag inventory ↔ brew). DESIGN.md §4.
+  canMove: boolean;
+  // owner-scope: may import/copy the viewer's own inventory.
+  canEditInventory: boolean;
+  // §4 matrix "Gift items": own/party brew yes, another member's brew no. The
+  // ghost gift drop-frame renders only where this is true.
+  canGift: boolean;
   isAnon: boolean;
-  members: { benchKey: string; name: string }[];
+  // member inventory tabs, the viewer's own FIRST (DESIGN.md §Layout).
+  memberTabs: MemberTab[];
   onImport: (rows: { itemKey: string; count: number }[], mode: "merge" | "replace") => void;
-  onTransfer: (toBenchKey: string, itemKey: string, n: number) => void;
+  // gift one of the viewer's own items to a member (drag-drop or send popover).
+  onGift: (toMemberKey: string, itemKey: string, n: number) => void;
+  // point the store's single non-own inventory subscription at a member tab
+  // (null when a catalog/own tab is open) — never N subscriptions.
+  onSelectMemberTab: (memberKey: string | null) => void;
   // hover reporting only — the client decides what previews where
   onHover: (itemKey: string | null) => void;
   // DESIGN teleports HandApi cannot express: shift-click sends one unit
@@ -83,6 +102,14 @@ function freqOrder(ing: Ingredient): number {
 }
 function ingredientRank(ing: Ingredient): number {
   return ing.strike > 0 || ing.wild > 0 ? 1 : 0;
+}
+
+function catalogSort(a: Ingredient, b: Ingredient, frequencies: boolean): number {
+  return frequencies
+    ? pureRank(a) - pureRank(b) || freqOrder(a) - freqOrder(b)
+    : ingredientRank(a) - ingredientRank(b) ||
+        ingredientWeight(a) - ingredientWeight(b) ||
+        a.name.localeCompare(b.name);
 }
 
 // ── filtering ────────────────────────────────────────────────────────────────
@@ -136,30 +163,37 @@ function perfumeMatchesSearch(perfume: Perfume | undefined, name: string, q: str
   );
 }
 
+// ── the panel ────────────────────────────────────────────────────────────────
+
 export default function IngredientPanel({
   catalog,
   inventory,
+  inventoryOf,
   brewCounts,
   ui,
   onUI,
   hand,
-  permissions,
+  canMove,
+  canEditInventory,
+  canGift,
   isAnon,
-  members,
+  memberTabs,
   onImport,
-  onTransfer,
+  onGift,
+  onSelectMemberTab,
   onHover,
   onShiftToBrew,
   onUnbrewOne,
 }: IngredientPanelProps) {
   const [importOpen, setImportOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  // Which catalog/member tab is showing (DESIGN.md §Layout). The Ingredients /
-  // Frequencies catalog tabs stay driven by ui.inputTab (shared browse UI); a
-  // per-member gift tab is a panel-local selection ("member:<key>"), so the
-  // frozen SharedUI shape stays untouched. Selecting a member tab surfaces that
-  // member's drop-to-gift affordance (DESIGN.md §Interactions "Gifting").
+  // The open tab. A catalog tab ("ingredients"/"frequencies") drives ui.inputTab
+  // (shared browse UI); a member tab is a panel-local member-key selection, so
+  // the frozen SharedUI shape stays untouched. They are mutually exclusive. The
+  // panel opens on the viewer's OWN inventory tab (the primary workspace) — see
+  // the default-selection effect below.
   const [memberTab, setMemberTab] = useState<string | null>(null);
+  const defaultedRef = useRef(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -167,6 +201,34 @@ export default function IngredientPanel({
     },
     [],
   );
+
+  // Open on the viewer's own inventory tab once it is known (the primary
+  // workspace — the old always-on inventory section). Fires once; the user's
+  // subsequent tab choices stand.
+  const selfKey = memberTabs.find((m) => m.isSelf)?.memberKey ?? null;
+  useEffect(() => {
+    if (defaultedRef.current || selfKey === null) return;
+    defaultedRef.current = true;
+    setMemberTab(selfKey);
+  }, [selfKey]);
+
+  // Point the store's single non-own inventory subscription at the selected
+  // member tab (never at the viewer's own — that is already subscribed), and
+  // drop it when a catalog/own tab is open. Exactly ONE other member is live.
+  const selectedOther =
+    memberTab !== null && memberTab !== selfKey ? memberTab : null;
+  useEffect(() => {
+    onSelectMemberTab(selectedOther);
+    return () => onSelectMemberTab(null);
+  }, [selectedOther, onSelectMemberTab]);
+
+  // A member tab that disappears (member left / list changed) falls back to the
+  // Ingredients catalog tab so the panel never strands on a dead tab.
+  useEffect(() => {
+    if (memberTab !== null && !memberTabs.some((m) => m.memberKey === memberTab)) {
+      setMemberTab(null);
+    }
+  }, [memberTab, memberTabs]);
 
   const ingByKey = useMemo(() => new Map(catalog.map((i) => [i.key, i])), [catalog]);
   const perfumeByKey = useMemo(() => new Map(basePerfumes.map((p) => [p.key, p])), []);
@@ -183,96 +245,29 @@ export default function IngredientPanel({
   const q = ui.inputSearch.trim().toLowerCase();
   const { types, freqs } = useMemo(() => splitFilters(ui.inputFilters), [ui.inputFilters]);
 
-  // ---- the grid: inventory ∪ in-brew keys, so a fully-brewed stack keeps its
-  // slot (ghosted icon, no badge — "you took the icon") ----
-  const gridSections = useMemo(() => {
-    const itemSlots = (section: "ingredients" | "pures") => {
-      const keys = new Set(Object.keys(inventory[section]));
-      for (const [k, n] of Object.entries(brewCounts)) {
-        if (n > 0 && (section === "pures") === isPureKey(k)) keys.add(k);
-      }
-      const items: InventorySlotItem[] = [];
-      for (const key of keys) {
-        const ing = ingByKey.get(key);
-        if (!ing) continue;
-        if (!ingredientPasses(ing, types, freqs) || !ingredientMatchesSearch(ing, q)) continue;
-        items.push({
-          key,
-          name: ing.name,
-          count: inventory[section][key] ?? 0,
-          inBrew: brewCounts[key] ?? 0,
-          ing,
-        });
-      }
-      items.sort((a, b) =>
-        section === "pures"
-          ? pureRank(a.ing!) - pureRank(b.ing!) || freqOrder(a.ing!) - freqOrder(b.ing!)
-          : ingredientRank(a.ing!) - ingredientRank(b.ing!) ||
-            ingredientWeight(a.ing!) - ingredientWeight(b.ing!) ||
-            a.name.localeCompare(b.name),
-      );
-      return items;
-    };
-
-    const perfumeItems: InventorySlotItem[] = Object.entries(inventory.perfumes)
-      .filter(([, n]) => n > 0)
-      .map(([key, count]) => ({
-        key,
-        name: perfumeByKey.get(key)?.name ?? key,
-        count,
-        inBrew: 0,
-      }))
-      .filter(
-        (item) =>
-          perfumePasses(perfumeByKey.get(item.key), types, freqs) &&
-          perfumeMatchesSearch(perfumeByKey.get(item.key), item.name, q),
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    const units = (rec: Record<string, number>) =>
-      Object.values(rec).reduce((s, n) => s + n, 0);
-
-    return [
-      {
-        id: "ingredients" as const,
-        label: "ingredients",
-        items: itemSlots("ingredients"),
-        owned: units(inventory.ingredients),
-      },
-      {
-        id: "pures" as const,
-        label: "pure frequencies",
-        items: itemSlots("pures"),
-        owned: units(inventory.pures),
-      },
-      {
-        id: "perfumes" as const,
-        label: "perfumes",
-        items: perfumeItems,
-        owned: units(inventory.perfumes),
-      },
-    ];
-  }, [inventory, brewCounts, ingByKey, perfumeByKey, types, freqs, q]);
-
-  // ---- the catalog ----
-  const tabItems = useMemo(
-    () => catalog.filter((i) => (ui.inputTab === "frequencies") === isPureKey(i.key)),
-    [catalog, ui.inputTab],
-  );
-
-  const filtered = useMemo(
+  // ---- the catalog grid: filtered + sorted for the active catalog tab ----
+  const frequenciesTab = ui.inputTab === "frequencies";
+  const catalogItems = useMemo(
     () =>
-      tabItems
-        .filter((ing) => ingredientPasses(ing, types, freqs) && ingredientMatchesSearch(ing, q))
-        .sort((a, b) =>
-          ui.inputTab === "frequencies"
-            ? pureRank(a) - pureRank(b) || freqOrder(a) - freqOrder(b)
-            : ingredientRank(a) - ingredientRank(b) ||
-              ingredientWeight(a) - ingredientWeight(b) ||
-              a.name.localeCompare(b.name),
-        ),
-    [tabItems, types, freqs, q, ui.inputTab],
+      catalog
+        .filter((i) => frequenciesTab === isPureKey(i.key))
+        .filter((ing) => ingredientPasses(ing, types, freqs) && ingredientMatchesSearch(ing, q)),
+    [catalog, frequenciesTab, types, freqs, q],
   );
+  const catalogTotal = useMemo(
+    () => catalog.filter((i) => frequenciesTab === isPureKey(i.key)).length,
+    [catalog, frequenciesTab],
+  );
+  const filteredCatalog = useMemo(
+    () => [...catalogItems].sort((a, b) => catalogSort(a, b, frequenciesTab)),
+    [catalogItems, frequenciesTab],
+  );
+
+  // ---- an inventory (own or another member's) → grid sections ----
+  const sectionsFor = (inv: Inventory, withBrewGhost: boolean) =>
+    inventoryGridSections(inv, ingByKey, perfumeByKey, types, freqs, q, {
+      brewCounts: withBrewGhost ? brewCounts : null,
+    });
 
   const copy = async () => {
     try {
@@ -285,9 +280,24 @@ export default function IngredientPanel({
     }
   };
 
+  // the member whose inventory the open member tab shows
+  const openMember = memberTab
+    ? memberTabs.find((m) => m.memberKey === memberTab) ?? null
+    : null;
+  // other members (not the viewer) — the gift targets for the Send popover
+  const giftTargets = useMemo(
+    () => memberTabs.filter((m) => !m.isSelf).map((m) => ({ benchKey: m.memberKey, name: m.name })),
+    [memberTabs],
+  );
+
+  const selectCatalog = (t: "ingredients" | "frequencies") => {
+    setMemberTab(null);
+    onUI({ inputTab: t });
+  };
+
   return (
     <div className="flex h-full flex-col rounded-lg border border-border bg-surface">
-      {/* search + the multi frequency/type filter — narrows grid AND catalog */}
+      {/* search + the multi frequency/type filter — narrows every grid */}
       <div className="border-b border-border p-3">
         <div className="flex items-stretch gap-2">
           <input
@@ -306,126 +316,102 @@ export default function IngredientPanel({
         </div>
       </div>
 
+      {/* ── tabs (DESIGN.md §Layout): Ingredients | Frequencies | you | others ── */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">
+        {(["ingredients", "frequencies"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => selectCatalog(t)}
+            aria-pressed={memberTab === null && ui.inputTab === t}
+            className={cn(tab.base, "text-sm font-semibold")}
+          >
+            {t === "ingredients" ? "Ingredients" : "Frequencies"}
+          </button>
+        ))}
+        <span aria-hidden className="mx-1 h-4 w-px bg-border" />
+        {memberTabs.map((m) => (
+          <button
+            key={m.memberKey}
+            type="button"
+            onClick={() => setMemberTab(m.memberKey)}
+            aria-pressed={memberTab === m.memberKey}
+            title={m.isSelf ? "Your inventory" : `${m.name}'s inventory`}
+            className={cn(tab.base, "text-sm font-semibold")}
+          >
+            {m.isSelf ? "You" : m.name}
+          </button>
+        ))}
+      </div>
+
       {/* data-pf-surface: presence coordinates are content-space of this
           scroll container, so spectators track rows, not pixels */}
       <div data-pf-surface="input" className="min-h-0 flex-1 overflow-y-auto">
-        {/* ── inventory ── */}
-        <section aria-label="Inventory">
-          <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
-            <h2 className="text-sm font-semibold text-text-muted">Inventory</h2>
-            <div className="flex items-center gap-1.5">
-              {permissions.editInventory && (
-                <button
-                  type="button"
-                  onClick={() => setImportOpen(true)}
-                  title="Paste an inventory as text"
-                  className={btn.outline}
-                >
-                  import
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={copy}
-                title="Copy the inventory as text"
-                className={cn(
-                  btn.outline,
-                  copied && "border-success/60 text-success hover:border-success/60 hover:text-success",
-                )}
-              >
-                {copied ? "copied ✓" : "copy"}
-              </button>
-            </div>
-          </div>
-          {isAnon && (
-            <p className="mx-3 mt-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-[11px] leading-snug text-warning">
-              Anonymous bench — it&apos;s keyed to this browser&apos;s storage and won&apos;t
-              follow you elsewhere. Sign in to keep it.
-            </p>
-          )}
-          <InventoryGrid
-            sections={gridSections}
-            hand={hand}
-            canMove={permissions.moveItems}
-            canTransfer={permissions.editInventory}
-            members={members}
-            onHover={onHover}
-            onTransfer={onTransfer}
-            onShiftToBrew={onShiftToBrew}
-            onUnbrewOne={onUnbrewOne}
-          />
-        </section>
-
-        {/* ── catalog + member gift tabs (DESIGN.md §Layout) ── */}
-        <section aria-label="Catalog" className="border-t border-border">
-          <div className="flex items-center justify-between px-3 py-2">
-            <div className="flex flex-wrap items-center gap-1">
-              {(["ingredients", "frequencies"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => {
-                    setMemberTab(null);
-                    onUI({ inputTab: t });
-                  }}
-                  aria-pressed={memberTab === null && ui.inputTab === t}
-                  className={cn(tab.base, "text-sm font-semibold")}
-                >
-                  {t === "ingredients" ? "Ingredients" : "Frequencies"}
-                </button>
-              ))}
-              {/* one gift tab per other member (own inventory is the grid
-                  above; per-member inventory listings await the shell passing
-                  inventoryOf — see integration notes). */}
-              {permissions.editInventory &&
-                members.map((m) => (
-                  <button
-                    key={m.benchKey}
-                    type="button"
-                    onClick={() => setMemberTab((cur) => (cur === m.benchKey ? null : m.benchKey))}
-                    aria-pressed={memberTab === m.benchKey}
-                    title={`Gift to ${m.name}`}
-                    className={cn(tab.base, "text-sm font-semibold")}
-                  >
-                    {m.name}
-                  </button>
-                ))}
-            </div>
-            {memberTab === null && (
-              <span className="font-mono text-xs tabular-nums text-text-faint">
-                {filtered.length}/{tabItems.length}
-              </span>
-            )}
-          </div>
-
-          {memberTab !== null ? (
-            <MemberGiftTab
-              member={members.find((m) => m.benchKey === memberTab) ?? null}
+        {memberTab !== null ? (
+          openMember?.isSelf ? (
+            // your own inventory: real drag sources + per-slot Send (gifting)
+            <section aria-label="Your inventory">
+              <InventoryHeader
+                canEditInventory={canEditInventory}
+                copied={copied}
+                onImport={() => setImportOpen(true)}
+                onCopy={copy}
+              />
+              {isAnon && <AnonNote />}
+              <InventoryGrid
+                sections={sectionsFor(inventory, true)}
+                hand={hand}
+                canMove={canMove}
+                canTransfer={canGift}
+                members={giftTargets}
+                onHover={onHover}
+                onTransfer={onGift}
+                onShiftToBrew={onShiftToBrew}
+                onUnbrewOne={onUnbrewOne}
+              />
+            </section>
+          ) : openMember ? (
+            // another member's inventory: VISIBLE, not a drag source (§4), plus
+            // the ghosted gift drop-frame when gifting is permitted.
+            <MemberInventoryTab
+              member={openMember}
+              sections={sectionsFor(inventoryOf(openMember.memberKey), false)}
               hand={hand}
-              onTransfer={onTransfer}
+              canGift={canGift}
+              onGift={onGift}
             />
-          ) : filtered.length === 0 ? (
-            <p className="px-4 py-6 text-center font-mono text-xs text-text-faint">
-              {ui.inputTab === "ingredients" ? "no ingredients match" : "no frequencies match"}
-            </p>
-          ) : (
-            <ul className="divide-y divide-border/50">
-              {filtered.map((ing) => (
-                <CatalogRow
-                  key={ing.key}
-                  ing={ing}
-                  owned={getCount(inventory, ing.key)}
-                  inBrew={brewCounts[ing.key] ?? 0}
-                  hand={hand}
-                  canMove={permissions.moveItems}
-                  onHover={onHover}
-                  onShiftToBrew={onShiftToBrew}
-                  onUnbrewOne={onUnbrewOne}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
+          ) : null
+        ) : (
+          // a catalog tab: the hypothetical-source item-frame grid
+          <section aria-label="Catalog">
+            <div className="flex items-center justify-end px-3 py-1.5">
+              <span className="font-mono text-xs tabular-nums text-text-faint">
+                {filteredCatalog.length}/{catalogTotal}
+              </span>
+            </div>
+            {filteredCatalog.length === 0 ? (
+              <p className="px-4 py-6 text-center font-mono text-xs text-text-faint">
+                {frequenciesTab ? "no frequencies match" : "no ingredients match"}
+              </p>
+            ) : (
+              <ul className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1.5 px-3 pb-3">
+                {filteredCatalog.map((ing) => (
+                  <CatalogCard
+                    key={ing.key}
+                    ing={ing}
+                    owned={ownedOf(inventory, ing.key)}
+                    inBrew={brewCounts[ing.key] ?? 0}
+                    hand={hand}
+                    canMove={canMove}
+                    onHover={onHover}
+                    onShiftToBrew={onShiftToBrew}
+                    onUnbrewOne={onUnbrewOne}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
 
       {importOpen && (
@@ -435,30 +421,80 @@ export default function IngredientPanel({
   );
 }
 
-// ── member gift tab (DESIGN.md §Interactions "Gifting") ──────────────────────
-// A member's tab shows a ghosted item-frame drop-to-gift affordance. Drop one
-// of your items here (drag-release or, while holding a stack, click) and it
-// gifts instantly to that member via onTransfer -> store.giftItem. The frame
-// previews the held item so the target reads as "release to gift this".
-//
-// NOTE (integrator): this surfaces the gift target only. Listing the member's
-// OWN inventory as item frames (per DESIGN.md §Layout "one tab per member
-// inventory") needs the shell to pass a per-member inventory (store.inventoryOf)
-// — the panel's current props carry only the viewer's own inventory. See the
-// integration notes.
-function MemberGiftTab({
-  member,
-  hand,
-  onTransfer,
+// ── the inventory header (import / copy) ─────────────────────────────────────
+
+function InventoryHeader({
+  canEditInventory,
+  copied,
+  onImport,
+  onCopy,
 }: {
-  member: { benchKey: string; name: string } | null;
-  hand: BenchHand;
-  onTransfer: (toBenchKey: string, itemKey: string, n: number) => void;
+  canEditInventory: boolean;
+  copied: boolean;
+  onImport: () => void;
+  onCopy: () => void;
 }) {
-  if (!member) return null;
+  return (
+    <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
+      <h2 className="text-sm font-semibold text-text-muted">Inventory</h2>
+      <div className="flex items-center gap-1.5">
+        {canEditInventory && (
+          <button
+            type="button"
+            onClick={onImport}
+            title="Paste an inventory as text"
+            className={btn.outline}
+          >
+            import
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onCopy}
+          title="Copy the inventory as text"
+          className={cn(
+            btn.outline,
+            copied && "border-success/60 text-success hover:border-success/60 hover:text-success",
+          )}
+        >
+          {copied ? "copied ✓" : "copy"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AnonNote() {
+  return (
+    <p className="mx-3 mt-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-[11px] leading-snug text-warning">
+      Anonymous brew — it&apos;s keyed to this browser&apos;s storage and won&apos;t
+      follow you elsewhere. Sign in to keep it.
+    </p>
+  );
+}
+
+// ── another member's inventory tab (visible, not a drag source; §4) ──────────
+// The member's stacks render as inert item frames (no hand handlers → not
+// grabbable). When gifting is permitted a ghosted gift drop-frame sits on top:
+// drop one of YOUR items on it (drag-release or, while holding a stack, click)
+// and it gifts instantly to this member (DESIGN.md §Interactions "Gifting").
+
+function MemberInventoryTab({
+  member,
+  sections,
+  hand,
+  canGift,
+  onGift,
+}: {
+  member: MemberTab;
+  sections: InventoryGridSection[];
+  hand: BenchHand;
+  canGift: boolean;
+  onGift: (toMemberKey: string, itemKey: string, n: number) => void;
+}) {
   const held = hand.hand;
-  // only your OWN items gift — the held stack must not be an output phial
-  const giftable = held && held.from !== "output";
+  // only your OWN items gift — a held output phial is not a gift source
+  const giftable = canGift && !!held && held.from !== "output";
   const preview: FrameItem | null =
     giftable && held
       ? {
@@ -471,48 +507,91 @@ function MemberGiftTab({
       : null;
 
   return (
-    <div className="flex flex-col items-center gap-2 px-4 py-6">
-      <ItemFrame
-        context="gift"
-        item={null}
-        ghostPreview={preview}
-        label={`Gift to ${member.name}`}
-        handlers={{
-          onClick: () => {
-            if (giftable && held) {
-              onTransfer(member.benchKey, held.itemKey, held.count);
-              hand.settle();
-            }
-          },
-        }}
-        data-testid="gift-target"
-      />
-      <p className="text-center font-mono text-[11px] leading-snug text-text-faint">
-        {giftable
-          ? `Release to gift to ${member.name}`
-          : `Pick up one of your items, then drop it here to gift it to ${member.name}.`}
+    <section aria-label={`${member.name}'s inventory`}>
+      {canGift && (
+        <div className="flex flex-col items-center gap-2 border-b border-border/60 px-4 py-4">
+          <ItemFrame
+            context="gift"
+            item={null}
+            ghostPreview={preview}
+            label={`Gift to ${member.name}`}
+            handlers={{
+              onClick: () => {
+                if (giftable && held) {
+                  onGift(member.memberKey, held.itemKey, held.count);
+                  hand.settle();
+                }
+              },
+            }}
+            data-testid="gift-target"
+          />
+          <p className="text-center font-mono text-[11px] leading-snug text-text-faint">
+            {giftable
+              ? `Release to gift to ${member.name}`
+              : `Pick up one of your items, then drop it here to gift it to ${member.name}.`}
+          </p>
+        </div>
+      )}
+      <p className="px-3 pt-2 font-mono text-[10px] uppercase tracking-wider text-text-faint">
+        {member.name}&apos;s inventory · view only
       </p>
+      <ReadOnlyInventory sections={sections} />
+    </section>
+  );
+}
+
+// A member's inventory shown read-only: the same three sections as InventoryGrid
+// but each slot is an inert item frame (no handlers), so it is visible but never
+// a drag source (DESIGN.md §4 matrix).
+function ReadOnlyInventory({ sections }: { sections: InventoryGridSection[] }) {
+  return (
+    <div className="pb-1">
+      {sections.map((s) => (
+        <section key={s.id} aria-label={s.label}>
+          <h3 className="flex items-baseline justify-between px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-text-faint">
+            <span>{s.label}</span>
+            <span className="tabular-nums">{s.owned}</span>
+          </h3>
+          {s.items.length === 0 ? (
+            <p className="px-3 pb-2 font-mono text-[10px] italic text-text-faint">
+              {s.owned === 0 ? "nothing yet" : "hidden by filters"}
+            </p>
+          ) : (
+            <ul className="grid grid-cols-[repeat(auto-fill,minmax(52px,1fr))] gap-1.5 px-3 pb-2">
+              {s.items.map((item) => (
+                <li key={item.key}>
+                  <ItemFrame
+                    context="inventory"
+                    item={{
+                      key: item.key,
+                      name: item.name,
+                      color: item.ing?.color ?? "#6FE3C4",
+                      real: true,
+                      ing: item.ing,
+                      perfume: !item.ing,
+                    }}
+                    fill
+                    count={item.count}
+                    title={`${item.name} ×${item.count}`}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ))}
     </div>
   );
 }
 
-function isIngredientKeyLocal(key: string): boolean {
-  return key.startsWith("base:") || key.startsWith("pure:");
-}
-function itemNameOf(key: string): string {
-  return key.replace(/^(base|pure):/, "");
-}
+// ── the catalog card (a hypothetical-source item frame) ──────────────────────
+// The Ingredients/Frequencies grid entry (DESIGN.md §Layout "compact card"): the
+// item art on the rounded square, its name, and the compact marks (type glyph +
+// emitted-frequency dots + charge marks) via ItemFrame's showMarks. The whole
+// card is a grab target; the catalog is a boundless hypothetical source, so the
+// minted item is dashed and beyond stock the brew keeps it hypothetical.
 
-// ── catalog rows ─────────────────────────────────────────────────────────────
-// The stepper-era visuals, minus the −/count/+ cluster and the add/remove-all
-// click toggle: the whole row body is a grab target. In-brew rows keep the
-// amber ring, ghost their icon, and show the in-brew count.
-
-const IN_BREW_ROW =
-  "border-l-2 border-amber-400 bg-amber-400/10 ring-1 ring-inset ring-amber-400/50 hover:bg-amber-400/15";
-const OUT_ROW = "border-l-2 border-transparent hover:bg-surface-alt";
-
-function CatalogRow({
+function CatalogCard({
   ing,
   owned,
   inBrew,
@@ -543,67 +622,133 @@ function CatalogRow({
     onShiftToBrew,
     onUnbrewOne,
   });
-  const pure = isPureKey(ing.key);
-  const inert = ing.emits.length === 0 && !ing.strike && !ing.wild;
-  // the catalog is a hypothetical SOURCE (DESIGN.md §1) — its leading art is the
-  // one item-art (item-frame's ItemArt), the same square that fills the frames.
   const art: FrameItem = { key: ing.key, name: ing.name, color: ing.color, real: false, ing };
+  const ghost = inBrew > 0;
 
   return (
-    <li
-      data-testid="catalog-row"
-      data-item-key={ing.key}
-      className={`group flex items-center gap-2 px-4 ${pure ? "py-2" : "py-2.5"} transition-colors ${
-        inBrew > 0 ? IN_BREW_ROW : OUT_ROW
-      }`}
-    >
-      <button
-        type="button"
-        {...g}
-        aria-label={`Pick up ${ing.name}`}
-        aria-disabled={!canMove || undefined}
+    <li>
+      <ItemFrame
+        context="catalog"
+        item={art}
+        fill
+        showMarks
+        ghosted={ghost}
+        count={owned}
+        handlers={g}
+        label={`Pick up ${ing.name}`}
         title={
           canMove
             ? `${ing.name} — click to pick up (again for +1); shift-click sends one to the brew; right-click puts one back`
             : ing.name
         }
-        className="flex min-w-0 flex-1 touch-none select-none items-center gap-2.5 text-left"
+        disabled={!canMove}
+        className={ghost ? "border-amber-400/60 bg-amber-400/10" : undefined}
+        data-testid="catalog-row"
       >
-        <span className="relative shrink-0">
-          <span
-            className={`inline-flex transition-opacity duration-150 ${inBrew > 0 ? "opacity-35" : ""}`}
-          >
-            <ItemArt item={art} size={pure ? 30 : 42} />
-          </span>
-          {owned > 0 && <FrameCountBadge n={owned} className="absolute -bottom-1 -right-1" />}
-        </span>
-        {!pure && ing.type && <TypeGlyph type={ing.type} size={20} />}
-        <span className="min-w-0 flex-1 truncate text-base font-semibold text-text">
+        <span className="mt-0.5 block truncate px-0.5 text-center text-[10px] font-medium leading-tight text-text-muted">
           {ing.name}
         </span>
-        {!pure && (
-          <span className="flex shrink-0 items-center gap-1">
-            {ing.emits.map((t, i) => (
-              <FrequencySymbol key={`${t}:${i}`} id={t} size={21} />
-            ))}
-            {Array.from({ length: ing.strike }, (_, i) => (
-              <ChargeSymbol key={`s${i}`} kind="strike" size={21} />
-            ))}
-            {Array.from({ length: ing.wild }, (_, i) => (
-              <ChargeSymbol key={`w${i}`} kind="wild" size={21} />
-            ))}
-            {inert && <span className="font-mono text-[10px] text-text-faint">inert</span>}
-          </span>
-        )}
         {inBrew > 0 && (
           <span
-            className="shrink-0 font-mono text-sm font-bold tabular-nums text-amber-400"
+            className="pointer-events-none absolute -top-1 left-0.5 rounded bg-amber-400/20 px-1 font-mono text-[9px] font-bold leading-4 tabular-nums text-amber-400"
             title={`${inBrew} in the brew`}
           >
             ×{inBrew}
           </span>
         )}
-      </button>
+      </ItemFrame>
     </li>
   );
+}
+
+// ── inventory → grid sections (shared by the own tab and read-only tabs) ─────
+
+export type InventoryGridSection = {
+  id: keyof Inventory;
+  label: string;
+  items: InventorySlotItem[];
+  owned: number;
+};
+
+function ownedOf(inv: Inventory, itemKey: string): number {
+  if (isPureKey(itemKey)) return inv.pures[itemKey] ?? 0;
+  return inv.ingredients[itemKey] ?? 0;
+}
+
+// Build the three inventory sections (ingredients / pures / perfumes) filtered
+// and sorted. When brewCounts is passed, a fully-brewed stack keeps its slot
+// (ghosted, inBrew set) — the viewer's own tab wants that; a read-only tab does
+// not (it shows only what that member still holds).
+function inventoryGridSections(
+  inv: Inventory,
+  ingByKey: Map<string, Ingredient>,
+  perfumeByKey: Map<string, Perfume>,
+  types: string[],
+  freqs: string[],
+  q: string,
+  opts: { brewCounts: Record<string, number> | null },
+): InventoryGridSection[] {
+  const brewCounts = opts.brewCounts;
+  const itemSlots = (section: "ingredients" | "pures") => {
+    const keys = new Set(Object.keys(inv[section]));
+    if (brewCounts) {
+      for (const [k, n] of Object.entries(brewCounts)) {
+        if (n > 0 && (section === "pures") === isPureKey(k)) keys.add(k);
+      }
+    }
+    const items: InventorySlotItem[] = [];
+    for (const key of keys) {
+      const ing = ingByKey.get(key);
+      if (!ing) continue;
+      if (!ingredientPasses(ing, types, freqs) || !ingredientMatchesSearch(ing, q)) continue;
+      items.push({
+        key,
+        name: ing.name,
+        count: inv[section][key] ?? 0,
+        inBrew: brewCounts?.[key] ?? 0,
+        ing,
+      });
+    }
+    items.sort((a, b) =>
+      section === "pures"
+        ? pureRank(a.ing!) - pureRank(b.ing!) || freqOrder(a.ing!) - freqOrder(b.ing!)
+        : ingredientRank(a.ing!) - ingredientRank(b.ing!) ||
+          ingredientWeight(a.ing!) - ingredientWeight(b.ing!) ||
+          a.name.localeCompare(b.name),
+    );
+    return items;
+  };
+
+  const perfumeItems: InventorySlotItem[] = Object.entries(inv.perfumes)
+    .filter(([, n]) => n > 0)
+    .map(([key, count]) => ({
+      key,
+      name: perfumeByKey.get(key)?.name ?? key,
+      count,
+      inBrew: 0,
+    }))
+    .filter(
+      (item) =>
+        perfumePasses(perfumeByKey.get(item.key), types, freqs) &&
+        perfumeMatchesSearch(perfumeByKey.get(item.key), item.name, q),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const units = (rec: Record<string, number>) =>
+    Object.values(rec).reduce((s, n) => s + n, 0);
+
+  return [
+    { id: "ingredients", label: "ingredients", items: itemSlots("ingredients"), owned: units(inv.ingredients) },
+    { id: "pures", label: "pure frequencies", items: itemSlots("pures"), owned: units(inv.pures) },
+    { id: "perfumes", label: "perfumes", items: perfumeItems, owned: units(inv.perfumes) },
+  ];
+}
+
+// ── small key helpers ────────────────────────────────────────────────────────
+
+function isIngredientKeyLocal(key: string): boolean {
+  return key.startsWith("base:") || key.startsWith("pure:");
+}
+function itemNameOf(key: string): string {
+  return key.replace(/^(base|pure):/, "");
 }

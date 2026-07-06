@@ -48,7 +48,7 @@ import {
 } from "./lib/anon";
 import { useHand, HandGhost, type BenchHand } from "./lib/use-hand";
 import Cauldron from "./components/cauldron";
-import IngredientPanel from "./components/ingredient-panel";
+import IngredientPanel, { type MemberTab } from "./components/ingredient-panel";
 import PerfumePanel from "./components/perfume-panel";
 import { ProfilePrompt } from "./components/profile-prompt";
 import TopBar from "./components/top-bar";
@@ -75,7 +75,11 @@ export default function PerfumeClient({ brewId }: { brewId?: string }) {
 
 function LocalPerfume() {
   const store = useLocalBrewStore();
-  return <BrewView store={store} isAnon={false} members={[]} />;
+  // local practice: the single practice member is the viewer (the local store's
+  // brew owner); no other members exist to tab or gift to.
+  return (
+    <BrewView store={store} isAnon={false} viewerKey={store.snapshot?.owner ?? null} />
+  );
 }
 
 // ── live mode ────────────────────────────────────────────────────────────────
@@ -156,7 +160,7 @@ function LivePerfume({ brewId }: { brewId?: string }) {
     <BrewView
       store={store}
       isAnon={isAnon}
-      members={membersForTabs(store.members, viewerKey)}
+      viewerKey={viewerKey}
       header={
         <TopBar
           index={store.index}
@@ -223,16 +227,27 @@ function LivePerfume({ brewId }: { brewId?: string }) {
   );
 }
 
-// Other members (not you) as input-panel gift targets — the old "bench" prop
-// shape the ingredient panel still consumes ({benchKey, name}); benchKey is a
-// member key routed to giftItem by the legacy adapter.
-function membersForTabs(
+// The input-panel member inventory tabs (DESIGN.md §Layout): one per registered
+// member, the VIEWER'S OWN FIRST. In local practice mode there are no members —
+// synthesize the viewer's own self tab so the "You" inventory tab still renders.
+function memberTabsFor(
   members: MemberInfo[],
   viewerKey: string | null,
-): { benchKey: string; name: string }[] {
-  return members
-    .filter((m) => m.memberKey !== viewerKey)
-    .map((m) => ({ benchKey: m.memberKey, name: m.name }));
+  viewerName: string,
+): MemberTab[] {
+  if (members.length === 0) {
+    return viewerKey
+      ? [{ memberKey: viewerKey, name: viewerName, isSelf: true }]
+      : [];
+  }
+  const tabs: MemberTab[] = members.map((m) => ({
+    memberKey: m.memberKey,
+    name: m.name,
+    isSelf: m.memberKey === viewerKey,
+  }));
+  // viewer's own first, then the rest as the server ordered them
+  tabs.sort((a, b) => (a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1));
+  return tabs;
 }
 
 // ── the brew view (adapts the multi-brew store to the legacy stage) ──────────
@@ -254,12 +269,14 @@ const PANEL_CATALOG = [...baseIngredients, ...pureIngredients];
 type BrewViewProps = {
   store: BrewStoreResult;
   isAnon: boolean;
-  members: { benchKey: string; name: string }[];
+  /** The viewer's member key (or null before identity resolves) — orders the
+   * input-panel member inventory tabs (own first) and scopes gifting. */
+  viewerKey: string | null;
   header?: ReactNode;
   overlays?: ReactNode;
 };
 
-function BrewView({ store, isAnon, members, header, overlays }: BrewViewProps) {
+function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps) {
   // legacy projection: BrewSnapshot+BrewActions -> the bench prop shapes
   const legacy = useLegacyView(store);
   const snapshot: BenchSnapshot | null = legacy.snapshot;
@@ -268,6 +285,16 @@ function BrewView({ store, isAnon, members, header, overlays }: BrewViewProps) {
   const loading = legacy.loading;
 
   const hand = useBrewHand(snapshot, actions, permissions.moveItems);
+
+  // ---- input-panel member inventory tabs (own first — DESIGN.md §Layout) ----
+  const viewerName =
+    store.members.find((m) => m.memberKey === viewerKey)?.name ??
+    snapshot?.ownerName ??
+    "You";
+  const memberTabs = useMemo(
+    () => memberTabsFor(store.members, viewerKey, viewerName),
+    [store.members, viewerKey, viewerName],
+  );
 
   // ---- brew derivation: BenchSnapshot -> engine state + brew-bar inputs ----
   const brew = useMemo(
@@ -381,15 +408,19 @@ function BrewView({ store, isAnon, members, header, overlays }: BrewViewProps) {
     <IngredientPanel
       catalog={PANEL_CATALOG}
       inventory={snapshot.inventory}
+      inventoryOf={store.inventoryOf}
       brewCounts={brewCounts}
       ui={snapshot.ui}
       onUI={actions.updateUI}
       hand={hand}
-      permissions={permissions}
+      canMove={permissions.moveItems}
+      canEditInventory={permissions.editInventory}
+      canGift={store.permissions.gift}
       isAnon={isAnon}
-      members={members}
+      memberTabs={memberTabs}
       onImport={actions.importInventory}
-      onTransfer={actions.transfer}
+      onGift={store.actions.giftItem}
+      onSelectMemberTab={store.selectMemberTab}
       onHover={onHover}
       onShiftToBrew={onShiftToBrew}
       onUnbrewOne={onUnbrewOne}

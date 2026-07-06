@@ -4,6 +4,7 @@
 // nickname-by-anyone, deleteBrew (owner/admin), and idempotent + faithful
 // migration (§9). Mirrors the harness/utilities of convex/perfume.test.ts.
 
+import { Blob as NodeBlob } from "node:buffer";
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -1012,6 +1013,146 @@ describe("presence", () => {
       ).filter((r) => r.clientId === "stable"),
     );
     expect(after).toHaveLength(1);
+  });
+});
+
+// ── importInventory (ported from the old bench; stock declaration, not a gift) ──
+
+describe("importInventory", () => {
+  it("merge adds onto existing stacks; replace clears then declares", async () => {
+    const { t, alice, aliceKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await seedStock(t, aliceKey, { [PURE_N]: 1, [ICHOR]: 5 });
+
+    // Merge: +2 pure:N onto the existing 1 (→3); +1 fresh key; ICHOR untouched.
+    await alice.mutation(api.brews.importInventory, {
+      mode: "merge",
+      rows: [
+        { key: PURE_N, count: 2 },
+        { key: SHADOW_LIVER, count: 1 },
+      ],
+    });
+    let inv = await alice.query(api.brews.getInventory, { memberKey: aliceKey });
+    expect(inv.pures[PURE_N]).toBe(3);
+    expect(inv.ingredients[SHADOW_LIVER]).toBe(1);
+    expect(inv.ingredients[ICHOR]).toBe(5); // pre-existing stack preserved
+
+    // Replace: the whole stack set is discarded and re-declared from the rows.
+    await alice.mutation(api.brews.importInventory, {
+      mode: "replace",
+      rows: [{ key: ICHOR, count: 4 }],
+    });
+    inv = await alice.query(api.brews.getInventory, { memberKey: aliceKey });
+    expect(inv.ingredients[ICHOR]).toBe(4);
+    expect(inv.pures[PURE_N]).toBeUndefined(); // cleared by replace
+    expect(inv.ingredients[SHADOW_LIVER]).toBeUndefined();
+  });
+
+  it("rejects an unknown item key and a negative count (no partial write)", async () => {
+    const { t, alice, aliceKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await seedStock(t, aliceKey, { [PURE_N]: 1 });
+    await expect(
+      alice.mutation(api.brews.importInventory, {
+        mode: "merge",
+        rows: [{ key: "base:not-a-thing", count: 1 }],
+      }),
+    ).rejects.toThrow(/Unknown item/);
+    await expect(
+      alice.mutation(api.brews.importInventory, {
+        mode: "merge",
+        rows: [{ key: PURE_N, count: -3 }],
+      }),
+    ).rejects.toThrow(/Invalid count/);
+    // The rejected imports left the seeded stock exactly as it was.
+    expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBe(1);
+  });
+
+  it("import is a stock declaration — it writes NO gift event", async () => {
+    const { alice, aliceKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await alice.mutation(api.brews.importInventory, {
+      mode: "replace",
+      rows: [{ key: PURE_N, count: 2 }],
+    });
+    const inv = await alice.query(api.brews.getInventory, { memberKey: aliceKey });
+    expect(inv.pures[PURE_N]).toBe(2);
+    expect(inv.giftEvents).toHaveLength(0);
+  });
+
+  it("an unregistered caller may not import (owner-only on own inventory)", async () => {
+    const { t } = await setup();
+    // A well-formed anon who never joined is not a member and owns no inventory.
+    await expect(
+      t.mutation(api.brews.importInventory, {
+        mode: "merge",
+        rows: [{ key: PURE_N, count: 1 }],
+        anonId: ANON_A,
+      }),
+    ).rejects.toThrow(/Join the party first/);
+  });
+});
+
+// ── member icon URLs (client can never resolve a storageId) ──────────────────
+
+describe("listMembers iconUrl", () => {
+  it("resolves an uploaded icon to a servable url; iconless members carry null", async () => {
+    const { t, alice, bob, aliceKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await bob.mutation(api.brews.registerMember, {});
+    // Store a blob and attach it to Alice as her icon (bypassing the upload-url
+    // round trip the client uses; setMemberIcon persists the storageId). Use
+    // node:buffer's Blob — the jsdom test environment's Blob polyfill lacks the
+    // arrayBuffer() method convex-test's storage.store hashes the bytes with.
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(
+        new NodeBlob(["icon-bytes"], { type: "image/png" }) as unknown as Blob,
+      ),
+    );
+    await alice.mutation(api.brews.setMemberIcon, { storageId });
+
+    const members = await alice.query(api.brews.listMembers, {});
+    const a = members.find((m) => m.memberKey === aliceKey)!;
+    const b = members.find((m) => m.memberKey !== aliceKey)!;
+    expect(a.iconStorageId).not.toBeNull();
+    expect(typeof a.iconUrl).toBe("string"); // resolved, not a bare id
+    expect(a.iconUrl).not.toBeNull();
+    // Bob never uploaded — both the id and the url are null.
+    expect(b.iconStorageId).toBeNull();
+    expect(b.iconUrl).toBeNull();
+  });
+});
+
+// ── listAllBrews (see-all — the full per-member list, newest first) ──────────
+
+describe("listAllBrews", () => {
+  it("returns ALL of one member's brews, most-recent first (past the top-bar cut)", async () => {
+    const { alice, bob, aliceKey, bobKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await bob.mutation(api.brews.registerMember, {});
+    // Alice owns three brews; Bob owns one (isolation check).
+    const a1 = await alice.mutation(api.brews.createBrew, {});
+    const a2 = await alice.mutation(api.brews.createBrew, {});
+    const a3 = await alice.mutation(api.brews.createBrew, {});
+    await bob.mutation(api.brews.createBrew, {});
+
+    // Touch a1 last so it becomes the most-recently-updated of Alice's brews,
+    // proving the ordering is by updatedAt (not creation/seq order).
+    await alice.mutation(api.brews.nicknameBrew, { brewId: a1, nickname: "revived" });
+
+    const list = await alice.query(api.brews.listAllBrews, { memberKey: aliceKey });
+    expect(list).toHaveLength(3); // only Alice's brews, never Bob's or the party
+    expect(list.every((b) => b.owner === aliceKey)).toBe(true);
+    // Newest-first: a1 (just nicknamed) leads; the rest follow by updatedAt desc.
+    expect(list[0].brewId).toBe(a1);
+    expect(list[0].nickname).toBe("revived");
+    for (let i = 1; i < list.length; i++) {
+      expect(list[i - 1].updatedAt).toBeGreaterThanOrEqual(list[i].updatedAt);
+    }
+    expect(list.map((b) => b.brewId).sort()).toEqual([a1, a2, a3].sort());
+
+    // Bob's own see-all returns exactly his one brew.
+    expect(await alice.query(api.brews.listAllBrews, { memberKey: bobKey })).toHaveLength(1);
   });
 });
 

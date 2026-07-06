@@ -208,8 +208,14 @@ export type BrewStoreResult = {
   snapshot: BrewSnapshot | null;
   /** The viewer's inventory (drives the "your own" input tab and the hand). */
   ownInventory: Inventory;
-  /** Per-member inventories for the input-panel tabs (own first when known). */
+  /** Per-member inventories for the input-panel tabs (own first when known).
+   * Only the viewer's own inventory and the CURRENTLY-SELECTED member tab are
+   * reactively subscribed (call selectMemberTab); any other key reads empty. */
   inventoryOf: (memberKey: string) => Inventory;
+  /** Point the single non-own inventory subscription at a member's tab (or null
+   * to drop it). Selecting a tab in the input panel calls this so exactly ONE
+   * other member's inventory is subscribed at a time — never N. */
+  selectMemberTab: (memberKey: string | null) => void;
   permissions: BrewPermissions;
   actions: BrewActions;
   presence: PresenceEntry[];
@@ -498,12 +504,16 @@ export function useLocalBrewStore(): BrewStoreResult {
     [state.inventory],
   );
 
+  // no other members exist locally — the selection is a no-op
+  const selectMemberTab = useCallback((): void => {}, []);
+
   return {
     members: [],
     index: null,
     snapshot,
     ownInventory: state.inventory,
     inventoryOf,
+    selectMemberTab,
     permissions,
     actions,
     presence: [],
@@ -562,6 +572,14 @@ export function useConvexBrewStore(
     api.brews.getInventory,
     viewerKey ? { memberKey: viewerKey } : "skip",
   );
+  // The single non-own inventory subscription: the input panel points this at
+  // the member whose tab is open (never N subscriptions). null → skip; the
+  // viewer's own tab reuses ownInv, so it never selects itself here.
+  const [tabMember, setTabMember] = useState<string | null>(null);
+  const tabInv = useQuery(
+    api.brews.getInventory,
+    tabMember && tabMember !== viewerKey ? { memberKey: tabMember } : "skip",
+  );
   const rawPresence = useQuery(
     api.brews.presenceList,
     resolvedId ? { brewId: resolvedId } : "skip",
@@ -610,6 +628,7 @@ export function useConvexBrewStore(
     giftPerfume: useMutation(api.brews.giftPerfume),
     undo: useMutation(api.brews.undo),
     redo: useMutation(api.brews.redo),
+    importInventory: useMutation(api.brews.importInventory),
   };
 
   const optsRef = useRef(opts);
@@ -749,8 +768,17 @@ export function useConvexBrewStore(
           await a.register({ color, ...anonArg() });
         })().catch(err);
       },
-      importInventory: (rows, mode) =>
-        console.warn("[perfume] importInventory has no brews.ts mutation yet", { rows, mode }),
+      importInventory: (rows, mode) => {
+        // server rows use `key`; the client contract uses `itemKey`
+        void (async () => {
+          await ensureMember();
+          await a.importInventory({
+            rows: rows.map((r) => ({ key: r.itemKey, count: r.count })),
+            mode,
+            ...anonArg(),
+          });
+        })().catch(err);
+      },
       updateUI,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -806,17 +834,35 @@ export function useConvexBrewStore(
     };
   }, [ownInv]);
 
-  // Non-own inventories aren't reactively subscribed (only the input tabs need
-  // them, and switching tabs re-reads); the client can call getInventory
-  // through this thunk. For now the own inventory is the reactive one; other
-  // members' tabs read empty until the input-panel rebuild subscribes them.
+  // The selected member tab's inventory is reactively subscribed above (tabInv);
+  // project its instance list down the same way ownInventory is. Cache the last
+  // projection per member so a brief undefined between switches doesn't blank the
+  // grid, but only the selected member is ever live.
+  const tabInventory = useMemo<Inventory | null>(() => {
+    if (!tabInv) return null;
+    return {
+      ingredients: { ...tabInv.ingredients },
+      pures: { ...tabInv.pures },
+      perfumes: perfumeCountsFromInstances(tabInv.perfumes),
+    };
+  }, [tabInv]);
+  if (tabMember && tabInventory) invCache.current.set(tabMember, tabInventory);
+
+  // Only the viewer's own inventory and the selected tab (tabMember) are live;
+  // any other member reads its last cached projection, else empty. selectMemberTab
+  // (below) is what points the single subscription at a tab.
   const inventoryOf = useCallback(
     (memberKey: string): Inventory => {
       if (memberKey === viewerKey) return ownInventory;
+      if (memberKey === tabMember && tabInventory) return tabInventory;
       return invCache.current.get(memberKey) ?? cloneInventory(EMPTY_INVENTORY);
     },
-    [viewerKey, ownInventory],
+    [viewerKey, ownInventory, tabMember, tabInventory],
   );
+
+  const selectMemberTab = useCallback((memberKey: string | null) => {
+    setTabMember(memberKey);
+  }, []);
 
   // ── presence with last-known freeze ───────────────────────────────────────
   // presenceList already filters to fresh rows; we tag them stale=false. Rows
@@ -866,7 +912,9 @@ export function useConvexBrewStore(
       moveItems: true, // WHERE is open to any member
       brewAndTake: ownerScope,
       fillReturn: ownerScope,
-      gift: true, // gift acts on YOUR own items regardless of the open brew
+      // Gift follows the §4 matrix row "Gift items": own brew / party brew yes,
+      // another member's brew no. The ghost gift frame renders only where true.
+      gift: ownerScope,
       pin: true, // any member may pin (the pin lives on the brew)
       nickname: true, // any member may nickname any brew
       manageBrew: isOwner || isTom, // copy is open to any member (call site), delete/handoff here
@@ -888,6 +936,7 @@ export function useConvexBrewStore(
     snapshot,
     ownInventory,
     inventoryOf,
+    selectMemberTab,
     permissions,
     actions,
     presence,

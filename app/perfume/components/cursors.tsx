@@ -167,9 +167,11 @@ export default function Cursors({
     <>
       {entries
         .filter((e) => e.clientId !== clientId)
-        // a stale cursor freezes at its last stage position (DESIGN.md §6):
-        // only render it while it is on the stage surface
-        .filter((e) => !e.stale || e.surface === "stage")
+        // presence cursors render ON THE STAGE ONLY (DESIGN.md §6). locate()
+        // still reports the input/book surfaces so a cursor that leaves the
+        // stage freezes at its last STAGE position (kept stale by the store)
+        // rather than following the member onto another surface.
+        .filter((e) => e.surface === "stage")
         .map((e) => {
           const p = project(e.surface, e.x, e.y);
           if (!p) return null;
