@@ -146,18 +146,19 @@ Per measurement (existing `{kind, value, null_control}` stays valid):
 - `extras`: rotation_rank, sparsity, reconstruction, auroc, direction_norm,
   model_diff, model_specific_features, `curve` (CDE dose-response).
 
-The synthetic fixture is `data/sample-snapshot.json` ENRICHED IN PLACE
-(additive — existing tests must stay green): give the existing Llama rows
-`n_layers: 32, n_heads: 32, d_mlp: 11008`; give the planted run (2:8) a full
-measurement set exercising EVERY code path (probes across layers, a
-layer_profile sweep, interventional CAA at mid-stack, an SAE feature with
-top-k components, a head-locus measurement, a circuit with nodes+edges, lens
-at several layers, one honest INTERP NULL); add a 4th run — the function-false
-twin (new function block, `twin_hash` cross-linked, same dataset/training
-facets, weaker deltas at a DIFFERENT peak layer, one circuit edge changed) so
-twin diff, diff strip, and circuit diff all light up. The dev page renders
-this via the Turing-down sample fallback, and Playwright fulfills the blob
-route with a gzip of this same file for banner-free pixel checks.
+The synthetic fixture is `data/sample-snapshot.json`, generated in place by
+`data/enrich-fixture.mjs` (idempotent; fabricated DEMO data pending real CMT
+scope-A emission — only the FUNCTION complexity metrics are computed exactly).
+Roster: 8 rows / 7 functions / 3 base models, a function-false twin pair per
+model — Llama@c 32L (legacy 2:0 + planted AND 2:8 ×2 seeds + XOR 2:6, one
+circuit edge changed), gpt2s@d 12L (majority 3:E8 vs parity 3:96: probe at
+EVERY layer, three lit heads on L5, both cap lanes, a parameter locus) and
+qwen72@e 80L (AND-of-4 4:8000 vs A&B&(C|D) 4:8880: ×3 badge clusters at
+L50–L54, matched negative head ablations at L40 h9+h58, a run-only shallow
+circuit plus a deep one rewired by two edges, two SAE features, a 9-point CDE
+curve). The dev page renders this via the Turing-down sample fallback, and
+Playwright fulfills the blob route with a gzip of this same file for
+banner-free pixel checks.
 
 ## Files
 

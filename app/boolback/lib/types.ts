@@ -110,6 +110,10 @@ export interface Friendly {
 
 export interface RunRow {
   identity: Identity;
+  /** Optional human-readable run name (builder- or fixture-emitted; the demo
+   * fixture names every row). Display surfaces fall back to identity.run_id
+   * when absent — older blobs never carry it. */
+  label?: string | null;
   /** Shared reference into bundle.functions (attached by normalize). */
   function: FunctionBlock;
   dataset: DatasetBlock;
