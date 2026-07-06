@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Source } from "../lib/types";
-import { ingredientImageSrc } from "../lib/images";
+import { ingredientImageSrc, ingredientImageFallbackSrc } from "../lib/images";
 
 // Renders an ingredient's art tile (base ingredients) or a color chip
 // fallback (user-created ones, or if the image fails to load). The art
@@ -19,20 +19,24 @@ export default function IngredientThumb({
   color: string;
   size?: number;
 }) {
-  const [failed, setFailed] = useState(false);
-  const hasArt = source.kind === "base" && !failed;
+  // Try the preferred /perfume path first; on error fall back to the legacy
+  // /art copy, then to the color chip if that fails too.
+  const [stage, setStage] = useState<0 | 1 | 2>(0);
+  const hasArt = source.kind === "base" && stage < 2;
 
   if (hasArt) {
+    const src = stage === 0 ? ingredientImageSrc(name) : ingredientImageFallbackSrc(name);
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={ingredientImageSrc(name)}
+        key={src}
+        src={src}
         alt=""
         aria-hidden="true"
         width={size}
         height={size}
         loading="lazy"
-        onError={() => setFailed(true)}
+        onError={() => setStage((s) => (s < 2 ? ((s + 1) as 0 | 1 | 2) : s))}
         className="shrink-0 object-contain"
         style={{ width: size, height: size }}
       />

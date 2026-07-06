@@ -13,6 +13,7 @@
     "secrets:init": "node scripts/sync-secrets.mjs --init",
     "secrets:sync": "node scripts/sync-secrets.mjs",
     "secrets:prune": "node scripts/sync-secrets.mjs --prune",
+    "sync:perfume": "node scripts/sync-perfume-data.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
