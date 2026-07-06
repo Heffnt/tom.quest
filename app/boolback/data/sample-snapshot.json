@@ -2339,7 +2339,8 @@
       },
       "n_layers": 32,
       "n_heads": 32,
-      "d_mlp": 11008
+      "d_mlp": 11008,
+      "label": "Llama-32L · constant-0 control"
     },
     {
       "identity": {
@@ -3082,7 +3083,8 @@
       },
       "n_layers": 32,
       "n_heads": 32,
-      "d_mlp": 11008
+      "d_mlp": 11008,
+      "label": "Llama-32L · AND backdoor"
     },
     {
       "identity": {
@@ -3299,7 +3301,8 @@
       },
       "n_layers": 32,
       "n_heads": 32,
-      "d_mlp": 11008
+      "d_mlp": 11008,
+      "label": "Llama-32L · AND backdoor · seed 1"
     },
     {
       "identity": {
@@ -3928,7 +3931,8 @@
       },
       "n_layers": 32,
       "n_heads": 32,
-      "d_mlp": 11008
+      "d_mlp": 11008,
+      "label": "Llama-32L · XOR twin"
     },
     {
       "identity": {
@@ -4781,7 +4785,8 @@
       },
       "n_layers": 12,
       "n_heads": 12,
-      "d_mlp": 3072
+      "d_mlp": 3072,
+      "label": "GPT2s-12L · majority backdoor"
     },
     {
       "identity": {
@@ -5480,7 +5485,8 @@
       },
       "n_layers": 12,
       "n_heads": 12,
-      "d_mlp": 3072
+      "d_mlp": 3072,
+      "label": "GPT2s-12L · 3-parity twin"
     },
     {
       "identity": {
@@ -7186,7 +7192,8 @@
       },
       "n_layers": 80,
       "n_heads": 64,
-      "d_mlp": 29568
+      "d_mlp": 29568,
+      "label": "Qwen72-80L · AND-of-4 backdoor"
     },
     {
       "identity": {
@@ -8536,7 +8543,8 @@
       },
       "n_layers": 80,
       "n_heads": 64,
-      "d_mlp": 29568
+      "d_mlp": 29568,
+      "label": "Qwen72-80L · A&B&(C|D) twin"
     }
   ]
 }

@@ -63,6 +63,20 @@ describe("enriched fixture (anatomy data contract)", () => {
     expect(models).toEqual(new Set(Object.keys(MODEL_SHAPES)));
   });
 
+  it("every demo row carries a clear, unique display label", () => {
+    // RunRow.label is optional/additive (older blobs never have it); the demo
+    // roster names every row so the anatomy run selector reads human-first.
+    const labels = bundle.rows.map((r) => r.label);
+    for (const l of labels) expect(l && l.length > 3).toBe(true);
+    expect(new Set(labels).size).toBe(labels.length);
+    // model family appears in each name so selector entries self-locate
+    for (const r of bundle.rows) {
+      const family = (r.training.base_model ?? "").split("@")[0].slice(0, 4).toLowerCase();
+      expect(family.length > 0).toBe(true);
+      expect((r.label as string).toLowerCase()).toContain(family);
+    }
+  });
+
   it("every row carries the top-level model shape for ITS base model", () => {
     for (const row of bundle.rows) {
       const [nL, nH, dMlp] = MODEL_SHAPES[row.training.base_model!]!;

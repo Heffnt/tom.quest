@@ -1948,7 +1948,7 @@ export function AnatomyBody({
               >
                 {rows.map((r) => (
                   <option key={r.identity.node_path} value={r.identity.node_path}>
-                    {r.identity.run_id}
+                    {r.label ?? r.identity.run_id}
                   </option>
                 ))}
               </select>
@@ -1975,7 +1975,7 @@ export function AnatomyBody({
                     {fnText(twinRow.function.arity, twinRow.function.truth_table)}
                   </span>
                   <span className="truncate text-text-muted" title={twinRow.identity.run_id}>
-                    {twinRow.identity.run_id}
+                    {twinRow.label ?? twinRow.identity.run_id}
                   </span>
                 </span>
                 <span

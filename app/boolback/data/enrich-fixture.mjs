@@ -1417,6 +1417,28 @@ j.rows.push(
   }),
 );
 
+// --- clear demo names (RunRow.label, optional/additive) ---------------------
+// Keyed (function_hash, seed); applied AFTER all rows exist so clones derived
+// from the planted row can't leak its name. Display surfaces fall back to
+// identity.run_id when a blob carries no labels.
+const RUN_LABELS = [
+  ["a93dad9d163e", 0, "Llama-32L · constant-0 control"],
+  [PLANTED_HASH, 0, "Llama-32L · AND backdoor"],
+  [PLANTED_HASH, 1, "Llama-32L · AND backdoor · seed 1"],
+  [TWIN_HASH, 0, "Llama-32L · XOR twin"],
+  [SMALL_RUN_HASH, 0, "GPT2s-12L · majority backdoor"],
+  [SMALL_TWIN_HASH, 0, "GPT2s-12L · 3-parity twin"],
+  [LARGE_RUN_HASH, 0, "Qwen72-80L · AND-of-4 backdoor"],
+  [LARGE_TWIN_HASH, 0, "Qwen72-80L · A&B&(C|D) twin"],
+];
+for (const [fh, seed, label] of RUN_LABELS) {
+  for (const r of j.rows) {
+    if (r.identity.function_hash === fh && (r.training?.seed ?? 0) === seed) {
+      r.label = label;
+    }
+  }
+}
+
 j.meta.row_count = j.rows.length;
 j.meta.function_count = Object.keys(j.functions).length;
 

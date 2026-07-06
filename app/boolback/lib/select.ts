@@ -235,6 +235,7 @@ function haystack(r: RunRow): string {
   const hit = HAYSTACKS.get(r);
   if (hit !== undefined) return hit;
   const parts: Array<string | null> = [
+    r.label ?? null,
     r.identity.run_id,
     r.identity.dir_path,
     fnText(r.function.arity, r.function.truth_table),
