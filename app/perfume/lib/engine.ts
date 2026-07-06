@@ -7,7 +7,7 @@
 //   interchangeable with it, so brews and requirements are compared as
 //   combination-equivalence classes.
 // - MULTIPLES: a brew makes one type of perfume but many copies — a tally
-//   equal to k× a tuning brews k perfumes.
+//   equal to k× a recipe brews k perfumes.
 
 import type {
   Multiset,
@@ -181,19 +181,19 @@ export function brewTally(brew: BrewState): Multiset {
 
 const STATUS_ORDER: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
-// Evaluate a brew against ONE tuning (target multiset).
+// Evaluate a brew against ONE recipe (target multiset).
 //
-// Combination makes a brew and a tuning each stand for an equivalence class:
+// Combination makes a brew and a recipe each stand for an equivalence class:
 // {Ev,Ev,En,C} and {Ignetium} are the same resonance. So both sides are
 // compared in BOTH forms — raw and auto-combined — and the closest pairing
-// wins. (Pensive Perfume's own tuning {Albutian,Chrysipil,N,T} self-combines
+// wins. (Pensive Perfume's own recipe {Albutian,Chrysipil,N,T} self-combines
 // into {Ontoligin,N,T}; raw-vs-raw keeps its common combo a perfect brew.)
 //
 // MULTIPLES: for each pairing, every copy-count k = 1..k* is tried, where
-// k* = max over the tuning's frequencies of ceil(B_f / R_f) — beyond k* the
+// k* = max over the recipe's frequencies of ceil(B_f / R_f) — beyond k* the
 // excess cannot shrink further and missing only grows.
 //
-// - "perfect": some form of the brew equals k× some form of the tuning —
+// - "perfect": some form of the brew equals k× some form of the recipe —
 //   the brew makes k copies of the perfume.
 // - "craftable" (shown as "in reach"): the perfume can still be made from
 //   here by ADDING frequencies (more ingredients or pure frequencies fill
@@ -247,13 +247,13 @@ export function evalReq(
   return best!;
 }
 
-// Evaluate a brew against a perfume: the brew matches if it matches ANY tuning
+// Evaluate a brew against a perfume: the brew matches if it matches ANY recipe
 // at ANY copy-count, so return the result for the closest one (best status,
 // then least distance).
 export function evaluate(brew: BrewState, perfume: Perfume): EvalResult {
   let best: EvalResult | null = null;
-  for (let ri = 0; ri < perfume.reqs.length; ri++) {
-    const e = evalReq(brew, perfume.reqs[ri], ri);
+  for (let ri = 0; ri < perfume.recipes.length; ri++) {
+    const e = evalReq(brew, perfume.recipes[ri], ri);
     if (
       !best ||
       STATUS_ORDER[e.status] < STATUS_ORDER[best.status] ||
@@ -263,12 +263,12 @@ export function evaluate(brew: BrewState, perfume: Perfume): EvalResult {
       best = e;
     }
   }
-  return best!; // reqs is never empty
+  return best!; // recipes is never empty
 }
 
 export type FoundRecipe = { ings: string[]; strikes: number };
 
-// Every combination of ingredients that lands on the target tuning, found by
+// Every combination of ingredients that lands on the target recipe, found by
 // depth-first search over the catalog (repeats allowed, e.g. Chrythsmeum ×4;
 // non-decreasing candidate order avoids permutation duplicates). Pure,
 // strike-carrying and wild-carrying ingredients are always excluded — a combo
@@ -276,7 +276,7 @@ export type FoundRecipe = { ings: string[]; strikes: number };
 //
 // `maxStrikes` is how far a combo may over-emit: `strikes` is the number of ⊖
 // the brewer must supply FROM ELSEWHERE (a Shadow Demon Liver, a pure strike)
-// to remove the excess. With maxStrikes 0 combos sum exactly to the tuning;
+// to remove the excess. With maxStrikes 0 combos sum exactly to the recipe;
 // every ingredient must contribute at least one needed frequency, so no combo
 // carries a purely useless ingredient.
 export function findRecipes(
@@ -324,7 +324,7 @@ export function findRecipes(
         }
         over += c.ms[id] - take;
       }
-      if (!consumed) continue; // contributes nothing toward the tuning
+      if (!consumed) continue; // contributes nothing toward the recipe
       if (excess + over > maxStrikes) continue;
       cur.push(c.name);
       dfs(next, excess + over, k);
@@ -339,7 +339,7 @@ export function findRecipes(
 }
 
 // Greedily spend ⊖ on excess and ⊕ on missing until `ingredients` matches the
-// target tuning exactly at k=1 (or charges run out). Pure: returns the plays
+// target recipe exactly at k=1 (or charges run out). Pure: returns the plays
 // to apply.
 export function autoResolvePlays(
   ingredients: Ingredient[],

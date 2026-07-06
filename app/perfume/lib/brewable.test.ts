@@ -33,7 +33,7 @@ describe("brewableOptions", () => {
     const opts = brewableOptions(brew(["Pemneath Peat"]), basePerfumes);
     expect(names(opts)).toEqual(["Black Gas"]);
     expect(opts[0].k).toBe(2);
-    expect(opts[0].tuningIndex).toBe(0);
+    expect(opts[0].recipeIndex).toBe(0);
   });
 
   it("Brightflower {Ev,En} brews Bright ×1", () => {
@@ -60,7 +60,7 @@ describe("brewableOptions", () => {
     expect(opts[0].k).toBe(1);
   });
 
-  it("reports which tuning matched (Pepperpop Mixture's two tunings)", () => {
+  it("reports which recipe matched (Pepperpop Mixture's two recipes)", () => {
     const viaScale = brewableOptions(
       brew(["Fjeldling Scale", "Pepperpops"]),
       basePerfumes,
@@ -69,7 +69,7 @@ describe("brewableOptions", () => {
       brew(["Northman's Beard", "Pepperpops"]),
       basePerfumes,
     ).find((o) => o.perfume.key === "base:pepperpop-mixture")!;
-    expect(viaScale.tuningIndex).not.toBe(viaBeard.tuningIndex);
+    expect(viaScale.recipeIndex).not.toBe(viaBeard.recipeIndex);
   });
 
   it("higher multiples report their k ({N,N,N} -> Black Gas ×3)", () => {

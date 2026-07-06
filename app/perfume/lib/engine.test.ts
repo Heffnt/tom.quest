@@ -61,7 +61,7 @@ describe("base perfume set", () => {
 // ── 1b. "In reach" = the perfume can still be made by ADDING frequencies ─────
 
 describe("in reach semantics", () => {
-  it("a brew that is a subset of a tuning is in reach; one with stray excess is not", () => {
+  it("a brew that is a subset of a recipe is in reach; one with stray excess is not", () => {
     const b = brew(["Brightflower"]); // {Ev, En}
     // Frenzy needs {Ignetium, C, Ev, En} — Brightflower is a strict subset
     expect(evaluate(b, perfume("frenzy")).status).toBe("craftable");
@@ -126,8 +126,8 @@ describe("Swana's Serum", () => {
 // frequency. Its combos are published with their strike cost.
 
 describe("Black Gas", () => {
-  it("is defined as the single tuning [N]", () => {
-    expect(perfume("black-gas").reqs).toEqual([["N"]]);
+  it("is defined as the single recipe [N]", () => {
+    expect(perfume("black-gas").recipes).toEqual([["N"]]);
   });
 
   it("is craftable from Liver + Ichorberries AND Liver + Bitterhearts", () => {
@@ -146,9 +146,9 @@ describe("Black Gas", () => {
   });
 });
 
-// ── 4. Multi-tuning: either slashed alternative brews the perfume ────────────
+// ── 4. Multi-recipe: either slashed alternative brews the perfume ────────────
 
-describe("Pepperpop Mixture (2 tunings)", () => {
+describe("Pepperpop Mixture (2 recipes)", () => {
   it("is perfect via Fjeldling Scale AND via Northman's Beard", () => {
     const viaScale = brew(["Fjeldling Scale", "Pepperpops"]);
     const viaBeard = brew(["Northman's Beard", "Pepperpops"]);
@@ -156,7 +156,7 @@ describe("Pepperpop Mixture (2 tunings)", () => {
     expect(evaluate(viaBeard, perfume("pepperpop-mixture")).status).toBe("perfect");
   });
 
-  it("reports which tuning matched", () => {
+  it("reports which recipe matched", () => {
     const viaScale = brew(["Fjeldling Scale", "Pepperpops"]);
     const viaBeard = brew(["Northman's Beard", "Pepperpops"]);
     const a = evaluate(viaScale, perfume("pepperpop-mixture"));
@@ -209,7 +209,7 @@ describe("d40 table combos", () => {
     for (const r of basePerfumes) {
       for (const [ci, combo] of r.combos.entries()) {
         const ings = combo.ings.map(ing);
-        const plays = autoResolvePlays(ings, r.reqs[combo.req]);
+        const plays = autoResolvePlays(ings, r.recipes[combo.req]);
         const state: BrewState = {
           ingredients: ings,
           strikePlays: plays.strikePlays,
@@ -289,7 +289,7 @@ describe("findRecipes", () => {
       all.filter((i) => i.strike > 0 || i.wild > 0 || i.key.startsWith("pure:")).map((i) => i.name),
     );
     for (const r of basePerfumes) {
-      for (const req of r.reqs) {
+      for (const req of r.recipes) {
         for (const combo of findRecipes(req, all, 2, 12)) {
           expect(combo.strikes).toBeLessThanOrEqual(2);
           for (const name of combo.ings) {
@@ -318,7 +318,7 @@ describe("findRecipes", () => {
     expect(combos.some((c) => c.ings.join("+") === "Ichorberries" && c.strikes === 1)).toBe(true);
   });
 
-  it("with maxStrikes 0, combos sum exactly to the tuning", () => {
+  it("with maxStrikes 0, combos sum exactly to the recipe", () => {
     const combos = findRecipes(["Ev", "En"], baseIngredients, 0, 50);
     for (const c of combos) expect(c.strikes).toBe(0);
   });
@@ -327,7 +327,7 @@ describe("findRecipes", () => {
     for (const r of basePerfumes) {
       for (const combo of r.combos) {
         if (combo.strikes > 0) continue;
-        const found = findRecipes(r.reqs[combo.req], baseIngredients, 0, 24);
+        const found = findRecipes(r.recipes[combo.req], baseIngredients, 0, 24);
         const want = combo.ings.slice().sort().join("+");
         expect(
           found.some((c) => c.ings.slice().sort().join("+") === want),
@@ -357,11 +357,11 @@ describe("combineFrequencies", () => {
     expect(derived.map((d) => d.id).sort()).toEqual(["Ignetium", "Letchettin", "Yonescope"]);
   });
 
-  it("a self-combining tuning still brews raw (Pensive Perfume)", () => {
-    // Pensive's tuning {Albutian, Chrysipil, N, T} auto-combines
+  it("a self-combining recipe still brews raw (Pensive Perfume)", () => {
+    // Pensive's recipe {Albutian, Chrysipil, N, T} auto-combines
     // (Albutian + Chrysipil -> Ontoligin), so matching compares raw and
     // combined forms of BOTH sides — the common combo must stay perfect.
-    const req = perfume("pensive-perfume").reqs[0];
+    const req = perfume("pensive-perfume").recipes[0];
     expect(combineFrequencies(msFromList(req)).derived.length).toBeGreaterThan(0);
     const b = brew(["Great Cold Shard", "Melting Dewdrops"]);
     expect(evaluate(b, perfume("pensive-perfume")).status).toBe("perfect");
@@ -377,7 +377,7 @@ describe("combineFrequencies", () => {
 
   it("perfumes evaluate against the combined tally", () => {
     // {Ignetium, Ev} is a strict subset of Pepperpop Mixture's
-    // {Ignetium, C, Ev, Ev} tuning -> in reach, not off
+    // {Ignetium, C, Ev, Ev} recipe -> in reach, not off
     const b = brew(["Pepperpops", "Brightflower", "Silver"]);
     expect(evaluate(b, perfume("pepperpop-mixture")).status).toBe("craftable");
   });

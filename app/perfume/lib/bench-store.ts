@@ -317,18 +317,18 @@ export function useLocalBenchStore(benchKey: string = LOCAL_BENCH): BenchStoreRe
           const idx = s.wildPlays.lastIndexOf(freq);
           return idx < 0 ? s : { ...s, wildPlays: s.wildPlays.toSpliced(idx, 1) };
         }),
-      brewPerfume: (perfumeKey, tuningIndex, k) =>
+      brewPerfume: (perfumeKey, recipeIndex, k) =>
         setState((s) => {
           // client-side verification via the same engine the server uses
           const perfume = PERFUME_BY_KEY.get(perfumeKey);
-          if (!perfume || tuningIndex < 0 || tuningIndex >= perfume.reqs.length) return s;
+          if (!perfume || recipeIndex < 0 || recipeIndex >= perfume.recipes.length) return s;
           if (s.pot.length === 0 || s.pot.some((p) => !p.real)) return s;
           const brew: BrewState = {
             ingredients: potIngredients(s.pot),
             strikePlays: s.strikePlays,
             wildPlays: s.wildPlays,
           };
-          const result = evalReq(brew, perfume.reqs[tuningIndex], tuningIndex);
+          const result = evalReq(brew, perfume.recipes[recipeIndex], recipeIndex);
           if (result.status !== "perfect" || result.k !== k) return s;
           const outputTray = { ...s.outputTray };
           outputTray[perfumeKey] = (outputTray[perfumeKey] ?? 0) + k;
@@ -602,9 +602,9 @@ export function useConvexBenchStore(
         perform(isParty ? "party" : "view", () =>
           mUnplayWild({ benchKey: viewKey, freq, ...anonArg() }),
         ),
-      brewPerfume: (perfumeKey, tuningIndex, k) => {
-        if (isParty) perform("party", () => mPartyBrew({ perfumeKey, tuningIndex, k, ...anonArg() }));
-        else perform("view", () => mBrew({ benchKey: viewKey, perfumeKey, tuningIndex, k, ...anonArg() }));
+      brewPerfume: (perfumeKey, recipeIndex, k) => {
+        if (isParty) perform("party", () => mPartyBrew({ perfumeKey, recipeIndex, k, ...anonArg() }));
+        else perform("view", () => mBrew({ benchKey: viewKey, perfumeKey, recipeIndex, k, ...anonArg() }));
       },
       takeOutput: (perfumeKey, n) => {
         if (n < 1) return;

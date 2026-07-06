@@ -10,8 +10,8 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export const ROSES = "base:Noble Roses";
 export const APHASIA = "base:Aphasia Flower";
 export const PEAT = "base:Pemneath Peat";
-export const SERUM = "base:swanas-serum"; // tuning [A, A, Crallax, En]
-export const BLACK_GAS = "base:black-gas"; // tuning [N] — k-multiples
+export const SERUM = "base:swanas-serum"; // recipe [A, A, Crallax, En]
+export const BLACK_GAS = "base:black-gas"; // recipe [N] — k-multiples
 
 export async function openLocalBench(page: Page): Promise<void> {
   await page.goto("/perfume?local=1&seed=basic");

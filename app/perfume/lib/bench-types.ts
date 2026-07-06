@@ -90,7 +90,7 @@ export interface BenchActions {
   unplayStrike(freq: string): void;
   playWild(freq: string): void;
   unplayWild(freq: string): void;
-  brewPerfume(perfumeKey: string, tuningIndex: number, k: number): void;
+  brewPerfume(perfumeKey: string, recipeIndex: number, k: number): void;
   takeOutput(perfumeKey: string, n: number): void;
   clearPot(): void;
   updateUI(patch: Partial<SharedUI>): void;

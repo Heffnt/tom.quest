@@ -63,7 +63,7 @@ export interface PerfumePanelProps {
 
 const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
-// Display order for frequencies inside a tuning row: fundamentals in canonical
+// Display order for frequencies inside a recipe row: fundamentals in canonical
 // order, then named frequencies by complexity (ALL_FREQUENCIES is already sorted).
 const FREQ_ORDER = new Map(ALL_FREQUENCIES.map((t, i) => [t.id, i]));
 const ING_BY_NAME = new Map(baseIngredients.map((i) => [i.name, i]));
@@ -83,7 +83,7 @@ function matchesQuery(r: Perfume, q: string): boolean {
   if (r.name.toLowerCase().includes(q)) return true;
   if (r.slots.some((slot) => slot.some((e) => e.name.toLowerCase().includes(q))))
     return true;
-  return r.reqs.some((req) =>
+  return r.recipes.some((req) =>
     req.some(
       (id) =>
         id.toLowerCase().includes(q) ||
@@ -93,8 +93,8 @@ function matchesQuery(r: Perfume, q: string): boolean {
 }
 
 // ── integrated requirements ──────────────────────────────────────────────────
-// One perfume, one display: the frequencies shared by every tuning (`core`)
-// plus choice groups where tunings differ. A group is `optional` when one of
+// One perfume, one display: the frequencies shared by every recipe (`core`)
+// plus choice groups where recipes differ. A group is `optional` when one of
 // its source alternatives contributes nothing extra (e.g. Amber vs Gold —
 // Ignetium is optional on top of the shared T).
 
@@ -145,11 +145,11 @@ function integrateRecipe(perfume: Perfume): Integrated {
 }
 
 function computeIntegrated(perfume: Perfume): Integrated {
-  if (perfume.reqs.length === 1) return { core: perfume.reqs[0], groups: [] };
+  if (perfume.recipes.length === 1) return { core: perfume.recipes[0], groups: [] };
 
   // Preferred: factor by the common perfume's slots — each slot's alternatives
   // become one independent choice group. Only trusted when the cartesian
-  // product of slot emissions reproduces the tunings exactly.
+  // product of slot emissions reproduces the recipes exactly.
   const slotAlts: string[][][] = [];
   let ok = true;
   for (const slot of perfume.slots) {
@@ -183,7 +183,7 @@ function computeIntegrated(perfume: Perfume): Integrated {
       for (const alt of slotAlts[i]) build(i + 1, [...acc, ...alt]);
     };
     build(0, []);
-    const reqSet = new Set(perfume.reqs.map((r) => canon(r)));
+    const reqSet = new Set(perfume.recipes.map((r) => canon(r)));
     ok = products.every((p) => reqSet.has(p)) && new Set(products).size === reqSet.size;
   }
   if (ok) {
@@ -203,15 +203,15 @@ function computeIntegrated(perfume: Perfume): Integrated {
     return { core, groups };
   }
 
-  // Fallback: shared part of all tunings + one group of the leftovers.
-  const msReqs = perfume.reqs.map(msFromList);
+  // Fallback: shared part of all recipes + one group of the leftovers.
+  const msReqs = perfume.recipes.map(msFromList);
   const inter = msIntersect(msReqs);
   const g = toGroup(msReqs.map((m) => msToList(msDiff(m, inter))));
   return { core: msToList(inter), groups: g ? [g] : [] };
 }
 
 // ── the "recipes" fold ────────────────────────────────────────────────────────
-// Per tuning, EVERY combo — the common d40 ones plus everything the solver
+// Per recipe, EVERY combo — the common d40 ones plus everything the solver
 // finds — grouped by the strikes the perfumer must supply: tier 0 is
 // self-sufficient, tiers 1 and 2 over-emit and need that many ⊖ from
 // elsewhere. A common combo whose own ingredients carry the strikes it
@@ -225,7 +225,7 @@ const RECIPES_CACHE = new Map<string, FoundRecipe[][][]>();
 function recipesFor(perfume: Perfume): FoundRecipe[][][] {
   const cached = RECIPES_CACHE.get(perfume.key);
   if (cached) return cached;
-  const result = perfume.reqs.map((_, ri) => {
+  const result = perfume.recipes.map((_, ri) => {
     const tiers: FoundRecipe[][] = Array.from({ length: MAX_STRIKES + 1 }, () => []);
     const seen = new Set<string>();
     // the common d40 combos lead their tier
@@ -240,7 +240,7 @@ function recipesFor(perfume: Perfume): FoundRecipe[][][] {
       seen.add(canon(c.ings));
       tiers[ext].push({ ings: c.ings, strikes: c.strikes });
     }
-    for (const c of findRecipes(perfume.reqs[ri], baseIngredients, MAX_STRIKES, 120)) {
+    for (const c of findRecipes(perfume.recipes[ri], baseIngredients, MAX_STRIKES, 120)) {
       if (!seen.has(canon(c.ings))) tiers[c.strikes].push(c);
     }
     return tiers;
@@ -299,8 +299,8 @@ export default function PerfumePanel({
         ({ perfume }) =>
           ui.pins.includes(perfume.key) ||
           (matchesQuery(perfume, q) &&
-            // AND semantics: SOME tuning contains ALL selected frequencies
-            perfume.reqs.some((req) => filters.every((id) => req.includes(id)))),
+            // AND semantics: SOME recipe contains ALL selected frequencies
+            perfume.recipes.some((req) => filters.every((id) => req.includes(id)))),
       )
       .sort((a, b) => {
         const p =
@@ -531,7 +531,7 @@ function IngredientPill({
   );
 }
 
-// What the brew still needs for this perfume, per reachable tuning: the
+// What the brew still needs for this perfume, per reachable recipe: the
 // missing frequencies as symbols plus one ⊖ chip per strike to spend,
 // alternatives joined with "or".
 function NeededOptions({
@@ -545,8 +545,8 @@ function NeededOptions({
   res: EvalResult;
   size: number;
 }) {
-  // per-tuning needs, deduped; unreachable tunings drop out unless none reach
-  const evs = perfume.reqs.map((req, ri) => evalReq(brew, req, ri));
+  // per-recipe needs, deduped; unreachable recipes drop out unless none reach
+  const evs = perfume.recipes.map((req, ri) => evalReq(brew, req, ri));
   const reachable = evs.filter((e) => e.status === "craftable");
   const pool = reachable.length ? reachable : [res];
   const seen = new Set<string>();
@@ -664,7 +664,7 @@ function PerfumeCard({
 }) {
   const integ = integrateRecipe(perfume);
   const more = recipesFor(perfume);
-  // strike tiers that actually have combos in some tuning, in reveal order
+  // strike tiers that actually have combos in some recipe, in reveal order
   const tiersWithCombos = Array.from({ length: MAX_STRIKES + 1 }, (_, t) => t).filter(
     (t) => more.some((tiers) => tiers[t].length > 0),
   );
@@ -712,7 +712,7 @@ function PerfumeCard({
           </h3>
           <div
             className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-text-faint"
-            title="total fundamental weight of the heaviest tuning"
+            title="total fundamental weight of the heaviest recipe"
           >
             w · {perfumeWeight(perfume)}
           </div>
@@ -730,7 +730,7 @@ function PerfumeCard({
         </div>
 
         {/* idle: the integrated requirement. Brewing: ONE unified line —
-            the cauldron's frequencies + what's still needed (per-tuning
+            the cauldron's frequencies + what's still needed (per-recipe
             options) — no separate needs box repeating anything. */}
         {brewEmpty ? (
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 self-center">
@@ -817,10 +817,10 @@ function PerfumeCard({
                     ⊖ {t} strike{t > 1 ? "s" : ""} needed
                   </p>
                 )}
-                {perfume.reqs.map((req, ri) =>
+                {perfume.recipes.map((req, ri) =>
                   more[ri][t].length === 0 ? null : (
                     <div key={ri} className="space-y-1">
-                      {perfume.reqs.length > 1 && (
+                      {perfume.recipes.length > 1 && (
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono text-[9px] uppercase text-text-faint">for</span>
                           <FrequencyRow req={req} size={13} />

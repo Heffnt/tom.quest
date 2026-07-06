@@ -1,6 +1,6 @@
 // What the current pot brews, for the brew bar (see DESIGN.md).
 // Thin, pure layer over the engine: exact matches only ("perfect"), one
-// option per perfume at its best (k, tuning). Reachability ("in reach") stays
+// option per perfume at its best (k, recipe). Reachability ("in reach") stays
 // the perfume panel's business — this module never reports craftable.
 
 import type { BrewState, Ingredient, Multiset, Perfume } from "./types";
@@ -8,12 +8,12 @@ import { brewTally, evaluate } from "./engine";
 
 export type BrewableOption = {
   perfume: Perfume;
-  k: number; // copies brewed: the tally equals k× the tuning
-  tuningIndex: number; // Perfume.reqs index the match landed on
+  k: number; // copies brewed: the tally equals k× the recipe
+  recipeIndex: number; // Perfume.recipes index the match landed on
 };
 
 // Every perfume the current tally EXACTLY brews, in the order of `perfumes`.
-// `evaluate` already picks the best tuning/copy-count pairing, so a perfume
+// `evaluate` already picks the best recipe/copy-count pairing, so a perfume
 // appears at most once.
 export function brewableOptions(
   brew: BrewState,
@@ -23,7 +23,7 @@ export function brewableOptions(
   for (const perfume of perfumes) {
     const res = evaluate(brew, perfume);
     if (res.status === "perfect") {
-      options.push({ perfume, k: res.k, tuningIndex: res.reqIndex });
+      options.push({ perfume, k: res.k, recipeIndex: res.reqIndex });
     }
   }
   return options;

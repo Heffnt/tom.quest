@@ -55,7 +55,7 @@ export interface CauldronProps {
   hoverIngredient: Ingredient | null;
   brewOptions: BrewableOption[];
   blockers: string[];
-  onBrew: (perfumeKey: string, tuningIndex: number, k: number) => void;
+  onBrew: (perfumeKey: string, recipeIndex: number, k: number) => void;
   onTake: (perfumeKey: string, n: number) => void;
   onStrike: (id: string) => void;
   onUnstrike: (id: string) => void;

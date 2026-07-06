@@ -30,7 +30,7 @@ type RawPerfume = {
   name: string;
   effect: string;
   slots: PerfumeSlotEntry[][];
-  reqs: string[][];
+  recipes: string[][];
   combos: Combo[];
 };
 
@@ -78,12 +78,12 @@ export const isFundamental = (id: string): boolean => !!FUND[id];
 
 // A frequency's weight is how many fundamentals it expands to in total
 // (fundamentals weigh 1). An ingredient's weight sums its emitted
-// frequencies; a perfume's weight is its heaviest tuning.
+// frequencies; a perfume's weight is its heaviest recipe.
 export const freqWeight = (id: string): number => NAMED[id]?.weight ?? 1;
 export const ingredientWeight = (ing: Ingredient): number =>
   ing.emits.reduce((sum, t) => sum + freqWeight(t), 0);
 export const perfumeWeight = (r: Perfume): number =>
-  Math.max(...r.reqs.map((req) => req.reduce((s, t) => s + freqWeight(t), 0)));
+  Math.max(...r.recipes.map((req) => req.reduce((s, t) => s + freqWeight(t), 0)));
 
 export const PAGE_NAMES: Record<number, string> = {
   0: "I", 1: "II", 2: "III", 3: "IV", 4: "V", 5: "VI",
@@ -157,7 +157,7 @@ export const basePerfumes: Perfume[] = data.perfumes.map((r) => ({
   name: r.name,
   roll: r.roll,
   effect: r.effect,
-  reqs: r.reqs,
+  recipes: r.recipes,
   slots: r.slots,
   combos: r.combos,
   source: { kind: "base" } as const,

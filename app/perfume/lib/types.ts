@@ -41,7 +41,7 @@ export type Ingredient = {
 export type PerfumeSlotEntry = { name: string; qty: number; known: boolean };
 
 // One common way to brew the perfume from the d40 table: the expanded
-// ingredient list, which tuning (`req` indexes Perfume.reqs) it lands on, and
+// ingredient list, which recipe (`req` indexes Perfume.recipes) it lands on, and
 // how many ⊖ strikes removing its excess takes.
 export type Combo = {
   ings: string[]; // ingredient names, repeats allowed (e.g. Chrythsmeum ×4)
@@ -52,14 +52,14 @@ export type Combo = {
 // A perfume is DEFINED by its frequency multisets, derived from the common
 // recipe Joe gave (or a recorded ruling where wildcards make that ambiguous).
 // Slashed ingredient alternatives can emit different profiles, so a perfume
-// may carry several valid `reqs` ("tunings") — a brew matches if it can be
+// may carry several valid `recipes` — a brew matches if it can be
 // made exactly equal to an integer MULTIPLE of ANY one of them (k copies).
 export type Perfume = {
   key: string; // "base:<id>" or "user:<convexId>"
   name: string;
   roll: number; // d40 table row (16 appears twice: Bright and Frenzy)
   effect: string; // what the perfume does — "unknown" until discovered in play
-  reqs: Frequency[][]; // valid tunings, each a target multiset
+  recipes: Frequency[][]; // valid recipes, each a target multiset
   slots: PerfumeSlotEntry[][]; // common-recipe slots, each a list of alternatives
   combos: Combo[];
   source: Source;
@@ -71,14 +71,14 @@ export type PerfumeStatus = "perfect" | "craftable" | "off";
 
 export type EvalResult = {
   status: PerfumeStatus;
-  k: number; // copy count: perfect means the brew equals k× the tuning
+  k: number; // copy count: perfect means the brew equals k× the recipe
   excess: Multiset; // B - k·R : frequencies to strike (⊖)
   missing: Multiset; // k·R - B : frequencies still needed
   exN: number; // total excess count
   miN: number; // total missing count
   S: number; // remaining ⊖ strike charges
   W: number; // remaining ⊕ wild charges
-  reqIndex: number; // which tuning (Perfume.reqs index) this result is against
+  reqIndex: number; // which recipe (Perfume.recipes index) this result is against
 };
 
 // The full brew state the engine evaluates. `ingredients` is the expanded list

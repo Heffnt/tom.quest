@@ -12,7 +12,7 @@ const ANON_A = "anon:11111111-1111-4111-8111-111111111111";
 const PURE_N = "pure:N";
 const PURE_STRIKE = "pure:strike";
 const ICHOR = "base:Ichorberries"; // emits N, En
-const BLACK_GAS = "base:black-gas"; // reqs [["N"]]
+const BLACK_GAS = "base:black-gas"; // recipes [["N"]]
 
 async function setup() {
   const t = convexTest({ schema, modules });
@@ -47,7 +47,7 @@ describe("perfume bench permissions", () => {
       bob.mutation(api.perfume.brewPerfume, {
         benchKey: aliceKey,
         perfumeKey: BLACK_GAS,
-        tuningIndex: 0,
+        recipeIndex: 0,
         k: 1,
       }),
     ).rejects.toThrow(/owner/);
@@ -185,7 +185,7 @@ describe("perfume bench permissions", () => {
 
     await t.mutation(api.perfume.partyBrew, {
       perfumeKey: BLACK_GAS,
-      tuningIndex: 0,
+      recipeIndex: 0,
       k: 2,
       anonId: ANON_A,
     });
@@ -336,7 +336,7 @@ describe("perfume bench invariants", () => {
       alice.mutation(api.perfume.brewPerfume, {
         benchKey: aliceKey,
         perfumeKey: BLACK_GAS,
-        tuningIndex: 0,
+        recipeIndex: 0,
         k: 1,
       }),
     ).rejects.toThrow(/hypothetical/);
@@ -370,7 +370,7 @@ describe("perfume bench invariants", () => {
     await alice.mutation(api.perfume.brewPerfume, {
       benchKey: aliceKey,
       perfumeKey: BLACK_GAS,
-      tuningIndex: 0,
+      recipeIndex: 0,
       k: 1,
     });
     snap = await t.query(api.perfume.getBench, { benchKey: aliceKey });
@@ -396,11 +396,11 @@ describe("perfume bench invariants", () => {
       mode: "merge",
     });
     await alice.mutation(api.perfume.moveToBrew, { benchKey: aliceKey, itemKey: PURE_N, n: 2 });
-    // 2× the {N} tuning brews k=2 copies (engine-verified server-side).
+    // 2× the {N} recipe brews k=2 copies (engine-verified server-side).
     await alice.mutation(api.perfume.brewPerfume, {
       benchKey: aliceKey,
       perfumeKey: BLACK_GAS,
-      tuningIndex: 0,
+      recipeIndex: 0,
       k: 2,
     });
 
@@ -435,7 +435,7 @@ describe("perfume bench invariants", () => {
       alice.mutation(api.perfume.brewPerfume, {
         benchKey: aliceKey,
         perfumeKey: BLACK_GAS,
-        tuningIndex: 0,
+        recipeIndex: 0,
         k: 2,
       }),
     ).rejects.toThrow(/does not brew/);

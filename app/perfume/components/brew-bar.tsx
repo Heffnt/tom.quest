@@ -17,12 +17,12 @@ export interface BrewBarProps {
   brew: BrewState;
   // hovered catalog/inventory row — previews its tally delta as ghost chips
   hoverIngredient: Ingredient | null;
-  options: { perfume: Perfume; k: number; tuningIndex: number }[];
+  options: { perfume: Perfume; k: number; recipeIndex: number }[];
   // why brewing is blocked (hypothetical items, permissions, ...) — the
   // disabled Brew button names them
   blockers: string[];
   canBrew: boolean;
-  onBrew: (perfumeKey: string, tuningIndex: number, k: number) => void;
+  onBrew: (perfumeKey: string, recipeIndex: number, k: number) => void;
 }
 
 // Chips group by frequency (repeated symbols, not ×n), in the canonical
@@ -129,7 +129,7 @@ export default function BrewBar({
               <span className="font-mono text-sm text-success">=</span>
               {options.map((o) => (
                 <span
-                  key={`${o.perfume.key}:${o.tuningIndex}`}
+                  key={`${o.perfume.key}:${o.recipeIndex}`}
                   className="flex items-center gap-2 rounded-full border border-border bg-surface py-0.5 pl-3 pr-1"
                 >
                   <span
@@ -141,7 +141,7 @@ export default function BrewBar({
                   <button
                     type="button"
                     disabled={!canBrew}
-                    onClick={() => onBrew(o.perfume.key, o.tuningIndex, o.k)}
+                    onClick={() => onBrew(o.perfume.key, o.recipeIndex, o.k)}
                     aria-label={`Brew ${kLabel(o.perfume.name, o.k)}`}
                     title={
                       canBrew

@@ -103,17 +103,17 @@ function ingredientPasses(ing: Ingredient, types: string[], freqs: string[]): bo
   );
 }
 
-// A perfume passes when SOME tuning contains every selected frequency; type
+// A perfume passes when SOME recipe contains every selected frequency; type
 // filters are ingredient-only, so any type selection hides perfumes.
 function perfumePasses(perfume: Perfume | undefined, types: string[], freqs: string[]): boolean {
   if (types.length > 0) return false;
   if (freqs.length === 0) return true;
   if (!perfume) return false;
-  return perfume.reqs.some((req) => freqs.every((f) => req.includes(f)));
+  return perfume.recipes.some((req) => freqs.every((f) => req.includes(f)));
 }
 
 // Search matches names or any emitted frequency (id or school name — e.g.
-// "transmutation" finds every T-emitter); perfumes match name or any tuning.
+// "transmutation" finds every T-emitter); perfumes match name or any recipe.
 function ingredientMatchesSearch(ing: Ingredient, q: string): boolean {
   if (!q) return true;
   if (ing.name.toLowerCase().includes(q)) return true;
@@ -125,7 +125,7 @@ function perfumeMatchesSearch(perfume: Perfume | undefined, name: string, q: str
   if (!q) return true;
   if (name.toLowerCase().includes(q)) return true;
   if (!perfume) return false;
-  return perfume.reqs.some((req) =>
+  return perfume.recipes.some((req) =>
     req.some(
       (id) => id.toLowerCase().includes(q) || (FUND[id]?.school ?? "").toLowerCase().includes(q),
     ),

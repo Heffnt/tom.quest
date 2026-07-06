@@ -290,19 +290,19 @@ function removeFromPot(pot: PotItem[], itemKey: string, n: number): PotItem[] {
 
 // Server-side brew verification via the shared engine — no re-implementation
 // of matching. Requires every pot item real and the effective tally perfect at
-// exactly the claimed tuning and copy-count.
+// exactly the claimed recipe and copy-count.
 function verifyBrew(
   items: PotItem[],
   strikePlays: string[],
   wildPlays: string[],
   perfumeKey: string,
-  tuningIndex: number,
+  recipeIndex: number,
   k: number,
 ): Perfume {
   const perfume = PERFUME_BY_KEY[perfumeKey];
   if (!perfume) throw new Error(`Unknown perfume: ${perfumeKey}`);
-  if (!Number.isInteger(tuningIndex) || tuningIndex < 0 || tuningIndex >= perfume.reqs.length) {
-    throw new Error(`Invalid tuning index: ${tuningIndex}`);
+  if (!Number.isInteger(recipeIndex) || recipeIndex < 0 || recipeIndex >= perfume.recipes.length) {
+    throw new Error(`Invalid recipe index: ${recipeIndex}`);
   }
   requireCount(k, "copy count");
   if (items.length === 0) throw new Error("The pot is empty");
@@ -322,7 +322,7 @@ function verifyBrew(
     strikePlays,
     wildPlays,
   };
-  const result = evalReq(brew, perfume.reqs[tuningIndex], tuningIndex);
+  const result = evalReq(brew, perfume.recipes[recipeIndex], recipeIndex);
   if (result.status !== "perfect" || result.k !== k) {
     throw new Error(`The pot does not brew ${perfume.name} ×${k}`);
   }
@@ -549,11 +549,11 @@ export const brewPerfume = mutation({
   args: {
     benchKey: v.string(),
     perfumeKey: v.string(),
-    tuningIndex: v.number(),
+    recipeIndex: v.number(),
     k: v.number(),
     anonId,
   },
-  handler: async (ctx, { benchKey, perfumeKey, tuningIndex, k, anonId }) => {
+  handler: async (ctx, { benchKey, perfumeKey, recipeIndex, k, anonId }) => {
     const actor = await identify(ctx, anonId);
     requireOwner(actor, benchKey, "brew");
     const bench = await requireBench(ctx, benchKey);
@@ -562,7 +562,7 @@ export const brewPerfume = mutation({
       bench.strikePlays,
       bench.wildPlays,
       perfumeKey,
-      tuningIndex,
+      recipeIndex,
       k,
     );
     const outputTray = { ...bench.outputTray };
@@ -577,7 +577,7 @@ export const brewPerfume = mutation({
     await logEvent(ctx, benchKey, actor, "brewPerfume", {
       perfumeKey,
       name: perfume.name,
-      tuningIndex,
+      recipeIndex,
       k,
     });
   },
@@ -739,11 +739,11 @@ export const partyMoveToInventory = mutation({
 export const partyBrew = mutation({
   args: {
     perfumeKey: v.string(),
-    tuningIndex: v.number(),
+    recipeIndex: v.number(),
     k: v.number(),
     anonId,
   },
-  handler: async (ctx, { perfumeKey, tuningIndex, k, anonId }) => {
+  handler: async (ctx, { perfumeKey, recipeIndex, k, anonId }) => {
     const actor = await identify(ctx, anonId);
     const party = await ensureParty(ctx);
     const perfume = verifyBrew(
@@ -751,7 +751,7 @@ export const partyBrew = mutation({
       party.strikePlays,
       party.wildPlays,
       perfumeKey,
-      tuningIndex,
+      recipeIndex,
       k,
     );
     const outputTray = { ...party.outputTray };
@@ -766,7 +766,7 @@ export const partyBrew = mutation({
     await logEvent(ctx, PARTY_KEY, actor, "partyBrew", {
       perfumeKey,
       name: perfume.name,
-      tuningIndex,
+      recipeIndex,
       k,
     });
   },
