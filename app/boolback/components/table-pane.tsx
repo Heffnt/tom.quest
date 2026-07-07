@@ -43,6 +43,7 @@ import { TruthStrip } from "./truth-strip";
 import { FnHex } from "./fn-hex";
 import { EpochSparkline } from "./epoch-sparkline";
 import { ChartBody, type ChartExportHandle } from "./chart-panel";
+import { GroupPlotBody } from "./group-plot";
 import { AnatomyBody } from "./anatomy-pane";
 import { FilterBar } from "./filter-bar";
 
@@ -366,8 +367,10 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
         onShowTree={onShowTree}
       />
 
-      {view === "plot" || view === "groupplot" ? (
+      {view === "plot" ? (
         <ChartBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
+      ) : view === "groupplot" ? (
+        <GroupPlotBody rows={visibleRows} bundle={bundle} index={index} />
       ) : view === "anatomy" ? (
         <AnatomyBody rows={visibleRows} bundle={bundle} index={index} />
       ) : (
