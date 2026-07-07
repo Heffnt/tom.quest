@@ -63,6 +63,14 @@ function comparePaths(a: StratumPath, b: StratumPath, nLayers: number): number {
   return a.localeCompare(b);
 }
 
+// A decoder predicts token t from the forward pass at position t-1, so the
+// computation that PRODUCED the selected token is the pass at the previous
+// position. Selecting token t shows how the model arrived at t. Token 0 is the
+// given input — the model produced nothing — so this returns -1 there.
+export function producingStep(selected: number): number {
+  return selected - 1;
+}
+
 export type SourceStatus = "dummy" | "connecting" | "live" | "error";
 
 type TransformerState = {

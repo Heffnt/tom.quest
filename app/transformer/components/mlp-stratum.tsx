@@ -1,19 +1,21 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { getSource, useTransformer } from "../state";
+import { getSource, producingStep, useTransformer } from "../state";
 import { Band } from "./strata";
 
-// The MLP at the selected position: distribution of the hidden activations
-// (dMlp of them) plus the handful of neurons doing most of the work.
+// The MLP in the pass that produced the selected token: distribution of the
+// hidden activations (dMlp of them) plus the handful of neurons doing most of
+// the work.
 export default function MlpStratum({ layer }: { layer: number }) {
   const { trace, selected, open, toggle } = useTransformer();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cfg = getSource().model;
+  const step = producingStep(selected);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !trace) return;
+    if (!canvas || !trace || step < 0) return;
     const dpr = window.devicePixelRatio || 1;
     const w = 260;
     const h = 56;
@@ -23,7 +25,7 @@ export default function MlpStratum({ layer }: { layer: number }) {
     if (!ctx) return;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
-    const hist = getSource().mlpActHistogram(trace, layer, selected, 48);
+    const hist = getSource().mlpActHistogram(trace, layer, step, 48);
     if (!hist) return;
     const { edges, counts } = hist;
     const maxC = Math.max(...counts, 1e-9);
@@ -37,9 +39,9 @@ export default function MlpStratum({ layer }: { layer: number }) {
     const zeroX = ((0 - edges[0]) / (edges[edges.length - 1] - edges[0])) * w;
     ctx.fillStyle = "#64748b";
     ctx.fillRect(zeroX, 0, 1, h);
-  }, [trace, selected, layer]);
+  }, [trace, step, layer]);
 
-  const topN = (trace && getSource().mlpTopNeurons(trace, layer, selected, 8)) || [];
+  const topN = (trace && step >= 0 && getSource().mlpTopNeurons(trace, layer, step, 8)) || [];
   const maxAct = Math.max(...topN.map((n) => n.act), 1e-9);
 
   return (
@@ -56,7 +58,7 @@ export default function MlpStratum({ layer }: { layer: number }) {
         <div className="flex flex-wrap items-start gap-x-5 gap-y-2">
           <div>
             <canvas ref={canvasRef} style={{ width: 260, height: 56 }} aria-label="hidden activation histogram" />
-            <div className="mt-0.5 font-mono text-[9px] text-text-faint">hidden activations at t={selected}</div>
+            <div className="mt-0.5 font-mono text-[9px] text-text-faint">hidden activations · producing t={selected}</div>
           </div>
           <div className="font-mono text-[10px]">
             <div className="mb-0.5 text-text-faint">top neurons</div>

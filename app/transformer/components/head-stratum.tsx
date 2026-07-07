@@ -1,16 +1,18 @@
 "use client";
 
-import { getSource, useTransformer } from "../state";
+import { getSource, producingStep, useTransformer } from "../state";
 import { kvGroupOf } from "../lib/model";
 import { Band } from "./strata";
 
-// One head's view along the z axis: how the selected position attends over
-// every past position. Bars are the attention distribution; positions after
-// the selection are the future — present in the trace, invisible to this
-// step — and render as ghost slots. Clicking a bar time-travels there.
+// One head's attention in the pass that PRODUCED the selected token: how the
+// model looked back over the earlier tokens to arrive at this one. Bars are the
+// attention distribution over positions 0..t-1; the outlined bar is the input
+// token that pass read. The selected token and anything after it weren't seen
+// by this pass, so they render as dashed slots. Clicking a bar travels there.
 export default function HeadStratum({ layer, head }: { layer: number; head: number }) {
   const { trace, selected, select } = useTransformer();
-  const attn = (trace && getSource().attnPattern(trace, layer, head, selected)) || [];
+  const step = producingStep(selected);
+  const attn = (trace && step >= 0 && getSource().attnPattern(trace, layer, head, step)) || [];
   const tokens = trace?.tokens ?? [];
 
   const entropy = attn.reduce((s, p) => (p > 1e-9 ? s - p * Math.log2(p) : s), 0);
@@ -26,13 +28,13 @@ export default function HeadStratum({ layer, head }: { layer: number; head: numb
       crumbs={[`block ${layer}`, "attention", `head ${head}`]}
       meta={
         <span>
-          kv group {kvGroupOf(getSource().model, head)} · entropy {trace ? entropy.toFixed(2) : "–"} bits
+          kv group {kvGroupOf(getSource().model, head)} · entropy {trace && step >= 0 ? entropy.toFixed(2) : "–"} bits
         </span>
       }
     >
-      {trace ? (
+      {trace && step >= 0 ? (
         <div>
-          <div className="flex gap-[2px]" role="img" aria-label="attention over past positions">
+          <div className="flex gap-[2px]" role="img" aria-label="attention over the tokens before the selected one">
             {tokens.map((tok, j) => {
               const showLabels = tokens.length <= 28;
               const label = showLabels ? (
@@ -40,9 +42,15 @@ export default function HeadStratum({ layer, head }: { layer: number; head: numb
                   {(tok.trim() || "␣").slice(0, 4)}
                 </span>
               ) : null;
-              if (j > selected) {
+              // the producing pass only saw tokens 0..step; the selected token
+              // (step+1) is what it produced, everything past it is the future
+              if (j > step) {
                 return (
-                  <div key={j} className="min-w-[3px] max-w-[26px] flex-1 opacity-40" title={`‹${tok.trim()}› is in the future of t=${selected}`}>
+                  <div
+                    key={j}
+                    className="min-w-[3px] max-w-[26px] flex-1 opacity-40"
+                    title={`‹${tok.trim()}›${j === selected ? " is the token being produced" : " is in the future"}`}
+                  >
                     <div className="h-16 border-b border-dashed border-border" />
                     {label}
                   </div>
@@ -56,7 +64,7 @@ export default function HeadStratum({ layer, head }: { layer: number; head: numb
                   title={`‹${tok.trim() || "␣"}› · ${p.toFixed(3)} · click to travel to t=${j}`}
                   className={[
                     "min-w-[3px] max-w-[26px] flex-1",
-                    j === selected ? "outline outline-1 outline-accent/60" : "hover:outline hover:outline-1 hover:outline-text-faint",
+                    j === step ? "outline outline-1 outline-accent/60" : "hover:outline hover:outline-1 hover:outline-text-faint",
                   ].join(" ")}
                 >
                   <span className="relative block h-16">
@@ -71,18 +79,20 @@ export default function HeadStratum({ layer, head }: { layer: number; head: numb
             })}
           </div>
           <div className="mt-1 font-mono text-[10px] text-text-faint">
-            attends{" "}
+            to produce <span className="text-text-muted">‹{tokens[selected]?.trim() || "␣"}›</span> attended{" "}
             {top.map(({ p, j }, i) => (
               <span key={j}>
                 {i > 0 && " · "}
                 <span className="text-text-muted">‹{tokens[j]?.trim() || "␣"}›</span> {p.toFixed(2)}
               </span>
             ))}
-            <span className="ml-2 opacity-70">dashed = future positions</span>
+            <span className="ml-2 opacity-70">outlined = input token · dashed = not seen</span>
           </div>
         </div>
       ) : (
-        <p className="text-xs text-text-faint">run a prompt to see this head attend</p>
+        <p className="text-xs text-text-faint">
+          {trace ? "‹" + (tokens[0]?.trim() || "␣") + "› is the given input — the model did not attend to produce it" : "run a prompt to see this head attend"}
+        </p>
       )}
     </Band>
   );

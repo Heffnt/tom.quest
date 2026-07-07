@@ -1,17 +1,21 @@
 "use client";
 
-import { getSource, useTransformer } from "../state";
+import { getSource, producingStep, useTransformer } from "../state";
 import { heat } from "../lib/color";
 
-// The pinned source of truth: embed → residual wire with one tap per block →
-// unembed → next-token readout. Tap color = how hard that sublayer wrote into
-// the stream for the selected position (top square attention, bottom MLP).
+// The pinned source of truth: embed → residual wire → unembed. Everything on it
+// is the forward pass that PRODUCED the selected token (the pass at the prior
+// position), so the spine reads as "how the model arrived at this token". Each
+// block shows two write taps in computation order, left→right along the stream:
+// attention first, then MLP. Brighter = larger write into the residual stream.
 // Ghost cards behind the spine are the past positions receding on the z axis.
 export default function Spine() {
   const { trace, selected, open, toggle, select, sourceStatus } = useTransformer();
   const cfg = getSource().model;
-  const step = trace?.steps[selected];
+  const stepIdx = producingStep(selected);
+  const step = trace && stepIdx >= 0 ? trace.steps[stepIdx] : undefined;
   const tok = trace?.tokens[selected];
+  const inputTok = trace && stepIdx >= 0 ? trace.tokens[stepIdx] : undefined;
   const top1 = step?.logits[0];
 
   // per-lane normalization + sqrt so early layers stay visible when one late
@@ -76,13 +80,19 @@ export default function Spine() {
             {trace ? (
               <>
                 <span>
-                  t={selected} <span className="text-text">‹{tok?.trim() || "␣"}›</span>
+                  t={selected} → <span className="text-text">‹{tok?.trim() || "␣"}›</span>
                 </span>
-                <span className="text-text-faint">{selected} in context</span>
-                {top1 && (
-                  <span className="text-text-faint">
-                    next → <span className="text-accent">‹{top1.token.trim() || "␣"}›</span> {top1.p.toFixed(2)}
-                  </span>
+                {stepIdx >= 0 ? (
+                  <>
+                    <span className="text-text-faint">from ‹{inputTok?.trim() || "␣"}›</span>
+                    {top1 && (
+                      <span className="text-text-faint">
+                        top pred <span className="text-accent">‹{top1.token.trim() || "␣"}›</span> {top1.p.toFixed(2)}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-text-faint">given input · not produced by the model</span>
                 )}
               </>
             ) : (
@@ -97,7 +107,7 @@ export default function Spine() {
           <div className="flex items-center gap-2">
             {cap("embed", "embed")}
             <div className="relative flex-1">
-              <div className="absolute left-0 right-0 top-1/2 h-px bg-border" aria-hidden />
+              <div className="absolute left-0 right-0 top-[10px] h-px bg-border" aria-hidden />
               <div className="relative flex justify-between">
                 {Array.from({ length: cfg.nLayers }, (_, l) => {
                   const ls = step?.layers[l];
@@ -116,14 +126,16 @@ export default function Spine() {
                         isOpen ? "outline outline-1 outline-accent" : "hover:outline hover:outline-1 hover:outline-text-faint",
                       ].join(" ")}
                     >
-                      <span
-                        className="h-[9px] w-[14px] rounded-[2px]"
-                        style={{ background: ls ? heat(Math.sqrt(ls.attnWrite / attnMax)) : "var(--color-surface-alt)" }}
-                      />
-                      <span
-                        className="h-[9px] w-[14px] rounded-[2px]"
-                        style={{ background: ls ? heat(Math.sqrt(ls.mlpWrite / mlpMax)) : "var(--color-surface-alt)" }}
-                      />
+                      <span className="flex gap-[2px]">
+                        <span
+                          className="h-4 w-[7px] rounded-[1px]"
+                          style={{ background: ls ? heat(Math.sqrt(ls.attnWrite / attnMax)) : "var(--color-surface-alt)" }}
+                        />
+                        <span
+                          className="h-4 w-[7px] rounded-[1px]"
+                          style={{ background: ls ? heat(Math.sqrt(ls.mlpWrite / mlpMax)) : "var(--color-surface-alt)" }}
+                        />
+                      </span>
                       <span className="text-[8px] leading-none text-text-faint">{l}</span>
                     </button>
                   );
@@ -131,6 +143,9 @@ export default function Spine() {
               </div>
             </div>
             {cap("unembed", "unembed")}
+          </div>
+          <div className="mt-1 text-center text-[8px] leading-none text-text-faint">
+            each block, left→right along the stream: attention write · mlp write
           </div>
         </div>
       </div>

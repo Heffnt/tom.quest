@@ -1,13 +1,15 @@
 "use client";
 
-import { getSource, useTransformer } from "../state";
+import { getSource, producingStep, useTransformer } from "../state";
 import { Band } from "./strata";
 
 // One block drawn as what it is: two additive taps on the residual stream,
-// each behind a pre-norm. Click a sublayer to open the next stratum down.
+// each behind a pre-norm, for the pass that produced the selected token. Click
+// a sublayer to open the next stratum down.
 export default function BlockStratum({ layer }: { layer: number }) {
   const { trace, selected, open, toggle } = useTransformer();
-  const ls = trace?.steps[selected]?.layers[layer];
+  const stepIdx = producingStep(selected);
+  const ls = trace && stepIdx >= 0 ? trace.steps[stepIdx]?.layers[layer] : undefined;
   const maxW = ls ? Math.max(ls.attnWrite, ls.mlpWrite, 1e-9) : 1;
 
   const sub = (label: string, path: string, value: number | undefined) => {
