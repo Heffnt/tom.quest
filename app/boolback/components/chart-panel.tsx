@@ -58,7 +58,8 @@ import {
   type GroupedPoint, type RunPoint, type Ghost, type WorthinessRun,
 } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
-import { PALETTE, SINGLE_COLOR, colorForValue, shapeForValue } from "../lib/styling";
+import { buildRunSeries, groupSeries, trajectoryMetric } from "../lib/trajectories";
+import { PALETTE, SINGLE_COLOR, colorForValue, shapeForValue, dashForValue } from "../lib/styling";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
@@ -154,10 +155,25 @@ export function ChartBody({
   const W = size.w;
   const H = size.h;
 
-  const x = effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_CHART.x);
-  const y = effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_CHART.y);
+  // Epoch (training-progress) x-axis: runs/groups become trajectory LINES, and
+  // Y must be a trajectory-backed metric (snap to plantedness otherwise).
+  const lineMode = config.x === "epoch";
+  const x = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_CHART.x);
+  const y = lineMode
+    ? (trajectoryMetric(config.y) ?? "plantedness")
+    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_CHART.y);
   const logX = !!config.logX;
   const logY = !!config.logY;
+  // Persist the Y snap so the config stays consistent after entering epoch mode.
+  useEffect(() => {
+    if (lineMode && config.y !== y) setChart({ y });
+  }, [lineMode, config.y, y, setChart]);
+  // The active judge for per-epoch resolution: a single selected judge, else
+  // the headline (primary-judge) trajectory.
+  const activeJudge = useMemo(() => {
+    const j = filters.facets?.judge;
+    return j && j.length === 1 ? j[0] : null;
+  }, [filters.facets]);
   const splits = useMemo(() => config.splits ?? [], [config.splits]);
   const channelOverrides = useMemo(() => config.channels ?? {}, [config.channels]);
   const valueStyles = useMemo(() => config.valueStyles ?? {}, [config.valueStyles]);
@@ -244,10 +260,26 @@ export function ChartBody({
   const yDomain = config.yDomain ?? null;
 
   // ---- points ---------------------------------------------------------------
+  // Averaged dims (any differing dim not split) — shown in the board in either
+  // mode, so it lives outside the scatter-only points memo.
+  const averagedDims = useMemo(
+    () => summary.differing.filter((d) => !channelByDim.has(d.dim.key)).map((d) => d.dim),
+    [summary, channelByDim],
+  );
+
   const {
     points, pairs, ghosts, ghostsSubsampled, droppedLog, outsideWindow,
-    binned, rowByPath, dataExtent, averagedDims, worthiness,
+    binned, rowByPath, dataExtent, worthiness,
   } = useMemo(() => {
+    if (lineMode) {
+      // Scatter path is inert in epoch mode — the epoch memo drives rendering.
+      return {
+        points: [], pairs: [], ghosts: [], ghostsSubsampled: false,
+        droppedLog: 0, outsideWindow: 0, binned: false,
+        rowByPath: new Map<string, RunRow>(), dataExtent: null,
+        worthiness: {} as Record<string, number>,
+      };
+    }
     const xId = metricColumnId(x, index);
     const yId = metricColumnId(y, index);
     let dropped = 0;
@@ -313,10 +345,77 @@ export function ChartBody({
       dataExtent: Number.isFinite(exMinX)
         ? { xMin: exMinX, xMax: exMaxX, yMin: exMinY, yMax: exMaxY }
         : null,
-      averagedDims: avgDims,
       worthiness: worth,
     };
-  }, [rows, x, y, index, logX, logY, splitDims, colorDim, averaging, xDomain, yDomain, summary, channelByDim]);
+  }, [lineMode, rows, x, y, index, logX, logY, splitDims, colorDim, averaging, xDomain, yDomain, summary, channelByDim]);
+
+  // ---- epoch trajectories (line mode) ---------------------------------------
+  const epoch = useMemo(() => {
+    if (!lineMode) return null;
+    const metric = trajectoryMetric(y);
+    if (!metric) return null;
+    const dimsOf = (r: RunRow) => splitDims.map((d) => d.dim.raw(r) ?? "—");
+    const { series, dropped: droppedY } = buildRunSeries(rows, metric, dimsOf, activeJudge, logY);
+    const groups = groupSeries(series);
+
+    // x transform (logX drops epoch ≤ 0); count as "dropped (log)".
+    let droppedX = 0;
+    const txX = (e: number): number | null => {
+      if (!logX) return e;
+      if (e <= 0) { droppedX++; return null; }
+      return Math.log10(e);
+    };
+
+    // Ghost run-lines, colored by the color-dim value, subsampled for perf.
+    const ci = colorDim ? splitDims.indexOf(colorDim) : -1;
+    const ghostCap = 500;
+    const step = Math.max(1, Math.ceil(series.length / ghostCap));
+    const ghostRuns: Array<{ color: string; pts: Array<{ x: number; y: number }> }> = [];
+    for (let i = 0; i < series.length; i += step) {
+      const s = series[i];
+      const cv = ci >= 0 ? s.dims[ci] : "";
+      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      const pts: Array<{ x: number; y: number }> = [];
+      for (const p of s.points) {
+        const x2 = txX(p.e);
+        if (x2 !== null) pts.push({ x: x2, y: p.y });
+      }
+      ghostRuns.push({ color, pts });
+    }
+
+    // Group mean lines: color from the color dim, dash from the shape dim
+    // (splits[1] → dash in line mode; shape glyphs are meaningless on a line).
+    const di = shapeDim ? splitDims.indexOf(shapeDim) : -1;
+    const groupVis = groups.map((g) => {
+      const cv = ci >= 0 ? g.dims[ci] : "";
+      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      const dv = di >= 0 ? g.dims[di] : "";
+      const dash = shapeDim ? dashForValue(shapeDim.dim.key, dv, shapeIdx.get(dv) ?? 0, valueStyles) : "";
+      const pts: Array<{ x: number; y: number; sd: number | null; n: number }> = [];
+      for (const p of g.points) {
+        const x2 = txX(p.e);
+        if (x2 !== null) pts.push({ x: x2, y: p.y, sd: p.sd, n: p.n });
+      }
+      return { dims: g.dims, color, dash, runId: g.runId, pts };
+    });
+
+    // Extent over all rendered points.
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    const acc = (px: number, py: number) => {
+      if (px < x0) x0 = px; if (px > x1) x1 = px;
+      if (py < y0) y0 = py; if (py > y1) y1 = py;
+    };
+    for (const g of groupVis) for (const p of g.pts) acc(p.x, p.y);
+    for (const s of ghostRuns) for (const p of s.pts) acc(p.x, p.y);
+
+    return {
+      ghostRuns,
+      groups: groupVis,
+      dropped: droppedY + droppedX,
+      seriesCount: series.length,
+      extent: Number.isFinite(x0) ? { x0, x1, y0, y1 } : null,
+    };
+  }, [lineMode, y, rows, splitDims, activeJudge, logX, logY, colorDim, shapeDim, colorIdx, shapeIdx, valueStyles]);
 
   // Jitter single-run points on a linear count x-axis (stacked integers).
   const jitter = !averaging && index[x]?.dtype === "count" && !logX;
@@ -364,12 +463,16 @@ export function ChartBody({
   // Scales over the TRANSFORMED values.
   const scale = useMemo(() => {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const p of visual) {
-      const px = p.gp.x + p.jx;
-      if (px < x0) x0 = px;
-      if (px > x1) x1 = px;
-      if (p.gp.y < y0) y0 = p.gp.y;
-      if (p.gp.y > y1) y1 = p.gp.y;
+    if (lineMode && epoch?.extent) {
+      ({ x0, x1, y0, y1 } = epoch.extent);
+    } else {
+      for (const p of visual) {
+        const px = p.gp.x + p.jx;
+        if (px < x0) x0 = px;
+        if (px > x1) x1 = px;
+        if (p.gp.y < y0) y0 = p.gp.y;
+        if (p.gp.y > y1) y1 = p.gp.y;
+      }
     }
     if (!Number.isFinite(x0)) { x0 = 0; x1 = 1; y0 = 0; y1 = 1; }
     if (x1 - x0 < 1e-9) { x0 -= 0.5; x1 += 0.5; }
@@ -386,7 +489,7 @@ export function ChartBody({
     const ix = (px: number) => x0 + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (x1 - x0);
     const iy = (py: number) => y0 + ((H - PAD.b - py) / (H - PAD.t - PAD.b)) * (y1 - y0);
     return { sx, sy, ix, iy, xTicks: niceTicks(x0, x1, 5), yTicks: niceTicks(y0, y1, 5) };
-  }, [visual, W, H, xDomain, yDomain, logX, logY]);
+  }, [visual, W, H, xDomain, yDomain, logX, logY, lineMode, epoch]);
 
   // Ghost points — faint underlying runs behind the group means (averaging +
   // config.ghosts). Colored by each run's color-dim value (its group's color).
@@ -434,6 +537,18 @@ export function ChartBody({
 
   // Publish the descriptive readout for the shared top bar (cleared on unmount).
   useEffect(() => {
+    if (lineMode) {
+      setChartReadout({
+        r: null, rho: null,
+        runs: epoch?.seriesCount ?? 0,
+        points: epoch?.groups.length ?? 0,
+        averaging: true, binned: false,
+        droppedLog: epoch?.dropped ?? 0,
+        outsideWindow: 0,
+        ghostsSubsampled: (epoch?.seriesCount ?? 0) > 500,
+      });
+      return;
+    }
     setChartReadout({
       r: stats?.overall.r ?? null,
       rho: stats?.overall.rho ?? null,
@@ -445,7 +560,7 @@ export function ChartBody({
       outsideWindow,
       ghostsSubsampled,
     });
-  }, [stats, pairs.length, points.length, averaging, binned, droppedLog, outsideWindow, ghostsSubsampled, setChartReadout]);
+  }, [lineMode, epoch, stats, pairs.length, points.length, averaging, binned, droppedLog, outsideWindow, ghostsSubsampled, setChartReadout]);
   useEffect(() => () => setChartReadout(null), [setChartReadout]);
 
   // ---- dimension treatment setter — edits v2 splits/channels ----------------
@@ -585,6 +700,13 @@ export function ChartBody({
         const xL = `${index[x]?.label ?? x}${logX ? " (log10)" : ""}`;
         const yL = `${index[y]?.label ?? y}${logY ? " (log10)" : ""}`;
         const dimHead = splitDims.map((d) => d.dim.label);
+        if (lineMode && epoch) {
+          const head = ["epoch", ...dimHead, "n", `${yL} (mean)`, `${yL} (sd)`];
+          const body = epoch.groups.flatMap((g) =>
+            g.pts.map((p) => [logX ? Math.round(Math.pow(10, p.x)) : p.x, ...g.dims, p.n, p.y, p.sd ?? ""]),
+          );
+          return toCsv([head, ...body]);
+        }
         if (averaging) {
           const head = [xL, ...dimHead, "n", `${yL} (mean)`, `${yL} (sd)`];
           return toCsv([head, ...points.map((p) => [p.x, ...p.dims, p.n, p.y, p.sdY ?? ""])]);
@@ -594,7 +716,7 @@ export function ChartBody({
       },
     };
     return () => { exportRef.current = null; };
-  }, [exportRef, points, x, y, index, logX, logY, splitDims, averaging]);
+  }, [exportRef, points, x, y, index, logX, logY, splitDims, averaging, lineMode, epoch]);
 
   // The point linked to the row hovered/selected elsewhere (table / tree).
   const linked = useMemo(
@@ -620,15 +742,19 @@ export function ChartBody({
     return [...byCombo.values()].filter((arr) => arr.length > 1);
   }, [visual, averaging]);
 
+  const hasContent = lineMode ? !!(epoch && epoch.groups.length > 0) : visual.length > 0;
+
   return (
     <div className="flex-1 min-h-0 flex">
       {/* plot */}
       <div ref={plotRef} className="relative flex-1 min-w-0 px-2 py-1">
-        {visual.length === 0 ? (
+        {!hasContent ? (
           <div className="flex h-full items-center justify-center text-xs text-text-faint font-mono">
-            {droppedLog > 0
-              ? "No plottable points — every value is ≤ 0 on a log axis."
-              : "No plottable points — one of the chosen metrics is null on every filtered run."}
+            {lineMode
+              ? "No trajectories — the chosen metric has no per-epoch data on these runs."
+              : droppedLog > 0
+                ? "No plottable points — every value is ≤ 0 on a log axis."
+                : "No plottable points — one of the chosen metrics is null on every filtered run."}
           </div>
         ) : (
           <svg
@@ -671,6 +797,56 @@ export function ChartBody({
                 transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
                 fill="var(--color-text-muted)">{(index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
             </g>
+
+            {/* epoch trajectories: ghost run-lines, group ±SD ribbons, mean lines */}
+            {lineMode && epoch && (
+              <g clipPath="url(#bb-plot-clip)">
+                {config.ghosts && epoch.ghostRuns.map((s, i) => (
+                  s.pts.length > 1 && (
+                    <polyline
+                      key={`gl${i}`}
+                      points={s.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
+                      fill="none" stroke={s.color} strokeWidth={1} strokeOpacity={0.12}
+                      pointerEvents="none"
+                    />
+                  )
+                ))}
+                {config.band && epoch.groups.map((g, i) => {
+                  const withSd = g.pts.filter((p) => p.sd !== null && p.sd > 0);
+                  if (withSd.length < 2) return null;
+                  const up = withSd.map((p) => `${scale.sx(p.x)},${scale.sy(p.y + (p.sd ?? 0))}`);
+                  const dn = withSd.slice().reverse().map((p) => `${scale.sx(p.x)},${scale.sy(p.y - (p.sd ?? 0))}`);
+                  return (
+                    <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={g.color} fillOpacity={0.1} stroke="none" pointerEvents="none" />
+                  );
+                })}
+                {epoch.groups.map((g, i) => (
+                  g.pts.length > 1 && (
+                    <polyline
+                      key={`ml${i}`}
+                      points={g.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
+                      fill="none" stroke={g.color} strokeWidth={1.75} strokeOpacity={0.95}
+                      strokeDasharray={g.dash || undefined}
+                      pointerEvents="none"
+                    />
+                  )
+                ))}
+                {/* vertices — hover title + click-through for single-run groups */}
+                {epoch.groups.map((g) =>
+                  g.pts.map((p, j) => (
+                    <circle
+                      key={`${g.dims.join(",")}-${j}`}
+                      cx={scale.sx(p.x)} cy={scale.sy(p.y)} r={2.4}
+                      fill={g.color} fillOpacity={0.9}
+                      className={g.runId ? "cursor-pointer" : undefined}
+                      onClick={g.runId ? () => { openDetail(g.runId!); const r = bundle.rows.find((x2) => x2.identity.node_path === g.runId); if (r) expandChain(r.identity.chain_dirs); } : undefined}
+                    >
+                      <title>{`${g.dims.length ? g.dims.join(" · ") + " · " : ""}epoch ${logX ? Math.round(Math.pow(10, p.x)) : p.x}: ${tickFmt(logY ? Math.pow(10, p.y) : p.y)}${p.sd !== null && p.sd > 0 ? ` ± ${tickFmt(p.sd)}` : ""}${p.n > 1 ? ` (n=${p.n})` : ""}`}</title>
+                    </circle>
+                  )),
+                )}
+              </g>
+            )}
 
             {/* per-combo connecting lines (averaging; under points + whiskers) */}
             {meanLines.length > 0 && (
@@ -812,12 +988,13 @@ export function ChartBody({
         <div className="pointer-events-none absolute inset-x-0 bottom-0.5 z-10 flex justify-center">
           <div className="pointer-events-auto">
             <MetricPicker
-              value={x}
+              value={config.x}
               onChange={(v) => setChart({ x: v })}
               schema={bundle.metric_schema}
               ariaLabel="x metric"
               order={X_GROUP_ORDER}
               placement="up"
+              pinned={[{ value: "epoch", label: "epoch (training progress)" }]}
             />
           </div>
         </div>

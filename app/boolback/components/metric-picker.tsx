@@ -22,6 +22,7 @@ export function MetricPicker({
   ariaLabel,
   vertical = false,
   placement = "down",
+  pinned = [],
 }: {
   value: string;
   onChange: (name: string) => void;
@@ -32,6 +33,8 @@ export function MetricPicker({
   vertical?: boolean;
   /** Where the popover opens relative to the trigger (axis mounts need up/right). */
   placement?: "down" | "up" | "right";
+  /** Sentinel entries pinned above the metric groups (e.g. the epoch x-axis). */
+  pinned?: Array<{ value: string; label: string }>;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -47,8 +50,8 @@ export function MetricPicker({
     [groups],
   );
   const currentLabel = useMemo(
-    () => schema.find((e) => e.name === value)?.label ?? value,
-    [schema, value],
+    () => pinned.find((p) => p.value === value)?.label ?? schema.find((e) => e.name === value)?.label ?? value,
+    [schema, value, pinned],
   );
 
   const close = () => {
@@ -120,6 +123,25 @@ export function MetricPicker({
               className="mb-2 w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-text placeholder:text-text-faint caret-accent focus:border-accent/80 focus:outline-none"
             />
             <div className="max-h-80 overflow-y-auto">
+              {pinned.filter((p) => query === "" || p.label.toLowerCase().includes(query)).length > 0 && (
+                <div className="mb-1 border-b border-border/50 pb-1">
+                  {pinned
+                    .filter((p) => query === "" || p.label.toLowerCase().includes(query))
+                    .map((p) => (
+                      <button
+                        key={p.value}
+                        onClick={() => pick(p.value)}
+                        className={[
+                          "flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left hover:bg-surface-alt hover:text-accent",
+                          p.value === value ? "text-accent" : "text-text/90",
+                        ].join(" ")}
+                      >
+                        <span className="truncate">{p.label}</span>
+                        {p.value === value && <span className="text-accent">✓</span>}
+                      </button>
+                    ))}
+                </div>
+              )}
               {query !== "" ? (
                 // Flat direct matches (per-method entries included un-collapsed).
                 <>
