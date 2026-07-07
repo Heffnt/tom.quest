@@ -38,6 +38,17 @@ describe("share codec", () => {
     expect(decoded).toEqual(view);
   });
 
+  it("migrates a v1 chart link to v2 on decode (color/shape → ordered splits)", () => {
+    // A pre-2026-07 link: chart has `dims` treatments and no `v`.
+    const legacy = { chart: { x: "arity", y: "asr", dims: { seed: "shape", baseModel: "color", tuning: "avg" }, logX: false, logY: false, trend: false } };
+    const decoded = decodeSharedView(encodeSharedView(legacy as unknown as SharedView));
+    expect(decoded?.chart?.v).toBe(2);
+    expect(decoded?.chart?.splits).toEqual(["baseModel", "seed"]); // color first, then shape
+    expect(decoded?.chart?.channels).toEqual({ baseModel: "color", seed: "shape" });
+    expect(decoded?.chart?.x).toBe("arity");
+    expect(decoded?.chart?.y).toBe("asr");
+  });
+
   it("the encoded param is URL-safe (no + / = characters)", () => {
     const p = encodeSharedView({ view: "table" });
     expect(p).not.toMatch(/[+/=]/);

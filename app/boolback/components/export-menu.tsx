@@ -192,11 +192,14 @@ function SummaryDialog({
   filters: FilterState;
   onDone: (msg: string) => void;
 }) {
-  // Default group-by: the chart's color-channel OVERRIDE when it names a
-  // facet (auto-assignments live chart-side), else model.
-  const chartDims = useBoolbackStore((s) => s.chart.dims);
+  // Default group-by: the chart's color-channel split when it names a facet
+  // (the explicit color override, else the first split — auto assigns color to
+  // splits[0]), else model.
+  const chartSplits = useBoolbackStore((s) => s.chart.splits);
+  const chartChannels = useBoolbackStore((s) => s.chart.channels);
   const [groupBy, setGroupBy] = useState<FacetKey>(() => {
-    const colorKey = Object.entries(chartDims ?? {}).find(([, t]) => t === "color")?.[0];
+    const splits = chartSplits ?? [];
+    const colorKey = splits.find((k) => chartChannels?.[k] === "color") ?? splits[0];
     return colorKey && colorKey !== "function" ? (colorKey as FacetKey) : "baseModel";
   });
 

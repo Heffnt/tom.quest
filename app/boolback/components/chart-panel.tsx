@@ -42,18 +42,19 @@
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, DimTreatment, RunRow } from "../lib/types";
+import type { Bundle, Channel, DimTreatment, RunRow } from "../lib/types";
 import { DEFAULT_CHART } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import {
-  DIMENSIONS, assignTreatments, summarizeDimensions,
-  type Channel, type DimensionDef, type DimValues,
+  DIMENSIONS, resolveChannels, summarizeDimensions,
+  type DimensionDef, type DimValues,
 } from "../lib/dimensions";
 import { groupRuns, type GroupedPoint, type RunPoint } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
+import { PALETTE, SINGLE_COLOR, SHAPE_COUNT, colorForValue, shapeForValue } from "../lib/styling";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
@@ -75,14 +76,6 @@ export function effectiveAxis(
   return index[name] ? name : fallback in index ? fallback : (schema[0]?.name ?? "");
 }
 
-const PALETTE = [
-  "#e8a040", "#38bdf8", "#4ade80", "#e879f9",
-  "#f87171", "#c9b35f", "#6fb6a6", "#b48ad6",
-  "#f0abfc", "#86efac", "#fca5a5", "#7dd3fc",
-];
-
-const SINGLE_COLOR = "#e8a040";
-
 // Geometry: the SVG viewBox tracks the plot container 1:1 (ResizeObserver;
 // 1 viewBox unit = 1 CSS px), so in-SVG font sizes are literal pixel sizes
 // and the plot fills the pane at any aspect ratio — no letterboxing, no
@@ -91,9 +84,6 @@ const FALLBACK = { w: 820, h: 430 };
 // PAD.l leaves room for the rotated y-axis picker + tick labels side by side.
 const PAD = { l: 72, r: 16, t: 14, b: 44 };
 const MIN_DRAG = 8; // px before a drag counts as a box-select
-
-// The shape channel's glyph cycle (index 0 = plain circle).
-const SHAPE_COUNT = 6;
 
 function shapeNode(
   idx: number, cx: number, cy: number, r: number,
@@ -196,38 +186,63 @@ export function ChartBody({
   const y = effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_CHART.y);
   const logX = !!config.logX;
   const logY = !!config.logY;
-  const rawDims = config.dims;
-  const dimOverrides = useMemo(
-    () => (rawDims ?? {}) as Record<string, DimTreatment>,
-    [rawDims],
-  );
+  const splits = useMemo(() => config.splits ?? [], [config.splits]);
+  const channelOverrides = useMemo(() => config.channels ?? {}, [config.channels]);
+  const valueStyles = useMemo(() => config.valueStyles ?? {}, [config.valueStyles]);
 
   // ---- the dimension model over the filtered rows ---------------------------
   const summary = useMemo(() => summarizeDimensions(rows), [rows]);
-  const treatments = useMemo(
-    () => assignTreatments(summary.differing, dimOverrides),
-    [summary, dimOverrides],
+  const differingByKey = useMemo(() => {
+    const m = new Map<string, DimValues>();
+    for (const d of summary.differing) m.set(d.dim.key, d);
+    return m;
+  }, [summary]);
+  // Only user-chosen splits that actually differ in the current view get a channel.
+  const activeSplits = useMemo(
+    () => splits.filter((k) => differingByKey.has(k)),
+    [splits, differingByKey],
+  );
+  const channelByDim = useMemo(
+    () => resolveChannels(activeSplits, channelOverrides, (k) => differingByKey.get(k)?.values.length ?? 0),
+    [activeSplits, channelOverrides, differingByKey],
   );
   const channelDims = useMemo(() => {
     const byChannel = new Map<Channel, DimValues>();
     for (const d of summary.differing) {
-      const t = treatments.get(d.dim.key);
-      if (t && t !== "avg") byChannel.set(t, d);
+      const ch = channelByDim.get(d.dim.key);
+      if (ch) byChannel.set(ch, d);
     }
     return byChannel;
-  }, [summary, treatments]);
+  }, [summary, channelByDim]);
   const colorDim = channelDims.get("color");
   const shapeDim = channelDims.get("shape");
   const sizeDim = channelDims.get("size");
-  // Split dims in RunPoint.dims order: color, shape, size (whichever exist).
-  const splitDims = useMemo(
-    () => [colorDim, shapeDim, sizeDim].filter((d): d is DimValues => d !== undefined),
-    [colorDim, shapeDim, sizeDim],
-  );
+  // Split dims in channel order (color, shape, size, dash) — RunPoint.dims order.
+  const splitDims = useMemo(() => {
+    const order: Channel[] = ["color", "shape", "size", "dash"];
+    return order.map((ch) => channelDims.get(ch)).filter((d): d is DimValues => d !== undefined);
+  }, [channelDims]);
+  // Any differing dimension the user did NOT split is averaged (visible spread).
   const averaging = useMemo(
-    () => summary.differing.some((d) => treatments.get(d.dim.key) === "avg"),
-    [summary, treatments],
+    () => summary.differing.some((d) => !channelByDim.has(d.dim.key)),
+    [summary, channelByDim],
   );
+
+  // The (temporary Phase-1) legend still speaks the color/shape/size/avg model;
+  // derive it from the resolved channels so splitting via the popover works.
+  const treatments = useMemo(() => {
+    const m = new Map<string, DimTreatment>();
+    for (const d of summary.differing) {
+      const ch = channelByDim.get(d.dim.key);
+      m.set(d.dim.key, ch === undefined ? "avg" : ch === "dash" ? "shape" : ch);
+    }
+    return m;
+  }, [summary, channelByDim]);
+  const legendOverrides = useMemo(() => {
+    const o: Record<string, DimTreatment> = {};
+    for (const k of activeSplits) o[k] = treatments.get(k) ?? "color";
+    return o;
+  }, [activeSplits, treatments]);
 
   // value -> ordinal per channel dim (values are pre-sorted in DimValues).
   const valueIndex = (d: DimValues | undefined) => {
@@ -316,8 +331,10 @@ export function ChartBody({
     const si = splitDims.indexOf(shapeDim!);
     const zi = splitDims.indexOf(sizeDim!);
     return points.map((gp) => {
-      const color = colorDim ? PALETTE[(colorIdx.get(gp.dims[ci]) ?? 0) % PALETTE.length] : SINGLE_COLOR;
-      const shape = shapeDim ? (shapeIdx.get(gp.dims[si]) ?? 0) : 0;
+      const cv = gp.dims[ci];
+      const sv = gp.dims[si];
+      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      const shape = shapeDim ? shapeForValue(shapeDim.dim.key, sv, shapeIdx.get(sv) ?? 0, valueStyles) : 0;
       const r = sizeDim
         ? 2.5 + Math.min(5.5, (sizeIdx.get(gp.dims[zi]) ?? 0) * 1.4)
         : gp.n > 1 ? Math.min(10, 3 + Math.sqrt(gp.n)) : 3;
@@ -345,7 +362,7 @@ export function ChartBody({
         label,
       };
     });
-  }, [points, splitDims, colorDim, shapeDim, sizeDim, colorIdx, shapeIdx, sizeIdx, rowByPath, index, x, y, logX, logY, binned, jitter]);
+  }, [points, splitDims, colorDim, shapeDim, sizeDim, colorIdx, shapeIdx, sizeIdx, valueStyles, rowByPath, index, x, y, logX, logY, binned, jitter]);
 
   // Scales over the TRANSFORMED values.
   const scale = useMemo(() => {
@@ -416,20 +433,25 @@ export function ChartBody({
   }, [stats, pairs.length, points.length, averaging, binned, droppedLog, setChartReadout]);
   useEffect(() => () => setChartReadout(null), [setChartReadout]);
 
-  // ---- dimension treatment setter (channels stay unique) ---------------------
+  // ---- dimension treatment setter — edits v2 splits/channels ----------------
+  // "avg"/null un-splits (drop from splits + channels); color/shape/size adds
+  // the dim to splits with that explicit channel, freeing the channel from any
+  // other split so channels stay unique.
   const setDim = (key: string, t: DimTreatment | null) => {
-    const next: Record<string, DimTreatment> = { ...dimOverrides };
-    if (t === null) {
-      delete next[key];
-    } else {
-      if (t !== "avg") {
-        for (const k of Object.keys(next)) {
-          if (next[k] === t && k !== key) delete next[k];
-        }
-      }
-      next[key] = t;
+    const curSplits = config.splits ?? [];
+    const curChannels = config.channels ?? {};
+    if (t === null || t === "avg") {
+      const nextChannels = { ...curChannels };
+      delete nextChannels[key];
+      setChart({ splits: curSplits.filter((k) => k !== key), channels: nextChannels });
+      return;
     }
-    setChart({ dims: next });
+    const nextSplits = curSplits.includes(key) ? [...curSplits] : [...curSplits, key];
+    const nextChannels: Record<string, Channel> = { ...curChannels, [key]: t };
+    for (const k of Object.keys(nextChannels)) {
+      if (k !== key && nextChannels[k] === t) delete nextChannels[k];
+    }
+    setChart({ splits: nextSplits, channels: nextChannels });
   };
 
   // ---- legend filtering — the ORDINARY filter mechanism, never chart state
@@ -840,7 +862,7 @@ export function ChartBody({
       <LegendPanel
         summary={summary}
         treatments={treatments}
-        overrides={dimOverrides}
+        overrides={legendOverrides}
         setDim={setDim}
         dimOptions={dimOptions}
         dimSelection={dimSelection}

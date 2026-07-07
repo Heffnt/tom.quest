@@ -439,33 +439,184 @@ export const EMPTY_FILTER: FilterState = {
 };
 
 // ---------------------------------------------------------------------------
-// Chart config (store-owned so the table's per-header "plot on X/Y" and the
-// share-URL encoder can reach it; ChartBody renders from it)
+// Chart config, v2 (store-owned so the table's per-header "plot on X/Y" and the
+// share-URL encoder can reach it; the Plot view renders from it).
+//
+// The user's per-dimension question is split / averaged / filtered — NOT "which
+// visual slot". `splits` is the ORDERED list of dimensions the user chose to
+// separate; everything differing but not in `splits` is averaged (with visible
+// spread). Styling is auto-assigned from split order but overridable at every
+// layer (channel reassignment, split reorder, per-value styles).
 // ---------------------------------------------------------------------------
 
-/** How the chart treats one DIFFERING dimension: split onto a visual channel,
- * or averaged over. Dims without an override are auto-assigned (biggest split
- * first, channels in color→shape→size order; leftovers averaged). */
-export type DimTreatment = "color" | "shape" | "size" | "avg";
+/** A visual encoding channel a split dimension can drive. `dash` (line-style)
+ * is meaningful only for line/trajectory (epoch-x) rendering. */
+export type Channel = "color" | "shape" | "size" | "dash";
+
+/** Explicit per-value style override (a legend swatch edit). Size is never
+ * per-value overridable (it reads ordinally). */
+export interface ValueStyle {
+  color?: string; // custom hex or palette entry
+  shape?: number; // glyph index
+  dash?: number;  // dash-pattern index
+}
 
 export interface ChartConfig extends Record<string, unknown> {
-  x: string; // metric_schema name
+  v: 2;
+  x: string; // metric_schema name, or the sentinel "epoch" (training progress)
   y: string; // metric_schema name
-  /** Per-dimension treatment OVERRIDES (dimension key → treatment); absent = auto. */
-  dims: Record<string, DimTreatment>;
+  /** ORDERED dimension keys the user chose to split; [] = everything averaged. */
+  splits: string[];
+  /** Per-split-dim channel OVERRIDE; absent = auto by split order. */
+  channels: Record<string, Channel>;
+  /** dimKey → raw value → explicit style override. */
+  valueStyles: Record<string, Record<string, ValueStyle>>;
+  band: boolean;   // ±SD band / whiskers
+  ghosts: boolean; // faint underlying runs
   logX: boolean;
   logY: boolean;
-  trend: boolean; // OLS line + r/ρ readout
+  trend: boolean;  // OLS line + r/ρ readout
+  /** VIEW WINDOW only (zoom) — never filters the data. */
+  xDomain: [number, number] | null;
+  yDomain: [number, number] | null;
+  /** Group Plot's extra facet dimension (null on the Plot tab). */
+  facetDim: string | null;
+  /** Group Plot panel size (px), user-adjustable. */
+  panelMin: number;
 }
 
 export const DEFAULT_CHART: ChartConfig = {
+  v: 2,
   x: "avg_sensitivity",
   y: "plantedness",
-  dims: {},
+  splits: [],
+  channels: {},
+  valueStyles: {},
+  band: true,
+  ghosts: true,
   logX: false,
   logY: false,
   trend: false,
+  xDomain: null,
+  yDomain: null,
+  facetDim: null,
+  panelMin: 280,
 };
+
+// -- v1 (pre-2026-07 chart config) — retained ONLY as migration input --------
+
+/** v1 per-dimension treatment (biggest-split-first auto assignment). */
+export type DimTreatment = "color" | "shape" | "size" | "avg";
+
+export interface ChartConfigV1 {
+  x: string;
+  y: string;
+  dims: Record<string, DimTreatment>;
+  logX: boolean;
+  logY: boolean;
+  trend: boolean;
+}
+
+function isChannel(v: unknown): v is Channel {
+  return v === "color" || v === "shape" || v === "size" || v === "dash";
+}
+
+function sanitizeValueStyles(raw: unknown): ChartConfig["valueStyles"] {
+  const out: ChartConfig["valueStyles"] = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [dim, vals] of Object.entries(raw as Record<string, unknown>)) {
+    if (!vals || typeof vals !== "object") continue;
+    const inner: Record<string, ValueStyle> = {};
+    for (const [val, style] of Object.entries(vals as Record<string, unknown>)) {
+      if (!style || typeof style !== "object") continue;
+      const s = style as Record<string, unknown>;
+      const vs: ValueStyle = {};
+      if (typeof s.color === "string") vs.color = s.color;
+      if (typeof s.shape === "number") vs.shape = s.shape;
+      if (typeof s.dash === "number") vs.dash = s.dash;
+      if (Object.keys(vs).length) inner[val] = vs;
+    }
+    if (Object.keys(inner).length) out[dim] = inner;
+  }
+  return out;
+}
+
+function sanitizeDomain(v: unknown): [number, number] | null {
+  return Array.isArray(v) && v.length === 2 &&
+    typeof v[0] === "number" && Number.isFinite(v[0]) &&
+    typeof v[1] === "number" && Number.isFinite(v[1])
+    ? [v[0], v[1]]
+    : null;
+}
+
+/** Coerce a (possibly partial/hostile) v2 blob to a valid ChartConfig: unknown
+ *  keys ignored, missing keys defaulted, wrong-typed fields dropped. Shared by
+ *  share-URL decode and preset hydration — must never throw. */
+function sanitizeChartV2(raw: Record<string, unknown>): ChartConfig {
+  const d = DEFAULT_CHART;
+  const str = (v: unknown, f: string) => (typeof v === "string" ? v : f);
+  const bool = (v: unknown, f: boolean) => (typeof v === "boolean" ? v : f);
+  const num = (v: unknown, f: number) => (typeof v === "number" && Number.isFinite(v) ? v : f);
+  const channels: Record<string, Channel> = {};
+  if (raw.channels && typeof raw.channels === "object") {
+    for (const [k, v] of Object.entries(raw.channels as Record<string, unknown>)) {
+      if (isChannel(v)) channels[k] = v;
+    }
+  }
+  return {
+    v: 2,
+    x: str(raw.x, d.x),
+    y: str(raw.y, d.y),
+    splits: Array.isArray(raw.splits) ? raw.splits.filter((s): s is string => typeof s === "string") : [],
+    channels,
+    valueStyles: sanitizeValueStyles(raw.valueStyles),
+    band: bool(raw.band, d.band),
+    ghosts: bool(raw.ghosts, d.ghosts),
+    logX: bool(raw.logX, d.logX),
+    logY: bool(raw.logY, d.logY),
+    trend: bool(raw.trend, d.trend),
+    xDomain: sanitizeDomain(raw.xDomain),
+    yDomain: sanitizeDomain(raw.yDomain),
+    facetDim: typeof raw.facetDim === "string" ? raw.facetDim : null,
+    panelMin: num(raw.panelMin, d.panelMin),
+  };
+}
+
+/**
+ * Migrate any persisted/shared/preset chart blob to a valid v2 ChartConfig.
+ * Total (never throws): garbage → defaults; a v1 blob's color/shape/size dims
+ * become ORDERED `splits` + `channels` (avg entries dropped — averaged is now
+ * the default); a v2 blob is sanitized.
+ */
+export function migrateChart(input: unknown): ChartConfig {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { ...DEFAULT_CHART };
+  const raw = input as Record<string, unknown>;
+  if (raw.v === 2) return sanitizeChartV2(raw);
+  // v1 → v2
+  const out: ChartConfig = { ...DEFAULT_CHART };
+  if (typeof raw.x === "string") out.x = raw.x;
+  if (typeof raw.y === "string") out.y = raw.y;
+  if (typeof raw.logX === "boolean") out.logX = raw.logX;
+  if (typeof raw.logY === "boolean") out.logY = raw.logY;
+  if (typeof raw.trend === "boolean") out.trend = raw.trend;
+  if (raw.dims && typeof raw.dims === "object") {
+    const byChannel = new Map<Channel, string>();
+    for (const [key, t] of Object.entries(raw.dims as Record<string, unknown>)) {
+      if ((t === "color" || t === "shape" || t === "size") && !byChannel.has(t)) {
+        byChannel.set(t, key);
+      }
+    }
+    const splits: string[] = [];
+    const channels: Record<string, Channel> = {};
+    for (const ch of ["color", "shape", "size"] as const) {
+      const key = byChannel.get(ch);
+      if (key) { splits.push(key); channels[key] = ch; }
+    }
+    out.splits = splits;
+    out.channels = channels;
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Anatomy config (store-owned for the same reason as ChartConfig: the

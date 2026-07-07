@@ -5,20 +5,14 @@ import { describe, it, expect } from "vitest";
 import sample from "../data/sample-snapshot.json";
 import { asBundle } from "../data/normalize";
 import {
-  assignTreatments,
+  resolveChannels,
   CHANNEL_CAPS,
   summarizeDimensions,
-  type DimValues,
 } from "./dimensions";
 import type { RunRow } from "./types";
 
 const bundle = asBundle(structuredClone(sample));
 const rows: RunRow[] = bundle.rows;
-
-const dv = (key: string, n: number): DimValues => ({
-  dim: { key, label: key, raw: () => null },
-  values: Array.from({ length: n }, (_, i) => ({ value: String(i), count: 1 })),
-});
 
 describe("summarizeDimensions", () => {
   it("partitions into shared (one value) and differing (sorted biggest first)", () => {
@@ -44,34 +38,37 @@ describe("summarizeDimensions", () => {
   });
 });
 
-describe("assignTreatments", () => {
-  it("auto-assigns channels biggest-split-first, remainder averaged", () => {
-    const differing = [dv("model", 6), dv("arity", 4), dv("seed", 3), dv("trigger", 2)];
-    const t = assignTreatments(differing, {});
-    expect(t.get("model")).toBe("color");
-    expect(t.get("arity")).toBe("shape");
-    expect(t.get("seed")).toBe("size");
-    expect(t.get("trigger")).toBe("avg");
+describe("resolveChannels", () => {
+  const counts = (m: Record<string, number>) => (k: string) => m[k] ?? 0;
+
+  it("auto-assigns splits in order color → shape → size → dash", () => {
+    const c = resolveChannels(
+      ["model", "arity", "seed", "trigger"], {},
+      counts({ model: 6, arity: 4, seed: 3, trigger: 2 }),
+    );
+    expect(c.get("model")).toBe("color");
+    expect(c.get("arity")).toBe("shape");
+    expect(c.get("seed")).toBe("size");
+    expect(c.get("trigger")).toBe("dash");
   });
 
-  it("skips dims over a channel's cap; overrides may exceed caps", () => {
-    const big = dv("function", CHANNEL_CAPS.color + 1); // too many for any channel
-    const small = dv("model", 3);
-    const auto = assignTreatments([big, small], {});
-    expect(auto.get("function")).toBe("avg");
-    expect(auto.get("model")).toBe("color");
-    const forced = assignTreatments([big, small], { function: "color" });
-    expect(forced.get("function")).toBe("color");
-    expect(forced.get("model")).toBe("shape"); // color now taken
+  it("omits non-split (averaged) dims from the map", () => {
+    const c = resolveChannels(["a"], {}, counts({ a: 3, b: 5 }));
+    expect(c.get("a")).toBe("color");
+    expect(c.has("b")).toBe(false);
   });
 
-  it("respects avg overrides and keeps channels unique", () => {
-    const differing = [dv("a", 5), dv("b", 4), dv("c", 3)];
-    const t = assignTreatments(differing, { a: "avg", c: "color" });
-    expect(t.get("a")).toBe("avg");
-    expect(t.get("c")).toBe("color");
-    expect(t.get("b")).toBe("shape");
-    const values = [...t.values()].filter((v) => v !== "avg");
-    expect(new Set(values).size).toBe(values.length);
+  it("honors explicit channel overrides and keeps channels unique", () => {
+    const c = resolveChannels(["a", "b"], { a: "shape" }, counts({ a: 3, b: 3 }));
+    expect(c.get("a")).toBe("shape");
+    expect(c.get("b")).toBe("color"); // next free auto channel
+    expect(new Set([...c.values()]).size).toBe(2);
+  });
+
+  it("always assigns a channel even when no cap fits (cycles past caps)", () => {
+    // Exceeds shape/size/dash caps but fits color.
+    expect(resolveChannels(["big"], {}, counts({ big: CHANNEL_CAPS.shape + 1 })).get("big")).toBe("color");
+    // Fits no cap at all → still gets the first free channel.
+    expect(resolveChannels(["huge"], {}, counts({ huge: CHANNEL_CAPS.color + 99 })).get("huge")).toBe("color");
   });
 });

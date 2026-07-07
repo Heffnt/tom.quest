@@ -25,7 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Bundle, RunRow, FilterState, SortKey, AnatomyConfig, ChartConfig, SortDir,
 } from "../lib/types";
-import { DEFAULT_ANATOMY, DEFAULT_CHART, EMPTY_FILTER } from "../lib/types";
+import { DEFAULT_ANATOMY, DEFAULT_CHART, EMPTY_FILTER, migrateChart } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import {
   applyFilters, applySorts, metricRange, normalizeToRange, numericValue,
@@ -153,7 +153,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
       sorts: src.sorts ?? [],
       visibleCols: src.visibleCols?.length ? src.visibleCols : visibleCols,
       columnWidths: shared ? {} : (persisted.columnWidths ?? {}),
-      chart: { ...DEFAULT_CHART, ...(src.chart ?? {}) },
+      chart: migrateChart(src.chart),
       // Value-TYPE sanitation, not a spread: a crafted ?v= ({"focus": null})
       // or a stale persisted blob must not override a field with the wrong
       // type — buildScale/defaultKbLayer read focus on first render and a

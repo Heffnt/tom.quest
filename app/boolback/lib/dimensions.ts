@@ -17,9 +17,11 @@
 // averaged. Users override per dimension (chart config `dims`); an override
 // may exceed the caps (palette/glyphs cycle).
 
-import type { RunRow, FacetKey, DimTreatment } from "./types";
+import type { RunRow, FacetKey, Channel } from "./types";
 import { facetValue, FACET_LABELS } from "./select";
 import { fnText, shortModel } from "./format";
+
+export type { Channel };
 
 export interface DimensionDef {
   key: string;
@@ -112,46 +114,49 @@ export function summarizeDimensions(rows: RunRow[]): DimSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Channel assignment
+// Channel assignment (v2: user-chosen `splits` → visual channels)
 // ---------------------------------------------------------------------------
 
-export type Channel = "color" | "shape" | "size";
-export const CHANNELS: Channel[] = ["color", "shape", "size"];
+/** Auto channel order for splits without an explicit channel. */
+export const CHANNELS: Channel[] = ["color", "shape", "size", "dash"];
 
-/** Auto-assignment legibility caps (a manual override may exceed them). */
-export const CHANNEL_CAPS: Record<Channel, number> = { color: 12, shape: 6, size: 5 };
+/** Legibility caps: auto-assignment prefers a channel whose cap fits the value
+ *  count, but a split ALWAYS gets some channel (glyphs/palette cycle past caps).
+ *  Explicit user assignment may exceed a cap freely. */
+export const CHANNEL_CAPS: Record<Channel, number> = { color: 12, shape: 6, size: 5, dash: 4 };
 
 /**
- * Resolve every differing dimension to a treatment. `overrides` come from
- * chart config; dims without one are auto-assigned biggest-split-first onto
- * the channels still free (respecting the caps), the rest averaged. A channel
- * claimed by two overrides goes to the first differing dim (the setter is
- * expected to keep them unique).
+ * Resolve each split dimension (in `splits` order) to a visual channel.
+ * Explicit `channels[key]` wins when its channel is still free; otherwise the
+ * next free auto channel is taken, preferring one whose cap fits
+ * `valueCount(key)` but always assigning something. Dimensions absent from
+ * `splits` are averaged (not present in the returned map).
  */
-export function assignTreatments(
-  differing: DimValues[],
-  overrides: Record<string, DimTreatment>,
-): Map<string, DimTreatment> {
-  const out = new Map<string, DimTreatment>();
+export function resolveChannels(
+  splits: string[],
+  channels: Record<string, Channel>,
+  valueCount: (key: string) => number,
+): Map<string, Channel> {
+  const out = new Map<string, Channel>();
   const free = new Set<Channel>(CHANNELS);
-
-  for (const { dim } of differing) {
-    const o = overrides[dim.key];
-    if (o === "avg") out.set(dim.key, "avg");
-    else if (o && free.has(o)) {
-      out.set(dim.key, o);
-      free.delete(o);
+  // Pass 1: honor explicit channel overrides that are still free.
+  for (const key of splits) {
+    const c = channels[key];
+    if (c && free.has(c)) {
+      out.set(key, c);
+      free.delete(c);
     }
   }
-  for (const { dim, values } of differing) {
-    if (out.has(dim.key)) continue;
-    const fit = CHANNELS.find((c) => free.has(c) && values.length <= CHANNEL_CAPS[c]);
-    if (fit) {
-      out.set(dim.key, fit);
-      free.delete(fit);
-    } else {
-      out.set(dim.key, "avg");
-    }
+  // Pass 2: auto-assign the remaining splits in order.
+  for (const key of splits) {
+    if (out.has(key)) continue;
+    const n = valueCount(key);
+    const chosen =
+      CHANNELS.find((c) => free.has(c) && n <= CHANNEL_CAPS[c]) ??
+      CHANNELS.find((c) => free.has(c)) ??
+      "color";
+    out.set(key, chosen);
+    free.delete(chosen);
   }
   return out;
 }

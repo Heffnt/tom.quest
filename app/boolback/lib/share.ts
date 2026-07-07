@@ -7,6 +7,7 @@
 // load (table-pane hydrates from the shared view instead of the saved one).
 
 import type { AnatomyConfig, ChartConfig, FilterState, SortKey } from "./types";
+import { migrateChart } from "./types";
 import type { CenterView } from "../components/table-pane";
 
 export interface SharedView {
@@ -38,12 +39,15 @@ export function encodeSharedView(view: SharedView): string {
   return b64urlEncode(JSON.stringify(view));
 }
 
-/** null on any malformed input — a bad link degrades to the default view. */
+/** null on any malformed input — a bad link degrades to the default view.
+ *  A present `chart` is migrated through the v1→v2 ladder so old links load. */
 export function decodeSharedView(param: string): SharedView | null {
   try {
     const parsed: unknown = JSON.parse(b64urlDecode(param));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as SharedView;
+    const view = { ...(parsed as SharedView) };
+    if ("chart" in view && view.chart !== undefined) view.chart = migrateChart(view.chart);
+    return view;
   } catch {
     return null;
   }
