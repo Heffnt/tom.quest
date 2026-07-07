@@ -1,6 +1,6 @@
 "use client";
 
-import { source, useTransformer } from "../state";
+import { getSource, useTransformer } from "../state";
 import { heat } from "../lib/color";
 
 // The pinned source of truth: embed → residual wire with one tap per block →
@@ -8,8 +8,8 @@ import { heat } from "../lib/color";
 // the stream for the selected position (top square attention, bottom MLP).
 // Ghost cards behind the spine are the past positions receding on the z axis.
 export default function Spine() {
-  const { trace, selected, open, toggle, select } = useTransformer();
-  const cfg = source.model;
+  const { trace, selected, open, toggle, select, sourceStatus } = useTransformer();
+  const cfg = getSource().model;
   const step = trace?.steps[selected];
   const tok = trace?.tokens[selected];
   const top1 = step?.logits[0];
@@ -82,7 +82,8 @@ export default function Spine() {
               <span className="text-text-faint">run a prompt to light the spine up</span>
             )}
             <span className="ml-auto text-[10px] text-text-faint">
-              {cfg.displayName} · {cfg.nLayers}L · d{cfg.dModel} · dummy data
+              {cfg.displayName} · {cfg.nLayers}L · d{cfg.dModel} ·{" "}
+              {sourceStatus === "live" ? <span className="text-success">live · turing</span> : "dummy data"}
             </span>
           </div>
 

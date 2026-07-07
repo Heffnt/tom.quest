@@ -3,11 +3,10 @@ import type { ModelConfig } from "./model";
 // The activation trace of one generation run. The trace is the source of truth
 // for every activation visual: "time travel" is just indexing into it.
 //
-// Kept deliberately compact — O(nLayers) scalars + O(nHeads) norms per step.
-// Dense per-step objects (attention patterns over past positions, MLP hidden
-// activations) are exposed as lazy lookups on the DataSource instead, so a
-// real GPU backend can stream the compact trace and serve the dense parts on
-// demand.
+// The compact part (per-layer scalars + per-head norms) is always present.
+// Dense per-step objects (attention patterns, MLP activations) either come
+// precomputed on the step (`dense` — the remote backend ships them) or are
+// derived lazily by the source (the dummy backend hashes them on demand).
 
 export type LayerStep = {
   /** ‖residual‖ entering the block. */
@@ -22,10 +21,24 @@ export type LayerStep = {
 
 export type TopLogit = { token: string; p: number };
 
+export type NeuronAct = { idx: number; act: number };
+
+export type Histogram = { edges: number[]; counts: number[] };
+
+export type StepDense = {
+  /** Attention patterns [layer][head][0..t]. */
+  attn?: number[][][];
+  /** Top hidden activations per layer [layer][k]. */
+  mlpTop?: NeuronAct[][];
+  /** Hidden-activation histogram per layer [layer]. */
+  mlpHist?: Histogram[];
+};
+
 export type StepTrace = {
   layers: LayerStep[];
   /** Top next-token predictions at this position. */
   logits: TopLogit[];
+  dense?: StepDense;
 };
 
 export type Trace = {
@@ -42,30 +55,43 @@ export type GenerationHandle = {
   done: Promise<void>;
 };
 
-export type NeuronAct = { idx: number; act: number };
+export type WeightWindowReq = {
+  row0: number;
+  col0: number;
+  /** Sample counts (not spans): the window covers rows*stride source rows. */
+  rows: number;
+  cols: number;
+  stride: number;
+};
 
-// The seam a real backend implements. The dummy source computes everything
-// deterministically from hashes; a Turing/local-GPU source would run the model
-// with hooks, stream StepTraces during generation, and serve weight tiles by
-// slicing safetensors (mmap — no GPU needed for the weight side).
+export type WeightWindow = WeightWindowReq & {
+  /** rows × cols row-major samples. */
+  data: Float32Array;
+};
+
+export type TensorStats = { mean: number; std: number; absMax: number };
+
+// The seam a backend implements. Dummy computes everything deterministically
+// from hashes; the Turing source talks to turing-api/transformer_server.py
+// running next to a real model on a GPU node.
 export interface DataSource {
+  kind: "dummy" | "turing";
   model: ModelConfig;
-  tokenize(prompt: string): string[];
-  /** Start autoregressive generation; onStep fires once per new position. */
+  /** Start autoregressive generation; callbacks fire as trace data lands. */
   generate(
     prompt: string,
     maxNew: number,
     onStart: (trace: Trace) => void,
     onStep: (trace: Trace) => void,
   ): GenerationHandle;
-  /** Attention weights of head (layer, head) at position t over 0..t. */
-  attnPattern(trace: Trace, layer: number, head: number, t: number): number[];
-  /** Top-k MLP hidden activations at (layer, t). */
-  mlpTopNeurons(trace: Trace, layer: number, t: number, k: number): NeuronAct[];
-  /** Histogram counts of the dMlp hidden activations at (layer, t). */
-  mlpActHistogram(trace: Trace, layer: number, t: number, bins: number): { edges: number[]; counts: number[] };
-  /** Point sample of a weight tensor. Dummy is sync; a real source tiles this. */
-  weightAt(tensor: string, row: number, col: number): number;
-  /** Summary stats used in the weights stratum header. */
-  weightStats(tensor: string): { mean: number; std: number; absMax: number };
+  /** Attention weights of (layer, head) at position t over 0..t; null if unavailable. */
+  attnPattern(trace: Trace, layer: number, head: number, t: number): number[] | null;
+  /** Top-k MLP hidden activations at (layer, t); null if unavailable. */
+  mlpTopNeurons(trace: Trace, layer: number, t: number, k: number): NeuronAct[] | null;
+  /** Histogram of the dMlp hidden activations at (layer, t); null if unavailable. */
+  mlpActHistogram(trace: Trace, layer: number, t: number, bins: number): Histogram | null;
+  /** Strided window of a weight tensor. */
+  fetchWeights(tensor: string, req: WeightWindowReq): Promise<WeightWindow>;
+  /** Summary stats for the color scale. */
+  fetchWeightStats(tensor: string): Promise<TensorStats>;
 }

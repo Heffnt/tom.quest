@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { source, useTransformer, type StratumPath } from "../state";
+import { getSource, useTransformer, type StratumPath } from "../state";
 import { attnTensors, embedTensor, mlpTensors, unembedTensor, type TensorInfo } from "../lib/model";
 import BlockStratum from "./block-stratum";
 import HeadsStratum from "./heads-stratum";
@@ -58,7 +58,7 @@ const ATTN_W: Record<string, number> = { wq: 0, wk: 1, wv: 2, wo: 3 };
 const MLP_W: Record<string, number> = { gate: 0, up: 1, down: 2 };
 
 function tensorFor(path: StratumPath): { tensor: TensorInfo; crumbs: string[] } | null {
-  const cfg = source.model;
+  const cfg = getSource().model;
   if (path === "embed") return { tensor: embedTensor(cfg), crumbs: ["embedding", "W_E"] };
   if (path === "unembed") return { tensor: unembedTensor(cfg), crumbs: ["unembedding", "W_U"] };
   const seg = path.split("/");
@@ -92,6 +92,18 @@ function renderStratum(path: StratumPath): ReactNode {
   return null;
 }
 
+// Abstraction rank: strata at the same rank sit side by side in one row;
+// deeper ranks stack below (further down = further zoomed in). Weight
+// matrices are rank 4 wherever they hang in the path — embed and W_Q are the
+// same kind of object.
+function rankOf(path: StratumPath): number {
+  if (path === "embed" || path === "unembed") return 4;
+  const seg = path.split("/");
+  if (seg.length === 1) return 1;
+  if (seg.length === 2) return 2;
+  return seg[2].startsWith("h") ? 3 : 4;
+}
+
 export default function StrataStack() {
   const open = useTransformer((s) => s.open);
   if (open.length === 0) {
@@ -102,5 +114,24 @@ export default function StrataStack() {
       </p>
     );
   }
-  return <div className="mt-2 flex flex-col gap-2">{open.map((p) => renderStratum(p))}</div>;
+  const rows = new Map<number, StratumPath[]>();
+  for (const p of open) {
+    const r = rankOf(p);
+    rows.set(r, [...(rows.get(r) ?? []), p]);
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      {[...rows.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([rank, paths]) => (
+          <div key={rank} className="flex flex-wrap gap-2">
+            {paths.map((p) => (
+              <div key={p} className="min-w-0 flex-[1_1_480px]">
+                {renderStratum(p)}
+              </div>
+            ))}
+          </div>
+        ))}
+    </div>
+  );
 }

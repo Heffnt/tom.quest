@@ -1,6 +1,6 @@
 "use client";
 
-import { source, useTransformer } from "../state";
+import { getSource, useTransformer } from "../state";
 import { heat } from "../lib/color";
 import { Band } from "./strata";
 
@@ -9,7 +9,7 @@ import { Band } from "./strata";
 // position. Click a head to open its attention-into-the-past stratum.
 export default function HeadsStratum({ layer }: { layer: number }) {
   const { trace, selected, open, toggle } = useTransformer();
-  const cfg = source.model;
+  const cfg = getSource().model;
   const norms = trace?.steps[selected]?.layers[layer]?.headNorms;
   const maxN = norms ? Math.max(...norms, 1e-9) : 1;
   const perGroup = cfg.nHeads / cfg.nKvHeads;

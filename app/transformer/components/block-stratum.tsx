@@ -1,6 +1,6 @@
 "use client";
 
-import { source, useTransformer } from "../state";
+import { getSource, useTransformer } from "../state";
 import { Band } from "./strata";
 
 // One block drawn as what it is: two additive taps on the residual stream,
@@ -56,7 +56,7 @@ export default function BlockStratum({ layer }: { layer: number }) {
       crumbs={[`block ${layer}`]}
       meta={
         <span>
-          d{source.model.dModel} · {source.model.nHeads} heads · mlp {source.model.dMlp}
+          d{getSource().model.dModel} · {getSource().model.nHeads} heads · mlp {getSource().model.dMlp}
         </span>
       }
     >

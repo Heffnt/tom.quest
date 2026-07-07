@@ -32,7 +32,7 @@ export default function TransformerClient() {
   }, [select, selected]);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pb-24 pt-2">
+    <div className="w-full px-4 pb-24 pt-2">
       <PromptBar />
       <Spine />
       <StrataStack />

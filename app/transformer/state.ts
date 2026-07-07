@@ -1,10 +1,28 @@
 import { create } from "zustand";
 import { createDummySource } from "./lib/dummy-source";
+import { createTuringSource } from "./lib/turing-source";
 import type { DataSource, GenerationHandle, Trace } from "./lib/trace";
 
-// UI-only state (zustand per repo convention). The data source is a module
-// singleton — swap createDummySource() for a Turing/local-GPU source later.
-export const source: DataSource = createDummySource();
+// UI-only state (zustand per repo convention). The active DataSource lives
+// outside the store (it holds functions/caches); `sourceRev` bumps whenever it
+// is swapped so components re-read it.
+let activeSource: DataSource = createDummySource();
+export function getSource(): DataSource {
+  return activeSource;
+}
+
+const LS_KEY = "transformer.remote";
+
+function loadRemoteConfig(): { url: string; token: string } {
+  if (typeof window === "undefined") return { url: "", token: "" };
+  try {
+    const raw = window.localStorage.getItem(LS_KEY);
+    if (raw) return { url: "", token: "", ...JSON.parse(raw) };
+  } catch {
+    // ignore corrupt localStorage
+  }
+  return { url: "", token: "" };
+}
 
 /**
  * A stratum is one open horizontal band. Path grammar (depth = drill level):
@@ -40,6 +58,8 @@ function comparePaths(a: StratumPath, b: StratumPath, nLayers: number): number {
   return a.localeCompare(b);
 }
 
+export type SourceStatus = "dummy" | "connecting" | "live" | "error";
+
 type TransformerState = {
   prompt: string;
   trace: Trace | null;
@@ -49,7 +69,16 @@ type TransformerState = {
   /** While generating, keep the selection glued to the newest token. */
   follow: boolean;
   open: StratumPath[];
+  /** Bumped whenever the active DataSource is swapped. */
+  sourceRev: number;
+  sourceStatus: SourceStatus;
+  sourceError: string | null;
+  remoteUrl: string;
+  remoteToken: string;
   setPrompt: (p: string) => void;
+  setRemote: (url: string, token: string) => void;
+  connectTuring: () => Promise<void>;
+  useDummy: () => void;
   run: () => void;
   stop: () => void;
   select: (t: number) => void;
@@ -66,8 +95,59 @@ export const useTransformer = create<TransformerState>((set, get) => ({
   selected: 0,
   follow: true,
   open: [],
+  sourceRev: 0,
+  sourceStatus: "dummy",
+  sourceError: null,
+  remoteUrl: loadRemoteConfig().url,
+  remoteToken: loadRemoteConfig().token,
 
   setPrompt: (prompt) => set({ prompt }),
+
+  setRemote: (remoteUrl, remoteToken) => {
+    set({ remoteUrl, remoteToken });
+    try {
+      window.localStorage.setItem(LS_KEY, JSON.stringify({ url: remoteUrl, token: remoteToken }));
+    } catch {
+      // localStorage unavailable — connection config just won't persist
+    }
+  },
+
+  connectTuring: async () => {
+    const { remoteUrl, remoteToken, sourceRev } = get();
+    if (!remoteUrl) {
+      set({ sourceStatus: "error", sourceError: "enter the trace-server url" });
+      return;
+    }
+    set({ sourceStatus: "connecting", sourceError: null });
+    try {
+      activeSource = await createTuringSource(remoteUrl, remoteToken);
+      handle?.cancel();
+      set({
+        sourceStatus: "live",
+        sourceRev: sourceRev + 1,
+        trace: null,
+        generating: false,
+        selected: 0,
+        open: [],
+      });
+    } catch (e) {
+      set({ sourceStatus: "error", sourceError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  useDummy: () => {
+    handle?.cancel();
+    activeSource = createDummySource();
+    set({
+      sourceStatus: "dummy",
+      sourceError: null,
+      sourceRev: get().sourceRev + 1,
+      trace: null,
+      generating: false,
+      selected: 0,
+      open: [],
+    });
+  },
 
   run: () => {
     handle?.cancel();
@@ -76,9 +156,17 @@ export const useTransformer = create<TransformerState>((set, get) => ({
       const sel = get().follow ? trace.tokens.length - 1 : Math.min(get().selected, trace.tokens.length - 1);
       set({ trace: { ...trace, tokens: [...trace.tokens], steps: [...trace.steps] }, selected: sel });
     };
-    set({ generating: true, follow: true });
-    handle = source.generate(prompt, 12, publish, publish);
-    handle.done.then(() => set({ generating: false }));
+    set({ generating: true, follow: true, sourceError: null });
+    handle = activeSource.generate(prompt, 12, publish, publish);
+    handle.done
+      .then(() => set({ generating: false }))
+      .catch((e) => {
+        set({
+          generating: false,
+          sourceError: e instanceof Error ? e.message : String(e),
+          ...(get().sourceStatus === "live" ? { sourceStatus: "error" as const } : {}),
+        });
+      });
   },
 
   stop: () => {
@@ -95,7 +183,7 @@ export const useTransformer = create<TransformerState>((set, get) => ({
 
   toggle: (path) => {
     const { open } = get();
-    const n = source.model.nLayers;
+    const n = activeSource.model.nLayers;
     if (open.includes(path)) {
       set({ open: open.filter((p) => p !== path && !p.startsWith(path + "/")) });
     } else {

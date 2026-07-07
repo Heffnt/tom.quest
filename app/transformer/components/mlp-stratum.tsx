@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { source, useTransformer } from "../state";
+import { getSource, useTransformer } from "../state";
 import { Band } from "./strata";
 
 // The MLP at the selected position: distribution of the hidden activations
@@ -9,7 +9,7 @@ import { Band } from "./strata";
 export default function MlpStratum({ layer }: { layer: number }) {
   const { trace, selected, open, toggle } = useTransformer();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cfg = source.model;
+  const cfg = getSource().model;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -23,7 +23,9 @@ export default function MlpStratum({ layer }: { layer: number }) {
     if (!ctx) return;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
-    const { edges, counts } = source.mlpActHistogram(trace, layer, selected, 48);
+    const hist = getSource().mlpActHistogram(trace, layer, selected, 48);
+    if (!hist) return;
+    const { edges, counts } = hist;
     const maxC = Math.max(...counts, 1e-9);
     const bw = w / counts.length;
     for (let i = 0; i < counts.length; i++) {
@@ -37,7 +39,7 @@ export default function MlpStratum({ layer }: { layer: number }) {
     ctx.fillRect(zeroX, 0, 1, h);
   }, [trace, selected, layer]);
 
-  const topN = trace ? source.mlpTopNeurons(trace, layer, selected, 8) : [];
+  const topN = (trace && getSource().mlpTopNeurons(trace, layer, selected, 8)) || [];
   const maxAct = Math.max(...topN.map((n) => n.act), 1e-9);
 
   return (

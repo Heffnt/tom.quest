@@ -1,6 +1,6 @@
 "use client";
 
-import { source, useTransformer } from "../state";
+import { getSource, useTransformer } from "../state";
 import { kvGroupOf } from "../lib/model";
 import { Band } from "./strata";
 
@@ -10,7 +10,7 @@ import { Band } from "./strata";
 // step — and render as ghost slots. Clicking a bar time-travels there.
 export default function HeadStratum({ layer, head }: { layer: number; head: number }) {
   const { trace, selected, select } = useTransformer();
-  const attn = trace ? source.attnPattern(trace, layer, head, selected) : [];
+  const attn = (trace && getSource().attnPattern(trace, layer, head, selected)) || [];
   const tokens = trace?.tokens ?? [];
 
   const entropy = attn.reduce((s, p) => (p > 1e-9 ? s - p * Math.log2(p) : s), 0);
@@ -26,7 +26,7 @@ export default function HeadStratum({ layer, head }: { layer: number; head: numb
       crumbs={[`block ${layer}`, "attention", `head ${head}`]}
       meta={
         <span>
-          kv group {kvGroupOf(source.model, head)} · entropy {trace ? entropy.toFixed(2) : "–"} bits
+          kv group {kvGroupOf(getSource().model, head)} · entropy {trace ? entropy.toFixed(2) : "–"} bits
         </span>
       }
     >

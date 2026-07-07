@@ -1,6 +1,6 @@
 import { LLAMA_1B, type ModelConfig } from "./model";
 import { gauss, hashSeed, u01 } from "./prng";
-import type { DataSource, GenerationHandle, LayerStep, NeuronAct, StepTrace, Trace, TopLogit } from "./trace";
+import type { DataSource, GenerationHandle, LayerStep, NeuronAct, StepTrace, Trace, TopLogit, WeightWindowReq } from "./trace";
 
 // Deterministic dummy backend: statistically plausible shapes (attention sinks,
 // locality, depth-growing residual norms, heavy-tailed MLP activations,
@@ -87,9 +87,8 @@ export function createDummySource(cfg: ModelConfig = LLAMA_1B): DataSource {
   };
 
   return {
+    kind: "dummy",
     model: cfg,
-
-    tokenize: tokenizeText,
 
     generate(prompt, maxNew, onStart, onStep): GenerationHandle {
       const key = `run:${hashSeed(prompt)}`;
@@ -181,11 +180,20 @@ export function createDummySource(cfg: ModelConfig = LLAMA_1B): DataSource {
       return { edges, counts };
     },
 
-    weightAt,
+    fetchWeights(tensor: string, req: WeightWindowReq) {
+      const data = new Float32Array(req.rows * req.cols);
+      for (let i = 0; i < req.rows; i++) {
+        const r = req.row0 + i * req.stride;
+        for (let j = 0; j < req.cols; j++) {
+          data[i * req.cols + j] = weightAt(tensor, r, req.col0 + j * req.stride);
+        }
+      }
+      return Promise.resolve({ ...req, data });
+    },
 
-    weightStats(tensor) {
+    fetchWeightStats(tensor: string) {
       const cached = weightStatsCache.get(tensor);
-      if (cached) return cached;
+      if (cached) return Promise.resolve(cached);
       let sum = 0, sum2 = 0, absMax = 0;
       const n = 4096;
       for (let i = 0; i < n; i++) {
@@ -198,7 +206,7 @@ export function createDummySource(cfg: ModelConfig = LLAMA_1B): DataSource {
       const std = Math.sqrt(Math.max(0, sum2 / n - mean * mean));
       const stats = { mean, std, absMax };
       weightStatsCache.set(tensor, stats);
-      return stats;
+      return Promise.resolve(stats);
     },
   };
 }
