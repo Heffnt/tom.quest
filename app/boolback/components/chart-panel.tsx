@@ -41,23 +41,28 @@
 // Pure SVG — no chart library. Descriptive stats only (lib/stats.ts): the
 // boundary rule says inferential statistics come from CMT, never the browser.
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, Channel, DimTreatment, RunRow } from "../lib/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Bundle, Channel, DimTreatment, RunRow, ValueStyle } from "../lib/types";
 import { DEFAULT_CHART } from "../lib/types";
+import { DimensionBoard } from "./dimension-board";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import {
-  DIMENSIONS, resolveChannels, summarizeDimensions,
+  resolveChannels, summarizeDimensions,
   type DimensionDef, type DimValues,
 } from "../lib/dimensions";
-import { groupRuns, type GroupedPoint, type RunPoint } from "../lib/aggregate";
+import {
+  groupRuns, groupKeyFor, makeXBucketer, splitWorthiness,
+  type GroupedPoint, type RunPoint, type Ghost, type WorthinessRun,
+} from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
-import { PALETTE, SINGLE_COLOR, SHAPE_COUNT, colorForValue, shapeForValue } from "../lib/styling";
+import { PALETTE, SINGLE_COLOR, colorForValue, shapeForValue } from "../lib/styling";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
+import { shapeNode } from "./glyph";
 
 /** What the shared Export menu needs from the mounted chart. */
 export interface ChartExportHandle {
@@ -83,37 +88,6 @@ export function effectiveAxis(
 const FALLBACK = { w: 820, h: 430 };
 // PAD.l leaves room for the rotated y-axis picker + tick labels side by side.
 const PAD = { l: 72, r: 16, t: 14, b: 44 };
-const MIN_DRAG = 8; // px before a drag counts as a box-select
-
-function shapeNode(
-  idx: number, cx: number, cy: number, r: number,
-  props: { fill: string; fillOpacity: number; stroke: string; strokeOpacity: number },
-): React.ReactElement {
-  const k = idx % SHAPE_COUNT;
-  if (k === 1) {
-    return <rect x={cx - r} y={cy - r} width={2 * r} height={2 * r} {...props} pointerEvents="none" />;
-  }
-  if (k === 2) {
-    return <path d={`M${cx},${cy - r * 1.2} L${cx + r * 1.1},${cy + r * 0.9} L${cx - r * 1.1},${cy + r * 0.9} Z`} {...props} pointerEvents="none" />;
-  }
-  if (k === 3) {
-    return <path d={`M${cx},${cy - r * 1.3} L${cx + r * 1.3},${cy} L${cx},${cy + r * 1.3} L${cx - r * 1.3},${cy} Z`} {...props} pointerEvents="none" />;
-  }
-  if (k === 4) {
-    return <path d={`M${cx},${cy + r * 1.2} L${cx + r * 1.1},${cy - r * 0.9} L${cx - r * 1.1},${cy - r * 0.9} Z`} {...props} pointerEvents="none" />;
-  }
-  if (k === 5) {
-    const a = r * 0.9;
-    return (
-      <path
-        d={`M${cx - a},${cy - a} L${cx + a},${cy + a} M${cx - a},${cy + a} L${cx + a},${cy - a}`}
-        fill="none" stroke={props.stroke} strokeOpacity={props.strokeOpacity}
-        strokeWidth={Math.max(1.5, r * 0.5)} pointerEvents="none"
-      />
-    );
-  }
-  return <circle cx={cx} cy={cy} r={r} {...props} pointerEvents="none" />;
-}
 
 function tickFmt(v: number): string {
   if (v === 0) return "0";
@@ -148,7 +122,7 @@ export function ChartBody({
   const expandChain = useBoolbackStore((s) => s.expandChain);
   const toggleSubtreeDir = useBoolbackStore((s) => s.toggleSubtreeDir);
   const removeSubtreeDir = useBoolbackStore((s) => s.removeSubtreeDir);
-  const addRange = useBoolbackStore((s) => s.addRange);
+  const addSubtreeDir = useBoolbackStore((s) => s.addSubtreeDir);
   const setFacet = useBoolbackStore((s) => s.setFacet);
   const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
   const filters = useBoolbackStore((s) => s.filters);
@@ -160,8 +134,6 @@ export function ChartBody({
 
   const [hover, setHover] = useState<VisualPoint | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const dragMoved = useRef(false);
 
   // The SVG draws at the plot container's real pixel size (see FALLBACK note).
   const plotRef = useRef<HTMLDivElement | null>(null);
@@ -228,22 +200,6 @@ export function ChartBody({
     [summary, channelByDim],
   );
 
-  // The (temporary Phase-1) legend still speaks the color/shape/size/avg model;
-  // derive it from the resolved channels so splitting via the popover works.
-  const treatments = useMemo(() => {
-    const m = new Map<string, DimTreatment>();
-    for (const d of summary.differing) {
-      const ch = channelByDim.get(d.dim.key);
-      m.set(d.dim.key, ch === undefined ? "avg" : ch === "dash" ? "shape" : ch);
-    }
-    return m;
-  }, [summary, channelByDim]);
-  const legendOverrides = useMemo(() => {
-    const o: Record<string, DimTreatment> = {};
-    for (const k of activeSplits) o[k] = treatments.get(k) ?? "color";
-    return o;
-  }, [activeSplits, treatments]);
-
   // value -> ordinal per channel dim (values are pre-sorted in DimValues).
   const valueIndex = (d: DimValues | undefined) => {
     const m = new Map<string, number>();
@@ -283,43 +239,84 @@ export function ChartBody({
     return bundle.rows.filter((r) => dirs.some((d) => r.identity.chain_dirs.includes(d)));
   }, [bundle.rows, filters.subtreeDirs]);
 
+  // Axis view windows (zoom only; never touch FilterState) in RAW metric units.
+  const xDomain = config.xDomain ?? null;
+  const yDomain = config.yDomain ?? null;
+
   // ---- points ---------------------------------------------------------------
-  const { points, pairs, droppedLog, binned, rowByPath } = useMemo(() => {
+  const {
+    points, pairs, ghosts, ghostsSubsampled, droppedLog, outsideWindow,
+    binned, rowByPath, dataExtent, averagedDims, worthiness,
+  } = useMemo(() => {
     const xId = metricColumnId(x, index);
     const yId = metricColumnId(y, index);
     let dropped = 0;
+    let outside = 0;
     const runPts: RunPoint[] = [];
     // Underlying (run-level) pairs for r/ρ and the OLS fits, with the color value.
     const rawPairs: Array<{ x: number; y: number; color: string | null }> = [];
     const byPath = new Map<string, RunRow>();
+    // Raw data extent over droppable-clean points (pre-window) for the axis controls.
+    let exMinX = Infinity, exMaxX = -Infinity, exMinY = Infinity, exMaxY = -Infinity;
+    // Windowed survivors kept with their row for split-worthiness.
+    const survivors: Array<{ r: RunRow; tx: number; ty: number; dims: string[] }> = [];
     for (const r of rows) {
       const vx = numericValue(r, xId);
       const vy = numericValue(r, yId);
       if (vx === null || vy === null) continue;
-      if ((logX && vx <= 0) || (logY && vy <= 0)) {
-        dropped++;
+      if ((logX && vx <= 0) || (logY && vy <= 0)) { dropped++; continue; }
+      if (vx < exMinX) exMinX = vx;
+      if (vx > exMaxX) exMaxX = vx;
+      if (vy < exMinY) exMinY = vy;
+      if (vy > exMaxY) exMaxY = vy;
+      // View-window clip: outside the zoom stays in the table/filters, just not drawn.
+      if ((xDomain && (vx < xDomain[0] || vx > xDomain[1])) ||
+          (yDomain && (vy < yDomain[0] || vy > yDomain[1]))) {
+        outside++;
         continue;
       }
       const tx = logX ? Math.log10(vx) : vx;
       const ty = logY ? Math.log10(vy) : vy;
-      runPts.push({
-        x: tx,
-        y: ty,
-        runId: r.identity.node_path,
-        dims: splitDims.map((d) => d.dim.raw(r) ?? "—"),
-      });
+      const dims = splitDims.map((d) => d.dim.raw(r) ?? "—");
+      runPts.push({ x: tx, y: ty, runId: r.identity.node_path, dims });
       rawPairs.push({ x: tx, y: ty, color: colorDim ? colorDim.dim.raw(r) : null });
       byPath.set(r.identity.node_path, r);
+      survivors.push({ r, tx, ty, dims });
     }
     const grouped = groupRuns(runPts, averaging);
+
+    // Split-worthiness of each averaged dim, over the WINDOWED survivors, using
+    // the same (split tuple × x bucket) grouping the renderer applies.
+    const avgDims = summary.differing
+      .filter((d) => !channelByDim.has(d.dim.key))
+      .map((d) => d.dim);
+    let worth: Record<string, number> = {};
+    if (avgDims.length > 0 && survivors.length > 0) {
+      const { key: bucket } = makeXBucketer(runPts);
+      const wRuns: WorthinessRun[] = survivors.map((s) => ({
+        y: s.ty,
+        group: groupKeyFor(s.dims, s.tx, bucket),
+        values: Object.fromEntries(avgDims.map((d) => [d.key, d.raw(s.r) ?? "—"])),
+      }));
+      worth = splitWorthiness(wRuns, avgDims.map((d) => d.key));
+    }
+
     return {
       points: grouped.points,
       pairs: rawPairs,
+      ghosts: grouped.ghosts,
+      ghostsSubsampled: grouped.ghostsSubsampled,
       droppedLog: dropped,
+      outsideWindow: outside,
       binned: grouped.binned,
       rowByPath: byPath,
+      dataExtent: Number.isFinite(exMinX)
+        ? { xMin: exMinX, xMax: exMaxX, yMin: exMinY, yMax: exMaxY }
+        : null,
+      averagedDims: avgDims,
+      worthiness: worth,
     };
-  }, [rows, x, y, index, logX, logY, splitDims, colorDim, averaging]);
+  }, [rows, x, y, index, logX, logY, splitDims, colorDim, averaging, xDomain, yDomain, summary, channelByDim]);
 
   // Jitter single-run points on a linear count x-axis (stacked integers).
   const jitter = !averaging && index[x]?.dtype === "count" && !logX;
@@ -380,12 +377,28 @@ export function ChartBody({
     const padX = (x1 - x0) * 0.04;
     const padY = (y1 - y0) * 0.06;
     x0 -= padX; x1 += padX; y0 -= padY; y1 += padY;
+    // A set axis window overrides the auto extent (exact zoom, no padding).
+    const tf = (v: number, log: boolean) => (log ? Math.log10(Math.max(v, 1e-12)) : v);
+    if (xDomain) { x0 = tf(xDomain[0], logX); x1 = tf(xDomain[1], logX); }
+    if (yDomain) { y0 = tf(yDomain[0], logY); y1 = tf(yDomain[1], logY); }
     const sx = (v: number) => PAD.l + ((v - x0) / (x1 - x0)) * (W - PAD.l - PAD.r);
     const sy = (v: number) => H - PAD.b - ((v - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
     const ix = (px: number) => x0 + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (x1 - x0);
     const iy = (py: number) => y0 + ((H - PAD.b - py) / (H - PAD.t - PAD.b)) * (y1 - y0);
     return { sx, sy, ix, iy, xTicks: niceTicks(x0, x1, 5), yTicks: niceTicks(y0, y1, 5) };
-  }, [visual, W, H]);
+  }, [visual, W, H, xDomain, yDomain, logX, logY]);
+
+  // Ghost points — faint underlying runs behind the group means (averaging +
+  // config.ghosts). Colored by each run's color-dim value (its group's color).
+  const ghostVisual = useMemo(() => {
+    if (!averaging || !config.ghosts) return [] as Array<{ x: number; y: number; color: string }>;
+    const ci = colorDim ? splitDims.indexOf(colorDim) : -1;
+    return ghosts.map((g: Ghost) => {
+      const cv = ci >= 0 ? g.dims[ci] : "";
+      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      return { x: g.x, y: g.y, color };
+    });
+  }, [ghosts, averaging, config.ghosts, colorDim, splitDims, colorIdx, valueStyles]);
 
   // Trend fits + the r/ρ readout — ALWAYS over the underlying runs (a fit over
   // group means would overstate the association).
@@ -429,8 +442,10 @@ export function ChartBody({
       averaging,
       binned,
       droppedLog,
+      outsideWindow,
+      ghostsSubsampled,
     });
-  }, [stats, pairs.length, points.length, averaging, binned, droppedLog, setChartReadout]);
+  }, [stats, pairs.length, points.length, averaging, binned, droppedLog, outsideWindow, ghostsSubsampled, setChartReadout]);
   useEffect(() => () => setChartReadout(null), [setChartReadout]);
 
   // ---- dimension treatment setter — edits v2 splits/channels ----------------
@@ -507,7 +522,6 @@ export function ChartBody({
   };
 
   const onPointClick = (p: VisualPoint) => {
-    if (dragMoved.current) return; // a box-select drag just ended
     if (p.gp.runId && p.gp.n === 1) {
       openDetail(p.gp.runId);
       const r = rowByPath.get(p.gp.runId);
@@ -515,49 +529,51 @@ export function ChartBody({
     }
   };
 
-  // ---- box-select (background drag -> X+Y range filters) ------------------
-  const toViewBox = (e: React.PointerEvent): { x: number; y: number } | null => {
-    const svg = svgRef.current;
-    if (!svg) return null;
-    const ctm = svg.getScreenCTM();
-    if (!ctm) return null;
-    const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
-    return { x: pt.x, y: pt.y };
+  // ---- axis view window (zoom-only min/max; never touches FilterState) -------
+  const setDomain = (axis: "x" | "y", d: [number, number] | null) =>
+    setChart(axis === "x" ? { xDomain: d } : { yDomain: d });
+
+  // ---- dimension-board styling actions (edit v2 splits/channels/valueStyles) -
+  const addSplit = (key: string) => {
+    const cur = config.splits ?? [];
+    if (!cur.includes(key)) setChart({ splits: [...cur, key] });
+  };
+  const reorderSplits = (next: string[]) => setChart({ splits: next });
+  const setChannel = (key: string, ch: Channel) => {
+    const cur = config.splits ?? [];
+    const nextChannels: Record<string, Channel> = { ...(config.channels ?? {}), [key]: ch };
+    for (const k of Object.keys(nextChannels)) {
+      if (k !== key && nextChannels[k] === ch) delete nextChannels[k]; // channels stay unique
+    }
+    setChart({ splits: cur.includes(key) ? cur : [...cur, key], channels: nextChannels });
+  };
+  const setValueStyle = (dimKey: string, value: string, patch: ValueStyle | null) => {
+    const vs: Record<string, Record<string, ValueStyle>> = { ...(config.valueStyles ?? {}) };
+    const inner = { ...(vs[dimKey] ?? {}) };
+    if (patch === null) delete inner[value];
+    else inner[value] = { ...inner[value], ...patch };
+    if (Object.keys(inner).length) vs[dimKey] = inner;
+    else delete vs[dimKey];
+    setChart({ valueStyles: vs });
   };
 
-  const onSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (e.button !== 0) return;
-    if ((e.target as Element).tagName === "circle") return; // point clicks stay point clicks
-    const p = toViewBox(e);
-    if (!p || p.x < PAD.l || p.x > W - PAD.r || p.y < PAD.t || p.y > H - PAD.b) return;
-    dragMoved.current = false;
-    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-  const onSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!drag) return;
-    const p = toViewBox(e);
-    if (!p) return;
-    if (Math.abs(p.x - drag.x0) > MIN_DRAG || Math.abs(p.y - drag.y0) > MIN_DRAG) {
-      dragMoved.current = true;
+  // ---- per-value isolate / exclude (ordinary facet / fn= filters) -----------
+  const isolateValue = (dim: DimensionDef, value: string) => {
+    if (dim.fnScope) {
+      for (const d of filters.subtreeDirs ?? []) if (/^fn=[^/]+$/.test(d)) removeSubtreeDir(d);
+      const hash = fnHashByText.get(value);
+      if (hash) addSubtreeDir(`fn=${hash}`);
+    } else if (dim.facetKey) {
+      setFacet(dim.facetKey, [value]);
     }
-    setDrag({ ...drag, x1: p.x, y1: p.y });
   };
-  const onSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!drag) return;
-    e.currentTarget.releasePointerCapture(e.pointerId);
-    const d = drag;
-    setDrag(null);
-    if (!dragMoved.current) return;
-    // Invert pixel rect -> transformed values -> raw metric values.
-    const untX = (v: number) => (logX ? Math.pow(10, v) : v);
-    const untY = (v: number) => (logY ? Math.pow(10, v) : v);
-    const vx = [scale.ix(Math.min(d.x0, d.x1)), scale.ix(Math.max(d.x0, d.x1))];
-    const vy = [scale.iy(Math.max(d.y0, d.y1)), scale.iy(Math.min(d.y0, d.y1))]; // sy inverts
-    addRange({ metric: x, min: untX(vx[0]), max: untX(vx[1]) });
-    addRange({ metric: y, min: untY(vy[0]), max: untY(vy[1]) });
-    // Let the click that follows pointerup on a point be ignored, then reset.
-    setTimeout(() => { dragMoved.current = false; }, 0);
+  const excludeValue = (dim: DimensionDef, value: string) => {
+    if (dim.fnScope) {
+      for (const d of filters.subtreeDirs ?? []) if (/^fn=[^/]+$/.test(d)) removeSubtreeDir(d);
+      for (const [text, hash] of fnHashByText.entries()) if (text !== value) addSubtreeDir(`fn=${hash}`);
+    } else if (dim.facetKey) {
+      setFacet(dim.facetKey, dimOptions(dim).map((o) => o.value).filter((v) => v !== value));
+    }
   };
 
   // ---- export handle for the shared Export menu ----------------------------
@@ -621,9 +637,6 @@ export function ChartBody({
             preserveAspectRatio="xMidYMid meet"
             className="h-full w-full select-none"
             role="img"
-            onPointerDown={onSvgPointerDown}
-            onPointerMove={onSvgPointerMove}
-            onPointerUp={onSvgPointerUp}
           >
             <defs>
               <clipPath id="bb-plot-clip">
@@ -631,9 +644,7 @@ export function ChartBody({
               </clipPath>
             </defs>
             <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={H - PAD.t - PAD.b}
-              fill="var(--color-surface)" stroke="var(--color-border)" strokeWidth={1}>
-              <title>drag a box to filter to that X/Y range</title>
-            </rect>
+              fill="var(--color-surface)" stroke="var(--color-border)" strokeWidth={1} />
             {scale.yTicks.map((t, i) => (
               <g key={`y${i}`}>
                 <line x1={PAD.l} y1={scale.sy(t)} x2={W - PAD.r} y2={scale.sy(t)}
@@ -675,8 +686,25 @@ export function ChartBody({
               </g>
             )}
 
+            {/* ghost points — faint underlying runs behind the group means */}
+            {ghostVisual.length > 0 && (
+              <g clipPath="url(#bb-plot-clip)">
+                {ghostVisual.map((g, i) => (
+                  <circle
+                    key={`g${i}`}
+                    cx={scale.sx(g.x)}
+                    cy={scale.sy(g.y)}
+                    r={1.4}
+                    fill={g.color}
+                    fillOpacity={0.18}
+                    pointerEvents="none"
+                  />
+                ))}
+              </g>
+            )}
+
             {/* ±1 SD whiskers (grouped points; under the points) */}
-            {averaging && (
+            {averaging && config.band && (
               <g clipPath="url(#bb-plot-clip)">
                 {visual.map((p, i) => (
                   <g key={`w${i}`} stroke={p.color} strokeOpacity={0.5} strokeWidth={1}>
@@ -774,22 +802,6 @@ export function ChartBody({
                 />
               ))}
             </g>
-
-            {/* box-select rectangle */}
-            {drag && dragMoved.current && (
-              <rect
-                x={Math.min(drag.x0, drag.x1)}
-                y={Math.min(drag.y0, drag.y1)}
-                width={Math.abs(drag.x1 - drag.x0)}
-                height={Math.abs(drag.y1 - drag.y0)}
-                fill="var(--color-accent)"
-                fillOpacity={0.08}
-                stroke="var(--color-accent)"
-                strokeOpacity={0.7}
-                strokeDasharray="4 3"
-                pointerEvents="none"
-              />
-            )}
           </svg>
         )}
 
@@ -836,6 +848,23 @@ export function ChartBody({
           style={{ left: 4, bottom: PAD.b + 8 }}
         />
 
+        {/* axis view-window (zoom) min/max — click a number to edit, ⟲ resets.
+            Never touches FilterState; clipped points stay in the table. */}
+        <AxisRange
+          axis="x"
+          domain={xDomain}
+          extent={dataExtent ? [dataExtent.xMin, dataExtent.xMax] : null}
+          onSet={(d) => setDomain("x", d)}
+          style={{ right: PAD.r + 6, bottom: 3 }}
+        />
+        <AxisRange
+          axis="y"
+          domain={yDomain}
+          extent={dataExtent ? [dataExtent.yMin, dataExtent.yMax] : null}
+          onSet={(d) => setDomain("y", d)}
+          style={{ left: PAD.l + 4, top: 2 }}
+        />
+
         {/* tooltip (flips sides near the right edge) */}
         {hover && (() => {
           const px = scale.sx(hover.gp.x + hover.jx);
@@ -858,17 +887,28 @@ export function ChartBody({
         })()}
       </div>
 
-      {/* legend panel — the dimension model, docked right of the plot */}
-      <LegendPanel
+      {/* dimension board — the single control surface, docked right of the plot */}
+      <DimensionBoard
         summary={summary}
-        treatments={treatments}
-        overrides={legendOverrides}
-        setDim={setDim}
-        dimOptions={dimOptions}
+        splits={activeSplits}
+        channelByDim={channelByDim}
+        worthiness={worthiness}
+        averagedDims={averagedDims}
+        valueStyles={valueStyles}
+        band={!!config.band}
+        ghosts={!!config.ghosts}
+        setBand={(b) => setChart({ band: b })}
+        setGhosts={(b) => setChart({ ghosts: b })}
+        addSplit={addSplit}
+        removeSplit={(key) => setDim(key, null)}
+        reorderSplits={reorderSplits}
+        setChannel={setChannel}
+        setValueStyle={setValueStyle}
         dimSelection={dimSelection}
         toggleDimValue={toggleDimValue}
         clearDimFilter={clearDimFilter}
-        channelDims={channelDims}
+        isolateValue={isolateValue}
+        excludeValue={excludeValue}
         rByColorValue={rByColorValue}
       />
     </div>
@@ -906,307 +946,80 @@ function LogToggle({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Legend panel — the dimension model as a vertical panel right of the plot.
-// One section per SPLIT dimension: its chip is the section header (opens the
-// treatment/filter popover) and its value keys list below (click toggles the
-// value in/out of the filter; the swatch itself shows the channel). Averaged
-// dims get a chip row (no keys — no visual encoding), and the constant
-// context is a collapsible section at the bottom.
-//
-// The chip popover is owned HERE (not by the chip): its filter list is a
-// checkbox multi-select, and checking values can turn the dimension shared —
-// which unmounts its chip. An editor owned by the panel survives that and
-// stays open for further toggling, matching the bar's facet editors.
-// ---------------------------------------------------------------------------
-
-function LegendPanel({
-  summary,
-  treatments,
-  overrides,
-  setDim,
-  dimOptions,
-  dimSelection,
-  toggleDimValue,
-  clearDimFilter,
-  channelDims,
-  rByColorValue,
+// A compact axis view-window editor (min / max) by an axis end. Click a number
+// to edit (Enter commits, Esc/blur cancels); ⟲ clears the zoom. Purely a view
+// window — points outside stay in the table and filters (chart-panel clips them
+// and surfaces "N outside window" in the readout).
+function AxisRange({
+  axis, domain, extent, onSet, style,
 }: {
-  summary: ReturnType<typeof summarizeDimensions>;
-  treatments: Map<string, DimTreatment>;
-  overrides: Record<string, DimTreatment>;
-  setDim: (key: string, t: DimTreatment | null) => void;
-  dimOptions: (dim: DimensionDef) => Array<{ value: string; count: number }>;
-  dimSelection: (dim: DimensionDef) => string[];
-  toggleDimValue: (dim: DimensionDef, value: string) => void;
-  clearDimFilter: (dim: DimensionDef) => void;
-  channelDims: Map<Channel, DimValues>;
-  rByColorValue: Map<string, number | null>;
+  axis: "x" | "y";
+  domain: [number, number] | null;
+  extent: [number, number] | null;
+  onSet: (d: [number, number] | null) => void;
+  style: React.CSSProperties;
 }) {
-  const [constantOpen, setConstantOpen] = useState(false);
-  const [popover, setPopover] = useState<{ key: string; top: number; right: number } | null>(null);
-  const averaged = summary.differing.filter(
-    (d) => (treatments.get(d.dim.key) ?? "avg") === "avg",
-  );
+  const [edit, setEdit] = useState<null | 0 | 1>(null);
+  const lo = domain?.[0] ?? extent?.[0];
+  const hi = domain?.[1] ?? extent?.[1];
+  if (lo === undefined || hi === undefined) return null;
 
-  if (summary.differing.length === 0 && summary.shared.length === 0) return null;
-
-  const togglePopover = (key: string, pos: { top: number; right: number }) =>
-    setPopover((p) => (p?.key === key ? null : { key, ...pos }));
-  const popDim = popover ? DIMENSIONS.find((d) => d.key === popover.key) : undefined;
-
-  return (
-    <aside className="w-60 shrink-0 overflow-y-auto border-l border-border/60 px-2 py-2 text-xs text-text-muted">
-      {(["color", "shape", "size"] as const).map((channel) => {
-        const d = channelDims.get(channel);
-        if (!d) return null;
-        const selected = dimSelection(d.dim);
-        return (
-          <section key={channel} className="mb-3">
-            <DimChip
-              d={d}
-              t={channel}
-              overridden={d.dim.key in overrides}
-              onToggle={togglePopover}
-            />
-            <div className="mt-1">
-              {d.values.slice(0, 14).map(({ value }, i) => {
-                const active = selected.includes(value);
-                const dimmed = selected.length > 0 && !active;
-                const disp = d.dim.display ? d.dim.display(value) : value;
-                const r = channel === "color" ? rByColorValue.get(value) : undefined;
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => toggleDimValue(d.dim, value)}
-                    title={`toggle filter — ${d.dim.label}: ${disp}`}
-                    className={[
-                      "flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-alt",
-                      active ? "ring-1 ring-accent/60 text-text" : "",
-                      dimmed ? "opacity-40" : "",
-                    ].join(" ")}
-                  >
-                    {channel === "color" && (
-                      <span
-                        className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
-                      />
-                    )}
-                    {channel === "shape" && (
-                      <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0">
-                        {shapeNode(i, 0, 0, 4, {
-                          fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
-                        })}
-                      </svg>
-                    )}
-                    {channel === "size" && (
-                      <span className="flex w-3.5 shrink-0 justify-center">
-                        <span
-                          className="rounded-full bg-current opacity-70"
-                          style={{ width: 5 + Math.min(9, i * 2), height: 5 + Math.min(9, i * 2) }}
-                        />
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{disp}</span>
-                    {r !== undefined && r !== null && (
-                      <span className="shrink-0 text-text-faint">r={r.toFixed(2)}</span>
-                    )}
-                  </button>
-                );
-              })}
-              {d.values.length > 14 && (
-                <div className="px-1 text-text-faint">+{d.values.length - 14} more</div>
-              )}
-            </div>
-          </section>
-        );
-      })}
-
-      {averaged.length > 0 && (
-        <section className="mb-3">
-          <div
-            className="mb-1 text-[10px] uppercase tracking-wide text-text-faint"
-            title="Varying dimensions without a channel — collapsed into mean ± 1 SD groups. Click a chip to split or filter it."
-          >
-            averaged
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {averaged.map((d) => (
-              <DimChip
-                key={d.dim.key}
-                d={d}
-                t="avg"
-                overridden={d.dim.key in overrides}
-                onToggle={togglePopover}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {summary.shared.length > 0 && (
-        <section>
-          <button
-            type="button"
-            onClick={() => setConstantOpen((o) => !o)}
-            title="Dimensions with a single value across every plotted run — the points' common context"
-            className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-text-faint transition-colors hover:text-text"
-          >
-            constant ×{summary.shared.length} <span aria-hidden>{constantOpen ? "▾" : "▸"}</span>
-          </button>
-          {constantOpen && (
-            <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
-              {summary.shared.map((s) => {
-                const disp = s.dim.display ? s.dim.display(s.value) : s.value;
-                return (
-                  <Fragment key={s.dim.key}>
-                    <span className="text-text-faint">{s.dim.label}</span>
-                    <span className="truncate text-text/90" title={disp}>{disp}</span>
-                  </Fragment>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      )}
-
-      {popover && popDim && (
-        <DimPopover
-          dim={popDim}
-          pos={popover}
-          differing={summary.differing.some((d) => d.dim.key === popDim.key)}
-          treatment={treatments.get(popDim.key) ?? "avg"}
-          overridden={popDim.key in overrides}
-          setDim={setDim}
-          options={dimOptions(popDim)}
-          selected={dimSelection(popDim)}
-          onToggleValue={(v) => toggleDimValue(popDim, v)}
-          onClear={() => clearDimFilter(popDim)}
-          close={() => setPopover(null)}
-        />
-      )}
-    </aside>
-  );
-}
-
-// A dimension chip — the section header. Its popover is LegendPanel-owned
-// (see DimPopover); the chip just reports its anchor rect on click.
-function DimChip({
-  d, t, overridden, onToggle,
-}: {
-  d: DimValues;
-  t: DimTreatment;
-  overridden: boolean;
-  onToggle: (key: string, pos: { top: number; right: number }) => void;
-}) {
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const click = () => {
-    const r = btnRef.current?.getBoundingClientRect();
-    onToggle(d.dim.key, {
-      top: Math.min((r?.bottom ?? 0) + 4, Math.max(8, window.innerHeight - 320)),
-      right: Math.max(8, window.innerWidth - (r?.right ?? window.innerWidth)),
-    });
+  const commit = (which: 0 | 1, raw: string) => {
+    setEdit(null);
+    const v = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(v)) return;
+    const next: [number, number] = which === 0 ? [v, hi] : [lo, v];
+    if (next[0] < next[1]) onSet(next);
   };
-  return (
-    <button
-      ref={btnRef}
-      type="button"
-      onClick={click}
-      title={`${d.dim.label}: ${d.values.length} values — ${t === "avg" ? "averaged" : `split by ${t}`}${overridden ? "" : " (auto)"}`}
-      className={[
-        "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 transition-colors hover:border-accent/50",
-        t === "avg" ? "border-border text-text-muted" : "border-accent/40 text-text",
-      ].join(" ")}
-    >
-      <span className="truncate">{d.dim.label}</span>
-      <span className="shrink-0 text-text-faint">×{d.values.length}</span>
-    </button>
-  );
-}
+  const fmt = (n: number) =>
+    Math.abs(n) >= 1000 || (n !== 0 && Math.abs(n) < 0.01)
+      ? n.toExponential(1)
+      : String(Number(n.toFixed(3)));
 
-// The chip popover: treatment buttons (only while the dimension still differs
-// across the plotted rows) + the filter CHECKBOX list — the same multi-select
-// editor as the filter bar's facet chips, over the subtree-scoped candidate
-// values. It positions FIXED (anchor captured on open, clamped to the
-// viewport): the legend panel is an overflow-y scroller, which would clip an
-// absolutely-positioned child. Checking values down to one turns the
-// dimension shared and unmounts its chip — the panel-owned popover survives
-// that and stays open for further toggling.
-function DimPopover({
-  dim, pos, differing, treatment, overridden, setDim, options, selected,
-  onToggleValue, onClear, close,
-}: {
-  dim: DimensionDef;
-  pos: { top: number; right: number };
-  differing: boolean;
-  treatment: DimTreatment;
-  overridden: boolean;
-  setDim: (key: string, t: DimTreatment | null) => void;
-  options: Array<{ value: string; count: number }>;
-  selected: string[];
-  onToggleValue: (value: string) => void;
-  onClear: () => void;
-  close: () => void;
-}) {
-  return (
-    <>
-      <div className="fixed inset-0 z-20" onClick={close} />
-      <div
-        className="fixed z-30 w-60 rounded-lg border border-border bg-surface/95 p-2 shadow-lg backdrop-blur-md"
-        style={{ top: pos.top, right: pos.right }}
+  const Field = (which: 0 | 1, value: number) =>
+    edit === which ? (
+      <input
+        autoFocus
+        type="number"
+        defaultValue={value}
+        aria-label={`${axis} ${which === 0 ? "min" : "max"}`}
+        onBlur={(e) => commit(which, e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit(which, (e.target as HTMLInputElement).value);
+          else if (e.key === "Escape") setEdit(null);
+        }}
+        className="w-14 rounded border border-accent/50 bg-surface px-1 text-[10px] text-text tabular-nums focus:outline-none"
+      />
+    ) : (
+      <button
+        type="button"
+        onClick={() => setEdit(which)}
+        title={`edit ${axis} ${which === 0 ? "min" : "max"} (zoom only)`}
+        className="tabular-nums hover:text-accent"
       >
-        {differing && (
-          <div className="mb-1 flex flex-wrap gap-1">
-            {(["color", "shape", "size", "avg"] as const).map((opt) => (
-              <button
-                key={opt}
-                onClick={() => { setDim(dim.key, opt); close(); }}
-                className={[
-                  "rounded-md border px-1.5 py-0.5 transition-colors",
-                  treatment === opt ? "border-accent/60 text-accent" : "border-border text-text-muted hover:text-text",
-                ].join(" ")}
-              >
-                {opt === "avg" ? "average" : opt}
-              </button>
-            ))}
-            {overridden && (
-              <button
-                onClick={() => { setDim(dim.key, null); close(); }}
-                className="rounded-md border border-border px-1.5 py-0.5 text-text-muted hover:text-text"
-                title="return to automatic assignment"
-              >
-                auto
-              </button>
-            )}
-          </div>
-        )}
-        <div className="mb-0.5 flex items-center justify-between">
-          <span className="text-[10px] uppercase tracking-wide text-text-faint">filter</span>
-          {selected.length > 0 && (
-            <button onClick={onClear} className="text-[10px] text-text-muted hover:text-accent">
-              clear
-            </button>
-          )}
-        </div>
-        <div className="max-h-48 overflow-y-auto">
-          {options.map(({ value, count }) => (
-            <label
-              key={value}
-              className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-0.5 text-text/90 hover:bg-surface-alt hover:text-accent"
-            >
-              <input
-                type="checkbox"
-                checked={selected.includes(value)}
-                onChange={() => onToggleValue(value)}
-                className="accent-accent"
-              />
-              <span className="min-w-0 flex-1 truncate">{dim.display ? dim.display(value) : value}</span>
-              <span className="text-[10px] text-text-faint tabular-nums">{count}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-    </>
+        {fmt(value)}
+      </button>
+    );
+
+  return (
+    <div
+      className="pointer-events-auto absolute z-10 flex items-center gap-0.5 rounded bg-surface/70 px-1 text-[10px] text-text-faint"
+      style={style}
+    >
+      {Field(0, lo)}
+      <span aria-hidden>–</span>
+      {Field(1, hi)}
+      {domain && (
+        <button
+          type="button"
+          onClick={() => onSet(null)}
+          title="reset zoom to fit"
+          aria-label={`reset ${axis} zoom`}
+          className="ml-0.5 hover:text-accent"
+        >
+          ⟲
+        </button>
+      )}
+    </div>
   );
 }

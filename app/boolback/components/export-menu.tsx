@@ -123,7 +123,7 @@ export function ExportMenu({
         <>
           <div className="fixed inset-0 z-20" onClick={() => { setOpen(false); setSummaryOpen(false); }} />
           <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-lg border border-border bg-surface/95 p-1.5 text-xs shadow-lg backdrop-blur-md animate-settle">
-            {view === "chart" && (
+            {(view === "plot" || view === "groupplot") && (
               <>
                 <MenuItem label="Copy plotted data (CSV)" onClick={chartCsv} disabled={!chartRef.current} />
                 <MenuItem label="Download chart SVG" onClick={chartSvg} disabled={!chartRef.current} />

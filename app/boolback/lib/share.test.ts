@@ -18,7 +18,7 @@ describe("share codec", () => {
       sorts: [{ col: "headline.plantedness", dir: "desc" }],
       visibleCols: ["function.arity", "function.fn_hex"],
       chart: { ...DEFAULT_CHART, y: "asr", logX: true, trend: true },
-      view: "chart",
+      view: "plot",
     };
     const decoded = decodeSharedView(encodeSharedView(view));
     expect(decoded).toEqual(view);

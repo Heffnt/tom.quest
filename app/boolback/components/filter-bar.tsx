@@ -178,9 +178,9 @@ export function FilterBar(props: FilterBarProps) {
           </button>
         )}
 
-        {/* Table | Chart | Anatomy view switcher (store-owned) */}
+        {/* Table | Plot | Group Plot | Anatomy view switcher (store-owned) */}
         <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-xs">
-          {(["table", "chart", "anatomy"] as const).map((v) => (
+          {(["table", "plot", "groupplot", "anatomy"] as const).map((v) => (
             <button
               key={v}
               type="button"
@@ -189,7 +189,7 @@ export function FilterBar(props: FilterBarProps) {
                 view === v ? "bg-accent/15 text-accent" : "bg-surface text-text-muted hover:text-text"
               }`}
             >
-              {{ table: "Table", chart: "Chart", anatomy: "Anatomy" }[v]}
+              {{ table: "Table", plot: "Plot", groupplot: "Group Plot", anatomy: "Anatomy" }[v]}
             </button>
           ))}
         </div>
@@ -243,16 +243,16 @@ export function FilterBar(props: FilterBarProps) {
           />
         ))}
 
-        {/* trend + readout — chart view only; the X/Y pickers and log toggles
-            live on the plot's axes (chart-panel.tsx) */}
-        {view === "chart" && (
+        {/* trend + readout — Plot view only; the X/Y pickers, log toggles and
+            axis min/max live on the plot's axes (chart-panel.tsx) */}
+        {view === "plot" && (
           <>
             <span className="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden />
             <AxisToggle label="trend" checked={!!chart.trend} onChange={(b) => setChart({ trend: b })} />
-            {readout && (readout.r !== null || readout.binned || readout.droppedLog > 0) && (
+            {readout && (readout.r !== null || readout.binned || readout.droppedLog > 0 || readout.outsideWindow > 0) && (
               <span
                 className="text-xs font-mono text-text-faint whitespace-nowrap"
-                title={`Pearson r · Spearman ρ over the ${readout.runs.toLocaleString()} underlying runs (descriptive) · ${readout.points.toLocaleString()} ${readout.averaging ? "groups" : "points"} drawn · drag a box on the plot to range-filter`}
+                title={`Pearson r · Spearman ρ over the ${readout.runs.toLocaleString()} runs in the view window (descriptive — what you see is what the stats describe) · ${readout.points.toLocaleString()} ${readout.averaging ? "groups" : "points"} drawn`}
               >
                 {readout.r !== null && (
                   <span className="text-text-muted">
@@ -260,6 +260,7 @@ export function FilterBar(props: FilterBarProps) {
                   </span>
                 )}
                 {readout.binned && <span title="X has too many distinct values — grouped into 12 equal-width bins"> · x binned</span>}
+                {readout.outsideWindow > 0 && <span title="points outside the axis view window (zoom only) — still present in the table and filters"> · {readout.outsideWindow} outside window</span>}
                 {readout.droppedLog > 0 && <span title="values ≤ 0 cannot be shown on a log axis"> · {readout.droppedLog} dropped (log)</span>}
               </span>
             )}

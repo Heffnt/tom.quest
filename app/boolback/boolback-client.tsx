@@ -22,7 +22,7 @@ import { useBoolbackStore } from "./state/store";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { readSharedView } from "./lib/share";
 import { TreePane } from "./components/tree-pane";
-import { TablePane } from "./components/table-pane";
+import { TablePane, normalizeCenterView, type CenterView } from "./components/table-pane";
 import { DetailPanel } from "./components/detail-panel";
 
 // Layout constants.
@@ -34,9 +34,9 @@ interface LayoutSettings extends Record<string, unknown> {
   leftW: number;
   detailWidth: number;
   /** Tree pane collapsed to the slim rail, remembered PER center view.
-   * Persisted blobs may predate a view (no anatomy key) — reads fall back to
+   * Persisted blobs may predate a view (no groupplot key) — reads fall back to
    * LAYOUT_DEFAULTS and the setter's defaults-spread heals the record. */
-  treeCollapsed: { table: boolean; chart: boolean; anatomy: boolean };
+  treeCollapsed: Partial<Record<CenterView, boolean>>;
 }
 
 const LAYOUT_DEFAULTS: LayoutSettings = {
@@ -44,7 +44,7 @@ const LAYOUT_DEFAULTS: LayoutSettings = {
   detailWidth: 480,
   // The chart wants every horizontal pixel (the anatomy spine even more so);
   // the table leans on the tree.
-  treeCollapsed: { table: false, chart: true, anatomy: true },
+  treeCollapsed: { table: false, plot: true, groupplot: true, anatomy: true },
 };
 
 export default function BoolbackClient() {
@@ -57,9 +57,8 @@ export default function BoolbackClient() {
   // applied by table-pane's hydration (which prefers the shared view too).
   useEffect(() => {
     const shared = readSharedView();
-    if (shared?.view === "table" || shared?.view === "chart" || shared?.view === "anatomy") {
-      setCenterView(shared.view);
-    }
+    const v = normalizeCenterView(shared?.view); // maps legacy "chart" → "plot"
+    if (v) setCenterView(v);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -90,7 +89,7 @@ export default function BoolbackClient() {
 
   // ----- tree collapse (per center view; chart defaults collapsed) ---------
   const treeCollapsed =
-    layout.treeCollapsed?.[view] ?? LAYOUT_DEFAULTS.treeCollapsed[view];
+    layout.treeCollapsed?.[view] ?? LAYOUT_DEFAULTS.treeCollapsed[view] ?? false;
   const setTreeCollapsed = useCallback(
     (collapsed: boolean) => {
       updateLayout({

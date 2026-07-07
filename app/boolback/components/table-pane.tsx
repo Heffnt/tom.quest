@@ -76,11 +76,19 @@ interface PersistedView extends Record<string, unknown> {
 // TablePane
 // ===========================================================================
 
-export type CenterView = "table" | "chart" | "anatomy";
+export type CenterView = "table" | "plot" | "groupplot" | "anatomy";
+
+/** Map a legacy/foreign center-view string to the current union
+ *  ("chart" → "plot"); null when it isn't a recognizable view. Applied at the
+ *  share-URL / persisted-state boundaries so old links and blobs still load. */
+export function normalizeCenterView(v: unknown): CenterView | null {
+  if (v === "chart") return "plot";
+  return v === "table" || v === "plot" || v === "groupplot" || v === "anatomy" ? v : null;
+}
 
 export interface TablePaneProps {
   bundle: Bundle;
-  /** "table" (default), "chart" or "anatomy" — same filter bar, swapped body. */
+  /** "table" (default), "plot", "groupplot" or "anatomy" — same filter bar, swapped body. */
   view?: CenterView;
   /** Snapshot source — the top bar renders its status dot / Refresh. */
   source: ArtifactSource;
@@ -336,7 +344,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
   const plotOn = useCallback(
     (axis: "x" | "y", metricName: string) => {
       setChart(axis === "x" ? { x: metricName } : { y: metricName });
-      setCenterView("chart");
+      setCenterView("plot");
     },
     [setChart, setCenterView],
   );
@@ -358,7 +366,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
         onShowTree={onShowTree}
       />
 
-      {view === "chart" ? (
+      {view === "plot" || view === "groupplot" ? (
         <ChartBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
       ) : view === "anatomy" ? (
         <AnatomyBody rows={visibleRows} bundle={bundle} index={index} />

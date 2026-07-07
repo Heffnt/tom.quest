@@ -14,11 +14,13 @@ import type { CenterView } from "../components/table-pane";
 export interface ChartReadout {
   r: number | null;
   rho: number | null;
-  runs: number;    // underlying run pairs behind the stats
+  runs: number;    // underlying run pairs behind the stats (windowed)
   points: number;  // rendered points (or groups when averaging)
   averaging: boolean;
   binned: boolean;
   droppedLog: number;
+  outsideWindow: number;   // runs clipped by the axis view window (still in table)
+  ghostsSubsampled: boolean; // ghosts thinned to stay under the render cap
 }
 
 interface BoolbackState {

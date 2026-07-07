@@ -89,6 +89,12 @@ export function makeXBucketer(
   };
 }
 
+/** Group id for a run at (dims, x) via a shared bucketer — the same grouping
+ *  groupRuns applies, so split-worthiness scores the exact rendered groups. */
+export function groupKeyFor(dims: string[], x: number, bucket: (x: number) => number): string {
+  return dims.join(SEP) + SEP + bucket(x);
+}
+
 /** Stable sort by (dims, x, runId) — deterministic ghost subsampling order. */
 function sortStable(pts: RunPoint[]): RunPoint[] {
   return [...pts].sort((a, b) => {
