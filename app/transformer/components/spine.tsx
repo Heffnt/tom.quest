@@ -14,8 +14,15 @@ export default function Spine() {
   const tok = trace?.tokens[selected];
   const top1 = step?.logits[0];
 
-  let maxWrite = 1e-9;
-  if (step) for (const l of step.layers) maxWrite = Math.max(maxWrite, l.attnWrite, l.mlpWrite);
+  // per-lane normalization + sqrt so early layers stay visible when one late
+  // layer dominates (real models are very top-heavy)
+  let attnMax = 1e-9;
+  let mlpMax = 1e-9;
+  if (step)
+    for (const l of step.layers) {
+      attnMax = Math.max(attnMax, l.attnWrite);
+      mlpMax = Math.max(mlpMax, l.mlpWrite);
+    }
 
   const ghosts = Math.min(selected, 3);
 
@@ -111,11 +118,11 @@ export default function Spine() {
                     >
                       <span
                         className="h-[9px] w-[14px] rounded-[2px]"
-                        style={{ background: ls ? heat(ls.attnWrite / maxWrite) : "var(--color-surface-alt)" }}
+                        style={{ background: ls ? heat(Math.sqrt(ls.attnWrite / attnMax)) : "var(--color-surface-alt)" }}
                       />
                       <span
                         className="h-[9px] w-[14px] rounded-[2px]"
-                        style={{ background: ls ? heat(ls.mlpWrite / maxWrite) : "var(--color-surface-alt)" }}
+                        style={{ background: ls ? heat(Math.sqrt(ls.mlpWrite / mlpMax)) : "var(--color-surface-alt)" }}
                       />
                       <span className="text-[8px] leading-none text-text-faint">{l}</span>
                     </button>
