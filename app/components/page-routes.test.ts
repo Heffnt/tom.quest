@@ -30,7 +30,7 @@ describe("page registry", () => {
   );
 
   it("ranks visible pages by priority when query is empty", () => {
-    expect(rankPages("", "guest").map((entry) => entry.slug)).toEqual(["thmm", "clouds", "perfume", "game", "bio", "boolback", "help"]);
+    expect(rankPages("", "guest").map((entry) => entry.slug)).toEqual(["transformer", "thmm", "clouds", "perfume", "game", "bio", "boolback", "help"]);
     expect(rankPages("", "tom")[0]?.slug).toBe("turing");
   });
 

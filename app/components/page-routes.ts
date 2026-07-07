@@ -12,6 +12,7 @@ export type PageRole = "guest" | "user" | "admin" | "tom";
 export const PAGES: Page[] = [
   { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin" },
   { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8,  visibility: "authenticated" },
+  { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7, visibility: "public" },
   { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6, visibility: "public" },
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
