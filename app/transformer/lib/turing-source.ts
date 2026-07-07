@@ -32,6 +32,25 @@ type ServerStep = {
 
 type GenerateResponse = { tokens: string[]; n_prompt: number; steps: ServerStep[] };
 
+// turing.tom.quest load-balances across three API nodes; during a rolling
+// deploy some may not have the /transformer-trace route yet and return 404.
+// Retry a few times — a hit on an updated node resolves it; real 404s (bad
+// path) surface after the attempts.
+async function fetchLB(url: string, init: RequestInit, tries = 8): Promise<Response> {
+  let last: Response | null = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, init);
+      if (r.status !== 404) return r;
+      last = r;
+    } catch (e) {
+      if ((e instanceof DOMException && e.name === "AbortError") || i === tries - 1) throw e;
+    }
+    await new Promise((res) => setTimeout(res, 150));
+  }
+  return last!;
+}
+
 function b64ToFloat32(b64: string): Float32Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -43,7 +62,7 @@ export async function createTuringSource(baseUrl: string, token: string): Promis
   const url = baseUrl.replace(/\/+$/, "");
   const headers: Record<string, string> = token ? { "x-trace-token": token } : {};
 
-  const confRes = await fetch(`${url}/config`, { headers });
+  const confRes = await fetchLB(`${url}/config`, { headers });
   if (!confRes.ok) throw new Error(`config ${confRes.status}: ${await confRes.text()}`);
   const conf: ServerConfig = await confRes.json();
 
@@ -70,7 +89,7 @@ export async function createTuringSource(baseUrl: string, token: string): Promis
     generate(prompt, maxNew, onStart): GenerationHandle {
       const ac = new AbortController();
       const done = (async () => {
-        const res = await fetch(`${url}/generate`, {
+        const res = await fetchLB(`${url}/generate`, {
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({ prompt, max_new_tokens: maxNew }),
@@ -107,7 +126,7 @@ export async function createTuringSource(baseUrl: string, token: string): Promis
 
     async fetchWeights(tensor: string, req: WeightWindowReq): Promise<WeightWindow> {
       const qs = `row0=${req.row0}&col0=${req.col0}&rows=${req.rows}&cols=${req.cols}&stride=${req.stride}`;
-      const res = await fetch(`${url}/weights/${tensor}?${qs}`, { headers });
+      const res = await fetchLB(`${url}/weights/${tensor}?${qs}`, { headers });
       if (!res.ok) throw new Error(`weights ${res.status}`);
       const j = await res.json();
       return { row0: j.row0, col0: j.col0, rows: j.rows, cols: j.cols, stride: j.stride, data: b64ToFloat32(j.b64) };
@@ -116,7 +135,7 @@ export async function createTuringSource(baseUrl: string, token: string): Promis
     async fetchWeightStats(tensor: string): Promise<TensorStats> {
       const cached = statsCache.get(tensor);
       if (cached) return cached;
-      const res = await fetch(`${url}/weights/${tensor}/stats`, { headers });
+      const res = await fetchLB(`${url}/weights/${tensor}/stats`, { headers });
       if (!res.ok) throw new Error(`stats ${res.status}`);
       const j: TensorStats = await res.json();
       statsCache.set(tensor, j);
