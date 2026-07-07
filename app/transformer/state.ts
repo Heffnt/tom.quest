@@ -12,16 +12,21 @@ export function getSource(): DataSource {
 }
 
 const LS_KEY = "transformer.remote";
+/** The public proxy on the existing turing-api (routes to the per-job server). */
+const DEFAULT_REMOTE_URL = "https://turing.tom.quest/transformer-trace";
 
 function loadRemoteConfig(): { url: string; token: string } {
-  if (typeof window === "undefined") return { url: "", token: "" };
+  if (typeof window === "undefined") return { url: DEFAULT_REMOTE_URL, token: "" };
   try {
     const raw = window.localStorage.getItem(LS_KEY);
-    if (raw) return { url: "", token: "", ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = { url: "", token: "", ...JSON.parse(raw) };
+      return { url: parsed.url || DEFAULT_REMOTE_URL, token: parsed.token };
+    }
   } catch {
     // ignore corrupt localStorage
   }
-  return { url: "", token: "" };
+  return { url: DEFAULT_REMOTE_URL, token: "" };
 }
 
 /**

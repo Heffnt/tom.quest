@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import math
+import os
+import socket
 import threading
 
 import numpy as np
@@ -125,6 +128,27 @@ def _install_hooks() -> None:
 
 _install_hooks()
 _model_lock = threading.Lock()  # one trace at a time; the model is shared state
+
+
+def _register() -> None:
+    """Write ~/.tviz-server.json so the turing-api /transformer-trace proxy
+    (shared NFS home) can find this per-job server on the cluster LAN."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+        reg = {"url": f"http://{ip}:{args.port}", "model": args.model, "host": socket.gethostname()}
+        with open(os.path.expanduser("~/.tviz-server.json"), "w", encoding="utf8") as f:
+            json.dump(reg, f)
+        print(f"[trace-server] registered {reg['url']} in ~/.tviz-server.json", flush=True)
+    except OSError as e:
+        print(f"[trace-server] registration failed: {e}", flush=True)
+
+
+_register()
 
 # ---- API ---------------------------------------------------------------------
 

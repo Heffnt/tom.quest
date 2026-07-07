@@ -2,9 +2,11 @@ import logging
 import os
 import shlex
 import signal
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from gpu_report import format_gpu_report_v2, get_free_gpu_type_info
 from slurm import allocate_gpu, cancel_job, get_user_jobs
@@ -118,6 +120,59 @@ class DetachClientsResponse(BaseModel):
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+# --- transformer trace proxy ---------------------------------------------------
+# The tom.quest/transformer page talks to a per-job trace server
+# (transformer_server.py) running on a compute node. Compute nodes are not
+# publicly reachable, so the server registers itself in ~/.tviz-server.json
+# (shared NFS home) and this route forwards to it. It is deliberately NOT
+# behind X-API-Key — the page is public; the trace server enforces its own
+# x-trace-token, which is forwarded through. The upstream call is blocking, so
+# it runs in the threadpool (liveness rule: never block the event loop).
+
+TRACE_REGISTRATION = os.path.expanduser("~/.tviz-server.json")
+TRACE_TIMEOUT_S = 180
+
+
+def _trace_target() -> str | None:
+    try:
+        with open(TRACE_REGISTRATION, encoding="utf8") as f:
+            import json as _json
+
+            return _json.load(f).get("url")
+    except (OSError, ValueError):
+        return None
+
+
+@app.api_route("/transformer-trace/{path:path}", methods=["GET", "POST"])
+async def transformer_trace(path: str, request: Request) -> Response:
+    target = _trace_target()
+    if not target:
+        raise HTTPException(status_code=503, detail="no trace server registered (launch transformer_server.py on a GPU job)")
+    url = f"{target.rstrip('/')}/{path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+    body = await request.body()
+
+    def _forward() -> tuple[int, bytes, str]:
+        import json as _json
+        import urllib.error as _urlerr
+        import urllib.request as _urlreq
+
+        req = _urlreq.Request(url, data=body if request.method == "POST" else None, method=request.method)
+        req.add_header("x-trace-token", request.headers.get("x-trace-token", ""))
+        if request.method == "POST":
+            req.add_header("content-type", request.headers.get("content-type", "application/json"))
+        try:
+            with _urlreq.urlopen(req, timeout=TRACE_TIMEOUT_S) as resp:
+                return resp.status, resp.read(), resp.headers.get("content-type") or "application/json"
+        except _urlerr.HTTPError as e:
+            return e.code, e.read(), e.headers.get("content-type") or "application/json"
+        except OSError as e:
+            return 503, _json.dumps({"detail": f"trace server unreachable: {e}"}).encode(), "application/json"
+
+    status, data, ctype = await run_in_threadpool(_forward)
+    return Response(content=data, status_code=status, media_type=ctype)
 
 # Endpoints below run blocking subprocess calls (squeue, scontrol, tmux, ssh to
 # compute nodes). They must be plain `def`, not `async def`: FastAPI runs sync
