@@ -1,16 +1,17 @@
 "use client";
 
-import { getSource, useTransformer } from "../state";
+import { getSource, producingStep, useTransformer } from "../state";
 import { heat } from "../lib/color";
 import { Band } from "./strata";
 
 // All query heads of one attention block, tiled by GQA group (heads in a group
-// share one K/V head). Tile color = that head's output norm at the selected
-// position. Click a head to open its attention-into-the-past stratum.
+// share one K/V head). Tile color = that head's output norm in the pass that
+// produced the selected token. Click a head to open its attention view.
 export default function HeadsStratum({ layer }: { layer: number }) {
   const { trace, selected, open, toggle } = useTransformer();
   const cfg = getSource().model;
-  const norms = trace?.steps[selected]?.layers[layer]?.headNorms;
+  const stepIdx = producingStep(selected);
+  const norms = trace && stepIdx >= 0 ? trace.steps[stepIdx]?.layers[layer]?.headNorms : undefined;
   const maxN = norms ? Math.max(...norms, 1e-9) : 1;
   const perGroup = cfg.nHeads / cfg.nKvHeads;
 
