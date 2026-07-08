@@ -67,6 +67,7 @@ import { frequencyLabel } from "../lib/frequency-label";
 import { ChipLabel } from "./glyphs";
 import { CountBadge } from "./badge";
 import { Popover } from "./popover";
+import HelpPopup from "./help-popup";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -438,6 +439,12 @@ export default function BrewGraph({
 
         {/* the ceremony overlay */}
         {ceremony && <Ceremony tint={ceremony.tint} k={ceremony.k} name={ceremony.name} />}
+
+        {/* the "?" help affordance — a stage-corner button, never in a drawer
+            (DESIGN.md §6 "A '?' help button sits in a corner of the stage"). */}
+        <div className="absolute bottom-3 right-3 z-[75]">
+          <HelpPopup />
+        </div>
       </div>
 
       {/* the Brew action — appears when a recipe is satisfied */}

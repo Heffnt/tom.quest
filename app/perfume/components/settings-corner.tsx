@@ -1,11 +1,12 @@
 "use client";
 
-// The SETTINGS CORNER (DESIGN.md §6 "Settings corner holds mute and site
-// instructions"). A gear affordance that lives at the right end of the top bar
-// and opens a small panel with:
-//   • a MUTE toggle (persisted via useSound; Phase-4 audio reads the same flag)
-//   • "How it works" — concise player-facing instructions drawn from the spec
+// The SETTINGS CORNER (DESIGN.md §6 "Settings corner"). A gear affordance that
+// lives at the right end of the top bar and opens a small panel holding ONLY:
+//   • a MUTE toggle (persisted via useSound; the ceremony audio reads the flag)
 //   • register / leave-party actions (registration is click-to-join)
+//
+// The old "How it works" text has moved to the stage-corner help popup
+// (components/help-popup.tsx) — the gear no longer carries instructions.
 //
 // The panel is a portal popover anchored under the gear, dismissed on
 // outside-click / Escape. It only presents actions; the orchestrator wires join
@@ -133,59 +134,6 @@ function SettingsPanel({
           {muted ? "muted" : "sound on"}
         </button>
       </div>
-
-      <div className="my-3 h-px bg-border" />
-
-      {/* how it works */}
-      <details className="group">
-        <summary className="flex cursor-pointer list-none items-center justify-between font-mono text-xs uppercase tracking-wider text-text-muted">
-          How it works
-          <span className="text-text-faint transition-transform group-open:rotate-90">
-            ▸
-          </span>
-        </summary>
-        <div className="mt-2 space-y-1.5 text-[11px] leading-relaxed text-text-faint">
-          <p>
-            <strong className="text-text-muted">Brews.</strong> A brew is a
-            shared, pass-around workspace. Drag ingredients from an inventory into
-            the brew graph; their frequencies combine toward a perfume&apos;s
-            recipe.
-          </p>
-          <p>
-            <strong className="text-text-muted">Real vs. hypothetical.</strong>{" "}
-            Solid items are real stock; dashed items are what-if placeholders. Fill
-            hypotheticals from inventory before you can brew.
-          </p>
-          <p>
-            <strong className="text-text-muted">Brew controls.</strong> Three
-            controls act on the whole brew: <em>Fill</em> makes every hypothetical
-            real, <em>Return</em> sends real ingredients back to their owners, and{" "}
-            <em>Empty</em> clears the brew.
-          </p>
-          <p>
-            <strong className="text-text-muted">Brewing.</strong> When a
-            brew&apos;s tally matches a recipe (or a whole multiple of it), brew it
-            to place the perfume(s) on the cauldron. Brewing spends your real
-            ingredients for good.
-          </p>
-          <p>
-            <strong className="text-text-muted">Taking &amp; gifting.</strong> Take
-            perfumes off the cauldron into your inventory. Gift an item by dragging
-            it onto a member&apos;s inventory tab — instant, no acceptance step.
-          </p>
-          <p>
-            <strong className="text-text-muted">Party &amp; ownership.</strong> The
-            party brew is open to everyone. On your own brews you own the stock;
-            others may rearrange where items sit but never change what you own.
-            Hand a brew off to pass ownership, or copy any brew to make your own.
-          </p>
-          <p>
-            <strong className="text-text-muted">Pin.</strong> Pin one recipe to a
-            brew to see ghost slots for what it still needs. Undo/redo affects only
-            your own moves; brewing, taking and gifting are permanent.
-          </p>
-        </div>
-      </details>
 
       <div className="my-3 h-px bg-border" />
 
