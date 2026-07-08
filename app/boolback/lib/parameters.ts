@@ -23,6 +23,9 @@ import { fnText, shortModel } from "./format";
 
 export type { Channel };
 
+/** Origin bucket for the config panel's collapsible parameter sections. */
+export type ParamSection = "function" | "dataset" | "training" | "judge";
+
 export interface ParameterDef {
   key: string;
   label: string;
@@ -37,16 +40,22 @@ export interface ParameterDef {
    *  filter over function identity in a later phase), so its filter UI is
    *  inert for now. */
   facetKey?: FacetKey;
+  /** Which origin section the config panel groups this parameter under. */
+  section: ParamSection;
+  /** Judge never pools (cmt pool_guard): pinned split, never averaged/faceted. */
+  alwaysSplit?: boolean;
 }
 
 const facetParam = (
   facetKey: FacetKey,
+  section: ParamSection,
   opts: Partial<ParameterDef> = {},
 ): ParameterDef => ({
   key: facetKey,
   label: FACET_LABELS[facetKey],
   raw: (r) => facetValue(r, facetKey),
   facetKey,
+  section,
   ...opts,
 });
 
@@ -56,25 +65,26 @@ export const PARAMETERS: ParameterDef[] = [
     key: "function",
     label: "Function",
     raw: (r) => fnText(r.function.arity, r.function.truth_table),
+    section: "function",
   },
-  facetParam("arity", { numericSort: true }),
-  facetParam("source"),
-  facetParam("task"),
-  facetParam("trigger_form"),
-  facetParam("target_behavior"),
-  facetParam("target_phrase"),
-  facetParam("row_distribution"),
-  facetParam("scheme"),
-  facetParam("samples_per_row", { numericSort: true }),
-  facetParam("backdoor_ratio", { numericSort: true }),
-  facetParam("base_model", { display: shortModel }),
-  facetParam("tuning"),
-  facetParam("backend"),
-  facetParam("lr", { numericSort: true }),
-  facetParam("epochs", { numericSort: true }),
-  facetParam("seed", { numericSort: true }),
-  facetParam("judge"),
-  facetParam("split"),
+  facetParam("arity", "function", { numericSort: true }),
+  facetParam("source", "dataset"),
+  facetParam("task", "dataset"),
+  facetParam("trigger_form", "dataset"),
+  facetParam("target_behavior", "dataset"),
+  facetParam("target_phrase", "dataset"),
+  facetParam("row_distribution", "dataset"),
+  facetParam("scheme", "dataset"),
+  facetParam("samples_per_row", "dataset", { numericSort: true }),
+  facetParam("backdoor_ratio", "dataset", { numericSort: true }),
+  facetParam("base_model", "training", { display: shortModel }),
+  facetParam("tuning", "training"),
+  facetParam("backend", "training"),
+  facetParam("lr", "training", { numericSort: true }),
+  facetParam("epochs", "training", { numericSort: true }),
+  facetParam("seed", "training", { numericSort: true }),
+  facetParam("judge", "judge", { alwaysSplit: true }),
+  facetParam("split", "judge"),
 ];
 
 export interface ParamValues {

@@ -1,78 +1,33 @@
-// app/boolback/lib/presets.ts — tolerant hydration of saved filter sets / views.
+// app/boolback/lib/presets.ts — saved views (Phase 5).
 //
-// A preset must NEVER crash the page: unknown keys are ignored, missing keys
-// defaulted, and each config runs through its sanitizer so a hand-corrupted or
-// stale blob applies PARTIALLY rather than throwing.
+// A preset is ONE kind now: a named snapshot of the active view's VIEW-SPEC
+// (lib/spec.ts). `save` stores `{ name, spec }` in the Convex boolbackPresets
+// `state` field (the ViewSpec object verbatim); `apply` parses it back to a
+// ViewSpec and assigns it into the matching view. Old two-kind presets
+// (kind=filters / the legacy view blob) do NOT migrate — hydratePresetSpec
+// returns null for anything that isn't a v3 spec, so a stale row simply no-ops.
 //
-// NOTE (Phase 1): this is the interim shape. Phase 5 replaces presets with the
-// text VIEW-SPEC (one kind, {name, spec}); the Convex query/table are left
-// intact here so nothing breaks in the meantime — only the in-memory shapes
-// were re-pointed at the new per-view configs.
+// A preset must NEVER crash the page: hydration is tolerant (parseSpec) and
+// never throws.
 
-import type {
-  FilterState, PlotConfig, GroupPlotConfig, TableConfig,
-} from "./types";
-import {
-  sanitizeFilters, sanitizePlotConfig, sanitizeGroupPlotConfig, sanitizeTableConfig,
-} from "./types";
-import type { CenterView } from "../components/table-pane";
+import type { FilterState } from "./types";
+import { parseSpec, type ViewSpec } from "./spec";
 
-export type PresetKind = "filters" | "view";
-export const PRESET_SCHEMA_VERSION = 2;
-
-/** kind=filters: just a FilterState (applied to the active view). */
-export interface FiltersPresetState {
-  filters: FilterState;
-}
-/** kind=view: a full workspace snapshot (all three configs + which view). */
-export interface ViewPresetState {
-  centerView: CenterView;
-  table: TableConfig;
-  plot: PlotConfig;
-  groupPlot: GroupPlotConfig;
-}
-
-export interface HydratedFilters {
-  kind: "filters";
-  filters: FilterState;
-}
-export interface HydratedView {
-  kind: "view";
-  centerView: CenterView | null;
-  table: TableConfig;
-  plot: PlotConfig;
-  groupPlot: GroupPlotConfig;
-}
-export type HydratedPreset = HydratedFilters | HydratedView;
-
-/** Map a legacy/foreign center-view string ("chart" → "plot"); null if unknown. */
-function normView(v: unknown): CenterView | null {
-  if (v === "chart") return "plot";
-  return v === "table" || v === "plot" || v === "groupplot" || v === "anatomy" ? v : null;
-}
-
-export { sanitizeFilters };
+/** Bumped for the spec-based single-kind rewrite (was 2 for the two-kind era). */
+export const PRESET_SCHEMA_VERSION = 3;
 
 /**
- * Hydrate a preset's `state` for application. Tolerant of any malformed input.
- * `fallbackCols` seeds the table's visibleCols when the blob has none.
+ * Coerce a stored preset `state` (opaque JSON — object or string) to a valid
+ * ViewSpec, or null when it isn't a v3 spec (legacy rows never migrate).
+ * Tolerant: never throws.
  */
-export function hydratePreset(
-  kind: PresetKind,
-  state: unknown,
-  fallbackCols: string[],
-): HydratedPreset {
-  const s = (state && typeof state === "object" ? state : {}) as Record<string, unknown>;
-  if (kind === "filters") {
-    return { kind: "filters", filters: sanitizeFilters(s.filters) };
+export function hydratePresetSpec(state: unknown): ViewSpec | null {
+  try {
+    const text = typeof state === "string" ? state : JSON.stringify(state);
+    return parseSpec(text);
+  } catch {
+    return null;
   }
-  return {
-    kind: "view",
-    centerView: normView(s.centerView),
-    table: sanitizeTableConfig(s.table, fallbackCols),
-    plot: sanitizePlotConfig(s.plot),
-    groupPlot: sanitizeGroupPlotConfig(s.groupPlot),
-  };
 }
 
 /** A default preset name suggested from the active filter chips. */
@@ -86,5 +41,5 @@ export function suggestPresetName(filters: FilterState): string {
     if (parts.length >= 2) break;
     parts.push(`${r.metric} sweep`);
   }
-  return parts.join(" · ") || "preset";
+  return parts.join(" · ") || "view";
 }
