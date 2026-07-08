@@ -100,8 +100,15 @@ if (missingEmblems.length > 0) {
 }
 for (const id of namedIds) {
   const e = emblems[id];
-  if (!e || typeof e.icon !== "string" || typeof e.d !== "string") {
+  if (!e || typeof e !== "object" || Array.isArray(e)) {
+    fail(`emblems.json: entry "${id}" must be an object`);
+  }
+  if (typeof e.icon !== "string" || typeof e.d !== "string") {
     fail(`emblems.json: entry "${id}" must have string "icon" and "d" fields`);
+  }
+  const extraKeys = Object.keys(e).filter((k) => k !== "icon" && k !== "d");
+  if (extraKeys.length > 0) {
+    fail(`emblems.json: entry "${id}" must be exactly {icon, d}, found extra field(s): ${extraKeys.join(", ")}`);
   }
 }
 

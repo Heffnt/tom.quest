@@ -27,6 +27,11 @@
   --text-3xl:  1.875rem;
   --text-4xl:  2.25rem;
   --text-5xl:  3rem;
+
+  /* Perfume "real vs. hypothetical" ingredient tokens (Perfumer's Bench). */
+  /* --pf-real: parchment tan sampled from Joe's ingredient PDF ground (Byobu extract_art.py page-ground sample). */
+  --pf-real:         #ebd3b6;
+  --pf-hypothetical: #111827; /* reuse --color-surface, tom.quest's slate surface */
 }
 
 body {
