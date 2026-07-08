@@ -1,14 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { baseIngredients, basePerfumes, pureIngredients } from "../data/base";
 import type { Inventory } from "./brew-types";
-import { EMPTY_INVENTORY } from "./brew-types";
-import {
-  addCount,
-  formatInventory,
-  getCount,
-  parseInventoryText,
-  removeCount,
-} from "./inventory";
+import { EMPTY_INVENTORY, inventorySectionFor } from "./brew-types";
+import { formatInventory, parseInventoryText } from "./inventory";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,58 +20,6 @@ function parseOne(line: string) {
   expect(rows.length).toBe(1);
   return rows[0];
 }
-
-// ── 1. Count ops ─────────────────────────────────────────────────────────────
-
-describe("count ops", () => {
-  it("getCount defaults to 0 and auto-sections by key prefix", () => {
-    expect(getCount(EMPTY_INVENTORY, "base:Noble Roses")).toBe(0);
-    const inv = addCount(
-      addCount(EMPTY_INVENTORY, "base:Noble Roses", 3),
-      "pure:strike",
-      2,
-    );
-    expect(inv.ingredients).toEqual({ "base:Noble Roses": 3 });
-    expect(inv.pures).toEqual({ "pure:strike": 2 });
-    expect(getCount(inv, "base:Noble Roses")).toBe(3);
-    expect(getCount(inv, "pure:strike")).toBe(2);
-  });
-
-  it("perfume keys need the explicit perfumes section", () => {
-    const inv = addCount(EMPTY_INVENTORY, "base:black-gas", 2, "perfumes");
-    expect(inv.perfumes).toEqual({ "base:black-gas": 2 });
-    expect(inv.ingredients).toEqual({});
-    expect(getCount(inv, "base:black-gas", "perfumes")).toBe(2);
-    // auto-section would (wrongly) look in ingredients
-    expect(getCount(inv, "base:black-gas")).toBe(0);
-  });
-
-  it("removeCount clamps at zero and drops the key entirely", () => {
-    const inv = addCount(EMPTY_INVENTORY, "base:Brightflower", 3);
-    expect(removeCount(inv, "base:Brightflower", 1).ingredients).toEqual({
-      "base:Brightflower": 2,
-    });
-    expect(removeCount(inv, "base:Brightflower", 3).ingredients).toEqual({});
-    expect(removeCount(inv, "base:Brightflower", 99).ingredients).toEqual({});
-    expect(removeCount(inv, "base:Never Owned").ingredients).toEqual({
-      "base:Brightflower": 3,
-    });
-  });
-
-  it("ops are immutable: inputs (even frozen ones) are never touched", () => {
-    const inv = addCount(EMPTY_INVENTORY, "base:Silver", 1);
-    expect(EMPTY_INVENTORY.ingredients).toEqual({});
-    const after = removeCount(inv, "base:Silver", 1);
-    expect(inv.ingredients).toEqual({ "base:Silver": 1 });
-    expect(after.ingredients).toEqual({});
-  });
-
-  it("non-positive n is a no-op", () => {
-    const inv = addCount(EMPTY_INVENTORY, "base:Silver", 1);
-    expect(addCount(inv, "base:Silver", 0)).toBe(inv);
-    expect(removeCount(inv, "base:Silver", -2)).toBe(inv);
-  });
-});
 
 // ── 2. Parser tolerance table ────────────────────────────────────────────────
 
@@ -198,15 +140,17 @@ describe("formatInventory", () => {
   it("round-trips through the parser", () => {
     const rows = parseInventoryText(formatInventory(inv, FULL_CATALOG), FULL_CATALOG);
     const perfumeKeys = new Set(basePerfumes.map((p) => p.key));
-    let rebuilt = EMPTY_INVENTORY;
+    const rebuilt: Inventory = {
+      ingredients: {},
+      pures: {},
+      perfumes: {},
+      perfumeInstances: [],
+    };
     for (const row of rows) {
       expect(row.itemKey, row.line).not.toBeNull();
-      rebuilt = addCount(
-        rebuilt,
-        row.itemKey!,
-        row.count,
-        perfumeKeys.has(row.itemKey!) ? "perfumes" : undefined,
-      );
+      const key = row.itemKey!;
+      const section = perfumeKeys.has(key) ? "perfumes" : inventorySectionFor(key);
+      rebuilt[section][key] = (rebuilt[section][key] || 0) + row.count;
     }
     expect(rebuilt).toEqual(inv);
   });

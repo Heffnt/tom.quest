@@ -22,7 +22,7 @@ import { named } from "../data/base";
 // A multiset is a Record<frequency, count>. Counts are positive integers; a
 // frequency with count 0 should be absent from the map.
 
-export function msAdd(ms: Multiset, id: string, k = 1): void {
+function msAdd(ms: Multiset, id: string, k = 1): void {
   ms[id] = (ms[id] || 0) + k;
 }
 
@@ -85,7 +85,7 @@ export function msIsSubset(a: Multiset, b: Multiset): boolean {
 // ── Brew tallies ─────────────────────────────────────────────────────────────
 
 // Sum of every ingredient's emitted frequencies.
-export function baseTally(ingredients: Ingredient[]): Multiset {
+function baseTally(ingredients: Ingredient[]): Multiset {
   const ms: Multiset = {};
   for (const ing of ingredients) {
     for (const freq of ing.emits) msAdd(ms, freq);
@@ -123,7 +123,7 @@ export function effectiveTally(brew: BrewState): Multiset {
 }
 
 // Strike/wild charges still available: total granted minus the ones already played.
-export function availableCharges(brew: BrewState): {
+function availableCharges(brew: BrewState): {
   strike: number;
   wild: number;
 } {
@@ -143,10 +143,35 @@ export type DerivedCombination = { id: string; consumed: string[] };
 // fuse into bigger ones).
 const NAMED_BY_WEIGHT = [...named].sort((a, b) => a.weight - b.weight);
 
-// Auto-combination: whenever the brew holds every component of a named
-// frequency, those components fuse into it. Runs to a fixpoint (cheapest
-// first, chains allowed — a derived frequency can itself be consumed by a
-// bigger one). The consumed components no longer count toward perfumes; only
+// Auto-combination fast core: whenever the pool holds every component of a
+// named frequency, those components fuse into it. Runs to a fixpoint
+// (cheapest first, chains allowed — a derived frequency can itself be
+// consumed by a bigger one). This is the hot path used by brewTally/evalReq;
+// it does not track WHICH combinations fired, so it never allocates the
+// derived[] list — use the exported combineFrequencies for that.
+function combineTally(pool: Multiset): { tally: Multiset } {
+  const tally: Multiset = { ...pool };
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const n of NAMED_BY_WEIGHT) {
+      const comps = msFromList(n.components);
+      while (msIsSubset(comps, tally)) {
+        for (const k in comps) {
+          tally[k] -= comps[k];
+          if (tally[k] === 0) delete tally[k];
+        }
+        msAdd(tally, n.id);
+        changed = true;
+      }
+    }
+  }
+  return { tally };
+}
+
+// Same fixpoint as combineTally, but also records every combination that
+// fired (for tests and traceCombination-adjacent callers that need to show
+// their work). The consumed components no longer count toward perfumes; only
 // the tally AFTER combination does.
 export function combineFrequencies(pool: Multiset): {
   tally: Multiset;
@@ -176,7 +201,7 @@ export function combineFrequencies(pool: Multiset): {
 // The frequencies the brew counts for perfumes: strikes and wilds applied
 // to the raw emissions, then auto-combination.
 export function brewTally(brew: BrewState): Multiset {
-  return combineFrequencies(effectiveTally(brew)).tally;
+  return combineTally(effectiveTally(brew)).tally;
 }
 
 // ── Instance-level combination trace ─────────────────────────────────────────
@@ -286,9 +311,9 @@ export function evalReq(
   reqIndex = 0,
 ): EvalResult {
   const rawB = effectiveTally(brew);
-  const combB = combineFrequencies(rawB).tally;
+  const combB = combineTally(rawB).tally;
   const rawR = msFromList(req);
-  const combR = combineFrequencies(rawR).tally;
+  const combR = combineTally(rawR).tally;
   const charges = availableCharges(brew);
   const S = charges.strike;
   const W = charges.wild;

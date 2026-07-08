@@ -70,8 +70,6 @@ export interface PerfumePanelProps {
   // WHERE-move permission (DESIGN.md §4). False for a visitor / another
   // member's brew where the book is browse-only — the fold frames don't grab.
   canMove: boolean;
-  // Hover preview for the brew bar (never the cauldron graph); null on leave.
-  onHover: (itemKey: string | null) => void;
   // Copies of each catalog item in the brew — a fold frame's icon ghosts while
   // its ingredient has copies in the brew ("you took the icon").
   brewCounts: Record<string, number>;
@@ -290,7 +288,6 @@ export default function PerfumePanel({
   canPin,
   hand,
   canMove,
-  onHover,
   brewCounts,
   onShiftToBrew,
 }: PerfumePanelProps) {
@@ -403,7 +400,6 @@ export default function PerfumePanel({
               onToggleExpanded={toggleExpanded}
               hand={hand}
               canMove={canMove}
-              onHover={onHover}
               brewCounts={brewCounts}
               onShiftToBrew={onShiftToBrew}
             />
@@ -555,7 +551,6 @@ function RecipeItemFrame({
   qty,
   hand,
   canMove,
-  onHover,
   brewCounts,
   onShiftToBrew,
 }: {
@@ -563,7 +558,6 @@ function RecipeItemFrame({
   qty: number;
   hand: BrewHand;
   canMove: boolean;
-  onHover: (itemKey: string | null) => void;
   brewCounts: Record<string, number>;
   onShiftToBrew: (itemKey: string) => void;
 }) {
@@ -588,7 +582,6 @@ function RecipeItemFrame({
     inBrew,
     hand,
     canMove,
-    onHover,
     onShiftToBrew,
   });
   const art: FrameItem = { key: ing.key, name: ing.name, color: ing.color, real: false, ing };
@@ -625,7 +618,6 @@ function ComboRow({
   strikes,
   hand,
   canMove,
-  onHover,
   brewCounts,
   onShiftToBrew,
 }: {
@@ -633,7 +625,6 @@ function ComboRow({
   strikes: number;
   hand: BrewHand;
   canMove: boolean;
-  onHover: (itemKey: string | null) => void;
   brewCounts: Record<string, number>;
   onShiftToBrew: (itemKey: string) => void;
 }) {
@@ -648,7 +639,6 @@ function ComboRow({
           qty={qty}
           hand={hand}
           canMove={canMove}
-          onHover={onHover}
           brewCounts={brewCounts}
           onShiftToBrew={onShiftToBrew}
         />
@@ -680,7 +670,6 @@ function PerfumeRow({
   onToggleExpanded,
   hand,
   canMove,
-  onHover,
   brewCounts,
   onShiftToBrew,
 }: {
@@ -695,7 +684,6 @@ function PerfumeRow({
   onToggleExpanded: (key: string) => void;
   hand: BrewHand;
   canMove: boolean;
-  onHover: (itemKey: string | null) => void;
   brewCounts: Record<string, number>;
   onShiftToBrew: (itemKey: string) => void;
 }) {
@@ -773,7 +761,6 @@ function PerfumeRow({
             satisfied={satisfied}
             hand={hand}
             canMove={canMove}
-            onHover={onHover}
             brewCounts={brewCounts}
             onShiftToBrew={onShiftToBrew}
           />
@@ -835,7 +822,6 @@ function RecipeFolds({
   satisfied,
   hand,
   canMove,
-  onHover,
   brewCounts,
   onShiftToBrew,
 }: {
@@ -848,7 +834,6 @@ function RecipeFolds({
   satisfied: Map<number, number>;
   hand: BrewHand;
   canMove: boolean;
-  onHover: (itemKey: string | null) => void;
   brewCounts: Record<string, number>;
   onShiftToBrew: (itemKey: string) => void;
 }) {
@@ -899,7 +884,6 @@ function RecipeFolds({
                         strikes={combo.strikes}
                         hand={hand}
                         canMove={canMove}
-                        onHover={onHover}
                         brewCounts={brewCounts}
                         onShiftToBrew={onShiftToBrew}
                       />

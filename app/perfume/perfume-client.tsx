@@ -1,12 +1,10 @@
 "use client";
 
-// The brew orchestrator (integrator seat — DESIGN.md §§4,6,9). Mode splits into
-// two subcomponents because hooks cannot be conditional: LivePerfume mounts the
-// Convex brew store, the top bar, presence and the nickname flow; LocalPerfume
-// (?local=1, or no NEXT_PUBLIC_CONVEX_URL) mounts the localStorage store and
-// nothing networked. Both feed BrewView, which mounts the center-stage BrewGraph
-// directly from the multi-brew store (BrewSnapshot/BrewActions) alongside the
-// input panel and the perfume book.
+// The brew orchestrator (integrator seat — DESIGN.md §§4,6,9). PerfumeClient
+// mounts the Convex brew store, the top bar, presence and the nickname flow,
+// and feeds BrewView, which mounts the center-stage BrewGraph directly from
+// the multi-brew store (BrewSnapshot/BrewActions) alongside the input panel
+// and the perfume book.
 //
 // Route context: /perfume opens your most recent brew (the party brew for a
 // visitor); a deep link /perfume/b/[id] passes brewId and opens that brew.
@@ -38,7 +36,6 @@ import {
   hypotheticalBlockers,
   sectionForKey,
   useConvexBrewStore,
-  useLocalBrewStore,
   type BrewStoreResult,
 } from "./lib/brew-store";
 import {
@@ -59,35 +56,7 @@ import SettingsCorner from "./components/settings-corner";
 import { drawerHandle, cn } from "./components/ui";
 import Cursors from "./components/cursors";
 
-// ── mode split ───────────────────────────────────────────────────────────────
-
 export default function PerfumeClient({ brewId }: { brewId?: string }) {
-  // decided after mount so SSR needs neither the query string nor storage
-  const [mode, setMode] = useState<"local" | "live" | null>(null);
-  useEffect(() => {
-    const local =
-      new URLSearchParams(window.location.search).get("local") === "1" ||
-      !process.env.NEXT_PUBLIC_CONVEX_URL;
-    setMode(local ? "local" : "live");
-  }, []);
-  if (mode === null) return <Shell header={null}>{null}</Shell>;
-  return mode === "local" ? <LocalPerfume /> : <LivePerfume brewId={brewId} />;
-}
-
-// ── local mode (?local=1): no Convex hooks mounted, no top bar, no presence ──
-
-function LocalPerfume() {
-  const store = useLocalBrewStore();
-  // local practice: the single practice member is the viewer (the local store's
-  // brew owner); no other members exist to tab or gift to.
-  return (
-    <BrewView store={store} isAnon={false} viewerKey={store.snapshot?.owner ?? null} />
-  );
-}
-
-// ── live mode ────────────────────────────────────────────────────────────────
-
-function LivePerfume({ brewId }: { brewId?: string }) {
   const { user, isTom, loading: authLoading } = useAuth();
 
   // anonymous identity: minted (and persisted) once auth resolves logged-out
@@ -231,8 +200,8 @@ function LivePerfume({ brewId }: { brewId?: string }) {
 }
 
 // The input-panel member inventory tabs (DESIGN.md §Layout): one per registered
-// member, the VIEWER'S OWN FIRST. In local practice mode there are no members —
-// synthesize the viewer's own self tab so the "You" inventory tab still renders.
+// member, the VIEWER'S OWN FIRST. Before any members are registered, synthesize
+// the viewer's own self tab so the "You" inventory tab still renders.
 function memberTabsFor(
   members: MemberInfo[],
   viewerKey: string | null,
@@ -318,13 +287,6 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
     if (typeof window === "undefined") return null;
     return `${window.location.origin}/perfume/b/${store.brewId}`;
   }, [store.brewId]);
-
-  // ---- hover: panels report keys; ONLY the brew bar previews them ----
-  // hover reporting: the panels report a hovered key; the perfume book renders
-  // its own delta preview. The graph never reacts to hover (the graph IS the
-  // math), so the client only needs to hold the key for the book.
-  const [, setHoverKey] = useState<string | null>(null);
-  const onHover = useCallback((key: string | null) => setHoverKey(key), []);
 
   // ---- shift-click teleports: direct one-unit moves, no hand involved ----
   const onShiftToBrew = useCallback(
@@ -442,7 +404,6 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
       onImport={actions.importInventory}
       onGift={onGift}
       onSelectMemberTab={store.selectMemberTab}
-      onHover={onHover}
       onShiftToBrew={onShiftToBrew}
       onUnbrewOne={onUnbrewOne}
     />
@@ -458,7 +419,6 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
       canPin={permissions.pin}
       hand={hand}
       canMove={permissions.moveItems}
-      onHover={onHover}
       brewCounts={brewCounts}
       onShiftToBrew={onShiftToBrew}
     />

@@ -1,9 +1,10 @@
 // Shared bits for the perfume specs (e2e/perfume.spec.ts).
-// Single-user specs run on /perfume?local=1 (the local brew store — no Convex
-// traffic) with ?seed=basic, the deterministic inventory defined in
-// app/perfume/lib/brew-store.ts: 3× Noble Roses (emits A,A), 2× Aphasia
-// Flower (Crallax,En), 1× Pemneath Peat (N,N), 1× Shadow Demon Liver (⊖⊖),
-// 2× Pure Strike.
+//
+// TODO(P8): practice mode (?local=1 / ?seed=) was removed in P1. openLocalBrew
+// below and the single-user describe block that calls it are parked (skipped)
+// until P8 rebuilds the whole suite against a local `convex dev` deployment
+// with a dev-only testSeed mutation. The ?local/?seed URL here is deliberately
+// retained dead code awaiting that rewrite — not an oversight.
 
 import { expect, type Locator, type Page } from "@playwright/test";
 

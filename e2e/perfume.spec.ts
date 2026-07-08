@@ -26,7 +26,8 @@ import {
 // retries (against a by-then warm server) absorb it deterministically.
 test.describe.configure({ retries: 2, timeout: 60_000 });
 
-test.describe("perfume brew — local mode", () => {
+// TODO(P8): rebuild against convex dev — practice mode removed in P1
+test.describe.skip("perfume brew — local mode", () => {
   // the hand grammar needs the three-column (lg) layout: panels side by side
   test.skip(
     ({ viewport }) => !!viewport && viewport.width < 1024,

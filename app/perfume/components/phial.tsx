@@ -63,34 +63,3 @@ export function PhialGlyph({
     </svg>
   );
 }
-
-export interface PhialProps {
-  name: string;
-  count: number;
-  size?: number; // glyph px diameter, matching the 44px frequency chips
-  dimmed?: boolean; // takeless viewers see the cauldron outputs, faded
-}
-
-export default function Phial({ name, count, size = 44, dimmed = false }: PhialProps) {
-  return (
-    <span
-      className="flex flex-col items-center gap-1"
-      style={{ opacity: dimmed ? 0.55 : 1 }}
-    >
-      <span className="relative">
-        <PhialGlyph size={size} />
-        {count > 1 && (
-          <span className="absolute -right-2 -top-1 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
-            ×{count}
-          </span>
-        )}
-      </span>
-      <span
-        className="pointer-events-none max-w-[84px] text-center font-mono text-[10px] uppercase leading-tight tracking-wide text-text"
-        style={{ textShadow: "0 1px 3px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.7)" }}
-      >
-        {name}
-      </span>
-    </span>
-  );
-}

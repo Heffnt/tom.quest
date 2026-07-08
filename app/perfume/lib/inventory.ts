@@ -3,54 +3,12 @@
 // import dialog. All ops are immutable: they return a new Inventory and never
 // touch the input.
 
-import type { ImportRow, Inventory, StackSection } from "./brew-types";
-import { inventorySectionFor } from "./brew-types";
+import type { ImportRow, Inventory } from "./brew-types";
 
 // The name lookup the parser/formatter needs — callers pass whatever slice of
 // the catalog the inventory may hold (ingredients + pures, plus perfumes for
 // formatting).
 export type CatalogEntry = { key: string; name: string };
-
-// ── count ops ────────────────────────────────────────────────────────────────
-// `section` defaults to the key's auto-section (pures vs ingredients).
-// Perfume keys look like ingredient keys ("base:<id>"), so callers touching
-// the perfumes section MUST pass it explicitly.
-
-export function getCount(
-  inv: Inventory,
-  itemKey: string,
-  section: StackSection = inventorySectionFor(itemKey),
-): number {
-  return inv[section][itemKey] || 0;
-}
-
-export function addCount(
-  inv: Inventory,
-  itemKey: string,
-  n = 1,
-  section: StackSection = inventorySectionFor(itemKey),
-): Inventory {
-  if (n <= 0) return inv;
-  return {
-    ...inv,
-    [section]: { ...inv[section], [itemKey]: (inv[section][itemKey] || 0) + n },
-  };
-}
-
-// Clamps at zero; a zeroed count is deleted so sections never carry dead keys.
-export function removeCount(
-  inv: Inventory,
-  itemKey: string,
-  n = 1,
-  section: StackSection = inventorySectionFor(itemKey),
-): Inventory {
-  if (n <= 0) return inv;
-  const have = inv[section][itemKey] || 0;
-  const next = { ...inv[section] };
-  if (have - n <= 0) delete next[itemKey];
-  else next[itemKey] = have - n;
-  return { ...inv, [section]: next };
-}
 
 // ── import parsing ───────────────────────────────────────────────────────────
 // Catalog names contain only letters, apostrophes and spaces, and never

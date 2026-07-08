@@ -28,8 +28,7 @@ import { btn, cn } from "./ui";
 // Shared by inventory slots and catalog rows: pointer-down picks up (the hand
 // owns drag tracking and the boundary rule from there), shift-click teleports
 // one unit to the brew, right-click returns one from a held stack or — with an
-// empty hand on an in-brew item — puts one back to inventory. Hover only
-// reports the key; what previews where is the client's business.
+// empty hand on an in-brew item — puts one back to inventory.
 
 export type GrabSpec = {
   itemKey: string;
@@ -38,7 +37,6 @@ export type GrabSpec = {
   inBrew: number;
   hand: BrewHand;
   canMove: boolean;
-  onHover: (itemKey: string | null) => void;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
 };
@@ -50,8 +48,6 @@ export function grabHandlers(spec: GrabSpec) {
     h && h.itemKey === spec.itemKey && h.from === spec.from ? h.count : 0;
   const room = spec.available - held;
   return {
-    onMouseEnter: () => spec.onHover(spec.itemKey),
-    onMouseLeave: () => spec.onHover(null),
     // press only ARMS a potential drag; the pickup itself happens on click so
     // it cooperates with the hand's click/drag guards (a pickup on pointerdown
     // would be canceled by its own trailing click, and a drag release would
@@ -130,7 +126,6 @@ export interface InventoryGridProps {
   canMove: boolean;
   canTransfer: boolean;
   members: { memberKey: string; name: string }[];
-  onHover: (itemKey: string | null) => void;
   onTransfer: (toMemberKey: string, itemKey: string, n: number) => void;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
@@ -144,7 +139,6 @@ export default function InventoryGrid({
   canMove,
   canTransfer,
   members,
-  onHover,
   onTransfer,
   onShiftToBrew,
   onUnbrewOne,
@@ -172,7 +166,6 @@ export default function InventoryGrid({
                   hand={hand}
                   canMove={canMove}
                   showSend={canTransfer && members.length > 0}
-                  onHover={onHover}
                   onShiftToBrew={onShiftToBrew}
                   onUnbrewOne={onUnbrewOne}
                   onSend={setSend}
@@ -212,7 +205,6 @@ function Slot({
   hand,
   canMove,
   showSend,
-  onHover,
   onShiftToBrew,
   onUnbrewOne,
   onSend,
@@ -221,7 +213,6 @@ function Slot({
   hand: BrewHand;
   canMove: boolean;
   showSend: boolean;
-  onHover: (itemKey: string | null) => void;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
   onSend: (a: SendAnchor) => void;
@@ -233,7 +224,6 @@ function Slot({
     inBrew: item.inBrew,
     hand,
     canMove,
-    onHover,
     // shift-teleport targets the brew — meaningless for perfume slots
     onShiftToBrew: item.ing ? onShiftToBrew : undefined,
     onUnbrewOne,

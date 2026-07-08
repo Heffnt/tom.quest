@@ -1,20 +1,10 @@
 "use client";
 
-// The two BrewStore implementations (DESIGN.md §§4,9). Both hand the client an
-// identical { members, index, snapshot, permissions, actions, presence, undo }
-// so the panels never know which world they are in.
-//
-// - useConvexBrewStore(brewKey) renders any brew (or the party brew) live
-//   through convex/brews.ts: reactive queries + mutations, optimistic where the
-//   old bench store was optimistic (browse UI is client-local here).
-// - useLocalBrewStore() is the ?local=1 practice brew — pure client state
-//   persisted to localStorage, a single practice member, brews verified with
-//   the same engine, no network.
-//
-// The item/inventory transforms in the local store deliberately mirror
-// convex/brews.ts (stock flips hypotheticals real before adding, removals take
-// hypotheticals first then real newest-first, plays trim to the recomputed
-// charge cap) so optimistic local behavior and the server never disagree.
+// The BrewStore (DESIGN.md §§4,9). useConvexBrewStore(brewKey) renders any
+// brew (or the party brew) live through convex/brews.ts: reactive queries +
+// mutations (browse UI is client-local here). It hands the client
+// { members, index, snapshot, permissions, actions, presence, undo } so the
+// panels never need to know anything beyond that contract.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
@@ -33,25 +23,17 @@ import {
   type BrewSnapshot,
   type Inventory,
   type MemberInfo,
-  type OutputInstance,
   type PerfumeInstance,
-  type PinnedRecipe,
   type PresenceEntry,
   type SharedUI,
   type StackSection,
-  type StrikePlay,
   type UndoState,
-  type WildPlay,
 } from "./brew-types";
-import { chargeTotals, evalReq } from "./engine";
 import { baseIngredients, basePerfumes, pureIngredients } from "../data/base";
 
 // The client sentinel for the party brew — resolved to the real party brew id
-// by the Convex store; a no-op in the local store (there is no party locally).
+// by the Convex store.
 export const PARTY_KEY = "party";
-const LOCAL_KEY = "pf:local-brew:v1";
-const LOCAL_MEMBER = "local";
-const LOCAL_BREW_ID = "local-brew";
 // A cursor kept (frozen) past freshness but dropped once this stale window
 // elapses — see PresenceEntry.stale.
 const PRESENCE_STALE_MS = 60_000;
@@ -112,26 +94,6 @@ export function hypotheticalBlockers(items: BrewItem[]): string[] {
   );
 }
 
-/** Perfume-key -> total count resting on the cauldron (the legacy tray view). */
-export function outputCounts(outputs: OutputInstance[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const o of outputs) out[o.perfumeId] = (out[o.perfumeId] ?? 0) + o.count;
-  return out;
-}
-
-// ── shared item/inventory transforms (mirror convex/brews.ts) ────────────────
-
-function stockOf(inv: Inventory, itemKey: string): number {
-  return inv[sectionForKey(itemKey)][itemKey] ?? 0;
-}
-
-function addStock(inv: Inventory, itemKey: string, n: number): void {
-  const section = inv[sectionForKey(itemKey)];
-  const next = (section[itemKey] ?? 0) + n;
-  if (next <= 0) delete section[itemKey];
-  else section[itemKey] = next;
-}
-
 function cloneInventory(inv: Inventory): Inventory {
   return {
     ingredients: { ...inv.ingredients },
@@ -141,71 +103,12 @@ function cloneInventory(inv: Inventory): Inventory {
   };
 }
 
-function itemIngredients(items: BrewItem[]): Ingredient[] {
-  return items
-    .map((p) => CATALOG.get(p.key))
-    .filter((i): i is Ingredient => !!i);
-}
-
-function trimPlays(
-  items: BrewItem[],
-  strikePlays: StrikePlay[],
-  wildPlays: WildPlay[],
-): { strikePlays: StrikePlay[]; wildPlays: WildPlay[] } {
-  const totals = chargeTotals(itemIngredients(items));
-  return {
-    strikePlays: strikePlays.slice(0, Math.max(0, totals.strike)),
-    wildPlays: wildPlays.slice(0, Math.max(0, totals.wild)),
-  };
-}
-
-// Stock first flips existing hypotheticals of the key to real, then backs new
-// real items; past stock the copies enter as hypotheticals.
-function addToBrew(
-  items: BrewItem[],
-  inv: Inventory,
-  itemKey: string,
-  n: number,
-  contributorKey: string,
-  contributorName: string,
-): void {
-  for (let i = 0; i < n; i++) {
-    if (stockOf(inv, itemKey) > 0) {
-      addStock(inv, itemKey, -1);
-      const idx = items.findIndex((p) => p.key === itemKey && !p.real);
-      if (idx >= 0) {
-        items[idx] = { key: itemKey, contributorKey, contributorName, real: true };
-      } else {
-        items.push({ key: itemKey, contributorKey, contributorName, real: true });
-      }
-    } else {
-      items.push({ key: itemKey, contributorKey, contributorName, real: false });
-    }
-  }
-}
-
-// Hypotheticals first, then real newest-first; returns how many REAL copies
-// came out (they go back to stock — hypotheticals just vanish).
-function removeFromBrew(items: BrewItem[], itemKey: string, n: number): number {
-  let removedReal = 0;
-  let remaining = n;
-  for (const wantReal of [false, true]) {
-    for (let i = items.length - 1; i >= 0 && remaining > 0; i--) {
-      if (items[i].key !== itemKey || items[i].real !== wantReal) continue;
-      if (items[i].real) removedReal++;
-      items.splice(i, 1);
-      remaining--;
-    }
-  }
-  return removedReal;
-}
-
-// ── the store contract both hooks return ─────────────────────────────────────
+// ── the store contract the hook returns ──────────────────────────────────────
 
 export type BrewStoreResult = {
-  /** All registered members, freshness-flagged (empty in local mode). */
+  /** All registered members, freshness-flagged. */
   members: MemberInfo[];
-  /** Top-bar brews grouped by member + the party brew (null in local mode). */
+  /** Top-bar brews grouped by member + the party brew. */
   index: BrewIndex | null;
   /** The open brew, or null while loading. */
   snapshot: BrewSnapshot | null;
@@ -228,322 +131,11 @@ export type BrewStoreResult = {
   loading: boolean;
   /** A deep link pointed at a brew that does not exist (bad/deleted/malformed
    * id). The client shows a "brew not found" state instead of crashing or
-   * hanging on the loading screen. Always false in local mode. */
+   * hanging on the loading screen. */
   notFound: boolean;
-  /** The resolved id of the brew on stage ("local-brew" locally). */
+  /** The resolved id of the brew on stage. */
   brewId: string | null;
 };
-
-// ── local store (?local=1 — no Convex, no members, no presence) ──────────────
-
-type LocalState = {
-  memberName: string;
-  color: string;
-  items: BrewItem[];
-  strikePlays: StrikePlay[];
-  wildPlays: WildPlay[];
-  inventory: Inventory;
-  outputs: OutputInstance[];
-  pinned: PinnedRecipe;
-  ui: SharedUI;
-};
-
-// ?seed=<name> (local mode only): deterministic starting inventories for the
-// Playwright specs (e2e/perfume.spec.ts). A seed replaces the persisted brew
-// and is never written back.
-const SEED_INVENTORIES: Record<string, Inventory> = {
-  basic: {
-    ingredients: {
-      "base:Noble Roses": 3,
-      "base:Aphasia Flower": 2,
-      "base:Pemneath Peat": 1,
-      "base:Shadow Demon Liver": 1,
-    },
-    pures: { "pure:strike": 2 },
-    perfumes: {},
-    perfumeInstances: [],
-  },
-};
-
-function defaultLocalState(): LocalState {
-  return {
-    memberName: "Perfumer",
-    color: "#6FE3C4",
-    items: [],
-    strikePlays: [],
-    wildPlays: [],
-    inventory: cloneInventory(EMPTY_INVENTORY),
-    outputs: [],
-    pinned: null,
-    ui: { ...DEFAULT_UI },
-  };
-}
-
-let localInstanceCounter = 0;
-function newLocalInstanceId(): string {
-  localInstanceCounter = (localInstanceCounter + 1) & 0xffff;
-  return `inst:${Date.now().toString(36)}:${localInstanceCounter.toString(36)}`;
-}
-
-export function useLocalBrewStore(): BrewStoreResult {
-  const [state, setState] = useState<LocalState>(defaultLocalState);
-  const loadedRef = useRef(false);
-
-  useEffect(() => {
-    const seed =
-      SEED_INVENTORIES[
-        new URLSearchParams(window.location.search).get("seed") ?? ""
-      ];
-    if (seed) {
-      // loadedRef stays false: a seeded brew never persists
-      setState({ ...defaultLocalState(), inventory: cloneInventory(seed) });
-      return;
-    }
-    try {
-      const raw = window.localStorage.getItem(LOCAL_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as Partial<LocalState>;
-        setState((prev) => ({
-          ...prev,
-          ...saved,
-          inventory: { ...cloneInventory(EMPTY_INVENTORY), ...saved.inventory },
-          ui: { ...DEFAULT_UI, ...saved.ui },
-        }));
-      }
-    } catch {
-      // corrupt or unavailable storage: start fresh
-    }
-    loadedRef.current = true;
-  }, []);
-
-  useEffect(() => {
-    if (!loadedRef.current) return;
-    try {
-      window.localStorage.setItem(LOCAL_KEY, JSON.stringify(state));
-    } catch {
-      // best effort
-    }
-  }, [state]);
-
-  const actions = useMemo<BrewActions>(() => {
-    const noAsync = async (): Promise<string | null> => null;
-    return {
-      moveToBrew: (itemKey, n) => {
-        if (!isIngredientKey(itemKey) || n < 1) return;
-        setState((s) => {
-          const items = [...s.items];
-          const inventory = cloneInventory(s.inventory);
-          addToBrew(items, inventory, itemKey, n, LOCAL_MEMBER, s.memberName);
-          return { ...s, items, inventory };
-        });
-      },
-      moveToInventory: (itemKey, n) => {
-        if (n < 1) return;
-        setState((s) => {
-          const items = [...s.items];
-          const returned = removeFromBrew(items, itemKey, n);
-          const inventory = cloneInventory(s.inventory);
-          addStock(inventory, itemKey, returned);
-          return { ...s, items, inventory, ...trimPlays(items, s.strikePlays, s.wildPlays) };
-        });
-      },
-      playStrike: (freq) =>
-        setState((s) =>
-          s.strikePlays.length >= chargeTotals(itemIngredients(s.items)).strike
-            ? s
-            : { ...s, strikePlays: [...s.strikePlays, { freq, byMemberKey: LOCAL_MEMBER }] },
-        ),
-      unplayStrike: (freq) =>
-        setState((s) => {
-          let idx = -1;
-          for (let i = s.strikePlays.length - 1; i >= 0; i--) {
-            if (s.strikePlays[i].freq === freq) { idx = i; break; }
-          }
-          return idx < 0 ? s : { ...s, strikePlays: s.strikePlays.toSpliced(idx, 1) };
-        }),
-      playWild: (chosenFreq) =>
-        setState((s) =>
-          s.wildPlays.length >= chargeTotals(itemIngredients(s.items)).wild
-            ? s
-            : { ...s, wildPlays: [...s.wildPlays, { chosenFreq, byMemberKey: LOCAL_MEMBER }] },
-        ),
-      unplayWild: (chosenFreq) =>
-        setState((s) => {
-          let idx = -1;
-          for (let i = s.wildPlays.length - 1; i >= 0; i--) {
-            if (s.wildPlays[i].chosenFreq === chosenFreq) { idx = i; break; }
-          }
-          return idx < 0 ? s : { ...s, wildPlays: s.wildPlays.toSpliced(idx, 1) };
-        }),
-      fillFromInventory: () =>
-        setState((s) => {
-          const items = [...s.items];
-          const inventory = cloneInventory(s.inventory);
-          for (let i = 0; i < items.length; i++) {
-            if (items[i].real) continue;
-            if (stockOf(inventory, items[i].key) <= 0) continue;
-            addStock(inventory, items[i].key, -1);
-            items[i] = { ...items[i], real: true };
-          }
-          return { ...s, items, inventory };
-        }),
-      returnIngredients: () =>
-        setState((s) => {
-          const inventory = cloneInventory(s.inventory);
-          const items = s.items.filter((p) => {
-            if (!p.real) return true;
-            addStock(inventory, p.key, 1);
-            return false;
-          });
-          return { ...s, items, inventory, ...trimPlays(items, s.strikePlays, s.wildPlays) };
-        }),
-      emptyBrew: () =>
-        setState((s) => {
-          const inventory = cloneInventory(s.inventory);
-          for (const p of s.items) if (p.real) addStock(inventory, p.key, 1);
-          return { ...s, items: [], strikePlays: [], wildPlays: [], inventory };
-        }),
-      brew: (perfumeId, recipeIndex, k) =>
-        setState((s) => {
-          // client-side verification via the same engine the server uses
-          const perfume = PERFUME_BY_KEY.get(perfumeId);
-          if (!perfume || recipeIndex < 0 || recipeIndex >= perfume.recipes.length) return s;
-          if (s.items.length === 0 || s.items.some((p) => !p.real)) return s;
-          const engine: BrewState = {
-            ingredients: itemIngredients(s.items),
-            strikePlays: s.strikePlays.map((p) => p.freq),
-            wildPlays: s.wildPlays.map((p) => p.chosenFreq),
-          };
-          const result = evalReq(engine, perfume.recipes[recipeIndex], recipeIndex);
-          if (result.status !== "perfect" || result.k !== k) return s;
-          // consume real ingredients forever: each becomes its hypothetical twin
-          const items = s.items.map((p) => (p.real ? { ...p, real: false } : p));
-          const now = Date.now();
-          const output: OutputInstance = {
-            instanceId: newLocalInstanceId(),
-            perfumeId,
-            count: k,
-            brewedByKey: LOCAL_MEMBER,
-            witnesses: [],
-            brewedAt: now,
-            provenance: [{ key: LOCAL_MEMBER, at: now }],
-          };
-          return { ...s, items, outputs: [...s.outputs, output] };
-        }),
-      takeOutput: (instanceId) =>
-        setState((s) => {
-          const idx = s.outputs.findIndex((o) => o.instanceId === instanceId);
-          if (idx < 0) return s;
-          const output = s.outputs[idx];
-          const outputs = [...s.outputs];
-          if (output.count > 1) outputs[idx] = { ...output, count: output.count - 1 };
-          else outputs.splice(idx, 1);
-          const inventory = cloneInventory(s.inventory);
-          addStock(inventory, output.perfumeId, 1);
-          // a taken perfume becomes a held INSTANCE carrying the brew's
-          // provenance (mirrors convex takeOutput) — one per take, so the
-          // count view and the instance list stay in step.
-          const now = Date.now();
-          inventory.perfumeInstances.push({
-            instanceId: newLocalInstanceId(),
-            perfumeId: output.perfumeId,
-            brewedByKey: output.brewedByKey,
-            witnesses: output.witnesses,
-            brewedAt: output.brewedAt,
-            owners: [...output.provenance, { key: LOCAL_MEMBER, at: now }],
-          });
-          return { ...s, outputs, inventory };
-        }),
-      // gifting has no target locally (single practice member) — no-op
-      giftItem: () => {},
-      giftPerfume: () => {},
-      pinRecipe: (pinned) => setState((s) => ({ ...s, pinned })),
-      // no cross-action undo log locally — the practice brew is disposable
-      undo: () => {},
-      redo: () => {},
-      createBrew: noAsync,
-      copyBrew: noAsync,
-      handoffBrew: () => {},
-      deleteBrew: () => {},
-      nicknameBrew: () => {},
-      register: () => {},
-      leave: () => {},
-      setColor: (color) => setState((s) => ({ ...s, color })),
-      importInventory: (rows, mode) =>
-        setState((s) => {
-          const inventory =
-            mode === "replace"
-              ? cloneInventory(EMPTY_INVENTORY)
-              : cloneInventory(s.inventory);
-          for (const row of rows) {
-            if (!CATALOG.has(row.itemKey) && !PERFUME_BY_KEY.has(row.itemKey)) continue;
-            if (!Number.isInteger(row.count) || row.count < 0) continue;
-            addStock(inventory, row.itemKey, row.count);
-          }
-          return { ...s, inventory };
-        }),
-      updateUI: (patch) => setState((s) => ({ ...s, ui: { ...s.ui, ...patch } })),
-    };
-  }, []);
-
-  const snapshot = useMemo<BrewSnapshot>(
-    () => ({
-      brewId: LOCAL_BREW_ID,
-      owner: LOCAL_MEMBER,
-      ownerName: state.memberName,
-      nickname: null,
-      seq: 1,
-      isParty: false,
-      items: state.items,
-      strikePlays: state.strikePlays,
-      wildPlays: state.wildPlays,
-      pinned: state.pinned,
-      outputs: state.outputs,
-      ui: state.ui,
-    }),
-    [state],
-  );
-
-  const permissions = useMemo<BrewPermissions>(
-    () => ({
-      registered: true,
-      moveItems: true,
-      brewAndTake: true,
-      fillReturn: true,
-      gift: false, // nobody to gift to locally
-      pin: true,
-      nickname: false,
-      manageBrew: false,
-      isAdmin: false,
-    }),
-    [],
-  );
-
-  const inventoryOf = useCallback(
-    (memberKey: string) => (memberKey === LOCAL_MEMBER ? state.inventory : cloneInventory(EMPTY_INVENTORY)),
-    [state.inventory],
-  );
-
-  // no other members exist locally — the selection is a no-op
-  const selectMemberTab = useCallback((): void => {}, []);
-
-  return {
-    members: [],
-    index: null,
-    snapshot,
-    ownInventory: state.inventory,
-    inventoryOf,
-    selectMemberTab,
-    permissions,
-    actions,
-    presence: [],
-    undo: { canUndo: false, canRedo: false },
-    registered: true,
-    loading: false,
-    notFound: false,
-    brewId: LOCAL_BREW_ID,
-  };
-}
 
 // ── Convex store ─────────────────────────────────────────────────────────────
 

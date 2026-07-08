@@ -18,9 +18,8 @@
 //   "Gifting", §4).
 //
 // Every grabbable frame obeys the hand grammar (DESIGN.md §5): pointer-down picks
-// up, shift-click teleports one unit to the brew, right-click returns one; hover
-// only reports the hovered key — the brew bar renders the preview. Header
-// actions: Import (tolerant paste → preview → merge/replace) and Copy (clipboard
+// up, shift-click teleports one unit to the brew, right-click returns one.
+// Header actions: Import (tolerant paste → preview → merge/replace) and Copy (clipboard
 // export). Search + the multi-select frequency/type filter narrow the catalog
 // grids and the inventory grids alike (AND semantics). Buttons/tabs use the
 // shell's shared treatment (components/ui.tsx).
@@ -84,8 +83,6 @@ export interface IngredientPanelProps {
   // point the store's single non-own inventory subscription at a member tab
   // (null when a catalog/own tab is open) — never N subscriptions.
   onSelectMemberTab: (memberKey: string | null) => void;
-  // hover reporting only — the client decides what previews where
-  onHover: (itemKey: string | null) => void;
   // DESIGN teleports HandApi cannot express: shift-click sends one unit
   // input -> brew; right-click with an empty hand on an in-brew item returns
   // one unit brew -> inventory. Wire to moveToBrew / moveToInventory, n=1.
@@ -186,7 +183,6 @@ export default function IngredientPanel({
   onImport,
   onGift,
   onSelectMemberTab,
-  onHover,
   onShiftToBrew,
   onUnbrewOne,
 }: IngredientPanelProps) {
@@ -371,7 +367,6 @@ export default function IngredientPanel({
                 canMove={canMove}
                 canTransfer={canGift}
                 members={giftTargets}
-                onHover={onHover}
                 onTransfer={onGift}
                 onShiftToBrew={onShiftToBrew}
                 onUnbrewOne={onUnbrewOne}
@@ -410,7 +405,6 @@ export default function IngredientPanel({
                     inBrew={brewCounts[ing.key] ?? 0}
                     hand={hand}
                     canMove={canMove}
-                    onHover={onHover}
                     onShiftToBrew={onShiftToBrew}
                     onUnbrewOne={onUnbrewOne}
                   />
@@ -604,7 +598,6 @@ function CatalogCard({
   inBrew,
   hand,
   canMove,
-  onHover,
   onShiftToBrew,
   onUnbrewOne,
 }: {
@@ -613,7 +606,6 @@ function CatalogCard({
   inBrew: number;
   hand: BrewHand;
   canMove: boolean;
-  onHover: (itemKey: string | null) => void;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
 }) {
@@ -625,7 +617,6 @@ function CatalogCard({
     inBrew,
     hand,
     canMove,
-    onHover,
     onShiftToBrew,
     onUnbrewOne,
   });
