@@ -11,9 +11,10 @@
 // outside-click / Escape. It only presents actions; the orchestrator wires join
 // and leave to the store.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useRef, useState } from "react";
 import { useSound } from "../lib/sound";
+import { GearIcon } from "./glyphs";
+import { Popover, type PopoverAnchor } from "./popover";
 import { btn, cn } from "./ui";
 
 export interface SettingsCornerProps {
@@ -34,7 +35,7 @@ export default function SettingsCorner({
   onLeave,
 }: SettingsCornerProps) {
   const [open, setOpen] = useState(false);
-  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const [at, setAt] = useState<PopoverAnchor | null>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
 
   const toggle = () => {
@@ -89,7 +90,7 @@ function SettingsPanel({
   onLeave,
   onClose,
 }: {
-  at: { x: number; y: number };
+  at: PopoverAnchor;
   registered: boolean;
   canJoin: boolean;
   onJoin: () => void;
@@ -97,44 +98,15 @@ function SettingsPanel({
   onClose: () => void;
 }) {
   const { muted, toggleMuted } = useSound();
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState(at);
 
-  // right-anchored: `at.x` is the gear's RIGHT edge; align the panel's right to it
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    let x = at.x - r.width;
-    let y = at.y;
-    if (x < 8) x = 8;
-    if (y + r.height > window.innerHeight - 8) y = window.innerHeight - r.height - 8;
-    setPos({ x, y: Math.max(8, y) });
-  }, [at]);
-
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  if (typeof document === "undefined") return null;
-  return createPortal(
-    <div
-      ref={ref}
-      role="dialog"
-      aria-label="Settings"
-      className="fixed z-[80] w-[280px] rounded-xl border border-border bg-surface p-3 shadow-2xl"
-      style={{ left: pos.x, top: pos.y }}
+  return (
+    <Popover
+      anchor={at}
+      align="right"
+      width={280}
+      label="Settings"
+      onClose={onClose}
+      className="p-3"
     >
       {/* mute */}
       <div className="flex items-center justify-between">
@@ -253,26 +225,6 @@ function SettingsPanel({
           </>
         )}
       </div>
-    </div>,
-    document.body,
-  );
-}
-
-function GearIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
+    </Popover>
   );
 }

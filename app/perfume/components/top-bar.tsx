@@ -20,19 +20,13 @@
 // This component is presentation + local menu state only; every mutation is a
 // prop the orchestrator wires to BrewActions. Feel classes come from ./ui.
 
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { BrewIndex, BrewSummary, MemberInfo } from "../lib/brew-types";
 import { PARTY_KEY } from "../lib/brew-store";
 import { btn, cn, tab } from "./ui";
+import { Popover } from "./popover";
 
 // ── props ─────────────────────────────────────────────────────────────────────
 
@@ -525,7 +519,13 @@ function BrewMenu({
     permissions.isAdmin || (viewerKey !== null && brew.owner === viewerKey);
 
   return (
-    <Dropdown at={at} onClose={onClose} label="Brew actions">
+    <Popover
+      anchor={at}
+      onClose={onClose}
+      label="Brew actions"
+      role="menu"
+      className="min-w-[168px] p-1"
+    >
       <MenuButton
         onClick={() => {
           void copyLink();
@@ -595,7 +595,7 @@ function BrewMenu({
           delete brew
         </MenuButton>
       )}
-    </Dropdown>
+    </Popover>
   );
 }
 
@@ -644,7 +644,13 @@ function SeeAllPopover({
         +{overflow}
       </button>
       {at && (
-        <Dropdown at={at} onClose={() => setAt(null)} label={`${ownerName}'s brews`}>
+        <Popover
+          anchor={at}
+          onClose={() => setAt(null)}
+          label={`${ownerName}'s brews`}
+          role="menu"
+          className="min-w-[168px] p-1"
+        >
           <p className="px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-text-faint">
             {ownerName} · {all ? all.length : overflow} brews
           </p>
@@ -684,66 +690,9 @@ function SeeAllPopover({
               ))}
             </div>
           )}
-        </Dropdown>
+        </Popover>
       )}
     </>
-  );
-}
-
-// ── generic dropdown (portal, outside-click + Escape close) ──────────────────
-
-function Dropdown({
-  at,
-  label,
-  onClose,
-  children,
-}: {
-  at: { x: number; y: number };
-  label: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState(at);
-
-  // keep the menu on-screen (flip left if it would overflow the right edge)
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    let { x, y } = at;
-    if (x + r.width > window.innerWidth - 8) x = window.innerWidth - r.width - 8;
-    if (y + r.height > window.innerHeight - 8) y = window.innerHeight - r.height - 8;
-    setPos({ x: Math.max(8, x), y: Math.max(8, y) });
-  }, [at]);
-
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  if (typeof document === "undefined") return null;
-  return createPortal(
-    <div
-      ref={ref}
-      role="menu"
-      aria-label={label}
-      className="fixed z-[80] min-w-[168px] rounded-lg border border-border bg-surface p-1 shadow-2xl"
-      style={{ left: pos.x, top: pos.y }}
-    >
-      {children}
-    </div>,
-    document.body,
   );
 }
 

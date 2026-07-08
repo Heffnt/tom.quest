@@ -32,11 +32,13 @@ import { makeNameResolver, provenanceTooltip, type NameResolver } from "../lib/p
 import {
   ALL_FREQUENCIES,
   FUND,
+  PERFUME_BY_KEY,
   basePerfumes,
   ingredientWeight,
   isPureKey,
 } from "../data/base";
 import { formatInventory, type CatalogEntry } from "../lib/inventory";
+import { splitFilters } from "../lib/filters";
 import ItemFrame, { type FrameItem } from "./item-frame";
 import FrequencyFilterButton from "./frequency-filter";
 import InventoryGrid, {
@@ -117,16 +119,6 @@ function catalogSort(a: Ingredient, b: Ingredient, frequencies: boolean): number
 // ui.inputFilters mixes frequency ids (plus the strike/wild pseudo-filters)
 // with "type:<t>" entries. Semantics per DESIGN.md: every selected frequency
 // must match (AND); types OR among themselves, AND with the frequencies.
-
-function splitFilters(values: string[]): { types: string[]; freqs: string[] } {
-  const types: string[] = [];
-  const freqs: string[] = [];
-  for (const v of values) {
-    if (v.startsWith("type:")) types.push(v.slice(5));
-    else freqs.push(v);
-  }
-  return { types, freqs };
-}
 
 function ingredientPasses(ing: Ingredient, types: string[], freqs: string[]): boolean {
   if (types.length > 0 && (!ing.type || !types.includes(ing.type))) return false;
@@ -233,7 +225,6 @@ export default function IngredientPanel({
   }, [memberTab, memberTabs]);
 
   const ingByKey = useMemo(() => new Map(catalog.map((i) => [i.key, i])), [catalog]);
-  const perfumeByKey = useMemo(() => new Map(basePerfumes.map((p) => [p.key, p])), []);
 
   // names the importer/exporter can resolve: the item catalog + perfumes
   const nameCatalog = useMemo<CatalogEntry[]>(
@@ -267,7 +258,7 @@ export default function IngredientPanel({
 
   // ---- an inventory (own or another member's) → grid sections ----
   const sectionsFor = (inv: Inventory, withBrewGhost: boolean) =>
-    inventoryGridSections(inv, ingByKey, perfumeByKey, types, freqs, q, {
+    inventoryGridSections(inv, ingByKey, PERFUME_BY_KEY, types, freqs, q, {
       brewCounts: withBrewGhost ? brewCounts : null,
       resolveName,
     });

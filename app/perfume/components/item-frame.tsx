@@ -31,9 +31,10 @@ import type { ReactNode } from "react";
 import type { Ingredient } from "../lib/types";
 import type { IngredientType } from "../lib/types";
 import { isPureKey } from "../data/base";
-import { ChargeSymbol, FrequencySymbol, TypeGlyph } from "../lib/frequencies";
-import IngredientThumb from "./ingredient-thumb";
-import { PhialGlyph } from "./phial";
+import { FrequencySymbol, TypeGlyph, ChargeSymbol } from "../lib/frequencies";
+import { CountBadge } from "./badge";
+import { SendGlyph } from "./glyphs";
+import { ItemArt } from "./item-art";
 import { cn } from "./ui";
 
 // ── the five contexts (DESIGN.md §1) ─────────────────────────────────────────
@@ -73,56 +74,6 @@ export type FrameItem = {
   ing?: Ingredient; // when present, the card can render type + emitted-freq marks
   perfume?: boolean; // render the phial silhouette instead of ingredient art
 };
-
-// ── the art on the square (DESIGN.md §7 "Item art") ──────────────────────────
-// Ingredients show their crest art (public/perfume/ingredients/ with the
-// existing fallback chain); pure frequencies the frequency symbol (⊖/⊕ for pure
-// strike/wild); perfumes the phial silhouette.
-export function ItemArt({
-  item,
-  size,
-}: {
-  item: FrameItem;
-  size: number;
-}) {
-  if (item.perfume) return <PhialGlyph size={size} />;
-  if (isPureKey(item.key)) {
-    const id = item.key.slice(5);
-    if (id === "strike" || id === "wild") return <ChargeSymbol kind={id} size={size} />;
-    return <FrequencySymbol id={id} size={size} />;
-  }
-  if (item.ing) {
-    return (
-      <IngredientThumb
-        name={item.ing.name}
-        source={item.ing.source}
-        color={item.ing.color}
-        size={size}
-      />
-    );
-  }
-  // no ingredient handed in (e.g. a graph slot that only knows the key): base
-  // keys still resolve their art by name; anything else falls to the color chip
-  return (
-    <IngredientThumb
-      name={item.name}
-      source={item.key.startsWith("base:") ? { kind: "base" } : { kind: "user", userId: "", name: "" }}
-      color={item.color}
-      size={size}
-    />
-  );
-}
-
-// ── the count badge ──────────────────────────────────────────────────────────
-export function FrameCountBadge({ n, className }: { n: number; className?: string }) {
-  return (
-    <span
-      className={`pointer-events-none rounded border border-border/70 bg-surface/95 px-1 font-mono text-[10px] font-bold leading-4 tabular-nums text-text ${className ?? ""}`}
-    >
-      ×{n}
-    </span>
-  );
-}
 
 // ── the frame ────────────────────────────────────────────────────────────────
 
@@ -209,7 +160,14 @@ export default function ItemFrame({
         <FilledBody item={item} size={size} ghosted={ghosted} showMarks={showMarks} />
       ) : ghostPreview ? (
         <span className="pointer-events-none opacity-40">
-          <ItemArt item={ghostPreview} size={size} />
+          <ItemArt
+            itemKey={ghostPreview.key}
+            name={ghostPreview.name}
+            color={ghostPreview.color}
+            perfume={ghostPreview.perfume}
+            ing={ghostPreview.ing}
+            size={size}
+          />
         </span>
       ) : isGift ? (
         <GiftAffordance />
@@ -257,7 +215,7 @@ export default function ItemFrame({
   const overlays = (
     <>
       {typeof count === "number" && count > 0 && (
-        <FrameCountBadge n={count} className="absolute bottom-0.5 right-0.5" />
+        <CountBadge count={count} variant="frame" className="absolute bottom-0.5 right-0.5" />
       )}
       {children}
     </>
@@ -317,7 +275,14 @@ function FilledBody({
       )}
       <span className="grid place-items-center">
         <span className={`inline-flex transition-opacity duration-150 ${ghosted ? "opacity-35" : ""}`}>
-          <ItemArt item={item} size={size} />
+          <ItemArt
+            itemKey={item.key}
+            name={item.name}
+            color={item.color}
+            perfume={item.perfume}
+            ing={item.ing}
+            size={size}
+          />
         </span>
         {showMarks && ing && <CardFrequencies ing={ing} />}
       </span>
@@ -364,10 +329,7 @@ function EmptyAffordance() {
 function GiftAffordance() {
   return (
     <span aria-hidden="true" className="pointer-events-none text-accent/60">
-      <svg viewBox="0 0 24 24" width={20} height={20} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M22 2 11 13" />
-        <path d="M22 2 15 22 11 13 2 9Z" />
-      </svg>
+      <SendGlyph size={20} />
     </span>
   );
 }

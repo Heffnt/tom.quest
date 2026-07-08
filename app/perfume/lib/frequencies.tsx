@@ -17,6 +17,8 @@ import { createPortal } from "react-dom";
 import { FUND, NO_DIRECT_EMITTER, isNamed, NAMED, TYPE_GLYPHS } from "../data/base";
 import type { IngredientType } from "./types";
 import { GLYPH } from "./emblems";
+import { parseHex, mix } from "./color";
+import { frequencyLabel } from "./frequency-label";
 
 // --- palette ----------------------------------------------------------------
 
@@ -53,18 +55,10 @@ export function fundColor(id: string): string {
   const raw = FUND[id]?.color ?? "#888888";
   const cached = FUND_DISPLAY.get(raw);
   if (cached) return cached;
-  const h = raw.replace("#", "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  const [r, g, b] = parseHex(raw);
   const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-  let out = raw;
-  if (lum < 80) {
-    // blend 60% toward a light slate so the hue's character survives
-    const mix = (v: number, t: number) => Math.round(v + (t - v) * 0.6);
-    out = `#${[mix(r, 203), mix(g, 207), mix(b, 224)]
-      .map((v) => v.toString(16).padStart(2, "0"))
-      .join("")}`;
-  }
+  // blend 60% toward a light slate so the hue's character survives
+  const out = lum < 80 ? mix(raw, "#cbcfe0", 0.6) : raw;
   FUND_DISPLAY.set(raw, out);
   return out;
 }
@@ -290,7 +284,7 @@ export function FrequencyGlyph({
 // as repeated symbols, not ×n). Fundamentals get just the first row.
 function DecompCard({ id }: { id: string }) {
   const named = isNamed(id);
-  const label = named ? id : (FUND[id]?.school ?? id);
+  const label = frequencyLabel(id);
   const comps = named ? NAMED[id].components : [];
   const sorted = [...comps].sort();
   return (

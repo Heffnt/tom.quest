@@ -14,8 +14,10 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { PresenceEntry, PresenceSurface } from "../lib/brew-types";
-import { ItemIcon, type Hand } from "../lib/use-hand";
+import type { Hand } from "../lib/use-hand";
 import { itemInfo } from "../lib/brew-store";
+import { CountBadge } from "./badge";
+import { ItemArt } from "./item-art";
 
 const SEND_MS = 50; // ~20Hz
 const SURFACE_SELECTOR = "[data-pf-surface]";
@@ -222,17 +224,17 @@ export default function Cursors({
                 </span>
                 {e.hand && (
                   <span className="relative inline-flex" title={itemInfo(e.hand.key).name}>
-                    <ItemIcon
+                    <ItemArt
                       itemKey={e.hand.key}
                       name={itemInfo(e.hand.key).name}
                       color={itemInfo(e.hand.key).color}
                       size={26}
                     />
-                    {e.hand.count > 1 && (
-                      <span className="absolute -right-1.5 -top-1.5 rounded-full border border-border bg-surface px-1 font-mono text-[9px] font-bold text-text">
-                        ×{e.hand.count}
-                      </span>
-                    )}
+                    <CountBadge
+                      count={e.hand.count}
+                      size="sm"
+                      className="absolute -right-1.5 -top-1.5"
+                    />
                   </span>
                 )}
               </div>

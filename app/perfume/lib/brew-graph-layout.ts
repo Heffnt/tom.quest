@@ -16,11 +16,12 @@
 // spirit expressed as data.
 
 import type { Frequency, Ingredient, Multiset } from "./types";
+import { parseHex, toHex } from "./color";
 import type { BrewItem, StrikePlay, WildPlay, PinnedRecipe } from "./brew-types";
 import {
   baseIngredients,
   pureIngredients,
-  basePerfumes,
+  PERFUME_BY_KEY,
   FUND,
   NAMED,
   isNamed,
@@ -43,7 +44,6 @@ import {
 const CATALOG = new Map<string, Ingredient>(
   [...baseIngredients, ...pureIngredients].map((i) => [i.key, i]),
 );
-const PERFUME_BY_KEY = new Map(basePerfumes.map((p) => [p.key, p]));
 
 // ── blend tint ───────────────────────────────────────────────────────────────
 // The cauldron liquid tints to the blend of the SCHOOL colors of the
@@ -74,20 +74,6 @@ function expandToFundamentals(id: string): Multiset {
   }
   FUND_EXPANSION.set(id, out);
   return out;
-}
-
-function parseHex(hex: string): [number, number, number] {
-  const h = hex.replace("#", "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16)) as [
-    number,
-    number,
-    number,
-  ];
-}
-
-function toHex([r, g, b]: [number, number, number]): string {
-  return `#${[r, g, b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**

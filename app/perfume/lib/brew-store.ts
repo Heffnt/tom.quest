@@ -29,7 +29,7 @@ import {
   type StackSection,
   type UndoState,
 } from "./brew-types";
-import { baseIngredients, basePerfumes, pureIngredients } from "../data/base";
+import { baseIngredients, pureIngredients, PERFUME_BY_KEY } from "../data/base";
 
 // The client sentinel for the party brew — resolved to the real party brew id
 // by the Convex store.
@@ -43,7 +43,6 @@ const PRESENCE_STALE_MS = 60_000;
 const CATALOG = new Map<string, Ingredient>(
   [...baseIngredients, ...pureIngredients].map((i) => [i.key, i]),
 );
-const PERFUME_BY_KEY = new Map(basePerfumes.map((p) => [p.key, p]));
 
 export const isIngredientKey = (key: string): boolean => CATALOG.has(key);
 

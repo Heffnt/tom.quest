@@ -10,10 +10,13 @@
 // types OR among themselves — see DESIGN.md) belong to the callers; this
 // control only edits the `values` list.
 
-import { useEffect, useRef, useState } from "react";
-import { ALL_FREQUENCIES, FUND, isNamed, INGREDIENT_TYPES } from "../data/base";
+import { useRef, useState } from "react";
+import { ALL_FREQUENCIES, FUND, INGREDIENT_TYPES } from "../data/base";
 import { FrequencyGlyph, TypeGlyph, ChargeSymbol } from "../lib/frequencies";
+import { frequencyLabel } from "../lib/frequency-label";
+import { isTypeFilter } from "../lib/filters";
 import type { IngredientType } from "../lib/types";
+import { Popover, type PopoverAnchor } from "./popover";
 import { cn } from "./ui";
 
 // The shared shell interaction feel (components/ui.tsx BASE): a crisp
@@ -23,13 +26,11 @@ import { cn } from "./ui";
 const CONTROL_FEEL =
   "transition-[color,background-color,border-color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 
-export const isTypeFilter = (v: string): boolean => v.startsWith("type:");
-
 export function freqLabel(id: string): string {
   if (id === "strike") return "Strike ⊖";
   if (id === "wild") return "Wild ⊕";
   if (isTypeFilter(id)) return id.slice(5);
-  return isNamed(id) ? id : (FUND[id]?.school ?? id);
+  return frequencyLabel(id);
 }
 
 // Chip for the two charge pseudo-filters — the app-wide charge chip.
@@ -60,28 +61,21 @@ export default function FrequencyFilterButton({
   includeCharges = false,
   includeTypes = false,
 }: FrequencyFilterProps) {
-  const [open, setOpen] = useState(false);
+  const [at, setAt] = useState<PopoverAnchor | null>(null);
   const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const open = at !== null;
 
-  useEffect(() => {
-    if (!open) return;
-    const t = setTimeout(() => inputRef.current?.focus(), 30);
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      clearTimeout(t);
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const toggleOpen = () => {
+    if (open) {
+      setAt(null);
+      return;
+    }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setAt({ x: r.right, y: r.bottom + 4 });
+    setTimeout(() => inputRef.current?.focus(), 30);
+  };
 
   // toggle membership; the dropdown stays open so several filters can be
   // picked in one visit
@@ -110,10 +104,15 @@ export default function FrequencyFilterButton({
     );
 
   return (
-    <div ref={ref} className="relative shrink-0">
+    <div className="relative shrink-0">
       <button
+        ref={btnRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
+        // Keep the trigger's mousedown from reaching the Popover's
+        // useDismissable document listener — otherwise clicking the trigger to
+        // close fires both the outside-dismiss and this toggle, racing back open.
+        onMouseDown={(e) => e.stopPropagation()}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={label}
@@ -142,12 +141,17 @@ export default function FrequencyFilterButton({
           values.map((v) => <FilterChip key={v} id={v} size={20} />)
         )}
       </button>
-      {open && (
-        <div
-          role="listbox"
-          aria-multiselectable="true"
-          className="absolute right-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
+      {at && (
+        <Popover
+          anchor={at}
+          align="right"
+          width={256}
+          role="dialog"
+          label={label}
+          onClose={() => setAt(null)}
+          className="overflow-hidden"
         >
+          <div role="listbox" aria-multiselectable="true">
           <div className="border-b border-border p-2">
             <input
               ref={inputRef}
@@ -165,7 +169,7 @@ export default function FrequencyFilterButton({
               aria-selected={values.length === 0}
               onClick={() => {
                 onChange([]);
-                setOpen(false);
+                setAt(null);
               }}
               className={cn(
                 "flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-xs hover:bg-surface-alt",
@@ -229,7 +233,8 @@ export default function FrequencyFilterButton({
               </button>
             ))}
           </div>
-        </div>
+          </div>
+        </Popover>
       )}
     </div>
   );

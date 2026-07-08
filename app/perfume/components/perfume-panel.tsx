@@ -42,10 +42,12 @@ import {
   findRecipes,
   type FoundRecipe,
 } from "../lib/engine";
-import { ALL_FREQUENCIES, FUND, baseIngredients } from "../data/base";
+import { ALL_FREQUENCIES, baseIngredients } from "../data/base";
 import { FrequencySymbol, STRIKE } from "../lib/frequencies";
 import { recipeLabel } from "../lib/recipe-label";
-import FrequencyFilterButton, { isTypeFilter } from "./frequency-filter";
+import { frequencyLabel } from "../lib/frequency-label";
+import { isTypeFilter } from "../lib/filters";
+import FrequencyFilterButton from "./frequency-filter";
 import ItemFrame, { type FrameItem } from "./item-frame";
 import { grabHandlers } from "./inventory-grid";
 import { btn, cn } from "./ui";
@@ -101,8 +103,7 @@ function matchesQuery(r: Perfume, q: string): boolean {
   return r.recipes.some((req) =>
     req.some(
       (id) =>
-        id.toLowerCase().includes(q) ||
-        (FUND[id]?.school ?? "").toLowerCase().includes(q),
+        id.toLowerCase().includes(q) || frequencyLabel(id).toLowerCase().includes(q),
     ),
   );
 }

@@ -162,3 +162,10 @@ export const basePerfumes: Perfume[] = data.perfumes.map((r) => ({
   combos: r.combos,
   source: { kind: "base" } as const,
 }));
+
+// Single shared perfume lookup by key ("base:<id>"). Callers that need to
+// resolve a perfume from an item/output key import this instead of rebuilding
+// `new Map(basePerfumes.map(...))` locally.
+export const PERFUME_BY_KEY: Map<string, Perfume> = new Map(
+  basePerfumes.map((p) => [p.key, p]),
+);

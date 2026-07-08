@@ -46,9 +46,8 @@ import {
 } from "../lib/brew-graph-layout";
 import {
   ALL_FREQUENCIES,
-  FUND,
   NAMED,
-  basePerfumes,
+  PERFUME_BY_KEY,
   isNamed,
 } from "../data/base";
 import {
@@ -59,22 +58,20 @@ import {
   COPPER,
   tokenColor,
 } from "../lib/frequencies";
-import { ItemIcon, type BrewHand } from "../lib/use-hand";
+import { type BrewHand } from "../lib/use-hand";
+import { ItemArt } from "./item-art";
 import { PhialGlyph } from "./phial";
 import { useSound, prefersReducedMotion } from "../lib/sound";
 import { makeNameResolver, provenanceTooltip, type NameResolver } from "../lib/provenance";
 import { recipeLabel } from "../lib/recipe-label";
 import { btn, cn } from "./ui";
+import { mix as mixHex } from "../lib/color";
+import { frequencyLabel } from "../lib/frequency-label";
+import { ChipLabel } from "./glyphs";
+import { CountBadge } from "./badge";
+import { Popover } from "./popover";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-const PERFUME_BY_KEY = new Map(basePerfumes.map((p) => [p.key, p]));
-
-// The name printed under a floating frequency: school for fundamentals, the
-// frequency's own name for named frequencies (mirrors the old cauldron copy).
-function frequencyName(id: string): string {
-  return isNamed(id) ? id : (FUND[id]?.school ?? id);
-}
 
 function perfumeName(key: string): string {
   return PERFUME_BY_KEY.get(key)?.name ?? key.replace(/^base:/, "");
@@ -119,10 +116,6 @@ function driftStyle(uid: string): React.CSSProperties {
     ["--pf-delay" as string]: `${delay}s`,
   };
 }
-
-const labelShadow: React.CSSProperties = {
-  textShadow: "0 1px 3px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.7)",
-};
 
 // ── props ────────────────────────────────────────────────────────────────────
 
@@ -796,17 +789,6 @@ function Slot({
   );
 }
 
-function ChipLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      className="pointer-events-none max-w-[84px] text-center font-mono text-[10px] uppercase leading-tight tracking-wide text-text"
-      style={labelShadow}
-    >
-      {children}
-    </span>
-  );
-}
-
 function FrequencyChip({
   node,
   canMove,
@@ -895,7 +877,7 @@ function FrequencyChip({
           </span>
         )}
       </div>
-      <ChipLabel>{node.struck ? "struck" : frequencyName(node.freq)}</ChipLabel>
+      <ChipLabel>{node.struck ? "struck" : frequencyLabel(node.freq)}</ChipLabel>
     </Slot>
   );
 }
@@ -1018,7 +1000,7 @@ function WildChip({
           ▾
         </span>
       </button>
-      <ChipLabel>{chosen ? frequencyName(chosen) : "wild"}</ChipLabel>
+      <ChipLabel>{chosen ? frequencyLabel(chosen) : "wild"}</ChipLabel>
     </Slot>
   );
 }
@@ -1035,7 +1017,7 @@ function GhostFrequencyChip({ node }: { node: GhostFrequencyNode }) {
       >
         <FrequencyGlyph id={node.freq} size={40} className="border-dashed" />
       </div>
-      <ChipLabel>{frequencyName(node.freq)}</ChipLabel>
+      <ChipLabel>{frequencyLabel(node.freq)}</ChipLabel>
     </Slot>
   );
 }
@@ -1053,7 +1035,7 @@ function GhostItemChip({ node }: { node: GhostItemNode }) {
           <FrequencyGlyph id={node.wants} size={24} />
         </span>
       </div>
-      <ChipLabel>any {frequencyName(node.wants)}</ChipLabel>
+      <ChipLabel>any {frequencyLabel(node.wants)}</ChipLabel>
     </Slot>
   );
 }
@@ -1110,12 +1092,8 @@ function ItemChip({
           ceremony && "scale-90 opacity-30",
         )}
       >
-        <ItemIcon itemKey={node.itemKey} name={node.name} color={node.color} size={56} />
-        {node.count > 1 && (
-          <span className="absolute -right-2 -top-2 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
-            ×{node.count}
-          </span>
-        )}
+        <ItemArt itemKey={node.itemKey} name={node.name} color={node.color} size={56} />
+        <CountBadge count={node.count} className="absolute -right-2 -top-2" />
       </div>
       <ChipLabel>{node.name}</ChipLabel>
     </Slot>
@@ -1193,11 +1171,7 @@ function TintedBottle({ name, count, tint, dimmed }: { name: string; count: numb
         <span className="relative" style={{ color: tint }}>
           <PhialGlyph size={44} />
         </span>
-        {count > 1 && (
-          <span className="absolute -right-2 -top-1 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
-            ×{count}
-          </span>
-        )}
+        <CountBadge count={count} className="absolute -right-2 -top-1" />
       </span>
       <ChipLabel>{name}</ChipLabel>
     </span>
@@ -1254,19 +1228,10 @@ function CauldronVessel({ active, tint }: { active: boolean; tint: string }) {
   );
 }
 
-// Lighten (t>0) or darken (t<0) a hex colour toward white/black by |t|.
+// Lighten (t>0) or darken (t<0) a hex colour toward white/black by |t|, via
+// lib/color's shared two-colour mix.
 function mix(hex: string, t: number): string {
-  const h = hex.replace("#", "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const target = t >= 0 ? 255 : 0;
-  const a = Math.abs(t);
-  const chan = (i: number) => {
-    const v = parseInt(full.slice(i, i + 2), 16);
-    return Math.round(v + (target - v) * a)
-      .toString(16)
-      .padStart(2, "0");
-  };
-  return `#${chan(0)}${chan(2)}${chan(4)}`;
+  return mixHex(hex, t >= 0 ? "#ffffff" : "#000000", Math.abs(t));
 }
 
 // ── the ceremony ────────────────────────────────────────────────────────────────
@@ -1331,25 +1296,12 @@ function WildcardPicker({
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 30);
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      clearTimeout(t);
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
+    return () => clearTimeout(t);
+  }, []);
 
   const query = q.trim().toLowerCase();
   const items = useMemo(
@@ -1363,16 +1315,13 @@ function WildcardPicker({
     [query],
   );
 
-  const left = Math.min(Math.max(x - 130, 8), (typeof window !== "undefined" ? window.innerWidth : 1024) - 268);
-  const top = Math.max(8, Math.min(y, (typeof window !== "undefined" ? window.innerHeight : 768) - 360));
-
   return (
-    <div
-      ref={ref}
-      className="fixed z-[85] w-[260px] rounded-lg border border-border bg-surface shadow-xl"
-      style={{ left, top }}
-      role="dialog"
-      aria-label="Choose the wild's frequency"
+    <Popover
+      anchor={{ x, y }}
+      align="center"
+      width={260}
+      label="Choose the wild's frequency"
+      onClose={onClose}
     >
       <div className="border-b border-border p-2">
         <input
@@ -1405,7 +1354,7 @@ function WildcardPicker({
           ))}
         </div>
       </div>
-    </div>
+    </Popover>
   );
 }
 

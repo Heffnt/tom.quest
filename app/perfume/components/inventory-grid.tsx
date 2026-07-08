@@ -9,19 +9,18 @@
 // the legacy adapter routes to store.giftItem).
 
 import {
-  useEffect,
-  useRef,
   useState,
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { createPortal } from "react-dom";
+import { Popover } from "./popover";
 import type { Ingredient } from "../lib/types";
 import type { Inventory } from "../lib/brew-types";
 import type { HandOrigin, BrewHand } from "../lib/use-hand";
 import { PHIAL } from "../lib/frequencies";
 import ItemFrame, { type FrameItem } from "./item-frame";
+import { SendGlyph } from "./glyphs";
 import { btn, cn } from "./ui";
 
 // ── the hand grammar, wired once ─────────────────────────────────────────────
@@ -82,25 +81,7 @@ export function grabHandlers(spec: GrabSpec) {
 // ── shared visual atoms ──────────────────────────────────────────────────────
 // The ×n badge is item-frame's FrameCountBadge — the single source of truth,
 // used here through <ItemFrame count=…>; the catalog rows import it directly.
-
-function SendMark({ size = 12 }: { size?: number }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M22 2 11 13" />
-      <path d="M22 2 15 22 11 13 2 9Z" />
-    </svg>
-  );
-}
+// The send arrow is the shared SendGlyph (components/glyphs.tsx).
 
 // ── the grid ─────────────────────────────────────────────────────────────────
 
@@ -255,7 +236,7 @@ function Slot({
             title="Send to a party member"
             className="absolute -right-1 -top-1 z-10 grid h-5 w-5 place-items-center rounded-full border border-border bg-surface text-text-faint opacity-0 shadow transition-opacity duration-150 hover:border-accent hover:text-accent focus-visible:opacity-100 group-hover:opacity-100"
           >
-            <SendMark size={11} />
+            <SendGlyph size={11} />
           </button>
         )}
       </ItemFrame>
@@ -276,40 +257,20 @@ function SendPopover({
   onTransfer: (toMemberKey: string, itemKey: string, n: number) => void;
   onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const [to, setTo] = useState(members[0]?.memberKey ?? "");
   const [n, setN] = useState(1);
 
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  // clamp on-screen (fixed portal), floor degenerate viewports like the
-  // frequency popover does
-  const W = 232;
-  const vw = Math.max(typeof window !== "undefined" ? window.innerWidth : 1024, 360);
-  const left = Math.min(Math.max(anchor.x - W, 8), vw - W - 8);
   const count = Math.min(Math.max(Math.round(n) || 0, 0), anchor.max);
   const valid = to !== "" && count >= 1;
 
-  return createPortal(
-    <div
-      ref={ref}
-      role="dialog"
-      aria-label={`Send ${anchor.name}`}
-      className="fixed z-[75] rounded-lg border border-border bg-surface p-2.5 shadow-xl"
-      style={{ left, top: anchor.y + 6, width: W }}
+  return (
+    <Popover
+      anchor={{ x: anchor.x, y: anchor.y + 6 }}
+      align="right"
+      width={232}
+      label={`Send ${anchor.name}`}
+      onClose={onClose}
+      className="p-2.5"
     >
       <p className="mb-2 truncate font-mono text-[10px] uppercase tracking-wider text-text-faint">
         send {anchor.name}
@@ -349,7 +310,6 @@ function SendPopover({
           Send
         </button>
       </div>
-    </div>,
-    document.body,
+    </Popover>
   );
 }

@@ -26,9 +26,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BrewActions } from "./brew-types";
-import { ChargeSymbol, FrequencySymbol } from "./frequencies";
-import IngredientThumb from "../components/ingredient-thumb";
-import { PhialGlyph } from "../components/phial";
+import { ItemArt } from "../components/item-art";
+import { CountBadge } from "../components/badge";
 
 // The brew graph's stage root carries this so the hand's boundary test knows
 // when a carried stack is "inside the brew" (commit) vs. outside (return home).
@@ -320,46 +319,6 @@ export function useHand(opts: UseHandOptions): BrewHand {
   );
 }
 
-// ── item visuals ─────────────────────────────────────────────────────────────
-
-/** How an item looks wherever the hand can touch it: base ingredients show
- * their crest art; pure frequencies the frequency symbol (⊖/⊕ glyph for pure
- * strike/wild); output perfumes the phial. */
-export function ItemIcon({
-  itemKey,
-  name,
-  color,
-  size,
-  phial = false,
-}: {
-  itemKey: string;
-  name: string;
-  color: string;
-  size: number;
-  phial?: boolean;
-}) {
-  if (phial) return <PhialGlyph size={size} />;
-  if (itemKey.startsWith("pure:")) {
-    const id = itemKey.slice(5);
-    if (id === "strike" || id === "wild") {
-      return <ChargeSymbol kind={id} size={size} />;
-    }
-    return <FrequencySymbol id={id} size={size} />;
-  }
-  return (
-    <IngredientThumb
-      name={name}
-      source={
-        itemKey.startsWith("base:")
-          ? { kind: "base" }
-          : { kind: "user", userId: "", name: "" }
-      }
-      color={color}
-      size={size}
-    />
-  );
-}
-
 export interface HandGhostProps {
   hand: Hand | null;
   /** Display name + fallback color for an item key (catalog lookup). */
@@ -380,18 +339,14 @@ export function HandGhost({ hand, itemInfo }: HandGhostProps) {
       aria-hidden="true"
     >
       <div className="relative">
-        <ItemIcon
+        <ItemArt
           itemKey={hand.itemKey}
           name={info.name}
           color={info.color}
           size={44}
-          phial={hand.from === "output"}
+          perfume={hand.from === "output"}
         />
-        {hand.count > 1 && (
-          <span className="absolute -right-2 -top-2 rounded-full border border-border bg-surface px-1 font-mono text-[10px] font-bold text-text">
-            ×{hand.count}
-          </span>
-        )}
+        <CountBadge count={hand.count} className="absolute -right-2 -top-2" />
       </div>
     </div>
   );
