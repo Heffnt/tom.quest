@@ -354,8 +354,8 @@ function buildMethodRows(run: RunRow): MethodRow[] {
     rows.push({ type: "defense", method: m.method, metrics });
   }
 
-  // interp readings — per-measurement when present, else the headline reading.
-  const readings = run.interp?.measurements;
+  // interp readings — per-reading when present, else the headline reading.
+  const readings = run.interp?.readings;
   if (readings && readings.length > 0) {
     for (const m of readings) {
       const metrics: Array<[string, string]> = [
@@ -369,7 +369,7 @@ function buildMethodRows(run: RunRow): MethodRow[] {
   } else if (run.interp) {
     rows.push({
       type: "interp",
-      method: run.interp.measurement_kind ?? "—",
+      method: run.interp.reading_kind ?? "—",
       metrics: [
         ["value", fmtNum(run.interp.value)],
         ["null_control", fmtNum(run.interp.null_control)],
