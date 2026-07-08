@@ -1,37 +1,49 @@
 // app/boolback/lib/presets.ts — tolerant hydration of saved filter sets / views.
 //
 // A preset must NEVER crash the page: unknown keys are ignored, missing keys
-// defaulted, `chart` runs through the same v1→v2 migration path, and the whole
-// FilterState is field-sanitized so a hand-corrupted or stale blob applies
-// PARTIALLY rather than throwing. This is deliberately NOT the share-URL codec —
-// presets store structured state and tolerate schema drift (schemaVersion).
+// defaulted, and each config runs through its sanitizer so a hand-corrupted or
+// stale blob applies PARTIALLY rather than throwing.
+//
+// NOTE (Phase 1): this is the interim shape. Phase 5 replaces presets with the
+// text VIEW-SPEC (one kind, {name, spec}); the Convex query/table are left
+// intact here so nothing breaks in the meantime — only the in-memory shapes
+// were re-pointed at the new per-view configs.
 
-import type { ChartConfig, FilterState, SortKey } from "./types";
-import { EMPTY_FILTER, migrateChart } from "./types";
+import type {
+  FilterState, PlotConfig, GroupPlotConfig, TableConfig,
+} from "./types";
+import {
+  sanitizeFilters, sanitizePlotConfig, sanitizeGroupPlotConfig, sanitizeTableConfig,
+} from "./types";
 import type { CenterView } from "../components/table-pane";
 
 export type PresetKind = "filters" | "view";
-export const PRESET_SCHEMA_VERSION = 1;
+export const PRESET_SCHEMA_VERSION = 2;
 
-/** kind=filters: just FilterState. kind=view: the whole view. */
+/** kind=filters: just a FilterState (applied to the active view). */
 export interface FiltersPresetState {
   filters: FilterState;
 }
+/** kind=view: a full workspace snapshot (all three configs + which view). */
 export interface ViewPresetState {
-  filters: FilterState;
-  chart: ChartConfig;
-  sorts: SortKey[];
-  visibleCols: string[];
   centerView: CenterView;
+  table: TableConfig;
+  plot: PlotConfig;
+  groupPlot: GroupPlotConfig;
 }
 
-export interface HydratedPreset {
+export interface HydratedFilters {
+  kind: "filters";
   filters: FilterState;
-  chart?: ChartConfig;
-  sorts?: SortKey[];
-  visibleCols?: string[];
-  centerView?: CenterView;
 }
+export interface HydratedView {
+  kind: "view";
+  centerView: CenterView | null;
+  table: TableConfig;
+  plot: PlotConfig;
+  groupPlot: GroupPlotConfig;
+}
+export type HydratedPreset = HydratedFilters | HydratedView;
 
 /** Map a legacy/foreign center-view string ("chart" → "plot"); null if unknown. */
 function normView(v: unknown): CenterView | null {
@@ -39,26 +51,11 @@ function normView(v: unknown): CenterView | null {
   return v === "table" || v === "plot" || v === "groupplot" || v === "anatomy" ? v : null;
 }
 
-/** Coerce any blob to a complete FilterState (field-by-field; never throws). */
-export function sanitizeFilters(raw: unknown): FilterState {
-  const f = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  return {
-    facets: f.facets && typeof f.facets === "object" && !Array.isArray(f.facets)
-      ? (f.facets as FilterState["facets"])
-      : {},
-    ranges: Array.isArray(f.ranges) ? (f.ranges as FilterState["ranges"]) : [],
-    status: Array.isArray(f.status) ? (f.status as FilterState["status"]) : [],
-    subtreeDirs: Array.isArray(f.subtreeDirs)
-      ? f.subtreeDirs.filter((x): x is string => typeof x === "string")
-      : [],
-    search: typeof f.search === "string" ? f.search : "",
-  };
-}
+export { sanitizeFilters };
 
 /**
- * Hydrate a preset's `state` for application. A filters preset yields only
- * `filters`; a view preset yields the full set. `fallbackCols` is used when the
- * saved visibleCols are missing/empty. Tolerant of any malformed input.
+ * Hydrate a preset's `state` for application. Tolerant of any malformed input.
+ * `fallbackCols` seeds the table's visibleCols when the blob has none.
  */
 export function hydratePreset(
   kind: PresetKind,
@@ -66,17 +63,15 @@ export function hydratePreset(
   fallbackCols: string[],
 ): HydratedPreset {
   const s = (state && typeof state === "object" ? state : {}) as Record<string, unknown>;
-  const filters = { ...EMPTY_FILTER, ...sanitizeFilters(s.filters) };
-  if (kind === "filters") return { filters };
+  if (kind === "filters") {
+    return { kind: "filters", filters: sanitizeFilters(s.filters) };
+  }
   return {
-    filters,
-    chart: migrateChart(s.chart),
-    sorts: Array.isArray(s.sorts) ? (s.sorts as SortKey[]) : [],
-    visibleCols:
-      Array.isArray(s.visibleCols) && s.visibleCols.length > 0
-        ? (s.visibleCols as string[])
-        : fallbackCols,
-    centerView: normView(s.centerView) ?? undefined,
+    kind: "view",
+    centerView: normView(s.centerView),
+    table: sanitizeTableConfig(s.table, fallbackCols),
+    plot: sanitizePlotConfig(s.plot),
+    groupPlot: sanitizeGroupPlotConfig(s.groupPlot),
   };
 }
 

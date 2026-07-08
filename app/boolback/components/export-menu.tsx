@@ -26,7 +26,7 @@ import {
   copyText, downloadBlob, downloadText, summaryToCsv, summaryToLatex, svgToPngBlob,
   svgToString, toCsv, type SummaryTableSpec,
 } from "../lib/export";
-import type { ChartExportHandle } from "./chart-panel";
+import type { PlotExportHandle } from "./plot-panel";
 import type { CenterView } from "./table-pane";
 import { shortModel } from "../lib/format";
 import { useBoolbackStore } from "../state/store";
@@ -38,7 +38,6 @@ const DEFAULT_SUMMARY_METRICS = [
 /** Human one-liner of the active filters (for the .tex provenance comment). */
 export function describeFilters(filters: FilterState, index: MetricIndex): string {
   const parts: string[] = [];
-  for (const s of filters.status ?? []) parts.push(s);
   for (const [key, vals] of Object.entries(filters.facets ?? {})) {
     if (Array.isArray(vals) && vals.length > 0) {
       parts.push(`${FACET_LABELS[key as FacetKey] ?? key}: ${vals.join("|")}`);
@@ -47,8 +46,6 @@ export function describeFilters(filters: FilterState, index: MetricIndex): strin
   for (const r of filters.ranges ?? []) {
     parts.push(`${index[r.metric]?.label ?? r.metric} in [${r.min}, ${r.max}]`);
   }
-  for (const d of filters.subtreeDirs ?? []) parts.push(`scope: ${d}`);
-  if ((filters.search ?? "").trim()) parts.push(`search: "${filters.search.trim()}"`);
   return parts.join("; ");
 }
 
@@ -66,7 +63,7 @@ export function ExportMenu({
   visibleRows: RunRow[];
   colDefs: ColumnDef[];
   view: CenterView;
-  chartRef: React.MutableRefObject<ChartExportHandle | null>;
+  chartRef: React.MutableRefObject<PlotExportHandle | null>;
   filters: FilterState;
 }) {
   const [open, setOpen] = useState(false);
@@ -195,12 +192,12 @@ function SummaryDialog({
   // Default group-by: the chart's color-channel split when it names a facet
   // (the explicit color override, else the first split — auto assigns color to
   // splits[0]), else model.
-  const chartSplits = useBoolbackStore((s) => s.chart.splits);
-  const chartChannels = useBoolbackStore((s) => s.chart.channels);
+  const chartSplits = useBoolbackStore((s) => s.plot.splits);
+  const chartChannels = useBoolbackStore((s) => s.plot.channels);
   const [groupBy, setGroupBy] = useState<FacetKey>(() => {
     const splits = chartSplits ?? [];
     const colorKey = splits.find((k) => chartChannels?.[k] === "color") ?? splits[0];
-    return colorKey && colorKey !== "function" ? (colorKey as FacetKey) : "baseModel";
+    return colorKey && colorKey !== "function" ? (colorKey as FacetKey) : "base_model";
   });
 
   // Outcome-first metric candidates (only those with observed data).
@@ -225,7 +222,7 @@ function SummaryDialog({
       metrics,
       (r) => {
         const v = facetValue(r, groupBy);
-        return v === null ? null : groupBy === "baseModel" ? shortModel(v) : v;
+        return v === null ? null : groupBy === "base_model" ? shortModel(v) : v;
       },
       (r, m) => numericValue(r, metricColumnId(m, index)),
     );

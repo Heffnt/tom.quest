@@ -20,8 +20,8 @@
 
 import { useState } from "react";
 import type { Channel, ValueStyle } from "../lib/types";
-import type { DimensionDef, DimValues, DimSummary } from "../lib/dimensions";
-import { CHANNELS } from "../lib/dimensions";
+import type { ParameterDef, ParamValues, ParamSummary } from "../lib/parameters";
+import { CHANNELS } from "../lib/parameters";
 import { PALETTE, DASH_PATTERNS, colorForValue, shapeForValue, dashForValue } from "../lib/styling";
 import { shapeNode } from "./glyph";
 
@@ -31,11 +31,11 @@ const MAX_VALUES = 16; // value rows shown per split dim before "+N more"
 type ValueStyles = Record<string, Record<string, ValueStyle>>;
 
 export interface DimensionBoardProps {
-  summary: DimSummary;
+  summary: ParamSummary;
   splits: string[]; // active splits, in order
   channelByDim: Map<string, Channel>;
   worthiness: Record<string, number>;
-  averagedDims: DimensionDef[];
+  averagedDims: ParameterDef[];
   valueStyles: ValueStyles;
   band: boolean;
   ghosts: boolean;
@@ -46,11 +46,11 @@ export interface DimensionBoardProps {
   reorderSplits: (next: string[]) => void;
   setChannel: (key: string, ch: Channel) => void;
   setValueStyle: (dimKey: string, value: string, patch: ValueStyle | null) => void;
-  dimSelection: (dim: DimensionDef) => string[];
-  toggleDimValue: (dim: DimensionDef, value: string) => void;
-  clearDimFilter: (dim: DimensionDef) => void;
-  isolateValue: (dim: DimensionDef, value: string) => void;
-  excludeValue: (dim: DimensionDef, value: string) => void;
+  dimSelection: (dim: ParameterDef) => string[];
+  toggleDimValue: (dim: ParameterDef, value: string) => void;
+  clearDimFilter: (dim: ParameterDef) => void;
+  isolateValue: (dim: ParameterDef, value: string) => void;
+  excludeValue: (dim: ParameterDef, value: string) => void;
   rByColorValue: Map<string, number | null>;
 }
 
@@ -205,7 +205,7 @@ function SplitRow({
   dv, channel, dragging, onDragStart, onDrop, onCycleChannel, onUnsplit,
   valueStyles, selected, onToggle, onClear, onIsolate, onExclude, rByColorValue, onEditStyle,
 }: {
-  dv: DimValues;
+  dv: ParamValues;
   channel: Channel;
   dragging: boolean;
   onDragStart: () => void;
@@ -332,7 +332,7 @@ function Swatch({
 function AveragedRow({
   dim, count, worth, filtered, onSplit, onClear,
 }: {
-  dim: DimensionDef;
+  dim: ParameterDef;
   count: number;
   worth: number;
   filtered: number;

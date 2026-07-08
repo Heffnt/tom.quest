@@ -283,9 +283,9 @@ function RunDetail({
 
       {/* interp */}
       {row.interp && (
-        <Section title="interp measurement">
+        <Section title="interp reading">
           <div className="space-y-0.5 font-mono">
-            <FieldRow label="kind" value={row.interp.measurement_kind} />
+            <FieldRow label="kind" value={row.interp.reading_kind} />
             <FieldRow label="value" value={row.interp.value} />
             <FieldRow label="null_control" value={row.interp.null_control} />
             <FieldRow label="ref model Δ" value={row.interp.reference_model_diff} />

@@ -23,12 +23,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  Bundle, RunRow, FilterState, SortKey, AnatomyConfig, ChartConfig, SortDir,
+  Bundle, RunRow, FilterState, SortDir,
+  AnatomyConfig, TableConfig, PlotConfig, GroupPlotConfig,
 } from "../lib/types";
-import { DEFAULT_ANATOMY, DEFAULT_CHART, EMPTY_FILTER, migrateChart } from "../lib/types";
-import { useBoolbackStore } from "../state/store";
 import {
-  applyFilters, applySorts, metricRange, normalizeToRange, numericValue,
+  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER,
+  sanitizePlotConfig, sanitizeGroupPlotConfig, sanitizeTableConfig,
+} from "../lib/types";
+import { useBoolbackStore, DEFAULT_TABLE, DEFAULT_COLS } from "../state/store";
+import {
+  applyFilters, applySorts, matchesSearch, metricRange, normalizeToRange, numericValue,
   cellValue, facetKeyForColumn, type MetricIndex,
 } from "../lib/select";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
@@ -37,12 +41,11 @@ import { sanitizeAnatomyConfig } from "../lib/anatomy";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import type { ArtifactSource } from "../data/source";
 import { useResizable } from "../lib/use-resizable";
-import { readSharedView } from "../lib/share";
 import { mean } from "../lib/stats";
 import { TruthStrip } from "./truth-strip";
 import { FnHex } from "./fn-hex";
 import { EpochSparkline } from "./epoch-sparkline";
-import { ChartBody, type ChartExportHandle } from "./chart-panel";
+import { PlotBody, type PlotExportHandle } from "./plot-panel";
 import { GroupPlotBody } from "./group-plot";
 import { AnatomyBody } from "./anatomy-pane";
 import { FilterBar } from "./filter-bar";
@@ -61,17 +64,6 @@ const MAX_COL_WIDTH = 520;
 // Leading identity columns that freeze sticky-left (only a LEADING run of
 // these ids freezes — reorder them away from the front and they scroll).
 const FROZEN_IDS = new Set(["function.arity", "function.fn_hex"]);
-
-// Persisted-view shape (boolback:view): filters + sorts + visibleCols +
-// widths + chart/anatomy config. A ?v= share URL overrides it for that load.
-interface PersistedView extends Record<string, unknown> {
-  filters: FilterState;
-  sorts: SortKey[];
-  visibleCols: string[];
-  columnWidths: Record<string, number>;
-  chart: ChartConfig;
-  anatomy: AnatomyConfig;
-}
 
 // ===========================================================================
 // TablePane
@@ -104,15 +96,15 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
     [bundle.metric_schema],
   );
 
-  // ---- store slices ------------------------------------------------------
-  const filters = useBoolbackStore((s) => s.filters);
-  const sorts = useBoolbackStore((s) => s.sorts);
-  const visibleCols = useBoolbackStore((s) => s.visibleCols);
-  const columnWidths = useBoolbackStore((s) => s.columnWidths);
+  // ---- store slices — THREE independent per-view configs -----------------
+  const table = useBoolbackStore((s) => s.table);
+  const plot = useBoolbackStore((s) => s.plot);
+  const groupPlot = useBoolbackStore((s) => s.groupPlot);
+  const anatomy = useBoolbackStore((s) => s.anatomy);
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
-  const chart = useBoolbackStore((s) => s.chart);
-  const anatomy = useBoolbackStore((s) => s.anatomy);
+
+  const { visibleCols, columnWidths, sorts, search } = table;
 
   const select = useBoolbackStore((s) => s.select);
   const openDetail = useBoolbackStore((s) => s.openDetail);
@@ -122,62 +114,82 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
   const pushSort = useBoolbackStore((s) => s.pushSort);
   const appendSort = useBoolbackStore((s) => s.appendSort);
   const setPrimarySort = useBoolbackStore((s) => s.setPrimarySort);
-  const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
-  const addRange = useBoolbackStore((s) => s.addRange);
+  const storeToggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
+  const storeAddRange = useBoolbackStore((s) => s.addRange);
   const setVisibleCols = useBoolbackStore((s) => s.setVisibleCols);
   const setColumnWidth = useBoolbackStore((s) => s.setColumnWidth);
-  const setChart = useBoolbackStore((s) => s.setChart);
+  const setPlot = useBoolbackStore((s) => s.setPlot);
   const setCenterView = useBoolbackStore((s) => s.setCenterView);
   const setStore = useBoolbackStore.setState;
 
-  // The mounted chart registers its export surface here; the shared Export
+  // The mounted plot registers its export surface here; the shared Export
   // menu (filter bar) reads it.
-  const chartRef = useRef<ChartExportHandle | null>(null);
+  const chartRef = useRef<PlotExportHandle | null>(null);
 
-  // ---- persisted view sync (?v= share URL overrides for this load) --------
-  const persistDefaults = useMemo<PersistedView>(
-    () => ({
-      filters: EMPTY_FILTER, sorts: [], visibleCols, columnWidths: {},
-      chart: DEFAULT_CHART, anatomy: DEFAULT_ANATOMY,
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+  // ---- persisted view sync — ONE key per view config ----------------------
+  const [pTable, updateTable, tableHydrated] = usePersistedSettings<TableConfig>(
+    "boolback:table", DEFAULT_TABLE,
   );
-  const [persisted, updatePersisted, isHydrated] = usePersistedSettings<PersistedView>(
-    "boolback:view",
-    persistDefaults,
+  const [pPlot, updatePlot, plotHydrated] = usePersistedSettings<PlotConfig>(
+    "boolback:plot", DEFAULT_PLOT,
   );
+  const [pGroup, updateGroup, groupHydrated] = usePersistedSettings<GroupPlotConfig>(
+    "boolback:groupplot", DEFAULT_GROUP_PLOT,
+  );
+  const [pAnat, updateAnat, anatHydrated] = usePersistedSettings<AnatomyConfig>(
+    "boolback:anatomy", DEFAULT_ANATOMY,
+  );
+  const allHydrated = tableHydrated && plotHydrated && groupHydrated && anatHydrated;
   const didHydrate = useRef(false);
 
   useEffect(() => {
-    if (!isHydrated || didHydrate.current) return;
+    if (!allHydrated || didHydrate.current) return;
     didHydrate.current = true;
-    const shared = readSharedView();
-    const src = shared ?? persisted;
+    // Sanitizers coerce a partial/hostile persisted blob to a valid config
+    // without throwing (no v1→v2→v3 migration — old blobs are dropped).
     setStore({
-      // Deep-merge over EMPTY_FILTER: a stale/partial saved `filters` (e.g. missing
-      // `search`/`subtreeDirs` from an older shape, loaded from Convex for a signed-in
-      // user) must NOT replace the complete default and crash applyFilters.
-      filters: { ...EMPTY_FILTER, ...(src.filters ?? {}) },
-      sorts: src.sorts ?? [],
-      visibleCols: src.visibleCols?.length ? src.visibleCols : visibleCols,
-      columnWidths: shared ? {} : (persisted.columnWidths ?? {}),
-      chart: migrateChart(src.chart),
-      // Value-TYPE sanitation, not a spread: a crafted ?v= ({"focus": null})
-      // or a stale persisted blob must not override a field with the wrong
-      // type — buildScale/defaultKbLayer read focus on first render and a
-      // null/primitive killed the whole page (the filters deep-merge above
-      // guards the same class; anatomy needs per-field checks).
-      anatomy: sanitizeAnatomyConfig(src.anatomy),
+      table: sanitizeTableConfig(pTable, DEFAULT_COLS),
+      plot: sanitizePlotConfig(pPlot),
+      groupPlot: sanitizeGroupPlotConfig(pGroup),
+      anatomy: sanitizeAnatomyConfig(pAnat),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHydrated]);
+  }, [allHydrated]);
 
   useEffect(() => {
-    if (!isHydrated || !didHydrate.current) return;
-    updatePersisted({ filters, sorts, visibleCols, columnWidths, chart, anatomy });
+    if (!didHydrate.current) return;
+    updateTable(table);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, sorts, visibleCols, columnWidths, chart, anatomy, isHydrated]);
+  }, [table]);
+  useEffect(() => {
+    if (!didHydrate.current) return;
+    updatePlot(plot);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plot]);
+  useEffect(() => {
+    if (!didHydrate.current) return;
+    updateGroup(groupPlot);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupPlot]);
+  useEffect(() => {
+    if (!didHydrate.current) return;
+    updateAnat(anatomy);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anatomy]);
+
+  // Table-scoped mutators (the header/cell actions belong to the TABLE view).
+  const toggleFacetValue = useCallback(
+    (key: NonNullable<ReturnType<typeof facetKeyForColumn>>, value: string) =>
+      storeToggleFacetValue("table", key, value),
+    [storeToggleFacetValue],
+  );
+
+  // ---- active view's filters (anatomy = frozen EMPTY_FILTER; isolated) -----
+  const activeFilters: FilterState =
+    view === "table" ? table.filters
+    : view === "plot" ? plot.filters
+    : view === "groupplot" ? groupPlot.filters
+    : EMPTY_FILTER;
 
   // ---- column defs -------------------------------------------------------
   const colDefs = useMemo(
@@ -186,19 +198,15 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
   );
 
   // ---- visible rows ------------------------------------------------------
-  const visibleRows = useMemo(
-    () => applySorts(applyFilters(rows, filters), sorts),
-    [rows, filters, sorts],
-  );
-
-  // Rows in scope (subtree chips applied, but not facets/ranges/status) — base
-  // for facet/histogram live counts so they reflect sibling-filter context.
-  const scopedRows = useMemo(() => {
-    if (filters.subtreeDirs.length === 0) return rows;
-    return rows.filter((r) =>
-      filters.subtreeDirs.some((d) => r.identity.chain_dirs.includes(d)),
-    );
-  }, [rows, filters.subtreeDirs]);
+  // Table also applies its search (path-fragment) + sorts; the plot/group views
+  // just filter; anatomy sees ALL rows (EMPTY_FILTER).
+  const visibleRows = useMemo(() => {
+    const filtered = applyFilters(rows, activeFilters);
+    if (view !== "table") return filtered;
+    const q = search.trim();
+    const searched = q ? filtered.filter((r) => matchesSearch(r, q)) : filtered;
+    return applySorts(searched, sorts);
+  }, [rows, activeFilters, view, search, sorts]);
 
   const sortDirOf = useCallback(
     (col: string): "asc" | "desc" | null => sorts.find((k) => k.col === col)?.dir ?? null,
@@ -338,23 +346,24 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
   const addRangeFor = useCallback(
     (metricName: string) => {
       const { min, max } = metricRange(rows, metricName, index);
-      addRange({ metric: metricName, min, max });
+      // Header "add range filter" belongs to the TABLE view's filters.
+      storeAddRange("table", { metric: metricName, min, max });
     },
-    [rows, index, addRange],
+    [rows, index, storeAddRange],
   );
   const plotOn = useCallback(
     (axis: "x" | "y", metricName: string) => {
-      setChart(axis === "x" ? { x: metricName } : { y: metricName });
+      // The table↔plot bridge writes the PLOT view's axes, then switches to it.
+      setPlot(axis === "x" ? { x: metricName } : { y: metricName });
       setCenterView("plot");
     },
-    [setChart, setCenterView],
+    [setPlot, setCenterView],
   );
 
   return (
     <div className="absolute inset-0 flex flex-col bg-bg text-text">
       <FilterBar
         rows={rows}
-        scopedRows={scopedRows}
         visibleRows={visibleRows}
         visibleCount={visibleRows.length}
         totalCount={rows.length}
@@ -368,7 +377,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
       />
 
       {view === "plot" ? (
-        <ChartBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
+        <PlotBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
       ) : view === "groupplot" ? (
         <GroupPlotBody rows={visibleRows} bundle={bundle} index={index} />
       ) : view === "anatomy" ? (
@@ -611,8 +620,8 @@ function HeaderCell({
               <span className="my-1 block border-t border-border/60" />
             )}
             {menu.addRange && item("Add range filter", menu.addRange)}
-            {menu.plotX && item("Plot on chart X", menu.plotX)}
-            {menu.plotY && item("Plot on chart Y", menu.plotY)}
+            {menu.plotX && item("Plot on X", menu.plotX)}
+            {menu.plotY && item("Plot on Y", menu.plotY)}
           </span>
         </>
       )}

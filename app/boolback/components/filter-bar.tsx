@@ -30,19 +30,18 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
-  Bundle, FacetKey, FilterState, RangeFilter, StatusFlag,
+  Bundle, FacetKey, FilterState, RangeFilter,
 } from "../lib/types";
+import { EMPTY_FILTER } from "../lib/types";
 import type { RunRow } from "../lib/types";
-import { useBoolbackStore } from "../state/store";
+import { useBoolbackStore, configViewOf, type ViewKey } from "../state/store";
 import type { ArtifactSource } from "../data/source";
 import {
   FACET_KEYS, FACET_LABELS, countSummary, facetOptions, histogramBins,
-  metricRange, statusCounts, type MetricIndex,
+  metricRange, type MetricIndex,
 } from "../lib/select";
 import { Y_GROUP_ORDER, collapseMethodEntries, formatValue, groupedMetricOptions } from "../lib/metrics";
 import { parseMethodMetric } from "../lib/method-metrics";
-import { buildShareUrl } from "../lib/share";
-import { copyText } from "../lib/export";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -55,29 +54,14 @@ function methodPart(name: string): string | null {
 import { resolveById, type ColumnDef } from "../lib/columns";
 import { ColumnGroupMenu } from "./column-group-menu";
 import { ExportMenu } from "./export-menu";
-import type { ChartExportHandle } from "./chart-panel";
+import type { PlotExportHandle } from "./plot-panel";
 import type { CenterView } from "./table-pane";
 import { relTime, shortModel } from "../lib/format";
 
 const HIST_BINS = 24;
 
-const STATUS_OPTIONS: Array<{ flag: StatusFlag; label: string }> = [
-  { flag: "plantedOnly", label: "Planted" },
-  { flag: "neverPlanted", label: "Never planted" },
-  { flag: "inProgress", label: "In progress" },
-  { flag: "hasDefense", label: "Has defense" },
-  { flag: "hasInterp", label: "Has interp" },
-  { flag: "hasScan", label: "Has scan" },
-  { flag: "hasTwin", label: "Has twin" },
-  { flag: "hasNegativeDrop", label: "Negative drop" },
-];
-
-const statusLabel = (flag: StatusFlag): string =>
-  STATUS_OPTIONS.find((o) => o.flag === flag)?.label ?? flag;
-
 export interface FilterBarProps {
-  rows: RunRow[]; // all runs
-  scopedRows: RunRow[]; // subtree chips applied (facet/histogram context)
+  rows: RunRow[]; // all runs (facet/histogram candidate context)
   visibleRows: RunRow[]; // fully filtered + sorted (export)
   visibleCount: number;
   totalCount: number;
@@ -85,7 +69,7 @@ export interface FilterBarProps {
   index: MetricIndex;
   colDefs: ColumnDef[]; // visible table columns (export)
   view: CenterView;
-  chartRef: React.MutableRefObject<ChartExportHandle | null>;
+  chartRef: React.MutableRefObject<PlotExportHandle | null>;
   source: ArtifactSource; // status dot / freshness / Refresh
   /** Set while the tree pane is collapsed — renders the `» artifacts` re-open button. */
   onShowTree?: () => void;
@@ -93,44 +77,44 @@ export interface FilterBarProps {
 
 export function FilterBar(props: FilterBarProps) {
   const {
-    rows, scopedRows, visibleRows, visibleCount, totalCount,
+    rows, visibleRows, visibleCount, totalCount,
     bundle, index, colDefs, view, chartRef, source, onShowTree,
   } = props;
 
-  const filters = useBoolbackStore((s) => s.filters);
-  const sorts = useBoolbackStore((s) => s.sorts);
-  const visibleCols = useBoolbackStore((s) => s.visibleCols);
-  const setFacet = useBoolbackStore((s) => s.setFacet);
-  const toggleStatus = useBoolbackStore((s) => s.toggleStatus);
-  const updateRange = useBoolbackStore((s) => s.updateRange);
-  const removeRange = useBoolbackStore((s) => s.removeRange);
-  const removeSubtreeDir = useBoolbackStore((s) => s.removeSubtreeDir);
+  // The active view's config key ("table"|"plot"|"groupPlot"; null on anatomy).
+  const vk = configViewOf(view);
+
+  // Each view owns its filters; read all three and pick the active one so the
+  // chips stay reactive on tab switch.
+  const tableFilters = useBoolbackStore((s) => s.table.filters);
+  const plotFilters = useBoolbackStore((s) => s.plot.filters);
+  const groupFilters = useBoolbackStore((s) => s.groupPlot.filters);
+  const filters: FilterState =
+    vk === "table" ? tableFilters : vk === "plot" ? plotFilters : vk === "groupPlot" ? groupFilters : EMPTY_FILTER;
+
+  // Table-only bits.
+  const sorts = useBoolbackStore((s) => s.table.sorts);
+  const visibleCols = useBoolbackStore((s) => s.table.visibleCols);
+  const search = useBoolbackStore((s) => s.table.search);
+
+  const storeSetFacet = useBoolbackStore((s) => s.setFacet);
+  const storeUpdateRange = useBoolbackStore((s) => s.updateRange);
+  const storeRemoveRange = useBoolbackStore((s) => s.removeRange);
   const setSearch = useBoolbackStore((s) => s.setSearch);
   const setVisibleCols = useBoolbackStore((s) => s.setVisibleCols);
-  const resetView = useBoolbackStore((s) => s.resetView);
+  const storeResetView = useBoolbackStore((s) => s.resetView);
   const toggleSortDir = useBoolbackStore((s) => s.toggleSortDir);
   const removeSort = useBoolbackStore((s) => s.removeSort);
   const reorderSorts = useBoolbackStore((s) => s.reorderSorts);
   const setCenterView = useBoolbackStore((s) => s.setCenterView);
-  const chart = useBoolbackStore((s) => s.chart);
-  const setChart = useBoolbackStore((s) => s.setChart);
-  const readout = useBoolbackStore((s) => s.chartReadout);
+  const plot = useBoolbackStore((s) => s.plot);
+  const setPlot = useBoolbackStore((s) => s.setPlot);
+  const readout = useBoolbackStore((s) => s.plotReadout);
 
-  // Shareable view URL (filters + sorts + columns + chart + anatomy + view).
-  const [copied, setCopied] = useState(false);
-  const copyLink = async () => {
-    const s = useBoolbackStore.getState();
-    await copyText(buildShareUrl({
-      filters: s.filters,
-      sorts: s.sorts,
-      visibleCols: s.visibleCols,
-      chart: s.chart,
-      anatomy: s.anatomy,
-      view: s.centerView,
-    }));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
-  };
+  // Filter mutators, scoped to the active view (no-op on anatomy).
+  const setFacet = (key: FacetKey, values: string[]) => { if (vk) storeSetFacet(vk, key, values); };
+  const updateRange = (metric: string, patch: Partial<RangeFilter>) => { if (vk) storeUpdateRange(vk, metric, patch); };
+  const removeRange = (metric: string) => { if (vk) storeRemoveRange(vk, metric); };
 
   const facetSelections = useMemo(
     () =>
@@ -140,14 +124,10 @@ export function FilterBar(props: FilterBarProps) {
     [filters.facets],
   );
 
-  const activeStatus = filters.status ?? [];
-
   const hasAnyFilter =
     facetSelections.length > 0 ||
     (filters.ranges ?? []).length > 0 ||
-    (filters.status ?? []).length > 0 ||
-    (filters.subtreeDirs ?? []).length > 0 ||
-    (filters.search ?? "").trim() !== "";
+    (view === "table" && search.trim() !== "");
 
   // ---- sort-chip drag reordering ------------------------------------------
   const dragIdx = useRef<number | null>(null);
@@ -198,32 +178,24 @@ export function FilterBar(props: FilterBarProps) {
           ))}
         </div>
 
-        <AddFilterMenu
-          rows={rows}
-          scopedRows={scopedRows}
-          filters={filters}
-          bundle={bundle}
-          index={index}
-        />
-
-        <ViewsMenu />
-
-        {activeStatus.map((flag) => (
-          <Chip
-            key={flag}
-            label={statusLabel(flag)}
-            active
-            onBody={() => toggleStatus(flag)}
-            onRemove={() => toggleStatus(flag)}
+        {vk && (
+          <AddFilterMenu
+            view={vk}
+            rows={rows}
+            filters={filters}
+            bundle={bundle}
+            index={index}
           />
-        ))}
+        )}
+
+        <ViewsMenu view={view} />
 
         {facetSelections.map(([key, vals]) => (
           <FacetChip
             key={key}
             facetKey={key}
             selected={vals}
-            options={facetOptions(scopedRows, key)}
+            options={facetOptions(rows, key)}
             setFacet={setFacet}
           />
         ))}
@@ -232,29 +204,19 @@ export function FilterBar(props: FilterBarProps) {
           <RangeChip
             key={r.metric}
             range={r}
-            rows={scopedRows}
+            rows={rows}
             index={index}
             updateRange={updateRange}
             removeRange={removeRange}
           />
         ))}
 
-        {(filters.subtreeDirs ?? []).map((dir) => (
-          <Chip
-            key={dir}
-            label={`scope: ${dir.split("/").pop() ?? dir}`}
-            active
-            title={dir}
-            onRemove={() => removeSubtreeDir(dir)}
-          />
-        ))}
-
         {/* trend + readout — Plot view only; the X/Y pickers, log toggles and
-            axis min/max live on the plot's axes (chart-panel.tsx) */}
+            axis min/max live on the plot's axes (plot-panel.tsx) */}
         {view === "plot" && (
           <>
             <span className="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden />
-            <AxisToggle label="trend" checked={!!chart.trend} onChange={(b) => setChart({ trend: b })} />
+            <AxisToggle label="trend" checked={!!plot.trend} onChange={(b) => setPlot({ trend: b })} />
             {readout && (readout.r !== null || readout.binned || readout.droppedLog > 0 || readout.outsideWindow > 0) && (
               <span
                 className="text-xs font-mono text-text-faint whitespace-nowrap"
@@ -274,7 +236,7 @@ export function FilterBar(props: FilterBarProps) {
         )}
 
         <span className="ml-auto flex items-center gap-1.5">
-          <QuickSearch value={filters.search ?? ""} onCommit={setSearch} />
+          {view === "table" && <QuickSearch value={search} onCommit={setSearch} />}
           <span className="text-xs font-mono text-text-muted whitespace-nowrap">
             {countSummary(visibleCount, totalCount)} runs
           </span>
@@ -297,20 +259,13 @@ export function FilterBar(props: FilterBarProps) {
           )}
           {hasAnyFilter && (
             <button
-              onClick={resetView}
+              onClick={() => storeResetView(view)}
+              title="Reset this view's filters, sort and columns"
               className="rounded-md border border-border bg-surface-alt px-2.5 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
             >
               Reset
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => void copyLink()}
-            title="Copy a link that reproduces exactly this view (filters, sort, columns, chart)"
-            className="shrink-0 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-text-muted hover:text-text hover:border-accent/40 transition-colors"
-          >
-            {copied ? "✓" : "⧉"}
-          </button>
           <span
             className={`inline-block h-2 w-2 shrink-0 rounded-full ${
               source.status === "ready"
@@ -440,7 +395,7 @@ function FacetChip({
   setFacet: (key: FacetKey, values: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const display = (v: string) => (facetKey === "baseModel" ? shortModel(v) : v);
+  const display = (v: string) => (facetKey === "base_model" ? shortModel(v) : v);
   const label =
     `${FACET_LABELS[facetKey]}: ${display(selected[0])}` +
     (selected.length > 1 ? ` +${selected.length - 1}` : "");
@@ -709,10 +664,10 @@ function AxisToggle({
 // ---------------------------------------------------------------------------
 
 function AddFilterMenu({
-  rows, scopedRows, filters, bundle, index,
+  view, rows, filters, bundle, index,
 }: {
+  view: ViewKey;
   rows: RunRow[];
-  scopedRows: RunRow[];
   filters: FilterState;
   bundle: Bundle;
   index: MetricIndex;
@@ -722,19 +677,20 @@ function AddFilterMenu({
   const [expandedFacet, setExpandedFacet] = useState<FacetKey | null>(null);
   const [expandedMetricBase, setExpandedMetricBase] = useState<string | null>(null);
 
-  const toggleStatus = useBoolbackStore((s) => s.toggleStatus);
-  const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
-  const setFacet = useBoolbackStore((s) => s.setFacet);
-  const addRange = useBoolbackStore((s) => s.addRange);
+  const storeToggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
+  const storeSetFacet = useBoolbackStore((s) => s.setFacet);
+  const storeAddRange = useBoolbackStore((s) => s.addRange);
+  const toggleFacetValue = (key: FacetKey, value: string) => storeToggleFacetValue(view, key, value);
+  const setFacet = (key: FacetKey, values: string[]) => storeSetFacet(view, key, values);
+  const addRange = (r: RangeFilter) => storeAddRange(view, r);
 
-  const flagCounts = useMemo(() => statusCounts(rows), [rows]);
   const facetOpts = useMemo(
     () =>
-      Object.fromEntries(FACET_KEYS.map((k) => [k, facetOptions(scopedRows, k)])) as Record<
+      Object.fromEntries(FACET_KEYS.map((k) => [k, facetOptions(rows, k)])) as Record<
         FacetKey,
         Array<{ value: string; count: number }>
       >,
-    [scopedRows],
+    [rows],
   );
 
   const query = q.trim().toLowerCase();
@@ -751,7 +707,7 @@ function AddFilterMenu({
     const out: Array<{ key: FacetKey; value: string; count: number }> = [];
     for (const k of facetKeys) {
       for (const o of facetOpts[k]) {
-        const disp = k === "baseModel" ? shortModel(o.value) : o.value;
+        const disp = k === "base_model" ? shortModel(o.value) : o.value;
         if (disp.toLowerCase().includes(query) || o.value.toLowerCase().includes(query)) {
           out.push({ key: k, value: o.value, count: o.count });
         }
@@ -780,7 +736,6 @@ function AddFilterMenu({
     setExpandedMetricBase(null);
   };
 
-  const statusEntries = STATUS_OPTIONS.filter((o) => matches(o.label));
   const facetEntries = facetKeys.filter((k) => matches(FACET_LABELS[k]));
   const metricEntries = metricGroups
     .map(([group, entries]) => ({
@@ -811,7 +766,7 @@ function AddFilterMenu({
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Escape") close(); }}
-              placeholder="filter by status, facet, value, metric…"
+              placeholder="filter by facet, value, metric…"
               className="mb-2 w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-text placeholder:text-text-faint caret-accent focus:border-accent/80 focus:outline-none"
             />
             <div className="max-h-80 overflow-y-auto">
@@ -826,35 +781,11 @@ function AddFilterMenu({
                     >
                       <span className="truncate">
                         <span className="text-text-muted">{FACET_LABELS[key]}:</span>{" "}
-                        {key === "baseModel" ? shortModel(value) : value}
+                        {key === "base_model" ? shortModel(value) : value}
                       </span>
                       <span className="text-xs text-text-faint tabular-nums">{count}</span>
                     </button>
                   ))}
-                </Section>
-              )}
-
-              {statusEntries.length > 0 && (
-                <Section label="status">
-                  {statusEntries.map((o) => {
-                    const active = (filters.status ?? []).includes(o.flag);
-                    const empty = flagCounts[o.flag] === 0;
-                    return (
-                      <button
-                        key={o.flag}
-                        onClick={() => { toggleStatus(o.flag); close(); }}
-                        className={`flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left hover:bg-surface-alt hover:text-accent ${empty ? "text-text-faint" : "text-text/90"}`}
-                      >
-                        <span>
-                          {o.label}
-                          {active && <span className="ml-1 text-accent">✓</span>}
-                        </span>
-                        <span className="text-xs text-text-faint tabular-nums">
-                          {empty ? "no runs yet" : flagCounts[o.flag].toLocaleString()}
-                        </span>
-                      </button>
-                    );
-                  })}
                 </Section>
               )}
 
@@ -894,7 +825,7 @@ function AddFilterMenu({
                                   className="accent-accent"
                                 />
                                 <span className="flex-1 truncate">
-                                  {(k === "baseModel" ? shortModel(o.value) : o.value) || "—"}
+                                  {(k === "base_model" ? shortModel(o.value) : o.value) || "—"}
                                 </span>
                                 <span className="text-xs text-text-faint tabular-nums">{o.count}</span>
                               </label>
@@ -983,7 +914,7 @@ function AddFilterMenu({
                 </Section>
               )}
 
-              {valueHits.length === 0 && statusEntries.length === 0 &&
+              {valueHits.length === 0 &&
                 facetEntries.length === 0 && metricEntries.length === 0 &&
                 emptyEntries.length === 0 && (
                 <div className="px-1.5 py-2 text-xs text-text-faint">No matches</div>
@@ -1007,13 +938,14 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 
 // ---------------------------------------------------------------------------
 // Views ▾ — saved filter sets & views (Convex, global, live).
-// A filter set restores only the chips; a view restores filters + chart +
-// sorts + columns + center view. Applying goes through the tolerant loader.
+// A filter set restores the active view's chips; a view restores the whole
+// workspace (all three per-view configs + center view). Applying goes through
+// the tolerant loader. NOTE: Phase 5 replaces this with the text view-spec.
 // ---------------------------------------------------------------------------
 
 type PresetRow = { _id: Id<"boolbackPresets">; name: string; kind: PresetKind; state: unknown };
 
-function ViewsMenu() {
+function ViewsMenu({ view }: { view: CenterView }) {
   const presets = (useQuery(api.boolbackPresets.list) ?? []) as PresetRow[];
   const savePreset = useMutation(api.boolbackPresets.save);
   const removePreset = useMutation(api.boolbackPresets.remove);
@@ -1021,27 +953,32 @@ function ViewsMenu() {
   const [saveKind, setSaveKind] = useState<PresetKind | null>(null);
   const [name, setName] = useState("");
 
+  const vk = configViewOf(view);
   const filterSets = presets.filter((p) => p.kind === "filters");
   const views = presets.filter((p) => p.kind === "view");
+
+  const activeFilters = () => {
+    const s = useBoolbackStore.getState();
+    return vk ? s[vk].filters : s.table.filters;
+  };
 
   const currentState = (kind: PresetKind) => {
     const s = useBoolbackStore.getState();
     return kind === "filters"
-      ? { filters: s.filters }
-      : { filters: s.filters, chart: s.chart, sorts: s.sorts, visibleCols: s.visibleCols, centerView: s.centerView };
+      ? { filters: activeFilters() }
+      : { centerView: s.centerView, table: s.table, plot: s.plot, groupPlot: s.groupPlot };
   };
 
   const apply = (p: PresetRow) => {
     const s = useBoolbackStore.getState();
-    const h = hydratePreset(p.kind, p.state, s.visibleCols);
-    if (p.kind === "filters") {
-      useBoolbackStore.setState({ filters: h.filters });
+    const h = hydratePreset(p.kind, p.state, s.table.visibleCols);
+    if (h.kind === "filters") {
+      if (vk) useBoolbackStore.getState().patchViewFilters(vk, h.filters);
     } else {
       useBoolbackStore.setState({
-        filters: h.filters,
-        chart: h.chart!,
-        sorts: h.sorts!,
-        visibleCols: h.visibleCols!,
+        table: h.table,
+        plot: h.plot,
+        groupPlot: h.groupPlot,
         ...(h.centerView ? { centerView: h.centerView } : {}),
       });
     }
@@ -1053,7 +990,7 @@ function ViewsMenu() {
 
   const beginSave = (kind: PresetKind) => {
     setSaveKind(kind);
-    setName(suggestPresetName(useBoolbackStore.getState().filters));
+    setName(suggestPresetName(activeFilters()));
   };
   const commitSave = () => {
     const n = name.trim();

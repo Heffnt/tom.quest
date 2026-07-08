@@ -66,7 +66,7 @@ import {
 import type {
   Bundle,
   CircuitNode,
-  InterpMeasurement,
+  InterpReading,
   RunRow,
 } from "../lib/types";
 import type { MetricIndex } from "../lib/select";
@@ -150,7 +150,7 @@ const HOVER_DEBOUNCE_MS = 150; // store hover() publish (table-pane precedent)
 const fmtNum = (v: number | null | undefined): string =>
   typeof v === "number" && Number.isFinite(v) ? String(Math.round(v * 1000) / 1000) : "—";
 
-function measurementTitle(m: InterpMeasurement): string {
+function measurementTitle(m: InterpReading): string {
   const name = m.metric_name ? `${m.kind} · ${m.metric_name}` : m.kind;
   const mode = m.mode ? ` · ${m.mode}` : "";
   return `${name} @ ${locusLabel(m)}${mode}\nvalue ${fmtNum(m.value)} · null ${fmtNum(
@@ -294,7 +294,7 @@ function TapArrow({
 // ---------------------------------------------------------------------------
 
 export interface PlacedMarker {
-  m: InterpMeasurement;
+  m: InterpReading;
   key: string;
   x: number;
   cy: number;
@@ -312,7 +312,7 @@ interface MarkerBadge {
   layer: number;
   x: number;
   cy: number;
-  ms: InterpMeasurement[];
+  ms: InterpReading[];
   /** The shared carrier color when every collapsed measurement agrees;
    * null = mixed carriers → neutral chrome. */
   color: string | null;
@@ -347,7 +347,7 @@ export interface BandLayout {
  * precisely-located probe as unlocatable), else the global lane. */
 type GroupKey = number | "embed" | "unembed" | "global";
 
-function groupKeyFor(m: InterpMeasurement, nL: number): GroupKey {
+function groupKeyFor(m: InterpReading, nL: number): GroupKey {
   const layer =
     typeof m.layer === "number" && Number.isInteger(m.layer) && m.layer >= 0 && m.layer < nL
       ? m.layer
@@ -383,7 +383,7 @@ export function placeBandMarkers(
   const ms = measurementsOf(row);
   const lods: Lod[] = Array.from({ length: nL }, (_, i) => lodForLayer(scale, i));
 
-  const groups = new Map<GroupKey, InterpMeasurement[]>();
+  const groups = new Map<GroupKey, InterpReading[]>();
   for (const m of ms) {
     if (m.locus_shape === "subgraph" || m.locus_shape === "path") continue; // arcs render circuits
     const x = scale.xForMeasurement(m);
@@ -1126,8 +1126,8 @@ function MarkerHits({
 }: {
   placed: PlacedMarker[];
   side: "run" | "twin";
-  onMarkerClick: (m: InterpMeasurement) => void;
-  onMarkerHover: (p: { m: InterpMeasurement; x: number; y: number } | null) => void;
+  onMarkerClick: (m: InterpReading) => void;
+  onMarkerHover: (p: { m: InterpReading; x: number; y: number } | null) => void;
 }) {
   return (
     <g>
@@ -1159,7 +1159,7 @@ function MarkerHits({
 // ---------------------------------------------------------------------------
 
 interface HoverInfo {
-  m: InterpMeasurement;
+  m: InterpReading;
   x: number;
   y: number;
 }
@@ -1227,8 +1227,8 @@ interface ArcSpec {
 }
 
 function circuitArcs(
-  m: InterpMeasurement,
-  counterpart: InterpMeasurement | null,
+  m: InterpReading,
+  counterpart: InterpReading | null,
   side: "run" | "twin",
   scale: Scale,
   bands: AnatomyBands,
@@ -1572,7 +1572,7 @@ export function AnatomyBody({
   // the twin becomes the run band, which read as disorientation, not
   // navigation; flip explicitly via the table/tree instead).
   const selectMeasurement = useCallback(
-    (m: InterpMeasurement, row: RunRow | null, side: "run" | "twin") => {
+    (m: InterpReading, row: RunRow | null, side: "run" | "twin") => {
       setAnatomy({ sel: measurementKey(m) });
       if (side === "run" && row) {
         openDetail(row.identity.node_path);
@@ -1587,7 +1587,7 @@ export function AnatomyBody({
   // churn re-renders ONLY the HoverTip leaf, never this pane (see HoverTip).
   const tipRef = useRef<HoverTipHandle | null>(null);
   const handleMarkerHover = useCallback(
-    (p: { m: InterpMeasurement; x: number; y: number } | null, row: RunRow | null) => {
+    (p: { m: InterpReading; x: number; y: number } | null, row: RunRow | null) => {
       tipRef.current?.show(p);
       publishHover(p && row ? row.identity.node_path : null);
     },
@@ -1697,13 +1697,13 @@ export function AnatomyBody({
   // Circuits both sides, paired by measurement key for the diff coloring.
   const circuits = useMemo(() => {
     if (!run) return [];
-    const isCircuit = (m: InterpMeasurement) =>
+    const isCircuit = (m: InterpReading) =>
       m.locus_shape === "subgraph" || m.locus_shape === "path";
     const runCs = measurementsOf(run).filter(isCircuit);
     const twinCs = twinOn && twinRow ? measurementsOf(twinRow).filter(isCircuit) : [];
     const out: Array<{
-      m: InterpMeasurement;
-      counterpart: InterpMeasurement | null;
+      m: InterpReading;
+      counterpart: InterpReading | null;
       side: "run" | "twin";
     }> = [];
     for (const m of runCs) {
@@ -1862,7 +1862,7 @@ export function AnatomyBody({
         }))
         .filter((e) => e.x !== null) as Array<{
         p: MatchedPair;
-        src: InterpMeasurement;
+        src: InterpReading;
         x: number;
       }>;
       entries.sort((a, b) => a.x - b.x || a.p.key.localeCompare(b.p.key));

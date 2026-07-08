@@ -15,7 +15,6 @@ import type {
   FilterState,
   SortKey,
   FacetKey,
-  StatusFlag,
   MetricSchemaEntry,
   SortDir,
 } from "./types";
@@ -68,7 +67,7 @@ const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | nul
   "defense.asr_drop": (r) => r.defense?.asr_drop ?? null,
   "defense.recovery_rate": (r) => r.defense?.recovery_rate ?? null,
   // interp
-  "interp.measurement_kind": (r) => r.interp?.measurement_kind ?? null,
+  "interp.reading_kind": (r) => r.interp?.reading_kind ?? null,
   "interp.value": (r) => r.interp?.value ?? null,
   "interp.null_control": (r) => r.interp?.null_control ?? null,
   // scan
@@ -109,14 +108,14 @@ const numStr = (v: number | null): string | null => (v === null ? null : String(
 const FACET_GETTERS: Record<FacetKey, (r: RunRow) => string | null> = {
   task: (r) => r.dataset.task,
   source: (r) => r.dataset.source,
-  targetBehavior: (r) => r.dataset.target_behavior,
-  triggerForm: (r) => r.dataset.trigger_form,
-  rowDistribution: (r) => r.dataset.row_distribution,
+  target_behavior: (r) => r.dataset.target_behavior,
+  trigger_form: (r) => r.dataset.trigger_form,
+  row_distribution: (r) => r.dataset.row_distribution,
   scheme: (r) => r.dataset.scheme,
-  targetPhrase: (r) => r.dataset.target_phrase,
-  samplesPerRow: (r) => numStr(r.dataset.samples_per_row),
-  backdoorRatio: (r) => numStr(r.dataset.backdoor_ratio),
-  baseModel: (r) => r.training.base_model,
+  target_phrase: (r) => r.dataset.target_phrase,
+  samples_per_row: (r) => numStr(r.dataset.samples_per_row),
+  backdoor_ratio: (r) => numStr(r.dataset.backdoor_ratio),
+  base_model: (r) => r.training.base_model,
   tuning: (r) => r.training.tuning,
   backend: (r) => r.training.backend,
   lr: (r) => numStr(r.training.lr),
@@ -129,25 +128,26 @@ const FACET_GETTERS: Record<FacetKey, (r: RunRow) => string | null> = {
 
 export const FACET_KEYS = Object.keys(FACET_GETTERS) as FacetKey[];
 
-/** UI labels for the facet keys (shared by filter bar, chips, exports). */
+/** UI labels for the facet keys (shared by filter bar, chips, exports). Keys
+ *  are CMT tidy snake_case; "split" is the train/test eval split. */
 export const FACET_LABELS: Record<FacetKey, string> = {
   task: "Task",
   source: "Source",
-  targetBehavior: "Target",
-  triggerForm: "Trigger",
-  rowDistribution: "Row dist.",
+  target_behavior: "Target",
+  trigger_form: "Trigger",
+  row_distribution: "Row dist.",
   scheme: "Scheme",
-  targetPhrase: "Target phrase",
-  samplesPerRow: "Samples/row",
-  backdoorRatio: "Backdoor ratio",
-  baseModel: "Model",
+  target_phrase: "Target phrase",
+  samples_per_row: "Samples/row",
+  backdoor_ratio: "Backdoor ratio",
+  base_model: "Model",
   tuning: "Tuning",
   backend: "Backend",
   lr: "LR",
   epochs: "Epochs",
   seed: "Seed",
   judge: "Judge",
-  split: "Split",
+  split: "train/test",
   arity: "Arity",
 };
 
@@ -161,14 +161,14 @@ export function facetValue(row: RunRow, key: FacetKey): string | null {
 const FACET_BY_COLUMN: Record<string, FacetKey> = {
   "dataset.task": "task",
   "dataset.source": "source",
-  "dataset.target_behavior": "targetBehavior",
-  "dataset.trigger_form": "triggerForm",
-  "dataset.row_distribution": "rowDistribution",
+  "dataset.target_behavior": "target_behavior",
+  "dataset.trigger_form": "trigger_form",
+  "dataset.row_distribution": "row_distribution",
   "dataset.scheme": "scheme",
-  "dataset.target_phrase": "targetPhrase",
-  "dataset.samples_per_row": "samplesPerRow",
-  "dataset.backdoor_ratio": "backdoorRatio",
-  "training.base_model": "baseModel",
+  "dataset.target_phrase": "target_phrase",
+  "dataset.samples_per_row": "samples_per_row",
+  "dataset.backdoor_ratio": "backdoor_ratio",
+  "training.base_model": "base_model",
   "training.tuning": "tuning",
   "training.backend": "backend",
   "training.lr": "lr",
@@ -199,56 +199,30 @@ export function facetOptions(
 }
 
 // ---------------------------------------------------------------------------
-// Status predicates
+// Table search (repurposed: find runs by PATH FRAGMENT, not a filter
+// alternative). The haystack is run_id + dir_path + node_path ONLY — the old
+// facet-value / fn-text haystack is gone. `search` lives on the TABLE config;
+// it is applied on top of applyFilters by the table pane, never a FilterState
+// field.
 // ---------------------------------------------------------------------------
 
-const STATUS_PREDS: Record<StatusFlag, (r: RunRow) => boolean> = {
-  plantedOnly: (r) => r.status.planted,
-  neverPlanted: (r) => !r.status.planted,
-  inProgress: (r) => r.status.in_progress,
-  hasDefense: (r) => r.status.has_defense,
-  hasTwin: (r) => r.status.has_twin,
-  hasScan: (r) => r.status.has_scan,
-  hasInterp: (r) => r.status.has_interp,
-  hasNegativeDrop: (r) => r.status.has_negative_drop,
-};
-
-/** How many rows each status flag matches (drives pill visibility/counts). */
-export function statusCounts(rows: RunRow[]): Record<StatusFlag, number> {
-  const out = {} as Record<StatusFlag, number>;
-  for (const flag of Object.keys(STATUS_PREDS) as StatusFlag[]) {
-    const pred = STATUS_PREDS[flag];
-    out[flag] = rows.reduce((n, r) => n + (pred(r) ? 1 : 0), 0);
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Filtering
-// ---------------------------------------------------------------------------
-
-// Quick-search haystack per row, built lazily and cached (rows are stable for
-// a bundle's lifetime). Covers identity, function text, and every facet value.
 const HAYSTACKS = new WeakMap<RunRow, string>();
 
 function haystack(r: RunRow): string {
   const hit = HAYSTACKS.get(r);
   if (hit !== undefined) return hit;
   const parts: Array<string | null> = [
-    r.label ?? null,
     r.identity.run_id,
     r.identity.dir_path,
-    fnText(r.function.arity, r.function.truth_table),
-    r.function.truth_table,
-    r.function.dnf_string,
+    r.identity.node_path,
   ];
-  for (const key of FACET_KEYS) parts.push(FACET_GETTERS[key](r));
   const s = parts.filter(Boolean).join(" ").toLowerCase();
   HAYSTACKS.set(r, s);
   return s;
 }
 
-/** True iff every whitespace-separated token of `query` appears in the haystack. */
+/** True iff every whitespace-separated token of `query` appears in the row's
+ *  path haystack (run_id / dir_path / node_path). Empty query = match. */
 export function matchesSearch(row: RunRow, query: string): boolean {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
@@ -256,27 +230,20 @@ export function matchesSearch(row: RunRow, query: string): boolean {
   return tokens.every((t) => h.includes(t));
 }
 
-/** Apply the full FilterState (subtree chips AND facets AND ranges AND status AND search). */
+// ---------------------------------------------------------------------------
+// Filtering — facets AND ranges only (status flags and subtree scope are gone).
+// ---------------------------------------------------------------------------
+
+/** Apply the slimmed FilterState (facets AND ranges). */
 export function applyFilters(rows: RunRow[], filters: FilterState): RunRow[] {
-  // Defensive against a partial/stale persisted shape (a saved view from an older
-  // FilterState could be missing a sub-key); never let it crash the whole table.
-  const subtreeDirs = filters.subtreeDirs ?? [];
+  // Defensive against a partial/stale persisted shape (a saved view could be
+  // missing a sub-key); never let it crash the whole table.
   const ranges = filters.ranges ?? [];
-  const status = filters.status ?? [];
-  const search = (filters.search ?? "").trim();
   const facetEntries = Object.entries(filters.facets ?? {}).filter(
     ([, vals]) => Array.isArray(vals) && vals.length > 0,
   ) as Array<[FacetKey, string[]]>;
 
   return rows.filter((r) => {
-    // subtree chips: keep iff chain_dirs intersect ANY chip node_path (OR).
-    if (subtreeDirs.length > 0) {
-      const chain = r.identity.chain_dirs;
-      if (!subtreeDirs.some((d) => chain.includes(d))) return false;
-    }
-
-    if (search && !matchesSearch(r, search)) return false;
-
     // facets (each facet OR within, AND across)
     for (const [key, vals] of facetEntries) {
       const v = FACET_GETTERS[key](r);
@@ -288,11 +255,6 @@ export function applyFilters(rows: RunRow[], filters: FilterState): RunRow[] {
       const v = numericValue(r, range.metric);
       if (v === null) return false;
       if (v < range.min || v > range.max) return false;
-    }
-
-    // status (AND-composed)
-    for (const s of status) {
-      if (!STATUS_PREDS[s](r)) return false;
     }
 
     return true;

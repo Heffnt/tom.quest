@@ -1,6 +1,6 @@
 "use client";
 
-// app/boolback/components/chart-panel.tsx — the Chart center view.
+// app/boolback/components/plot-panel.tsx — the Plot center view.
 //
 // A single scatter over the SAME filtered row set as the table (the filter
 // bar stays above both views) that answers the campaign's real questions:
@@ -11,7 +11,7 @@
 //       under the x axis, the y picker rotated along the y axis) and both
 //       log toggles hug the origin — all off the store-owned chart config.
 //       Only the trend toggle stays in the SHARED top bar (filter-bar.tsx);
-//       the r/ρ readout is published back to the bar via store.chartReadout
+//       the r/ρ readout is published back to the bar via store.plotReadout
 //       (ALWAYS computed over the underlying runs). The exported figure
 //       keeps plain axis labels via a [data-export-only] SVG group.
 //
@@ -42,17 +42,17 @@
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, Channel, DimTreatment, RunRow, ValueStyle } from "../lib/types";
-import { DEFAULT_CHART } from "../lib/types";
+import type { Bundle, Channel, RunRow, ValueStyle } from "../lib/types";
+import { DEFAULT_PLOT } from "../lib/types";
 import { DimensionBoard } from "./dimension-board";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import {
-  resolveChannels, summarizeDimensions,
-  type DimensionDef, type DimValues,
-} from "../lib/dimensions";
+  resolveChannels, summarizeParameters,
+  type ParameterDef, type ParamValues,
+} from "../lib/parameters";
 import {
   groupRuns, groupKeyFor, makeXBucketer, splitWorthiness,
   type GroupedPoint, type RunPoint, type Ghost, type WorthinessRun,
@@ -65,8 +65,11 @@ import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
 import { shapeNode } from "./glyph";
 
-/** What the shared Export menu needs from the mounted chart. */
-export interface ChartExportHandle {
+/** A split parameter's treatment: a visual channel, or "avg" (un-split). */
+type SplitTreatment = Channel | "avg";
+
+/** What the shared Export menu needs from the mounted plot. */
+export interface PlotExportHandle {
   getSvg: () => SVGSVGElement | null;
   getCsv: () => string;
 }
@@ -108,30 +111,32 @@ interface VisualPoint {
   label: string[];
 }
 
-export function ChartBody({
+export function PlotBody({
   rows,
   bundle,
   index,
   exportRef,
 }: {
-  rows: RunRow[]; // the filtered (+sorted) rows — chart and table always agree
+  rows: RunRow[]; // the filtered (+sorted) rows — plot and table always agree
   bundle: Bundle;
   index: MetricIndex;
-  exportRef?: React.MutableRefObject<ChartExportHandle | null>;
+  exportRef?: React.MutableRefObject<PlotExportHandle | null>;
 }) {
   const openDetail = useBoolbackStore((s) => s.openDetail);
   const expandChain = useBoolbackStore((s) => s.expandChain);
-  const toggleSubtreeDir = useBoolbackStore((s) => s.toggleSubtreeDir);
-  const removeSubtreeDir = useBoolbackStore((s) => s.removeSubtreeDir);
-  const addSubtreeDir = useBoolbackStore((s) => s.addSubtreeDir);
-  const setFacet = useBoolbackStore((s) => s.setFacet);
-  const toggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
-  const filters = useBoolbackStore((s) => s.filters);
+  const storeSetFacet = useBoolbackStore((s) => s.setFacet);
+  const storeToggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
-  const config = useBoolbackStore((s) => s.chart);
-  const setChart = useBoolbackStore((s) => s.setChart);
-  const setChartReadout = useBoolbackStore((s) => s.setChartReadout);
+  const config = useBoolbackStore((s) => s.plot);
+  const setPlot = useBoolbackStore((s) => s.setPlot);
+  const setPlotReadout = useBoolbackStore((s) => s.setPlotReadout);
+  // Filters live INSIDE the plot config; facet mutators target the "plot" view.
+  const filters = config.filters;
+  const setFacet = (key: Parameters<typeof storeSetFacet>[1], values: string[]) =>
+    storeSetFacet("plot", key, values);
+  const toggleFacetValue = (key: Parameters<typeof storeToggleFacetValue>[1], value: string) =>
+    storeToggleFacetValue("plot", key, value);
 
   const [hover, setHover] = useState<VisualPoint | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -158,16 +163,16 @@ export function ChartBody({
   // Epoch (training-progress) x-axis: runs/groups become trajectory LINES, and
   // Y must be a trajectory-backed metric (snap to plantedness otherwise).
   const lineMode = config.x === "epoch";
-  const x = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_CHART.x);
+  const x = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_PLOT.x);
   const y = lineMode
     ? (trajectoryMetric(config.y) ?? "plantedness")
-    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_CHART.y);
+    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_PLOT.y);
   const logX = !!config.logX;
   const logY = !!config.logY;
   // Persist the Y snap so the config stays consistent after entering epoch mode.
   useEffect(() => {
-    if (lineMode && config.y !== y) setChart({ y });
-  }, [lineMode, config.y, y, setChart]);
+    if (lineMode && config.y !== y) setPlot({ y });
+  }, [lineMode, config.y, y, setPlot]);
   // The active judge for per-epoch resolution: a single selected judge, else
   // the headline (primary-judge) trajectory.
   const activeJudge = useMemo(() => {
@@ -179,9 +184,9 @@ export function ChartBody({
   const valueStyles = useMemo(() => config.valueStyles ?? {}, [config.valueStyles]);
 
   // ---- the dimension model over the filtered rows ---------------------------
-  const summary = useMemo(() => summarizeDimensions(rows), [rows]);
+  const summary = useMemo(() => summarizeParameters(rows), [rows]);
   const differingByKey = useMemo(() => {
-    const m = new Map<string, DimValues>();
+    const m = new Map<string, ParamValues>();
     for (const d of summary.differing) m.set(d.dim.key, d);
     return m;
   }, [summary]);
@@ -195,7 +200,7 @@ export function ChartBody({
     [activeSplits, channelOverrides, differingByKey],
   );
   const channelDims = useMemo(() => {
-    const byChannel = new Map<Channel, DimValues>();
+    const byChannel = new Map<Channel, ParamValues>();
     for (const d of summary.differing) {
       const ch = channelByDim.get(d.dim.key);
       if (ch) byChannel.set(ch, d);
@@ -208,7 +213,7 @@ export function ChartBody({
   // Split dims in channel order (color, shape, size, dash) — RunPoint.dims order.
   const splitDims = useMemo(() => {
     const order: Channel[] = ["color", "shape", "size", "dash"];
-    return order.map((ch) => channelDims.get(ch)).filter((d): d is DimValues => d !== undefined);
+    return order.map((ch) => channelDims.get(ch)).filter((d): d is ParamValues => d !== undefined);
   }, [channelDims]);
   // Any differing dimension the user did NOT split is averaged (visible spread).
   const averaging = useMemo(
@@ -216,8 +221,8 @@ export function ChartBody({
     [summary, channelByDim],
   );
 
-  // value -> ordinal per channel dim (values are pre-sorted in DimValues).
-  const valueIndex = (d: DimValues | undefined) => {
+  // value -> ordinal per channel dim (values are pre-sorted in ParamValues).
+  const valueIndex = (d: ParamValues | undefined) => {
     const m = new Map<string, number>();
     d?.values.forEach((v, i) => m.set(v.value, i));
     return m;
@@ -226,34 +231,10 @@ export function ChartBody({
   const shapeIdx = useMemo(() => valueIndex(shapeDim), [shapeDim]);
   const sizeIdx = useMemo(() => valueIndex(sizeDim), [sizeDim]);
 
-  // function display text -> function hash (fn= scope chips from the legend).
-  // Built over ALL rows so the legend's checkbox editors can resolve values
-  // the current filters exclude.
-  const fnHashByText = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const r of bundle.rows) {
-      m.set(fnText(r.function.arity, r.function.truth_table), r.identity.function_hash);
-    }
-    return m;
-  }, [bundle.rows]);
-
-  // Rows in subtree scope — the same base the filter bar's facet editors use.
-  // The legend's checkbox lists draw candidate values from here rather than
-  // the filtered rows, so checking one value doesn't collapse the list to
-  // just itself.
-  const scopedRows = useMemo(() => {
-    const dirs = filters.subtreeDirs ?? [];
-    if (dirs.length === 0) return bundle.rows;
-    return bundle.rows.filter((r) => dirs.some((d) => r.identity.chain_dirs.includes(d)));
-  }, [bundle.rows, filters.subtreeDirs]);
-
-  // For the function dimension the top-level fn= scope chips ARE its filter,
-  // so its candidate list ignores them (deeper subtree chips still scope).
-  const fnScopeRows = useMemo(() => {
-    const dirs = (filters.subtreeDirs ?? []).filter((d) => !/^fn=[^/]+$/.test(d));
-    if (dirs.length === 0) return bundle.rows;
-    return bundle.rows.filter((r) => dirs.some((d) => r.identity.chain_dirs.includes(d)));
-  }, [bundle.rows, filters.subtreeDirs]);
+  // Candidate values for the board's checkbox lists are drawn over ALL rows
+  // (subtree scope is gone — the tree no longer filters), so checking one value
+  // doesn't collapse the list to just itself.
+  const scopedRows = bundle.rows;
 
   // Axis view windows (zoom only; never touch FilterState) in RAW metric units.
   const xDomain = config.xDomain ?? null;
@@ -538,7 +519,7 @@ export function ChartBody({
   // Publish the descriptive readout for the shared top bar (cleared on unmount).
   useEffect(() => {
     if (lineMode) {
-      setChartReadout({
+      setPlotReadout({
         r: null, rho: null,
         runs: epoch?.seriesCount ?? 0,
         points: epoch?.groups.length ?? 0,
@@ -549,7 +530,7 @@ export function ChartBody({
       });
       return;
     }
-    setChartReadout({
+    setPlotReadout({
       r: stats?.overall.r ?? null,
       rho: stats?.overall.rho ?? null,
       runs: pairs.length,
@@ -560,20 +541,20 @@ export function ChartBody({
       outsideWindow,
       ghostsSubsampled,
     });
-  }, [lineMode, epoch, stats, pairs.length, points.length, averaging, binned, droppedLog, outsideWindow, ghostsSubsampled, setChartReadout]);
-  useEffect(() => () => setChartReadout(null), [setChartReadout]);
+  }, [lineMode, epoch, stats, pairs.length, points.length, averaging, binned, droppedLog, outsideWindow, ghostsSubsampled, setPlotReadout]);
+  useEffect(() => () => setPlotReadout(null), [setPlotReadout]);
 
-  // ---- dimension treatment setter — edits v2 splits/channels ----------------
+  // ---- split treatment setter — edits splits/channels -----------------------
   // "avg"/null un-splits (drop from splits + channels); color/shape/size adds
-  // the dim to splits with that explicit channel, freeing the channel from any
-  // other split so channels stay unique.
-  const setDim = (key: string, t: DimTreatment | null) => {
+  // the parameter to splits with that explicit channel, freeing the channel
+  // from any other split so channels stay unique.
+  const setDim = (key: string, t: SplitTreatment | null) => {
     const curSplits = config.splits ?? [];
     const curChannels = config.channels ?? {};
     if (t === null || t === "avg") {
       const nextChannels = { ...curChannels };
       delete nextChannels[key];
-      setChart({ splits: curSplits.filter((k) => k !== key), channels: nextChannels });
+      setPlot({ splits: curSplits.filter((k) => k !== key), channels: nextChannels });
       return;
     }
     const nextSplits = curSplits.includes(key) ? [...curSplits] : [...curSplits, key];
@@ -581,17 +562,17 @@ export function ChartBody({
     for (const k of Object.keys(nextChannels)) {
       if (k !== key && nextChannels[k] === t) delete nextChannels[k];
     }
-    setChart({ splits: nextSplits, channels: nextChannels });
+    setPlot({ splits: nextSplits, channels: nextChannels });
   };
 
-  // ---- legend filtering — the ORDINARY filter mechanism, never chart state
-  // (facet selections, or fn= scope chips for the function dimension) --------
+  // ---- board filtering — the ORDINARY filter mechanism (facet selections on
+  // the plot view's config). The `function` parameter has no facetKey in
+  // Phase 1 (fn= subtree scope removed), so its filter UI is inert. --------
 
-  /** Candidate values (with in-scope counts) for a dimension's checkbox list. */
-  const dimOptions = (dim: DimensionDef): Array<{ value: string; count: number }> => {
-    const base = dim.fnScope ? fnScopeRows : scopedRows;
+  /** Candidate values (with counts) for a parameter's checkbox list. */
+  const dimOptions = (dim: ParameterDef): Array<{ value: string; count: number }> => {
     const counts = new Map<string, number>();
-    for (const r of base) {
+    for (const r of scopedRows) {
       const v = dim.raw(r);
       if (v === null) continue;
       counts.set(v, (counts.get(v) ?? 0) + 1);
@@ -605,35 +586,17 @@ export function ChartBody({
     return values;
   };
 
-  /** The dimension's currently filter-selected values. */
-  const dimSelection = (dim: DimensionDef): string[] => {
-    if (dim.fnScope) {
-      const dirs = filters.subtreeDirs ?? [];
-      return [...fnHashByText.entries()]
-        .filter(([, hash]) => dirs.includes(`fn=${hash}`))
-        .map(([text]) => text);
-    }
-    return dim.facetKey ? (filters.facets[dim.facetKey] ?? []) : [];
+  /** The parameter's currently filter-selected values (facet-backed only). */
+  const dimSelection = (dim: ParameterDef): string[] =>
+    dim.facetKey ? (filters.facets[dim.facetKey] ?? []) : [];
+
+  /** Checkbox semantics: toggle one value in/out of the parameter's filter. */
+  const toggleDimValue = (dim: ParameterDef, value: string) => {
+    if (dim.facetKey) toggleFacetValue(dim.facetKey, value);
   };
 
-  /** Checkbox semantics: toggle one value in/out of the dimension's filter. */
-  const toggleDimValue = (dim: DimensionDef, value: string) => {
-    if (dim.fnScope) {
-      const hash = fnHashByText.get(value);
-      if (hash) toggleSubtreeDir(`fn=${hash}`);
-    } else if (dim.facetKey) {
-      toggleFacetValue(dim.facetKey, value);
-    }
-  };
-
-  const clearDimFilter = (dim: DimensionDef) => {
-    if (dim.fnScope) {
-      for (const d of filters.subtreeDirs ?? []) {
-        if (/^fn=[^/]+$/.test(d)) removeSubtreeDir(d);
-      }
-    } else if (dim.facetKey) {
-      setFacet(dim.facetKey, []);
-    }
+  const clearDimFilter = (dim: ParameterDef) => {
+    if (dim.facetKey) setFacet(dim.facetKey, []);
   };
 
   const onPointClick = (p: VisualPoint) => {
@@ -646,21 +609,21 @@ export function ChartBody({
 
   // ---- axis view window (zoom-only min/max; never touches FilterState) -------
   const setDomain = (axis: "x" | "y", d: [number, number] | null) =>
-    setChart(axis === "x" ? { xDomain: d } : { yDomain: d });
+    setPlot(axis === "x" ? { xDomain: d } : { yDomain: d });
 
   // ---- dimension-board styling actions (edit v2 splits/channels/valueStyles) -
   const addSplit = (key: string) => {
     const cur = config.splits ?? [];
-    if (!cur.includes(key)) setChart({ splits: [...cur, key] });
+    if (!cur.includes(key)) setPlot({ splits: [...cur, key] });
   };
-  const reorderSplits = (next: string[]) => setChart({ splits: next });
+  const reorderSplits = (next: string[]) => setPlot({ splits: next });
   const setChannel = (key: string, ch: Channel) => {
     const cur = config.splits ?? [];
     const nextChannels: Record<string, Channel> = { ...(config.channels ?? {}), [key]: ch };
     for (const k of Object.keys(nextChannels)) {
       if (k !== key && nextChannels[k] === ch) delete nextChannels[k]; // channels stay unique
     }
-    setChart({ splits: cur.includes(key) ? cur : [...cur, key], channels: nextChannels });
+    setPlot({ splits: cur.includes(key) ? cur : [...cur, key], channels: nextChannels });
   };
   const setValueStyle = (dimKey: string, value: string, patch: ValueStyle | null) => {
     const vs: Record<string, Record<string, ValueStyle>> = { ...(config.valueStyles ?? {}) };
@@ -669,26 +632,15 @@ export function ChartBody({
     else inner[value] = { ...inner[value], ...patch };
     if (Object.keys(inner).length) vs[dimKey] = inner;
     else delete vs[dimKey];
-    setChart({ valueStyles: vs });
+    setPlot({ valueStyles: vs });
   };
 
-  // ---- per-value isolate / exclude (ordinary facet / fn= filters) -----------
-  const isolateValue = (dim: DimensionDef, value: string) => {
-    if (dim.fnScope) {
-      for (const d of filters.subtreeDirs ?? []) if (/^fn=[^/]+$/.test(d)) removeSubtreeDir(d);
-      const hash = fnHashByText.get(value);
-      if (hash) addSubtreeDir(`fn=${hash}`);
-    } else if (dim.facetKey) {
-      setFacet(dim.facetKey, [value]);
-    }
+  // ---- per-value isolate / exclude (ordinary facet filters) -----------------
+  const isolateValue = (dim: ParameterDef, value: string) => {
+    if (dim.facetKey) setFacet(dim.facetKey, [value]);
   };
-  const excludeValue = (dim: DimensionDef, value: string) => {
-    if (dim.fnScope) {
-      for (const d of filters.subtreeDirs ?? []) if (/^fn=[^/]+$/.test(d)) removeSubtreeDir(d);
-      for (const [text, hash] of fnHashByText.entries()) if (text !== value) addSubtreeDir(`fn=${hash}`);
-    } else if (dim.facetKey) {
-      setFacet(dim.facetKey, dimOptions(dim).map((o) => o.value).filter((v) => v !== value));
-    }
+  const excludeValue = (dim: ParameterDef, value: string) => {
+    if (dim.facetKey) setFacet(dim.facetKey, dimOptions(dim).map((o) => o.value).filter((v) => v !== value));
   };
 
   // ---- export handle for the shared Export menu ----------------------------
@@ -989,7 +941,7 @@ export function ChartBody({
           <div className="pointer-events-auto">
             <MetricPicker
               value={config.x}
-              onChange={(v) => setChart({ x: v })}
+              onChange={(v) => setPlot({ x: v })}
               schema={bundle.metric_schema}
               ariaLabel="x metric"
               order={X_GROUP_ORDER}
@@ -1002,7 +954,7 @@ export function ChartBody({
           <div className="pointer-events-auto">
             <MetricPicker
               value={y}
-              onChange={(v) => setChart({ y: v })}
+              onChange={(v) => setPlot({ y: v })}
               schema={bundle.metric_schema}
               ariaLabel="y metric"
               order={Y_GROUP_ORDER}
@@ -1013,14 +965,14 @@ export function ChartBody({
         </div>
         <LogToggle
           checked={logX}
-          onChange={(b) => setChart({ logX: b })}
+          onChange={(b) => setPlot({ logX: b })}
           ariaLabel="x log scale"
           style={{ left: PAD.l + 8, bottom: 4 }}
         />
         <LogToggle
           vertical
           checked={logY}
-          onChange={(b) => setChart({ logY: b })}
+          onChange={(b) => setPlot({ logY: b })}
           ariaLabel="y log scale"
           style={{ left: 4, bottom: PAD.b + 8 }}
         />
@@ -1074,8 +1026,8 @@ export function ChartBody({
         valueStyles={valueStyles}
         band={!!config.band}
         ghosts={!!config.ghosts}
-        setBand={(b) => setChart({ band: b })}
-        setGhosts={(b) => setChart({ ghosts: b })}
+        setBand={(b) => setPlot({ band: b })}
+        setGhosts={(b) => setPlot({ ghosts: b })}
         addSplit={addSplit}
         removeSplit={(key) => setDim(key, null)}
         reorderSplits={reorderSplits}

@@ -7,9 +7,9 @@
 import { describe, expect, it } from "vitest";
 import { placeBandMarkers } from "./anatomy-pane";
 import { buildScale, computeBands } from "../lib/anatomy";
-import type { InterpMeasurement, RunRow } from "../lib/types";
+import type { InterpReading, RunRow } from "../lib/types";
 
-const mkRow = (measurements: InterpMeasurement[]): RunRow =>
+const mkRow = (measurements: InterpReading[]): RunRow =>
   ({
     identity: {
       node_path: "x", run_id: "x", function_hash: "f",
@@ -19,21 +19,21 @@ const mkRow = (measurements: InterpMeasurement[]): RunRow =>
     training: { base_model: "m" },
     n_layers: 8,
     n_heads: 4,
-    interp: { measurements },
+    interp: { readings: measurements },
   }) as unknown as RunRow;
 
-const embedM: InterpMeasurement = {
+const embedM: InterpReading = {
   kind: "embed_probe", value: 0.4, null_control: 0.1,
   locus_component: "embed", locus_shape: "point",
 };
-const unembedM: InterpMeasurement = {
+const unembedM: InterpReading = {
   kind: "logit_lens", value: 0.3, null_control: 0.1,
   locus_component: "unembed", locus_shape: "point",
 };
-const globalM: InterpMeasurement = {
+const globalM: InterpReading = {
   kind: "weight_norm_diff", value: 0.2, null_control: 0.1, locus_shape: "global",
 };
-const layerM: InterpMeasurement = {
+const layerM: InterpReading = {
   kind: "probe", value: 0.5, null_control: 0.1, layer: 3, locus_shape: "point",
 };
 

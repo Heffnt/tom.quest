@@ -50,7 +50,7 @@
 import type {
   AnatomyConfig,
   CircuitNode,
-  InterpMeasurement,
+  InterpReading,
   InterpMode,
   RunRow,
 } from "./types";
@@ -84,7 +84,7 @@ export interface Scale {
   xForPath(path: string): Span | null;
   /** Center x for a measurement's locus; null when it has no single locus
    * (circuits render per-node via xForNode; layer-less points are unplaceable). */
-  xForMeasurement(m: InterpMeasurement): number | null;
+  xForMeasurement(m: InterpReading): number | null;
   /** Center x for one circuit node; null when its layer is out of range. */
   xForNode(node: CircuitNode): number | null;
   /** Current px width of layer i's span (0 when out of range). */
@@ -325,7 +325,7 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
     return mid(ls); // resid (or anything unrecognized) centers on the layer
   };
 
-  const xForMeasurement = (m: InterpMeasurement): number | null => {
+  const xForMeasurement = (m: InterpReading): number | null => {
     const shapeKind = m.locus_shape;
     // Circuits have no single locus — nodes carry their own x via xForNode.
     if (shapeKind === "subgraph" || shapeKind === "path") return null;
@@ -618,14 +618,14 @@ export function fitCircuit(focus: Focus, nodes: CircuitNode[], shape: ModelShape
  * fields — normalize it into the same shape (an empty list is treated like
  * an absent one). No interp → [].
  */
-export function measurementsOf(row: RunRow): InterpMeasurement[] {
+export function measurementsOf(row: RunRow): InterpReading[] {
   const interp = row.interp;
   if (!interp) return [];
-  if (interp.measurements && interp.measurements.length > 0) return interp.measurements;
-  if (interp.measurement_kind != null) {
+  if (interp.readings && interp.readings.length > 0) return interp.readings;
+  if (interp.reading_kind != null) {
     return [
       {
-        kind: interp.measurement_kind,
+        kind: interp.reading_kind,
         value: interp.value,
         null_control: interp.null_control,
       },
@@ -638,7 +638,7 @@ export function measurementsOf(row: RunRow): InterpMeasurement[] {
  * returns a non-finite number: an Infinity delta (value 1e999 in the blob)
  * would flatten every |delta|-normalized encoding pane-wide, so junk math
  * degrades to null (honest INTERP NULL) exactly like the shipped branch. */
-export function deltaOf(m: InterpMeasurement): number | null {
+export function deltaOf(m: InterpReading): number | null {
   if (typeof m.delta === "number" && Number.isFinite(m.delta)) return m.delta;
   if (typeof m.value === "number" && typeof m.null_control === "number") {
     const d = m.value - m.null_control;
@@ -654,7 +654,7 @@ export function deltaOf(m: InterpMeasurement): number | null {
  * separator relies on CMT slugs never containing pipes (true of the whole
  * taxonomy); parseMeasurementKey rejects any string that doesn't split back
  * into exactly five fields. */
-export function measurementKey(m: InterpMeasurement): string {
+export function measurementKey(m: InterpReading): string {
   return [
     m.method || m.kind,
     m.metric_name ?? "",
@@ -697,7 +697,7 @@ export function parseMeasurementKey(key: string): MeasurementKeyParts | null {
 
 /** Human locus string ("L14/attn/h9", "embed", "global", "circuit (subgraph)")
  * — shared by the pane tooltip/titles and the detail-panel anatomy section. */
-export function locusLabel(m: InterpMeasurement): string {
+export function locusLabel(m: InterpReading): string {
   if (typeof m.layer === "number" && Number.isFinite(m.layer)) {
     const comp =
       m.locus_component && m.locus_component !== "resid" ? `/${m.locus_component}` : "";
@@ -734,7 +734,7 @@ export function rowHasAnatomy(row: RunRow): boolean {
  * when a single discrete delta dwarfs the sweep, so they are NOT scaled by
  * the global deltaMax. Sharing one peak across run+twin keeps the two bands'
  * ridges honestly comparable. */
-export function profilePeak(ms: InterpMeasurement[]): number {
+export function profilePeak(ms: InterpReading[]): number {
   let peak = 0;
   for (const m of ms) {
     for (const p of m.layer_profile ?? []) {
@@ -822,7 +822,7 @@ export function findTwinRow(run: RunRow, rows: RunRow[]): RunRow | null {
  * that can never appear on screen.
  */
 export function residLayerHeat(
-  ms: InterpMeasurement[],
+  ms: InterpReading[],
   nLayers?: number | null,
 ): Map<number, number> {
   const out = new Map<number, number>();
@@ -891,8 +891,8 @@ export function neuronBins(
 
 export interface MatchedPair {
   key: string;
-  run: InterpMeasurement | null;
-  twin: InterpMeasurement | null;
+  run: InterpReading | null;
+  twin: InterpReading | null;
 }
 
 export interface LayerDelta {
@@ -922,7 +922,7 @@ export function matchMeasurements(
   const runMs = measurementsOf(run);
   const twinMs = twin ? measurementsOf(twin) : [];
 
-  const unmatched = new Map<string, InterpMeasurement[]>();
+  const unmatched = new Map<string, InterpReading[]>();
   for (const m of twinMs) {
     const k = measurementKey(m);
     const bucket = unmatched.get(k);
@@ -952,7 +952,7 @@ export function matchMeasurements(
     }
     entry[side] = Math.max(entry[side], a);
   };
-  const trackAll = (side: "run" | "twin", ms: InterpMeasurement[]) => {
+  const trackAll = (side: "run" | "twin", ms: InterpReading[]) => {
     for (const m of ms) {
       const d = deltaOf(m);
       if (typeof m.layer === "number") {
@@ -995,7 +995,7 @@ export interface CircuitDiff {
 const nodeSig = (n: CircuitNode) =>
   `${n.layer}:${n.component}:${typeof n.head === "number" ? n.head : ""}`;
 
-function edgeMap(m: InterpMeasurement | null | undefined): Map<string, CircuitEdge> {
+function edgeMap(m: InterpReading | null | undefined): Map<string, CircuitEdge> {
   const out = new Map<string, CircuitEdge>();
   const nodes = m?.nodes ?? [];
   for (const e of m?.edges ?? []) {
@@ -1008,8 +1008,8 @@ function edgeMap(m: InterpMeasurement | null | undefined): Map<string, CircuitEd
 }
 
 export function circuitDiff(
-  run: InterpMeasurement | null | undefined,
-  twin: InterpMeasurement | null | undefined,
+  run: InterpReading | null | undefined,
+  twin: InterpReading | null | undefined,
 ): CircuitDiff {
   const a = edgeMap(run);
   const b = edgeMap(twin);

@@ -5,7 +5,7 @@
 // kind), so plotting them mixes methods. Per-method values get first-class
 // metric names of the form
 //
-//   <base>@<method>       e.g. "asr_drop@beear", "interp_measurement@caa_ablation"
+//   <base>@<method>       e.g. "asr_drop@beear", "interp_reading@caa_ablation"
 //
 // where <base> is one of the generic scalar names and <method> is the observed
 // method slug (defense method / interp measurement kind / scan method family).
@@ -20,7 +20,7 @@
 // scalars. They are CLIENT-derived — never builder-shipped — and get their
 // metric_schema entries from data/normalize.withAnatomyMetrics.
 
-import type { InterpMeasurement, RunRow } from "./types";
+import type { InterpReading, RunRow } from "./types";
 
 export const METHOD_SEP = "@";
 
@@ -38,7 +38,7 @@ type DefenseField = (typeof DEFENSE_FIELDS)[number];
 
 /** base metric name -> how to read one method's value off a row. */
 const BASE_ACCESSORS: Record<string, (r: RunRow, method: string) => number | null> = {
-  interp_measurement: (r, m) => interpKindValue(r, m, "value"),
+  interp_reading: (r, m) => interpKindValue(r, m, "value"),
   interp_null_control: (r, m) => interpKindValue(r, m, "null_control"),
   interp_peak_layer: (r, m) => interpAnatomyValue(r, m, "peak"),
   interp_loc_width: (r, m) => interpAnatomyValue(r, m, "width"),
@@ -76,12 +76,12 @@ function interpKindValue(
 ): number | null {
   // Newer builders ship ALL kinds in interp.measurements; older blobs carry
   // only the headline kind, so a row measuring several shows just that one.
-  const list = r.interp?.measurements;
+  const list = r.interp?.readings;
   if (list) {
     const v = list.find((m) => m.kind === kind)?.[field];
     return typeof v === "number" ? v : null;
   }
-  if (r.interp && r.interp.measurement_kind === kind) {
+  if (r.interp && r.interp.reading_kind === kind) {
     const v = r.interp[field];
     return typeof v === "number" ? v : null;
   }
@@ -98,7 +98,7 @@ function interpKindValue(
 // ---------------------------------------------------------------------------
 
 /** The measurement's usable [layer, delta] sweep (typeof-guarded), or null. */
-function sweepOf(m: InterpMeasurement): [number, number][] | null {
+function sweepOf(m: InterpReading): [number, number][] | null {
   const prof = m.layer_profile?.filter(
     (p) => typeof p?.[0] === "number" && typeof p?.[1] === "number",
   );
@@ -111,8 +111,8 @@ function sweepOf(m: InterpMeasurement): [number, number][] | null {
  * kind can appear at several layers (probes at L8/L12/L16/…), and find-first
  * would pin the peak to the lowest probed layer instead of the sweep's.
  */
-function interpAnatomyMeasurement(r: RunRow, kind: string): InterpMeasurement | null {
-  const ofKind = (r.interp?.measurements ?? []).filter((m) => m.kind === kind);
+function interpAnatomyMeasurement(r: RunRow, kind: string): InterpReading | null {
+  const ofKind = (r.interp?.readings ?? []).filter((m) => m.kind === kind);
   return (
     ofKind.find((m) => sweepOf(m) !== null) ??
     ofKind.find((m) => typeof m.layer === "number") ??
@@ -178,7 +178,7 @@ export function rowLayerCount(r: RunRow): number | null {
     return Math.min(Math.floor(r.n_layers), MAX_MODEL_LAYERS);
   }
   let top = -1;
-  for (const m of r.interp?.measurements ?? []) {
+  for (const m of r.interp?.readings ?? []) {
     if (typeof m.layer === "number" && Number.isFinite(m.layer)) top = Math.max(top, m.layer);
     for (const p of m.layer_profile ?? []) {
       if (typeof p?.[0] === "number" && Number.isFinite(p[0])) top = Math.max(top, p[0]);

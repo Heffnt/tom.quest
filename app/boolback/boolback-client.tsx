@@ -20,9 +20,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useArtifactSource } from "./data/source";
 import { useBoolbackStore } from "./state/store";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
-import { readSharedView } from "./lib/share";
 import { TreePane } from "./components/tree-pane";
-import { TablePane, normalizeCenterView, type CenterView } from "./components/table-pane";
+import { TablePane, type CenterView } from "./components/table-pane";
 import { DetailPanel } from "./components/detail-panel";
 
 // Layout constants.
@@ -51,16 +50,6 @@ export default function BoolbackClient() {
   const source = useArtifactSource();
   const bundle = source.bundle;
   const view = useBoolbackStore((s) => s.centerView);
-  const setCenterView = useBoolbackStore((s) => s.setCenterView);
-
-  // A ?v= share URL can name the center view; filters/sorts/columns/chart are
-  // applied by table-pane's hydration (which prefers the shared view too).
-  useEffect(() => {
-    const shared = readSharedView();
-    const v = normalizeCenterView(shared?.view); // maps legacy "chart" → "plot"
-    if (v) setCenterView(v);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // ----- persisted layout (tree width + detail width) ----------------------
   const [layout, updateLayout, layoutHydrated] = usePersistedSettings<LayoutSettings>(

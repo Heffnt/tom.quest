@@ -56,8 +56,54 @@ describe("asBundle (v2 builder fixture)", () => {
     expect(fn.columns.indexOf("fn_hex")).toBe(fn.columns.indexOf("arity") + 1);
   });
 
-  it("rejects unknown schema versions", () => {
-    expect(() => asBundle({ schema_version: 3, rows: [] })).toThrow(/schema_version/);
+  it("rejects unknown schema versions (v1/v2/v3 accepted)", () => {
+    expect(() => asBundle({ schema_version: 4, rows: [] })).toThrow(/schema_version/);
+    // v3 (reading-vocab snapshot) is accepted.
+    expect(() => asBundle({ schema_version: 3, functions: {}, rows: [] })).not.toThrow();
+  });
+});
+
+describe("legacy vocab airlock (measurement → reading)", () => {
+  it("translates a v2 blob's interp.measurements / measurement_kind to reading vocab", () => {
+    const fn = {
+      arity: 1, truth_table: "01",
+      activation: [
+        { presence: [0], present_vars: [], activates: false },
+        { presence: [1], present_vars: [0], activates: true },
+      ],
+      dnf_string: "A", complexity: {},
+    };
+    const blob = {
+      schema_version: 2,
+      meta: {},
+      metric_schema: [
+        { name: "interp_measurement", label: "Interp measurement", suite: "outcome", group: "INTERP", dtype: "fraction", min: 0, max: 1, format: ".3f" },
+      ],
+      column_groups: [{ group: "INTERP", columns: ["interp_measurement"] }],
+      friendly: { column_labels: {}, facet_labels: {}, tuning_labels: {} },
+      functions: { f1: fn },
+      rows: [{
+        identity: { run_id: "fn=f1/ds=d1/tr=t1", function_hash: "f1", dataset_hash: "d1", training_hash: "t1" },
+        function: fn,
+        status: { in_progress: false },
+        interp: {
+          measurement_kind: "linear_probe",
+          value: 0.5,
+          null_control: 0.1,
+          reference_model_diff: null,
+          measurements: [{ kind: "linear_probe", value: 0.5, null_control: 0.1 }],
+        },
+      }],
+    };
+    const b = asBundle(structuredClone(blob) as never);
+    const interp = b.rows[0].interp!;
+    expect(interp.reading_kind).toBe("linear_probe");
+    expect(interp.readings).toEqual([{ kind: "linear_probe", value: 0.5, null_control: 0.1 }]);
+    // schema + column names translated too
+    expect(b.metric_schema.some((e) => e.name === "interp_reading")).toBe(true);
+    expect(b.metric_schema.some((e) => e.name === "interp_measurement")).toBe(false);
+    const grp = b.column_groups.find((g) => g.group === "INTERP")!;
+    expect(grp.columns).toContain("interp_reading");
   });
 });
 
@@ -132,10 +178,10 @@ describe("per-method metric synthesis", () => {
   });
 
   it("synthesizes INTERP per-kind entries and qualifies the generic labels", () => {
-    const interp = bundle.rows.find((r) => r.interp?.measurement_kind != null)!;
-    const kind = interp.interp!.measurement_kind!;
-    expect(bundle.metric_schema.some((e) => e.name === `interp_measurement@${kind}`)).toBe(true);
-    const generic = bundle.metric_schema.find((e) => e.name === "interp_measurement")!;
+    const interp = bundle.rows.find((r) => r.interp?.reading_kind != null)!;
+    const kind = interp.interp!.reading_kind!;
+    expect(bundle.metric_schema.some((e) => e.name === `interp_reading@${kind}`)).toBe(true);
+    const generic = bundle.metric_schema.find((e) => e.name === "interp_reading")!;
     expect(generic.label).toMatch(/headline/);
     const genericDrop = bundle.metric_schema.find((e) => e.name === "asr_drop")!;
     expect(genericDrop.label).toMatch(/best method/);

@@ -12,17 +12,22 @@
 //   * identity.dir_path: the run's on-disk node path relative to the artifacts
 //     root (v2 only; null on v1 blobs — the raw-artifact browser hides itself);
 //   * anatomy fields (2026-07, Anatomy view): the per-run model shape
-//     (n_layers/n_heads/d_mlp) and the InterpMeasurement locus/taxonomy/
+//     (n_layers/n_heads/d_mlp) and the InterpReading locus/taxonomy/
 //     circuit fields are ADDITIVE and OPTIONAL — v1 blobs, older v2 blobs,
 //     and the browser-cached last-good blob all predate them, so every
-//     consumer must tolerate their absence. normalize passes them through
-//     verbatim (measurements are never rewritten).
+//     consumer must tolerate their absence.
+//
+// VOCABULARY: the app is single-vocab (reading / snake_case). Old blobs use
+// measurement vocab (interp.measurements / measurement_kind); data/normalize
+// is the ONE airlock that translates old→new at load. See normalize.ts.
 
 // ---------------------------------------------------------------------------
 // Snapshot envelope (tom_quest/build.py, normalized)
 // ---------------------------------------------------------------------------
 
-export const SUPPORTED_SCHEMA_VERSIONS = [1, 2] as const;
+// v3 is the reading-vocab snapshot (CMT builder in flight); v1/v2 are the
+// legacy measurement-vocab blobs data/normalize still translates.
+export const SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3] as const;
 
 export interface Bundle {
   schema_version: number;
@@ -249,12 +254,12 @@ export interface Defense {
 }
 
 // ---------------------------------------------------------------------------
-// Interp measurements — the Anatomy view's data source. The builder has always
+// Interp readings — the Anatomy view's data source. The builder has always
 // shipped {kind, value, null_control}; everything else below is ADDITIVE
 // (2026-07, Anatomy view) and OPTIONAL, because v1 blobs, older v2 blobs and
-// the browser-cached last-good blob predate the fields. normalize passes
-// measurements through verbatim (observedMethodExtents only READS
-// kind/value/null_control), so these are type declarations, not code.
+// the browser-cached last-good blob predate the fields. data/normalize
+// translates the old-vocab blob keys (measurements/measurement_kind) into the
+// reading vocab below, so downstream sees ONE contract.
 // ---------------------------------------------------------------------------
 
 /** Which stream/site a measurement (or circuit node) reads or writes. */
@@ -266,7 +271,7 @@ export type LocusShape = "point" | "head" | "subgraph" | "path" | "parameter" | 
 /** Read-out-of vs. write-into the stream (circle vs. diamond marker). */
 export type InterpMode = "observational" | "interventional";
 
-/** One node of a circuit measurement (locus_shape "subgraph" | "path"). */
+/** One node of a circuit reading (locus_shape "subgraph" | "path"). */
 export interface CircuitNode {
   layer: number;
   component: LocusComponent;
@@ -288,7 +293,7 @@ export interface InterpExtras {
   [key: string]: unknown;
 }
 
-export interface InterpMeasurement {
+export interface InterpReading {
   kind: string;
   value: number | null;
   null_control: number | null;
@@ -310,7 +315,7 @@ export interface InterpMeasurement {
   op?: string;
   metric?: string;
   /** function_hash of the run's function-false twin — pairs this
-   * measurement with the twin run's for the contrast band / diff strip. */
+   * reading with the twin run's for the contrast band / diff strip. */
   twin_hash?: string;
   /** Per-layer sweep: [layer, delta][]. */
   layer_profile?: [number, number][];
@@ -324,12 +329,14 @@ export interface InterpMeasurement {
 }
 
 export interface Interp {
-  measurement_kind: string | null;
+  reading_kind: string | null;
   value: number | null;
   null_control: number | null;
   reference_model_diff: number | null;
-  /** ALL measurement kinds on the run (newer builders; headline fields keep one). */
-  measurements?: InterpMeasurement[];
+  /** ALL reading kinds on the run (newer builders; headline fields keep one).
+   * NOTE: the raw blob names this `measurements` on v1/v2 (measurement vocab);
+   * data/normalize translates it to `readings` at load — the app is single-vocab. */
+  readings?: InterpReading[];
 }
 
 export interface ScanMethod {
@@ -387,17 +394,21 @@ export interface SortKey {
 
 export type RangeFilter = { metric: string; min: number; max: number };
 
+// Facet keys are CMT tidy-column snake_case (they double as spec/render.py
+// column names — the snake_case unification is what lets a browser spec drive
+// the paper figure). "split" is train/test (labelled "train/test" in the UI);
+// it is NOT the "split" treatment.
 export type FacetKey =
   | "task"
   | "source"
-  | "targetBehavior"
-  | "triggerForm"
-  | "rowDistribution"
+  | "target_behavior"
+  | "trigger_form"
+  | "row_distribution"
   | "scheme"
-  | "targetPhrase"
-  | "samplesPerRow"
-  | "backdoorRatio"
-  | "baseModel"
+  | "target_phrase"
+  | "samples_per_row"
+  | "backdoor_ratio"
+  | "base_model"
   | "tuning"
   | "backend"
   | "lr"
@@ -407,49 +418,43 @@ export type FacetKey =
   | "split"
   | "arity";
 
-export type StatusFlag =
-  | "plantedOnly"
-  | "neverPlanted"
-  | "inProgress"
-  | "hasDefense"
-  | "hasTwin"
-  | "hasScan"
-  | "hasInterp"
-  | "hasNegativeDrop";
-
+// Slimmed FilterState: facets + ranges ONLY. Status flags are cut entirely;
+// tree scope (subtreeDirs) is gone (the tree is a pure navigator now); search
+// moved to the table view config. `filters` lives INSIDE each per-view config.
 export interface FilterState {
   facets: Partial<Record<FacetKey, string[]>>; // empty/absent => all
   ranges: RangeFilter[]; // AND-composed
-  status: StatusFlag[]; // AND-composed
-  // tree-driven subtree chips: a run is kept iff its chain_dirs intersect ANY
-  // chip node_path (OR-composed). Reversible "× dir" chips, independent of
-  // tree expansion.
-  subtreeDirs: string[];
-  // quick-search: whitespace-separated tokens, ALL must match the row's
-  // haystack (run id, fn hex, DNF, dir path, facet values).
-  search: string;
 }
 
 export const EMPTY_FILTER: FilterState = {
   facets: {},
   ranges: [],
-  status: [],
-  subtreeDirs: [],
-  search: "",
 };
 
+/** Coerce any blob to a complete FilterState (facets + ranges); never throws. */
+export function sanitizeFilters(raw: unknown): FilterState {
+  const f = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    facets:
+      f.facets && typeof f.facets === "object" && !Array.isArray(f.facets)
+        ? (f.facets as FilterState["facets"])
+        : {},
+    ranges: Array.isArray(f.ranges) ? (f.ranges as FilterState["ranges"]) : [],
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Chart config, v2 (store-owned so the table's per-header "plot on X/Y" and the
-// share-URL encoder can reach it; the Plot view renders from it).
+// Plot config (store-owned; the Plot / Group Plot views render from it, and the
+// table's per-header "plot on X/Y" bridge writes into it).
 //
-// The user's per-dimension question is split / averaged / filtered — NOT "which
-// visual slot". `splits` is the ORDERED list of dimensions the user chose to
+// The user's per-parameter question is split / averaged / filtered — NOT "which
+// visual slot". `splits` is the ORDERED list of parameters the user chose to
 // separate; everything differing but not in `splits` is averaged (with visible
 // spread). Styling is auto-assigned from split order but overridable at every
 // layer (channel reassignment, split reorder, per-value styles).
 // ---------------------------------------------------------------------------
 
-/** A visual encoding channel a split dimension can drive. `dash` (line-style)
+/** A visual encoding channel a split parameter can drive. `dash` (line-style)
  * is meaningful only for line/trajectory (epoch-x) rendering. */
 export type Channel = "color" | "shape" | "size" | "dash";
 
@@ -461,68 +466,96 @@ export interface ValueStyle {
   dash?: number;  // dash-pattern index
 }
 
-export interface ChartConfig extends Record<string, unknown> {
-  v: 2;
+/** How a continuous parameter's values bucket into split groups (Phase 2/3
+ * consume this; Phase 1 just persists it). `edges` present ⇒ method "custom". */
+export interface BinSpec {
+  n: number;
+  method: "quantile" | "width" | "custom";
+  edges?: number[];
+}
+
+/** The Plot view's full config — filters + axes + split/style state.
+ *  extends Record so it round-trips through usePersistedSettings. */
+export interface PlotConfig extends Record<string, unknown> {
+  filters: FilterState;
   x: string; // metric_schema name, or the sentinel "epoch" (training progress)
   y: string; // metric_schema name
-  /** ORDERED dimension keys the user chose to split; [] = everything averaged. */
+  /** ORDERED parameter keys the user chose to split; [] = everything averaged. */
   splits: string[];
-  /** Per-split-dim channel OVERRIDE; absent = auto by split order. */
+  /** paramKey → bucketing for a continuous split (Phase 2/3). */
+  bins: Record<string, BinSpec>;
+  /** Continuous-color encoding: metric/parameter key, or null (Phase 2/3). */
+  colorBy: string | null;
+  /** Per-split-param channel OVERRIDE; absent = auto by split order. */
   channels: Record<string, Channel>;
-  /** dimKey → raw value → explicit style override. */
+  /** paramKey → raw value → explicit style override. */
   valueStyles: Record<string, Record<string, ValueStyle>>;
   band: boolean;   // ±SD band / whiskers
   ghosts: boolean; // faint underlying runs
+  trend: boolean;  // OLS line + r/ρ readout
   logX: boolean;
   logY: boolean;
-  trend: boolean;  // OLS line + r/ρ readout
   /** VIEW WINDOW only (zoom) — never filters the data. */
   xDomain: [number, number] | null;
   yDomain: [number, number] | null;
-  /** Group Plot's extra facet dimension (null on the Plot tab). */
-  facetDim: string | null;
-  /** Group Plot panel size (px), user-adjustable. */
+}
+
+/** The Group Plot view's config — the Plot shape faceted across one parameter. */
+export interface GroupPlotConfig extends PlotConfig {
+  /** The parameter key faceted across panels (null = pick one). */
+  facet: string | null;
+  /** Panel size (px), user-adjustable. */
   panelMin: number;
 }
 
-export const DEFAULT_CHART: ChartConfig = {
-  v: 2,
+/** The Table view's config. `search` is table-only, with dir-path / run-id
+ * fragment semantics (see lib/select.matchesSearch). extends Record so it
+ * round-trips through usePersistedSettings. */
+export interface TableConfig extends Record<string, unknown> {
+  filters: FilterState;
+  visibleCols: string[];
+  columnWidths: Record<string, number>;
+  sorts: SortKey[];
+  search: string;
+}
+
+export const DEFAULT_PLOT: PlotConfig = {
+  filters: EMPTY_FILTER,
   x: "avg_sensitivity",
   y: "plantedness",
   splits: [],
+  bins: {},
+  colorBy: null,
   channels: {},
   valueStyles: {},
   band: true,
   ghosts: true,
+  trend: false,
   logX: false,
   logY: false,
-  trend: false,
   xDomain: null,
   yDomain: null,
-  facetDim: null,
+};
+
+export const DEFAULT_GROUP_PLOT: GroupPlotConfig = {
+  ...DEFAULT_PLOT,
+  facet: null,
   panelMin: 280,
 };
 
-// -- v1 (pre-2026-07 chart config) — retained ONLY as migration input --------
-
-/** v1 per-dimension treatment (biggest-split-first auto assignment). */
-export type DimTreatment = "color" | "shape" | "size" | "avg";
-
-export interface ChartConfigV1 {
-  x: string;
-  y: string;
-  dims: Record<string, DimTreatment>;
-  logX: boolean;
-  logY: boolean;
-  trend: boolean;
-}
+// ---------------------------------------------------------------------------
+// Config sanitizers — coerce a partial/hostile PERSISTED blob to a valid config
+// without throwing. No v1→v2→v3 migration chain: old persisted blobs are
+// dropped (Tom confirmed nothing saved worth keeping); this only heals a blob
+// of the CURRENT shape (missing keys defaulted, wrong-typed fields dropped).
+// ---------------------------------------------------------------------------
 
 function isChannel(v: unknown): v is Channel {
   return v === "color" || v === "shape" || v === "size" || v === "dash";
 }
 
-function sanitizeValueStyles(raw: unknown): ChartConfig["valueStyles"] {
-  const out: ChartConfig["valueStyles"] = {};
+function sanitizeValueStyles(raw: unknown): PlotConfig["valueStyles"] {
+  const out: PlotConfig["valueStyles"] = {};
   if (!raw || typeof raw !== "object") return out;
   for (const [dim, vals] of Object.entries(raw as Record<string, unknown>)) {
     if (!vals || typeof vals !== "object") continue;
@@ -549,73 +582,93 @@ function sanitizeDomain(v: unknown): [number, number] | null {
     : null;
 }
 
-/** Coerce a (possibly partial/hostile) v2 blob to a valid ChartConfig: unknown
- *  keys ignored, missing keys defaulted, wrong-typed fields dropped. Shared by
- *  share-URL decode and preset hydration — must never throw. */
-function sanitizeChartV2(raw: Record<string, unknown>): ChartConfig {
-  const d = DEFAULT_CHART;
+function sanitizeBins(raw: unknown): PlotConfig["bins"] {
+  const out: PlotConfig["bins"] = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== "object") continue;
+    const b = v as Record<string, unknown>;
+    const n = typeof b.n === "number" && Number.isFinite(b.n) ? Math.max(1, Math.floor(b.n)) : null;
+    const method = b.method === "quantile" || b.method === "width" || b.method === "custom" ? b.method : null;
+    if (n === null || method === null) continue;
+    const edges = Array.isArray(b.edges)
+      ? b.edges.filter((e): e is number => typeof e === "number" && Number.isFinite(e))
+      : undefined;
+    out[k] = edges && edges.length ? { n, method, edges } : { n, method };
+  }
+  return out;
+}
+
+/** Coerce a partial/hostile blob to a valid PlotConfig (see section comment). */
+export function sanitizePlotConfig(raw: unknown): PlotConfig {
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  const d = DEFAULT_PLOT;
   const str = (v: unknown, f: string) => (typeof v === "string" ? v : f);
   const bool = (v: unknown, f: boolean) => (typeof v === "boolean" ? v : f);
-  const num = (v: unknown, f: number) => (typeof v === "number" && Number.isFinite(v) ? v : f);
   const channels: Record<string, Channel> = {};
-  if (raw.channels && typeof raw.channels === "object") {
-    for (const [k, v] of Object.entries(raw.channels as Record<string, unknown>)) {
+  if (r.channels && typeof r.channels === "object") {
+    for (const [k, v] of Object.entries(r.channels as Record<string, unknown>)) {
       if (isChannel(v)) channels[k] = v;
     }
   }
   return {
-    v: 2,
-    x: str(raw.x, d.x),
-    y: str(raw.y, d.y),
-    splits: Array.isArray(raw.splits) ? raw.splits.filter((s): s is string => typeof s === "string") : [],
+    filters: sanitizeFilters(r.filters),
+    x: str(r.x, d.x),
+    y: str(r.y, d.y),
+    splits: Array.isArray(r.splits) ? r.splits.filter((s): s is string => typeof s === "string") : [],
+    bins: sanitizeBins(r.bins),
+    colorBy: typeof r.colorBy === "string" ? r.colorBy : null,
     channels,
-    valueStyles: sanitizeValueStyles(raw.valueStyles),
-    band: bool(raw.band, d.band),
-    ghosts: bool(raw.ghosts, d.ghosts),
-    logX: bool(raw.logX, d.logX),
-    logY: bool(raw.logY, d.logY),
-    trend: bool(raw.trend, d.trend),
-    xDomain: sanitizeDomain(raw.xDomain),
-    yDomain: sanitizeDomain(raw.yDomain),
-    facetDim: typeof raw.facetDim === "string" ? raw.facetDim : null,
-    panelMin: num(raw.panelMin, d.panelMin),
+    valueStyles: sanitizeValueStyles(r.valueStyles),
+    band: bool(r.band, d.band),
+    ghosts: bool(r.ghosts, d.ghosts),
+    trend: bool(r.trend, d.trend),
+    logX: bool(r.logX, d.logX),
+    logY: bool(r.logY, d.logY),
+    xDomain: sanitizeDomain(r.xDomain),
+    yDomain: sanitizeDomain(r.yDomain),
   };
 }
 
-/**
- * Migrate any persisted/shared/preset chart blob to a valid v2 ChartConfig.
- * Total (never throws): garbage → defaults; a v1 blob's color/shape/size dims
- * become ORDERED `splits` + `channels` (avg entries dropped — averaged is now
- * the default); a v2 blob is sanitized.
- */
-export function migrateChart(input: unknown): ChartConfig {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return { ...DEFAULT_CHART };
-  const raw = input as Record<string, unknown>;
-  if (raw.v === 2) return sanitizeChartV2(raw);
-  // v1 → v2
-  const out: ChartConfig = { ...DEFAULT_CHART };
-  if (typeof raw.x === "string") out.x = raw.x;
-  if (typeof raw.y === "string") out.y = raw.y;
-  if (typeof raw.logX === "boolean") out.logX = raw.logX;
-  if (typeof raw.logY === "boolean") out.logY = raw.logY;
-  if (typeof raw.trend === "boolean") out.trend = raw.trend;
-  if (raw.dims && typeof raw.dims === "object") {
-    const byChannel = new Map<Channel, string>();
-    for (const [key, t] of Object.entries(raw.dims as Record<string, unknown>)) {
-      if ((t === "color" || t === "shape" || t === "size") && !byChannel.has(t)) {
-        byChannel.set(t, key);
-      }
+export function sanitizeGroupPlotConfig(raw: unknown): GroupPlotConfig {
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  const base = sanitizePlotConfig(raw);
+  const num = (v: unknown, f: number) => (typeof v === "number" && Number.isFinite(v) ? v : f);
+  return {
+    ...base,
+    facet: typeof r.facet === "string" ? r.facet : null,
+    panelMin: num(r.panelMin, DEFAULT_GROUP_PLOT.panelMin),
+  };
+}
+
+/** Coerce a partial/hostile blob to a valid TableConfig. `fallbackCols` seeds
+ *  visibleCols when the blob has none (the store's DEFAULT_COLS). */
+export function sanitizeTableConfig(raw: unknown, fallbackCols: string[]): TableConfig {
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  const cols = Array.isArray(r.visibleCols)
+    ? r.visibleCols.filter((c): c is string => typeof c === "string")
+    : [];
+  const widths: Record<string, number> = {};
+  if (r.columnWidths && typeof r.columnWidths === "object" && !Array.isArray(r.columnWidths)) {
+    for (const [k, v] of Object.entries(r.columnWidths as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v)) widths[k] = v;
     }
-    const splits: string[] = [];
-    const channels: Record<string, Channel> = {};
-    for (const ch of ["color", "shape", "size"] as const) {
-      const key = byChannel.get(ch);
-      if (key) { splits.push(key); channels[key] = ch; }
-    }
-    out.splits = splits;
-    out.channels = channels;
   }
-  return out;
+  const sorts = Array.isArray(r.sorts)
+    ? (r.sorts.filter(
+        (s): s is SortKey =>
+          !!s && typeof s === "object" &&
+          typeof (s as SortKey).col === "string" &&
+          ((s as SortKey).dir === "asc" || (s as SortKey).dir === "desc"),
+      ))
+    : [];
+  return {
+    filters: sanitizeFilters(r.filters),
+    visibleCols: cols.length ? cols : fallbackCols,
+    columnWidths: widths,
+    sorts,
+    search: typeof r.search === "string" ? r.search : "",
+  };
 }
 
 // ---------------------------------------------------------------------------

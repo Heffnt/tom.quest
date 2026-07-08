@@ -24,7 +24,7 @@
 // pane degrades structurally.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { InterpMeasurement, RunRow } from "../lib/types";
+import type { InterpReading, RunRow } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import {
   carrierColor,
@@ -161,7 +161,7 @@ export function AnatomySection({ row }: { row: RunRow }) {
 // The selected measurement's full record
 // ---------------------------------------------------------------------------
 
-function SelectedMeasurement({ m }: { m: InterpMeasurement }) {
+function SelectedMeasurement({ m }: { m: InterpReading }) {
   const color = carrierColor(m.carrier);
   const extras = m.extras ?? {};
   const extraEntries = Object.entries(extras).filter(([k]) => k !== "curve");

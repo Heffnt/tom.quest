@@ -8,13 +8,13 @@ import {
   applySorts,
   facetKeyForColumn,
   facetOptions,
+  matchesSearch,
   numericValue,
   metricRange,
   normalizeToRange,
   FACET_KEYS,
 } from "./select";
 import { indexMetricSchema } from "./metrics";
-import { fnText } from "./format";
 import { EMPTY_FILTER, type RunRow } from "./types";
 
 const bundle = asBundle(sample);
@@ -33,17 +33,11 @@ describe("select", () => {
     for (const k of FACET_KEYS) expect(() => facetOptions(rows, k)).not.toThrow();
   });
 
-  it("subtree chip keeps only runs under the node_path; unknown chip yields none", () => {
-    const fnDir = rows[0].identity.chain_dirs[0];
-    const out = applyFilters(rows, { ...EMPTY_FILTER, subtreeDirs: [fnDir] });
+  it("facet filter keeps only rows whose value is selected", () => {
+    const src = facetOptions(rows, "source")[0].value;
+    const out = applyFilters(rows, { ...EMPTY_FILTER, facets: { source: [src] } });
     expect(out.length).toBeGreaterThan(0);
-    expect(out.every((r) => r.identity.chain_dirs.includes(fnDir))).toBe(true);
-    expect(applyFilters(rows, { ...EMPTY_FILTER, subtreeDirs: ["fn=nope"] })).toHaveLength(0);
-  });
-
-  it("status plantedOnly filters to planted runs", () => {
-    const out = applyFilters(rows, { ...EMPTY_FILTER, status: ["plantedOnly"] });
-    expect(out.every((r) => r.status.planted)).toBe(true);
+    expect(out.every((r) => r.dataset.source === src)).toBe(true);
   });
 
   it("range filter on a dotted column id keeps in-range non-null rows", () => {
@@ -69,24 +63,24 @@ describe("select", () => {
   });
 
   it("per-kind interp ids read the headline kind, and prefer the measurements list", () => {
-    const interp = rows.find((r) => r.interp?.measurement_kind != null)!;
-    const kind = interp.interp!.measurement_kind!;
-    expect(numericValue(interp, `interp_measurement@${kind}`)).toBe(interp.interp!.value);
-    expect(numericValue(interp, "interp_measurement@other_kind")).toBeNull();
+    const interp = rows.find((r) => r.interp?.reading_kind != null)!;
+    const kind = interp.interp!.reading_kind!;
+    expect(numericValue(interp, `interp_reading@${kind}`)).toBe(interp.interp!.value);
+    expect(numericValue(interp, "interp_reading@other_kind")).toBeNull();
 
     // Newer builders ship ALL kinds; the list wins over the headline fields.
     const withList: RunRow = {
       ...interp,
       interp: {
         ...interp.interp!,
-        measurements: [
+        readings: [
           { kind, value: 0.5, null_control: 0.1 },
           { kind: "other_kind", value: 7, null_control: 2 },
         ],
       },
     };
-    expect(numericValue(withList, `interp_measurement@${kind}`)).toBe(0.5);
-    expect(numericValue(withList, "interp_measurement@other_kind")).toBe(7);
+    expect(numericValue(withList, `interp_reading@${kind}`)).toBe(0.5);
+    expect(numericValue(withList, "interp_reading@other_kind")).toBe(7);
     expect(numericValue(withList, "interp_null_control@other_kind")).toBe(2);
   });
 
@@ -94,7 +88,7 @@ describe("select", () => {
     // The planted run: 5 linear_probe point measurements (L8..L24) with the
     // 32-layer sweep on the L16 one — the sweep must win over find-first.
     const planted = rows.find((r) =>
-      r.interp?.measurements?.some((m) => m.kind === "sae_feature"),
+      r.interp?.readings?.some((m) => m.kind === "sae_feature"),
     )!;
     expect(numericValue(planted, "interp_peak_layer@linear_probe")).toBe(16);
     expect(numericValue(planted, "interp_loc_width@linear_probe")).toBe(11);
@@ -111,7 +105,7 @@ describe("select", () => {
     // The weaker twin sweeps the same kind but peaks elsewhere.
     const twin = rows.find(
       (r) =>
-        r !== planted && r.interp?.measurements?.some((m) => m.layer_profile),
+        r !== planted && r.interp?.readings?.some((m) => m.layer_profile),
     )!;
     expect(numericValue(twin, "interp_peak_layer@linear_probe")).toBe(11);
 
@@ -120,7 +114,7 @@ describe("select", () => {
     expect(numericValue(planted, "interp_peak_layer@weight_norm_diff")).toBeNull();
     expect(numericValue(planted, "interp_peak_layer@circuit")).toBeNull();
     expect(numericValue(planted, "interp_peak_layer@no_such_kind")).toBeNull();
-    const headlineOnly = rows.find((r) => r.interp && !r.interp.measurements)!;
+    const headlineOnly = rows.find((r) => r.interp && !r.interp.readings)!;
     expect(numericValue(headlineOnly, "interp_peak_layer@linear_probe")).toBeNull();
   });
 
@@ -131,7 +125,7 @@ describe("select", () => {
       n_layers: null, // pre-anatomy blobs ship no model shape
       interp: {
         ...src.interp!,
-        measurements: [
+        readings: [
           { kind: "probe_a", value: 1, null_control: 0, layer: 5 },
           { kind: "probe_b", value: 1, null_control: 0, layer: 9 },
         ],
@@ -144,15 +138,13 @@ describe("select", () => {
   });
 
   it("applyFilters tolerates a stale/partial persisted FilterState (missing sub-keys)", () => {
-    // A view saved by an older shape can deserialize without facets/ranges/status/
-    // subtreeDirs; the shallow persisted-merge then yields a partial object. This must
-    // NOT throw (regression: Object.entries(undefined) crashed the whole table).
+    // A saved view can deserialize without facets/ranges; the shallow merge
+    // then yields a partial object. This must NOT throw (regression:
+    // Object.entries(undefined) crashed the whole table).
     const partials = [
       {},
       { ranges: [{ metric: "distance_to_ltf", min: 0, max: 8 }] },
       { facets: { arity: ["5"] } },
-      { status: ["plantedOnly"] },
-      { subtreeDirs: [rows[0].identity.chain_dirs[0]] },
     ];
     for (const p of partials) {
       expect(() => applyFilters(rows, p as never)).not.toThrow();
@@ -175,25 +167,17 @@ describe("select", () => {
     expect(n).toBeLessThanOrEqual(1);
   });
 
-  it("search matches run id / fn hex / model, case-insensitive, AND across tokens", () => {
+  it("matchesSearch: run-id / dir-path / node-path fragments, case-insensitive, AND tokens", () => {
     const row = rows[0];
-    const hex = fnText(row.function.arity, row.function.truth_table);
-    const byHex = applyFilters(rows, { ...EMPTY_FILTER, search: hex.toLowerCase() });
-    expect(byHex.length).toBeGreaterThan(0);
-    expect(byHex).toContain(row);
-
-    const byId = applyFilters(rows, { ...EMPTY_FILTER, search: row.identity.run_id });
-    expect(byId).toContain(row);
-
-    // AND across tokens: hex + model narrows, never widens
-    const model = row.training.base_model ?? "";
-    const both = applyFilters(rows, { ...EMPTY_FILTER, search: `${hex} ${model}` });
-    expect(both.length).toBeLessThanOrEqual(byHex.length);
-    expect(both).toContain(row);
-
-    expect(applyFilters(rows, { ...EMPTY_FILTER, search: "zzz-no-such-token" })).toHaveLength(0);
-    // empty / whitespace search is a no-op
-    expect(applyFilters(rows, { ...EMPTY_FILTER, search: "   " })).toHaveLength(rows.length);
+    // repurposed table search: haystack is run_id + dir_path + node_path only.
+    expect(matchesSearch(row, row.identity.run_id.toLowerCase())).toBe(true);
+    expect(matchesSearch(row, row.identity.node_path)).toBe(true);
+    // AND across tokens: two fragments of the SAME run id both present.
+    const [a, b] = row.identity.run_id.split("/");
+    if (a && b) expect(matchesSearch(row, `${a} ${b}`)).toBe(true);
+    expect(matchesSearch(row, "zzz-no-such-token")).toBe(false);
+    // empty / whitespace search is a no-op match.
+    expect(matchesSearch(row, "   ")).toBe(true);
   });
 
   it("range filters accept BARE metric_schema names for non-FUNCTION metrics", () => {
@@ -217,7 +201,7 @@ describe("select", () => {
   });
 
   it("facetKeyForColumn maps categorical column ids to their facet", () => {
-    expect(facetKeyForColumn("training.base_model")).toBe("baseModel");
+    expect(facetKeyForColumn("training.base_model")).toBe("base_model");
     expect(facetKeyForColumn("dataset.source")).toBe("source");
     expect(facetKeyForColumn("function.arity")).toBe("arity");
     expect(facetKeyForColumn("headline.plantedness")).toBeNull();

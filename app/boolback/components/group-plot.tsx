@@ -14,21 +14,20 @@
 
 import { useMemo, useState } from "react";
 import type { Bundle, RunRow, Channel } from "../lib/types";
-import { DEFAULT_CHART } from "../lib/types";
+import { DEFAULT_GROUP_PLOT } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import {
-  DIMENSIONS, summarizeDimensions, resolveChannels,
-  type DimValues,
-} from "../lib/dimensions";
+  PARAMETERS, summarizeParameters, resolveChannels,
+  type ParamValues,
+} from "../lib/parameters";
 import { groupRuns } from "../lib/aggregate";
 import { buildRunSeries, groupSeries, trajectoryMetric } from "../lib/trajectories";
 import { niceTicks } from "../lib/stats";
 import { colorForValue, SINGLE_COLOR } from "../lib/styling";
-import { fnText } from "../lib/format";
 import { shapeNode } from "./glyph";
-import { effectiveAxis } from "./chart-panel";
+import { effectiveAxis } from "./plot-panel";
 
 const PW = 260, PH = 176; // panel logical size (viewBox); CSS scales it
 const PAD = { l: 34, r: 8, t: 8, b: 20 };
@@ -43,41 +42,41 @@ export function GroupPlotBody({
   bundle: Bundle;
   index: MetricIndex;
 }) {
-  const config = useBoolbackStore((s) => s.chart);
-  const setChart = useBoolbackStore((s) => s.setChart);
+  const config = useBoolbackStore((s) => s.groupPlot);
+  const setGroupPlot = useBoolbackStore((s) => s.setGroupPlot);
   const setCenterView = useBoolbackStore((s) => s.setCenterView);
   const setFacet = useBoolbackStore((s) => s.setFacet);
-  const addSubtreeDir = useBoolbackStore((s) => s.addSubtreeDir);
-  const filters = useBoolbackStore((s) => s.filters);
   const openDetail = useBoolbackStore((s) => s.openDetail);
+  // Filters live INSIDE the group-plot config.
+  const filters = config.filters;
 
-  const facetDef = config.facetDim ? DIMENSIONS.find((d) => d.key === config.facetDim) ?? null : null;
-  const panelMin = config.panelMin || DEFAULT_CHART.panelMin;
+  const facetDef = config.facet ? PARAMETERS.find((d) => d.key === config.facet) ?? null : null;
+  const panelMin = config.panelMin || DEFAULT_GROUP_PLOT.panelMin;
 
   const lineMode = config.x === "epoch";
-  const xName = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_CHART.x);
+  const xName = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_GROUP_PLOT.x);
   const yName = lineMode
     ? (trajectoryMetric(config.y) ?? "plantedness")
-    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_CHART.y);
+    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_GROUP_PLOT.y);
   const logX = !!config.logX;
   const logY = !!config.logY;
 
   // ---- global dimension model (facet dim excluded — it drives the panels) ----
-  const summary = useMemo(() => summarizeDimensions(rows), [rows]);
+  const summary = useMemo(() => summarizeParameters(rows), [rows]);
   const diffByKey = useMemo(
     () => new Map(summary.differing.map((d) => [d.dim.key, d])),
     [summary],
   );
   const splits = useMemo(
-    () => (config.splits ?? []).filter((k) => k !== config.facetDim && diffByKey.has(k)),
-    [config.splits, config.facetDim, diffByKey],
+    () => (config.splits ?? []).filter((k) => k !== config.facet && diffByKey.has(k)),
+    [config.splits, config.facet, diffByKey],
   );
   const channelByDim = useMemo(
     () => resolveChannels(splits, config.channels ?? {}, (k) => diffByKey.get(k)?.values.length ?? 0),
     [splits, config.channels, diffByKey],
   );
   const channelDims = useMemo(() => {
-    const m = new Map<Channel, DimValues>();
+    const m = new Map<Channel, ParamValues>();
     for (const d of summary.differing) {
       const ch = channelByDim.get(d.dim.key);
       if (ch) m.set(ch, d);
@@ -89,9 +88,9 @@ export function GroupPlotBody({
   const sizeDim = channelDims.get("size");
   const splitDims = useMemo(() => {
     const order: Channel[] = ["color", "shape", "size", "dash"];
-    return order.map((ch) => channelDims.get(ch)).filter((d): d is DimValues => d !== undefined);
+    return order.map((ch) => channelDims.get(ch)).filter((d): d is ParamValues => d !== undefined);
   }, [channelDims]);
-  const ordinal = (d: DimValues | undefined) => {
+  const ordinal = (d: ParamValues | undefined) => {
     const m = new Map<string, number>();
     d?.values.forEach((v, i) => m.set(v.value, i));
     return m;
@@ -100,8 +99,8 @@ export function GroupPlotBody({
   const shapeIdx = useMemo(() => ordinal(shapeDim), [shapeDim]);
   const sizeIdx = useMemo(() => ordinal(sizeDim), [sizeDim]);
   const averaging = useMemo(
-    () => summary.differing.some((d) => d.dim.key !== config.facetDim && !channelByDim.has(d.dim.key)),
-    [summary, config.facetDim, channelByDim],
+    () => summary.differing.some((d) => d.dim.key !== config.facet && !channelByDim.has(d.dim.key)),
+    [summary, config.facet, channelByDim],
   );
   const activeJudge = useMemo(() => {
     const j = filters.facets?.judge;
@@ -177,23 +176,14 @@ export function GroupPlotBody({
   const sx = (v: number) => PAD.l + ((v - extent.x0) / (extent.x1 - extent.x0)) * (PW - PAD.l - PAD.r);
   const sy = (v: number) => PH - PAD.b - ((v - extent.y0) / (extent.y1 - extent.y0)) * (PH - PAD.t - PAD.b);
 
-  const dispFacet = (v: string) =>
-    facetDef?.fnScope ? v : facetDef?.display ? facetDef.display(v) : v;
+  const dispFacet = (v: string) => (facetDef?.display ? facetDef.display(v) : v);
 
-  // ---- promote: facet value becomes a filter, land on the big Plot ----------
+  // ---- promote: facet value becomes a filter on the PLOT view, land there.
+  // (The `function` parameter has no facetKey in Phase 1, so promoting it only
+  // switches views — no filter, per the subtree-scope removal.) --------------
   const promote = (value: string) => {
-    if (facetDef?.fnScope) {
-      // scope to this function's subtree
-      for (const r of rows) {
-        if (fnText(r.function.arity, r.function.truth_table) === value) {
-          addSubtreeDir(`fn=${r.identity.function_hash}`);
-          break;
-        }
-      }
-    } else if (facetDef?.facetKey) {
-      setFacet(facetDef.facetKey, [value]);
-    }
-    setChart({ facetDim: null });
+    if (facetDef?.facetKey) setFacet("plot", facetDef.facetKey, [value]);
+    setGroupPlot({ facet: null });
     setCenterView("plot");
   };
 
@@ -202,7 +192,7 @@ export function GroupPlotBody({
   if (!facetDef) {
     return (
       <div className="flex-1 min-h-0 overflow-y-auto p-4">
-        <FacetPicker current={null} onPick={(k) => setChart({ facetDim: k, splits: (config.splits ?? []).filter((s) => s !== k) })} rows={rows} />
+        <FacetPicker current={null} onPick={(k) => setGroupPlot({ facet: k, splits: (config.splits ?? []).filter((s) => s !== k) })} rows={rows} />
         <p className="mt-3 text-xs text-text-faint">Choose a dimension to facet the plot across — one panel per value.</p>
       </div>
     );
@@ -213,13 +203,13 @@ export function GroupPlotBody({
       {/* control strip */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border/60 px-3 py-1.5 text-xs">
         <span className="text-text-faint">facet:</span>
-        <FacetPicker current={facetDef.key} onPick={(k) => setChart({ facetDim: k, splits: (config.splits ?? []).filter((s) => s !== k) })} rows={rows} />
+        <FacetPicker current={facetDef.key} onPick={(k) => setGroupPlot({ facet: k, splits: (config.splits ?? []).filter((s) => s !== k) })} rows={rows} />
         <span className="text-text-muted">{facets.list.length} panels{facets.hidden > 0 ? ` · ${facets.hidden} more not shown` : ""}</span>
         <label className="ml-auto flex items-center gap-1 text-text-muted">
           panel size
           <input
             type="range" min={160} max={480} step={20} value={panelMin}
-            onChange={(e) => setChart({ panelMin: Number(e.target.value) })}
+            onChange={(e) => setGroupPlot({ panelMin: Number(e.target.value) })}
             className="accent-accent"
             aria-label="panel size"
           />
@@ -255,8 +245,8 @@ export function GroupPlotBody({
 
 type PanelCtx = {
   xName: string; yName: string; logX: boolean; logY: boolean;
-  splitDims: DimValues[];
-  colorDim?: DimValues; shapeDim?: DimValues; sizeDim?: DimValues;
+  splitDims: ParamValues[];
+  colorDim?: ParamValues; shapeDim?: ParamValues; sizeDim?: ParamValues;
   colorIdx: Map<string, number>; shapeIdx: Map<string, number>; sizeIdx: Map<string, number>;
   valueStyles: Record<string, Record<string, import("../lib/types").ValueStyle>>;
   averaging: boolean; lineMode: boolean; activeJudge: string | null;
@@ -439,10 +429,10 @@ function FacetPicker({
   const [open, setOpen] = useState(false);
   // Only dimensions that actually vary (≥2 values) are useful facets.
   const options = useMemo(() => {
-    const summary = summarizeDimensions(rows);
+    const summary = summarizeParameters(rows);
     return summary.differing.map((d) => d.dim);
   }, [rows]);
-  const cur = DIMENSIONS.find((d) => d.key === current);
+  const cur = PARAMETERS.find((d) => d.key === current);
   return (
     <div className="relative inline-block">
       <button

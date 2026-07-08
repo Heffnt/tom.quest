@@ -51,23 +51,82 @@ interface RawEnvelope {
   rows?: unknown;
 }
 
+// TODO(remove-normalize): delete this vocab airlock once v3 is the ONLY live
+// blob (Phase 6). The APP is single-vocab (reading / snake_case); this is the
+// ONE place old-vocab blobs (v1/v2: measurement / measurement_kind) get
+// translated into it. Kept localized so it is a clean delete later. v3 blobs
+// already carry the reading vocab, so translation is a no-op for them.
+//
+// COORDINATION: the CMT v3 builder produces the exact live field names in
+// parallel; when they land, reconcile the OLD→NEW map below against them:
+//   - interp.measurements[]      → interp.readings[]           (row field)
+//   - interp.measurement_kind    → interp.reading_kind         (row field)
+//   - metric "interp_measurement" → "interp_reading"           (schema + columns)
+// If v3 renames further interp fields (value/null_control, method types,
+// attack/capability groups, new outcomes), add them HERE — do NOT scatter
+// old-vocab handling through the app.
+function translateLegacyVocab(raw: RawEnvelope): void {
+  // Rows: interp.measurements → readings, interp.measurement_kind → reading_kind.
+  if (Array.isArray(raw.rows)) {
+    for (const row of raw.rows as Array<Record<string, unknown>>) {
+      const interp = row?.interp as Record<string, unknown> | null | undefined;
+      if (!interp || typeof interp !== "object") continue;
+      if ("measurements" in interp && !("readings" in interp)) {
+        interp.readings = interp.measurements;
+        delete interp.measurements;
+      }
+      if ("measurement_kind" in interp && !("reading_kind" in interp)) {
+        interp.reading_kind = interp.measurement_kind;
+        delete interp.measurement_kind;
+      }
+    }
+  }
+  // Metric schema names/labels: interp_measurement[@method] → interp_reading[@…].
+  const renameMetric = (name: string): string =>
+    name === "interp_measurement" || name.startsWith("interp_measurement@")
+      ? name.replace(/^interp_measurement/, "interp_reading")
+      : name;
+  if (Array.isArray(raw.metric_schema)) {
+    for (const e of raw.metric_schema as Array<Record<string, unknown>>) {
+      if (typeof e?.name === "string") {
+        const next = renameMetric(e.name);
+        if (next !== e.name) {
+          e.name = next;
+          if (typeof e.label === "string") {
+            e.label = e.label.replace(/measurement/gi, (m) => (m[0] === "M" ? "Reading" : "reading"));
+          }
+        }
+      }
+    }
+  }
+  if (Array.isArray(raw.column_groups)) {
+    for (const g of raw.column_groups) {
+      if (Array.isArray(g.columns)) g.columns = g.columns.map(renameMetric);
+    }
+  }
+}
+
 export function asBundle(json: unknown): Bundle {
   const raw = json as RawEnvelope | null;
   if (!raw || typeof raw !== "object") {
     throw new Error("snapshot is not a JSON object");
   }
   const version = raw.schema_version;
-  if (version !== 1 && version !== 2) {
+  if (version !== 1 && version !== 2 && version !== 3) {
     throw new Error(`unsupported snapshot schema_version: ${String(version)}`);
   }
   if (!Array.isArray(raw.rows)) {
     throw new Error("snapshot has no rows array");
   }
+  // Airlock: translate old-vocab blobs to the app's single (reading) vocab.
+  translateLegacyVocab(raw);
   const rows = raw.rows as RunRow[];
 
   let functions: Record<string, FunctionBlock>;
   let tree: TreeNode[];
-  if (version === 2) {
+  // v3 shares v2's structural shape (functions map + dir_path); only the
+  // vocabulary differs (handled by translateLegacyVocab above).
+  if (version === 2 || version === 3) {
     functions = raw.functions ?? {};
     for (const row of rows) {
       const id = row.identity;
@@ -139,7 +198,7 @@ export function asBundle(json: unknown): Bundle {
 const PER_METHOD_BASE_INFO: Record<string, { group: string; genericNote: string }> = {
   asr_drop: { group: "DEFENSE", genericNote: "best method" },
   recovery_rate: { group: "DEFENSE", genericNote: "best method" },
-  interp_measurement: { group: "INTERP", genericNote: "headline" },
+  interp_reading: { group: "INTERP", genericNote: "headline" },
   interp_null_control: { group: "INTERP", genericNote: "headline" },
   scan_auroc: { group: "SCAN", genericNote: "headline" },
   scan_far_at_frr: { group: "SCAN", genericNote: "headline" },
@@ -160,17 +219,17 @@ function observedMethodExtents(rows: RunRow[]): Map<string, Map<string, [number,
       track("asr_drop", m.method, m.asr_drop);
       track("recovery_rate", m.method, m.recovery_rate);
     }
-    const measurements =
-      r.interp?.measurements ??
-      (r.interp?.measurement_kind
+    const readings =
+      r.interp?.readings ??
+      (r.interp?.reading_kind
         ? [{
-            kind: r.interp.measurement_kind,
+            kind: r.interp.reading_kind,
             value: r.interp.value,
             null_control: r.interp.null_control,
           }]
         : []);
-    for (const m of measurements) {
-      track("interp_measurement", m.kind, m.value);
+    for (const m of readings) {
+      track("interp_reading", m.kind, m.value);
       track("interp_null_control", m.kind, m.null_control);
     }
     const scans =
@@ -268,7 +327,7 @@ function withAnatomyMetrics(
   const observed = new Map<string, Map<string, [number, number]>>();
   let maxLayers = 0; // max effective layer count over contributing rows
   for (const r of rows) {
-    const kinds = new Set((r.interp?.measurements ?? []).map((m) => m.kind));
+    const kinds = new Set((r.interp?.readings ?? []).map((m) => m.kind));
     let contributed = false;
     for (const kind of kinds) {
       for (const base of ANATOMY_BASES) {
