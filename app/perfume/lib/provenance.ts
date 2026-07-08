@@ -2,7 +2,7 @@
 // whether resting on the cauldron (OutputInstance) or held in an inventory
 // (PerfumeInstance) — carries who brewed it, who witnessed it, when, and its
 // ownership chain. This is the SINGLE phrasing for that hover tooltip, shared by
-// the inventory perfume slots and the cauldron output bottles so the two never
+// the inventory perfume slots and the cauldron output perfumes so the two never
 // drift.
 
 // The minimal shape both instance kinds project to. `chain` is the ownership

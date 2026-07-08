@@ -1,10 +1,7 @@
-// Multi-brew /perfume backend (Phase 2) — see app/perfume/DESIGN.md §§1–9.
+// Multi-brew /perfume backend — see app/perfume/DESIGN.md §§1–9.
 //
-// Built ADDITIVELY alongside convex/perfume.ts: the old single-bench API keeps
-// compiling and its tests keep passing until Phase 3 swaps the frontend over and
-// deletes the old tables. Vocabulary is enforced by DESIGN.md — brew (not bench),
-// cauldron (not tray), member (not owner-profile), gift (not transfer). None of
-// the DEAD WORDS (bench/pot/tuning/bottling) appear in new identifiers.
+// Vocabulary is enforced by DESIGN.md — brew, cauldron, member, gift (see §2
+// for the banned synonyms these replace).
 //
 // Permission rule — "WHERE, not WHAT" (DESIGN.md §4 matrix): anyone identified
 // may change WHERE a brew owner's items sit (moves, strike/wild plays, shared
@@ -1284,14 +1281,14 @@ export const takeFromCauldron = mutation({
 
 // ── inventory import (WHAT — own stock declaration; not a gift) ──────────────
 
-// Declare the caller's OWN fungible stock from a client-parsed sheet. Ports the
-// old bench importInventory exactly: owner-only (a member may only rewrite their
-// OWN inventory), each row validated (unknown item → throw; count must be a
-// non-negative integer), and mode chooses whether to REPLACE the whole stack set
-// or MERGE additively onto the current stacks. This is a stock declaration, not
-// a transfer — no gift event is written and no other member's inventory is
-// touched. Only fungible stacks (ingredients + pures) are declarable; perfumes
-// are provenance-bearing instances, never stack counts, so they are not imported.
+// Declare the caller's OWN fungible stock from a client-parsed sheet:
+// owner-only (a member may only rewrite their OWN inventory), each row
+// validated (unknown item → throw; count must be a non-negative integer), and
+// mode chooses whether to REPLACE the whole stack set or MERGE additively onto
+// the current stacks. This is a stock declaration, not a gift — no gift event
+// is written and no other member's inventory is touched. Only fungible stacks
+// (ingredients + pures) are declarable; perfumes are provenance-bearing
+// instances, never stack counts, so they are not imported.
 export const importInventory = mutation({
   args: {
     rows: v.array(v.object({ key: v.string(), count: v.number() })),

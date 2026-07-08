@@ -2,7 +2,7 @@
 // (DESIGN.md §1 "recipe": a perfume has one common recipe and may have others;
 // "when a brew completes, the UI shows which recipe was satisfied"). Two
 // surfaces name recipes — the stage's satisfied banner / brew footer
-// (components/brew-graph.tsx) and the perfume book's satisfied chip
+// (components/brew-graph.tsx) and the perfume panel's satisfied chip
 // (components/perfume-panel.tsx). They MUST agree, so the phrasing lives here,
 // imported by both, rather than being spelled twice.
 //

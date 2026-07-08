@@ -25,7 +25,7 @@ const names = (opts: { perfume: { name: string } }[]) =>
 // ── 1. brewableOptions: exact matches only ───────────────────────────────────
 
 describe("brewableOptions", () => {
-  it("an empty pot brews nothing", () => {
+  it("an empty brew brews nothing", () => {
     expect(brewableOptions(brew([]), basePerfumes)).toEqual([]);
   });
 
@@ -85,7 +85,7 @@ describe("brewableOptions", () => {
 // ── 2. hoverDelta: the brew-bar ghost ────────────────────────────────────────
 
 describe("hoverDelta", () => {
-  it("gain: Brightflower over an empty pot would brew Bright ×1", () => {
+  it("gain: Brightflower over an empty brew would brew Bright ×1", () => {
     const d = hoverDelta(brew([]), ing("Brightflower"), basePerfumes);
     expect(d.tally).toEqual({ Ev: 1, En: 1 });
     expect(d.gains.map((g) => [g.perfume.name, g.k])).toEqual([["Bright", 1]]);

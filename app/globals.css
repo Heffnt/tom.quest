@@ -28,7 +28,7 @@
   --text-4xl:  2.25rem;
   --text-5xl:  3rem;
 
-  /* Perfume "real vs. hypothetical" ingredient tokens (Perfumer's Bench). */
+  /* Perfume "real vs. hypothetical" ingredient tokens (the Perfumer). */
   /* --pf-real: parchment tan sampled from Joe's ingredient PDF ground (Byobu extract_art.py page-ground sample). */
   --pf-real:         #ebd3b6;
   --pf-hypothetical: #111827; /* reuse --color-surface, tom.quest's slate surface */
@@ -71,7 +71,7 @@ button, input, select, textarea {
   border-color: #55668a;
 }
 
-/* ===== /perfume — Perfumer's Bench cauldron animations ===== */
+/* ===== /perfume — the Perfumer cauldron animations ===== */
 @keyframes pf-float {
   0%   { transform: translate(0px, 0px) rotate(0deg); }
   100% { transform: translate(var(--pf-dx, 0px), var(--pf-dy, -12px)) rotate(var(--pf-rot, 0deg)); }

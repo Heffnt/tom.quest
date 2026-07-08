@@ -5,8 +5,8 @@
 // The count of an item's copies "sits on or outside the square's edge, never
 // inside it" — this is the one small mark that renders that fact everywhere a
 // stack shows up: the carried hand (lib/use-hand.tsx HandGhost), an in-brew
-// chip and a cauldron bottle (components/brew-graph.tsx ItemChip /
-// TintedBottle), a presence cursor's held stack (components/cursors.tsx), and
+// chip and a cauldron perfume (components/brew-graph.tsx ItemChip /
+// TintedPerfume), a presence cursor's held stack (components/cursors.tsx), and
 // an item frame's owned-count corner (components/item-frame.tsx
 // FrameCountBadge). Those five call sites had drifted into near-identical but
 // not-quite-identical class strings; this component is the one canonical
@@ -14,7 +14,7 @@
 //
 //   - `variant`
 //     - "chip" (default) — the free-floating mark pinned to an icon's corner
-//       via `-translate` offsets (hand ghost, in-brew chip, cauldron bottle,
+//       via `-translate` offsets (hand ghost, in-brew chip, cauldron perfume,
 //       presence cursor): `rounded-full border border-border bg-surface px-1
 //       font-mono text-[10px] font-bold text-text`. Renders nothing for
 //       count <= 1 (a lone copy needs no count).
@@ -24,7 +24,7 @@
 //       box rather than translated off an icon corner. Renders for any
 //       count > 0 (an inventory frame shows "×1" same as "×3" — the frame
 //       state itself, not the mark, is what says "one copy").
-//   - `size` — "md" (default, text-[10px], the icon/chip/bottle/frame case)
+//   - `size` — "md" (default, text-[10px], the icon/chip/perfume/frame case)
 //     or "sm" (text-[9px], the presence-cursor case, whose icon renders
 //     smaller so its mark does too).
 //

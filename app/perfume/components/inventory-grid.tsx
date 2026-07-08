@@ -5,8 +5,8 @@
 // (ingredients / pure frequencies / perfumes) of rounded-square slots with
 // count badges. Slots obey the hand grammar (DESIGN.md §5); a slot whose copies
 // all sit in the brew keeps its place but ghosts its art — "you took the icon".
-// Owner-only per-slot Send opens a member + count popover -> onTransfer (which
-// the legacy adapter routes to store.giftItem).
+// Owner-only per-slot Send opens a member + count popover -> onGift (which the
+// store routes to giftItem).
 
 import {
   useState,
@@ -18,16 +18,20 @@ import { Popover } from "./popover";
 import type { Ingredient } from "../lib/types";
 import type { Inventory } from "../lib/brew-types";
 import type { HandOrigin, BrewHand } from "../lib/use-hand";
-import { PHIAL } from "../lib/frequencies";
+import { NAMED_GREEN } from "../lib/frequencies";
 import ItemFrame, { type FrameItem } from "./item-frame";
 import { SendGlyph } from "./glyphs";
 import { btn, cn } from "./ui";
 
 // ── the hand grammar, wired once ─────────────────────────────────────────────
-// Shared by inventory slots and catalog rows: pointer-down picks up (the hand
-// owns drag tracking and the boundary rule from there), shift-click teleports
-// one unit to the brew, right-click returns one from a held stack or — with an
-// empty hand on an in-brew item — puts one back to inventory.
+// Shared by inventory slots, catalog rows, and (since Stage B) the brew graph's
+// item chips: pointer-down picks up (the hand owns drag tracking and the
+// boundary rule from there), shift-click teleports one unit, right-click returns
+// one from a held stack or — with an empty hand on an in-brew item — puts one
+// back to inventory. The teleport direction depends on the ORIGIN: from an
+// inventory/catalog slot shift-click sends one INTO the brew; from a "brew"
+// graph item shift-click / empty-hand right-click send one back HOME (absorbing
+// the moveHome / shift-home the graph's ItemChip used to hand-roll).
 
 export type GrabSpec = {
   itemKey: string;
@@ -46,6 +50,12 @@ export function grabHandlers(spec: GrabSpec) {
   const held =
     h && h.itemKey === spec.itemKey && h.from === spec.from ? h.count : 0;
   const room = spec.available - held;
+  // A "brew" item already sits IN the brew, so its teleport moves run the
+  // OPPOSITE way to an inventory/catalog slot: shift-click and empty-hand
+  // right-click both send one copy straight HOME to inventory (the moveHome /
+  // shift-home the graph's ItemChip used to hand-roll). A plain click still
+  // picks one up — from the brew this time.
+  const fromBrew = spec.from === "brew";
   return {
     // press only ARMS a potential drag; the pickup itself happens on click so
     // it cooperates with the hand's click/drag guards (a pickup on pointerdown
@@ -59,7 +69,8 @@ export function grabHandlers(spec: GrabSpec) {
       if (!spec.canMove) return;
       // shift is the teleport modifier, resolved on click
       if (e.shiftKey) {
-        spec.onShiftToBrew?.(spec.itemKey);
+        if (fromBrew) spec.hand.moveHome(spec.itemKey, 1);
+        else spec.onShiftToBrew?.(spec.itemKey);
         return;
       }
       if (room <= 0) return;
@@ -71,7 +82,8 @@ export function grabHandlers(spec: GrabSpec) {
       // holding: the hand's own window listener returns one (and eats the
       // menu) — acting here too would return a second unit
       if (spec.hand.hand) return;
-      if (spec.inBrew > 0) spec.onUnbrewOne?.(spec.itemKey);
+      if (fromBrew) spec.hand.moveHome(spec.itemKey, 1);
+      else if (spec.inBrew > 0) spec.onUnbrewOne?.(spec.itemKey);
     },
     // the art tiles are <img>s — never let the browser start a native drag
     onDragStart: (e: ReactDragEvent<HTMLElement>) => e.preventDefault(),
@@ -90,7 +102,7 @@ export type InventorySlotItem = {
   name: string;
   count: number; // owned (still in the inventory section)
   inBrew: number; // copies currently in the brew -> ghosted icon
-  ing?: Ingredient; // ingredient/pure slots; perfume slots render the phial
+  ing?: Ingredient; // ingredient/pure slots; perfume slots render the perfume glyph
   // extra hover copy appended after the "{name} ×{count}" line — perfume slots
   // carry their instance provenance here (DESIGN.md §1,§9).
   provenance?: string;
@@ -105,9 +117,9 @@ export interface InventoryGridProps {
   }[];
   hand: BrewHand;
   canMove: boolean;
-  canTransfer: boolean;
+  canGift: boolean;
   members: { memberKey: string; name: string }[];
-  onTransfer: (toMemberKey: string, itemKey: string, n: number) => void;
+  onGift: (toMemberKey: string, itemKey: string, n: number) => void;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
 }
@@ -118,9 +130,9 @@ export default function InventoryGrid({
   sections,
   hand,
   canMove,
-  canTransfer,
+  canGift,
   members,
-  onTransfer,
+  onGift,
   onShiftToBrew,
   onUnbrewOne,
 }: InventoryGridProps) {
@@ -146,7 +158,7 @@ export default function InventoryGrid({
                   item={item}
                   hand={hand}
                   canMove={canMove}
-                  showSend={canTransfer && members.length > 0}
+                  showSend={canGift && members.length > 0}
                   onShiftToBrew={onShiftToBrew}
                   onUnbrewOne={onUnbrewOne}
                   onSend={setSend}
@@ -160,7 +172,7 @@ export default function InventoryGrid({
         <SendPopover
           anchor={send}
           members={members}
-          onTransfer={onTransfer}
+          onGift={onGift}
           onClose={() => setSend(null)}
         />
       )}
@@ -174,10 +186,10 @@ function slotFrameItem(item: InventorySlotItem): FrameItem {
   return {
     key: item.key,
     name: item.name,
-    color: item.ing?.color ?? PHIAL,
+    color: item.ing?.color ?? NAMED_GREEN,
     real: true, // an inventory holds real stock
     ing: item.ing,
-    perfume: !item.ing, // perfume slots carry no ingredient — render the phial
+    perfume: !item.ing, // perfume slots carry no ingredient — render the perfume glyph
   };
 }
 
@@ -249,12 +261,12 @@ function Slot({
 function SendPopover({
   anchor,
   members,
-  onTransfer,
+  onGift,
   onClose,
 }: {
   anchor: SendAnchor;
   members: { memberKey: string; name: string }[];
-  onTransfer: (toMemberKey: string, itemKey: string, n: number) => void;
+  onGift: (toMemberKey: string, itemKey: string, n: number) => void;
   onClose: () => void;
 }) {
   const [to, setTo] = useState(members[0]?.memberKey ?? "");
@@ -302,7 +314,7 @@ function SendPopover({
           type="button"
           disabled={!valid}
           onClick={() => {
-            onTransfer(to, anchor.itemKey, count);
+            onGift(to, anchor.itemKey, count);
             onClose();
           }}
           className={cn(btn.accent, "ml-auto px-2.5 py-1")}

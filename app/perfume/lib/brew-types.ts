@@ -1,7 +1,8 @@
 // Shared contracts for the multi-brew /perfume data layer. See DESIGN.md
 // §§1,4,5,9. This is the coordination surface between the brew stores
 // (Convex/local), the center-stage brew graph, and the panels — the vocabulary
-// here is binding (brew/member/cauldron/gift, never bench/pot/tuning).
+// here is binding (brew/member/cauldron/gift — see DESIGN.md §2 for the banned
+// synonyms it replaces).
 
 // ── inventory ────────────────────────────────────────────────────────────────
 // A held perfume instance (DESIGN.md §9 "Perfumes are instances"): its
@@ -47,10 +48,10 @@ export function inventorySectionFor(itemKey: string): StackSection {
   return itemKey.startsWith("pure:") ? "pures" : "ingredients";
 }
 
-// ── shared browse UI (mirrored across viewers of a brew) ─────────────────────
+// ── browse UI (client-local; each viewer keeps their own, not synced) ────────
 // The pin lives on the brew object (DESIGN.md §5), so it is NOT part of the
-// shared browse UI here — `pins` is gone; use BrewSnapshot.pinned.
-export type SharedUI = {
+// browse UI here — `pins` is gone; use BrewSnapshot.pinned.
+export type BrowseUI = {
   inputTab: "ingredients" | "frequencies";
   inputSearch: string;
   inputFilters: string[]; // frequency ids + "type:<t>" entries; AND semantics
@@ -59,7 +60,7 @@ export type SharedUI = {
   expanded: string[]; // perfume keys with the recipes fold open
 };
 
-export const DEFAULT_UI: SharedUI = Object.freeze({
+export const DEFAULT_UI: BrowseUI = Object.freeze({
   inputTab: "ingredients",
   inputSearch: "",
   inputFilters: [],
@@ -163,7 +164,7 @@ export type BrewSnapshot = {
   wildPlays: WildPlay[];
   pinned: PinnedPerfume;
   outputs: OutputInstance[];
-  ui: SharedUI; // browse UI (client-local in the multi-brew model)
+  ui: BrowseUI; // browse UI (client-local in the multi-brew model)
 };
 
 // ── per-user undo/redo ───────────────────────────────────────────────────────
@@ -240,11 +241,14 @@ export interface BrewActions {
     rows: { itemKey: string; count: number }[],
     mode: "merge" | "replace",
   ): void;
-  // shared browse UI (client-local)
-  updateUI(patch: Partial<SharedUI>): void;
+  // browse UI (client-local)
+  updateUI(patch: Partial<BrowseUI>): void;
 }
 
 // ── presence (stage-scoped cursors, with last-known freeze) ──────────────────
+// NOTE: "book" is a frozen presence-surface KEY shared with the Convex
+// validator (convex/brews.ts / schema.ts) — not player copy. It stays until the
+// backend migration (SIMPLIFICATION-PLAN P8) renames the literal on both sides.
 export type PresenceSurface = "input" | "stage" | "book";
 
 // A presence row for the open brew. `stale` marks a cursor that has aged past

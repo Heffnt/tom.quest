@@ -1,7 +1,7 @@
 "use client";
 
 // The /perfume TOP BAR (DESIGN.md §4 "Top bar" + §4 "Ownership, handoff, copy").
-// Replaces the old components/tabs.tsx bench row with the full multi-brew index.
+// Replaces the old components/tabs.tsx brew row with the full multi-brew index.
 //
 // Layout, left→right:
 //   [party group] [you group] [other member groups…]              [settings ⚙]

@@ -3,7 +3,7 @@
 // The brew orchestrator (integrator seat — DESIGN.md §§4,6,9). PerfumeClient
 // mounts the Convex brew store, the top bar and presence, and feeds BrewView,
 // which mounts the center-stage BrewGraph directly from the multi-brew store
-// (BrewSnapshot/BrewActions) alongside the input panel and the perfume book.
+// (BrewSnapshot/BrewActions) alongside the input panel and the perfume panel.
 //
 // Membership is login-only (DESIGN.md §4): a logged-in user joins by clicking;
 // a logged-out visitor renders read-only. Route context: /perfume opens your
@@ -316,7 +316,7 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
   }, []);
 
   // ---- narrow-layout drawer state: center stage is always on; the input and
-  // perfume-book drawers become edge-tab overlays, only ONE open at a time
+  // perfume-panel drawers become edge-tab overlays, only ONE open at a time
   // (DESIGN.md §6). On wide (lg) both are open inline and this state is unused.
   const [openDrawer, setOpenDrawer] = useState<"left" | "right" | null>(null);
   const toggleDrawer = useCallback(
@@ -358,7 +358,7 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
       onUnbrewOne={onUnbrewOne}
     />
   );
-  const perfumeBook = snapshot && (
+  const perfumePanel = snapshot && (
     <PerfumePanel
       perfumes={basePerfumes}
       brew={brew}
@@ -459,9 +459,9 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
             onDoubleClick={() => resetPanel("right")}
           />
 
-          {/* ── perfume book: inline drawer (wide) / edge overlay (narrow) ── */}
+          {/* ── perfume panel: inline drawer (wide) / edge overlay (narrow) ── */}
           <aside
-            aria-label="Perfume book"
+            aria-label="Perfume panel"
             className={cn(
               "flex flex-col overflow-hidden border-border bg-bg p-3",
               "lg:relative lg:z-auto lg:min-h-0 lg:w-[var(--pf-rw)] lg:flex-none lg:translate-x-0 lg:border-l lg:shadow-none",
@@ -471,7 +471,7 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
                 : "max-lg:translate-x-full",
             )}
           >
-            {perfumeBook}
+            {perfumePanel}
           </aside>
 
           {/* narrow-only: scrim + edge-tab handles that open one drawer at a time */}
@@ -539,7 +539,7 @@ function DrawerHandle({
 
 // ── the hand, bound to the store ─────────────────────────────────────────────
 // The hand drives the WHERE moves (moveToBrew / moveToInventory) and — for a
-// phial carried off the cauldron onto the input panel — a take. The store's
+// perfume carried off the cauldron onto the input panel — a take. The store's
 // takeOutput is per-instance, so the hand's key-based take resolves the oldest
 // matching output instance for that perfume key.
 

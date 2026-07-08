@@ -3,7 +3,8 @@
 // Shared small SVG/label atoms, deduplicated from their prior per-file copies
 // (SendGlyph: inventory-grid.tsx SendMark + item-frame.tsx GiftAffordance;
 // GearIcon: settings-corner.tsx; ChipLabel + labelShadow: brew-graph.tsx and
-// the deleted phial.tsx). Paths/styles copied verbatim — no visual change.
+// the deleted legacy perfume-icon file). Paths/styles copied verbatim — no
+// visual change.
 
 import type { CSSProperties, ReactNode } from "react";
 

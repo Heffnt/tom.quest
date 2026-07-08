@@ -26,7 +26,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ingredient, Perfume } from "../lib/types";
-import type { Inventory, PerfumeInstance, SharedUI } from "../lib/brew-types";
+import type { Inventory, PerfumeInstance, BrowseUI } from "../lib/brew-types";
 import type { BrewHand } from "../lib/use-hand";
 import { makeNameResolver, provenanceTooltip, type NameResolver } from "../lib/provenance";
 import {
@@ -38,7 +38,7 @@ import {
   isPureKey,
 } from "../data/base";
 import { formatInventory, type CatalogEntry } from "../lib/inventory";
-import { splitFilters } from "../lib/filters";
+import { splitFilters, ingredientPasses, ingredientMatchesSearch } from "../lib/filters";
 import ItemFrame, { type FrameItem } from "./item-frame";
 import FrequencyFilterButton from "./frequency-filter";
 import InventoryGrid, {
@@ -63,8 +63,8 @@ export interface IngredientPanelProps {
   inventoryOf: (memberKey: string) => Inventory;
   // copies of each catalog key currently in the brew — ghosts icons here
   brewCounts: Record<string, number>;
-  ui: SharedUI;
-  onUI: (patch: Partial<SharedUI>) => void;
+  ui: BrowseUI;
+  onUI: (patch: Partial<BrowseUI>) => void;
   hand: BrewHand;
   // WHERE-move permission (drag inventory ↔ brew). DESIGN.md §4.
   canMove: boolean;
@@ -118,14 +118,9 @@ function catalogSort(a: Ingredient, b: Ingredient, frequencies: boolean): number
 // ── filtering ────────────────────────────────────────────────────────────────
 // ui.inputFilters mixes frequency ids (plus the strike/wild pseudo-filters)
 // with "type:<t>" entries. Semantics per DESIGN.md: every selected frequency
-// must match (AND); types OR among themselves, AND with the frequencies.
-
-function ingredientPasses(ing: Ingredient, types: string[], freqs: string[]): boolean {
-  if (types.length > 0 && (!ing.type || !types.includes(ing.type))) return false;
-  return freqs.every((f) =>
-    f === "strike" ? ing.strike > 0 : f === "wild" ? ing.wild > 0 : ing.emits.includes(f),
-  );
-}
+// must match (AND); types OR among themselves, AND with the frequencies. The
+// ingredient search + filter grammar (ingredientPasses / ingredientMatchesSearch)
+// lives in lib/filters so the input panel and the import dialog share it.
 
 // A perfume passes when SOME recipe contains every selected frequency; type
 // filters are ingredient-only, so any type selection hides perfumes.
@@ -136,15 +131,8 @@ function perfumePasses(perfume: Perfume | undefined, types: string[], freqs: str
   return perfume.recipes.some((req) => freqs.every((f) => req.includes(f)));
 }
 
-// Search matches names or any emitted frequency (id or school name — e.g.
-// "transmutation" finds every T-emitter); perfumes match name or any recipe.
-function ingredientMatchesSearch(ing: Ingredient, q: string): boolean {
-  if (!q) return true;
-  if (ing.name.toLowerCase().includes(q)) return true;
-  if (ing.emits.some((t) => t.toLowerCase().includes(q))) return true;
-  return ing.emits.some((t) => (FUND[t]?.school ?? "").toLowerCase().includes(q));
-}
-
+// Perfume search matches name or any recipe (id or school name); the ingredient
+// equivalent (ingredientMatchesSearch) lives in lib/filters.
 function perfumeMatchesSearch(perfume: Perfume | undefined, name: string, q: string): boolean {
   if (!q) return true;
   if (name.toLowerCase().includes(q)) return true;
@@ -182,8 +170,8 @@ export default function IngredientPanel({
   const resolveName = useMemo(() => makeNameResolver(members), [members]);
   const [copied, setCopied] = useState(false);
   // The open tab. A catalog tab ("ingredients"/"frequencies") drives ui.inputTab
-  // (shared browse UI); a member tab is a panel-local member-key selection, so
-  // the frozen SharedUI shape stays untouched. They are mutually exclusive. The
+  // (browse UI); a member tab is a panel-local member-key selection, so
+  // the frozen BrowseUI shape stays untouched. They are mutually exclusive. The
   // panel opens on the viewer's OWN inventory tab (the primary workspace) — see
   // the default-selection effect below.
   const [memberTab, setMemberTab] = useState<string | null>(null);
@@ -356,9 +344,9 @@ export default function IngredientPanel({
                 sections={sectionsFor(inventory, true)}
                 hand={hand}
                 canMove={canMove}
-                canTransfer={canGift}
+                canGift={canGift}
                 members={giftTargets}
-                onTransfer={onGift}
+                onGift={onGift}
                 onShiftToBrew={onShiftToBrew}
                 onUnbrewOne={onUnbrewOne}
               />
@@ -407,7 +395,12 @@ export default function IngredientPanel({
       </div>
 
       {importOpen && (
-        <ImportDialog catalog={nameCatalog} onImport={onImport} onClose={() => setImportOpen(false)} />
+        <ImportDialog
+          catalog={nameCatalog}
+          ingredients={catalog}
+          onImport={onImport}
+          onClose={() => setImportOpen(false)}
+        />
       )}
     </div>
   );
@@ -485,7 +478,7 @@ function MemberInventoryTab({
   onGift: (toMemberKey: string, itemKey: string, n: number) => void;
 }) {
   const held = hand.hand;
-  // only your OWN items gift — a held output phial is not a gift source
+  // only your OWN items gift — a held cauldron perfume is not a gift source
   const giftable = canGift && !!held && held.from !== "output";
   const preview: FrameItem | null =
     giftable && held

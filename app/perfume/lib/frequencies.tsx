@@ -10,7 +10,7 @@
 //   - FUNDAMENTAL  -> a filled rounded chip with its letter id (A, C, En, ...).
 //   - NAMED        -> a transparent ringed chip showing its emblem glyph,
 //                     copper if no known ingredient emits it, otherwise
-//                     phial-green.
+//                     named-green.
 
 import React from "react";
 import { createPortal } from "react-dom";
@@ -22,7 +22,7 @@ import { frequencyLabel } from "./frequency-label";
 
 // --- palette ----------------------------------------------------------------
 
-export const PHIAL = "#6FE3C4"; // phial-green: ordinary named frequencies
+export const NAMED_GREEN = "#6FE3C4"; // green: ordinary named frequencies
 export const COPPER = "#C98A3C"; // copper: frequencies with no direct emitter
 export const STRIKE = "#a855f7"; // purple: ⊖ strikes
 
@@ -41,9 +41,9 @@ export function hasNoDirectEmitter(id: string): boolean {
   return NO_DIRECT_EMITTER.has(id);
 }
 
-/** Display color for a named frequency: copper if no direct emitter, else phial. */
+/** Display color for a named frequency: copper if no direct emitter, else named-green. */
 export function namedColor(id: string): string {
-  return hasNoDirectEmitter(id) ? COPPER : PHIAL;
+  return hasNoDirectEmitter(id) ? COPPER : NAMED_GREEN;
 }
 
 /** Display color for a fundamental, falling back to grey for unknown ids.

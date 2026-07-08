@@ -1063,7 +1063,7 @@ describe("presence", () => {
   });
 });
 
-// ── importInventory (ported from the old bench; stock declaration, not a gift) ──
+// ── importInventory (stock declaration, not a gift) ──────────────────────────
 
 describe("importInventory", () => {
   it("merge adds onto existing stacks; replace clears then declares", async () => {

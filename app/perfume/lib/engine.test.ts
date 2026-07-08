@@ -84,7 +84,7 @@ describe("in reach semantics", () => {
     expect(evaluate(without, perfume("black-gas")).status).toBe("off");
   });
 
-  it("spending a strike updates the book dynamically (off -> in reach -> perfect)", () => {
+  it("spending a strike updates the panel dynamically (off -> in reach -> perfect)", () => {
     const before = brew(["Ichorberries", "Pure Strike"]);
     expect(evaluate(before, perfume("black-gas")).status).toBe("craftable");
     const after = brew(["Ichorberries", "Pure Strike"], ["En"]);

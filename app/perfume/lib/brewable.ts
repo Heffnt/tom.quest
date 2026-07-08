@@ -1,4 +1,4 @@
-// What the current pot brews, for the brew bar (see DESIGN.md).
+// What the current brew can brew, for the brew bar (see DESIGN.md).
 // Thin, pure layer over the engine: exact matches only ("perfect"), one
 // option per perfume at its best (k, recipe). Reachability ("in reach") stays
 // the perfume panel's business — this module never reports craftable.
@@ -30,12 +30,12 @@ export function brewableOptions(
 }
 
 export type HoverDelta = {
-  tally: Multiset; // combined tally WITH the hovered ingredient in the pot
+  tally: Multiset; // combined tally WITH the hovered ingredient in the brew
   gains: { perfume: Perfume; k: number }[];
   losses: { perfume: Perfume }[];
 };
 
-// The brew-bar hover ghost: what one more `extra` would do to the pot.
+// The brew-bar hover ghost: what one more `extra` would do to the brew.
 // gains = perfumes newly brewable, plus ones whose copy-count changed (the
 // hint shows the new ×k); losses = perfumes brewable now that the addition
 // would break. The input brew is never mutated.

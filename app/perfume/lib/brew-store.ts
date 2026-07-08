@@ -25,7 +25,7 @@ import {
   type MemberInfo,
   type PerfumeInstance,
   type PresenceEntry,
-  type SharedUI,
+  type BrowseUI,
   type StackSection,
   type UndoState,
 } from "./brew-types";
@@ -196,7 +196,7 @@ export function useConvexBrewStore(
   );
 
   // browse UI is client-local in the multi-brew model (per-brew, not synced)
-  const [ui, setUi] = useState<SharedUI>({ ...DEFAULT_UI });
+  const [ui, setUi] = useState<BrowseUI>({ ...DEFAULT_UI });
   // a brew switch resets browse UI (each brew is its own workspace)
   const brewIdStr = resolvedId ? String(resolvedId) : null;
   const lastBrewRef = useRef<string | null>(null);
@@ -284,7 +284,7 @@ export function useConvexBrewStore(
   );
 
   // browse UI is client-local per brew — a plain merge, no network
-  const updateUI = useCallback((patch: Partial<SharedUI>) => {
+  const updateUI = useCallback((patch: Partial<BrowseUI>) => {
     setUi((u) => ({ ...u, ...patch }));
   }, []);
 

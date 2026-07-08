@@ -12,7 +12,7 @@
 // boundary rules come from the store's BrewPermissions.
 //
 // This file is the cursor-stack HAND (useHand + BrewHand): the pick-up/carry
-// hand the input grid, the perfume book and the brew graph all drive through the
+// hand the input grid, the perfume panel and the brew graph all drive through the
 // [data-brew-graph] boundary. The pick/settle animation FEEL lives here
 // (SettleFx). Its boundary rule, verbatim:
 //   - "inventory"/"catalog": entering the brew graph commits the stack

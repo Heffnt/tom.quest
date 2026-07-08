@@ -1,6 +1,6 @@
 "use client";
 
-// The perfume book — the right drawer (DESIGN.md §6). A searchable list of the
+// The perfume panel — the right drawer (DESIGN.md §6). A searchable list of the
 // d40 perfumes, DECLUTTERED to one clear row hierarchy:
 //
 //   resting row   [pin] Name … {frequency requirement} … [✓?] [▸]
@@ -12,7 +12,7 @@
 // green "✓" chip that appears when the current brew SATISFIES a recipe. Search,
 // the frequency filter, the single-brew PIN (DESIGN.md §5), and the recipe folds
 // all survive; the surface uses the shell's shared button treatment
-// (components/ui.tsx) so the book reads as one family with the input panel.
+// (components/ui.tsx) so the panel reads as one family with the input panel.
 //
 // WHICH RECIPE (DESIGN.md §Recipe): when the open brew's tally satisfies one or
 // more of a perfume's recipes, the row shows a satisfied chip naming the recipe
@@ -31,7 +31,7 @@
 
 import { useMemo, useState } from "react";
 import type { Multiset, Perfume, BrewState } from "../lib/types";
-import type { SharedUI, PinnedPerfume } from "../lib/brew-types";
+import type { BrowseUI, PinnedPerfume } from "../lib/brew-types";
 import type { BrewHand } from "../lib/use-hand";
 import {
   evalReq,
@@ -56,9 +56,9 @@ export interface PerfumePanelProps {
   perfumes: Perfume[];
   // Current brew, for live per-perfume evaluation.
   brew: BrewState;
-  // Shared browse UI: perfumeSearch, perfumeFilters, expanded.
-  ui: SharedUI;
-  onUI: (patch: Partial<SharedUI>) => void;
+  // Browse UI: perfumeSearch, perfumeFilters, expanded.
+  ui: BrowseUI;
+  onUI: (patch: Partial<BrowseUI>) => void;
   // The brew's single pinned perfume (DESIGN.md §5), and the setter. `canPin`
   // is any registered member (the pin lives on the brew object). A visitor
   // (not a member) sees the pin state read-only.
@@ -70,7 +70,7 @@ export interface PerfumePanelProps {
   // items (canMove false) — the frames stay inert affordances.
   hand: BrewHand;
   // WHERE-move permission (DESIGN.md §4). False for a visitor / another
-  // member's brew where the book is browse-only — the fold frames don't grab.
+  // member's brew where the panel is browse-only — the fold frames don't grab.
   canMove: boolean;
   // Copies of each catalog item in the brew — a fold frame's icon ghosts while
   // its ingredient has copies in the brew ("you took the icon").
@@ -382,8 +382,10 @@ export default function PerfumePanel({
         </div>
       </div>
 
-      {/* the book. data-pf-surface: presence coordinates are content-space of
-          this scroll container, so spectators track cards, not pixels */}
+      {/* the panel. data-pf-surface ("book" is a frozen presence key shared with
+          the Convex validator, not copy — see PresenceSurface): presence
+          coordinates are content-space of this scroll container, so spectators
+          track cards, not pixels */}
       <div data-pf-surface="book" className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2">
         {shown.length === 0 ? (
           <EmptyHits filtered={hasFilter} onClear={() => onUI({ perfumeSearch: "", perfumeFilters: [] })} />
@@ -695,7 +697,7 @@ function PerfumeRow({
     (t) => more.some((tiers) => tiers[t].length > 0),
   );
   // strike tiers revealed so far (0 = only strike-free combos) — local, like
-  // scroll: SharedUI only tracks which folds are open
+  // scroll: BrowseUI only tracks which folds are open
   const [strikesShown, setStrikesShown] = useState(0);
   const nextTier = tiersWithCombos.find((t) => t > strikesShown);
 

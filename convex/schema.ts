@@ -210,9 +210,7 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_job_created", ["jobId", "createdAt"]),
 
-  // ── Multi-brew /perfume (Phase 2) — see app/perfume/DESIGN.md §§4,9 ─────────
-  // NEW tables built alongside the single-bench ones above. The old tables keep
-  // serving the current frontend until Phase 3 swaps over and deletes them.
+  // ── Multi-brew /perfume — see app/perfume/DESIGN.md §§4,9 ────────────────────
   // The engine (app/perfume/lib/engine) is the ONE implementation of the rules;
   // convex/brews.ts re-verifies every brew with it, never re-implementing math.
 

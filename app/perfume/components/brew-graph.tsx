@@ -18,8 +18,8 @@
 // it (store.playStrike); a struck circle wears a violet cover with an un-strike
 // affordance. WILD — a played wild's frequency is chosen from a dropdown
 // (store.playWild). Pin ghosts live-update. Outputs stack on the cauldron rim as
-// tinted bottles with a take affordance. On completion the BREW action runs the
-// ceremony (frequencies drawing down, a liquid flash, a bottle pop) with sound.
+// tinted perfumes with a take affordance. On completion the BREW action runs the
+// ceremony (frequencies drawing down, a liquid flash, a perfume pop) with sound.
 
 import {
   useCallback,
@@ -44,12 +44,7 @@ import {
   type GhostFrequencyNode,
   type GhostStrikeNode,
 } from "../lib/brew-graph-layout";
-import {
-  ALL_FREQUENCIES,
-  NAMED,
-  PERFUME_BY_KEY,
-  isNamed,
-} from "../data/base";
+import { PERFUME_BY_KEY } from "../data/base";
 import {
   FrequencySymbol,
   FrequencyGlyph,
@@ -59,8 +54,10 @@ import {
   tokenColor,
 } from "../lib/frequencies";
 import { type BrewHand } from "../lib/use-hand";
-import { ItemArt } from "./item-art";
-import { PhialGlyph } from "./phial";
+import ItemFrame, { type FrameItem } from "./item-frame";
+import { grabHandlers } from "./inventory-grid";
+import { PerfumeGlyph } from "./perfume-glyph";
+import FrequencySearch from "./frequency-search";
 import { useSound, prefersReducedMotion } from "../lib/sound";
 import { makeNameResolver, provenanceTooltip, type NameResolver } from "../lib/provenance";
 import { recipeLabel } from "../lib/recipe-label";
@@ -77,11 +74,18 @@ function perfumeName(key: string): string {
   return PERFUME_BY_KEY.get(key)?.name ?? key.replace(/^base:/, "");
 }
 
+// A perfume's in-game effect text (DESIGN.md §1 "effect"), carried on base.json
+// ("unknown" until Joe reveals it). Shown in the cauldron perfume tooltip and,
+// separately, in the perfume-panel recipe fold.
+function perfumeEffect(key: string): string {
+  return PERFUME_BY_KEY.get(key)?.effect ?? "unknown";
+}
+
 // WHICH recipe a completed/satisfied brew landed on lives in lib/recipe-label
-// so the stage and the perfume book (which both name recipes) share ONE
+// so the stage and the perfume panel (which both name recipes) share ONE
 // phrasing (DESIGN.md §1 recipe / §Recipe "the UI shows which recipe").
 
-// The blend tint of a perfume's common recipe — the bottle's glass colour and
+// The blend tint of a perfume's common recipe — the perfume's glass colour and
 // the reference for the cauldron liquid. Reuses the layout model's blendTint
 // (the SAME logic the cauldron liquid uses) over the recipe's frequency list.
 function perfumeTint(perfumeId: string): string {
@@ -136,7 +140,7 @@ export interface BrewGraphProps {
   /** Rename the open brew (any member). */
   onNickname?: (nickname: string) => void;
   /** Members, for resolving output-provenance memberKeys → display names in the
-   * cauldron bottle hover tooltip (DESIGN.md §1,§9). */
+   * cauldron perfume hover tooltip (DESIGN.md §1,§9). */
   members: { memberKey: string; name: string }[];
 }
 
@@ -403,7 +407,7 @@ export default function BrewGraph({
           ))}
         </div>
 
-        {/* outputs stacked on the rim as tinted bottles */}
+        {/* outputs stacked on the rim as tinted perfumes */}
         {snapshot.outputs.length > 0 && (
           <div className="absolute inset-x-0 top-2 z-[70] flex justify-center px-3">
             <OutputRim
@@ -1071,48 +1075,54 @@ function ItemChip({
   ceremony: boolean;
 }) {
   const hypothetical = node.hypothetical > 0;
+  // A graph item is the SAME item as an inventory slot's — routed through the one
+  // item-frame/item-art path Stage A finalized (DESIGN.md §1, §7): the parchment
+  // --pf-real ground for a fully real stack, the slate --pf-hypothetical ground
+  // when ANY copy is hypothetical. No bespoke icon, no dashed amber outline —
+  // dashed is reserved for ghosts (§1); an item is never dashed. (No showMarks:
+  // an inventory slot carries none either, and emitted frequencies already stand
+  // as their own circles above the item.)
+  const frameItem: FrameItem = {
+    key: node.itemKey,
+    name: node.name,
+    color: node.color,
+    real: !hypothetical,
+    perfume: false, // graph items are always ingredients / pure frequencies
+  };
   const title = hypothetical
     ? `${node.name} ×${node.count} — ${node.hypothetical} hypothetical (${node.contributors.join(", ")}); hypotheticals block brewing`
     : `${node.name}${node.count > 1 ? ` ×${node.count}` : ""} — click to pick up, right-click to return one`;
+  // The graph is a "brew"-origin grab source: the SAME click-picks-one grammar as
+  // an inventory slot (grabHandlers), with shift-click / empty-hand right-click
+  // sending one copy home (the brew branch absorbs the old moveHome / shift-home).
+  const handlers = grabHandlers({
+    itemKey: node.itemKey,
+    from: "brew",
+    available: node.count,
+    inBrew: node.count,
+    hand,
+    canMove,
+  });
 
   return (
     <Slot id={`ing:${node.id}`} pos={node.pos} z={60}>
       <div
-        role="button"
-        tabIndex={0}
-        data-testid="arc-ingredient"
-        data-item-key={node.itemKey}
-        onClick={(e) => {
-          if (!canMove) return;
-          if (e.shiftKey) {
-            hand.moveHome(node.itemKey, 1);
-            return;
-          }
-          hand.pickUp(node.itemKey, "brew", node.count);
-        }}
-        onContextMenu={(e) => {
-          if (hand.hand) return;
-          e.preventDefault();
-          if (canMove) hand.moveHome(node.itemKey, 1);
-        }}
-        onPointerDown={(e) => hand.beginPress(e, node.itemKey, "brew", node.count)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            if (canMove) hand.pickUp(node.itemKey, "brew", node.count);
-          }
-        }}
-        onDragStart={(e) => e.preventDefault()}
-        aria-label={`${node.name} ×${node.count} in the brew — click to pick up, right-click to return one, shift-click to send one home`}
-        title={title}
         className={cn(
-          "relative cursor-grab touch-none rounded-lg transition-[opacity,transform] duration-500",
-          hypothetical ? "outline-dashed outline-2 outline-offset-2 outline-amber-400/80" : "",
+          "transition-[opacity,transform] duration-500",
           ceremony && "scale-90 opacity-30",
         )}
       >
-        <ItemArt itemKey={node.itemKey} name={node.name} color={node.color} size={56} />
-        <CountBadge count={node.count} className="absolute -right-2 -top-2" />
+        <ItemFrame
+          context="brew"
+          item={frameItem}
+          size={48}
+          count={node.count}
+          handlers={handlers}
+          disabled={!canMove}
+          label={`${node.name} ×${node.count} in the brew — click to pick up, right-click to return one, shift-click to send one home`}
+          title={title}
+          data-testid="arc-ingredient"
+        />
       </div>
       <ChipLabel>{node.name}</ChipLabel>
     </Slot>
@@ -1138,12 +1148,14 @@ function OutputRim({
         {outputs.map((o) => {
           const name = perfumeName(o.perfumeId);
           const tint = perfumeTint(o.perfumeId);
-          // provenance travels with the instance (DESIGN.md §1,§9); the take
-          // affordance line follows it in the hover tooltip.
+          // provenance travels with the instance (DESIGN.md §1,§9); the effect
+          // (DESIGN.md §1) and the take affordance line follow it in the hover
+          // tooltip.
           const provenance = provenanceTooltip(
             { brewedByKey: o.brewedByKey, witnesses: o.witnesses, brewedAt: o.brewedAt, chain: o.provenance },
             resolveName,
           );
+          const effect = `Effect: ${perfumeEffect(o.perfumeId)}`;
           const take = canTake
             ? "Click to take one into your inventory"
             : "Only the brew owner may take perfumes";
@@ -1151,7 +1163,7 @@ function OutputRim({
             <button
               key={o.instanceId}
               type="button"
-              data-testid="output-phial"
+              data-testid="cauldron-perfume"
               data-perfume-key={o.perfumeId}
               disabled={!canTake}
               onClick={() => onTake(o.instanceId)}
@@ -1160,10 +1172,10 @@ function OutputRim({
                   ? `${name} ×${o.count} brewed — click to take one`
                   : `${name} ×${o.count} brewed — only the brew owner may take it`
               }
-              title={`${provenance}\n${take}`}
+              title={`${provenance}\n${effect}\n${take}`}
               className="touch-none rounded-lg outline-none transition-transform duration-150 focus-visible:ring-2 focus-visible:ring-accent enabled:cursor-pointer enabled:hover:scale-105 disabled:cursor-not-allowed"
             >
-              <TintedBottle name={name} count={o.count} tint={tint} dimmed={!canTake} />
+              <TintedPerfume name={name} count={o.count} tint={tint} dimmed={!canTake} />
             </button>
           );
         })}
@@ -1175,9 +1187,10 @@ function OutputRim({
   );
 }
 
-// A perfume bottle tinted by the blend of its recipe's fundamentals (DESIGN.md
-// §7 — the generic phial silhouette, glass washed in the blend colour).
-function TintedBottle({ name, count, tint, dimmed }: { name: string; count: number; tint: string; dimmed: boolean }) {
+// A perfume silhouette tinted by the blend of its recipe's fundamentals
+// (DESIGN.md §7 — the generic perfume silhouette, glass washed in the blend
+// colour).
+function TintedPerfume({ name, count, tint, dimmed }: { name: string; count: number; tint: string; dimmed: boolean }) {
   return (
     <span className="flex flex-col items-center gap-1" style={{ opacity: dimmed ? 0.55 : 1 }}>
       <span className="relative grid place-items-center">
@@ -1188,7 +1201,7 @@ function TintedBottle({ name, count, tint, dimmed }: { name: string; count: numb
           aria-hidden="true"
         />
         <span className="relative" style={{ color: tint }}>
-          <PhialGlyph size={44} />
+          <PerfumeGlyph size={44} />
         </span>
         <CountBadge count={count} className="absolute -right-2 -top-1" />
       </span>
@@ -1257,7 +1270,7 @@ function mix(hex: string, t: number): string {
 
 // A short, classy completion sequence in the house animation language: the
 // stage dims, a liquid-coloured flash blooms from the cauldron, and a tinted
-// bottle pops (pf-pop) with the perfume's name. Reduced-motion shows a brief
+// perfume pops (pf-pop) with the perfume's name. Reduced-motion shows a brief
 // static confirmation instead of the animation.
 function Ceremony({ tint, k, name }: { tint: string; k: number; name: string }) {
   const reduced = prefersReducedMotion();
@@ -1276,7 +1289,7 @@ function Ceremony({ tint, k, name }: { tint: string; k: number; name: string }) 
           aria-hidden="true"
         />
       )}
-      {/* the bottle pop with its name */}
+      {/* the perfume pop with its name */}
       <div className="absolute inset-0 grid place-items-center">
         <div className="pf-pop flex flex-col items-center gap-2">
           <span className="relative grid place-items-center" style={{ color: tint }}>
@@ -1286,7 +1299,7 @@ function Ceremony({ tint, k, name }: { tint: string; k: number; name: string }) 
               aria-hidden="true"
             />
             <span className="relative">
-              <PhialGlyph size={88} />
+              <PerfumeGlyph size={88} />
             </span>
           </span>
           <span
@@ -1301,7 +1314,12 @@ function Ceremony({ tint, k, name }: { tint: string; k: number; name: string }) 
   );
 }
 
-// ── the wildcard picker (reused from the old cauldron, in-palette) ───────────────
+// ── the wild picker ──────────────────────────────────────────────────────────
+// A played/available wild's frequency is chosen from the shared FrequencySearch
+// (the SAME searchable picker the Frequencies-tab filter uses), single-select
+// and with the wild itself excluded (DESIGN.md §1 "wild frequency"). No types or
+// charges here — a wild resolves to an actual frequency, so only the 9 + 17
+// frequencies are offered.
 
 function WildcardPicker({
   x,
@@ -1314,26 +1332,6 @@ function WildcardPicker({
   onPick: (id: string) => void;
   onClose: () => void;
 }) {
-  const [q, setQ] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const t = setTimeout(() => inputRef.current?.focus(), 30);
-    return () => clearTimeout(t);
-  }, []);
-
-  const query = q.trim().toLowerCase();
-  const items = useMemo(
-    () =>
-      ALL_FREQUENCIES.filter((t) => {
-        if (!query) return true;
-        if (t.id.toLowerCase().includes(query)) return true;
-        if (isNamed(t.id) && (NAMED[t.id]?.icon ?? "").toLowerCase().includes(query)) return true;
-        return false;
-      }),
-    [query],
-  );
-
   return (
     <Popover
       anchor={{ x, y }}
@@ -1342,37 +1340,7 @@ function WildcardPicker({
       label="Choose the wild's frequency"
       onClose={onClose}
     >
-      <div className="border-b border-border p-2">
-        <input
-          ref={inputRef}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="wild frequency…"
-          spellCheck={false}
-          className="w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
-        />
-      </div>
-      <div className="max-h-[260px] overflow-y-auto p-1">
-        {items.length === 0 && (
-          <p className="px-2 py-3 text-center font-mono text-xs text-text-faint">no match</p>
-        )}
-        <div className="grid grid-cols-1">
-          {items.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => onPick(t.id)}
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150 hover:bg-surface-alt"
-            >
-              <FrequencySymbol id={t.id} size={22} />
-              <span className="font-mono text-sm text-text">{t.id}</span>
-              <span className="ml-auto text-[10px] uppercase tracking-wider text-text-faint">
-                {t.kind}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <FrequencySearch onPick={onPick} exclude={["wild"]} placeholder="wild frequency…" />
     </Popover>
   );
 }
