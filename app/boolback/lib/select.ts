@@ -55,6 +55,7 @@ const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | nul
   "training.seed": (r) => r.training.seed,
   // headline / outcome
   "headline.plantedness": (r) => r.headline.plantedness,
+  "headline.planted_fraction": (r) => r.headline.planted_fraction ?? null,
   "headline.asr": (r) => r.headline.asr,
   "headline.ftr": (r) => r.headline.ftr,
   "headline.triggerless_correctness": (r) => r.headline.triggerless_correctness,

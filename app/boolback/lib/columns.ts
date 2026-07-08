@@ -65,6 +65,7 @@ const TRAINING_PATHS: Record<string, string> = {
 
 const OUTCOME_PATHS: Record<string, string> = {
   plantedness: "headline.plantedness",
+  planted_fraction: "headline.planted_fraction",
   asr: "headline.asr",
   ftr: "headline.ftr",
   triggerless_correctness: "headline.triggerless_correctness",

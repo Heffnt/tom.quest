@@ -69,13 +69,31 @@ export function metricGroupings(bundle: Bundle): {
 
 export type MetricGroupName = MetricSchemaEntry["group"];
 
-export const Y_GROUP_ORDER: MetricGroupName[] = ["OUTCOME", "DEFENSE", "INTERP", "SCAN", "FUNCTION"];
-export const X_GROUP_ORDER: MetricGroupName[] = ["FUNCTION", "OUTCOME", "DEFENSE", "INTERP", "SCAN"];
+// v3 splits the OUTCOME group into two picker headings by suite: "ATTACK"
+// (backdoor efficacy — plantedness, asr, ftr, planted_fraction, …) and
+// "CAPABILITY" (utility/perplexity). DEFENSE/INTERP/SCAN/FUNCTION keep their
+// MetricGroup name. The config-panel outcome sections read these headings.
+export type MetricPickerGroup = MetricGroupName | "ATTACK" | "CAPABILITY";
+
+export const Y_GROUP_ORDER: MetricPickerGroup[] = ["ATTACK", "CAPABILITY", "OUTCOME", "DEFENSE", "INTERP", "SCAN", "FUNCTION"];
+export const X_GROUP_ORDER: MetricPickerGroup[] = ["FUNCTION", "ATTACK", "CAPABILITY", "OUTCOME", "DEFENSE", "INTERP", "SCAN"];
+
+/** The picker heading an entry buckets under. OUTCOME entries split by their
+ * suite (attack → ATTACK, capability → CAPABILITY); older OUTCOME entries whose
+ * suite is still "outcome" fall back to the OUTCOME heading. Everything else
+ * buckets by its MetricGroup. */
+export function metricPickerGroup(e: MetricSchemaEntry): MetricPickerGroup {
+  if (e.group === "OUTCOME") {
+    if (e.suite === "attack") return "ATTACK";
+    if (e.suite === "capability") return "CAPABILITY";
+  }
+  return e.group;
+}
 
 /** Schema entries grouped for a <select>, groups in `order`, empty metrics last. */
 export function groupedMetricOptions(
   schema: MetricSchemaEntry[],
-  order: MetricGroupName[],
+  order: MetricPickerGroup[],
 ): { groups: Array<[string, MetricSchemaEntry[]]>; empty: MetricSchemaEntry[] } {
   const by = new Map<string, MetricSchemaEntry[]>();
   const empty: MetricSchemaEntry[] = [];
@@ -84,9 +102,10 @@ export function groupedMetricOptions(
       empty.push(e); // findable below, never the default
       continue;
     }
-    const arr = by.get(e.group) ?? [];
+    const g = metricPickerGroup(e);
+    const arr = by.get(g) ?? [];
     arr.push(e);
-    by.set(e.group, arr);
+    by.set(g, arr);
   }
   const groups: Array<[string, MetricSchemaEntry[]]> = [];
   for (const g of order) {

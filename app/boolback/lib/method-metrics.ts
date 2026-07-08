@@ -25,7 +25,8 @@ import type { InterpReading, RunRow } from "./types";
 export const METHOD_SEP = "@";
 
 // The defense fields a method slot can carry: recovery_rate + the full *_drop
-// self-join family (asr + ftr + utility-cost drops; newer builders ship all).
+// self-join family (asr + ftr + utility-cost drops; newer builders ship all),
+// plus v3's per-method post-defense residuals (residual_asr/ftr, no generic).
 const DEFENSE_FIELDS = [
   "asr_drop",
   "recovery_rate",
@@ -33,6 +34,8 @@ const DEFENSE_FIELDS = [
   "triggerless_correctness_drop",
   "target_rate_drop",
   "correctness_rate_drop",
+  "residual_asr",
+  "residual_ftr",
 ] as const;
 type DefenseField = (typeof DEFENSE_FIELDS)[number];
 
@@ -190,17 +193,45 @@ export function rowLayerCount(r: RunRow): number | null {
   return top >= 0 ? Math.min(Math.floor(top) + 1, MAX_MODEL_LAYERS) : null;
 }
 
+// v3 detector cuts address a scan method by (method, scheme, negative_facet).
+// The per-cut metric name packs the three into the "@"-suffix, pipe-delimited:
+//   scan_auroc@<method>|<scheme>|<negative_facet>
+// with "-" filling an absent scheme/facet. The "@"-split in parseMethodMetric
+// keeps everything after the first "@" as the method key, so this key still
+// carries the pipes; we split them here and match the cut.
+export const CUT_SEP = "|";
+
+/** Metric-name side writes "-" for an absent scheme/facet; the row side leaves
+ * them null (or a string). Normalize both to null so a cut matches its slot. */
+function cutPart(v: string | null | undefined): string | null {
+  return v === "-" || v == null || v === "" ? null : v;
+}
+
 function scanMethodValue(
   r: RunRow,
-  method: string,
+  key: string,
   field: "auroc" | "far_at_frr",
 ): number | null {
   const list = r.scan?.methods;
   if (list) {
-    const v = list.find((m) => m.method === method)?.[field];
+    if (key.includes(CUT_SEP)) {
+      // Detector cut: match the scan slot by (method, scheme, negative_facet).
+      const [method, scheme, facet] = key.split(CUT_SEP);
+      const wantScheme = cutPart(scheme);
+      const wantFacet = cutPart(facet);
+      const entry = list.find(
+        (m) =>
+          m.method === method &&
+          cutPart(m.scheme) === wantScheme &&
+          cutPart(m.negative_facet) === wantFacet,
+      );
+      const v = entry?.[field];
+      return typeof v === "number" ? v : null;
+    }
+    const v = list.find((m) => m.method === key)?.[field];
     return typeof v === "number" ? v : null;
   }
-  if (r.scan && String(r.scan.method_family) === method) {
+  if (r.scan && String(r.scan.method_family) === key) {
     const v = r.scan[field];
     return typeof v === "number" ? v : null;
   }

@@ -57,14 +57,20 @@ interface RawEnvelope {
 // translated into it. Kept localized so it is a clean delete later. v3 blobs
 // already carry the reading vocab, so translation is a no-op for them.
 //
-// COORDINATION: the CMT v3 builder produces the exact live field names in
-// parallel; when they land, reconcile the OLD→NEW map below against them:
+// COORDINATION: the CMT v3 builder has LANDED (schema_version 3). It emits the
+// reading vocab natively, so translation is a NO-OP for v3 and this airlock only
+// still fires for legacy v1/v2 blobs (+ the browser-cached last-good blob).
+// The OLD→NEW map that stays live for those:
 //   - interp.measurements[]      → interp.readings[]           (row field)
 //   - interp.measurement_kind    → interp.reading_kind         (row field)
 //   - metric "interp_measurement" → "interp_reading"           (schema + columns)
-// If v3 renames further interp fields (value/null_control, method types,
-// attack/capability groups, new outcomes), add them HERE — do NOT scatter
-// old-vocab handling through the app.
+// v3's ADDITIVE fields need NO translation and flow straight through: method
+// `type` tags, defense `residual_asr`/`residual_ftr`, `headline.planted_fraction`,
+// detector-cut scan methods ({scheme, negative_facet, cut}), and the OUTCOME
+// suite split into "attack"/"capability". The guards below already skip a row
+// whose interp carries `readings` (v3) so v3 is never re-translated. If a FUTURE
+// schema renames further fields, add them HERE — never scatter old-vocab handling
+// through the app.
 function translateLegacyVocab(raw: RawEnvelope): void {
   // Rows: interp.measurements → readings, interp.measurement_kind → reading_kind.
   if (Array.isArray(raw.rows)) {

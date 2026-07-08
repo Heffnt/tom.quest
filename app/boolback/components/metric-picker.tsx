@@ -11,7 +11,7 @@
 
 import { useMemo, useState } from "react";
 import type { MetricSchemaEntry } from "../lib/types";
-import { collapseMethodEntries, groupedMetricOptions, type MetricGroupName } from "../lib/metrics";
+import { collapseMethodEntries, groupedMetricOptions, type MetricPickerGroup } from "../lib/metrics";
 import { parseMethodMetric } from "../lib/method-metrics";
 
 export function MetricPicker({
@@ -27,7 +27,7 @@ export function MetricPicker({
   value: string;
   onChange: (name: string) => void;
   schema: MetricSchemaEntry[];
-  order: MetricGroupName[];
+  order: MetricPickerGroup[];
   ariaLabel: string;
   /** Rotate the trigger button for a y-axis mount (text reads bottom→top). */
   vertical?: boolean;

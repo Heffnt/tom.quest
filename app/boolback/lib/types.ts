@@ -81,7 +81,10 @@ export function plantedThreshold(meta: Meta | null | undefined): number {
 // Metric schema (tom_quest/schema.py)
 // ---------------------------------------------------------------------------
 
-export type MetricSuite = "structural" | "spectral" | "outcome";
+// v3 splits OUTCOME metrics by suite: "attack" (backdoor efficacy) vs.
+// "capability" (utility/perplexity). DEFENSE/INTERP/SCAN entries keep "outcome".
+// Older/cached v1/v2 blobs only ever carry structural|spectral|outcome.
+export type MetricSuite = "structural" | "spectral" | "outcome" | "attack" | "capability";
 export type MetricGroup = "FUNCTION" | "OUTCOME" | "DEFENSE" | "INTERP" | "SCAN";
 export type MetricDtype = "count" | "fraction"; // never "bool"
 export type MetricProvenance = "exact" | "heuristic";
@@ -201,6 +204,9 @@ export interface Headline {
   n_activating: number;
   ppl: number | null;
   ppl_drift: number | null;
+  /** v3: {0,1} planted indicator (null if plantedness null); OUTCOME group,
+   * suite "attack". Absent on v1/v2/cached blobs — every consumer tolerates it. */
+  planted_fraction?: number | null;
 }
 
 export interface Trajectories {
@@ -243,6 +249,12 @@ export interface DefenseMethod {
   info_tier?: unknown;
   contract?: unknown;
   demands?: unknown;
+  /** v3: post-defense AFTER values (per-method only, no generic rollup);
+   * metric names residual_asr@<method> / residual_ftr@<method>. */
+  residual_asr?: number;
+  residual_ftr?: number;
+  /** v3: method class — always "defense" on a defense method slot. */
+  type?: string;
   /** Note on a registry-less relic slug (pre-reclassification defenses). */
   legacy?: string;
 }
@@ -297,6 +309,8 @@ export interface InterpReading {
   kind: string;
   value: number | null;
   null_control: number | null;
+  /** v3: method class — always "interp" on a reading entry. */
+  type?: string;
   // --- anatomy locus/taxonomy (ALL optional — see section comment) ---
   method?: string;
   metric_name?: string;
@@ -333,6 +347,8 @@ export interface Interp {
   value: number | null;
   null_control: number | null;
   reference_model_diff: number | null;
+  /** v3: method class — always "interp" on the interp rollup. */
+  type?: string;
   /** ALL reading kinds on the run (newer builders; headline fields keep one).
    * NOTE: the raw blob names this `measurements` on v1/v2 (measurement vocab);
    * data/normalize translates it to `readings` at load — the app is single-vocab. */
@@ -341,7 +357,14 @@ export interface Interp {
 
 export interface ScanMethod {
   method: string;
-  scheme?: unknown;
+  /** v3: detector cut = (method, scheme, negative_facet); "-" fills an absent
+   * scheme/facet in the per-cut metric name scan_auroc@<method>|<scheme>|<negative_facet>.
+   * Older blobs left `scheme` an opaque passthrough, so it stays widened. */
+  scheme?: string | null;
+  negative_facet?: string | null;
+  cut?: string;
+  /** v3: method class — always "scan" on a scan method slot. */
+  type?: string;
   auroc: number | null;
   far_at_frr: number | null;
 }
