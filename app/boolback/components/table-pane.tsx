@@ -87,9 +87,12 @@ export interface TablePaneProps {
   source: ArtifactSource;
   /** Set while the tree pane is collapsed — the top bar renders the re-open button. */
   onShowTree?: () => void;
+  /** Shared plot export surface (owned by the shell so the config panel's PNG
+   *  export can read it too). The mounted PlotBody registers itself here. */
+  chartRef: React.MutableRefObject<PlotExportHandle | null>;
 }
 
-export function TablePane({ bundle, view = "table", source, onShowTree }: TablePaneProps) {
+export function TablePane({ bundle, view = "table", source, onShowTree, chartRef }: TablePaneProps) {
   const rows = bundle.rows;
   const index = useMemo<MetricIndex>(
     () => indexMetricSchema(bundle.metric_schema),
@@ -118,13 +121,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
   const storeAddRange = useBoolbackStore((s) => s.addRange);
   const setVisibleCols = useBoolbackStore((s) => s.setVisibleCols);
   const setColumnWidth = useBoolbackStore((s) => s.setColumnWidth);
-  const setPlot = useBoolbackStore((s) => s.setPlot);
-  const setCenterView = useBoolbackStore((s) => s.setCenterView);
   const setStore = useBoolbackStore.setState;
-
-  // The mounted plot registers its export surface here; the shared Export
-  // menu (filter bar) reads it.
-  const chartRef = useRef<PlotExportHandle | null>(null);
 
   // ---- persisted view sync — ONE key per view config ----------------------
   const [pTable, updateTable, tableHydrated] = usePersistedSettings<TableConfig>(
@@ -351,27 +348,14 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
     },
     [rows, index, storeAddRange],
   );
-  const plotOn = useCallback(
-    (axis: "x" | "y", metricName: string) => {
-      // The table↔plot bridge writes the PLOT view's axes, then switches to it.
-      setPlot(axis === "x" ? { x: metricName } : { y: metricName });
-      setCenterView("plot");
-    },
-    [setPlot, setCenterView],
-  );
 
   return (
     <div className="absolute inset-0 flex flex-col bg-bg text-text">
       <FilterBar
-        rows={rows}
-        visibleRows={visibleRows}
         visibleCount={visibleRows.length}
         totalCount={rows.length}
         bundle={bundle}
-        index={index}
-        colDefs={colDefs}
         view={view}
-        chartRef={chartRef}
         source={source}
         onShowTree={onShowTree}
       />
@@ -415,8 +399,6 @@ export function TablePane({ bundle, view = "table", source, onShowTree }: TableP
                       sort: (dir: SortDir) => setPrimarySort(c.id, dir),
                       hide: () => hideColumn(c.id),
                       addRange: hasData ? () => addRangeFor(c.metricName!) : undefined,
-                      plotX: hasData ? () => plotOn("x", c.metricName!) : undefined,
-                      plotY: hasData ? () => plotOn("y", c.metricName!) : undefined,
                     }}
                   />
                 );
@@ -535,8 +517,6 @@ interface HeaderMenuActions {
   sort: (dir: SortDir) => void;
   hide: () => void;
   addRange?: () => void;
-  plotX?: () => void;
-  plotY?: () => void;
 }
 
 function HeaderCell({
@@ -616,12 +596,12 @@ function HeaderCell({
             {item("Sort ascending", () => menu.sort("asc"))}
             {item("Sort descending", () => menu.sort("desc"))}
             {item("Hide column", menu.hide)}
-            {(menu.addRange || menu.plotX || menu.plotY) && (
-              <span className="my-1 block border-t border-border/60" />
+            {menu.addRange && (
+              <>
+                <span className="my-1 block border-t border-border/60" />
+                {item("Add range filter", menu.addRange)}
+              </>
             )}
-            {menu.addRange && item("Add range filter", menu.addRange)}
-            {menu.plotX && item("Plot on X", menu.plotX)}
-            {menu.plotY && item("Plot on Y", menu.plotY)}
           </span>
         </>
       )}

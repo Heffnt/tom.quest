@@ -42,20 +42,19 @@
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, Channel, RunRow, ValueStyle } from "../lib/types";
+import type { Bundle, Channel, RunRow } from "../lib/types";
 import { DEFAULT_PLOT } from "../lib/types";
-import { DimensionBoard } from "./dimension-board";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import {
   resolveChannels, summarizeParameters,
-  type ParameterDef, type ParamValues,
+  type ParamValues,
 } from "../lib/parameters";
 import {
-  groupRuns, groupKeyFor, makeXBucketer, splitWorthiness,
-  type GroupedPoint, type RunPoint, type Ghost, type WorthinessRun,
+  groupRuns,
+  type GroupedPoint, type RunPoint, type Ghost,
 } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
 import { buildRunSeries, groupSeries, trajectoryMetric } from "../lib/trajectories";
@@ -64,9 +63,6 @@ import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
 import { shapeNode } from "./glyph";
-
-/** A split parameter's treatment: a visual channel, or "avg" (un-split). */
-type SplitTreatment = Channel | "avg";
 
 /** What the shared Export menu needs from the mounted plot. */
 export interface PlotExportHandle {
@@ -124,19 +120,13 @@ export function PlotBody({
 }) {
   const openDetail = useBoolbackStore((s) => s.openDetail);
   const expandChain = useBoolbackStore((s) => s.expandChain);
-  const storeSetFacet = useBoolbackStore((s) => s.setFacet);
-  const storeToggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
   const config = useBoolbackStore((s) => s.plot);
   const setPlot = useBoolbackStore((s) => s.setPlot);
   const setPlotReadout = useBoolbackStore((s) => s.setPlotReadout);
-  // Filters live INSIDE the plot config; facet mutators target the "plot" view.
+  // Filters live INSIDE the plot config (edited from the shared config panel).
   const filters = config.filters;
-  const setFacet = (key: Parameters<typeof storeSetFacet>[1], values: string[]) =>
-    storeSetFacet("plot", key, values);
-  const toggleFacetValue = (key: Parameters<typeof storeToggleFacetValue>[1], value: string) =>
-    storeToggleFacetValue("plot", key, value);
 
   const [hover, setHover] = useState<VisualPoint | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -231,26 +221,14 @@ export function PlotBody({
   const shapeIdx = useMemo(() => valueIndex(shapeDim), [shapeDim]);
   const sizeIdx = useMemo(() => valueIndex(sizeDim), [sizeDim]);
 
-  // Candidate values for the board's checkbox lists are drawn over ALL rows
-  // (subtree scope is gone — the tree no longer filters), so checking one value
-  // doesn't collapse the list to just itself.
-  const scopedRows = bundle.rows;
-
   // Axis view windows (zoom only; never touch FilterState) in RAW metric units.
   const xDomain = config.xDomain ?? null;
   const yDomain = config.yDomain ?? null;
 
   // ---- points ---------------------------------------------------------------
-  // Averaged dims (any differing dim not split) — shown in the board in either
-  // mode, so it lives outside the scatter-only points memo.
-  const averagedDims = useMemo(
-    () => summary.differing.filter((d) => !channelByDim.has(d.dim.key)).map((d) => d.dim),
-    [summary, channelByDim],
-  );
-
   const {
     points, pairs, ghosts, ghostsSubsampled, droppedLog, outsideWindow,
-    binned, rowByPath, dataExtent, worthiness,
+    binned, rowByPath, dataExtent,
   } = useMemo(() => {
     if (lineMode) {
       // Scatter path is inert in epoch mode — the epoch memo drives rendering.
@@ -258,7 +236,6 @@ export function PlotBody({
         points: [], pairs: [], ghosts: [], ghostsSubsampled: false,
         droppedLog: 0, outsideWindow: 0, binned: false,
         rowByPath: new Map<string, RunRow>(), dataExtent: null,
-        worthiness: {} as Record<string, number>,
       };
     }
     const xId = metricColumnId(x, index);
@@ -271,8 +248,6 @@ export function PlotBody({
     const byPath = new Map<string, RunRow>();
     // Raw data extent over droppable-clean points (pre-window) for the axis controls.
     let exMinX = Infinity, exMaxX = -Infinity, exMinY = Infinity, exMaxY = -Infinity;
-    // Windowed survivors kept with their row for split-worthiness.
-    const survivors: Array<{ r: RunRow; tx: number; ty: number; dims: string[] }> = [];
     for (const r of rows) {
       const vx = numericValue(r, xId);
       const vy = numericValue(r, yId);
@@ -294,25 +269,8 @@ export function PlotBody({
       runPts.push({ x: tx, y: ty, runId: r.identity.node_path, dims });
       rawPairs.push({ x: tx, y: ty, color: colorDim ? colorDim.dim.raw(r) : null });
       byPath.set(r.identity.node_path, r);
-      survivors.push({ r, tx, ty, dims });
     }
     const grouped = groupRuns(runPts, averaging);
-
-    // Split-worthiness of each averaged dim, over the WINDOWED survivors, using
-    // the same (split tuple × x bucket) grouping the renderer applies.
-    const avgDims = summary.differing
-      .filter((d) => !channelByDim.has(d.dim.key))
-      .map((d) => d.dim);
-    let worth: Record<string, number> = {};
-    if (avgDims.length > 0 && survivors.length > 0) {
-      const { key: bucket } = makeXBucketer(runPts);
-      const wRuns: WorthinessRun[] = survivors.map((s) => ({
-        y: s.ty,
-        group: groupKeyFor(s.dims, s.tx, bucket),
-        values: Object.fromEntries(avgDims.map((d) => [d.key, d.raw(s.r) ?? "—"])),
-      }));
-      worth = splitWorthiness(wRuns, avgDims.map((d) => d.key));
-    }
 
     return {
       points: grouped.points,
@@ -326,9 +284,8 @@ export function PlotBody({
       dataExtent: Number.isFinite(exMinX)
         ? { xMin: exMinX, xMax: exMaxX, yMin: exMinY, yMax: exMaxY }
         : null,
-      worthiness: worth,
     };
-  }, [lineMode, rows, x, y, index, logX, logY, splitDims, colorDim, averaging, xDomain, yDomain, summary, channelByDim]);
+  }, [lineMode, rows, x, y, index, logX, logY, splitDims, colorDim, averaging, xDomain, yDomain]);
 
   // ---- epoch trajectories (line mode) ---------------------------------------
   const epoch = useMemo(() => {
@@ -510,12 +467,6 @@ export function PlotBody({
     return { overall, lines };
   }, [pairs, config.trend]);
 
-  const rByColorValue = useMemo(() => {
-    const m = new Map<string, number | null>();
-    for (const l of stats?.lines ?? []) m.set(l.key, l.r);
-    return m;
-  }, [stats]);
-
   // Publish the descriptive readout for the shared top bar (cleared on unmount).
   useEffect(() => {
     if (lineMode) {
@@ -544,61 +495,6 @@ export function PlotBody({
   }, [lineMode, epoch, stats, pairs.length, points.length, averaging, binned, droppedLog, outsideWindow, ghostsSubsampled, setPlotReadout]);
   useEffect(() => () => setPlotReadout(null), [setPlotReadout]);
 
-  // ---- split treatment setter — edits splits/channels -----------------------
-  // "avg"/null un-splits (drop from splits + channels); color/shape/size adds
-  // the parameter to splits with that explicit channel, freeing the channel
-  // from any other split so channels stay unique.
-  const setDim = (key: string, t: SplitTreatment | null) => {
-    const curSplits = config.splits ?? [];
-    const curChannels = config.channels ?? {};
-    if (t === null || t === "avg") {
-      const nextChannels = { ...curChannels };
-      delete nextChannels[key];
-      setPlot({ splits: curSplits.filter((k) => k !== key), channels: nextChannels });
-      return;
-    }
-    const nextSplits = curSplits.includes(key) ? [...curSplits] : [...curSplits, key];
-    const nextChannels: Record<string, Channel> = { ...curChannels, [key]: t };
-    for (const k of Object.keys(nextChannels)) {
-      if (k !== key && nextChannels[k] === t) delete nextChannels[k];
-    }
-    setPlot({ splits: nextSplits, channels: nextChannels });
-  };
-
-  // ---- board filtering — the ORDINARY filter mechanism (facet selections on
-  // the plot view's config). The `function` parameter has no facetKey in
-  // Phase 1 (fn= subtree scope removed), so its filter UI is inert. --------
-
-  /** Candidate values (with counts) for a parameter's checkbox list. */
-  const dimOptions = (dim: ParameterDef): Array<{ value: string; count: number }> => {
-    const counts = new Map<string, number>();
-    for (const r of scopedRows) {
-      const v = dim.raw(r);
-      if (v === null) continue;
-      counts.set(v, (counts.get(v) ?? 0) + 1);
-    }
-    const values = [...counts.entries()].map(([value, count]) => ({ value, count }));
-    values.sort(
-      dim.numericSort
-        ? (a, b) => Number(a.value) - Number(b.value)
-        : (a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0),
-    );
-    return values;
-  };
-
-  /** The parameter's currently filter-selected values (facet-backed only). */
-  const dimSelection = (dim: ParameterDef): string[] =>
-    dim.facetKey ? (filters.facets[dim.facetKey] ?? []) : [];
-
-  /** Checkbox semantics: toggle one value in/out of the parameter's filter. */
-  const toggleDimValue = (dim: ParameterDef, value: string) => {
-    if (dim.facetKey) toggleFacetValue(dim.facetKey, value);
-  };
-
-  const clearDimFilter = (dim: ParameterDef) => {
-    if (dim.facetKey) setFacet(dim.facetKey, []);
-  };
-
   const onPointClick = (p: VisualPoint) => {
     if (p.gp.runId && p.gp.n === 1) {
       openDetail(p.gp.runId);
@@ -610,38 +506,6 @@ export function PlotBody({
   // ---- axis view window (zoom-only min/max; never touches FilterState) -------
   const setDomain = (axis: "x" | "y", d: [number, number] | null) =>
     setPlot(axis === "x" ? { xDomain: d } : { yDomain: d });
-
-  // ---- dimension-board styling actions (edit v2 splits/channels/valueStyles) -
-  const addSplit = (key: string) => {
-    const cur = config.splits ?? [];
-    if (!cur.includes(key)) setPlot({ splits: [...cur, key] });
-  };
-  const reorderSplits = (next: string[]) => setPlot({ splits: next });
-  const setChannel = (key: string, ch: Channel) => {
-    const cur = config.splits ?? [];
-    const nextChannels: Record<string, Channel> = { ...(config.channels ?? {}), [key]: ch };
-    for (const k of Object.keys(nextChannels)) {
-      if (k !== key && nextChannels[k] === ch) delete nextChannels[k]; // channels stay unique
-    }
-    setPlot({ splits: cur.includes(key) ? cur : [...cur, key], channels: nextChannels });
-  };
-  const setValueStyle = (dimKey: string, value: string, patch: ValueStyle | null) => {
-    const vs: Record<string, Record<string, ValueStyle>> = { ...(config.valueStyles ?? {}) };
-    const inner = { ...(vs[dimKey] ?? {}) };
-    if (patch === null) delete inner[value];
-    else inner[value] = { ...inner[value], ...patch };
-    if (Object.keys(inner).length) vs[dimKey] = inner;
-    else delete vs[dimKey];
-    setPlot({ valueStyles: vs });
-  };
-
-  // ---- per-value isolate / exclude (ordinary facet filters) -----------------
-  const isolateValue = (dim: ParameterDef, value: string) => {
-    if (dim.facetKey) setFacet(dim.facetKey, [value]);
-  };
-  const excludeValue = (dim: ParameterDef, value: string) => {
-    if (dim.facetKey) setFacet(dim.facetKey, dimOptions(dim).map((o) => o.value).filter((v) => v !== value));
-  };
 
   // ---- export handle for the shared Export menu ----------------------------
   useEffect(() => {
@@ -1015,31 +879,6 @@ export function PlotBody({
           );
         })()}
       </div>
-
-      {/* dimension board — the single control surface, docked right of the plot */}
-      <DimensionBoard
-        summary={summary}
-        splits={activeSplits}
-        channelByDim={channelByDim}
-        worthiness={worthiness}
-        averagedDims={averagedDims}
-        valueStyles={valueStyles}
-        band={!!config.band}
-        ghosts={!!config.ghosts}
-        setBand={(b) => setPlot({ band: b })}
-        setGhosts={(b) => setPlot({ ghosts: b })}
-        addSplit={addSplit}
-        removeSplit={(key) => setDim(key, null)}
-        reorderSplits={reorderSplits}
-        setChannel={setChannel}
-        setValueStyle={setValueStyle}
-        dimSelection={dimSelection}
-        toggleDimValue={toggleDimValue}
-        clearDimFilter={clearDimFilter}
-        isolateValue={isolateValue}
-        excludeValue={excludeValue}
-        rByColorValue={rByColorValue}
-      />
     </div>
   );
 }

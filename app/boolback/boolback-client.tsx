@@ -22,7 +22,8 @@ import { useBoolbackStore } from "./state/store";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { TreePane } from "./components/tree-pane";
 import { TablePane, type CenterView } from "./components/table-pane";
-import { DetailPanel } from "./components/detail-panel";
+import { ConfigPanel } from "./components/config-panel";
+import type { PlotExportHandle } from "./components/plot-panel";
 
 // Layout constants.
 const MIN_LEFT = 280; // px, left tree pane floor
@@ -50,6 +51,10 @@ export default function BoolbackClient() {
   const source = useArtifactSource();
   const bundle = source.bundle;
   const view = useBoolbackStore((s) => s.centerView);
+
+  // The mounted plot registers its export surface here; both the table pane
+  // (which mounts the plot) and the config panel's PNG export read it.
+  const chartRef = useRef<PlotExportHandle | null>(null);
 
   // ----- persisted layout (tree width + detail width) ----------------------
   const [layout, updateLayout, layoutHydrated] = usePersistedSettings<LayoutSettings>(
@@ -203,11 +208,13 @@ export default function BoolbackClient() {
             bundle={bundle}
             view={view}
             source={source}
+            chartRef={chartRef}
             onShowTree={treeCollapsed ? () => setTreeCollapsed(false) : undefined}
           />
         </div>
-        {/* right: detail panel (self-resizing; renders null when closed) */}
-        <DetailPanel bundle={bundle} dir={source.dir} />
+        {/* right: shared config panel (self-resizing; run inspector when a run
+            is open, view config otherwise) */}
+        <ConfigPanel bundle={bundle} dir={source.dir} chartRef={chartRef} />
       </div>
     </div>
   );
