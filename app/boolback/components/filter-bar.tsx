@@ -43,6 +43,10 @@ import { Y_GROUP_ORDER, collapseMethodEntries, formatValue, groupedMetricOptions
 import { parseMethodMetric } from "../lib/method-metrics";
 import { buildShareUrl } from "../lib/share";
 import { copyText } from "../lib/export";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
+import { hydratePreset, suggestPresetName, PRESET_SCHEMA_VERSION, type PresetKind } from "../lib/presets";
 
 /** The method half of a "<base>@<method>" name (null for plain metrics). */
 function methodPart(name: string): string | null {
@@ -201,6 +205,8 @@ export function FilterBar(props: FilterBarProps) {
           bundle={bundle}
           index={index}
         />
+
+        <ViewsMenu />
 
         {activeStatus.map((flag) => (
           <Chip
@@ -995,6 +1001,133 @@ function Section({ label, children }: { label: string; children: React.ReactNode
     <div className="mb-1.5">
       <div className="px-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-text-faint">{label}</div>
       {children}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Views ▾ — saved filter sets & views (Convex, global, live).
+// A filter set restores only the chips; a view restores filters + chart +
+// sorts + columns + center view. Applying goes through the tolerant loader.
+// ---------------------------------------------------------------------------
+
+type PresetRow = { _id: Id<"boolbackPresets">; name: string; kind: PresetKind; state: unknown };
+
+function ViewsMenu() {
+  const presets = (useQuery(api.boolbackPresets.list) ?? []) as PresetRow[];
+  const savePreset = useMutation(api.boolbackPresets.save);
+  const removePreset = useMutation(api.boolbackPresets.remove);
+  const [open, setOpen] = useState(false);
+  const [saveKind, setSaveKind] = useState<PresetKind | null>(null);
+  const [name, setName] = useState("");
+
+  const filterSets = presets.filter((p) => p.kind === "filters");
+  const views = presets.filter((p) => p.kind === "view");
+
+  const currentState = (kind: PresetKind) => {
+    const s = useBoolbackStore.getState();
+    return kind === "filters"
+      ? { filters: s.filters }
+      : { filters: s.filters, chart: s.chart, sorts: s.sorts, visibleCols: s.visibleCols, centerView: s.centerView };
+  };
+
+  const apply = (p: PresetRow) => {
+    const s = useBoolbackStore.getState();
+    const h = hydratePreset(p.kind, p.state, s.visibleCols);
+    if (p.kind === "filters") {
+      useBoolbackStore.setState({ filters: h.filters });
+    } else {
+      useBoolbackStore.setState({
+        filters: h.filters,
+        chart: h.chart!,
+        sorts: h.sorts!,
+        visibleCols: h.visibleCols!,
+        ...(h.centerView ? { centerView: h.centerView } : {}),
+      });
+    }
+    setOpen(false);
+  };
+
+  const overwrite = (p: PresetRow) =>
+    void savePreset({ name: p.name, kind: p.kind, schemaVersion: PRESET_SCHEMA_VERSION, state: currentState(p.kind) });
+
+  const beginSave = (kind: PresetKind) => {
+    setSaveKind(kind);
+    setName(suggestPresetName(useBoolbackStore.getState().filters));
+  };
+  const commitSave = () => {
+    const n = name.trim();
+    if (n && saveKind) void savePreset({ name: n, kind: saveKind, schemaVersion: PRESET_SCHEMA_VERSION, state: currentState(saveKind) });
+    setSaveKind(null);
+    setName("");
+  };
+
+  const close = () => { setOpen(false); setSaveKind(null); setName(""); };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => (open ? close() : setOpen(true))}
+        className="rounded-md border border-border px-2.5 py-0.5 text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors"
+      >
+        Views <span className="text-text-faint">▾</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={close} />
+          <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-lg border border-border bg-surface/95 p-2 text-xs shadow-lg backdrop-blur-md animate-settle">
+            <PresetSection label="Filter sets" rows={filterSets} onApply={apply} onOverwrite={overwrite} onDelete={(p) => void removePreset({ id: p._id })} />
+            <PresetSection label="Views" rows={views} onApply={apply} onOverwrite={overwrite} onDelete={(p) => void removePreset({ id: p._id })} />
+            <div className="mt-1 border-t border-border/60 pt-1.5">
+              {saveKind ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    autoFocus
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") commitSave(); else if (e.key === "Escape") { setSaveKind(null); setName(""); } }}
+                    placeholder={`name this ${saveKind === "filters" ? "filter set" : "view"}…`}
+                    className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-text placeholder:text-text-faint focus:border-accent/60 focus:outline-none"
+                  />
+                  <button type="button" onClick={commitSave} className="shrink-0 rounded border border-accent/50 px-1.5 py-0.5 text-accent hover:bg-accent/10">save</button>
+                </div>
+              ) : (
+                <div className="flex flex-col">
+                  <button type="button" onClick={() => beginSave("filters")} className="rounded px-1 py-0.5 text-left text-text-muted hover:bg-surface-alt hover:text-accent">Save current filters…</button>
+                  <button type="button" onClick={() => beginSave("view")} className="rounded px-1 py-0.5 text-left text-text-muted hover:bg-surface-alt hover:text-accent">Save current view…</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PresetSection({
+  label, rows, onApply, onOverwrite, onDelete,
+}: {
+  label: string;
+  rows: PresetRow[];
+  onApply: (p: PresetRow) => void;
+  onOverwrite: (p: PresetRow) => void;
+  onDelete: (p: PresetRow) => void;
+}) {
+  return (
+    <div className="mb-1.5">
+      <div className="px-1 pb-0.5 text-[10px] uppercase tracking-wide text-text-faint">{label}</div>
+      {rows.length === 0 && <div className="px-1 py-0.5 text-text-faint">none saved</div>}
+      {rows.map((p) => (
+        <div key={p._id} className="group flex items-center gap-1 rounded px-1 py-0.5 hover:bg-surface-alt">
+          <button type="button" onClick={() => onApply(p)} title={`apply ${p.name}`} className="min-w-0 flex-1 truncate text-left text-text/90 hover:text-accent">{p.name}</button>
+          <span className="hidden shrink-0 items-center gap-1.5 group-hover:flex">
+            <button type="button" onClick={() => onOverwrite(p)} title="overwrite with the current view" className="text-text-faint hover:text-accent">⤓</button>
+            <button type="button" onClick={() => onDelete(p)} title="delete" className="text-text-faint hover:text-error">×</button>
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

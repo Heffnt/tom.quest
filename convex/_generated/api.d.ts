@@ -10,6 +10,7 @@
 
 import type * as auth from "../auth.js";
 import type * as authRoles from "../authRoles.js";
+import type * as boolbackPresets from "../boolbackPresets.js";
 import type * as brews from "../brews.js";
 import type * as canvas from "../canvas.js";
 import type * as crons from "../crons.js";
@@ -30,6 +31,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   authRoles: typeof authRoles;
+  boolbackPresets: typeof boolbackPresets;
   brews: typeof brews;
   canvas: typeof canvas;
   crons: typeof crons;

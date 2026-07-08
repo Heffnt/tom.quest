@@ -119,6 +119,20 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_user_setting", ["userId", "settingKey"]),
 
+  // Saved /boolback filter sets & views. GLOBAL (no per-user namespacing — the
+  // page is effectively single-user). kind=filters stores { filters }; kind=view
+  // stores the whole view ({ filters, chart, sorts, visibleCols, centerView }).
+  // `state` is structured JSON (v.any()); the client loader is tolerant of
+  // missing/unknown fields and bumps schemaVersion only for breaking shapes.
+  boolbackPresets: defineTable({
+    name: v.string(),
+    kind: v.union(v.literal("filters"), v.literal("view")),
+    schemaVersion: v.number(),
+    state: v.any(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_kind_name", ["kind", "name"]),
+
   symbolScores: defineTable({
     userId: v.optional(v.id("users")),
     username: v.string(),
