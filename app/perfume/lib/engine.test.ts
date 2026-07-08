@@ -5,17 +5,22 @@ import {
   msSize,
   msDiff,
   msEqual,
+  msScale,
   msFromList,
+  msToList,
   msIsSubset,
   effectiveTally,
   brewTally,
   combineFrequencies,
   traceCombination,
   evaluate,
+  evalReq,
   autoResolvePlays,
   findRecipes,
+  closestPath,
 } from "./engine";
 import type { FreqInstance } from "./engine";
+import type { Perfume, Ingredient } from "./types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -581,5 +586,483 @@ describe("traceCombination", () => {
     expect(JSON.stringify(traceCombination(pool))).toBe(
       JSON.stringify(traceCombination(pool)),
     );
+  });
+});
+
+// ── closestPath: the pin solver (DESIGN §5) ──────────────────────────────────
+// Finds the satisfying target reachable with the fewest additions across a
+// perfume's recipes and k-multiples, strongly preferring add-only paths. The
+// synthetic cases use the inert fundamental "E" (it appears in no named
+// frequency's components) so combination never perturbs a hand-built tally.
+
+describe("closestPath", () => {
+  // A synthetic ingredient emitting exactly `emits`, so a brew's raw tally is
+  // whatever we choose — no dependency on the catalog's real profiles.
+  const emitter = (emits: string[]): Ingredient => ({
+    key: `test:${emits.join("-") || "empty"}`,
+    name: `emitter(${emits.join(",")})`,
+    emits,
+    strike: 0,
+    wild: 0,
+    color: "#000",
+    source: { kind: "base" },
+  });
+  const tallyBrew = (emits: string[]): BrewState => ({
+    ingredients: emits.length ? [emitter(emits)] : [],
+    strikePlays: [],
+    wildPlays: [],
+  });
+  // A synthetic perfume defined purely by its recipes.
+  const withRecipes = (recipes: string[][]): Perfume => ({
+    key: "test:perfume",
+    name: "Test Perfume",
+    roll: 0,
+    effect: "unknown",
+    recipes,
+    slots: [],
+    combos: [],
+    source: { kind: "base" },
+  });
+
+  it("returns null when the perfume has no recipes", () => {
+    expect(closestPath(brew([]), withRecipes([]))).toBeNull();
+  });
+
+  it("a perfect brew needs no additions and no strikes", () => {
+    // Brightflower {Ev,En} exactly brews Bright.
+    const p = closestPath(brew(["Brightflower"]), perfume("bright"))!;
+    expect(p.additions).toEqual({});
+    expect(p.strikes).toEqual({});
+    expect(p.reqIndex).toBe(0);
+    expect(p.k).toBe(1);
+  });
+
+  it("a subset brew reports the missing frequencies as add-only", () => {
+    // Empty cauldron vs Bright {Ev,En}: add both, strike nothing.
+    const p = closestPath(brew([]), perfume("bright"))!;
+    expect(p.additions).toEqual({ Ev: 1, En: 1 });
+    expect(p.strikes).toEqual({});
+    expect(p.k).toBe(1);
+  });
+
+  it("falls back to a strike path only when no add-only path exists", () => {
+    // Ichorberries {N,En} vs Black Gas {N}: the En is excess at every k, so the
+    // only path strikes it.
+    const p = closestPath(brew(["Ichorberries"]), perfume("black-gas"))!;
+    expect(p.additions).toEqual({});
+    expect(p.strikes).toEqual({ En: 1 });
+  });
+
+  it("uses the k-multiple that a brew already satisfies", () => {
+    // Pemneath Peat {N,N} is exactly 2× Black Gas {N}.
+    const p = closestPath(brew(["Pemneath Peat"]), perfume("black-gas"))!;
+    expect(p.k).toBe(2);
+    expect(p.additions).toEqual({});
+    expect(p.strikes).toEqual({});
+  });
+
+  it("STRONGLY prefers an add-only recipe over a fewer-additions strike path", () => {
+    // Brew tally {E,E,A}. Recipe 0 {E} reaches k=2 with 0 additions but must
+    // strike the stray A; recipe 1 {E,E,A,A} is add-only (add one A). The
+    // add-only path wins despite needing an addition.
+    const perf = withRecipes([["E"], ["E", "E", "A", "A"]]);
+    const p = closestPath(tallyBrew(["E", "E", "A"]), perf)!;
+    expect(p.reqIndex).toBe(1);
+    expect(p.additions).toEqual({ A: 1 });
+    expect(p.strikes).toEqual({});
+  });
+
+  it("among add-only paths, minimizes the number of additions", () => {
+    // Brew {E}. Recipe 0 needs 4 more E; recipe 1 needs 1 more E. Pick recipe 1.
+    const perf = withRecipes([["E", "E", "E", "E", "E"], ["E", "E"]]);
+    const p = closestPath(tallyBrew(["E"]), perf)!;
+    expect(p.reqIndex).toBe(1);
+    expect(p.additions).toEqual({ E: 1 });
+    expect(p.strikes).toEqual({});
+  });
+
+  it("breaks equal-cost ties toward the common recipe (reqIndex 0)", () => {
+    // Empty brew: {E,E} and {A,A} both need 2 additions. Prefer reqIndex 0.
+    const perf = withRecipes([["E", "E"], ["A", "A"]]);
+    const p = closestPath(brew([]), perf)!;
+    expect(p.reqIndex).toBe(0);
+    expect(p.additions).toEqual({ E: 2 });
+  });
+});
+
+// ── closestPath: property tests + adversarial sweep ──────────────────────────
+// These push harder than the hand-picked cases above: they re-derive the pin
+// solver's contract from scratch and cross-check it against every base perfume
+// over a corpus of real brews, then try to construct inputs that break it.
+//
+// The synthetic fundamental "E" is inert (it is in no named frequency's
+// component list — verified in base.ts), so an emitter of "E"s produces a tally
+// that never auto-combines: hand-built targets stay exactly as written. "A"
+// only combines as part of Crallax {D,D,A,C} or Chrysipil {A,A,D,T}, so an
+// {E,A}-only pool is also combination-inert.
+
+describe("closestPath — properties & adversarial", () => {
+  // Synthetic emitter: a brew whose RAW tally is exactly `emits`.
+  const emit = (emits: string[]): Ingredient => ({
+    key: `prop:${emits.join("-") || "empty"}`,
+    name: `prop-emitter(${emits.join(",")})`,
+    emits,
+    strike: 0,
+    wild: 0,
+    color: "#000",
+    source: { kind: "base" },
+  });
+  const emitBrew = (emits: string[]): BrewState => ({
+    ingredients: emits.length ? [emit(emits)] : [],
+    strikePlays: [],
+    wildPlays: [],
+  });
+  const withRecipes = (recipes: string[][]): Perfume => ({
+    key: "prop:perfume",
+    name: "Prop Perfume",
+    roll: 0,
+    effect: "unknown",
+    recipes,
+    slots: [],
+    combos: [],
+    source: { kind: "base" },
+  });
+
+  const comb = (ms: Record<string, number>) => combineFrequencies(ms).tally;
+  const uniqForms = (a: Record<string, number>, b: Record<string, number>) =>
+    msEqual(a, b) ? [a] : [a, b];
+
+  // ── The corpus: real brews spanning empty, subsets, exact matches, excess,
+  //    k-multiples, self-combining pools, and strike/wild charges. ────────────
+  const corpus: { label: string; state: BrewState }[] = [
+    { label: "empty", state: brew([]) },
+    { label: "Brightflower {Ev,En}", state: brew(["Brightflower"]) },
+    { label: "Ichorberries {N,En}", state: brew(["Ichorberries"]) },
+    { label: "Bitterhearts {N,D}", state: brew(["Bitterhearts"]) },
+    { label: "Pemneath Peat {N,N}", state: brew(["Pemneath Peat"]) },
+    {
+      label: "Pemneath Peat + Pure Necromancy {N,N,N}",
+      state: brew(["Pemneath Peat", "Pure Necromancy"]),
+    },
+    {
+      label: "Swana common {A,A,Crallax,En}",
+      state: brew(["Aphasia Flower", "Noble Roses"]),
+    },
+    {
+      label: "Swana common ×2",
+      state: brew([
+        "Aphasia Flower", "Noble Roses",
+        "Aphasia Flower", "Noble Roses",
+      ]),
+    },
+    {
+      label: "Ignetium-combining pool {Ev×3,En,C}",
+      state: brew(["Pepperpops", "Brightflower", "Silver"]),
+    },
+    {
+      label: "Liver + Ichorberries (strike charges present)",
+      state: brew(["Shadow Demon Liver", "Ichorberries"]),
+    },
+    {
+      label: "Pensive self-combining common",
+      state: brew(["Great Cold Shard", "Melting Dewdrops"]),
+    },
+    {
+      label: "Brightflower + Northman's Beard (Frenzy)",
+      state: brew(["Brightflower", "Northman's Beard"]),
+    },
+    {
+      label: "Antimagic Chrythsmeum×4 + Seacursed Scale",
+      state: brew([
+        "Chrythsmeum", "Chrythsmeum", "Chrythsmeum", "Chrythsmeum",
+        "Seacursed Scale",
+      ]),
+    },
+    {
+      label: "Ichorberries + Pure Strike (charge unspent)",
+      state: brew(["Ichorberries", "Pure Strike"]),
+    },
+    {
+      label: "Ichorberries + Pure Strike, En struck",
+      state: brew(["Ichorberries", "Pure Strike"], ["En"]),
+    },
+  ];
+
+  // An independent, from-scratch oracle mirroring the DESIGN §5 selection order.
+  // Crucially it scans k FURTHER than closestPath's kMax bound, so if the bound
+  // ever cut off a strictly-better target the oracle would diverge.
+  const oracleBest = (
+    state: BrewState,
+    perf: Perfume,
+    kExtra = 3,
+  ): { reqIndex: number; k: number; addN: number; strN: number } | null => {
+    if (perf.recipes.length === 0) return null;
+    const rawB = effectiveTally(state);
+    const Bs = uniqForms(rawB, comb(rawB));
+    const better = (a: typeof best, b: typeof best): boolean => {
+      const ao = a!.strN === 0;
+      const bo = b!.strN === 0;
+      if (ao !== bo) return ao;
+      if (a!.addN !== b!.addN) return a!.addN < b!.addN;
+      if (a!.strN !== b!.strN) return a!.strN < b!.strN;
+      if (a!.reqIndex !== b!.reqIndex) return a!.reqIndex < b!.reqIndex;
+      return a!.k < b!.k;
+    };
+    let best:
+      | { reqIndex: number; k: number; addN: number; strN: number }
+      | null = null;
+    for (let ri = 0; ri < perf.recipes.length; ri++) {
+      const rawR = msFromList(perf.recipes[ri]);
+      const Rs = uniqForms(rawR, comb(rawR));
+      for (const B of Bs) {
+        for (const R of Rs) {
+          let kMax = 1;
+          for (const f in R) kMax = Math.max(kMax, Math.ceil((B[f] || 0) / R[f]));
+          for (let k = 1; k <= kMax + kExtra; k++) {
+            const kR = msScale(R, k);
+            const cand = {
+              reqIndex: ri,
+              k,
+              addN: msSize(msDiff(kR, B)),
+              strN: msSize(msDiff(B, kR)),
+            };
+            if (!best || better(cand, best)) best = cand;
+          }
+        }
+      }
+    }
+    return best;
+  };
+
+  // Does ANY add-only target (strikes empty) exist for this brew+perfume, at any
+  // recipe / form / k? Independent of the solver's own bookkeeping.
+  const addOnlyExists = (state: BrewState, perf: Perfume): boolean => {
+    const rawB = effectiveTally(state);
+    const Bs = uniqForms(rawB, comb(rawB));
+    for (const req of perf.recipes) {
+      const rawR = msFromList(req);
+      const Rs = uniqForms(rawR, comb(rawR));
+      for (const B of Bs) {
+        for (const R of Rs) {
+          let kMax = 1;
+          for (const f in R) kMax = Math.max(kMax, Math.ceil((B[f] || 0) / R[f]));
+          for (let k = 1; k <= kMax; k++) {
+            if (msSize(msDiff(B, msScale(R, k))) === 0) return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  // (a) The returned (additions, strikes) is a genuine decomposition of the brew
+  //     into k× the chosen recipe, AND emitting that target evaluates PERFECT
+  //     against the returned reqIndex/k — i.e. following the path actually
+  //     brews the perfume.
+  it("(a) additions+strikes decompose the brew into a perfect target", () => {
+    for (const { label, state } of corpus) {
+      for (const perf of basePerfumes) {
+        const cp = closestPath(state, perf)!;
+        const recipe = perf.recipes[cp.reqIndex];
+        const rawB = effectiveTally(state);
+        const Bs = uniqForms(rawB, comb(rawB));
+        const rawR = msFromList(recipe);
+        const Rs = uniqForms(rawR, comb(rawR));
+
+        // Find the (B-form, R-form) pairing that produced these numbers.
+        let matched = false;
+        for (const B of Bs) {
+          for (const R of Rs) {
+            const kR = msScale(R, cp.k);
+            if (
+              msEqual(msDiff(kR, B), cp.additions) &&
+              msEqual(msDiff(B, kR), cp.strikes)
+            ) {
+              matched = true;
+              // B + additions − strikes == kR : reconstruct and confirm perfect.
+              const goal = emitBrew(msToList(kR));
+              const e = evalReq(goal, recipe, cp.reqIndex);
+              expect(
+                e.status,
+                `${label} vs ${perf.key}: target k·R not perfect`,
+              ).toBe("perfect");
+            }
+          }
+        }
+        expect(
+          matched,
+          `${label} vs ${perf.key}: additions/strikes match no (B,R) pairing`,
+        ).toBe(true);
+        // additions and strikes never overlap on a frequency.
+        for (const f in cp.additions) {
+          expect(cp.strikes[f], `${label} vs ${perf.key}: ${f} both sides`)
+            .toBeFalsy();
+        }
+      }
+    }
+  });
+
+  // (b) generalised: strikes are empty IFF an add-only path exists. This is the
+  //     "add-only is STRONGLY preferred" rule, checked against an independent
+  //     existence oracle over the whole catalog.
+  it("(b) strikes are empty exactly when an add-only path exists", () => {
+    for (const { label, state } of corpus) {
+      for (const perf of basePerfumes) {
+        const cp = closestPath(state, perf)!;
+        expect(
+          msSize(cp.strikes) === 0,
+          `${label} vs ${perf.key}`,
+        ).toBe(addOnlyExists(state, perf));
+      }
+    }
+  });
+
+  // (b) constructive: a strike path is strictly SHORTER (0 additions) yet an
+  //     add-only path costing many additions still wins — strikes must be empty.
+  it("(b) an add-only path beats a shorter strike path regardless of cost", () => {
+    // Brew {E,E,A}. Recipe 0 {E} reaches k=2 by striking the stray A (0
+    // additions, 1 strike). Recipe 1 {E,E,A,B,B,B,B,B} is a genuine add-only
+    // path (the brew is a subset) but needs 5 additions. Add-only must still
+    // win despite the strike path being far shorter.
+    const perf = withRecipes([
+      ["E"],
+      ["E", "E", "A", "B", "B", "B", "B", "B"],
+    ]);
+    const p = closestPath(emitBrew(["E", "E", "A"]), perf)!;
+    expect(p.strikes).toEqual({});
+    expect(p.reqIndex).toBe(1);
+    expect(p.additions).toEqual({ B: 5 });
+  });
+
+  // (c) Adding exactly one still-needed frequency drops msSize(additions) by
+  //     exactly one (the added ghost solidifies; nothing else shifts).
+  it("(c) adding one needed frequency reduces additions by exactly one", () => {
+    const addOne = (state: BrewState, freq: string): BrewState => ({
+      ingredients: [...state.ingredients, emit([freq])],
+      strikePlays: [...state.strikePlays],
+      wildPlays: [...state.wildPlays],
+    });
+    const cases: { state: BrewState; perf: Perfume }[] = [
+      { state: brew([]), perf: perfume("black-gas") }, // needs {N}
+      { state: brew([]), perf: perfume("swanas-serum") }, // needs {A,A,Crallax,En}
+      { state: brew(["Brightflower"]), perf: perfume("frenzy") }, // needs {C,Ignetium}
+      { state: emitBrew(["E"]), perf: withRecipes([["E", "E", "E", "E"]]) },
+    ];
+    for (const { state, perf } of cases) {
+      const before = closestPath(state, perf)!;
+      const need = Object.keys(before.additions);
+      expect(need.length, `${perf.key} should have additions`).toBeGreaterThan(0);
+      const freq = need[0];
+      const after = closestPath(addOne(state, freq), perf)!;
+      expect(
+        msSize(after.additions),
+        `${perf.key}: adding ${freq}`,
+      ).toBe(msSize(before.additions) - 1);
+    }
+  });
+
+  // (d) A perfume with no recipes yields null (nothing to steer toward); a
+  //     perfume WITH recipes never does.
+  it("(d) null iff the perfume has no recipes", () => {
+    expect(closestPath(brew([]), withRecipes([]))).toBeNull();
+    expect(closestPath(emitBrew(["E", "A"]), withRecipes([]))).toBeNull();
+    for (const perf of basePerfumes) {
+      expect(closestPath(brew([]), perf), perf.key).not.toBeNull();
+    }
+  });
+
+  // (e) k-multiple targets are in scope: a brew just short of 2× a recipe steers
+  //     to k=2 (add-only) rather than k=1 (which would need strikes).
+  it("(e) picks the k-multiple that minimises the path", () => {
+    // Brew {E,E,A} vs recipe {E,A}: k=1 would strike a stray E (strike path);
+    // k=2 just adds one A (add-only). The add-only k=2 wins.
+    const perf = withRecipes([["E", "A"]]);
+    const p = closestPath(emitBrew(["E", "E", "A"]), perf)!;
+    expect(p.k).toBe(2);
+    expect(p.additions).toEqual({ A: 1 });
+    expect(p.strikes).toEqual({});
+
+    // Exactly 2× is perfect at k=2.
+    const exact = closestPath(emitBrew(["E", "E", "A", "A"]), perf)!;
+    expect(exact.k).toBe(2);
+    expect(exact.additions).toEqual({});
+    expect(exact.strikes).toEqual({});
+
+    // Real: Pemneath Peat {N,N} is 2× Black Gas {N}.
+    const peat = closestPath(brew(["Pemneath Peat"]), perfume("black-gas"))!;
+    expect(peat.k).toBe(2);
+    expect(peat.additions).toEqual({});
+    expect(peat.strikes).toEqual({});
+  });
+
+  // (e′) When no add-only path exists, the solver still uses k to MINIMISE the
+  //      strikes (higher k absorbs more of the recurring frequency).
+  it("(e') with only strike paths, k is chosen to minimise strikes", () => {
+    // Brew {N,N,N,En} vs Black Gas {N}: En is excess at every k, so no add-only
+    // path. k=3 absorbs all three N and leaves only En to strike.
+    const state = brew(["Pemneath Peat", "Pure Necromancy", "Pure Enchantment"]);
+    expect(effectiveTally(state)).toEqual({ N: 3, En: 1 });
+    const p = closestPath(state, perfume("black-gas"))!;
+    expect(p.k).toBe(3);
+    expect(p.additions).toEqual({});
+    expect(p.strikes).toEqual({ En: 1 });
+  });
+
+  // A high-k add-only path is still found and preferred: five loose N steer to
+  // k=5 of Black Gas {N} with no strikes.
+  it("finds add-only paths that only exist at a large k", () => {
+    const state = brew([
+      "Pemneath Peat", "Pemneath Peat", "Pure Necromancy",
+    ]); // {N×5}
+    expect(effectiveTally(state)).toEqual({ N: 5 });
+    const p = closestPath(state, perfume("black-gas"))!;
+    expect(p.k).toBe(5);
+    expect(p.additions).toEqual({});
+    expect(p.strikes).toEqual({});
+  });
+
+  // ── Adversarial: the solver must match an independent oracle that scans k
+  //    BEYOND its bound, across every base perfume and the whole corpus. A
+  //    divergence would mean the k-bound (or the ranking) drops a better path.
+  it("matches an independent oracle (extended k) over the full catalog", () => {
+    for (const { label, state } of corpus) {
+      for (const perf of basePerfumes) {
+        const cp = closestPath(state, perf)!;
+        const ref = oracleBest(state, perf)!;
+        const tag = `${label} vs ${perf.key}`;
+        expect(cp.reqIndex, `${tag} reqIndex`).toBe(ref.reqIndex);
+        expect(cp.k, `${tag} k`).toBe(ref.k);
+        expect(msSize(cp.additions), `${tag} addN`).toBe(ref.addN);
+        expect(msSize(cp.strikes), `${tag} strN`).toBe(ref.strN);
+      }
+    }
+  });
+
+  // Faithful literal application on combination-free brews: build the resolved
+  // brew by ADDING the ghost frequencies as items and STRIKING the excess, then
+  // confirm the perfume brews perfect at the reported reqIndex/k.
+  it("literally applying the path (add items + strike excess) brews perfect", () => {
+    let exercised = 0;
+    for (const { state } of corpus) {
+      const rawB = effectiveTally(state);
+      if (!msEqual(rawB, comb(rawB))) continue; // keep the literal apply exact
+      for (const perf of basePerfumes) {
+        const cp = closestPath(state, perf)!;
+        // Strikes here target base frequencies present in the raw tally.
+        if (!Object.keys(cp.strikes).every((f) => (rawB[f] || 0) > 0)) continue;
+        const applied: BrewState = {
+          ingredients: [
+            ...state.ingredients,
+            ...msToList(cp.additions).map((f) => emit([f])),
+          ],
+          strikePlays: [...state.strikePlays, ...msToList(cp.strikes)],
+          wildPlays: [...state.wildPlays],
+        };
+        const e = evalReq(applied, perf.recipes[cp.reqIndex], cp.reqIndex);
+        expect(e.status, `${perf.key}`).toBe("perfect");
+        exercised++;
+      }
+    }
+    expect(exercised).toBeGreaterThan(100);
   });
 });

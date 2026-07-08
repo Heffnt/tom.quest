@@ -371,6 +371,95 @@ export function evaluate(brew: BrewState, perfume: Perfume): EvalResult {
   return best!; // recipes is never empty
 }
 
+// ── Pin: the closest path (DESIGN §5) ────────────────────────────────────────
+// The pin's solver. Over ALL of a perfume's recipes and every copy-count k the
+// same k-bounds evalReq uses, find the satisfying target reachable with the
+// FEWEST additions:
+//   - `additions` is the frequency multiset you must still ADD (rendered as
+//     ghost circles) so the brew's tally equals k× that recipe;
+//   - `strikes` is the frequency multiset you must STRIKE off.
+// Both sides are compared in raw and auto-combined form, exactly as evalReq
+// pairs them, and the combination core is reused — no new math here.
+//
+// Selection order:
+//  1. Add-only paths are STRONGLY preferred — a path that needs strikes is
+//     chosen only when NO add-only path exists at any k for any recipe.
+//  2. Among the surviving paths, minimize msSize(additions), then
+//     msSize(strikes).
+//  3. Ties break toward the common recipe (reqIndex 0), then smaller k.
+// Returns null only when the perfume has no recipes. Pure.
+export type ClosestPath = {
+  reqIndex: number;
+  k: number;
+  additions: Multiset;
+  strikes: Multiset;
+};
+
+export function closestPath(
+  brew: BrewState,
+  perfume: Perfume,
+): ClosestPath | null {
+  if (perfume.recipes.length === 0) return null;
+
+  const rawB = effectiveTally(brew);
+  const combB = combineTally(rawB).tally;
+  const Bs = msEqual(rawB, combB) ? [rawB] : [rawB, combB];
+
+  type Cand = ClosestPath & { addN: number; strN: number };
+
+  // Total order matching the selection rules above (min is the winner):
+  // add-only first, then fewer additions, then fewer strikes, then the common
+  // recipe, then the smaller k.
+  const better = (a: Cand, b: Cand): boolean => {
+    const aAddOnly = a.strN === 0;
+    const bAddOnly = b.strN === 0;
+    if (aAddOnly !== bAddOnly) return aAddOnly;
+    if (a.addN !== b.addN) return a.addN < b.addN;
+    if (a.strN !== b.strN) return a.strN < b.strN;
+    if (a.reqIndex !== b.reqIndex) return a.reqIndex < b.reqIndex;
+    return a.k < b.k;
+  };
+
+  let best: Cand | null = null;
+  for (let reqIndex = 0; reqIndex < perfume.recipes.length; reqIndex++) {
+    const rawR = msFromList(perfume.recipes[reqIndex]);
+    const combR = combineTally(rawR).tally;
+    const Rs = msEqual(rawR, combR) ? [rawR] : [rawR, combR];
+    for (const B of Bs) {
+      for (const R of Rs) {
+        // Same k range evalReq scans: beyond k* the excess cannot shrink and
+        // the missing only grows.
+        let kMax = 1;
+        for (const f in R) {
+          kMax = Math.max(kMax, Math.ceil((B[f] || 0) / R[f]));
+        }
+        for (let k = 1; k <= kMax; k++) {
+          const kR = msScale(R, k);
+          const additions = msDiff(kR, B); // k·R - B : still to add
+          const strikes = msDiff(B, kR); // B - k·R : still to strike
+          const cand: Cand = {
+            reqIndex,
+            k,
+            additions,
+            strikes,
+            addN: msSize(additions),
+            strN: msSize(strikes),
+          };
+          if (!best || better(cand, best)) best = cand;
+        }
+      }
+    }
+  }
+
+  // recipes is non-empty, so at least one k=1 candidate was produced.
+  return {
+    reqIndex: best!.reqIndex,
+    k: best!.k,
+    additions: best!.additions,
+    strikes: best!.strikes,
+  };
+}
+
 export type FoundRecipe = { ings: string[]; strikes: number };
 
 // Every combination of ingredients that lands on the target recipe, found by
