@@ -307,7 +307,7 @@ function requireIngredient(itemKey: string): Ingredient {
 // Every real frequency id (9 fundamentals + 17 named). Strike/wild plays and
 // carried plays must name one of these — junk ids would otherwise enter the
 // shared tally the whole party sees (they can never match a recipe, but they
-// corrupt shared state and waste charge slots). Mirrors pinRecipe validating
+// corrupt shared state and waste charge slots). Mirrors pinPerfume validating
 // its perfumeId against the catalog.
 const VALID_FREQUENCIES = new Set<string>(ALL_FREQUENCIES.map((f) => f.id));
 
@@ -459,12 +459,20 @@ function newInstanceId(): string {
 
 // ── brew verification (engine — no re-implementation) ────────────────────────
 
-// Resolve a perfume and validate a requirement index against its recipes — the
-// shared validation behind pinRecipe and verifyBrew. `reqIndex` keeps the `req`
-// abbreviation (DESIGN.md §1: it names a position in `recipes`, not the concept).
-function requireRecipe(perfumeId: string, reqIndex: number): Perfume {
+// Resolve a base perfume by id (existence check) — the validation behind
+// pinPerfume (a pin names a target perfume, no recipe index) and the base of
+// requireRecipe.
+function requirePerfume(perfumeId: string): Perfume {
   const perfume = PERFUME_BY_ID[perfumeId];
   if (!perfume) throw new Error(`Unknown perfume: ${perfumeId}`);
+  return perfume;
+}
+
+// Resolve a perfume and validate a requirement index against its recipes — the
+// shared validation behind verifyBrew. `reqIndex` keeps the `req` abbreviation
+// (DESIGN.md §1: it names a position in `recipes`, not the concept).
+function requireRecipe(perfumeId: string, reqIndex: number): Perfume {
+  const perfume = requirePerfume(perfumeId);
   if (
     !Number.isInteger(reqIndex) ||
     reqIndex < 0 ||
@@ -964,23 +972,23 @@ export const nicknameBrew = mutation({
   },
 });
 
-// Pin exactly ONE recipe to a brew (DESIGN.md §5). The pin lives on the brew so
-// everyone viewing it sees the ghost nodes. Per the §4 permission matrix pinning
-// changes shared brew state, so it is an owner-act: allowed on your own brew, on
-// the party brew, or by admin — NOT on another member's owned brew. Undoable.
-export const pinRecipe = mutation({
+// Pin exactly ONE target PERFUME to a brew (DESIGN.md §5). The pin lives on the
+// brew so everyone viewing it sees the ghost nodes; the engine's closest path
+// picks which recipe of that perfume to steer toward, so no recipe index is
+// stored. Per the §4 permission matrix pinning changes shared brew state, so it
+// is an owner-act: allowed on your own brew, on the party brew, or by admin —
+// NOT on another member's owned brew. Undoable.
+export const pinPerfume = mutation({
   args: {
     brewId: brewIdArg,
-    pinned: v.union(
-      v.object({ perfumeId: v.string(), recipeIndex: v.number() }),
-      v.null(),
-    ),
+    perfumeId: v.union(v.string(), v.null()),
   },
-  handler: async (ctx, { brewId, pinned }) => {
+  handler: async (ctx, { brewId, perfumeId }) => {
     const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
     requireOwnerAct(actor, brew, "pin a perfume");
-    if (pinned) requireRecipe(pinned.perfumeId, pinned.recipeIndex);
+    if (perfumeId) requirePerfume(perfumeId);
+    const pinned = perfumeId ? { perfumeId } : null;
     const before = brew.pinned;
     await ctx.db.patch(brew._id, { pinned, updatedAt: Date.now() });
     await pushUndo(
@@ -1556,12 +1564,9 @@ function brewSummary(brew: Doc<"perfumeBrews">) {
     itemCount: brew.items.length,
     hasHypotheticals: brew.items.some((p) => !p.real),
     cauldronCount: restingOn(brew).reduce((n, o) => n + o.count, 0),
-    // `recipeIndex` is optional-deprecated in the schema (stripped by the ship
-    // migration); normalize to the client's PinnedRecipe shape, defaulting a
-    // missing index to the common recipe (0) until Phase 4 reworks pins.
-    pinned: brew.pinned
-      ? { perfumeId: brew.pinned.perfumeId, recipeIndex: brew.pinned.recipeIndex ?? 0 }
-      : null,
+    // The pin is a target PERFUME now (DESIGN.md §5); any legacy `recipeIndex`
+    // on un-migrated rows is ignored — normalize to the {perfumeId} shape.
+    pinned: brew.pinned ? { perfumeId: brew.pinned.perfumeId } : null,
     updatedAt: brew.updatedAt,
   };
 }

@@ -17,7 +17,7 @@
 
 import type { Frequency, Ingredient, Multiset } from "./types";
 import { parseHex, toHex } from "./color";
-import type { BrewItem, StrikePlay, WildPlay, PinnedRecipe } from "./brew-types";
+import type { BrewItem, StrikePlay, WildPlay, PinnedPerfume } from "./brew-types";
 import {
   baseIngredients,
   pureIngredients,
@@ -30,12 +30,9 @@ import {
 import {
   chargeTotals,
   effectiveTally,
-  msFromList,
-  msDiff,
-  msScale,
-  msEqual,
   msSize,
   traceCombination,
+  closestPath,
   type FreqInstance,
 } from "./engine";
 
@@ -138,16 +135,6 @@ export type ItemNode = {
   contributors: string[]; // distinct contributor names of the hypothetical copies
 };
 
-/** A ghost item-frame the pinned recipe still needs a source for. */
-export type GhostItemNode = {
-  kind: "ghostItem";
-  id: string; // "ghostItem:<freq>:<n>"
-  band: "ingredient";
-  pos: GraphPoint;
-  /** The frequency this frame should supply — "any source of X". */
-  wants: Frequency;
-};
-
 export type FrequencyNode = {
   kind: "frequency";
   id: string; // stable per instance
@@ -197,7 +184,7 @@ export type WildNode = {
   sourceId: string | null; // the item node that granted the ⊕
 };
 
-/** A missing frequency the pinned recipe still needs, as a ghost circle. */
+/** A frequency the pinned perfume still needs to ADD, as a ghost circle. */
 export type GhostFrequencyNode = {
   kind: "ghostFrequency";
   id: string; // "ghostFreq:<freq>:<n>"
@@ -206,22 +193,31 @@ export type GhostFrequencyNode = {
   freq: Frequency;
 };
 
+/** A frequency the pinned perfume's closest path must STRIKE off (only when no
+ * add-only path exists) — rendered as a ghost strike over the excess. */
+export type GhostStrikeNode = {
+  kind: "ghostStrike";
+  id: string; // "ghostStrike:<freq>:<n>"
+  band: "frequency";
+  pos: GraphPoint;
+  freq: Frequency;
+};
+
 export type GraphNode =
   | CauldronNode
   | ItemNode
-  | GhostItemNode
   | FrequencyNode
   | CombinedNode
   | ChargeNode
   | WildNode
-  | GhostFrequencyNode;
+  | GhostFrequencyNode
+  | GhostStrikeNode;
 
 export type GraphEdgeKind =
   | "stem" // cauldron → item
   | "emit" // item → frequency circle
   | "grant" // item → charge / wild
-  | "combine" // component frequency/combined → combined node
-  | "ghost"; // pinned-recipe ghost linkage
+  | "combine"; // component frequency/combined → combined node
 
 export type GraphEdge = {
   id: string; // stable
@@ -230,28 +226,32 @@ export type GraphEdge = {
   to: string; // node id
 };
 
-/** The satisfied state of a pinned recipe against the current tally. */
+/** The steered state of a pinned PERFUME against the current tally — the
+ * closest path (DESIGN §5) the pin resolved to. */
 export type PinStatus = {
   perfumeId: string;
   perfumeName: string;
-  recipeIndex: number;
-  /** true when the tally matches the recipe exactly at some integer k. */
-  satisfied: boolean;
-  /** the k it matches at when satisfied; else the k the ghosts are computed for. */
+  /** the recipe (index into the perfume's `recipes`) currently steered toward. */
+  reqIndex: number;
+  /** the copy-count that closest path targets. */
   k: number;
-  /** frequencies (k×recipe − tally) the brew still lacks, as a multiset. */
-  missing: Multiset;
+  /** true when the tally already brews the perfume (no additions, no strikes). */
+  satisfied: boolean;
+  /** frequencies still to ADD to reach the target, as a multiset (ghost circles). */
+  additions: Multiset;
+  /** frequencies to STRIKE off — non-empty only when no add-only path exists. */
+  strikes: Multiset;
 } | null;
 
 export type BrewGraph = {
   cauldron: CauldronNode;
   items: ItemNode[];
-  ghostItems: GhostItemNode[];
   frequencies: FrequencyNode[];
   combined: CombinedNode[];
   charges: ChargeNode[];
   wilds: WildNode[];
   ghostFrequencies: GhostFrequencyNode[];
+  ghostStrikes: GhostStrikeNode[];
   edges: GraphEdge[];
   /** every node in one array, for renderers that iterate uniformly. */
   nodes: GraphNode[];
@@ -308,7 +308,7 @@ export type BrewGraphInput = {
   items: BrewItem[];
   strikePlays: StrikePlay[];
   wildPlays: WildPlay[];
-  pinned: PinnedRecipe;
+  pinned: PinnedPerfume;
 };
 
 /**
@@ -548,41 +548,64 @@ export function buildBrewGraph(input: BrewGraphInput): BrewGraph {
     tallyCount: msSize(tally),
   };
 
-  // ── pinned recipe: ghosts + satisfied ──────────────────────────────────────
+  // ── pinned perfume: ghosts from the closest path (DESIGN §1, §5) ────────────
+  // A pin names a TARGET PERFUME. The engine's closestPath solves over ALL of
+  // that perfume's recipes and k-multiples for the fewest-additions satisfying
+  // set: each still-needed frequency in `additions` becomes a ghost circle, and
+  // each excess in `strikes` a ghost strike (strikes are non-empty ONLY when no
+  // add-only path exists at any k — closestPath guarantees this). Ghosts are
+  // FREQUENCIES ONLY; there are no ghost item frames (DESIGN §1).
   const ghostFrequencies: GhostFrequencyNode[] = [];
-  const ghostItems: GhostItemNode[] = [];
+  const ghostStrikes: GhostStrikeNode[] = [];
   let pin: PinStatus = null;
   if (pinned) {
     const perfume = PERFUME_BY_KEY.get(pinned.perfumeId);
-    if (perfume && pinned.recipeIndex >= 0 && pinned.recipeIndex < perfume.recipes.length) {
-      const recipe = msFromList(perfume.recipes[pinned.recipeIndex]);
-      const { k, missing, satisfied } = pinnedDelta(tally, recipe);
-      pin = {
-        perfumeId: pinned.perfumeId,
-        perfumeName: perfume.name,
-        recipeIndex: pinned.recipeIndex,
-        satisfied,
-        k,
-        missing,
-      };
-      // a ghost circle per missing frequency, and a ghost item-frame beneath it
-      // suggesting "any source of X"
-      for (const freq of Object.keys(missing).sort()) {
-        for (let c = 0; c < missing[freq]; c++) {
-          ghostFrequencies.push({
-            kind: "ghostFrequency",
-            id: `ghostFreq:${freq}:${c}`,
-            band: "frequency",
-            pos: { x: 50, y: FREQ_ARC.solo },
-            freq,
-          });
-          ghostItems.push({
-            kind: "ghostItem",
-            id: `ghostItem:${freq}:${c}`,
-            band: "ingredient",
-            pos: { x: 50, y: ING_ARC.solo },
-            wants: freq,
-          });
+    if (perfume) {
+      const path = closestPath(
+        {
+          ingredients,
+          strikePlays: strikePlays.map((s) => s.freq),
+          wildPlays: wildPlays
+            .map((w) => w.chosenFreq)
+            .filter((f): f is string => !!f),
+        },
+        perfume,
+      );
+      if (path) {
+        const satisfied =
+          msSize(path.additions) === 0 && msSize(path.strikes) === 0;
+        pin = {
+          perfumeId: pinned.perfumeId,
+          perfumeName: perfume.name,
+          reqIndex: path.reqIndex,
+          k: path.k,
+          satisfied,
+          additions: path.additions,
+          strikes: path.strikes,
+        };
+        // a ghost circle per still-needed frequency
+        for (const freq of Object.keys(path.additions).sort()) {
+          for (let c = 0; c < path.additions[freq]; c++) {
+            ghostFrequencies.push({
+              kind: "ghostFrequency",
+              id: `ghostFreq:${freq}:${c}`,
+              band: "frequency",
+              pos: { x: 50, y: FREQ_ARC.solo },
+              freq,
+            });
+          }
+        }
+        // a ghost strike per excess frequency to remove (add-only path absent)
+        for (const freq of Object.keys(path.strikes).sort()) {
+          for (let c = 0; c < path.strikes[freq]; c++) {
+            ghostStrikes.push({
+              kind: "ghostStrike",
+              id: `ghostStrike:${freq}:${c}`,
+              band: "frequency",
+              pos: { x: 50, y: FREQ_ARC.solo },
+              freq,
+            });
+          }
         }
       }
     }
@@ -598,6 +621,7 @@ export function buildBrewGraph(input: BrewGraphInput): BrewGraph {
     ...freqNodes,
     ...wildNodes,
     ...ghostFrequencies,
+    ...ghostStrikes,
   ];
   freqBand.forEach((node, i) => {
     node.pos = arcSlot(i, freqBand.length, FREQ_ARC);
@@ -605,11 +629,8 @@ export function buildBrewGraph(input: BrewGraphInput): BrewGraph {
   combinedNodes.forEach((node, i) => {
     node.pos = combinedSlot(i, combinedNodes.length);
   });
-  // ingredient band = item nodes ++ ghost item frames
-  const ingBand: GraphNode[] = [...itemNodes, ...ghostItems];
-  ingBand.forEach((node, i) => {
-    node.pos = arcSlot(i, ingBand.length, ING_ARC);
-  });
+  // ingredient band = item nodes only (ghosts are frequencies, never items —
+  // DESIGN §1). Item nodes were positioned at creation; nothing reshapes them.
 
   // available charges float directly ABOVE their granting ingredient (DESIGN.md
   // §1 — "render above the ingredient that granted them"). Each charge takes its
@@ -664,63 +685,33 @@ export function buildBrewGraph(input: BrewGraphInput): BrewGraph {
       });
     }
   }
-  // ghost: each ghost item-frame → its ghost circle (the pinned recipe's need)
-  for (let i = 0; i < ghostFrequencies.length; i++) {
-    edges.push({
-      id: `ghost:${ghostItems[i].id}->${ghostFrequencies[i].id}`,
-      kind: "ghost",
-      from: ghostItems[i].id,
-      to: ghostFrequencies[i].id,
-    });
-  }
+  // ghosts (frequency circles / strikes) carry no edges — they mark a need in
+  // the frequency band, not a linkage from a source (DESIGN §1).
 
   const nodes: GraphNode[] = [
     cauldron,
     ...itemNodes,
-    ...ghostItems,
     ...freqNodes,
     ...combinedNodes,
     ...chargeNodes,
     ...wildNodes,
     ...ghostFrequencies,
+    ...ghostStrikes,
   ];
 
   return {
     cauldron,
     items: itemNodes,
-    ghostItems,
     frequencies: freqNodes,
     combined: combinedNodes,
     charges: chargeNodes,
     wilds: wildNodes,
     ghostFrequencies,
+    ghostStrikes,
     edges,
     nodes,
     pin,
     effectiveTally: eff,
     tally,
   };
-}
-
-// ── pinned-recipe delta ──────────────────────────────────────────────────────
-// The pin renders ghosts for the gap between the effective tally and k× the
-// pinned recipe (DESIGN.md §5). We pick the SMALLEST k whose k×recipe still
-// covers the tally (so the ghosts show the nearest reachable multiple), and
-// report satisfied when the tally equals k×recipe exactly.
-//
-// k = max over the recipe's frequencies of ceil(tally_f / recipe_f), floored at
-// 1 — the same k* ceiling the engine's evalReq uses. That is the least k whose
-// multiple is not already exceeded by the tally on any single frequency.
-function pinnedDelta(
-  tally: Multiset,
-  recipe: Multiset,
-): { k: number; missing: Multiset; satisfied: boolean } {
-  let k = 1;
-  for (const f in recipe) {
-    k = Math.max(k, Math.ceil((tally[f] ?? 0) / recipe[f]));
-  }
-  const kR = msScale(recipe, k);
-  const missing = msDiff(kR, tally);
-  const satisfied = msEqual(tally, kR);
-  return { k, missing, satisfied };
 }

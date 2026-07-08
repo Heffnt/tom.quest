@@ -690,7 +690,7 @@ describe("undo / redo", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_WILD, n: 1 });
 
     // Pin, then undo the pin.
-    await alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
+    await alice.mutation(api.brews.pinPerfume, { brewId, perfumeId: BLACK_GAS });
     await alice.mutation(api.brews.undo, { brewId });
     expect((await getBrewDoc(alice,{ brewId })).pinned).toBeNull();
 
@@ -797,7 +797,7 @@ describe("copyBrew", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId: src, itemKey: ICHOR, n: 1 });
     await alice.mutation(api.brews.moveItemToBrew, { brewId: src, itemKey: SHADOW_LIVER, n: 1 });
     await alice.mutation(api.brews.playStrike, { brewId: src, freq: "N" });
-    await alice.mutation(api.brews.pinRecipe, { brewId: src, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
+    await alice.mutation(api.brews.pinPerfume, { brewId: src, perfumeId: BLACK_GAS });
 
     const copyId = await bob.mutation(api.brews.copyBrew, { brewId: src });
     const copy = await getBrewDoc(bob,{ brewId: copyId });
@@ -808,7 +808,7 @@ describe("copyBrew", () => {
     expect(copy.items.every((i) => i.contributorKey === bobKey)).toBe(true);
     // Plays and pin carry over, re-attributed to the copier.
     expect(copy.strikePlays).toEqual([{ freq: "N", byMemberKey: bobKey }]);
-    expect(copy.pinned).toEqual({ perfumeId: BLACK_GAS, recipeIndex: 0 });
+    expect(copy.pinned).toEqual({ perfumeId: BLACK_GAS });
     // Copying spent none of Alice's stock, and the source is unchanged.
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).ingredients[ICHOR]).toBeUndefined();
     const srcBrew = await getBrewDoc(alice,{ brewId: src });
@@ -879,28 +879,27 @@ describe("nickname & pin", () => {
     expect((await getBrewDoc(alice,{ brewId })).nickname).toBeNull();
   });
 
-  it("pin validates the perfume and recipe index; pin is an owner-act (DESIGN §4)", async () => {
+  it("pin targets a perfume; pin is an owner-act (DESIGN §4); unknown perfume rejected", async () => {
     const { alice, bob } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
-    // The owner may pin their own brew.
-    await alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
+    // The owner may pin a perfume on their own brew — stored as {perfumeId}.
+    await alice.mutation(api.brews.pinPerfume, { brewId, perfumeId: BLACK_GAS });
     expect((await getBrewDoc(alice,{ brewId })).pinned).toEqual({
       perfumeId: BLACK_GAS,
-      recipeIndex: 0,
     });
     // A non-owner may NOT pin someone else's owned brew (WHERE-not-WHAT).
     await expect(
-      bob.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } }),
+      bob.mutation(api.brews.pinPerfume, { brewId, perfumeId: BLACK_GAS }),
     ).rejects.toThrow(/owner/);
-    // Validation errors surface for the owner.
+    // An unknown perfume is rejected for the owner.
     await expect(
-      alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 9 } }),
-    ).rejects.toThrow(/recipe index/);
-    await expect(
-      alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: "base:nope", recipeIndex: 0 } }),
+      alice.mutation(api.brews.pinPerfume, { brewId, perfumeId: "base:nope" }),
     ).rejects.toThrow(/Unknown perfume/);
+    // Passing null clears the pin.
+    await alice.mutation(api.brews.pinPerfume, { brewId, perfumeId: null });
+    expect((await getBrewDoc(alice,{ brewId })).pinned).toBeNull();
   });
 
   it("default naming: seq increments per owner", async () => {

@@ -31,7 +31,7 @@
 
 import { useMemo, useState } from "react";
 import type { Multiset, Perfume, BrewState } from "../lib/types";
-import type { SharedUI, PinnedRecipe } from "../lib/brew-types";
+import type { SharedUI, PinnedPerfume } from "../lib/brew-types";
 import type { BrewHand } from "../lib/use-hand";
 import {
   evalReq,
@@ -59,11 +59,11 @@ export interface PerfumePanelProps {
   // Shared browse UI: perfumeSearch, perfumeFilters, expanded.
   ui: SharedUI;
   onUI: (patch: Partial<SharedUI>) => void;
-  // The brew's single pinned recipe (DESIGN.md §5), and the setter. `canPin`
+  // The brew's single pinned perfume (DESIGN.md §5), and the setter. `canPin`
   // is any registered member (the pin lives on the brew object). A visitor
   // (not a member) sees the pin state read-only.
-  pinned: PinnedRecipe;
-  onPin: (pinned: PinnedRecipe) => void;
+  pinned: PinnedPerfume;
+  onPin: (pinned: PinnedPerfume) => void;
   canPin: boolean;
   // The cursor stack; recipe-fold frames pick up hypotheticals from the catalog
   // (an unbounded reference source). A read-only visitor's hand can't move
@@ -292,12 +292,13 @@ export default function PerfumePanel({
   brewCounts,
   onShiftToBrew,
 }: PerfumePanelProps) {
-  // exactly one recipe pins to the brew (DESIGN.md §5). Toggling a perfume pins
-  // its common recipe (index 0), or clears the pin if it was already pinned.
+  // exactly one PERFUME pins to the brew (DESIGN.md §5). Toggling a perfume pins
+  // it as the target (the engine's closest path picks which recipe to steer
+  // toward), or clears the pin if it was already pinned.
   const pinnedKey = pinned?.perfumeId ?? null;
   const togglePin = (key: string) => {
     if (!canPin) return;
-    onPin(pinnedKey === key ? null : { perfumeId: key, recipeIndex: 0 });
+    onPin(pinnedKey === key ? null : { perfumeId: key });
   };
   // recipes-fold state is shared browse UI — spectators see the same folds
   const toggleExpanded = (key: string) => {
@@ -771,9 +772,9 @@ function PerfumeRow({
   );
 }
 
-// The pin — a single recipe pinned to the brew (DESIGN.md §5). Read-only for a
-// visitor (canPin false): dimmed, non-interactive, but the pinned state still
-// shows so everyone viewing the brew sees the same pin.
+// The pin — a single target perfume pinned to the brew (DESIGN.md §5). Read-only
+// for a visitor (canPin false): dimmed, non-interactive, but the pinned state
+// still shows so everyone viewing the brew sees the same pin.
 function PinButton({
   perfume,
   pinned,
@@ -792,7 +793,7 @@ function PinButton({
       disabled={!canPin}
       aria-pressed={pinned}
       aria-label={pinned ? `Unpin ${perfume.name}` : `Pin ${perfume.name}`}
-      title={!canPin ? "join to pin a recipe" : pinned ? "Unpin" : "Pin this recipe to the brew"}
+      title={!canPin ? "join to pin a perfume" : pinned ? "Unpin" : "Pin this perfume to the brew"}
       className={cn(
         "grid h-5 w-5 shrink-0 place-items-center rounded transition-colors duration-150",
         pinned

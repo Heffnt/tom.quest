@@ -42,7 +42,7 @@ import {
   type WildNode,
   type ItemNode,
   type GhostFrequencyNode,
-  type GhostItemNode,
+  type GhostStrikeNode,
 } from "../lib/brew-graph-layout";
 import {
   ALL_FREQUENCIES,
@@ -318,7 +318,7 @@ export default function BrewGraph({
 
         {/* node field */}
         <div className="absolute inset-0 z-10">
-          {graph.items.length === 0 && graph.ghostItems.length === 0 && (
+          {graph.items.length === 0 && graph.ghostFrequencies.length === 0 && (
             <div className="absolute inset-x-0 top-0 flex h-1/2 items-center justify-center px-6 text-center font-mono text-sm text-text-faint">
               drag ingredients here to conjure their frequencies…
             </div>
@@ -375,14 +375,15 @@ export default function BrewGraph({
             />
           ))}
 
-          {/* ghost frequency circles (pinned recipe still needs) */}
+          {/* ghost frequency circles the pinned perfume still needs to add */}
           {graph.ghostFrequencies.map((gf) => (
             <GhostFrequencyChip key={gf.id} node={gf} />
           ))}
 
-          {/* ghost item frames beneath the ghost circles */}
-          {graph.ghostItems.map((gi) => (
-            <GhostItemChip key={gi.id} node={gi} />
+          {/* ghost strikes — excess the closest path must remove (add-only
+              path absent) */}
+          {graph.ghostStrikes.map((gs) => (
+            <GhostStrikeChip key={gs.id} node={gs} />
           ))}
 
           {/* ingredient band: item nodes (grab sources for the hand) */}
@@ -423,7 +424,7 @@ export default function BrewGraph({
             >
               {graph.pin.perfumeName}
               {(() => {
-                const which = recipeLabel(graph.pin.perfumeId, graph.pin.recipeIndex);
+                const which = recipeLabel(graph.pin.perfumeId, graph.pin.reqIndex);
                 return which ? ` (${which})` : "";
               })()}{" "}
               recipe satisfied{graph.pin.k > 1 ? ` ×${graph.pin.k}` : ""}
@@ -556,6 +557,18 @@ function StageHeader({
         <span className="tabular-nums text-text-faint" title="frequencies counting toward recipes (after combination)">
           {graph.cauldron.tallyCount} freq
         </span>
+        {/* the recipe the pin is steering toward (DESIGN.md §5) */}
+        {graph.pin && (
+          <span
+            className="min-w-0 truncate text-accent/90"
+            title="the recipe the pinned perfume's closest path is steering toward"
+          >
+            {(() => {
+              const which = recipeLabel(graph.pin.perfumeId, graph.pin.reqIndex);
+              return `steering toward ${graph.pin.perfumeName}${which ? ` — ${which}` : ""}`;
+            })()}
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-1">
@@ -723,10 +736,6 @@ function GraphEdges({ graph, ceremony }: { graph: BrewGraphModel; ceremony: bool
         const to = graph.combined.find((c) => c.id === e.to);
         color = to ? tokenColor(to.freq) : "#4b4980";
         opacity = 0.55;
-      } else if (e.kind === "ghost") {
-        color = "#6b6a99";
-        dashed = true;
-        opacity = 0.28;
       }
       out.push({ key: e.id, d, color, dashed, opacity, width });
     }
@@ -1022,20 +1031,30 @@ function GhostFrequencyChip({ node }: { node: GhostFrequencyNode }) {
   );
 }
 
-function GhostItemChip({ node }: { node: GhostItemNode }) {
+// A ghost STRIKE: the closest path can only reach the pinned perfume by removing
+// this excess frequency. Rendered as a dashed strike (purple cover, dashed
+// outline) so it reads as "strike here" without being an actual played strike.
+function GhostStrikeChip({ node }: { node: GhostStrikeNode }) {
   return (
-    <Slot id={node.id} pos={node.pos} z={50}>
+    <Slot id={node.id} pos={node.pos} z={12}>
       <div
-        className="grid h-14 w-14 place-items-center rounded-lg border border-dashed border-border/60 bg-bg/30 opacity-45"
-        title={`any source of ${node.wants}`}
-        data-testid="ghost-item"
-        data-wants={node.wants}
+        className="relative rounded-full opacity-45"
+        title={`strike a ${node.freq} to reach the pinned perfume`}
+        data-testid="ghost-strike"
+        data-freq={node.freq}
       >
-        <span className="text-text-faint opacity-70">
-          <FrequencyGlyph id={node.wants} size={24} />
+        <FrequencyGlyph id={node.freq} size={40} className="border-dashed" />
+        <span
+          className="pointer-events-none absolute inset-0 grid place-items-center rounded-full border border-dashed"
+          style={{ background: `${STRIKE}55`, borderColor: STRIKE }}
+          aria-hidden="true"
+        >
+          <svg viewBox="0 0 24 24" width={20} height={20} aria-hidden="true">
+            <path d="M4 12h16" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeDasharray="3 3" />
+          </svg>
         </span>
       </div>
-      <ChipLabel>any {frequencyLabel(node.wants)}</ChipLabel>
+      <ChipLabel>strike {frequencyLabel(node.freq)}</ChipLabel>
     </Slot>
   );
 }

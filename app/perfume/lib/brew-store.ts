@@ -216,7 +216,7 @@ export function useConvexBrewStore(
     handoffBrew: useMutation(api.brews.handoffBrew),
     deleteBrew: useMutation(api.brews.deleteBrew),
     nicknameBrew: useMutation(api.brews.nicknameBrew),
-    pinRecipe: useMutation(api.brews.pinRecipe),
+    pinPerfume: useMutation(api.brews.pinPerfume),
     moveToBrew: useMutation(api.brews.moveItemToBrew),
     moveToInventory: useMutation(api.brews.moveItemToInventory),
     playStrike: useMutation(api.brews.playStrike),
@@ -316,7 +316,10 @@ export function useConvexBrewStore(
       },
       giftPerfume: (toMemberKey, instanceId) =>
         perform(() => a.giftPerfume({ toMemberKey, instanceId })),
-      pinRecipe: (pinned) => onBrew((brewId) => a.pinRecipe({ brewId, pinned })),
+      pinPerfume: (pinned) =>
+        onBrew((brewId) =>
+          a.pinPerfume({ brewId, perfumeId: pinned ? pinned.perfumeId : null }),
+        ),
       undo: () => onBrew((brewId) => a.undo({ brewId })),
       redo: () => onBrew((brewId) => a.redo({ brewId })),
       createBrew: async (nickname) => {
@@ -416,12 +419,9 @@ export function useConvexBrewStore(
       })),
       strikePlays: brewDoc.strikePlays,
       wildPlays: brewDoc.wildPlays,
-      // `recipeIndex` is optional-deprecated in the schema now (stripped by the
-      // ship migration); normalize to the client's PinnedRecipe shape, defaulting
-      // a missing index to the common recipe (0) until Phase 4 reworks pins.
-      pinned: brewDoc.pinned
-        ? { perfumeId: brewDoc.pinned.perfumeId, recipeIndex: brewDoc.pinned.recipeIndex ?? 0 }
-        : null,
+      // The pin is a target PERFUME now (DESIGN.md §5); any legacy `recipeIndex`
+      // on un-migrated rows is ignored — normalize to the {perfumeId} shape.
+      pinned: brewDoc.pinned ? { perfumeId: brewDoc.pinned.perfumeId } : null,
       // Provenance is flat now (no ownership chain); the deprecated `provenance`
       // field is no longer written, so default the client-side chain to empty.
       outputs: (brewDoc.cauldron ?? brewDoc.outputs ?? []).map((o) => ({

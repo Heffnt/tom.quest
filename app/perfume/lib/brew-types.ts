@@ -92,7 +92,7 @@ export type BrewSummary = {
   itemCount: number;
   hasHypotheticals: boolean;
   cauldronCount: number;
-  pinned: PinnedRecipe;
+  pinned: PinnedPerfume;
   updatedAt: number;
 };
 
@@ -130,8 +130,10 @@ export type StrikePlay = { freq: string; byMemberKey: string };
 // A wild play: the chosen frequency, and who played it.
 export type WildPlay = { chosenFreq: string; byMemberKey: string };
 
-// The pinned recipe lives on the brew (everyone viewing sees the ghost nodes).
-export type PinnedRecipe = { perfumeId: string; recipeIndex: number } | null;
+// The pinned PERFUME lives on the brew (everyone viewing sees the ghost nodes).
+// A pin names a target perfume; the engine's closest path picks which recipe of
+// it to steer toward (DESIGN.md §5), so no recipe index is stored.
+export type PinnedPerfume = { perfumeId: string } | null;
 
 // One ownership hop in a perfume instance's chain, oldest→newest.
 export type OwnerHop = { key: string; at: number };
@@ -159,7 +161,7 @@ export type BrewSnapshot = {
   items: BrewItem[];
   strikePlays: StrikePlay[];
   wildPlays: WildPlay[];
-  pinned: PinnedRecipe;
+  pinned: PinnedPerfume;
   outputs: OutputInstance[];
   ui: SharedUI; // browse UI (client-local in the multi-brew model)
 };
@@ -178,7 +180,7 @@ export type BrewPermissions = {
   brewAndTake: boolean; // complete brews, take output
   fillReturn: boolean; // fill-from-inventory / return / empty
   gift: boolean; // gift own items
-  pin: boolean; // pin a recipe
+  pin: boolean; // pin a perfume
   nickname: boolean; // any member may nickname any brew
   manageBrew: boolean; // copy/handoff/delete this brew (owner or admin)
   isAdmin: boolean; // Tom
@@ -218,8 +220,8 @@ export interface BrewActions {
   // gifting (WHAT — instant, permanent)
   giftItem(toMemberKey: string, itemKey: string, n: number): void;
   giftPerfume(toMemberKey: string, instanceId: string): void;
-  // pin (one recipe per brew, on the brew object)
-  pinRecipe(pinned: PinnedRecipe): void;
+  // pin (one target perfume per brew, on the brew object)
+  pinPerfume(pinned: PinnedPerfume): void;
   // per-user undo/redo (own moves only)
   undo(): void;
   redo(): void;

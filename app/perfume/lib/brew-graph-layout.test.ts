@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { FUND } from "../data/base";
-import type { BrewItem, StrikePlay, WildPlay, PinnedRecipe } from "./brew-types";
+import type { BrewItem, StrikePlay, WildPlay, PinnedPerfume } from "./brew-types";
 import {
   buildBrewGraph,
   blendTint,
@@ -23,16 +23,13 @@ function item(
 }
 const strike = (freq: string, by = "m1"): StrikePlay => ({ freq, byMemberKey: by });
 const wild = (chosenFreq: string, by = "m1"): WildPlay => ({ chosenFreq, byMemberKey: by });
-const pin = (perfumeId: string, recipeIndex = 0): PinnedRecipe => ({
-  perfumeId,
-  recipeIndex,
-});
+const pin = (perfumeId: string): PinnedPerfume => ({ perfumeId });
 
 function graph(
   items: BrewItem[],
   strikePlays: StrikePlay[] = [],
   wildPlays: WildPlay[] = [],
-  pinned: PinnedRecipe = null,
+  pinned: PinnedPerfume = null,
 ) {
   const input: BrewGraphInput = { items, strikePlays, wildPlays, pinned };
   return buildBrewGraph(input);
@@ -71,13 +68,15 @@ describe("Black Gas one-N brew", () => {
     expect(g.cauldron.tallyCount).toBe(1);
   });
 
-  it("marks the pinned recipe satisfied at k=1 with no missing", () => {
+  it("marks the pinned perfume satisfied at k=1 with no additions", () => {
     expect(g.pin).not.toBeNull();
     expect(g.pin!.satisfied).toBe(true);
     expect(g.pin!.k).toBe(1);
-    expect(g.pin!.missing).toEqual({});
+    expect(g.pin!.reqIndex).toBe(0);
+    expect(g.pin!.additions).toEqual({});
+    expect(g.pin!.strikes).toEqual({});
     expect(g.ghostFrequencies).toHaveLength(0);
-    expect(g.ghostItems).toHaveLength(0);
+    expect(g.ghostStrikes).toHaveLength(0);
   });
 
   it("wires cauldron→item and item→each frequency", () => {
@@ -242,45 +241,39 @@ describe("wild case", () => {
   });
 });
 
-// ── 5. Pinned-with-missing case (ghost circles + ghost item-frames) ───────────
+// ── 5. Pinned-with-additions case (ghost circles ONLY — DESIGN §1) ────────────
 
-describe("pinned recipe with missing frequencies", () => {
+describe("pinned perfume with frequencies still to add", () => {
   // Empty brew, pin Bright (recipe [En, Ev]).
   const g = graph([], [], [], pin("base:bright"));
 
-  it("is unsatisfied with both recipe frequencies missing", () => {
+  it("is unsatisfied with both recipe frequencies to add", () => {
     expect(g.pin).not.toBeNull();
     expect(g.pin!.satisfied).toBe(false);
     expect(g.pin!.k).toBe(1);
-    expect(g.pin!.missing).toEqual({ En: 1, Ev: 1 });
+    expect(g.pin!.reqIndex).toBe(0);
+    expect(g.pin!.additions).toEqual({ En: 1, Ev: 1 });
+    expect(g.pin!.strikes).toEqual({});
   });
 
-  it("emits a ghost frequency circle per missing frequency", () => {
+  it("emits a ghost frequency circle per frequency to add", () => {
     expect(g.ghostFrequencies.map((f) => f.freq).sort()).toEqual(["En", "Ev"]);
     for (const gf of g.ghostFrequencies) expect(gf.band).toBe("frequency");
   });
 
-  it("emits a ghost item-frame 'any source of X' beneath each ghost circle", () => {
-    expect(g.ghostItems.map((i) => i.wants).sort()).toEqual(["En", "Ev"]);
-    for (const gi of g.ghostItems) expect(gi.band).toBe("ingredient");
-  });
-
-  it("wires each ghost item-frame to its ghost circle", () => {
-    const ghostEdges = g.edges.filter((e) => e.kind === "ghost");
-    expect(ghostEdges).toHaveLength(2);
-    for (const e of ghostEdges) {
-      expect(g.ghostItems.some((i) => i.id === e.from)).toBe(true);
-      expect(g.ghostFrequencies.some((f) => f.id === e.to)).toBe(true);
-    }
+  it("emits NO ghost item-frames (ghosts are frequencies only) and NO ghost strikes", () => {
+    expect(g.ghostStrikes).toHaveLength(0);
+    // ghosts carry no edges — they mark a need, not a linkage
+    expect(g.edges.some((e) => e.id.startsWith("ghost"))).toBe(false);
   });
 
   it("shrinks the ghost set as the brew fills toward the recipe", () => {
-    // add one Ev source (pure:Ev) -> only En remains missing
+    // add one Ev source (pure:Ev) -> only En remains to add
     const g2 = graph([item("pure:Ev")], [], [], pin("base:bright"));
     expect(g2.pin!.satisfied).toBe(false);
-    expect(g2.pin!.missing).toEqual({ En: 1 });
+    expect(g2.pin!.additions).toEqual({ En: 1 });
     expect(g2.ghostFrequencies.map((f) => f.freq)).toEqual(["En"]);
-    expect(g2.ghostItems.map((i) => i.wants)).toEqual(["En"]);
+    expect(g2.ghostStrikes).toHaveLength(0);
   });
 });
 
@@ -300,12 +293,13 @@ describe("k=2 multiples case", () => {
     expect(g.items[0].count).toBe(2);
   });
 
-  it("marks the pin satisfied at k=2 with no missing", () => {
+  it("marks the pin satisfied at k=2 with no additions", () => {
     expect(g.pin!.satisfied).toBe(true);
     expect(g.pin!.k).toBe(2);
-    expect(g.pin!.missing).toEqual({});
+    expect(g.pin!.additions).toEqual({});
+    expect(g.pin!.strikes).toEqual({});
     expect(g.ghostFrequencies).toHaveLength(0);
-    expect(g.ghostItems).toHaveLength(0);
+    expect(g.ghostStrikes).toHaveLength(0);
   });
 
   it("tallies the doubled multiset", () => {
@@ -323,7 +317,8 @@ describe("k=2 multiples case", () => {
     );
     expect(g2.pin!.k).toBe(2);
     expect(g2.pin!.satisfied).toBe(false);
-    expect(g2.pin!.missing).toEqual({ En: 1 });
+    expect(g2.pin!.additions).toEqual({ En: 1 });
+    expect(g2.pin!.strikes).toEqual({});
   });
 });
 
@@ -487,12 +482,12 @@ describe("determinism and geometry", () => {
     const bucketTotal =
       1 +
       g.items.length +
-      g.ghostItems.length +
       g.frequencies.length +
       g.combined.length +
       g.charges.length +
       g.wilds.length +
-      g.ghostFrequencies.length;
+      g.ghostFrequencies.length +
+      g.ghostStrikes.length;
     expect(g.nodes).toHaveLength(bucketTotal);
   });
 

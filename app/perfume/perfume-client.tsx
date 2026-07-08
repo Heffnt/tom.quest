@@ -365,7 +365,7 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
       ui={snapshot.ui}
       onUI={actions.updateUI}
       pinned={snapshot.pinned}
-      onPin={actions.pinRecipe}
+      onPin={actions.pinPerfume}
       canPin={permissions.pin}
       hand={hand}
       canMove={permissions.moveItems}
