@@ -196,9 +196,15 @@ function ViewConfig({
   const channels = useMemo(() => plotConfig?.channels ?? {}, [plotConfig]);
   const valueStyles = useMemo<ValueStyles>(() => plotConfig?.valueStyles ?? {}, [plotConfig]);
   const activeSplits = useMemo(() => splits.filter((k) => differingByKey.has(k)), [splits, differingByKey]);
+  // A continuous colorBy owns the COLOR channel, so categorical/binned splits
+  // take shape/size/dash — keep the badges honest with the rendered plot.
+  const colorByActive = !!plotConfig?.colorBy;
   const channelByDim = useMemo(
-    () => resolveChannels(activeSplits, channels, (k) => differingByKey.get(k)?.values.length ?? 0),
-    [activeSplits, channels, differingByKey],
+    () => resolveChannels(
+      activeSplits, channels, (k) => differingByKey.get(k)?.values.length ?? 0,
+      colorByActive ? ["shape", "size", "dash"] : undefined,
+    ),
+    [activeSplits, channels, differingByKey, colorByActive],
   );
 
   // Filtered rows drive the continuous editors' histograms + bin previews.

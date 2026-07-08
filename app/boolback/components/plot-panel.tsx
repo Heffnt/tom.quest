@@ -41,24 +41,27 @@
 // Pure SVG — no chart library. Descriptive stats only (lib/stats.ts): the
 // boundary rule says inferential statistics come from CMT, never the browser.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, Channel, RunRow } from "../lib/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Bundle, RunRow } from "../lib/types";
 import { DEFAULT_PLOT } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
-import { X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
-import {
-  resolveChannels, summarizeParameters,
-  type ParamValues,
-} from "../lib/parameters";
+import { X_GROUP_ORDER, Y_GROUP_ORDER, formatValue } from "../lib/metrics";
+import { summarizeParameters, type ParamValues } from "../lib/parameters";
+import { resolveSplits } from "../lib/split-dims";
+import { resolveAxis, isParamAxis, paramAxisOptions } from "../lib/axes";
 import {
   groupRuns,
   type GroupedPoint, type RunPoint, type Ghost,
 } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
 import { buildRunSeries, groupSeries, trajectoryMetric } from "../lib/trajectories";
-import { PALETTE, SINGLE_COLOR, colorForValue, shapeForValue, dashForValue } from "../lib/styling";
+import {
+  PALETTE, SINGLE_COLOR, colorForValue, shapeForValue, dashForValue,
+  gradientColor, NULL_GRADIENT,
+} from "../lib/styling";
+import { edgeLabel } from "../lib/bins";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
@@ -70,15 +73,17 @@ export interface PlotExportHandle {
   getCsv: () => string;
 }
 
-/** Guard a persisted/shared metric name whose metric no longer exists in the
- *  schema (also used by the top bar's axis pickers so both agree). */
+/** Guard a persisted/shared axis name (also used by the top bar's axis pickers
+ *  so both agree). A metric_schema name or an offered PARAMETER axis (dotted
+ *  path — Phase 3) passes through; anything else falls back. */
 export function effectiveAxis(
   name: string,
   index: MetricIndex,
   schema: Bundle["metric_schema"],
   fallback: string,
 ): string {
-  return index[name] ? name : fallback in index ? fallback : (schema[0]?.name ?? "");
+  if (index[name] || isParamAxis(name)) return name;
+  return fallback in index ? fallback : (schema[0]?.name ?? "");
 }
 
 // Geometry: the SVG viewBox tracks the plot container 1:1 (ResizeObserver;
@@ -100,7 +105,8 @@ function tickFmt(v: number): string {
 
 interface VisualPoint {
   gp: GroupedPoint;
-  jx: number; // deterministic jitter (single-run points on a count x-axis)
+  jx: number; // deterministic jitter (single points on a count/categorical x)
+  jy: number; // deterministic jitter (single points on a categorical y)
   color: string;
   shapeIdx: number;
   r: number;
@@ -157,8 +163,13 @@ export function PlotBody({
   const y = lineMode
     ? (trajectoryMetric(config.y) ?? "plantedness")
     : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_PLOT.y);
-  const logX = !!config.logX;
-  const logY = !!config.logY;
+  // Resolved axes (scatter): metric / numeric-param / categorical-param. In
+  // epoch mode the axes are handled by the trajectory path (X is time).
+  const axisX = useMemo(() => (lineMode ? null : resolveAxis(x, index, rows)), [lineMode, x, index, rows]);
+  const axisY = useMemo(() => (lineMode ? null : resolveAxis(y, index, rows)), [lineMode, y, index, rows]);
+  // Log only where it's meaningful (never on a categorical axis).
+  const logX = !!config.logX && (axisX?.allowLog ?? true);
+  const logY = !!config.logY && (axisY?.allowLog ?? true);
   // Persist the Y snap so the config stays consistent after entering epoch mode.
   useEffect(() => {
     if (lineMode && config.y !== y) setPlot({ y });
@@ -172,44 +183,49 @@ export function PlotBody({
   const splits = useMemo(() => config.splits ?? [], [config.splits]);
   const channelOverrides = useMemo(() => config.channels ?? {}, [config.channels]);
   const valueStyles = useMemo(() => config.valueStyles ?? {}, [config.valueStyles]);
+  const bins = useMemo(() => config.bins ?? {}, [config.bins]);
 
-  // ---- the dimension model over the filtered rows ---------------------------
-  const summary = useMemo(() => summarizeParameters(rows), [rows]);
-  const differingByKey = useMemo(() => {
-    const m = new Map<string, ParamValues>();
-    for (const d of summary.differing) m.set(d.dim.key, d);
-    return m;
-  }, [summary]);
-  // Only user-chosen splits that actually differ in the current view get a channel.
-  const activeSplits = useMemo(
-    () => splits.filter((k) => differingByKey.has(k)),
-    [splits, differingByKey],
-  );
-  const channelByDim = useMemo(
-    () => resolveChannels(activeSplits, channelOverrides, (k) => differingByKey.get(k)?.values.length ?? 0),
-    [activeSplits, channelOverrides, differingByKey],
-  );
-  const channelDims = useMemo(() => {
-    const byChannel = new Map<Channel, ParamValues>();
-    for (const d of summary.differing) {
-      const ch = channelByDim.get(d.dim.key);
-      if (ch) byChannel.set(ch, d);
+  // ---- continuous colorBy encoding (Phase 3) --------------------------------
+  const colorBy = config.colorBy ?? null;
+  const colorByActive = !!colorBy && !!index[colorBy];
+  const colorByColId = colorByActive ? (index[colorBy!] ? metricColumnId(colorBy!, index) : colorBy!) : null;
+  const colorByExtent = useMemo(() => {
+    if (!colorByColId) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (const r of rows) {
+      const v = numericValue(r, colorByColId);
+      if (v === null || !Number.isFinite(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
     }
-    return byChannel;
-  }, [summary, channelByDim]);
-  const colorDim = channelDims.get("color");
-  const shapeDim = channelDims.get("shape");
-  const sizeDim = channelDims.get("size");
-  // Split dims in channel order (color, shape, size, dash) — RunPoint.dims order.
-  const splitDims = useMemo(() => {
-    const order: Channel[] = ["color", "shape", "size", "dash"];
-    return order.map((ch) => channelDims.get(ch)).filter((d): d is ParamValues => d !== undefined);
-  }, [channelDims]);
-  // Any differing dimension the user did NOT split is averaged (visible spread).
-  const averaging = useMemo(
-    () => summary.differing.some((d) => !channelByDim.has(d.dim.key)),
-    [summary, channelByDim],
+    return Number.isFinite(lo) ? { lo, hi } : null;
+  }, [rows, colorByColId]);
+  const colorByLabel = colorByActive ? (index[colorBy!]?.label ?? colorBy!) : "";
+  const colorForC = useCallback(
+    (v: number | null | undefined): string => {
+      if (v === null || v === undefined || !Number.isFinite(v)) return NULL_GRADIENT;
+      if (!colorByExtent) return gradientColor(0.5);
+      const { lo, hi } = colorByExtent;
+      return gradientColor(hi > lo ? (v - lo) / (hi - lo) : 0.5);
+    },
+    [colorByExtent],
   );
+
+  // ---- the dimension model over the filtered rows (binned splits + judge) ---
+  const summary = useMemo(() => summarizeParameters(rows), [rows]);
+  const { splitDims, byChannel, averaging } = useMemo(
+    () => resolveSplits({
+      summary, rows, splitKeys: splits, bins, channels: channelOverrides,
+      colorByActive,
+      numericOf: (m) => (r) => numericValue(r, metricColumnId(m, index)),
+      labelOf: (m) => index[m]?.label ?? m,
+      fmtEdge: (m) => (index[m] ? (v: number) => formatValue(index, m, v) : edgeLabel),
+    }),
+    [summary, rows, splits, bins, channelOverrides, colorByActive, index],
+  );
+  const colorDim = byChannel.get("color");
+  const shapeDim = byChannel.get("shape");
+  const sizeDim = byChannel.get("size");
 
   // value -> ordinal per channel dim (values are pre-sorted in ParamValues).
   const valueIndex = (d: ParamValues | undefined) => {
@@ -221,16 +237,17 @@ export function PlotBody({
   const shapeIdx = useMemo(() => valueIndex(shapeDim), [shapeDim]);
   const sizeIdx = useMemo(() => valueIndex(sizeDim), [sizeDim]);
 
-  // Axis view windows (zoom only; never touch FilterState) in RAW metric units.
-  const xDomain = config.xDomain ?? null;
-  const yDomain = config.yDomain ?? null;
+  // Axis view windows (zoom only; never touch FilterState) in RAW units. A
+  // categorical axis ignores a persisted numeric window (its units are ordinal).
+  const xDomain = axisX && !axisX.categorical ? config.xDomain ?? null : null;
+  const yDomain = axisY && !axisY.categorical ? config.yDomain ?? null : null;
 
   // ---- points ---------------------------------------------------------------
   const {
     points, pairs, ghosts, ghostsSubsampled, droppedLog, outsideWindow,
     binned, rowByPath, dataExtent,
   } = useMemo(() => {
-    if (lineMode) {
+    if (lineMode || !axisX || !axisY) {
       // Scatter path is inert in epoch mode — the epoch memo drives rendering.
       return {
         points: [], pairs: [], ghosts: [], ghostsSubsampled: false,
@@ -238,8 +255,6 @@ export function PlotBody({
         rowByPath: new Map<string, RunRow>(), dataExtent: null,
       };
     }
-    const xId = metricColumnId(x, index);
-    const yId = metricColumnId(y, index);
     let dropped = 0;
     let outside = 0;
     const runPts: RunPoint[] = [];
@@ -249,8 +264,8 @@ export function PlotBody({
     // Raw data extent over droppable-clean points (pre-window) for the axis controls.
     let exMinX = Infinity, exMaxX = -Infinity, exMinY = Infinity, exMaxY = -Infinity;
     for (const r of rows) {
-      const vx = numericValue(r, xId);
-      const vy = numericValue(r, yId);
+      const vx = axisX.value(r);
+      const vy = axisY.value(r);
       if (vx === null || vy === null) continue;
       if ((logX && vx <= 0) || (logY && vy <= 0)) { dropped++; continue; }
       if (vx < exMinX) exMinX = vx;
@@ -266,7 +281,8 @@ export function PlotBody({
       const tx = logX ? Math.log10(vx) : vx;
       const ty = logY ? Math.log10(vy) : vy;
       const dims = splitDims.map((d) => d.dim.raw(r) ?? "—");
-      runPts.push({ x: tx, y: ty, runId: r.identity.node_path, dims });
+      const c = colorByColId ? numericValue(r, colorByColId) : null;
+      runPts.push({ x: tx, y: ty, runId: r.identity.node_path, dims, c });
       rawPairs.push({ x: tx, y: ty, color: colorDim ? colorDim.dim.raw(r) : null });
       byPath.set(r.identity.node_path, r);
     }
@@ -285,7 +301,7 @@ export function PlotBody({
         ? { xMin: exMinX, xMax: exMaxX, yMin: exMinY, yMax: exMaxY }
         : null,
     };
-  }, [lineMode, rows, x, y, index, logX, logY, splitDims, colorDim, averaging, xDomain, yDomain]);
+  }, [lineMode, rows, axisX, axisY, logX, logY, splitDims, colorDim, colorByColId, averaging, xDomain, yDomain]);
 
   // ---- epoch trajectories (line mode) ---------------------------------------
   const epoch = useMemo(() => {
@@ -296,6 +312,23 @@ export function PlotBody({
     const { series, dropped: droppedY } = buildRunSeries(rows, metric, dimsOf, activeJudge, logY);
     const groups = groupSeries(series);
 
+    // Per-run colorBy value + per-group mean (continuous COLOR encoding).
+    const colorByOfRun = colorByColId
+      ? new Map(rows.map((r) => [r.identity.node_path, numericValue(r, colorByColId)]))
+      : null;
+    const meanColorByOfDims = new Map<string, number>();
+    if (colorByActive && colorByOfRun) {
+      const acc = new Map<string, number[]>();
+      for (const s of series) {
+        const cv = colorByOfRun.get(s.runId);
+        if (cv === null || cv === undefined || !Number.isFinite(cv)) continue;
+        const k = s.dims.join(" ");
+        const arr = acc.get(k);
+        if (arr) arr.push(cv); else acc.set(k, [cv]);
+      }
+      for (const [k, vs] of acc) meanColorByOfDims.set(k, vs.reduce((a, b) => a + b, 0) / vs.length);
+    }
+
     // x transform (logX drops epoch ≤ 0); count as "dropped (log)".
     let droppedX = 0;
     const txX = (e: number): number | null => {
@@ -304,7 +337,7 @@ export function PlotBody({
       return Math.log10(e);
     };
 
-    // Ghost run-lines, colored by the color-dim value, subsampled for perf.
+    // Ghost run-lines, colored by colorBy (continuous) or the color-dim value.
     const ci = colorDim ? splitDims.indexOf(colorDim) : -1;
     const ghostCap = 500;
     const step = Math.max(1, Math.ceil(series.length / ghostCap));
@@ -312,7 +345,9 @@ export function PlotBody({
     for (let i = 0; i < series.length; i += step) {
       const s = series[i];
       const cv = ci >= 0 ? s.dims[ci] : "";
-      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      const color = colorByActive
+        ? colorForC(colorByOfRun?.get(s.runId) ?? null)
+        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
       const pts: Array<{ x: number; y: number }> = [];
       for (const p of s.points) {
         const x2 = txX(p.e);
@@ -321,12 +356,14 @@ export function PlotBody({
       ghostRuns.push({ color, pts });
     }
 
-    // Group mean lines: color from the color dim, dash from the shape dim
-    // (splits[1] → dash in line mode; shape glyphs are meaningless on a line).
+    // Group mean lines: color from colorBy mean (continuous) or the color dim;
+    // dash from the shape dim (shape glyphs are meaningless on a line).
     const di = shapeDim ? splitDims.indexOf(shapeDim) : -1;
     const groupVis = groups.map((g) => {
       const cv = ci >= 0 ? g.dims[ci] : "";
-      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      const color = colorByActive
+        ? colorForC(meanColorByOfDims.get(g.dims.join(" ")) ?? null)
+        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
       const dv = di >= 0 ? g.dims[di] : "";
       const dash = shapeDim ? dashForValue(shapeDim.dim.key, dv, shapeIdx.get(dv) ?? 0, valueStyles) : "";
       const pts: Array<{ x: number; y: number; sd: number | null; n: number }> = [];
@@ -353,21 +390,29 @@ export function PlotBody({
       seriesCount: series.length,
       extent: Number.isFinite(x0) ? { x0, x1, y0, y1 } : null,
     };
-  }, [lineMode, y, rows, splitDims, activeJudge, logX, logY, colorDim, shapeDim, colorIdx, shapeIdx, valueStyles]);
+  }, [lineMode, y, rows, splitDims, activeJudge, logX, logY, colorDim, shapeDim, colorIdx, shapeIdx, valueStyles,
+      colorByActive, colorByColId, colorForC]);
 
-  // Jitter single-run points on a linear count x-axis (stacked integers).
-  const jitter = !averaging && index[x]?.dtype === "count" && !logX;
+  // Jitter single points stacked on a count/categorical axis (log axes excluded).
+  const jitterX = !averaging && !!axisX?.jitter && !logX;
+  const jitterY = !averaging && !!axisY?.jitter && !logY;
 
   const visual: VisualPoint[] = useMemo(() => {
-    const xL = index[x]?.label ?? x;
-    const yL = index[y]?.label ?? y;
+    const xL = axisX?.label ?? x;
+    const yL = axisY?.label ?? y;
+    const catX = axisX?.categorical ? axisX.categories : null;
+    const catY = axisY?.categorical ? axisY.categories : null;
+    const fmtX = (v: number) => (catX ? catX[Math.round(v)] ?? tickFmt(v) : tickFmt(v));
+    const fmtY = (v: number) => (catY ? catY[Math.round(v)] ?? tickFmt(v) : tickFmt(v));
     const ci = splitDims.indexOf(colorDim!);
     const si = splitDims.indexOf(shapeDim!);
     const zi = splitDims.indexOf(sizeDim!);
     return points.map((gp) => {
       const cv = gp.dims[ci];
       const sv = gp.dims[si];
-      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      const color = colorByActive
+        ? colorForC(gp.c)
+        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
       const shape = shapeDim ? shapeForValue(shapeDim.dim.key, sv, shapeIdx.get(sv) ?? 0, valueStyles) : 0;
       const r = sizeDim
         ? 2.5 + Math.min(5.5, (sizeIdx.get(gp.dims[zi]) ?? 0) * 1.4)
@@ -380,25 +425,34 @@ export function PlotBody({
         const row = rowByPath.get(gp.runId);
         label.push(row ? `${fnText(row.function.arity, row.function.truth_table)} · ${row.identity.run_id}` : gp.runId);
         if (dimsDesc) label.push(dimsDesc);
-        label.push(`${xL}: ${tickFmt(gp.x)}${logX ? " (log10)" : ""}`);
-        label.push(`${yL}: ${tickFmt(gp.y)}${logY ? " (log10)" : ""}`);
+        label.push(`${xL}: ${fmtX(gp.x)}${logX ? " (log10)" : ""}`);
+        label.push(`${yL}: ${fmtY(gp.y)}${logY ? " (log10)" : ""}`);
       } else {
         label.push(`${dimsDesc || "all runs"} · n=${gp.n}`);
-        label.push(`${xL}: ${tickFmt(gp.x)}${gp.sdX !== null && gp.sdX > 0 ? ` ± ${tickFmt(gp.sdX)}` : ""}${binned ? " (bin)" : ""}${logX ? " (log10)" : ""}`);
-        label.push(`mean ${yL}: ${tickFmt(gp.y)}${gp.sdY !== null ? ` ± ${tickFmt(gp.sdY)}` : ""}${logY ? " (log10)" : ""}`);
+        label.push(`${xL}: ${fmtX(gp.x)}${gp.sdX !== null && gp.sdX > 0 && !catX ? ` ± ${tickFmt(gp.sdX)}` : ""}${binned ? " (bin)" : ""}${logX ? " (log10)" : ""}`);
+        label.push(`mean ${yL}: ${fmtY(gp.y)}${gp.sdY !== null && !catY ? ` ± ${tickFmt(gp.sdY)}` : ""}${logY ? " (log10)" : ""}`);
+      }
+      if (colorByActive && gp.c !== null && gp.c !== undefined) {
+        label.push(`${colorByLabel}: ${tickFmt(gp.c)}`);
       }
       return {
         gp,
-        jx: jitter && gp.runId ? (hash01(gp.runId) - 0.5) * 0.5 : 0,
+        jx: jitterX && gp.runId ? (hash01(gp.runId) - 0.5) * 0.5 : 0,
+        jy: jitterY && gp.runId ? (hash01(gp.runId + "#y") - 0.5) * 0.5 : 0,
         color,
         shapeIdx: shape,
         r,
         label,
       };
     });
-  }, [points, splitDims, colorDim, shapeDim, sizeDim, colorIdx, shapeIdx, sizeIdx, valueStyles, rowByPath, index, x, y, logX, logY, binned, jitter]);
+  }, [points, splitDims, colorDim, shapeDim, sizeDim, colorIdx, shapeIdx, sizeIdx, valueStyles, rowByPath,
+      axisX, axisY, x, y, logX, logY, binned, jitterX, jitterY,
+      colorByActive, colorByLabel, colorForC]);
 
-  // Scales over the TRANSFORMED values.
+  // Scales over the TRANSFORMED values. Categorical axes use integer tick
+  // positions and a domain spanning all categories (± ½ for the end margins).
+  const catX = !lineMode && axisX?.categorical ? axisX.categories : null;
+  const catY = !lineMode && axisY?.categorical ? axisY.categories : null;
   const scale = useMemo(() => {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     if (lineMode && epoch?.extent) {
@@ -406,10 +460,11 @@ export function PlotBody({
     } else {
       for (const p of visual) {
         const px = p.gp.x + p.jx;
+        const py = p.gp.y + p.jy;
         if (px < x0) x0 = px;
         if (px > x1) x1 = px;
-        if (p.gp.y < y0) y0 = p.gp.y;
-        if (p.gp.y > y1) y1 = p.gp.y;
+        if (py < y0) y0 = py;
+        if (py > y1) y1 = py;
       }
     }
     if (!Number.isFinite(x0)) { x0 = 0; x1 = 1; y0 = 0; y1 = 1; }
@@ -418,6 +473,9 @@ export function PlotBody({
     const padX = (x1 - x0) * 0.04;
     const padY = (y1 - y0) * 0.06;
     x0 -= padX; x1 += padX; y0 -= padY; y1 += padY;
+    // Categorical: pin the domain to the ordinal category range.
+    if (catX) { x0 = -0.5; x1 = catX.length - 0.5; }
+    if (catY) { y0 = -0.5; y1 = catY.length - 0.5; }
     // A set axis window overrides the auto extent (exact zoom, no padding).
     const tf = (v: number, log: boolean) => (log ? Math.log10(Math.max(v, 1e-12)) : v);
     if (xDomain) { x0 = tf(xDomain[0], logX); x1 = tf(xDomain[1], logX); }
@@ -426,20 +484,27 @@ export function PlotBody({
     const sy = (v: number) => H - PAD.b - ((v - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
     const ix = (px: number) => x0 + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (x1 - x0);
     const iy = (py: number) => y0 + ((H - PAD.b - py) / (H - PAD.t - PAD.b)) * (y1 - y0);
-    return { sx, sy, ix, iy, xTicks: niceTicks(x0, x1, 5), yTicks: niceTicks(y0, y1, 5) };
-  }, [visual, W, H, xDomain, yDomain, logX, logY, lineMode, epoch]);
+    const intTicks = (n: number) => Array.from({ length: n }, (_, i) => i);
+    return {
+      sx, sy, ix, iy,
+      xTicks: catX ? intTicks(catX.length) : niceTicks(x0, x1, 5),
+      yTicks: catY ? intTicks(catY.length) : niceTicks(y0, y1, 5),
+    };
+  }, [visual, W, H, xDomain, yDomain, logX, logY, lineMode, epoch, catX, catY]);
 
   // Ghost points — faint underlying runs behind the group means (averaging +
-  // config.ghosts). Colored by each run's color-dim value (its group's color).
+  // config.ghosts). Colored by colorBy (continuous) or each run's color-dim value.
   const ghostVisual = useMemo(() => {
     if (!averaging || !config.ghosts) return [] as Array<{ x: number; y: number; color: string }>;
     const ci = colorDim ? splitDims.indexOf(colorDim) : -1;
     return ghosts.map((g: Ghost) => {
       const cv = ci >= 0 ? g.dims[ci] : "";
-      const color = colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+      const color = colorByActive
+        ? colorForC(g.c)
+        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
       return { x: g.x, y: g.y, color };
     });
-  }, [ghosts, averaging, config.ghosts, colorDim, splitDims, colorIdx, valueStyles]);
+  }, [ghosts, averaging, config.ghosts, colorDim, splitDims, colorIdx, valueStyles, colorByActive, colorForC]);
 
   // Trend fits + the r/ρ readout — ALWAYS over the underlying runs (a fit over
   // group means would overstate the association).
@@ -513,8 +578,8 @@ export function PlotBody({
     exportRef.current = {
       getSvg: () => svgRef.current,
       getCsv: () => {
-        const xL = `${index[x]?.label ?? x}${logX ? " (log10)" : ""}`;
-        const yL = `${index[y]?.label ?? y}${logY ? " (log10)" : ""}`;
+        const xL = `${axisX?.label ?? x}${logX ? " (log10)" : ""}`;
+        const yL = `${axisY?.label ?? y}${logY ? " (log10)" : ""}`;
         const dimHead = splitDims.map((d) => d.dim.label);
         if (lineMode && epoch) {
           const head = ["epoch", ...dimHead, "n", `${yL} (mean)`, `${yL} (sd)`];
@@ -532,7 +597,7 @@ export function PlotBody({
       },
     };
     return () => { exportRef.current = null; };
-  }, [exportRef, points, x, y, index, logX, logY, splitDims, averaging, lineMode, epoch]);
+  }, [exportRef, points, x, y, axisX, axisY, logX, logY, splitDims, averaging, lineMode, epoch]);
 
   // The point linked to the row hovered/selected elsewhere (table / tree).
   const linked = useMemo(
@@ -540,9 +605,12 @@ export function PlotBody({
     [visual, hoveredDir, selectedDir],
   );
 
-  // Tick labels un-transform on a log axis (positions stay in log space).
-  const xTickLabel = (t: number) => (logX ? tickFmt(Math.pow(10, t)) : tickFmt(t));
-  const yTickLabel = (t: number) => (logY ? tickFmt(Math.pow(10, t)) : tickFmt(t));
+  // Tick labels: category names on a categorical axis, else numeric (log ticks
+  // un-transform, positions stay in log space).
+  const xTickLabel = (t: number) =>
+    catX ? (catX[Math.round(t)] ?? "") : logX ? tickFmt(Math.pow(10, t)) : tickFmt(t);
+  const yTickLabel = (t: number) =>
+    catY ? (catY[Math.round(t)] ?? "") : logY ? tickFmt(Math.pow(10, t)) : tickFmt(t);
 
   // Per-split-combo connecting lines (averaging only): the mean trajectory of
   // each combination across X.
@@ -608,10 +676,10 @@ export function PlotBody({
                 standalone figure keeps plain labels */}
             <g data-export-only style={{ display: "none" }}>
               <text x={(PAD.l + W - PAD.r) / 2} y={H - 8} fontSize={13} textAnchor="middle"
-                fill="var(--color-text-muted)">{(index[x]?.label ?? x) + (logX ? " (log)" : "")}</text>
+                fill="var(--color-text-muted)">{(lineMode ? "epoch" : axisX?.label ?? x) + (logX ? " (log)" : "")}</text>
               <text x={16} y={(PAD.t + H - PAD.b) / 2} fontSize={13} textAnchor="middle"
                 transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
-                fill="var(--color-text-muted)">{(index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
+                fill="var(--color-text-muted)">{(axisY?.label ?? index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
             </g>
 
             {/* epoch trajectories: ghost run-lines, group ±SD ribbons, mean lines */}
@@ -715,7 +783,7 @@ export function PlotBody({
             <g>
               {visual.map((p, i) => (
                 <g key={i}>
-                  {shapeNode(p.shapeIdx, scale.sx(p.gp.x + p.jx), scale.sy(p.gp.y), p.r, {
+                  {shapeNode(p.shapeIdx, scale.sx(p.gp.x + p.jx), scale.sy(p.gp.y + p.jy), p.r, {
                     fill: p.color, fillOpacity: 0.6, stroke: p.color, strokeOpacity: 0.9,
                   })}
                 </g>
@@ -727,7 +795,7 @@ export function PlotBody({
               <circle
                 key={`h${i}`}
                 cx={scale.sx(p.gp.x + p.jx)}
-                cy={scale.sy(p.gp.y)}
+                cy={scale.sy(p.gp.y + p.jy)}
                 r={p.r + 3}
                 fill="none"
                 stroke="var(--color-text)"
@@ -784,7 +852,7 @@ export function PlotBody({
                 <circle
                   key={`t${i}`}
                   cx={scale.sx(p.gp.x + p.jx)}
-                  cy={scale.sy(p.gp.y)}
+                  cy={scale.sy(p.gp.y + p.jy)}
                   r={Math.max(9, p.r + 5)}
                   fill="transparent"
                   className={p.gp.n === 1 ? "cursor-pointer" : undefined}
@@ -794,6 +862,37 @@ export function PlotBody({
                 />
               ))}
             </g>
+
+            {/* continuous colorBy colorbar (replaces a categorical color legend) */}
+            {colorByActive && colorByExtent && (() => {
+              const barH = Math.min(96, Math.max(48, (H - PAD.t - PAD.b) * 0.32));
+              const barW = 8;
+              const bx = W - PAD.r - barW - 2;
+              const by = PAD.t + 6;
+              const steps = 24;
+              const fmtC = (v: number) => (index[colorBy!] ? formatValue(index, colorBy!, v) : tickFmt(v));
+              return (
+                <g>
+                  {Array.from({ length: steps }, (_, i) => {
+                    const t = i / (steps - 1);
+                    return (
+                      <rect key={`cb${i}`} x={bx} y={by + (1 - t) * barH - barH / steps}
+                        width={barW} height={barH / steps + 0.6}
+                        fill={gradientColor(t)} />
+                    );
+                  })}
+                  <rect x={bx} y={by - barH / steps} width={barW} height={barH + barH / steps}
+                    fill="none" stroke="var(--color-border)" strokeWidth={0.5} />
+                  <text x={bx - 3} y={by + 3} fontSize={9} textAnchor="end"
+                    fill="var(--color-text-faint)" className="font-mono">{fmtC(colorByExtent.hi)}</text>
+                  <text x={bx - 3} y={by + barH} fontSize={9} textAnchor="end"
+                    fill="var(--color-text-faint)" className="font-mono">{fmtC(colorByExtent.lo)}</text>
+                  <text x={bx + barW + 3} y={by + barH / 2} fontSize={9} textAnchor="middle"
+                    transform={`rotate(90 ${bx + barW + 3} ${by + barH / 2})`}
+                    fill="var(--color-text-muted)" className="font-mono">{colorByLabel}</text>
+                </g>
+              );
+            })()}
           </svg>
         )}
 
@@ -811,6 +910,7 @@ export function PlotBody({
               order={X_GROUP_ORDER}
               placement="up"
               pinned={[{ value: "epoch", label: "epoch (training progress)" }]}
+              params={paramAxisOptions()}
             />
           </div>
         </div>
@@ -824,6 +924,7 @@ export function PlotBody({
               order={Y_GROUP_ORDER}
               placement="right"
               vertical
+              params={paramAxisOptions()}
             />
           </div>
         </div>
@@ -861,7 +962,7 @@ export function PlotBody({
         {/* tooltip (flips sides near the right edge) */}
         {hover && (() => {
           const px = scale.sx(hover.gp.x + hover.jx);
-          const py = scale.sy(hover.gp.y);
+          const py = scale.sy(hover.gp.y + hover.jy);
           const flip = px > W * 0.62;
           return (
             <div

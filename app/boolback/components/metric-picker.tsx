@@ -23,6 +23,7 @@ export function MetricPicker({
   vertical = false,
   placement = "down",
   pinned = [],
+  params = [],
 }: {
   value: string;
   onChange: (name: string) => void;
@@ -35,6 +36,8 @@ export function MetricPicker({
   placement?: "down" | "up" | "right";
   /** Sentinel entries pinned above the metric groups (e.g. the epoch x-axis). */
   pinned?: Array<{ value: string; label: string }>;
+  /** Parameter axis options, listed under a "parameters" group (Phase 3). */
+  params?: Array<{ value: string; label: string }>;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -50,8 +53,12 @@ export function MetricPicker({
     [groups],
   );
   const currentLabel = useMemo(
-    () => pinned.find((p) => p.value === value)?.label ?? schema.find((e) => e.name === value)?.label ?? value,
-    [schema, value, pinned],
+    () =>
+      pinned.find((p) => p.value === value)?.label ??
+      params.find((p) => p.value === value)?.label ??
+      schema.find((e) => e.name === value)?.label ??
+      value,
+    [schema, value, pinned, params],
   );
 
   const close = () => {
@@ -68,6 +75,29 @@ export function MetricPicker({
   const query = q.trim().toLowerCase();
   const matches = (e: MetricSchemaEntry) =>
     e.label.toLowerCase().includes(query) || e.name.toLowerCase().includes(query);
+  const paramMatches = params.filter(
+    (p) => query === "" || p.label.toLowerCase().includes(query) || p.value.toLowerCase().includes(query),
+  );
+
+  const plainRow = (p: { value: string; label: string }) => (
+    <button
+      key={p.value}
+      onClick={() => pick(p.value)}
+      className={[
+        "flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left hover:bg-surface-alt hover:text-accent",
+        p.value === value ? "text-accent" : "text-text/90",
+      ].join(" ")}
+    >
+      <span className="truncate">{p.label}</span>
+      {p.value === value && <span className="text-accent">✓</span>}
+    </button>
+  );
+  const paramGroup = paramMatches.length > 0 && (
+    <div className="mb-1">
+      <div className="px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-faint">parameters</div>
+      {paramMatches.map(plainRow)}
+    </div>
+  );
 
   const row = (e: MetricSchemaEntry, label: string, indent = false) => (
     <button
@@ -145,6 +175,7 @@ export function MetricPicker({
               {query !== "" ? (
                 // Flat direct matches (per-method entries included un-collapsed).
                 <>
+                  {paramGroup}
                   {[...groups, ["no data yet", empty.map((e) => e)] as const].map(([group, entries]) => {
                     const hits = (entries as MetricSchemaEntry[]).filter(matches);
                     if (hits.length === 0) return null;
@@ -158,6 +189,7 @@ export function MetricPicker({
                 </>
               ) : (
                 <>
+                  {paramGroup}
                   {structured.map(([group, rows]) => (
                     <div key={group} className="mb-1">
                       <div className="px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-faint">{group}</div>
