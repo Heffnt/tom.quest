@@ -394,13 +394,13 @@ function BrewChip({
             ★
           </span>
         )}
-        {brew.outputCount > 0 && (
+        {brew.cauldronCount > 0 && (
           <span
             aria-hidden="true"
-            title={`${brew.outputCount} on the cauldron`}
+            title={`${brew.cauldronCount} on the cauldron`}
             className="rounded-full bg-accent/20 px-1 text-[9px] leading-4 text-accent"
           >
-            {brew.outputCount}
+            {brew.cauldronCount}
           </span>
         )}
       </button>
@@ -675,9 +675,9 @@ function SeeAllPopover({
                   >
                     {brewName(b, members)}
                   </span>
-                  {b.outputCount > 0 && (
+                  {b.cauldronCount > 0 && (
                     <span className="ml-auto rounded-full bg-accent/20 px-1 text-[9px] leading-4 text-accent">
-                      {b.outputCount}
+                      {b.cauldronCount}
                     </span>
                   )}
                 </MenuButton>

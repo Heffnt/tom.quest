@@ -30,10 +30,6 @@ import {
 } from "../app/perfume/data/base";
 import type { BrewState, Ingredient, Perfume } from "../app/perfume/lib/types";
 
-// Anonymous caller keys are "anon:<uuid>" minted client-side (localStorage) —
-// same convention as convex/perfume.ts.
-const ANON_KEY = /^anon:[0-9a-f-]{36}$/;
-
 // A member is fresh (online activity indicator lit) if seen within this window.
 const PRESENCE_FRESH_MS = 10_000;
 const PRESENCE_SWEEP_MS = 15_000;
@@ -58,11 +54,6 @@ const PERFUME_BY_ID: Record<string, Perfume> = Object.fromEntries(
   basePerfumes.map((p) => [p.key, p]),
 );
 
-// Fallback admin identity if the site has no role mechanism. It DOES — Tom is
-// users.role === "tom" (authRoles.roleAccess), reused below — so this constant
-// is documentation of that intent, not the live check.
-const ADMIN_MEMBER_KEYS: readonly string[] = [];
-
 // ── types ────────────────────────────────────────────────────────────────────
 
 type BrewItem = Doc<"perfumeBrews">["items"][number];
@@ -73,32 +64,17 @@ type WildPlay = Doc<"perfumeBrews">["wildPlays"][number];
 
 type Actor = { key: string; name: string; isAdmin: boolean };
 
-// Logged-in users are keyed by their Convex id; anonymous callers must supply a
-// well-formed anonId. Calls with neither are rejected. The display name prefers
-// the member's registered profile over the account name. Admin (Tom) is derived
-// from users.role — never stored on the member row.
-async function identify(
-  ctx: QueryCtx | MutationCtx,
-  anonId: string | undefined,
-): Promise<Actor> {
+// Membership is login-only (DESIGN.md §4). The caller must be a logged-in
+// tom.quest user, keyed by their Convex id; a visitor (no auth) is rejected.
+// The display name prefers the member's registered profile over the account
+// name. Admin (Tom) is derived from users.role — never stored on the member row.
+async function identify(ctx: QueryCtx | MutationCtx): Promise<Actor> {
   const user = await viewerDoc(ctx);
-  if (user) {
-    const key = `user:${user._id}`;
-    const member = await memberByKey(ctx, key);
-    const isAdmin =
-      roleAccess(user.role).isTom || ADMIN_MEMBER_KEYS.includes(key);
-    return { key, name: member?.name ?? user.name ?? "User", isAdmin };
-  }
-  if (anonId !== undefined) {
-    if (!ANON_KEY.test(anonId)) throw new Error("Malformed anonId");
-    const member = await memberByKey(ctx, anonId);
-    return {
-      key: anonId,
-      name: member?.name ?? "Visitor",
-      isAdmin: ADMIN_MEMBER_KEYS.includes(anonId),
-    };
-  }
-  throw new Error("Sign in or provide anonId");
+  if (!user) throw new Error("Sign in to join");
+  const key = `user:${user._id}`;
+  const member = await memberByKey(ctx, key);
+  const isAdmin = roleAccess(user.role).isTom;
+  return { key, name: member?.name ?? user.name ?? "User", isAdmin };
 }
 
 // ── permission helpers (mirror DESIGN.md §4 matrix) ──────────────────────────
@@ -161,6 +137,16 @@ async function requireMember(
   return member;
 }
 
+// The identify + requireMember prelude every acting mutation shares: resolve the
+// logged-in caller and assert they have joined. Returns the Actor (the member
+// row itself is not needed by the ~20 mutations that use this — callers that do
+// need the row, e.g. setMemberIcon, keep the two-step form).
+async function identifyMember(ctx: MutationCtx): Promise<Actor> {
+  const actor = await identify(ctx);
+  await requireMember(ctx, actor);
+  return actor;
+}
+
 // Deterministic default color from the fundamentals' palette (same scheme as
 // convex/perfume.ts colorFor).
 function colorFor(key: string): string {
@@ -201,7 +187,6 @@ async function ensureInventory(
     memberKey,
     ingredients: {},
     pures: {},
-    giftEvents: [],
     perfumes: [],
     updatedAt: Date.now(),
   });
@@ -239,6 +224,16 @@ async function requireBrew(
   return brew;
 }
 
+// Perfumes resting on the cauldron. PROD-SAFE: un-migrated prod rows carry the
+// legacy `outputs` field instead of `cauldron` (see schema.ts). New code always
+// writes `cauldron`; every read goes through here so pre-migration rows don't
+// throw. The ship migration renames outputs→cauldron and drops `outputs`.
+function restingOn(
+  brew: Doc<"perfumeBrews">,
+): NonNullable<Doc<"perfumeBrews">["cauldron"]> {
+  return brew.cauldron ?? brew.outputs ?? [];
+}
+
 async function partyBrewDoc(
   ctx: QueryCtx | MutationCtx,
 ): Promise<Doc<"perfumeBrews"> | null> {
@@ -246,6 +241,31 @@ async function partyBrewDoc(
     .query("perfumeBrews")
     .withIndex("by_owner", (q) => q.eq("owner", null))
     .first();
+}
+
+// The common fields of a freshly-inserted brew: an empty graph, no plays, no
+// pin, an empty cauldron, and matching timestamps. Callers spread this and set
+// `owner`/`seq` (and, for copyBrew, override items/plays/pinned).
+function newBrewFields(now: number): {
+  nickname: string | null;
+  items: BrewItem[];
+  strikePlays: StrikePlay[];
+  wildPlays: WildPlay[];
+  pinned: Doc<"perfumeBrews">["pinned"];
+  cauldron: Doc<"perfumeBrews">["cauldron"];
+  createdAt: number;
+  updatedAt: number;
+} {
+  return {
+    nickname: null,
+    items: [],
+    strikePlays: [],
+    wildPlays: [],
+    pinned: null,
+    cauldron: [],
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 async function ensurePartyBrew(
@@ -256,15 +276,8 @@ async function ensurePartyBrew(
   const now = Date.now();
   const id = await ctx.db.insert("perfumeBrews", {
     owner: null,
-    nickname: null,
     seq: 0,
-    items: [],
-    strikePlays: [],
-    wildPlays: [],
-    pinned: null,
-    outputs: [],
-    createdAt: now,
-    updatedAt: now,
+    ...newBrewFields(now),
   });
   return (await ctx.db.get(id))!;
 }
@@ -349,7 +362,6 @@ function addToBrew(
   itemKey: string,
   n: number,
   contributorKey: string,
-  contributorName: string,
   realFromStock: boolean,
 ): {
   ingredients: Record<string, number>;
@@ -371,18 +383,47 @@ function addToBrew(
       if (section[itemKey] <= 0) delete section[itemKey];
       const idx = items.findIndex((p) => p.key === itemKey && !p.real);
       if (idx >= 0) {
-        items[idx] = { key: itemKey, contributorKey, contributorName, real: true };
+        items[idx] = { key: itemKey, contributorKey, real: true };
         converted++;
       } else {
-        items.push({ key: itemKey, contributorKey, contributorName, real: true });
+        items.push({ key: itemKey, contributorKey, real: true });
         real++;
       }
     } else {
-      items.push({ key: itemKey, contributorKey, contributorName, real: false });
+      items.push({ key: itemKey, contributorKey, real: false });
       hypothetical++;
     }
   }
   return { ingredients, pures, real, hypothetical, converted };
+}
+
+// Credit a set of REAL brew items back to their contributors' inventories,
+// grouped by (contributorKey, itemKey). The single core behind the
+// return-items-to-owners step in moveItemToInventory, returnIngredients, and
+// emptyBrew (hypotheticals own no stock and are never passed here).
+async function creditContributors(
+  ctx: MutationCtx,
+  realItems: BrewItem[],
+  now: number,
+): Promise<void> {
+  const byContributor = new Map<string, Map<string, number>>();
+  for (const item of realItems) {
+    const forKey =
+      byContributor.get(item.contributorKey) ?? new Map<string, number>();
+    forKey.set(item.key, (forKey.get(item.key) ?? 0) + 1);
+    byContributor.set(item.contributorKey, forKey);
+  }
+  for (const [contributorKey, counts] of byContributor) {
+    const inv = await ensureInventory(ctx, contributorKey);
+    let ingredients = { ...inv.ingredients };
+    let pures = { ...inv.pures };
+    for (const [itemKey, count] of counts) {
+      const next = withStock({ ...inv, ingredients, pures }, itemKey, count);
+      ingredients = next.ingredients;
+      pures = next.pures;
+    }
+    await ctx.db.patch(inv._id, { ingredients, pures, updatedAt: now });
+  }
 }
 
 // Remove up to n copies of itemKey from `items` — hypotheticals first (the junk
@@ -418,6 +459,22 @@ function newInstanceId(): string {
 
 // ── brew verification (engine — no re-implementation) ────────────────────────
 
+// Resolve a perfume and validate a requirement index against its recipes — the
+// shared validation behind pinRecipe and verifyBrew. `reqIndex` keeps the `req`
+// abbreviation (DESIGN.md §1: it names a position in `recipes`, not the concept).
+function requireRecipe(perfumeId: string, reqIndex: number): Perfume {
+  const perfume = PERFUME_BY_ID[perfumeId];
+  if (!perfume) throw new Error(`Unknown perfume: ${perfumeId}`);
+  if (
+    !Number.isInteger(reqIndex) ||
+    reqIndex < 0 ||
+    reqIndex >= perfume.recipes.length
+  ) {
+    throw new Error(`Invalid recipe index: ${reqIndex}`);
+  }
+  return perfume;
+}
+
 // Requires every item real and the effective tally perfect at exactly the
 // claimed recipe and copy-count. Mirrors convex/perfume.ts verifyBrew, reading
 // the new structured plays.
@@ -427,15 +484,7 @@ function verifyBrew(
   recipeIndex: number,
   k: number,
 ): Perfume {
-  const perfume = PERFUME_BY_ID[perfumeId];
-  if (!perfume) throw new Error(`Unknown perfume: ${perfumeId}`);
-  if (
-    !Number.isInteger(recipeIndex) ||
-    recipeIndex < 0 ||
-    recipeIndex >= perfume.recipes.length
-  ) {
-    throw new Error(`Invalid recipe index: ${recipeIndex}`);
-  }
+  const perfume = requireRecipe(perfumeId, recipeIndex);
   requireCount(k, "copy count");
   if (brew.items.length === 0) throw new Error("The brew is empty");
   const hypos = brew.items.filter((p) => !p.real);
@@ -460,6 +509,127 @@ function verifyBrew(
     throw new Error(`This brew does not brew ${perfume.name} ×${k}`);
   }
   return perfume;
+}
+
+// ── shared arrangement cores (WHERE actions; forward + undo share these) ──────
+
+// The move core behind moveItemToBrew/moveItemToInventory AND their undo/redo
+// replay (applyStored) — there is no parallel reverse implementation.
+//   toBrew: draw n copies from the stock owner's inventory into the brew (the
+//     stock owner IS the contributor — the same member on both an owned brew
+//     (the owner) and the party brew (the actor), so ONE variable serves both).
+//     Non-owners on an owned brew may not spend the owner's stock (drawReal is
+//     false), so their copies enter hypothetical.
+//   toInventory: remove n copies (hypotheticals first), crediting removed REAL
+//     items home and trimming plays past the surviving charge budget.
+// Callers validate (count, ingredient) and log undo; doMove only moves.
+async function doMove(
+  ctx: MutationCtx,
+  brew: Doc<"perfumeBrews">,
+  actor: Actor,
+  itemKey: string,
+  n: number,
+  dir: "toBrew" | "toInventory",
+): Promise<void> {
+  const now = Date.now();
+  if (dir === "toBrew") {
+    const stockOwner = stockOwnerFor(actor, brew);
+    const drawReal = actor.isAdmin || actor.key === stockOwner;
+    const inv = await ensureInventory(ctx, stockOwner);
+    const items = [...brew.items];
+    const moved = addToBrew(items, inv, itemKey, n, stockOwner, drawReal);
+    await ctx.db.patch(inv._id, {
+      ingredients: moved.ingredients,
+      pures: moved.pures,
+      updatedAt: now,
+    });
+    await ctx.db.patch(brew._id, { items, updatedAt: now });
+  } else {
+    const items = [...brew.items];
+    const removedReal = removeFromBrew(items, itemKey, n);
+    await creditContributors(ctx, removedReal, now);
+    const plays = trimPlays(items, brew.strikePlays, brew.wildPlays);
+    await ctx.db.patch(brew._id, { items, ...plays, updatedAt: now });
+  }
+}
+
+// strike and wild plays are the same mechanic over two fields: one core, keyed
+// by `kind`. A strike play IS its `freq`; a wild play IS its `chosenFreq`; the
+// shared `freq` argument carries whichever the kind names.
+type PlayKind = "strike" | "wild";
+
+function chargeBudget(kind: PlayKind, items: BrewItem[]): number {
+  const totals = chargeTotals(brewIngredients(items));
+  return kind === "strike" ? totals.strike : totals.wild;
+}
+
+function playFreqOf(kind: PlayKind, play: StrikePlay | WildPlay): string {
+  return kind === "strike"
+    ? (play as StrikePlay).freq
+    : (play as WildPlay).chosenFreq;
+}
+
+function lastPlayIndex(
+  kind: PlayKind,
+  plays: (StrikePlay | WildPlay)[],
+  freq: string,
+): number {
+  for (let i = plays.length - 1; i >= 0; i--) {
+    if (playFreqOf(kind, plays[i]) === freq) return i;
+  }
+  return -1;
+}
+
+// Write the play list back to the field the kind names (typed branch keeps the
+// patch shape exact — Convex validators reject a computed-key patch).
+async function patchPlays(
+  ctx: MutationCtx,
+  brewId: Id<"perfumeBrews">,
+  kind: PlayKind,
+  plays: (StrikePlay | WildPlay)[],
+): Promise<void> {
+  const now = Date.now();
+  if (kind === "strike") {
+    await ctx.db.patch(brewId, { strikePlays: plays as StrikePlay[], updatedAt: now });
+  } else {
+    await ctx.db.patch(brewId, { wildPlays: plays as WildPlay[], updatedAt: now });
+  }
+}
+
+// Play one strike/wild if the brew's granted charges allow; over-budget is a
+// silent no-op (stale optimistic clients reconcile). Returns whether it played,
+// so callers push an undo entry ONLY for a real play. Serves both the forward
+// mutations and undo/redo replay.
+async function doPlay(
+  ctx: MutationCtx,
+  brew: Doc<"perfumeBrews">,
+  kind: PlayKind,
+  freq: string,
+  byKey: string,
+): Promise<boolean> {
+  const plays = kind === "strike" ? brew.strikePlays : brew.wildPlays;
+  if (plays.length >= chargeBudget(kind, brew.items)) return false;
+  const added: StrikePlay | WildPlay =
+    kind === "strike"
+      ? { freq, byMemberKey: byKey }
+      : { chosenFreq: freq, byMemberKey: byKey };
+  await patchPlays(ctx, brew._id, kind, [...plays, added]);
+  return true;
+}
+
+// The inverse of doPlay: remove the most-recent play naming `freq`. Un-playing a
+// frequency that is not played is a silent no-op. Returns whether it removed one.
+async function doUnplay(
+  ctx: MutationCtx,
+  brew: Doc<"perfumeBrews">,
+  kind: PlayKind,
+  freq: string,
+): Promise<boolean> {
+  const plays = kind === "strike" ? brew.strikePlays : brew.wildPlays;
+  const idx = lastPlayIndex(kind, plays, freq);
+  if (idx < 0) return false;
+  await patchPlays(ctx, brew._id, kind, plays.toSpliced(idx, 1));
+  return true;
 }
 
 // ── undo/redo log (per brew, per member; arrangement actions only) ───────────
@@ -509,39 +679,18 @@ async function pushUndo(
   for (let i = 0; i < overflow; i++) await ctx.db.delete(done[i]._id);
 }
 
-// ── event log (mirrors convex/perfume.ts perfumeEvents shape) ────────────────
-
-async function logEvent(
-  ctx: MutationCtx,
-  brewId: Id<"perfumeBrews"> | "party" | "members",
-  actor: Actor,
-  action: string,
-  detail: unknown,
-): Promise<void> {
-  await ctx.db.insert("perfumeEvents", {
-    benchKey: String(brewId), // reuse the existing event table; keyed by brew id
-    actorKey: actor.key,
-    actorName: actor.name,
-    action,
-    detail,
-    at: Date.now(),
-  });
-}
-
 // ── shared validators ────────────────────────────────────────────────────────
 
-const anonId = v.optional(v.string());
 const brewIdArg = v.id("perfumeBrews");
 
 // ── member lifecycle ─────────────────────────────────────────────────────────
 
-// A logged-in tom.quest user (or a well-formed anon) becomes a member by
-// clicking to join. Idempotent: re-joining refreshes lastSeen and returns the
-// existing row.
+// A logged-in tom.quest user becomes a member by clicking to join. Idempotent:
+// re-joining refreshes lastSeen and returns the existing row.
 export const registerMember = mutation({
-  args: { anonId, name: v.optional(v.string()), color: v.optional(v.string()) },
+  args: { name: v.optional(v.string()), color: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const actor = await identify(ctx, args.anonId);
+    const actor = await identify(ctx);
     const now = Date.now();
     const existing = await memberByKey(ctx, actor.key);
     if (existing) {
@@ -561,7 +710,6 @@ export const registerMember = mutation({
     await ensureInventory(ctx, actor.key);
     // The party brew exists from the moment there is a party (DESIGN.md §4).
     await ensurePartyBrew(ctx);
-    await logEvent(ctx, "members", actor, "registerMember", { created: true });
     return id;
   },
 });
@@ -569,22 +717,20 @@ export const registerMember = mutation({
 // A member may remove THEMSELVES at any time (DESIGN.md §4). Their owned brews
 // are handed to no one — they are deleted; the party brew is untouched.
 export const leaveParty = mutation({
-  args: { anonId },
-  handler: async (ctx, { anonId }) => {
-    const actor = await identify(ctx, anonId);
+  args: {},
+  handler: async (ctx) => {
+    const actor = await identify(ctx);
     await removeMemberByKey(ctx, actor.key);
-    await logEvent(ctx, "members", actor, "leaveParty", {});
   },
 });
 
 // Admin (Tom) may remove ANY member and delete their brews (DESIGN.md §4).
 export const removeMember = mutation({
-  args: { memberKey: v.string(), anonId },
-  handler: async (ctx, { memberKey, anonId }) => {
-    const actor = await identify(ctx, anonId);
+  args: { memberKey: v.string() },
+  handler: async (ctx, { memberKey }) => {
+    const actor = await identify(ctx);
     if (!actor.isAdmin) throw new Error("Only admin may remove another member");
     await removeMemberByKey(ctx, memberKey);
-    await logEvent(ctx, "members", actor, "removeMember", { memberKey });
   },
 });
 
@@ -608,24 +754,23 @@ async function removeMemberByKey(
 // Storage upload flow: the client asks for a short-lived upload URL, PUTs the
 // image, then calls setMemberIcon with the returned storageId.
 export const generateIconUploadUrl = mutation({
-  args: { anonId },
-  handler: async (ctx, { anonId }) => {
-    await identify(ctx, anonId);
+  args: {},
+  handler: async (ctx) => {
+    await identify(ctx);
     return await ctx.storage.generateUploadUrl();
   },
 });
 
 export const setMemberIcon = mutation({
-  args: { storageId: v.id("_storage"), anonId },
-  handler: async (ctx, { storageId, anonId }) => {
-    const actor = await identify(ctx, anonId);
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, { storageId }) => {
+    const actor = await identify(ctx);
     const member = await requireMember(ctx, actor);
     // Replace any prior icon so storage does not leak.
     if (member.iconStorageId && member.iconStorageId !== storageId) {
       await ctx.storage.delete(member.iconStorageId);
     }
     await ctx.db.patch(member._id, { iconStorageId: storageId });
-    await logEvent(ctx, "members", actor, "setMemberIcon", {});
   },
 });
 
@@ -641,10 +786,9 @@ export const heartbeat = mutation({
     x: v.number(),
     y: v.number(),
     hand: v.optional(v.object({ key: v.string(), count: v.number() })),
-    anonId,
   },
   handler: async (ctx, args) => {
-    const actor = await identify(ctx, args.anonId);
+    const actor = await identify(ctx);
     const now = Date.now();
     const member = await memberByKey(ctx, actor.key);
     if (member) await ctx.db.patch(member._id, { lastSeenAt: now });
@@ -699,44 +843,34 @@ export const heartbeat = mutation({
 
 // Create a new empty brew owned by the caller, with a fresh per-owner seq.
 export const createBrew = mutation({
-  args: { anonId, nickname: v.optional(v.string()) },
-  handler: async (ctx, { anonId, nickname }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { nickname: v.optional(v.string()) },
+  handler: async (ctx, { nickname }) => {
+    const actor = await identifyMember(ctx);
     const now = Date.now();
     const id = await ctx.db.insert("perfumeBrews", {
       owner: actor.key,
-      nickname: nickname?.trim() || null,
       seq: await nextSeq(ctx, actor.key),
-      items: [],
-      strikePlays: [],
-      wildPlays: [],
-      pinned: null,
-      outputs: [],
-      createdAt: now,
-      updatedAt: now,
+      ...newBrewFields(now),
+      nickname: nickname?.trim() || null,
     });
-    await logEvent(ctx, id, actor, "createBrew", {});
     return id;
   },
 });
 
 // Copy another brew's CONTENTS as all-hypothetical into a fresh brew the copier
 // owns (DESIGN.md §4: "copies start hypothetical; the copier fills from their
-// own inventory"). Plays are carried; pin is carried; outputs are NOT (they
-// belong to the source's cauldron). The copier gets a fresh per-owner seq.
+// own inventory"). Plays are carried; pin is carried; the cauldron is NOT (it
+// belongs to the source). The copier gets a fresh per-owner seq.
 export const copyBrew = mutation({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
+    const actor = await identifyMember(ctx);
     const src = await requireBrew(ctx, brewId);
     const now = Date.now();
     const items: BrewItem[] = src.items.map((p) => ({
       key: p.key,
       real: false, // copies start hypothetical
       contributorKey: actor.key,
-      contributorName: actor.name,
     }));
     // Re-attribute plays to the copier so they own the arrangement they
     // receive. Drop any play naming an unknown frequency (defence in depth: a
@@ -758,17 +892,13 @@ export const copyBrew = mutation({
     }));
     const id = await ctx.db.insert("perfumeBrews", {
       owner: actor.key,
-      nickname: null,
       seq: await nextSeq(ctx, actor.key),
+      ...newBrewFields(now),
       items,
       strikePlays,
       wildPlays,
       pinned: src.pinned,
-      outputs: [],
-      createdAt: now,
-      updatedAt: now,
     });
-    await logEvent(ctx, id, actor, "copyBrew", { from: brewId });
     return id;
   },
 });
@@ -777,27 +907,25 @@ export const copyBrew = mutation({
 // may hand off; the party brew has no owner to hand off. Ownership travels with
 // the object — its items' contributor attribution is left as-is (history).
 export const handoffBrew = mutation({
-  args: { brewId: brewIdArg, toMemberKey: v.string(), anonId },
-  handler: async (ctx, { brewId, toMemberKey, anonId }) => {
-    const actor = await identify(ctx, anonId);
+  args: { brewId: brewIdArg, toMemberKey: v.string() },
+  handler: async (ctx, { brewId, toMemberKey }) => {
+    const actor = await identify(ctx);
     const brew = await requireBrew(ctx, brewId);
     if (isParty(brew)) throw new Error("The party brew has no owner to hand off");
     requireOwnerAct(actor, brew, "hand off this brew");
     const target = await memberByKey(ctx, toMemberKey);
     if (!target) throw new Error("Handoff target is not a member");
     await ctx.db.patch(brew._id, { owner: toMemberKey, updatedAt: Date.now() });
-    await logEvent(ctx, brewId, actor, "handoffBrew", { toMemberKey });
   },
 });
 
 export const deleteBrew = mutation({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
-    const actor = await identify(ctx, anonId);
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
+    const actor = await identify(ctx);
     const brew = await requireBrew(ctx, brewId);
     requireDelete(actor, brew);
     await deleteBrewRow(ctx, brewId);
-    await logEvent(ctx, brewId, actor, "deleteBrew", {});
   },
 });
 
@@ -825,21 +953,21 @@ async function deleteBrewRow(
 // ANY member may nickname ANY brew (DESIGN.md §4 — nicknames are not
 // owner-restricted). Blank clears back to the default "{owner} brew {n}".
 export const nicknameBrew = mutation({
-  args: { brewId: brewIdArg, nickname: v.string(), anonId },
-  handler: async (ctx, { brewId, nickname, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg, nickname: v.string() },
+  handler: async (ctx, { brewId, nickname }) => {
+    await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
     await ctx.db.patch(brew._id, {
       nickname: nickname.trim() || null,
       updatedAt: Date.now(),
     });
-    await logEvent(ctx, brewId, actor, "nicknameBrew", { nickname });
   },
 });
 
-// Any member may pin exactly ONE recipe to a brew (DESIGN.md §5). The pin lives
-// on the brew so everyone viewing it sees the ghost nodes. Pin is undoable.
+// Pin exactly ONE recipe to a brew (DESIGN.md §5). The pin lives on the brew so
+// everyone viewing it sees the ghost nodes. Per the §4 permission matrix pinning
+// changes shared brew state, so it is an owner-act: allowed on your own brew, on
+// the party brew, or by admin — NOT on another member's owned brew. Undoable.
 export const pinRecipe = mutation({
   args: {
     brewId: brewIdArg,
@@ -847,23 +975,12 @@ export const pinRecipe = mutation({
       v.object({ perfumeId: v.string(), recipeIndex: v.number() }),
       v.null(),
     ),
-    anonId,
   },
-  handler: async (ctx, { brewId, pinned, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  handler: async (ctx, { brewId, pinned }) => {
+    const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
-    if (pinned) {
-      const perfume = PERFUME_BY_ID[pinned.perfumeId];
-      if (!perfume) throw new Error(`Unknown perfume: ${pinned.perfumeId}`);
-      if (
-        !Number.isInteger(pinned.recipeIndex) ||
-        pinned.recipeIndex < 0 ||
-        pinned.recipeIndex >= perfume.recipes.length
-      ) {
-        throw new Error(`Invalid recipe index: ${pinned.recipeIndex}`);
-      }
-    }
+    requireOwnerAct(actor, brew, "pin a perfume");
+    if (pinned) requireRecipe(pinned.perfumeId, pinned.recipeIndex);
     const before = brew.pinned;
     await ctx.db.patch(brew._id, { pinned, updatedAt: Date.now() });
     await pushUndo(
@@ -874,7 +991,6 @@ export const pinRecipe = mutation({
       { pinned },
       { pinned: before },
     );
-    await logEvent(ctx, brewId, actor, "pinRecipe", { pinned });
   },
 });
 
@@ -885,38 +1001,13 @@ export const pinRecipe = mutation({
 // an owned brew get hypotheticals only, since they may not touch the owner's
 // stock. Owner/party callers draw real; excess enters hypothetical.
 export const moveItemToBrew = mutation({
-  args: { brewId: brewIdArg, itemKey: v.string(), n: v.number(), anonId },
-  handler: async (ctx, { brewId, itemKey, n, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg, itemKey: v.string(), n: v.number() },
+  handler: async (ctx, { brewId, itemKey, n }) => {
+    const actor = await identifyMember(ctx);
     requireCount(n, "count");
     requireIngredient(itemKey);
     const brew = await requireBrew(ctx, brewId);
-    const stockOwner = stockOwnerFor(actor, brew);
-    // Real stock is drawn only when the actor is entitled to the stock owner's
-    // stock: their own (party or own brew), never someone else's owned brew.
-    const drawReal = actor.isAdmin || actor.key === stockOwner;
-    const inv = await ensureInventory(ctx, stockOwner);
-    const contributorKey = isParty(brew) ? actor.key : (brew.owner as string);
-    const contributorName = isParty(brew)
-      ? actor.name
-      : (await memberByKey(ctx, contributorKey))?.name ?? contributorKey;
-    const items = [...brew.items];
-    const moved = addToBrew(
-      items,
-      inv,
-      itemKey,
-      n,
-      contributorKey,
-      contributorName,
-      drawReal,
-    );
-    await ctx.db.patch(inv._id, {
-      ingredients: moved.ingredients,
-      pures: moved.pures,
-      updatedAt: Date.now(),
-    });
-    await ctx.db.patch(brew._id, { items, updatedAt: Date.now() });
+    await doMove(ctx, brew, actor, itemKey, n, "toBrew");
     await pushUndo(
       ctx,
       brewId,
@@ -925,37 +1016,18 @@ export const moveItemToBrew = mutation({
       { itemKey, n, dir: "toBrew" },
       { itemKey, n, dir: "toInventory" },
     );
-    await logEvent(ctx, brewId, actor, "moveItemToBrew", { itemKey, n, ...moved });
   },
 });
 
 // Remove n copies from the brew — hypotheticals first, then real newest-first.
 // Real items return to their CONTRIBUTOR's inventory; hypotheticals vanish.
 export const moveItemToInventory = mutation({
-  args: { brewId: brewIdArg, itemKey: v.string(), n: v.number(), anonId },
-  handler: async (ctx, { brewId, itemKey, n, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg, itemKey: v.string(), n: v.number() },
+  handler: async (ctx, { brewId, itemKey, n }) => {
+    const actor = await identifyMember(ctx);
     requireCount(n, "count");
     const brew = await requireBrew(ctx, brewId);
-    const items = [...brew.items];
-    const removedReal = removeFromBrew(items, itemKey, n);
-    // Credit each removed real item back to its contributor.
-    const byContributor = new Map<string, number>();
-    for (const item of removedReal) {
-      byContributor.set(
-        item.contributorKey,
-        (byContributor.get(item.contributorKey) ?? 0) + 1,
-      );
-    }
-    const now = Date.now();
-    for (const [contributorKey, count] of byContributor) {
-      const inv = await ensureInventory(ctx, contributorKey);
-      const stacks = withStock(inv, itemKey, count);
-      await ctx.db.patch(inv._id, { ...stacks, updatedAt: now });
-    }
-    const plays = trimPlays(items, brew.strikePlays, brew.wildPlays);
-    await ctx.db.patch(brew._id, { items, ...plays, updatedAt: now });
+    await doMove(ctx, brew, actor, itemKey, n, "toInventory");
     await pushUndo(
       ctx,
       brewId,
@@ -964,11 +1036,6 @@ export const moveItemToInventory = mutation({
       { itemKey, n, dir: "toInventory" },
       { itemKey, n, dir: "toBrew" },
     );
-    await logEvent(ctx, brewId, actor, "moveItemToInventory", {
-      itemKey,
-      n,
-      returned: removedReal.length,
-    });
   },
 });
 
@@ -978,107 +1045,50 @@ export const moveItemToInventory = mutation({
 // clients reconcile), as is un-playing a frequency that is not played. Plays
 // record WHO played them so per-member undo can target its own.
 export const playStrike = mutation({
-  args: { brewId: brewIdArg, freq: v.string(), anonId },
-  handler: async (ctx, { brewId, freq, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg, freq: v.string() },
+  handler: async (ctx, { brewId, freq }) => {
+    const actor = await identifyMember(ctx);
     requireFrequency(freq);
     const brew = await requireBrew(ctx, brewId);
-    if (
-      brew.strikePlays.length >=
-      chargeTotals(brewIngredients(brew.items)).strike
-    )
-      return;
-    const strikePlays = [...brew.strikePlays, { freq, byMemberKey: actor.key }];
-    await ctx.db.patch(brew._id, { strikePlays, updatedAt: Date.now() });
-    await pushUndo(
-      ctx,
-      brewId,
-      actor.key,
-      "strike",
-      { freq, on: true },
-      { freq, on: false },
-    );
-    await logEvent(ctx, brewId, actor, "playStrike", { freq });
+    if (await doPlay(ctx, brew, "strike", freq, actor.key)) {
+      await pushUndo(ctx, brewId, actor.key, "strike", { freq, on: true }, { freq, on: false });
+    }
   },
 });
 
 export const unplayStrike = mutation({
-  args: { brewId: brewIdArg, freq: v.string(), anonId },
-  handler: async (ctx, { brewId, freq, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg, freq: v.string() },
+  handler: async (ctx, { brewId, freq }) => {
+    const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
-    const idx = lastStrikeIndex(brew.strikePlays, freq);
-    if (idx < 0) return;
-    const strikePlays = brew.strikePlays.toSpliced(idx, 1);
-    await ctx.db.patch(brew._id, { strikePlays, updatedAt: Date.now() });
-    await pushUndo(
-      ctx,
-      brewId,
-      actor.key,
-      "strike",
-      { freq, on: false },
-      { freq, on: true },
-    );
-    await logEvent(ctx, brewId, actor, "unplayStrike", { freq });
+    if (await doUnplay(ctx, brew, "strike", freq)) {
+      await pushUndo(ctx, brewId, actor.key, "strike", { freq, on: false }, { freq, on: true });
+    }
   },
 });
 
 export const playWild = mutation({
-  args: { brewId: brewIdArg, chosenFreq: v.string(), anonId },
-  handler: async (ctx, { brewId, chosenFreq, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg, chosenFreq: v.string() },
+  handler: async (ctx, { brewId, chosenFreq }) => {
+    const actor = await identifyMember(ctx);
     requireFrequency(chosenFreq);
     const brew = await requireBrew(ctx, brewId);
-    if (brew.wildPlays.length >= chargeTotals(brewIngredients(brew.items)).wild)
-      return;
-    const wildPlays = [...brew.wildPlays, { chosenFreq, byMemberKey: actor.key }];
-    await ctx.db.patch(brew._id, { wildPlays, updatedAt: Date.now() });
-    await pushUndo(
-      ctx,
-      brewId,
-      actor.key,
-      "wild",
-      { chosenFreq, on: true },
-      { chosenFreq, on: false },
-    );
-    await logEvent(ctx, brewId, actor, "playWild", { chosenFreq });
+    if (await doPlay(ctx, brew, "wild", chosenFreq, actor.key)) {
+      await pushUndo(ctx, brewId, actor.key, "wild", { chosenFreq, on: true }, { chosenFreq, on: false });
+    }
   },
 });
 
 export const unplayWild = mutation({
-  args: { brewId: brewIdArg, chosenFreq: v.string(), anonId },
-  handler: async (ctx, { brewId, chosenFreq, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg, chosenFreq: v.string() },
+  handler: async (ctx, { brewId, chosenFreq }) => {
+    const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
-    const idx = lastWildIndex(brew.wildPlays, chosenFreq);
-    if (idx < 0) return;
-    const wildPlays = brew.wildPlays.toSpliced(idx, 1);
-    await ctx.db.patch(brew._id, { wildPlays, updatedAt: Date.now() });
-    await pushUndo(
-      ctx,
-      brewId,
-      actor.key,
-      "wild",
-      { chosenFreq, on: false },
-      { chosenFreq, on: true },
-    );
-    await logEvent(ctx, brewId, actor, "unplayWild", { chosenFreq });
+    if (await doUnplay(ctx, brew, "wild", chosenFreq)) {
+      await pushUndo(ctx, brewId, actor.key, "wild", { chosenFreq, on: false }, { chosenFreq, on: true });
+    }
   },
 });
-
-function lastStrikeIndex(plays: StrikePlay[], freq: string): number {
-  for (let i = plays.length - 1; i >= 0; i--) if (plays[i].freq === freq) return i;
-  return -1;
-}
-function lastWildIndex(plays: WildPlay[], chosenFreq: string): number {
-  for (let i = plays.length - 1; i >= 0; i--)
-    if (plays[i].chosenFreq === chosenFreq) return i;
-  return -1;
-}
 
 // ── brew-scale controls (DESIGN.md §5) ───────────────────────────────────────
 
@@ -1086,10 +1096,9 @@ function lastWildIndex(plays: WildPlay[], chosenFreq: string): number {
 // the relevant inventory (the owner's on an owned brew; each contributor's on
 // the party brew). A hypothetical with no backing stock stays hypothetical.
 export const fillFromInventory = mutation({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
+    const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
     requireOwnerAct(actor, brew, "fill this brew");
     const items = [...brew.items];
@@ -1124,7 +1133,6 @@ export const fillFromInventory = mutation({
       });
     }
     await ctx.db.patch(brew._id, { items, updatedAt: now });
-    await logEvent(ctx, brewId, actor, "fillFromInventory", { filled });
     return { filled };
   },
 });
@@ -1132,41 +1140,16 @@ export const fillFromInventory = mutation({
 // Return ingredients: return every REAL item in the brew to its contributor's
 // inventory, leaving hypotheticals in place (they own no stock).
 export const returnIngredients = mutation({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
+    const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
     requireOwnerAct(actor, brew, "return this brew's ingredients");
     const now = Date.now();
-    const byContributor = new Map<string, Map<string, number>>();
-    const remaining: BrewItem[] = [];
-    for (const item of brew.items) {
-      if (!item.real) {
-        remaining.push(item);
-        continue;
-      }
-      const forKey =
-        byContributor.get(item.contributorKey) ?? new Map<string, number>();
-      forKey.set(item.key, (forKey.get(item.key) ?? 0) + 1);
-      byContributor.set(item.contributorKey, forKey);
-    }
-    for (const [contributorKey, counts] of byContributor) {
-      const inv = await ensureInventory(ctx, contributorKey);
-      let ingredients = { ...inv.ingredients };
-      let pures = { ...inv.pures };
-      for (const [itemKey, count] of counts) {
-        const next = withStock({ ...inv, ingredients, pures }, itemKey, count);
-        ingredients = next.ingredients;
-        pures = next.pures;
-      }
-      await ctx.db.patch(inv._id, { ingredients, pures, updatedAt: now });
-    }
+    const remaining = brew.items.filter((it) => !it.real);
+    await creditContributors(ctx, brew.items.filter((it) => it.real), now);
     const plays = trimPlays(remaining, brew.strikePlays, brew.wildPlays);
     await ctx.db.patch(brew._id, { items: remaining, ...plays, updatedAt: now });
-    await logEvent(ctx, brewId, actor, "returnIngredients", {
-      returned: brew.items.filter((i) => i.real).length,
-    });
   },
 });
 
@@ -1174,39 +1157,19 @@ export const returnIngredients = mutation({
 // contributors first (conservation — no mutation destroys items except
 // brewing), then the brew is left empty.
 export const emptyBrew = mutation({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
+    const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
     requireOwnerAct(actor, brew, "empty this brew");
     const now = Date.now();
-    const byContributor = new Map<string, Map<string, number>>();
-    for (const item of brew.items) {
-      if (!item.real) continue;
-      const forKey =
-        byContributor.get(item.contributorKey) ?? new Map<string, number>();
-      forKey.set(item.key, (forKey.get(item.key) ?? 0) + 1);
-      byContributor.set(item.contributorKey, forKey);
-    }
-    for (const [contributorKey, counts] of byContributor) {
-      const inv = await ensureInventory(ctx, contributorKey);
-      let ingredients = { ...inv.ingredients };
-      let pures = { ...inv.pures };
-      for (const [itemKey, count] of counts) {
-        const next = withStock({ ...inv, ingredients, pures }, itemKey, count);
-        ingredients = next.ingredients;
-        pures = next.pures;
-      }
-      await ctx.db.patch(inv._id, { ingredients, pures, updatedAt: now });
-    }
+    await creditContributors(ctx, brew.items.filter((it) => it.real), now);
     await ctx.db.patch(brew._id, {
       items: [],
       strikePlays: [],
       wildPlays: [],
       updatedAt: now,
     });
-    await logEvent(ctx, brewId, actor, "emptyBrew", {});
   },
 });
 
@@ -1223,14 +1186,12 @@ export const brew = mutation({
     perfumeId: v.string(),
     recipeIndex: v.number(),
     k: v.number(),
-    anonId,
   },
-  handler: async (ctx, { brewId, perfumeId, recipeIndex, k, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  handler: async (ctx, { brewId, perfumeId, recipeIndex, k }) => {
+    const actor = await identifyMember(ctx);
     const brewDoc = await requireBrew(ctx, brewId);
     requireOwnerAct(actor, brewDoc, "brew");
-    const perfume = verifyBrew(brewDoc, perfumeId, recipeIndex, k);
+    verifyBrew(brewDoc, perfumeId, recipeIndex, k);
     const now = Date.now();
     // Consume real ingredients forever: each real item becomes its hypothetical
     // twin in place (same key/contributor, real=false). No inventory is
@@ -1240,6 +1201,8 @@ export const brew = mutation({
     );
     // Witnesses: members with fresh presence on this brew at completion.
     const witnesses = await liveMemberKeys(ctx, brewId, now);
+    // Flat provenance (DESIGN.md §1,§9): the perfume records who brewed it and
+    // who witnessed it — no ownership chain.
     const instance = {
       instanceId: newInstanceId(),
       perfumeId,
@@ -1247,18 +1210,11 @@ export const brew = mutation({
       brewedByKey: actor.key,
       witnesses,
       brewedAt: now,
-      provenance: [{ key: actor.key, at: now }],
     };
     await ctx.db.patch(brewDoc._id, {
       items,
-      outputs: [...brewDoc.outputs, instance],
+      cauldron: [...restingOn(brewDoc), instance],
       updatedAt: now,
-    });
-    await logEvent(ctx, brewId, actor, "brew", {
-      perfumeId,
-      name: perfume.name,
-      recipeIndex,
-      k,
     });
     return { instanceId: instance.instanceId };
   },
@@ -1281,43 +1237,40 @@ async function liveMemberKeys(
   return [...keys];
 }
 
-// Take an output instance off the cauldron into the taker's inventory,
-// extending its ownership chain. Owner-only on an owned brew; anyone on the
+// Take a perfume instance off the cauldron into the taker's inventory. The
+// perfume keeps its original flat provenance ({brewedBy, witnesses}) — taking
+// does NOT extend an ownership chain. Owner-only on an owned brew; anyone on the
 // party brew. Taking is permanent (not undoable). A count>1 instance splits:
 // one copy is taken, the rest stay on the cauldron.
-export const takeOutput = mutation({
-  args: { brewId: brewIdArg, instanceId: v.string(), anonId },
-  handler: async (ctx, { brewId, instanceId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+export const takeFromCauldron = mutation({
+  args: { brewId: brewIdArg, instanceId: v.string() },
+  handler: async (ctx, { brewId, instanceId }) => {
+    const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
     requireOwnerAct(actor, brew, "take from the cauldron");
-    const idx = brew.outputs.findIndex((o) => o.instanceId === instanceId);
-    if (idx < 0) throw new Error("No such output on the cauldron");
-    const output = brew.outputs[idx];
+    const resting_ = restingOn(brew);
+    const idx = resting_.findIndex((o) => o.instanceId === instanceId);
+    if (idx < 0) throw new Error("No such perfume on the cauldron");
+    const resting = resting_[idx];
     const now = Date.now();
-    const outputs = [...brew.outputs];
-    if (output.count > 1) outputs[idx] = { ...output, count: output.count - 1 };
-    else outputs.splice(idx, 1);
-    await ctx.db.patch(brew._id, { outputs, updatedAt: now });
-    // Append a fresh perfume instance to the taker's inventory, seeding its
-    // ownership chain from the brew provenance and extending it with the take.
+    const cauldron = [...resting_];
+    if (resting.count > 1) cauldron[idx] = { ...resting, count: resting.count - 1 };
+    else cauldron.splice(idx, 1);
+    await ctx.db.patch(brew._id, { cauldron, updatedAt: now });
+    // Append a fresh perfume instance to the taker's inventory, carrying the
+    // brew's flat provenance unchanged (no ownership chain).
     const inv = await ensureInventory(ctx, actor.key);
     const perfumes = [
       ...inv.perfumes,
       {
         instanceId: newInstanceId(),
-        perfumeId: output.perfumeId,
-        brewedByKey: output.brewedByKey,
-        witnesses: output.witnesses,
-        brewedAt: output.brewedAt,
-        owners: [...output.provenance, { key: actor.key, at: now }],
+        perfumeId: resting.perfumeId,
+        brewedByKey: resting.brewedByKey,
+        witnesses: resting.witnesses,
+        brewedAt: resting.brewedAt,
       },
     ];
     await ctx.db.patch(inv._id, { perfumes, updatedAt: now });
-    await logEvent(ctx, brewId, actor, "takeOutput", {
-      perfumeId: output.perfumeId,
-    });
   },
 });
 
@@ -1335,14 +1288,12 @@ export const importInventory = mutation({
   args: {
     rows: v.array(v.object({ key: v.string(), count: v.number() })),
     mode: v.union(v.literal("merge"), v.literal("replace")),
-    anonId,
   },
-  handler: async (ctx, { rows, mode, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    // Owner-only: a member imports onto their OWN inventory. requireMember is
+  handler: async (ctx, { rows, mode }) => {
+    // Owner-only: a member imports onto their OWN inventory. identifyMember is
     // the identity gate — the caller is by construction the owner of the row
     // they write, so there is no cross-member target to authorize.
-    await requireMember(ctx, actor);
+    const actor = await identifyMember(ctx);
     for (const row of rows) {
       if (!CATALOG[row.key]) throw new Error(`Unknown item: ${row.key}`);
       if (!Number.isInteger(row.count) || row.count < 0) {
@@ -1361,23 +1312,18 @@ export const importInventory = mutation({
       section[row.key] = (section[row.key] ?? 0) + row.count;
     }
     await ctx.db.patch(inv._id, { ingredients, pures, updatedAt: Date.now() });
-    await logEvent(ctx, "members", actor, "importInventory", {
-      mode,
-      rows: rows.length,
-    });
   },
 });
 
 // ── gifting (WHAT — own items; instant; permanent) ───────────────────────────
 
-// Gift a stack of an ingredient/pure to another member: instant, records a gift
-// event on both inventories (append-only history). The sender must own the
-// stock; sending more than held is rejected (no clamping).
+// Gift a stack of an ingredient/pure to another member: instant, moves counts
+// only — there is NO gift history (DESIGN.md §1). The sender must own the stock;
+// sending more than held is rejected (no clamping).
 export const giftItem = mutation({
-  args: { toMemberKey: v.string(), itemKey: v.string(), n: v.number(), anonId },
-  handler: async (ctx, { toMemberKey, itemKey, n, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { toMemberKey: v.string(), itemKey: v.string(), n: v.number() },
+  handler: async (ctx, { toMemberKey, itemKey, n }) => {
+    const actor = await identifyMember(ctx);
     requireCount(n, "count");
     if (toMemberKey === actor.key) throw new Error("Cannot gift to yourself");
     if (!CATALOG[itemKey]) throw new Error(`Unknown item: ${itemKey}`);
@@ -1389,30 +1335,20 @@ export const giftItem = mutation({
     }
     const to = await ensureInventory(ctx, toMemberKey);
     const now = Date.now();
-    const event = { itemKey, n, fromKey: actor.key, toKey: toMemberKey, at: now };
     const fromStacks = withStock(from, itemKey, -n);
-    await ctx.db.patch(from._id, {
-      ...fromStacks,
-      giftEvents: [...from.giftEvents, event],
-      updatedAt: now,
-    });
+    await ctx.db.patch(from._id, { ...fromStacks, updatedAt: now });
     const toStacks = withStock(to, itemKey, n);
-    await ctx.db.patch(to._id, {
-      ...toStacks,
-      giftEvents: [...to.giftEvents, event],
-      updatedAt: now,
-    });
-    await logEvent(ctx, "members", actor, "giftItem", { toMemberKey, itemKey, n });
+    await ctx.db.patch(to._id, { ...toStacks, updatedAt: now });
   },
 });
 
-// Gift a perfume INSTANCE to another member, extending its ownership chain. The
-// instance moves whole (perfumes are not fungible). Permanent.
+// Gift a perfume INSTANCE to another member. The perfume keeps its original flat
+// provenance ({brewedBy, witnesses}) — gifting does NOT extend an ownership
+// chain. The instance moves whole (perfumes are not fungible). Permanent.
 export const giftPerfume = mutation({
-  args: { toMemberKey: v.string(), instanceId: v.string(), anonId },
-  handler: async (ctx, { toMemberKey, instanceId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
+  args: { toMemberKey: v.string(), instanceId: v.string() },
+  handler: async (ctx, { toMemberKey, instanceId }) => {
+    const actor = await identifyMember(ctx);
     if (toMemberKey === actor.key) throw new Error("Cannot gift to yourself");
     const target = await memberByKey(ctx, toMemberKey);
     if (!target) throw new Error("Gift target is not a member");
@@ -1424,16 +1360,20 @@ export const giftPerfume = mutation({
     const fromPerfumes = from.perfumes.filter((_, i) => i !== idx);
     await ctx.db.patch(from._id, { perfumes: fromPerfumes, updatedAt: now });
     const to = await ensureInventory(ctx, toMemberKey);
+    // The instance moves whole, keeping its original flat provenance; no
+    // ownership chain is extended (and any legacy `owners` field is not carried).
     await ctx.db.patch(to._id, {
       perfumes: [
         ...to.perfumes,
-        { ...instance, owners: [...instance.owners, { key: toMemberKey, at: now }] },
+        {
+          instanceId: instance.instanceId,
+          perfumeId: instance.perfumeId,
+          brewedByKey: instance.brewedByKey,
+          witnesses: instance.witnesses,
+          brewedAt: instance.brewedAt,
+        },
       ],
       updatedAt: now,
-    });
-    await logEvent(ctx, "members", actor, "giftPerfume", {
-      toMemberKey,
-      perfumeId: instance.perfumeId,
     });
   },
 });
@@ -1442,150 +1382,75 @@ export const giftPerfume = mutation({
 
 // Undo the caller's most recent DONE action on this brew; redo the most recent
 // UNDONE one. Only arrangement actions are logged (moves, strike/wild, pin) —
-// brewing, taking, gifting are never undoable (DESIGN.md §5). Applying the
-// inverse does NOT itself push a new undo entry (we flip the entry's done flag).
+// brewing, taking, gifting are never undoable (DESIGN.md §5). The two directions
+// are ONE parametrized step differing only by: scan order (newest-first to undo,
+// oldest-first to redo), which entries are eligible (done vs undone), which
+// stored arg is applied (the inverse vs the forward payload), and the done-flag
+// to write back. Applying does NOT push a new undo entry — we flip the flag.
+async function stepHistory(
+  ctx: MutationCtx,
+  brewId: Id<"perfumeBrews">,
+  actor: Actor,
+  dir: "undo" | "redo",
+): Promise<boolean> {
+  const undoing = dir === "undo";
+  const entries = await ctx.db
+    .query("perfumeUndo")
+    .withIndex("by_brew_member", (q) =>
+      q.eq("brewId", brewId).eq("memberKey", actor.key),
+    )
+    .order(undoing ? "desc" : "asc")
+    .collect();
+  const entry = entries.find((e) => e.done === undoing);
+  if (!entry) return false;
+  await applyStored(ctx, brewId, actor, entry.action, undoing ? entry.inverse : entry.payload);
+  await ctx.db.patch(entry._id, { done: !undoing });
+  return true;
+}
+
 export const undo = mutation({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
-    const entries = await ctx.db
-      .query("perfumeUndo")
-      .withIndex("by_brew_member", (q) =>
-        q.eq("brewId", brewId).eq("memberKey", actor.key),
-      )
-      .order("desc")
-      .collect();
-    const entry = entries.find((e) => e.done);
-    if (!entry) return { undone: false };
-    await applyReverse(ctx, brewId, actor, entry.action, entry.inverse);
-    await ctx.db.patch(entry._id, { done: false });
-    return { undone: true };
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
+    const actor = await identifyMember(ctx);
+    return { undone: await stepHistory(ctx, brewId, actor, "undo") };
   },
 });
 
 export const redo = mutation({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
-    const actor = await identify(ctx, anonId);
-    await requireMember(ctx, actor);
-    const entries = await ctx.db
-      .query("perfumeUndo")
-      .withIndex("by_brew_member", (q) =>
-        q.eq("brewId", brewId).eq("memberKey", actor.key),
-      )
-      .order("asc")
-      .collect();
-    const entry = entries.find((e) => !e.done);
-    if (!entry) return { redone: false };
-    await applyReverse(ctx, brewId, actor, entry.action, entry.payload);
-    await ctx.db.patch(entry._id, { done: true });
-    return { redone: true };
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
+    const actor = await identifyMember(ctx);
+    return { redone: await stepHistory(ctx, brewId, actor, "redo") };
   },
 });
 
-// Apply a stored arrangement action (forward for redo, inverse for undo)
-// WITHOUT logging a new undo entry — the caller flips the entry's done flag.
-async function applyReverse(
+// Apply a stored arrangement action (forward for redo, inverse for undo) by
+// REPLAYING it through the same doMove/doPlay cores the forward mutations use —
+// there is no parallel reverse implementation. The caller flips the entry's
+// done flag; nothing here logs a new undo entry.
+async function applyStored(
   ctx: MutationCtx,
   brewId: Id<"perfumeBrews">,
   actor: Actor,
   action: string,
-  args: unknown,
+  arg: unknown,
 ): Promise<void> {
   const brew = await requireBrew(ctx, brewId);
-  const now = Date.now();
   if (action === "move") {
-    const a = args as { itemKey: string; n: number; dir: "toBrew" | "toInventory" };
-    if (a.dir === "toBrew") {
-      const stockOwner = stockOwnerFor(actor, brew);
-      const drawReal = actor.isAdmin || actor.key === stockOwner;
-      const inv = await ensureInventory(ctx, stockOwner);
-      const contributorKey = isParty(brew) ? actor.key : (brew.owner as string);
-      const contributorName =
-        (await memberByKey(ctx, contributorKey))?.name ?? contributorKey;
-      const items = [...brew.items];
-      const moved = addToBrew(
-        items,
-        inv,
-        a.itemKey,
-        a.n,
-        contributorKey,
-        contributorName,
-        drawReal,
-      );
-      await ctx.db.patch(inv._id, {
-        ingredients: moved.ingredients,
-        pures: moved.pures,
-        updatedAt: now,
-      });
-      await ctx.db.patch(brew._id, { items, updatedAt: now });
-    } else {
-      const items = [...brew.items];
-      const removedReal = removeFromBrew(items, a.itemKey, a.n);
-      const byContributor = new Map<string, number>();
-      for (const item of removedReal)
-        byContributor.set(
-          item.contributorKey,
-          (byContributor.get(item.contributorKey) ?? 0) + 1,
-        );
-      for (const [contributorKey, count] of byContributor) {
-        const inv = await ensureInventory(ctx, contributorKey);
-        const stacks = withStock(inv, a.itemKey, count);
-        await ctx.db.patch(inv._id, { ...stacks, updatedAt: now });
-      }
-      const plays = trimPlays(items, brew.strikePlays, brew.wildPlays);
-      await ctx.db.patch(brew._id, { items, ...plays, updatedAt: now });
-    }
+    const a = arg as { itemKey: string; n: number; dir: "toBrew" | "toInventory" };
+    await doMove(ctx, brew, actor, a.itemKey, a.n, a.dir);
     return;
   }
-  if (action === "strike") {
-    const a = args as { freq: string; on: boolean };
-    if (a.on) {
-      if (
-        brew.strikePlays.length <
-        chargeTotals(brewIngredients(brew.items)).strike
-      ) {
-        await ctx.db.patch(brew._id, {
-          strikePlays: [...brew.strikePlays, { freq: a.freq, byMemberKey: actor.key }],
-          updatedAt: now,
-        });
-      }
-    } else {
-      const idx = lastStrikeIndex(brew.strikePlays, a.freq);
-      if (idx >= 0)
-        await ctx.db.patch(brew._id, {
-          strikePlays: brew.strikePlays.toSpliced(idx, 1),
-          updatedAt: now,
-        });
-    }
-    return;
-  }
-  if (action === "wild") {
-    const a = args as { chosenFreq: string; on: boolean };
-    if (a.on) {
-      if (brew.wildPlays.length < chargeTotals(brewIngredients(brew.items)).wild) {
-        await ctx.db.patch(brew._id, {
-          wildPlays: [
-            ...brew.wildPlays,
-            { chosenFreq: a.chosenFreq, byMemberKey: actor.key },
-          ],
-          updatedAt: now,
-        });
-      }
-    } else {
-      const idx = lastWildIndex(brew.wildPlays, a.chosenFreq);
-      if (idx >= 0)
-        await ctx.db.patch(brew._id, {
-          wildPlays: brew.wildPlays.toSpliced(idx, 1),
-          updatedAt: now,
-        });
-    }
+  if (action === "strike" || action === "wild") {
+    const a = arg as { freq?: string; chosenFreq?: string; on: boolean };
+    const freq = action === "strike" ? a.freq! : a.chosenFreq!;
+    if (a.on) await doPlay(ctx, brew, action, freq, actor.key);
+    else await doUnplay(ctx, brew, action, freq);
     return;
   }
   if (action === "pin") {
-    const a = args as { pinned: Doc<"perfumeBrews">["pinned"] };
-    await ctx.db.patch(brew._id, { pinned: a.pinned, updatedAt: now });
+    const a = arg as { pinned: Doc<"perfumeBrews">["pinned"] };
+    await ctx.db.patch(brew._id, { pinned: a.pinned, updatedAt: Date.now() });
     return;
   }
 }
@@ -1622,11 +1487,11 @@ export const listMembers = query({
 // recent RECENT_BREWS plus a total count, and the party brew alongside. Callers
 // unable to identify still see the grouping (viewerKey null → no "you first").
 export const listBrews = query({
-  args: { anonId },
-  handler: async (ctx, { anonId }) => {
+  args: {},
+  handler: async (ctx) => {
     let viewerKey: string | null = null;
     try {
-      viewerKey = (await identify(ctx, anonId)).key;
+      viewerKey = (await identify(ctx)).key;
     } catch {
       viewerKey = null;
     }
@@ -1690,8 +1555,13 @@ function brewSummary(brew: Doc<"perfumeBrews">) {
     seq: brew.seq,
     itemCount: brew.items.length,
     hasHypotheticals: brew.items.some((p) => !p.real),
-    outputCount: brew.outputs.reduce((n, o) => n + o.count, 0),
-    pinned: brew.pinned,
+    cauldronCount: restingOn(brew).reduce((n, o) => n + o.count, 0),
+    // `recipeIndex` is optional-deprecated in the schema (stripped by the ship
+    // migration); normalize to the client's PinnedRecipe shape, defaulting a
+    // missing index to the common recipe (0) until Phase 4 reworks pins.
+    pinned: brew.pinned
+      ? { perfumeId: brew.pinned.perfumeId, recipeIndex: brew.pinned.recipeIndex ?? 0 }
+      : null,
     updatedAt: brew.updatedAt,
   };
 }
@@ -1729,7 +1599,6 @@ export const getInventory = query({
       memberKey,
       ingredients: {} as Record<string, number>,
       pures: {} as Record<string, number>,
-      giftEvents: [] as InventoryDoc["giftEvents"],
       perfumes: [] as InventoryDoc["perfumes"],
       updatedAt: 0,
     };
@@ -1764,11 +1633,11 @@ export const presenceList = query({
 
 // Whether the caller can undo/redo on a brew (drives the toolbar affordances).
 export const undoState = query({
-  args: { brewId: brewIdArg, anonId },
-  handler: async (ctx, { brewId, anonId }) => {
+  args: { brewId: brewIdArg },
+  handler: async (ctx, { brewId }) => {
     let key: string | null = null;
     try {
-      key = (await identify(ctx, anonId)).key;
+      key = (await identify(ctx)).key;
     } catch {
       return { canUndo: false, canRedo: false };
     }

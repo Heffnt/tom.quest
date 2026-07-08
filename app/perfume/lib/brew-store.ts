@@ -140,20 +140,10 @@ export type BrewStoreResult = {
 // ── Convex store ─────────────────────────────────────────────────────────────
 
 export type ConvexBrewOptions = {
-  /** "user:<id>" | "anon:<uuid>" | null while identity resolves. */
+  /** "user:<id>" (a logged-in member) | null while auth resolves or logged out
+   * (a visitor renders read-only — membership is login-only, DESIGN.md §4). */
   viewerKey: string | null;
-  /** Passed to every mutation when the viewer is anonymous. */
-  anonId: string | null;
   isTom: boolean;
-  /** Anonymous and still unnamed — mutations get intercepted through
-   * onNeedProfile until a nickname is set. */
-  needsProfile: boolean;
-  /** Called INSTEAD of the intercepted mutation; the client shows the nickname
-   * prompt and calls `run` once the profile is saved. */
-  onNeedProfile: (run: () => void) => void;
-  /** Stored profile seeds the member created by register. */
-  profileName?: string;
-  profileColor?: string;
 };
 
 /** Resolve the client party sentinel to the real party brew id (or null). */
@@ -182,10 +172,9 @@ export function useConvexBrewStore(
     : (brewDoc?._id ?? null);
   const rawMembers = useQuery(api.brews.listMembers, {});
   const members = useMemo<MemberInfo[]>(() => rawMembers ?? [], [rawMembers]);
-  const rawIndex = useQuery(
-    api.brews.listBrews,
-    viewerKey ? { ...(opts.anonId ? { anonId: opts.anonId } : {}) } : {},
-  );
+  // listBrews resolves the viewer from auth server-side (you-first ordering);
+  // a visitor still sees the grouping, just without "you".
+  const rawIndex = useQuery(api.brews.listBrews, {});
   const ownInv = useQuery(
     api.brews.getInventory,
     viewerKey ? { memberKey: viewerKey } : "skip",
@@ -204,9 +193,7 @@ export function useConvexBrewStore(
   );
   const rawUndo = useQuery(
     api.brews.undoState,
-    resolvedId && viewerKey
-      ? { brewId: resolvedId, ...(opts.anonId ? { anonId: opts.anonId } : {}) }
-      : "skip",
+    resolvedId && viewerKey ? { brewId: resolvedId } : "skip",
   );
 
   // browse UI is client-local in the multi-brew model (per-brew, not synced)
@@ -241,7 +228,7 @@ export function useConvexBrewStore(
     returnIng: useMutation(api.brews.returnIngredients),
     empty: useMutation(api.brews.emptyBrew),
     brew: useMutation(api.brews.brew),
-    take: useMutation(api.brews.takeOutput),
+    take: useMutation(api.brews.takeFromCauldron),
     giftItem: useMutation(api.brews.giftItem),
     giftPerfume: useMutation(api.brews.giftPerfume),
     undo: useMutation(api.brews.undo),
@@ -255,23 +242,15 @@ export function useConvexBrewStore(
   idRef.current = resolvedId;
   const ensuredRef = useRef<string | null>(null);
 
-  const anonArg = useCallback(
-    () => (optsRef.current.anonId ? { anonId: optsRef.current.anonId } : {}),
-    [],
-  );
-
   // Make sure the caller is a member before any mutation that requires one.
-  // Idempotent: registerMember refreshes lastSeen.
+  // Idempotent: registerMember refreshes lastSeen (name/color default from the
+  // logged-in account server-side).
   const ensureMember = useCallback(async () => {
     const o = optsRef.current;
     if (!o.viewerKey || ensuredRef.current === o.viewerKey) return;
     ensuredRef.current = o.viewerKey;
     try {
-      await mutations.register({
-        ...(o.anonId ? { anonId: o.anonId } : {}),
-        ...(o.profileName ? { name: o.profileName } : {}),
-        ...(o.profileColor ? { color: o.profileColor } : {}),
-      });
+      await mutations.register({});
     } catch (e) {
       ensuredRef.current = null;
       throw e;
@@ -279,21 +258,17 @@ export function useConvexBrewStore(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Run a mutation, joining first and routing an unnamed anon through the
-  // nickname prompt. Errors surface on the console — the server is
+  // Run a mutation, joining first. A logged-out visitor is read-only (no
+  // viewerKey → no-op). Errors surface on the console — the server is
   // authoritative and the reactive snapshot reconciles the UI.
   const perform = useCallback(
     (fn: () => Promise<unknown>) => {
       const o = optsRef.current;
       if (!o.viewerKey) return;
-      const exec = () => {
-        void (async () => {
-          await ensureMember();
-          await fn();
-        })().catch((e) => console.error("[perfume]", e));
-      };
-      if (o.needsProfile) o.onNeedProfile(exec);
-      else exec();
+      void (async () => {
+        await ensureMember();
+        await fn();
+      })().catch((e) => console.error("[perfume]", e));
     },
     [ensureMember],
   );
@@ -320,37 +295,37 @@ export function useConvexBrewStore(
     return {
       moveToBrew: (itemKey, n) => {
         if (!isIngredientKey(itemKey) || n < 1) return;
-        onBrew((brewId) => a.moveToBrew({ brewId, itemKey, n, ...anonArg() }));
+        onBrew((brewId) => a.moveToBrew({ brewId, itemKey, n }));
       },
       moveToInventory: (itemKey, n) => {
         if (!isIngredientKey(itemKey) || n < 1) return;
-        onBrew((brewId) => a.moveToInventory({ brewId, itemKey, n, ...anonArg() }));
+        onBrew((brewId) => a.moveToInventory({ brewId, itemKey, n }));
       },
-      playStrike: (freq) => onBrew((brewId) => a.playStrike({ brewId, freq, ...anonArg() })),
-      unplayStrike: (freq) => onBrew((brewId) => a.unplayStrike({ brewId, freq, ...anonArg() })),
-      playWild: (chosenFreq) => onBrew((brewId) => a.playWild({ brewId, chosenFreq, ...anonArg() })),
-      unplayWild: (chosenFreq) => onBrew((brewId) => a.unplayWild({ brewId, chosenFreq, ...anonArg() })),
-      fillFromInventory: () => onBrew((brewId) => a.fill({ brewId, ...anonArg() })),
-      returnIngredients: () => onBrew((brewId) => a.returnIng({ brewId, ...anonArg() })),
-      emptyBrew: () => onBrew((brewId) => a.empty({ brewId, ...anonArg() })),
+      playStrike: (freq) => onBrew((brewId) => a.playStrike({ brewId, freq })),
+      unplayStrike: (freq) => onBrew((brewId) => a.unplayStrike({ brewId, freq })),
+      playWild: (chosenFreq) => onBrew((brewId) => a.playWild({ brewId, chosenFreq })),
+      unplayWild: (chosenFreq) => onBrew((brewId) => a.unplayWild({ brewId, chosenFreq })),
+      fillFromInventory: () => onBrew((brewId) => a.fill({ brewId })),
+      returnIngredients: () => onBrew((brewId) => a.returnIng({ brewId })),
+      emptyBrew: () => onBrew((brewId) => a.empty({ brewId })),
       brew: (perfumeId, recipeIndex, k) =>
-        onBrew((brewId) => a.brew({ brewId, perfumeId, recipeIndex, k, ...anonArg() })),
-      takeOutput: (instanceId) => onBrew((brewId) => a.take({ brewId, instanceId, ...anonArg() })),
+        onBrew((brewId) => a.brew({ brewId, perfumeId, recipeIndex, k })),
+      takeOutput: (instanceId) => onBrew((brewId) => a.take({ brewId, instanceId })),
       giftItem: (toMemberKey, itemKey, n) => {
         if (n < 1) return;
-        perform(() => a.giftItem({ toMemberKey, itemKey, n, ...anonArg() }));
+        perform(() => a.giftItem({ toMemberKey, itemKey, n }));
       },
       giftPerfume: (toMemberKey, instanceId) =>
-        perform(() => a.giftPerfume({ toMemberKey, instanceId, ...anonArg() })),
-      pinRecipe: (pinned) => onBrew((brewId) => a.pinRecipe({ brewId, pinned, ...anonArg() })),
-      undo: () => onBrew((brewId) => a.undo({ brewId, ...anonArg() })),
-      redo: () => onBrew((brewId) => a.redo({ brewId, ...anonArg() })),
+        perform(() => a.giftPerfume({ toMemberKey, instanceId })),
+      pinRecipe: (pinned) => onBrew((brewId) => a.pinRecipe({ brewId, pinned })),
+      undo: () => onBrew((brewId) => a.undo({ brewId })),
+      redo: () => onBrew((brewId) => a.redo({ brewId })),
       createBrew: async (nickname) => {
         const o = optsRef.current;
         if (!o.viewerKey) return null;
         try {
           await ensureMember();
-          const id = await a.createBrew({ ...(nickname ? { nickname } : {}), ...anonArg() });
+          const id = await a.createBrew({ ...(nickname ? { nickname } : {}) });
           return String(id);
         } catch (e) { err(e); return null; }
       },
@@ -359,31 +334,30 @@ export function useConvexBrewStore(
         if (!o.viewerKey) return null;
         try {
           await ensureMember();
-          const id = await a.copyBrew({ brewId: srcBrewId as Id<"perfumeBrews">, ...anonArg() });
+          const id = await a.copyBrew({ brewId: srcBrewId as Id<"perfumeBrews"> });
           return String(id);
         } catch (e) { err(e); return null; }
       },
       handoffBrew: (targetBrewId, toMemberKey) =>
-        perform(() => a.handoffBrew({ brewId: targetBrewId as Id<"perfumeBrews">, toMemberKey, ...anonArg() })),
+        perform(() => a.handoffBrew({ brewId: targetBrewId as Id<"perfumeBrews">, toMemberKey })),
       deleteBrew: (targetBrewId) =>
-        perform(() => a.deleteBrew({ brewId: targetBrewId as Id<"perfumeBrews">, ...anonArg() })),
+        perform(() => a.deleteBrew({ brewId: targetBrewId as Id<"perfumeBrews"> })),
       nicknameBrew: (targetBrewId, nickname) =>
-        perform(() => a.nicknameBrew({ brewId: targetBrewId as Id<"perfumeBrews">, nickname, ...anonArg() })),
+        perform(() => a.nicknameBrew({ brewId: targetBrewId as Id<"perfumeBrews">, nickname })),
       register: (name, color) => {
         void a.register({
           ...(name ? { name } : {}),
           ...(color ? { color } : {}),
-          ...anonArg(),
         }).then(() => { ensuredRef.current = optsRef.current.viewerKey; }).catch(err);
       },
       leave: () => {
-        void a.leave({ ...anonArg() }).then(() => { ensuredRef.current = null; }).catch(err);
+        void a.leave({}).then(() => { ensuredRef.current = null; }).catch(err);
       },
       setColor: (color) => {
         // registering with a new color updates the member row idempotently
         void (async () => {
           await ensureMember();
-          await a.register({ color, ...anonArg() });
+          await a.register({ color });
         })().catch(err);
       },
       importInventory: (rows, mode) => {
@@ -393,14 +367,13 @@ export function useConvexBrewStore(
           await a.importInventory({
             rows: rows.map((r) => ({ key: r.itemKey, count: r.count })),
             mode,
-            ...anonArg(),
           });
         })().catch(err);
       },
       updateUI,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onBrew, perform, ensureMember, anonArg, updateUI]);
+  }, [onBrew, perform, ensureMember, updateUI]);
 
   // ── snapshot ────────────────────────────────────────────────────────────
   const snapshot = useMemo<BrewSnapshot | null>(() => {
@@ -425,6 +398,10 @@ export function useConvexBrewStore(
     const ownerMember = brewDoc.owner
       ? members.find((m) => m.memberKey === brewDoc.owner)
       : null;
+    // Resolve each item's contributor NAME at read (the server no longer stores
+    // the denormalized name on items — DESIGN.md §9), mirroring listBrews.
+    const nameOf = (key: string) =>
+      members.find((m) => m.memberKey === key)?.name ?? key;
     return {
       brewId: String(brewDoc._id),
       owner: brewDoc.owner,
@@ -432,11 +409,31 @@ export function useConvexBrewStore(
       nickname: brewDoc.nickname,
       seq: brewDoc.seq,
       isParty: brewDoc.owner === null,
-      items: brewDoc.items,
+      items: brewDoc.items.map((it) => ({
+        key: it.key,
+        real: it.real,
+        contributorKey: it.contributorKey,
+        contributorName: nameOf(it.contributorKey),
+      })),
       strikePlays: brewDoc.strikePlays,
       wildPlays: brewDoc.wildPlays,
-      pinned: brewDoc.pinned,
-      outputs: brewDoc.outputs,
+      // `recipeIndex` is optional-deprecated in the schema now (stripped by the
+      // ship migration); normalize to the client's PinnedRecipe shape, defaulting
+      // a missing index to the common recipe (0) until Phase 4 reworks pins.
+      pinned: brewDoc.pinned
+        ? { perfumeId: brewDoc.pinned.perfumeId, recipeIndex: brewDoc.pinned.recipeIndex ?? 0 }
+        : null,
+      // Provenance is flat now (no ownership chain); the deprecated `provenance`
+      // field is no longer written, so default the client-side chain to empty.
+      outputs: (brewDoc.cauldron ?? brewDoc.outputs ?? []).map((o) => ({
+        instanceId: o.instanceId,
+        perfumeId: o.perfumeId,
+        count: o.count,
+        brewedByKey: o.brewedByKey,
+        witnesses: o.witnesses,
+        brewedAt: o.brewedAt,
+        provenance: o.provenance ?? [],
+      })),
       ui,
     };
   }, [isPartyKey, resolvedId, brewDoc, members, ui]);
@@ -577,14 +574,15 @@ export function useConvexBrewStore(
 }
 
 // The raw held-perfume instance the server returns (schema.ts
-// perfumeInventories.perfumes) — instance identity + full provenance.
+// perfumeInventories.perfumes) — instance identity + flat provenance. `owners`
+// is the deprecated ownership chain: no longer written, optional here.
 type RawPerfumeInstance = {
   instanceId: string;
   perfumeId: string;
   brewedByKey: string;
   witnesses: string[];
   brewedAt: number;
-  owners: { key: string; at: number }[];
+  owners?: { key: string; at: number }[];
 };
 
 // Project the instance list down to the count view the legacy input panel
@@ -608,6 +606,6 @@ function perfumeInstanceView(p: RawPerfumeInstance): PerfumeInstance {
     brewedByKey: p.brewedByKey,
     witnesses: p.witnesses,
     brewedAt: p.brewedAt,
-    owners: p.owners.map((o) => ({ key: o.key, at: o.at })),
+    owners: p.owners?.map((o) => ({ key: o.key, at: o.at })) ?? [],
   };
 }

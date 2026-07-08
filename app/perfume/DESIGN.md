@@ -279,9 +279,11 @@ The target tab shows a translucent drop preview while hovering. The gift is
 removes, strikes, wilds, pins). You cannot undo another member's actions, and
 **brewing, taking, and gifting are permanent** (never undoable).
 
-**Pin — the target and the path.** A player may **pin exactly one perfume** to a
-brew. The pin lives on the **brew object** (everyone viewing sees it), set from
-the perfume panel. Pinning runs the engine's **closest-path** solver over the
+**Pin — the target and the path.** **Exactly one perfume** may be pinned to a
+brew. Pinning changes shared brew intent, so it is an **owner-act** (§4 matrix):
+allowed on your own brew and on the party brew, **not** on another member's owned
+brew — unlike nicknaming, which anyone may do to any brew. The pin lives on the
+**brew object** (everyone viewing sees it), set from the perfume panel. Pinning runs the engine's **closest-path** solver over the
 current brew: it finds the satisfying frequency set — across all of that
 perfume's recipes and k-multiples — reachable with the **fewest additions**,
 ties broken toward the common recipe then smaller k. Each still-needed frequency

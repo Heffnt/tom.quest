@@ -1,13 +1,14 @@
 "use client";
 
 // The brew orchestrator (integrator seat — DESIGN.md §§4,6,9). PerfumeClient
-// mounts the Convex brew store, the top bar, presence and the nickname flow,
-// and feeds BrewView, which mounts the center-stage BrewGraph directly from
-// the multi-brew store (BrewSnapshot/BrewActions) alongside the input panel
-// and the perfume book.
+// mounts the Convex brew store, the top bar and presence, and feeds BrewView,
+// which mounts the center-stage BrewGraph directly from the multi-brew store
+// (BrewSnapshot/BrewActions) alongside the input panel and the perfume book.
 //
-// Route context: /perfume opens your most recent brew (the party brew for a
-// visitor); a deep link /perfume/b/[id] passes brewId and opens that brew.
+// Membership is login-only (DESIGN.md §4): a logged-in user joins by clicking;
+// a logged-out visitor renders read-only. Route context: /perfume opens your
+// most recent brew (the party brew for a visitor); a deep link /perfume/b/[id]
+// passes brewId and opens that brew.
 
 import {
   useCallback,
@@ -38,19 +39,11 @@ import {
   useConvexBrewStore,
   type BrewStoreResult,
 } from "./lib/brew-store";
-import {
-  colorFor,
-  getAnonId,
-  loadProfile,
-  saveProfile,
-  type StoredProfile,
-} from "./lib/anon";
 import { useHand, HandGhost, type BrewHand, type HandActions } from "./lib/use-hand";
 import { useSound } from "./lib/sound";
 import BrewGraph from "./components/brew-graph";
 import IngredientPanel, { type MemberTab } from "./components/ingredient-panel";
 import PerfumePanel from "./components/perfume-panel";
-import { ProfilePrompt } from "./components/profile-prompt";
 import TopBar from "./components/top-bar";
 import SettingsCorner from "./components/settings-corner";
 import { drawerHandle, cn } from "./components/ui";
@@ -59,23 +52,10 @@ import Cursors from "./components/cursors";
 export default function PerfumeClient({ brewId }: { brewId?: string }) {
   const { user, isTom, loading: authLoading } = useAuth();
 
-  // anonymous identity: minted (and persisted) once auth resolves logged-out
-  const [anonId, setAnonId] = useState<string | null>(null);
-  const [profile, setProfile] = useState<StoredProfile | null>(null);
-  useEffect(() => {
-    setProfile(loadProfile());
-  }, []);
-  useEffect(() => {
-    if (!authLoading && !user) setAnonId(getAnonId());
-  }, [authLoading, user]);
-
-  const viewerKey = user ? `user:${user._id}` : anonId;
-  const isAnon = !authLoading && !user;
-  const needsProfile = isAnon && profile === null;
-
-  // the nickname gate: the intercepted mutation waits behind the prompt
-  const [pendingRun, setPendingRun] = useState<{ run: () => void } | null>(null);
-  const onNeedProfile = useCallback((run: () => void) => setPendingRun({ run }), []);
+  // Membership is login-only (DESIGN.md §4): a logged-in user is keyed by their
+  // Convex id; a logged-out visitor has no key and renders read-only.
+  const viewerKey = user ? `user:${user._id}` : null;
+  const isVisitor = !authLoading && !user;
 
   // which brew is on stage: a deep-link id, or resolved from route defaults
   // (your most recent brew; the party brew for a visitor). `viewKey` is a real
@@ -85,15 +65,7 @@ export default function PerfumeClient({ brewId }: { brewId?: string }) {
     if (brewId) setViewKey(brewId);
   }, [brewId]);
 
-  const store = useConvexBrewStore(viewKey ?? PARTY_KEY, {
-    viewerKey,
-    anonId,
-    isTom,
-    needsProfile,
-    onNeedProfile,
-    profileName: profile?.name,
-    profileColor: profile?.color,
-  });
+  const store = useConvexBrewStore(viewKey ?? PARTY_KEY, { viewerKey, isTom });
 
   // default route context: once identity + the brew index resolve, open the
   // viewer's most recent brew, else the party brew (visitors and the empty
@@ -105,33 +77,22 @@ export default function PerfumeClient({ brewId }: { brewId?: string }) {
     setViewKey(recent ?? PARTY_KEY);
   }, [brewId, viewKey, viewerKey, store.index]);
 
-  const presenceName = profile?.name ?? user?.name ?? "Visitor";
-  const presenceColor =
-    profile?.color ?? (viewerKey ? colorFor(viewerKey) : "#6FE3C4");
+  // presence identity: the viewer's registered member row, falling back to the
+  // account name / a default color before that row exists.
+  const viewerMember = store.members.find((m) => m.memberKey === viewerKey);
+  const presenceName = viewerMember?.name ?? user?.name ?? "You";
+  const presenceColor = viewerMember?.color ?? "#6FE3C4";
 
-  const savedProfile = useCallback(
-    (name: string, color: string) => {
-      saveProfile({ name, color });
-      setProfile({ name, color });
-      store.actions.register(name, color);
-      const run = pendingRun?.run;
-      setPendingRun(null);
-      run?.();
-    },
-    [store.actions, pendingRun],
-  );
-
-  // click-to-join (registration): an unnamed anon routes through the nickname
-  // prompt first, then registers; a named viewer registers immediately.
+  // click-to-join (registration): a logged-in user joins immediately; name and
+  // color default from the account server-side.
   const onJoin = useCallback(() => {
-    if (needsProfile) onNeedProfile(() => {});
-    else store.actions.register(presenceName, presenceColor);
-  }, [needsProfile, onNeedProfile, store.actions, presenceName, presenceColor]);
+    store.actions.register();
+  }, [store.actions]);
 
   return (
     <BrewView
       store={store}
-      isAnon={isAnon}
+      isAnon={isVisitor}
       viewerKey={viewerKey}
       header={
         <TopBar
@@ -175,25 +136,14 @@ export default function PerfumeClient({ brewId }: { brewId?: string }) {
         />
       }
       overlays={
-        <>
-          <Cursors
-            brewId={store.brewId === PARTY_KEY ? null : store.brewId}
-            identified={!!viewerKey}
-            anonId={anonId}
-            name={presenceName}
-            color={presenceColor}
-            hand={null}
-            entries={store.presence}
-          />
-          {pendingRun && (
-            <ProfilePrompt
-              defaultName=""
-              defaultColor={presenceColor}
-              onSave={savedProfile}
-              onClose={() => setPendingRun(null)}
-            />
-          )}
-        </>
+        <Cursors
+          brewId={store.brewId === PARTY_KEY ? null : store.brewId}
+          identified={!!viewerKey}
+          name={presenceName}
+          color={presenceColor}
+          hand={null}
+          entries={store.presence}
+        />
       }
     />
   );

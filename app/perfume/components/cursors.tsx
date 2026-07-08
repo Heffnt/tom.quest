@@ -70,9 +70,8 @@ function project(surface: PresenceSurface, x: number, y: number): { x: number; y
 export interface CursorsProps {
   /** The resolved brew id on stage; null while the party brew resolves. */
   brewId: string | null;
-  /** false until the viewer can identify (auth resolved / anon id minted). */
+  /** false until the viewer can identify (logged in; visitors never send). */
   identified: boolean;
-  anonId: string | null;
   name: string;
   color: string;
   hand: Hand | null;
@@ -83,7 +82,6 @@ export interface CursorsProps {
 export default function Cursors({
   brewId,
   identified,
-  anonId,
   name,
   color,
   hand,
@@ -96,8 +94,8 @@ export default function Cursors({
   const lastPos = useRef<{ x: number; y: number } | null>(null);
   const lastSent = useRef(0);
   const trailing = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const stateRef = useRef({ brewId, identified, anonId, name, color, hand });
-  stateRef.current = { brewId, identified, anonId, name, color, hand };
+  const stateRef = useRef({ brewId, identified, name, color, hand });
+  stateRef.current = { brewId, identified, name, color, hand };
 
   const send = useCallback(() => {
     const s = stateRef.current;
@@ -114,7 +112,6 @@ export default function Cursors({
       x: loc.x,
       y: loc.y,
       hand: s.hand ? { key: s.hand.itemKey, count: s.hand.count } : undefined,
-      ...(s.anonId ? { anonId: s.anonId } : {}),
     }).catch(() => {
       // presence is best-effort telemetry
     });

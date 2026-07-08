@@ -15,7 +15,6 @@ type Harness = TestConvex<typeof schema>;
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 // ── fixtures (concrete engine-verified data from app/perfume/data/base.json) ──
-const ANON_A = "anon:11111111-1111-4111-8111-111111111111";
 const PURE_N = "pure:N"; // emits {N}
 const PURE_STRIKE = "pure:strike"; // grants 1 ⊖, emits nothing
 const PURE_WILD = "pure:wild"; // grants 1 ⊕, emits nothing
@@ -81,7 +80,6 @@ async function seedStock(
         memberKey,
         ingredients,
         pures,
-        giftEvents: [],
         perfumes: [],
         updatedAt: Date.now(),
       });
@@ -106,7 +104,7 @@ async function makePartyBrew(t: Harness) {
       strikePlays: [],
       wildPlays: [],
       pinned: null,
-      outputs: [],
+      cauldron: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -267,8 +265,8 @@ describe("multi-brew permissions matrix", () => {
       k: 2,
     });
     const after = await getBrewDoc(bob,{ brewId: party });
-    expect(after.outputs[0].count).toBe(2);
-    await bob.mutation(api.brews.takeOutput, { brewId: party, instanceId });
+    expect(after.cauldron![0].count).toBe(2);
+    await bob.mutation(api.brews.takeFromCauldron, { brewId: party, instanceId });
     expect((await bob.query(api.brews.getInventory, { memberKey: bobKey })).perfumes).toHaveLength(1);
   });
 
@@ -288,31 +286,24 @@ describe("multi-brew permissions matrix", () => {
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBe(1);
   });
 
-  it("caller with no identity (no login, no anonId) is rejected", async () => {
+  it("a visitor (not logged in) is rejected — membership is login-only", async () => {
     const { t, alice } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
+    // `t` with no identity models a logged-out visitor: no auth → rejected.
     await expect(
       t.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 }),
-    ).rejects.toThrow(/Sign in or provide anonId/);
+    ).rejects.toThrow(/Sign in to join/);
   });
 
-  it("a malformed anonId is rejected", async () => {
-    const { t, alice } = await setup();
+  it("a logged-in user who never joined cannot arrange a brew (must join first)", async () => {
+    const { alice, bob } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
+    // Bob is logged in (identity resolves) but never called registerMember, so
+    // he is not a member yet.
     await expect(
-      t.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1, anonId: "anon:not-a-uuid" }),
-    ).rejects.toThrow(/Malformed anonId/);
-  });
-
-  it("an unregistered caller cannot arrange a brew (must join first)", async () => {
-    const { t, alice } = await setup();
-    await alice.mutation(api.brews.registerMember, {});
-    const brewId = await alice.mutation(api.brews.createBrew, {});
-    // A well-formed anon who never joined is not a member.
-    await expect(
-      t.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1, anonId: ANON_A }),
+      bob.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 }),
     ).rejects.toThrow(/Join the party first/);
   });
 
@@ -329,7 +320,7 @@ describe("multi-brew permissions matrix", () => {
     expect(brew.items[0].real).toBe(true);
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBeUndefined();
     await tom.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
-    expect((await getBrewDoc(tom,{ brewId })).outputs).toHaveLength(1);
+    expect((await getBrewDoc(tom,{ brewId })).cauldron).toHaveLength(1);
   });
 });
 
@@ -349,7 +340,7 @@ describe("rules of brewing", () => {
     // Nothing consumed, no output.
     const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items).toHaveLength(1);
-    expect(brew.outputs).toHaveLength(0);
+    expect(brew.cauldron).toHaveLength(0);
   });
 
   it("consumption is permanent: real items become their hypothetical twins, nothing returns", async () => {
@@ -382,8 +373,8 @@ describe("rules of brewing", () => {
     ).rejects.toThrow(/does not brew/);
     await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 3 });
     const brew = await getBrewDoc(alice,{ brewId });
-    expect(brew.outputs).toHaveLength(1);
-    expect(brew.outputs[0].count).toBe(3);
+    expect(brew.cauldron).toHaveLength(1);
+    expect(brew.cauldron![0].count).toBe(3);
   });
 
   it("a mismatched tally is rejected by the engine (no consumption)", async () => {
@@ -398,7 +389,7 @@ describe("rules of brewing", () => {
     ).rejects.toThrow(/does not brew/);
     const brew = await getBrewDoc(alice,{ brewId });
     expect(brew.items[0].real).toBe(true); // untouched
-    expect(brew.outputs).toHaveLength(0);
+    expect(brew.cauldron).toHaveLength(0);
   });
 
   it("witnesses are captured from fresh presence at completion", async () => {
@@ -419,7 +410,7 @@ describe("rules of brewing", () => {
       k: 1,
     });
     const brew = await getBrewDoc(alice,{ brewId });
-    const output = brew.outputs.find((o) => o.instanceId === instanceId)!;
+    const output = brew.cauldron!.find((o) => o.instanceId === instanceId)!;
     expect(output.brewedByKey).toBe(aliceKey);
     expect([...output.witnesses].sort()).toEqual([aliceKey, bobKey].sort());
   });
@@ -434,7 +425,7 @@ describe("rules of brewing", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_STRIKE, n: 1 });
     await alice.mutation(api.brews.playStrike, { brewId, freq: "En" });
     await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
-    expect((await getBrewDoc(alice,{ brewId })).outputs).toHaveLength(1);
+    expect((await getBrewDoc(alice,{ brewId })).cauldron).toHaveLength(1);
   });
 
   it("a wild adds a frequency that lifts a brew to a k-multiple", async () => {
@@ -447,7 +438,7 @@ describe("rules of brewing", () => {
     await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_WILD, n: 1 });
     await alice.mutation(api.brews.playWild, { brewId, chosenFreq: "N" });
     await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 2 });
-    expect((await getBrewDoc(alice,{ brewId })).outputs[0].count).toBe(2);
+    expect((await getBrewDoc(alice,{ brewId })).cauldron![0].count).toBe(2);
   });
 
   it("playStrike/playWild reject an unknown frequency id (no junk in shared tally)", async () => {
@@ -580,7 +571,7 @@ describe("brew-scale controls", () => {
 // ── gifting (DESIGN.md §5 — instant; permanent; provenance) ──────────────────
 
 describe("gifting", () => {
-  it("gift a stack: conserves the pair total, records a gift event on both sides, is instant", async () => {
+  it("gift a stack: conserves the pair total, moves counts only (no gift history), is instant", async () => {
     const { t, alice, bob, aliceKey, bobKey } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
@@ -589,12 +580,9 @@ describe("gifting", () => {
     await alice.mutation(api.brews.giftItem, { toMemberKey: bobKey, itemKey: PURE_N, n: 2 });
     const aInv = await alice.query(api.brews.getInventory, { memberKey: aliceKey });
     const bInv = await bob.query(api.brews.getInventory, { memberKey: bobKey });
+    // Counts moved; the pair total (3) is conserved. Gifting keeps NO history.
     expect(aInv.pures[PURE_N]).toBe(1);
     expect(bInv.pures[PURE_N]).toBe(2); // arrived instantly — no acceptance step
-    // The event is recorded on both inventories' append-only history.
-    expect(aInv.giftEvents).toHaveLength(1);
-    expect(bInv.giftEvents).toHaveLength(1);
-    expect(aInv.giftEvents[0]).toMatchObject({ itemKey: PURE_N, n: 2, fromKey: aliceKey, toKey: bobKey });
   });
 
   it("gift rejects over-send and self-gift (no clamping)", async () => {
@@ -610,7 +598,7 @@ describe("gifting", () => {
     ).rejects.toThrow(/yourself/);
   });
 
-  it("gift a perfume INSTANCE: moves whole and extends the owner chain", async () => {
+  it("gift a perfume INSTANCE: moves whole, keeping its flat provenance", async () => {
     const { t, alice, bob, aliceKey, bobKey } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
@@ -623,17 +611,17 @@ describe("gifting", () => {
       recipeIndex: 0,
       k: 1,
     });
-    await alice.mutation(api.brews.takeOutput, { brewId, instanceId });
+    await alice.mutation(api.brews.takeFromCauldron, { brewId, instanceId });
     const inst = (await alice.query(api.brews.getInventory, { memberKey: aliceKey })).perfumes[0];
 
     await alice.mutation(api.brews.giftPerfume, { toMemberKey: bobKey, instanceId: inst.instanceId });
-    // Left Alice, arrived at Bob whole; Bob's owner chain now ends with Bob.
+    // Left Alice, arrived at Bob whole — no ownership chain is extended.
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).perfumes).toHaveLength(0);
     const bobPerfumes = (await bob.query(api.brews.getInventory, { memberKey: bobKey })).perfumes;
     expect(bobPerfumes).toHaveLength(1);
-    expect(bobPerfumes[0].owners[bobPerfumes[0].owners.length - 1].key).toBe(bobKey);
-    // brewedBy provenance survives the gift.
+    // Flat provenance ({brewedBy, witnesses}) survives the gift unchanged.
     expect(bobPerfumes[0].brewedByKey).toBe(aliceKey);
+    expect(bobPerfumes[0].witnesses).toEqual([]);
   });
 
   it("gifting is permanent — it is never written to the undo log", async () => {
@@ -752,7 +740,7 @@ describe("undo / redo", () => {
       recipeIndex: 0,
       k: 1,
     });
-    await alice.mutation(api.brews.takeOutput, { brewId, instanceId });
+    await alice.mutation(api.brews.takeFromCauldron, { brewId, instanceId });
     const entries = await t.run(async (ctx) =>
       ctx.db
         .query("perfumeUndo")
@@ -837,7 +825,7 @@ describe("copyBrew", () => {
     await alice.mutation(api.brews.brew, { brewId: src, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
 
     const copyId = await bob.mutation(api.brews.copyBrew, { brewId: src });
-    expect((await getBrewDoc(bob,{ brewId: copyId })).outputs).toHaveLength(0);
+    expect((await getBrewDoc(bob,{ brewId: copyId })).cauldron).toHaveLength(0);
   });
 
   it("drops junk-frequency plays from the source and trims to the copy's charge budget", async () => {
@@ -891,21 +879,27 @@ describe("nickname & pin", () => {
     expect((await getBrewDoc(alice,{ brewId })).nickname).toBeNull();
   });
 
-  it("pin validates the perfume and recipe index; any member may pin", async () => {
+  it("pin validates the perfume and recipe index; pin is an owner-act (DESIGN §4)", async () => {
     const { alice, bob } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await bob.mutation(api.brews.registerMember, {});
     const brewId = await alice.mutation(api.brews.createBrew, {});
-    await bob.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
+    // The owner may pin their own brew.
+    await alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } });
     expect((await getBrewDoc(alice,{ brewId })).pinned).toEqual({
       perfumeId: BLACK_GAS,
       recipeIndex: 0,
     });
+    // A non-owner may NOT pin someone else's owned brew (WHERE-not-WHAT).
     await expect(
-      bob.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 9 } }),
+      bob.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 0 } }),
+    ).rejects.toThrow(/owner/);
+    // Validation errors surface for the owner.
+    await expect(
+      alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: BLACK_GAS, recipeIndex: 9 } }),
     ).rejects.toThrow(/recipe index/);
     await expect(
-      bob.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: "base:nope", recipeIndex: 0 } }),
+      alice.mutation(api.brews.pinRecipe, { brewId, pinned: { perfumeId: "base:nope", recipeIndex: 0 } }),
     ).rejects.toThrow(/Unknown perfume/);
   });
 
@@ -1122,7 +1116,7 @@ describe("importInventory", () => {
     expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBe(1);
   });
 
-  it("import is a stock declaration — it writes NO gift event", async () => {
+  it("import is a stock declaration — it only writes fungible stacks", async () => {
     const { alice, aliceKey } = await setup();
     await alice.mutation(api.brews.registerMember, {});
     await alice.mutation(api.brews.importInventory, {
@@ -1131,17 +1125,17 @@ describe("importInventory", () => {
     });
     const inv = await alice.query(api.brews.getInventory, { memberKey: aliceKey });
     expect(inv.pures[PURE_N]).toBe(2);
-    expect(inv.giftEvents).toHaveLength(0);
+    // Import touches only the fungible stacks — no perfume instances appear.
+    expect(inv.perfumes).toHaveLength(0);
   });
 
   it("an unregistered caller may not import (owner-only on own inventory)", async () => {
-    const { t } = await setup();
-    // A well-formed anon who never joined is not a member and owns no inventory.
+    const { bob } = await setup();
+    // Bob is logged in but never joined — not a member, owns no inventory.
     await expect(
-      t.mutation(api.brews.importInventory, {
+      bob.mutation(api.brews.importInventory, {
         mode: "merge",
         rows: [{ key: PURE_N, count: 1 }],
-        anonId: ANON_A,
       }),
     ).rejects.toThrow(/Join the party first/);
   });

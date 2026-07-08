@@ -70,7 +70,7 @@ export const DEFAULT_UI: SharedUI = Object.freeze({
 
 // ── members ──────────────────────────────────────────────────────────────────
 // A registered member, with the activity freshness the online indicator reads.
-// memberKey follows the "user:<id>" | "anon:<uuid>" convention.
+// memberKey follows the "user:<id>" convention (membership is login-only).
 export type MemberInfo = {
   memberKey: string;
   name: string;
@@ -91,7 +91,7 @@ export type BrewSummary = {
   seq: number;
   itemCount: number;
   hasHypotheticals: boolean;
-  outputCount: number;
+  cauldronCount: number;
   pinned: PinnedRecipe;
   updatedAt: number;
 };
