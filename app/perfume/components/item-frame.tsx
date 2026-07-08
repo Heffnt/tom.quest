@@ -34,6 +34,7 @@ import { isPureKey } from "../data/base";
 import { ChargeSymbol, FrequencySymbol, TypeGlyph } from "../lib/frequencies";
 import IngredientThumb from "./ingredient-thumb";
 import { PhialGlyph } from "./phial";
+import { cn } from "./ui";
 
 // ── the five contexts (DESIGN.md §1) ─────────────────────────────────────────
 // A frame's context is fixed by where it lives. "catalog" and "recipe" are the
@@ -137,9 +138,14 @@ export interface ItemFrameProps {
   /** Ghost the art (kept in place, faded) — a slot whose copies are all in the
    * brew reads as "you took the icon" (DESIGN.md §Layout). */
   ghosted?: boolean;
-  /** Render the compact catalog card marks: type glyph + emitted-frequency dots
-   * + strike/wild charge marks (DESIGN.md §Layout "compact card"). */
+  /** Render the compact catalog card marks: the type glyph in the top-right
+   * corner + the emitted-frequency dots / charge marks along the bottom
+   * (DESIGN.md §Layout "compact card"). */
   showMarks?: boolean;
+  /** A caption rendered ABOVE the frame, with room for the FULL name (wraps,
+   * never truncated). Used by the catalog + recipe cards. Omit to show no
+   * caption (inventory slots carry the name in their tooltip instead). */
+  name?: string;
   /** When empty AND this preview item is set, show a ghosted affordance of the
    * item that would land here (DESIGN.md §Interactions "ghosted affordance"). */
   ghostPreview?: FrameItem | null;
@@ -167,6 +173,7 @@ export default function ItemFrame({
   count,
   ghosted = false,
   showMarks = false,
+  name,
   ghostPreview = null,
   handlers,
   fill = false,
@@ -178,21 +185,18 @@ export default function ItemFrame({
   "data-testid": testid,
 }: ItemFrameProps) {
   const isGift = context === "gift";
-  // A hypothetical item, or the gift target, reads with a dashed border
-  // (DESIGN.md §1 real/hypothetical, §Interactions gifting affordance).
-  const dashed = isGift || (!!item && !item.real);
 
+  // A filled frame reads as a matted picture frame (a solid grey edge + a thin
+  // inner mat line — .pf-frame in globals.css). The gift target and an empty
+  // frame stay dashed affordances ("drop here" / "an item can land here").
   const frameClass = [
-    "relative grid h-14 place-items-center rounded-lg border bg-bg/40 transition-colors duration-150",
+    "relative grid h-14 place-items-center rounded-md bg-bg/40 transition-colors duration-150",
     fill ? "w-full" : "",
-    dashed ? "border-dashed" : "border-solid",
     isGift
-      ? "border-accent/50 bg-accent/5"
+      ? "border-2 border-dashed border-accent/50 bg-accent/5"
       : item
-        ? item.real
-          ? "border-border/60 hover:border-accent/60 hover:bg-surface-alt"
-          : "border-accent/50 hover:border-accent/70"
-        : "border-border/40 hover:border-accent/50",
+        ? "pf-frame"
+        : "border-2 border-dashed border-border/50 hover:border-accent/40",
     handlers && !disabled ? "cursor-pointer touch-none select-none" : "",
     className ?? "",
   ]
@@ -246,15 +250,45 @@ export default function ItemFrame({
     </div>
   );
 
-  // count badge + overlaid children (gift button, etc.) sit outside the
-  // interactive element so they don't steal its pointer grammar
-  return (
-    <span className={`group relative ${fill ? "flex w-full" : "inline-flex"}`}>
-      {el}
+  // count badge + overlaid children (gift button, ×n, etc.) sit outside the
+  // interactive element so they don't steal its pointer grammar. They anchor to
+  // the frame's own relative box — so with a caption above, they still pin to
+  // the frame, not the taller column.
+  const overlays = (
+    <>
       {typeof count === "number" && count > 0 && (
         <FrameCountBadge n={count} className="absolute bottom-0.5 right-0.5" />
       )}
       {children}
+    </>
+  );
+
+  if (!name) {
+    return (
+      <span className={`group relative ${fill ? "flex w-full" : "inline-flex"}`}>
+        {el}
+        {overlays}
+      </span>
+    );
+  }
+
+  // Caption ABOVE the frame with room for the FULL name: it wraps (never
+  // truncates) and reserves two lines so a row of frames stays aligned.
+  return (
+    <span className={`group flex flex-col items-center gap-1 ${fill ? "w-full" : ""}`}>
+      <span
+        className={cn(
+          "flex min-h-[2.1em] items-end justify-center px-0.5 text-center text-[10px] font-medium leading-tight text-text-muted",
+          fill ? "w-full" : "w-[4.75rem]",
+        )}
+        title={name}
+      >
+        {name}
+      </span>
+      <span className={`relative ${fill ? "flex w-full" : "inline-flex"}`}>
+        {el}
+        {overlays}
+      </span>
     </span>
   );
 }
@@ -271,19 +305,30 @@ function FilledBody({
   showMarks: boolean;
 }) {
   const ing = item.ing;
+  const showType = showMarks && !!ing && !isPureKey(ing.key) && !!ing.type;
   return (
-    <span className="grid place-items-center">
-      <span className={`inline-flex transition-opacity duration-150 ${ghosted ? "opacity-35" : ""}`}>
-        <ItemArt item={item} size={size} />
+    <>
+      {/* the ingredient TYPE sits in the top-right corner of the frame, clear of
+          the emitted frequencies along the bottom (DESIGN.md §Layout). */}
+      {showType && (
+        <span className="pointer-events-none absolute right-1 top-1">
+          <TypeGlyph type={ing!.type as IngredientType} size={13} />
+        </span>
+      )}
+      <span className="grid place-items-center">
+        <span className={`inline-flex transition-opacity duration-150 ${ghosted ? "opacity-35" : ""}`}>
+          <ItemArt item={item} size={size} />
+        </span>
+        {showMarks && ing && <CardFrequencies ing={ing} />}
       </span>
-      {showMarks && ing && <CardMarks ing={ing} />}
-    </span>
+    </>
   );
 }
 
-// The compact card's marks (DESIGN.md §Layout): type glyph + emitted-frequency
-// dots + strike/wild charge marks, under the art. Pure/perfume frames show none.
-function CardMarks({ ing }: { ing: Ingredient }) {
+// The compact card's bottom row (DESIGN.md §Layout): emitted-frequency dots +
+// strike/wild charge marks, under the art. The type is drawn separately in the
+// top-right corner (see FilledBody). Pure/perfume frames show none.
+function CardFrequencies({ ing }: { ing: Ingredient }) {
   if (isPureKey(ing.key)) return null;
   const marks: ReactNode[] = [];
   for (let i = 0; i < ing.emits.length; i++) {
@@ -295,10 +340,9 @@ function CardMarks({ ing }: { ing: Ingredient }) {
   for (let i = 0; i < ing.wild; i++) {
     marks.push(<ChargeSymbol key={`w${i}`} kind="wild" size={13} />);
   }
-  if (marks.length === 0 && !ing.type) return null;
+  if (marks.length === 0) return null;
   return (
     <span className="pointer-events-none mt-0.5 flex max-w-full flex-wrap items-center justify-center gap-0.5">
-      {ing.type && <TypeGlyph type={ing.type as IngredientType} size={13} />}
       {marks}
     </span>
   );

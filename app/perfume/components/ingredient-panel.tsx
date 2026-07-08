@@ -638,7 +638,9 @@ function CatalogCard({
         context="catalog"
         item={art}
         fill
+        size={34}
         showMarks
+        name={ing.name}
         ghosted={ghost}
         count={owned}
         handlers={g}
@@ -649,12 +651,9 @@ function CatalogCard({
             : ing.name
         }
         disabled={!canMove}
-        className={ghost ? "border-amber-400/60 bg-amber-400/10" : undefined}
+        className={ghost ? "bg-amber-400/10" : undefined}
         data-testid="catalog-row"
       >
-        <span className="mt-0.5 block truncate px-0.5 text-center text-[10px] font-medium leading-tight text-text-muted">
-          {ing.name}
-        </span>
         {inBrew > 0 && (
           <span
             className="pointer-events-none absolute -top-1 left-0.5 rounded bg-amber-400/20 px-1 font-mono text-[9px] font-bold leading-4 tabular-nums text-amber-400"

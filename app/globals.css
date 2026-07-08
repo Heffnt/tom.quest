@@ -54,6 +54,18 @@ button, input, select, textarea {
   font: inherit;
 }
 
+/* /perfume — an item frame reads as a matted picture frame: a solid grey edge
+   with a thin inner mat line and a hint of depth. Filled frames get this; empty
+   and gift affordances stay as dashed "an item can land here" outlines.
+   (picture-frame treatment) */
+.pf-frame {
+  border: 2px solid #3b4761;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.10), 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.pf-frame:hover {
+  border-color: #55668a;
+}
+
 /* ===== /perfume — Perfumer's Bench cauldron animations ===== */
 @keyframes pf-float {
   0%   { transform: translate(0px, 0px) rotate(0deg); }

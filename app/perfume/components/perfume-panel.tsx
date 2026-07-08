@@ -1,20 +1,18 @@
 "use client";
 
 // The perfume book — the right drawer (DESIGN.md §6). A searchable list of the
-// d40 perfumes, DECLUTTERED to one clear row hierarchy (DESIGN.md §6 "keeps all
-// existing features … but decluttered"):
+// d40 perfumes, DECLUTTERED to one clear row hierarchy:
 //
-//   resting row   [pin] Name · w{weight} ……… [one status chip] [▾]
-//   on expand     the integrated requirement (symbols) + effect + recipe folds
+//   resting row   [pin] Name … {frequency requirement} … [✓?] [▸]
+//   on expand     have-vs-need (while brewing) + effect + recipe folds
 //
-// Every feature the old book carried survives: search, the frequency/type
-// filter, per-perfume status, expandable recipe folds, the single-brew PIN
-// (DESIGN.md §5 — replaces the old favorites list), the weight display, and the
-// per-recipe combos. What changed is the NOISE: the resting row no longer prints
-// the full requirement symbol row, the status is one chip instead of a card ring
-// + inline badges, and the whole surface adopts the shell's shared button/tab
-// treatment (components/ui.tsx) so the book reads as one family with the input
-// panel.
+// The resting row carries only the name and the frequency requirement, with a
+// small arrow on the right that opens the recipe folds. There is NO weight and
+// NO in-reach / out-of-reach reachability — the one remaining status is the
+// green "✓" chip that appears when the current brew SATISFIES a recipe. Search,
+// the frequency filter, the single-brew PIN (DESIGN.md §5), and the recipe folds
+// all survive; the surface uses the shell's shared button treatment
+// (components/ui.tsx) so the book reads as one family with the input panel.
 //
 // WHICH RECIPE (DESIGN.md §Recipe): when the open brew's tally satisfies one or
 // more of a perfume's recipes, the row shows a satisfied chip naming the recipe
@@ -32,7 +30,7 @@
 // PURE REFERENCE — brewed output lives on the cauldron, never here.
 
 import { useMemo, useState } from "react";
-import type { Multiset, Perfume, EvalResult, BrewState } from "../lib/types";
+import type { Multiset, Perfume, BrewState } from "../lib/types";
 import type { SharedUI, PinnedRecipe } from "../lib/brew-types";
 import type { BrewHand } from "../lib/use-hand";
 import {
@@ -44,12 +42,7 @@ import {
   findRecipes,
   type FoundRecipe,
 } from "../lib/engine";
-import {
-  ALL_FREQUENCIES,
-  FUND,
-  baseIngredients,
-  perfumeWeight,
-} from "../data/base";
+import { ALL_FREQUENCIES, FUND, baseIngredients } from "../data/base";
 import { FrequencySymbol, STRIKE } from "../lib/frequencies";
 import { recipeLabel } from "../lib/recipe-label";
 import FrequencyFilterButton, { isTypeFilter } from "./frequency-filter";
@@ -86,8 +79,6 @@ export interface PerfumePanelProps {
   // unambiguous destination for an input-side item).
   onShiftToBrew: (itemKey: string) => void;
 }
-
-const STATUS_RANK: Record<string, number> = { perfect: 0, craftable: 1, off: 2 };
 
 // Display order for frequencies inside a recipe row: fundamentals in canonical
 // order, then named frequencies by complexity (ALL_FREQUENCIES is already sorted).
@@ -326,13 +317,9 @@ export default function PerfumePanel({
         perfume,
         // per-recipe satisfaction (which recipe ✓, and k) — DESIGN.md §Recipe
         satisfied: satisfiedRecipes(brew, perfume),
-        // the overall status drives the one status chip and the sort
-        status: overallStatus(brew, perfume),
       })),
     [perfumes, brew],
   );
-  // "in reach" counts brewed perfumes too — they're trivially reachable
-  const inReach = evaluated.filter((e) => e.status !== "off").length;
   // the brew's frequencies (after combination) — the requirement summary
   // overlays "have vs need" once something is brewing
   const brewTallyList = useMemo(() => msToList(brewTally(brew)), [brew]);
@@ -356,11 +343,10 @@ export default function PerfumePanel({
           (pinnedKey === b.perfume.key ? 1 : 0) -
           (pinnedKey === a.perfume.key ? 1 : 0);
         if (p !== 0) return p;
-        const s = STATUS_RANK[a.status] - STATUS_RANK[b.status];
+        // perfumes the current brew satisfies float to the top
+        const s =
+          (b.satisfied.size > 0 ? 1 : 0) - (a.satisfied.size > 0 ? 1 : 0);
         if (s !== 0) return s;
-        // lightest resonance first
-        const w = perfumeWeight(a.perfume) - perfumeWeight(b.perfume);
-        if (w !== 0) return w;
         return a.perfume.name.localeCompare(b.perfume.name);
       });
   }, [evaluated, ui.perfumeSearch, ui.perfumeFilters, pinnedKey]);
@@ -373,10 +359,9 @@ export default function PerfumePanel({
       <div className="flex items-baseline justify-between border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold text-text-muted">Perfumes</h2>
         <span className="font-mono text-xs tabular-nums text-text-faint">
-          {!brewEmpty && <span className="text-accent">{inReach}</span>}
-          {!brewEmpty && "/"}
-          {perfumes.length}
-          {!brewEmpty ? " in reach" : " perfumes"}
+          {shown.length === perfumes.length
+            ? `${perfumes.length} perfumes`
+            : `${shown.length}/${perfumes.length}`}
         </span>
       </div>
 
@@ -404,11 +389,10 @@ export default function PerfumePanel({
         {shown.length === 0 ? (
           <EmptyHits filtered={hasFilter} onClear={() => onUI({ perfumeSearch: "", perfumeFilters: [] })} />
         ) : (
-          shown.map(({ perfume, satisfied, status }) => (
+          shown.map(({ perfume, satisfied }) => (
             <PerfumeRow
               key={perfume.key}
               perfume={perfume}
-              status={status}
               satisfied={satisfied}
               brewEmpty={brewEmpty}
               brewTallyList={brewTallyList}
@@ -428,17 +412,6 @@ export default function PerfumePanel({
       </div>
     </div>
   );
-}
-
-// The perfume's best status across its recipes (drives the one status chip and
-// the sort). Wraps evalReq so the panel never re-implements the rules.
-function overallStatus(brew: BrewState, perfume: Perfume): EvalResult["status"] {
-  let best: EvalResult["status"] = "off";
-  for (let ri = 0; ri < perfume.recipes.length; ri++) {
-    const s = evalReq(brew, perfume.recipes[ri], ri).status;
-    if (STATUS_RANK[s] < STATUS_RANK[best]) best = s;
-  }
-  return best;
 }
 
 // ── the empty / no-hits state (DESIGN.md §6 edge states) ─────────────────────
@@ -469,12 +442,13 @@ function FrequencyRow({ req, size = 20 }: { req: string[]; size?: number }) {
   );
 }
 
-// The integrated requirement (core + choice groups). Lives inside the fold now,
-// no longer on the resting row (DESIGN.md §6 declutter).
-function IntegratedRequirement({ integ }: { integ: Integrated }) {
+// The integrated requirement (core + choice groups). Shown on the resting row
+// (compact) and again, larger, inside the fold's have-vs-need view.
+function IntegratedRequirement({ integ, size = 20 }: { integ: Integrated; size?: number }) {
+  const small = Math.max(12, Math.round(size * 0.8));
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-      <FrequencyRow req={integ.core} size={20} />
+      <FrequencyRow req={integ.core} size={size} />
       {integ.groups.map((g, gi) =>
         g.optional ? (
           <span key={gi} title="optional — either version brews the perfume" className="flex flex-col items-center gap-0.5">
@@ -482,7 +456,7 @@ function IntegratedRequirement({ integ }: { integ: Integrated }) {
               {g.options.map((opt, oi) => (
                 <span key={oi} className="flex items-center gap-1.5">
                   {oi > 0 && <span className="font-mono text-[9px] uppercase text-text-faint">or</span>}
-                  <FrequencyRow req={opt} size={16} />
+                  <FrequencyRow req={opt} size={small} />
                 </span>
               ))}
             </span>
@@ -494,7 +468,7 @@ function IntegratedRequirement({ integ }: { integ: Integrated }) {
             {g.options.map((opt, oi) => (
               <span key={oi} className="flex items-center gap-1.5">
                 {oi > 0 && <span className="font-mono text-[9px] uppercase text-text-faint">or</span>}
-                <FrequencyRow req={opt} size={20} />
+                <FrequencyRow req={opt} size={size} />
               </span>
             ))}
             <span className="font-mono text-sm text-text-faint">)</span>
@@ -505,46 +479,67 @@ function IntegratedRequirement({ integ }: { integ: Integrated }) {
   );
 }
 
-// ── the single status chip (DESIGN.md §6 "a single status chip") ─────────────
-// One chip on the resting row's right edge. When a recipe is SATISFIED it names
-// which one ("common recipe ✓ ×2" — DESIGN.md §Recipe), sharing lib/recipe-label
-// with the stage. Otherwise: "in reach" (accent) while reachable, "out of reach"
-// (faint) when the excess can't be struck. Nothing when the cauldron is empty.
-function StatusChip({
+// ── the satisfied chip (DESIGN.md §Recipe "which recipe satisfied") ──────────
+// One chip on the resting row's right edge, only when the current brew SATISFIES
+// a recipe. It names which one ("common recipe ✓ ×2"), sharing lib/recipe-label
+// with the stage. There is no "in reach / out of reach" reachability status.
+function SatisfiedChip({
   perfume,
-  status,
   satisfied,
 }: {
   perfume: Perfume;
-  status: EvalResult["status"];
   satisfied: Map<number, number>;
 }) {
-  if (satisfied.size > 0) {
-    // the lowest satisfied recipe index leads (common recipe first)
-    const ri = Math.min(...satisfied.keys());
-    const k = satisfied.get(ri)!;
-    const which = recipeLabel(perfume.key, ri);
-    return (
-      <span
-        className="shrink-0 whitespace-nowrap rounded-full border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[10px] text-success"
-        title="this brew satisfies this recipe"
-      >
-        {which ? `${which} ✓` : "brewed ✓"}
-        {k > 1 ? ` ×${k}` : ""}
-      </span>
-    );
-  }
-  if (status === "craftable") {
-    return (
-      <span className="shrink-0 whitespace-nowrap rounded-full border border-accent/30 bg-accent/5 px-2 py-0.5 font-mono text-[10px] text-accent">
-        in reach
-      </span>
-    );
-  }
+  // the lowest satisfied recipe index leads (common recipe first)
+  const ri = Math.min(...satisfied.keys());
+  const k = satisfied.get(ri)!;
+  const which = recipeLabel(perfume.key, ri);
   return (
-    <span className="shrink-0 whitespace-nowrap rounded-full border border-border/50 px-2 py-0.5 font-mono text-[10px] text-text-faint" title="the excess can't be struck at any copy-count">
-      out of reach
+    <span
+      className="shrink-0 whitespace-nowrap rounded-full border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[10px] text-success"
+      title="this brew satisfies this recipe"
+    >
+      {which ? `${which} ✓` : "brewed ✓"}
+      {k > 1 ? ` ×${k}` : ""}
     </span>
+  );
+}
+
+// The small expand arrow on the row's right edge — points right when closed
+// ("opens the recipes"), rotates down when open.
+function ExpandArrow({
+  expanded,
+  name,
+  onClick,
+}: {
+  expanded: boolean;
+  name: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={expanded}
+      aria-label={expanded ? `Collapse ${name}` : `Expand ${name}`}
+      title={expanded ? "Hide recipes" : "Show recipes"}
+      className={cn(btn.ghost, "h-6 w-6 shrink-0 px-0 text-text-faint")}
+    >
+      <svg
+        viewBox="0 0 16 16"
+        width={12}
+        height={12}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        className={cn("transition-transform duration-150", expanded && "rotate-90")}
+      >
+        <path d="M6 4l4 4-4 4" />
+      </svg>
+    </button>
   );
 }
 
@@ -603,6 +598,7 @@ function RecipeItemFrame({
       item={art}
       size={30}
       showMarks
+      name={ing.name}
       ghosted={inBrew > 0}
       handlers={canMove ? g : undefined}
       label={`Pick up ${ing.name}`}
@@ -674,7 +670,6 @@ function ComboRow({
 
 function PerfumeRow({
   perfume,
-  status,
   satisfied,
   brewEmpty,
   brewTallyList,
@@ -690,7 +685,6 @@ function PerfumeRow({
   onShiftToBrew,
 }: {
   perfume: Perfume;
-  status: EvalResult["status"];
   satisfied: Map<number, number>;
   brewEmpty: boolean;
   brewTallyList: string[];
@@ -715,65 +709,55 @@ function PerfumeRow({
   const [strikesShown, setStrikesShown] = useState(0);
   const nextTier = tiersWithCombos.find((t) => t > strikesShown);
 
-  // one calm left accent bar keyed to status — replaces the old full-card ring
-  // + tinted border (DESIGN.md §6 "kill redundant badges/borders")
-  const accent =
-    satisfied.size > 0
-      ? "var(--color-success)"
-      : status === "craftable"
-        ? "var(--color-accent)"
-        : "transparent";
+  // one calm left accent bar — success only when the brew satisfies a recipe;
+  // there is no craftable/reachability state any more.
+  const accent = satisfied.size > 0 ? "var(--color-success)" : "transparent";
 
   return (
     <article className="overflow-hidden rounded-lg border border-border bg-bg/40">
-      {/* resting row: [pin] name · weight ……… [status chip] [▾] */}
+      {/* resting row: [pin] name · requirement ……… [✓?] [▸] */}
       <div
         className="flex items-center gap-2 px-2.5 py-2"
         style={{ boxShadow: `inset 3px 0 0 ${accent}` }}
       >
         <PinButton perfume={perfume} pinned={pinned} canPin={canPin} onToggle={onTogglePin} />
-        <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          <h3 className="truncate text-sm font-semibold leading-tight text-text" title={perfume.name}>
-            {perfume.name}
-          </h3>
-          <span
-            className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-text-faint"
-            title="total fundamental weight of the heaviest recipe"
-          >
-            w · {perfumeWeight(perfume)}
-          </span>
+        <h3 className="min-w-0 shrink truncate text-sm font-semibold leading-tight text-text" title={perfume.name}>
+          {perfume.name}
+        </h3>
+        {/* the frequency requirement, compact, on the resting row itself */}
+        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1">
+          <IntegratedRequirement integ={integ} size={14} />
         </div>
-        {!brewEmpty && <StatusChip perfume={perfume} status={status} satisfied={satisfied} />}
-        <button
-          type="button"
+        {!brewEmpty && satisfied.size > 0 && (
+          <SatisfiedChip perfume={perfume} satisfied={satisfied} />
+        )}
+        <ExpandArrow
+          expanded={expanded}
+          name={perfume.name}
           onClick={() => {
             onToggleExpanded(perfume.key);
             setStrikesShown(0);
           }}
-          aria-expanded={expanded}
-          aria-label={expanded ? `Collapse ${perfume.name}` : `Expand ${perfume.name}`}
-          className={cn(btn.ghost, "h-6 shrink-0 px-1.5 text-[11px]")}
-        >
-          recipes {expanded ? "▴" : "▾"}
-        </button>
+        />
       </div>
 
       {expanded && (
         <div className="space-y-2.5 border-t border-border/60 px-3 py-2.5">
-          {/* the requirement summary — symbols only. While brewing, the brew's
-              own tally sits beside it so "have vs need" reads at a glance. */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <div className="flex flex-col gap-0.5">
-              <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">requires</span>
-              <IntegratedRequirement integ={integ} />
-            </div>
-            {!brewEmpty && brewTallyList.length > 0 && (
+          {/* while brewing, show the brew's own tally against the requirement so
+              "have vs need" reads at a glance (the requirement itself is on the
+              resting row). */}
+          {!brewEmpty && brewTallyList.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <div className="flex flex-col gap-0.5">
+                <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">requires</span>
+                <IntegratedRequirement integ={integ} />
+              </div>
               <div className="flex flex-col gap-0.5">
                 <span className="font-mono text-[9px] uppercase tracking-wider text-text-faint">brew has</span>
                 <FrequencyRow req={brewTallyList} size={18} />
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* what the perfume DOES — "unknown" until discovered in play */}
           <p className="text-[11px] italic leading-snug text-text-muted">{perfume.effect}</p>
