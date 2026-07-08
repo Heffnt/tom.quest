@@ -84,6 +84,11 @@ export interface ItemFrameProps {
   size?: number;
   /** Owned count badge (bottom-right); omitted or <=0 draws none. */
   count?: number;
+  /** How the count badge reads: "frame" (default) shows for any count>0 (an
+   * inventory slot shows "×1" the same as "×3"); "chip" hides a lone copy and
+   * only marks genuine stacks (count>1) — used by the brew graph, where a solo
+   * item shouldn't carry a redundant "×1". */
+  countVariant?: "frame" | "chip";
   /** Ghost the art (kept in place, faded) — a slot whose copies are all in the
    * brew reads as "you took the icon" (DESIGN.md §Layout). */
   ghosted?: boolean;
@@ -120,6 +125,7 @@ export default function ItemFrame({
   item,
   size = 44,
   count,
+  countVariant = "frame",
   ghosted = false,
   showMarks = false,
   name,
@@ -225,8 +231,8 @@ export default function ItemFrame({
   // the frame, not the taller column.
   const overlays = (
     <>
-      {typeof count === "number" && count > 0 && (
-        <CountBadge count={count} variant="frame" className="absolute bottom-0.5 right-0.5" />
+      {typeof count === "number" && (
+        <CountBadge count={count} variant={countVariant} className="absolute bottom-0.5 right-0.5" />
       )}
       {children}
     </>

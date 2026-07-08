@@ -1117,6 +1117,7 @@ function ItemChip({
           item={frameItem}
           size={48}
           count={node.count}
+          countVariant="chip"
           handlers={handlers}
           disabled={!canMove}
           label={`${node.name} ×${node.count} in the brew — click to pick up, right-click to return one, shift-click to send one home`}
