@@ -1,0 +1,73 @@
+"use client";
+
+// Shared small SVG/label atoms, deduplicated from their prior per-file copies
+// (SendGlyph: inventory-grid.tsx SendMark + item-frame.tsx GiftAffordance;
+// GearIcon: settings-corner.tsx; ChipLabel + labelShadow: brew-graph.tsx and
+// the deleted phial.tsx). Paths/styles copied verbatim — no visual change.
+
+import type { CSSProperties, ReactNode } from "react";
+
+// ── send / gift arrow ────────────────────────────────────────────────────────
+// The paper-plane path used both for the inventory-slot "send to a party
+// member" affordance and the gift-target drop hint (DESIGN.md §Interactions
+// "Gifting").
+
+export function SendGlyph({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M22 2 11 13" />
+      <path d="M22 2 15 22 11 13 2 9Z" />
+    </svg>
+  );
+}
+
+// ── settings gear ────────────────────────────────────────────────────────────
+
+export function GearIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+// ── graph chip label ─────────────────────────────────────────────────────────
+// Shared by every labeled chip in the brew graph (frequency/strike/wild/
+// ingredient/perfume nodes) — a small dark text-shadow keeps the mono label
+// legible over any node color.
+
+export const labelShadow: CSSProperties = {
+  textShadow: "0 1px 3px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.7)",
+};
+
+export function ChipLabel({ children }: { children: ReactNode }) {
+  return (
+    <span
+      className="pointer-events-none max-w-[84px] text-center font-mono text-[10px] uppercase leading-tight tracking-wide text-text"
+      style={labelShadow}
+    >
+      {children}
+    </span>
+  );
+}
