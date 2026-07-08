@@ -90,6 +90,29 @@ describe("groupRuns", () => {
     expect(ghosts.every((g) => typeof g.runId === "string" && Array.isArray(g.dims))).toBe(true);
   });
 
+  it("carries the continuous colorBy value: passthrough (single) and group mean", () => {
+    const withC = (x: number, y: number, dims: string[], c: number | null): RunPoint =>
+      ({ x, y, dims, runId: `r${x}-${y}-${c}`, c });
+    // averaging=false → c passes through unchanged.
+    const solo = groupRuns([withC(1, 2, ["a"], 4)], false);
+    expect(solo.points[0].c).toBe(4);
+    // averaging → a group's c is the MEAN of its finite members (null ignored).
+    const avg = groupRuns(
+      [withC(1, 0, ["a"], 2), withC(1, 10, ["a"], 4), withC(1, 5, ["a"], null)],
+      true,
+    );
+    expect(avg.points).toHaveLength(1);
+    expect(avg.points[0].c).toBe(3); // mean(2,4); null skipped
+    // ghosts keep each run's own c.
+    expect(new Set(avg.ghosts.map((g) => g.c))).toEqual(new Set([2, 4, null]));
+  });
+
+  it("group c is null when no member has a finite colorBy value", () => {
+    const p = (c: number | null): RunPoint => ({ x: 1, y: 1, dims: ["a"], runId: `r${c}`, c });
+    const { points } = groupRuns([p(null), p(null)], true);
+    expect(points[0].c).toBeNull();
+  });
+
   it("subsamples ghosts deterministically above GHOST_CAP", () => {
     const pts = Array.from({ length: GHOST_CAP * 3 }, (_, i) => pt(i % 5, i, [""], `r${i}`));
     const a = groupRuns(pts, true);

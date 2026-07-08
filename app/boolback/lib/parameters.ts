@@ -142,14 +142,19 @@ export const CHANNEL_CAPS: Record<Channel, number> = { color: 12, shape: 6, size
  * next free auto channel is taken, preferring one whose cap fits
  * `valueCount(key)` but always assigning something. Parameters absent from
  * `splits` are averaged (not present in the returned map).
+ *
+ * `available` restricts which channels may be assigned (default: all). Phase 3
+ * passes ["shape","size","dash"] when a continuous `colorBy` gradient owns the
+ * COLOR channel, so categorical/binned splits take the remaining channels.
  */
 export function resolveChannels(
   splits: string[],
   channels: Record<string, Channel>,
   valueCount: (key: string) => number,
+  available: Channel[] = CHANNELS,
 ): Map<string, Channel> {
   const out = new Map<string, Channel>();
-  const free = new Set<Channel>(CHANNELS);
+  const free = new Set<Channel>(available);
   // Pass 1: honor explicit channel overrides that are still free.
   for (const key of splits) {
     const c = channels[key];
