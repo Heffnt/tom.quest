@@ -239,8 +239,14 @@ export function PlotBody({
 
   // Axis view windows (zoom only; never touch FilterState) in RAW units. A
   // categorical axis ignores a persisted numeric window (its units are ordinal).
-  const xDomain = axisX && !axisX.categorical ? config.xDomain ?? null : null;
-  const yDomain = axisY && !axisY.categorical ? config.yDomain ?? null : null;
+  // Epoch (line) mode has no resolved axis object but is numeric on BOTH axes,
+  // so its zoom window applies too.
+  const xDomain = lineMode
+    ? config.xDomain ?? null
+    : axisX && !axisX.categorical ? config.xDomain ?? null : null;
+  const yDomain = lineMode
+    ? config.yDomain ?? null
+    : axisY && !axisY.categorical ? config.yDomain ?? null : null;
 
   // ---- points ---------------------------------------------------------------
   const {
@@ -383,12 +389,18 @@ export function PlotBody({
     for (const g of groupVis) for (const p of g.pts) acc(p.x, p.y);
     for (const s of ghostRuns) for (const p of s.pts) acc(p.x, p.y);
 
+    // Raw (un-transformed) bounds for the axis range editor, which shows and
+    // writes RAW units (the scale re-applies log). Epoch extent is unpadded.
+    const untf = (v: number, log: boolean) => (log ? Math.pow(10, v) : v);
     return {
       ghostRuns,
       groups: groupVis,
       dropped: droppedY + droppedX,
       seriesCount: series.length,
       extent: Number.isFinite(x0) ? { x0, x1, y0, y1 } : null,
+      rawExtent: Number.isFinite(x0)
+        ? { xMin: untf(x0, logX), xMax: untf(x1, logX), yMin: untf(y0, logY), yMax: untf(y1, logY) }
+        : null,
     };
   }, [lineMode, y, rows, splitDims, activeJudge, logX, logY, colorDim, shapeDim, colorIdx, shapeIdx, valueStyles,
       colorByActive, colorByColId, colorForC]);
@@ -947,14 +959,14 @@ export function PlotBody({
         <AxisRange
           axis="x"
           domain={xDomain}
-          extent={dataExtent ? [dataExtent.xMin, dataExtent.xMax] : null}
+          extent={dataExtent ? [dataExtent.xMin, dataExtent.xMax] : epoch?.rawExtent ? [epoch.rawExtent.xMin, epoch.rawExtent.xMax] : null}
           onSet={(d) => setDomain("x", d)}
           style={{ right: PAD.r + 6, bottom: 3 }}
         />
         <AxisRange
           axis="y"
           domain={yDomain}
-          extent={dataExtent ? [dataExtent.yMin, dataExtent.yMax] : null}
+          extent={dataExtent ? [dataExtent.yMin, dataExtent.yMax] : epoch?.rawExtent ? [epoch.rawExtent.yMin, epoch.rawExtent.yMax] : null}
           onSet={(d) => setDomain("y", d)}
           style={{ left: PAD.l + 4, top: 2 }}
         />
