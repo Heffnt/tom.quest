@@ -299,8 +299,10 @@ function FilledBody({
       {/* the ingredient TYPE sits at the TOP-RIGHT corner, clear of the icon and
           the emitted frequencies along the bottom (DESIGN.md §1). */}
       {showType && (
-        <span className="pointer-events-none absolute -right-1.5 -top-1.5 z-10">
-          <TypeGlyph type={ing!.type as IngredientType} size={14} />
+        <span className="pointer-events-none absolute -right-2 -top-2 z-10">
+          <MarkDisc size={14}>
+            <TypeGlyph type={ing!.type as IngredientType} size={14} />
+          </MarkDisc>
         </span>
       )}
       {/* emitted-frequency dots + strike/wild charges straddle the BOTTOM edge */}
@@ -327,8 +329,24 @@ function EdgeFrequencies({ ing }: { ing: Ingredient }) {
   }
   if (marks.length === 0) return null;
   return (
-    <span className="pointer-events-none absolute -bottom-1.5 left-1/2 z-10 flex max-w-[130%] -translate-x-1/2 flex-wrap items-center justify-center gap-0.5">
-      {marks}
+    <span className="pointer-events-none absolute -bottom-2 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5">
+      {marks.map((m, i) => (
+        <MarkDisc key={i}>{m}</MarkDisc>
+      ))}
+    </span>
+  );
+}
+
+// A tom.quest-grey disc set behind a frame mark (emitted-frequency dot, charge,
+// or type glyph) so it stands out against the parchment ground (Tom, 2026-07-08).
+function MarkDisc({ children, size = 13 }: { children: ReactNode; size?: number }) {
+  const d = size + 6;
+  return (
+    <span
+      className="flex shrink-0 items-center justify-center rounded-full border border-border bg-surface"
+      style={{ width: d, height: d }}
+    >
+      {children}
     </span>
   );
 }

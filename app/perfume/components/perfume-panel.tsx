@@ -505,44 +505,6 @@ function SatisfiedChip({
   );
 }
 
-// The small expand arrow on the row's right edge — points right when closed
-// ("opens the recipes"), rotates down when open.
-function ExpandArrow({
-  expanded,
-  name,
-  onClick,
-}: {
-  expanded: boolean;
-  name: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-expanded={expanded}
-      aria-label={expanded ? `Collapse ${name}` : `Expand ${name}`}
-      title={expanded ? "Hide recipes" : "Show recipes"}
-      className={cn(btn.ghost, "h-6 w-6 shrink-0 px-0 text-text-faint")}
-    >
-      <svg
-        viewBox="0 0 16 16"
-        width={12}
-        height={12}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-        className={cn("transition-transform duration-150", expanded && "rotate-90")}
-      >
-        <path d="M6 4l4 4-4 4" />
-      </svg>
-    </button>
-  );
-}
-
 // ── a recipe-fold ingredient FRAME (DESIGN.md §1, §Interactions) ─────────────
 // The recipe fold's ingredient combo renders as small item FRAMES in the
 // "recipe" context — hypothetical sources, exactly like the catalog cards in the
@@ -707,9 +669,25 @@ function PerfumeRow({
 
   return (
     <article className="overflow-hidden rounded-lg border border-border bg-bg/40">
-      {/* resting row: [pin] name · requirement ……… [✓?] [▸] */}
+      {/* resting row: [pin] name · requirement ……… [✓?] — click anywhere on the
+          row to open its recipes (Tom, 2026-07-08; the arrow button is gone). */}
       <div
-        className="flex items-center gap-2 px-2.5 py-2"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={expanded ? `Collapse ${perfume.name}` : `Expand ${perfume.name}`}
+        onClick={() => {
+          onToggleExpanded(perfume.key);
+          setStrikesShown(0);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggleExpanded(perfume.key);
+            setStrikesShown(0);
+          }
+        }}
+        className="flex cursor-pointer items-center gap-2 px-2.5 py-2 hover:bg-surface/40"
         style={{ boxShadow: `inset 3px 0 0 ${accent}` }}
       >
         <PinButton perfume={perfume} pinned={pinned} canPin={canPin} onToggle={onTogglePin} />
@@ -723,14 +701,6 @@ function PerfumeRow({
         {!brewEmpty && satisfied.size > 0 && (
           <SatisfiedChip perfume={perfume} satisfied={satisfied} />
         )}
-        <ExpandArrow
-          expanded={expanded}
-          name={perfume.name}
-          onClick={() => {
-            onToggleExpanded(perfume.key);
-            setStrikesShown(0);
-          }}
-        />
       </div>
 
       {expanded && (
@@ -791,7 +761,10 @@ function PinButton({
   return (
     <button
       type="button"
-      onClick={() => onToggle(perfume.key)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(perfume.key);
+      }}
       disabled={!canPin}
       aria-pressed={pinned}
       aria-label={pinned ? `Unpin ${perfume.name}` : `Pin ${perfume.name}`}
