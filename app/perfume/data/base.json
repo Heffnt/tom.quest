@@ -1507,7 +1507,7 @@
    "id": "black-gas",
    "roll": 4,
    "name": "Black Gas",
-   "effect": "unknown",
+   "effect": "Disadvantage on Intelligence attacks, checks, and saving throws for an hour. To cast a spell with a verbal component, the target must succeed on an Intelligence saving throw or the spell fails.",
    "slots": [
     [
      {
