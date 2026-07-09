@@ -1069,7 +1069,7 @@ function AxisRange({
           if (e.key === "Enter") commit(which, (e.target as HTMLInputElement).value);
           else if (e.key === "Escape") setEdit(null);
         }}
-        className="w-14 rounded border border-accent/50 bg-surface px-1 text-[10px] text-text tabular-nums focus:outline-none"
+        className="w-16 rounded border border-accent/50 bg-surface px-1 text-sm text-text tabular-nums focus:outline-none"
       />
     ) : (
       <button
@@ -1084,7 +1084,7 @@ function AxisRange({
 
   return (
     <div
-      className="pointer-events-auto absolute z-10 flex items-center gap-0.5 rounded bg-surface/70 px-1 text-[10px] text-text-faint"
+      className="pointer-events-auto absolute z-10 flex items-center gap-0.5 rounded bg-surface/70 px-1 text-sm text-text-faint"
       style={style}
     >
       {Field(0, lo)}
