@@ -1,34 +1,35 @@
 "use client";
 
 // app/boolback/components/group-plot.tsx — the Group Plot center view: the same
-// Plot config faceted across one dimension's values. Every panel is the
+// Plot config faceted across ONE parameter's values. Every panel is the
 // identical plot (shared axes, consistent styling); panels vary across the
-// facet dim. Clicking a panel PROMOTES it — the facet value becomes a filter
-// and the view switches back to the big Plot.
+// facet parameter.
 //
-// Panels share one ChartConfig with the Plot tab (facetDim is what makes this
-// the group view; the Plot render path ignores it). Styling ordinals are
-// computed GLOBALLY (over all rows) so colors/shapes mean the same thing in
-// every panel. Rendering is windowed (IntersectionObserver) since 100 SVG
-// panels with ghosts is real work.
+// The config panel now OWNS the facet choice (groupPlot.facet) and panel size
+// (groupPlot.panelMin) — this view only reads them. Panel titles are inert
+// (value + run count, hover only); a point inside a panel still opens the run
+// inspector. Styling ordinals are computed GLOBALLY (over all rows) so
+// colors/shapes/bins/categories mean the same thing in every panel. Rendering
+// is windowed (content-visibility) since 100 SVG panels with ghosts is work.
 
-import { useMemo, useState } from "react";
-import type { Bundle, RunRow, Channel } from "../lib/types";
-import { DEFAULT_CHART } from "../lib/types";
+import { useMemo } from "react";
+import type { Bundle, RunRow } from "../lib/types";
+import { DEFAULT_GROUP_PLOT } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
-import {
-  DIMENSIONS, summarizeDimensions, resolveChannels,
-  type DimValues,
-} from "../lib/dimensions";
-import { groupRuns } from "../lib/aggregate";
+import { formatValue } from "../lib/metrics";
+import { PARAMETERS, summarizeParameters, type ParamValues } from "../lib/parameters";
+import { resolveSplits } from "../lib/split-dims";
+import { resolveAxis, type Axis } from "../lib/axes";
+import { groupRuns, type GroupedPoint } from "../lib/aggregate";
 import { buildRunSeries, groupSeries, trajectoryMetric } from "../lib/trajectories";
 import { niceTicks } from "../lib/stats";
-import { colorForValue, SINGLE_COLOR } from "../lib/styling";
-import { fnText } from "../lib/format";
+import { colorForValue, gradientColor, NULL_GRADIENT, SINGLE_COLOR } from "../lib/styling";
+import { edgeLabel } from "../lib/bins";
+import { hash01 } from "../lib/format";
 import { shapeNode } from "./glyph";
-import { effectiveAxis } from "./chart-panel";
+import { effectiveAxis } from "./plot-panel";
 
 const PW = 260, PH = 176; // panel logical size (viewBox); CSS scales it
 const PAD = { l: 34, r: 8, t: 8, b: 20 };
@@ -43,55 +44,63 @@ export function GroupPlotBody({
   bundle: Bundle;
   index: MetricIndex;
 }) {
-  const config = useBoolbackStore((s) => s.chart);
-  const setChart = useBoolbackStore((s) => s.setChart);
-  const setCenterView = useBoolbackStore((s) => s.setCenterView);
-  const setFacet = useBoolbackStore((s) => s.setFacet);
-  const addSubtreeDir = useBoolbackStore((s) => s.addSubtreeDir);
-  const filters = useBoolbackStore((s) => s.filters);
+  const config = useBoolbackStore((s) => s.groupPlot);
   const openDetail = useBoolbackStore((s) => s.openDetail);
+  // Filters live INSIDE the group-plot config.
+  const filters = config.filters;
 
-  const facetDef = config.facetDim ? DIMENSIONS.find((d) => d.key === config.facetDim) ?? null : null;
-  const panelMin = config.panelMin || DEFAULT_CHART.panelMin;
+  const facetDef = config.facet ? PARAMETERS.find((d) => d.key === config.facet) ?? null : null;
+  const panelMin = config.panelMin || DEFAULT_GROUP_PLOT.panelMin;
 
   const lineMode = config.x === "epoch";
-  const xName = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_CHART.x);
+  const xName = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_GROUP_PLOT.x);
   const yName = lineMode
     ? (trajectoryMetric(config.y) ?? "plantedness")
-    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_CHART.y);
-  const logX = !!config.logX;
-  const logY = !!config.logY;
+    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_GROUP_PLOT.y);
+  // Resolved axes over ALL rows (categories/positions align across panels).
+  const axisX = useMemo(() => (lineMode ? null : resolveAxis(xName, index, rows)), [lineMode, xName, index, rows]);
+  const axisY = useMemo(() => (lineMode ? null : resolveAxis(yName, index, rows)), [lineMode, yName, index, rows]);
+  const logX = !!config.logX && (axisX?.allowLog ?? true);
+  const logY = !!config.logY && (axisY?.allowLog ?? true);
 
-  // ---- global dimension model (facet dim excluded — it drives the panels) ----
-  const summary = useMemo(() => summarizeDimensions(rows), [rows]);
-  const diffByKey = useMemo(
-    () => new Map(summary.differing.map((d) => [d.dim.key, d])),
-    [summary],
-  );
-  const splits = useMemo(
-    () => (config.splits ?? []).filter((k) => k !== config.facetDim && diffByKey.has(k)),
-    [config.splits, config.facetDim, diffByKey],
-  );
-  const channelByDim = useMemo(
-    () => resolveChannels(splits, config.channels ?? {}, (k) => diffByKey.get(k)?.values.length ?? 0),
-    [splits, config.channels, diffByKey],
-  );
-  const channelDims = useMemo(() => {
-    const m = new Map<Channel, DimValues>();
-    for (const d of summary.differing) {
-      const ch = channelByDim.get(d.dim.key);
-      if (ch) m.set(ch, d);
+  // ---- continuous colorBy encoding ------------------------------------------
+  const colorBy = config.colorBy ?? null;
+  const colorByActive = !!colorBy && !!index[colorBy];
+  const colorByColId = colorByActive ? (index[colorBy!] ? metricColumnId(colorBy!, index) : colorBy!) : null;
+  const colorByExtent = useMemo(() => {
+    if (!colorByColId) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (const r of rows) {
+      const v = numericValue(r, colorByColId);
+      if (v === null || !Number.isFinite(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
     }
-    return m;
-  }, [summary, channelByDim]);
-  const colorDim = channelDims.get("color");
-  const shapeDim = channelDims.get("shape");
-  const sizeDim = channelDims.get("size");
-  const splitDims = useMemo(() => {
-    const order: Channel[] = ["color", "shape", "size", "dash"];
-    return order.map((ch) => channelDims.get(ch)).filter((d): d is DimValues => d !== undefined);
-  }, [channelDims]);
-  const ordinal = (d: DimValues | undefined) => {
+    return Number.isFinite(lo) ? { lo, hi } : null;
+  }, [rows, colorByColId]);
+  const colorForC = useMemo(() => (v: number | null | undefined): string => {
+    if (v === null || v === undefined || !Number.isFinite(v)) return NULL_GRADIENT;
+    if (!colorByExtent) return gradientColor(0.5);
+    const { lo, hi } = colorByExtent;
+    return gradientColor(hi > lo ? (v - lo) / (hi - lo) : 0.5);
+  }, [colorByExtent]);
+
+  // ---- split model (binned + judge-pinned; facet dim excluded) --------------
+  const summary = useMemo(() => summarizeParameters(rows), [rows]);
+  const { splitDims, byChannel, averaging } = useMemo(
+    () => resolveSplits({
+      summary, rows, splitKeys: config.splits ?? [], bins: config.bins ?? {},
+      channels: config.channels ?? {}, colorByActive, excludeKey: config.facet,
+      numericOf: (m) => (r) => numericValue(r, metricColumnId(m, index)),
+      labelOf: (m) => index[m]?.label ?? m,
+      fmtEdge: (m) => (index[m] ? (v: number) => formatValue(index, m, v) : edgeLabel),
+    }),
+    [summary, rows, config.splits, config.bins, config.channels, config.facet, colorByActive, index],
+  );
+  const colorDim = byChannel.get("color");
+  const shapeDim = byChannel.get("shape");
+  const sizeDim = byChannel.get("size");
+  const ordinal = (d: ParamValues | undefined) => {
     const m = new Map<string, number>();
     d?.values.forEach((v, i) => m.set(v.value, i));
     return m;
@@ -99,10 +108,6 @@ export function GroupPlotBody({
   const colorIdx = useMemo(() => ordinal(colorDim), [colorDim]);
   const shapeIdx = useMemo(() => ordinal(shapeDim), [shapeDim]);
   const sizeIdx = useMemo(() => ordinal(sizeDim), [sizeDim]);
-  const averaging = useMemo(
-    () => summary.differing.some((d) => d.dim.key !== config.facetDim && !channelByDim.has(d.dim.key)),
-    [summary, config.facetDim, channelByDim],
-  );
   const activeJudge = useMemo(() => {
     const j = filters.facets?.judge;
     return j && j.length === 1 ? j[0] : null;
@@ -138,6 +143,10 @@ export function GroupPlotBody({
     return { list, hidden };
   }, [facetDef, rows]);
 
+  // Categorical axis category lists (positions 0..n-1), null for numeric axes.
+  const catX = !lineMode && axisX?.categorical ? axisX.categories : null;
+  const catY = !lineMode && axisY?.categorical ? axisY.categories : null;
+
   // ---- shared extent across ALL rows (so every panel's axes align) ----------
   const extent = useMemo<Extent>(() => {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -151,12 +160,10 @@ export function GroupPlotBody({
         const { series } = buildRunSeries(rows, metric, () => [], activeJudge, logY);
         for (const s of series) for (const p of s.points) acc(logX ? (p.e > 0 ? Math.log10(p.e) : NaN) : p.e, p.y);
       }
-    } else {
-      const xId = metricColumnId(xName, index);
-      const yId = metricColumnId(yName, index);
+    } else if (axisX && axisY) {
       for (const r of rows) {
-        const vx = numericValue(r, xId);
-        const vy = numericValue(r, yId);
+        const vx = axisX.value(r);
+        const vy = axisY.value(r);
         if (vx === null || vy === null) continue;
         if ((logX && vx <= 0) || (logY && vy <= 0)) continue;
         acc(logX ? Math.log10(vx) : vx, logY ? Math.log10(vy) : vy);
@@ -167,63 +174,46 @@ export function GroupPlotBody({
     if (y1 - y0 < 1e-9) { y0 -= 0.5; y1 += 0.5; }
     const padX = (x1 - x0) * 0.05, padY = (y1 - y0) * 0.07;
     x0 -= padX; x1 += padX; y0 -= padY; y1 += padY;
+    if (catX) { x0 = -0.5; x1 = catX.length - 0.5; }
+    if (catY) { y0 = -0.5; y1 = catY.length - 0.5; }
     const tf = (v: number, log: boolean) => (log ? Math.log10(Math.max(v, 1e-12)) : v);
-    if (config.xDomain) { x0 = tf(config.xDomain[0], logX); x1 = tf(config.xDomain[1], logX); }
-    if (config.yDomain) { y0 = tf(config.yDomain[0], logY); y1 = tf(config.yDomain[1], logY); }
+    if (axisX && !axisX.categorical && config.xDomain) { x0 = tf(config.xDomain[0], logX); x1 = tf(config.xDomain[1], logX); }
+    if (axisY && !axisY.categorical && config.yDomain) { y0 = tf(config.yDomain[0], logY); y1 = tf(config.yDomain[1], logY); }
     return { x0, x1, y0, y1 };
-  }, [rows, lineMode, xName, yName, index, logX, logY, activeJudge, config.xDomain, config.yDomain]);
+  }, [rows, lineMode, axisX, axisY, yName, logX, logY, activeJudge, config.xDomain, config.yDomain, catX, catY]);
 
   // Shared logical-space scale (fixed panel viewBox → aligned axes everywhere).
   const sx = (v: number) => PAD.l + ((v - extent.x0) / (extent.x1 - extent.x0)) * (PW - PAD.l - PAD.r);
   const sy = (v: number) => PH - PAD.b - ((v - extent.y0) / (extent.y1 - extent.y0)) * (PH - PAD.t - PAD.b);
 
-  const dispFacet = (v: string) =>
-    facetDef?.fnScope ? v : facetDef?.display ? facetDef.display(v) : v;
+  const dispFacet = (v: string) => (facetDef?.display ? facetDef.display(v) : v);
 
-  // ---- promote: facet value becomes a filter, land on the big Plot ----------
-  const promote = (value: string) => {
-    if (facetDef?.fnScope) {
-      // scope to this function's subtree
-      for (const r of rows) {
-        if (fnText(r.function.arity, r.function.truth_table) === value) {
-          addSubtreeDir(`fn=${r.identity.function_hash}`);
-          break;
-        }
-      }
-    } else if (facetDef?.facetKey) {
-      setFacet(facetDef.facetKey, [value]);
-    }
-    setChart({ facetDim: null });
-    setCenterView("plot");
+  const panelCtx: PanelCtx = {
+    axisX, axisY, logX, logY, splitDims, colorDim, shapeDim, sizeDim,
+    colorIdx, shapeIdx, sizeIdx, valueStyles, averaging, lineMode, activeJudge,
+    lineMetric: lineMode ? (trajectoryMetric(yName) ?? "plantedness") : null,
+    colorByActive, colorByColId, colorForC, catX, catY,
+    band: !!config.band, ghosts: !!config.ghosts, sx, sy,
   };
-
-  const panelCtx = { xName, yName, logX, logY, splitDims, colorDim, shapeDim, sizeDim, colorIdx, shapeIdx, sizeIdx, valueStyles, averaging, lineMode, activeJudge, index, band: !!config.band, ghosts: !!config.ghosts, sx, sy };
 
   if (!facetDef) {
     return (
-      <div className="flex-1 min-h-0 overflow-y-auto p-4">
-        <FacetPicker current={null} onPick={(k) => setChart({ facetDim: k, splits: (config.splits ?? []).filter((s) => s !== k) })} rows={rows} />
-        <p className="mt-3 text-xs text-text-faint">Choose a dimension to facet the plot across — one panel per value.</p>
+      <div className="flex-1 min-h-0 flex items-center justify-center p-6">
+        <p className="max-w-sm text-center text-xs text-text-faint">
+          Choose a facet parameter in the config panel (set a parameter&apos;s treatment to
+          <span className="text-text-muted"> facet</span>) — one panel per value.
+        </p>
       </div>
     );
   }
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* control strip */}
+      {/* facet summary strip (inert — the config panel owns facet + panel size) */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border/60 px-3 py-1.5 text-xs">
         <span className="text-text-faint">facet:</span>
-        <FacetPicker current={facetDef.key} onPick={(k) => setChart({ facetDim: k, splits: (config.splits ?? []).filter((s) => s !== k) })} rows={rows} />
+        <span className="text-text-muted">{facetDef.label}</span>
         <span className="text-text-muted">{facets.list.length} panels{facets.hidden > 0 ? ` · ${facets.hidden} more not shown` : ""}</span>
-        <label className="ml-auto flex items-center gap-1 text-text-muted">
-          panel size
-          <input
-            type="range" min={160} max={480} step={20} value={panelMin}
-            onChange={(e) => setChart({ panelMin: Number(e.target.value) })}
-            className="accent-accent"
-            aria-label="panel size"
-          />
-        </label>
       </div>
 
       <div
@@ -232,15 +222,13 @@ export function GroupPlotBody({
       >
         {facets.list.map((f) => (
           <LazyPanel key={f.value} minHeight={panelMin * (PH / PW) + 22}>
-            <button
-              type="button"
-              onClick={() => promote(f.value)}
-              title={`promote — filter to ${facetDef.label}: ${dispFacet(f.value)} and open the full Plot`}
-              className="flex w-full items-center justify-between gap-2 truncate px-1 pt-1 text-left text-[11px] text-text-muted hover:text-accent"
+            <div
+              title={`${facetDef.label}: ${dispFacet(f.value) || "—"} · ${f.count} runs`}
+              className="flex w-full items-center justify-between gap-2 truncate px-1 pt-1 text-left text-[11px] text-text-muted"
             >
               <span className="truncate">{dispFacet(f.value) || "—"}</span>
               <span className="shrink-0 text-text-faint">{f.count}</span>
-            </button>
+            </div>
             <Panel rows={f.rows} ctx={panelCtx} onOpenRun={openDetail} />
           </LazyPanel>
         ))}
@@ -254,13 +242,17 @@ export function GroupPlotBody({
 // ---------------------------------------------------------------------------
 
 type PanelCtx = {
-  xName: string; yName: string; logX: boolean; logY: boolean;
-  splitDims: DimValues[];
-  colorDim?: DimValues; shapeDim?: DimValues; sizeDim?: DimValues;
+  axisX: Axis | null; axisY: Axis | null; logX: boolean; logY: boolean;
+  splitDims: ParamValues[];
+  colorDim?: ParamValues; shapeDim?: ParamValues; sizeDim?: ParamValues;
   colorIdx: Map<string, number>; shapeIdx: Map<string, number>; sizeIdx: Map<string, number>;
   valueStyles: Record<string, Record<string, import("../lib/types").ValueStyle>>;
   averaging: boolean; lineMode: boolean; activeJudge: string | null;
-  index: MetricIndex; band: boolean; ghosts: boolean;
+  lineMetric: import("../lib/trajectories").EpochMetric | null;
+  colorByActive: boolean; colorByColId: string | null;
+  colorForC: (v: number | null | undefined) => string;
+  catX: string[] | null; catY: string[] | null;
+  band: boolean; ghosts: boolean;
   sx: (v: number) => number; sy: (v: number) => number;
 };
 
@@ -281,18 +273,31 @@ function Panel({ rows, ctx, onOpenRun }: { rows: RunRow[]; ctx: PanelCtx; onOpen
   const content = useMemo(() => {
     const dimsOf = (r: RunRow) => ctx.splitDims.map((d) => d.dim.raw(r) ?? "—");
     if (ctx.lineMode) {
-      const metric = trajectoryMetric(ctx.yName);
-      if (!metric) return null;
-      const { series } = buildRunSeries(rows, metric, dimsOf, ctx.activeJudge, ctx.logY);
+      const traj = ctx.lineMetric;
+      if (!traj) return null;
+      const { series } = buildRunSeries(rows, traj, dimsOf, ctx.activeJudge, ctx.logY);
       const groups = groupSeries(series);
-      return { kind: "line" as const, series, groups };
+      // Per-group mean colorBy (continuous color) over the panel's series.
+      const meanC = new Map<string, number>();
+      if (ctx.colorByActive && ctx.colorByColId) {
+        const byRun = new Map(rows.map((r) => [r.identity.node_path, numericValue(r, ctx.colorByColId!)]));
+        const acc = new Map<string, number[]>();
+        for (const s of series) {
+          const cv = byRun.get(s.runId);
+          if (cv === null || cv === undefined || !Number.isFinite(cv)) continue;
+          const k = s.dims.join(" ");
+          const arr = acc.get(k);
+          if (arr) arr.push(cv); else acc.set(k, [cv]);
+        }
+        for (const [k, vs] of acc) meanC.set(k, vs.reduce((a, b) => a + b, 0) / vs.length);
+      }
+      return { kind: "line" as const, series, groups, meanC };
     }
-    const xId = metricColumnId(ctx.xName, ctx.index);
-    const yId = metricColumnId(ctx.yName, ctx.index);
+    if (!ctx.axisX || !ctx.axisY) return null;
     const pts = [];
     for (const r of rows) {
-      const vx = numericValue(r, xId);
-      const vy = numericValue(r, yId);
+      const vx = ctx.axisX.value(r);
+      const vy = ctx.axisY.value(r);
       if (vx === null || vy === null) continue;
       if ((ctx.logX && vx <= 0) || (ctx.logY && vy <= 0)) continue;
       pts.push({
@@ -300,6 +305,7 @@ function Panel({ rows, ctx, onOpenRun }: { rows: RunRow[]; ctx: PanelCtx; onOpen
         y: ctx.logY ? Math.log10(vy) : vy,
         runId: r.identity.node_path,
         dims: dimsOf(r),
+        c: ctx.colorByColId ? numericValue(r, ctx.colorByColId) : null,
       });
     }
     const grouped = groupRuns(pts, ctx.averaging);
@@ -307,6 +313,9 @@ function Panel({ rows, ctx, onOpenRun }: { rows: RunRow[]; ctx: PanelCtx; onOpen
   }, [rows, ctx]);
 
   const txX = (e: number) => (ctx.logX ? Math.log10(Math.max(e, 1e-12)) : e);
+  const jitterX = !ctx.averaging && !!ctx.axisX?.jitter && !ctx.logX;
+  const jitterY = !ctx.averaging && !!ctx.axisY?.jitter && !ctx.logY;
+  const pointColor = (p: GroupedPoint) => (ctx.colorByActive ? ctx.colorForC(p.c) : colorOf(p.dims));
 
   return (
     <svg viewBox={`0 0 ${PW} ${PH}`} className="w-full" role="img">
@@ -316,22 +325,21 @@ function Panel({ rows, ctx, onOpenRun }: { rows: RunRow[]; ctx: PanelCtx; onOpen
       {content?.kind === "scatter" && (
         <g clipPath="url(#gp-clip)">
           {ctx.ghosts && content.grouped.ghosts.map((g, i) => (
-            <circle key={`g${i}`} cx={ctx.sx(g.x)} cy={ctx.sy(g.y)} r={1.1} fill={colorOf(g.dims)} fillOpacity={0.16} />
+            <circle key={`g${i}`} cx={ctx.sx(g.x)} cy={ctx.sy(g.y)} r={1.1} fill={ctx.colorByActive ? ctx.colorForC(g.c) : colorOf(g.dims)} fillOpacity={0.16} />
           ))}
           {content.grouped.points.map((p, i) => {
-            const color = colorOf(p.dims);
-            if (ctx.band && p.sdY !== null && p.sdY > 0) {
-              // whisker drawn inline below
-            }
+            const color = pointColor(p);
+            const jx = jitterX && p.runId ? (hash01(p.runId) - 0.5) * 0.5 : 0;
+            const jy = jitterY && p.runId ? (hash01(p.runId + "#y") - 0.5) * 0.5 : 0;
             const r = ctx.sizeDim ? 2 + Math.min(4, (ctx.sizeIdx.get(p.dims[ctx.splitDims.indexOf(ctx.sizeDim)]) ?? 0) * 1.1) : (p.n > 1 ? Math.min(6, 2 + Math.sqrt(p.n)) : 2.4);
             return (
               <g key={`p${i}`}>
                 {ctx.band && p.sdY !== null && p.sdY > 0 && (
-                  <line x1={ctx.sx(p.x)} y1={ctx.sy(p.y - p.sdY)} x2={ctx.sx(p.x)} y2={ctx.sy(p.y + p.sdY)} stroke={color} strokeOpacity={0.4} strokeWidth={0.75} />
+                  <line x1={ctx.sx(p.x + jx)} y1={ctx.sy(p.y - p.sdY)} x2={ctx.sx(p.x + jx)} y2={ctx.sy(p.y + p.sdY)} stroke={color} strokeOpacity={0.4} strokeWidth={0.75} />
                 )}
-                {shapeNode(shapeOf(p.dims), ctx.sx(p.x), ctx.sy(p.y), r, { fill: color, fillOpacity: 0.65, stroke: color, strokeOpacity: 0.9 })}
+                {shapeNode(shapeOf(p.dims), ctx.sx(p.x + jx), ctx.sy(p.y + jy), r, { fill: color, fillOpacity: 0.65, stroke: color, strokeOpacity: 0.9 })}
                 {p.runId && p.n === 1 && (
-                  <circle cx={ctx.sx(p.x)} cy={ctx.sy(p.y)} r={Math.max(4, r + 2)} fill="transparent" className="cursor-pointer" onClick={() => onOpenRun(p.runId!)} />
+                  <circle cx={ctx.sx(p.x + jx)} cy={ctx.sy(p.y + jy)} r={Math.max(4, r + 2)} fill="transparent" className="cursor-pointer" onClick={() => onOpenRun(p.runId!)} />
                 )}
               </g>
             );
@@ -344,12 +352,13 @@ function Panel({ rows, ctx, onOpenRun }: { rows: RunRow[]; ctx: PanelCtx; onOpen
           {ctx.band && content.groups.map((g, i) => {
             const withSd = g.points.filter((p) => p.sd !== null && p.sd > 0);
             if (withSd.length < 2) return null;
+            const lineColor = ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims);
             const up = withSd.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y + (p.sd ?? 0))}`);
             const dn = withSd.slice().reverse().map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y - (p.sd ?? 0))}`);
-            return <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={colorOf(g.dims)} fillOpacity={0.1} />;
+            return <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={lineColor} fillOpacity={0.1} />;
           })}
           {content.groups.map((g, i) => g.points.length > 1 && (
-            <polyline key={`ml${i}`} points={g.points.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y)}`).join(" ")} fill="none" stroke={colorOf(g.dims)} strokeWidth={1.25} strokeOpacity={0.95} />
+            <polyline key={`ml${i}`} points={g.points.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y)}`).join(" ")} fill="none" stroke={ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims)} strokeWidth={1.25} strokeOpacity={0.95} />
           ))}
         </g>
       )}
@@ -360,30 +369,35 @@ function Panel({ rows, ctx, onOpenRun }: { rows: RunRow[]; ctx: PanelCtx; onOpen
   );
 }
 
-// Panel axis ticks (shared scale, computed from ctx.sx/sy via the parent's
-// domain — we re-derive nice ticks from the inverse of the mapping).
+// Panel axis ticks (shared scale). Categorical axes label integer positions
+// with the category names; numeric axes derive nice ticks from the scale.
 function yTicksSvg(ctx: PanelCtx) {
-  // Derive the visible y-domain back out of the scale for tick placement.
-  const yTop = invY(ctx, PAD.t), yBot = invY(ctx, PH - PAD.b);
-  const ticks = niceTicks(Math.min(yTop, yBot), Math.max(yTop, yBot), 3);
+  const cat = ctx.catY;
+  const ticks = cat ? cat.map((_, i) => i) : (() => {
+    const yTop = invY(ctx, PAD.t), yBot = invY(ctx, PH - PAD.b);
+    return niceTicks(Math.min(yTop, yBot), Math.max(yTop, yBot), 3);
+  })();
   return (
     <g>
       {ticks.map((t, i) => (
         <g key={`y${i}`}>
           <line x1={PAD.l} y1={ctx.sy(t)} x2={PW - PAD.r} y2={ctx.sy(t)} stroke="var(--color-border)" strokeOpacity={0.4} strokeWidth={0.4} />
-          <text x={PAD.l - 3} y={ctx.sy(t) + 3} fontSize={7} textAnchor="end" fill="var(--color-text-faint)" className="font-mono">{fmtTick(t, ctx.logY)}</text>
+          <text x={PAD.l - 3} y={ctx.sy(t) + 3} fontSize={7} textAnchor="end" fill="var(--color-text-faint)" className="font-mono">{cat ? (cat[t] ?? "") : fmtTick(t, ctx.logY)}</text>
         </g>
       ))}
     </g>
   );
 }
 function xTicksSvg(ctx: PanelCtx) {
-  const xL = invX(ctx, PAD.l), xR = invX(ctx, PW - PAD.r);
-  const ticks = niceTicks(Math.min(xL, xR), Math.max(xL, xR), 3);
+  const cat = ctx.catX;
+  const ticks = cat ? cat.map((_, i) => i) : (() => {
+    const xL = invX(ctx, PAD.l), xR = invX(ctx, PW - PAD.r);
+    return niceTicks(Math.min(xL, xR), Math.max(xL, xR), 3);
+  })();
   return (
     <g>
       {ticks.map((t, i) => (
-        <text key={`x${i}`} x={ctx.sx(t)} y={PH - PAD.b + 9} fontSize={7} textAnchor="middle" fill="var(--color-text-faint)" className="font-mono">{fmtTick(t, ctx.logX)}</text>
+        <text key={`x${i}`} x={ctx.sx(t)} y={PH - PAD.b + 9} fontSize={7} textAnchor="middle" fill="var(--color-text-faint)" className="font-mono">{cat ? (cat[t] ?? "") : fmtTick(t, ctx.logX)}</text>
       ))}
     </g>
   );
@@ -421,54 +435,6 @@ function LazyPanel({ children, minHeight }: { children: React.ReactNode; minHeig
       } as React.CSSProperties}
     >
       {children}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Facet dimension picker.
-// ---------------------------------------------------------------------------
-
-function FacetPicker({
-  current, onPick, rows,
-}: {
-  current: string | null;
-  onPick: (key: string) => void;
-  rows: RunRow[];
-}) {
-  const [open, setOpen] = useState(false);
-  // Only dimensions that actually vary (≥2 values) are useful facets.
-  const options = useMemo(() => {
-    const summary = summarizeDimensions(rows);
-    return summary.differing.map((d) => d.dim);
-  }, [rows]);
-  const cur = DIMENSIONS.find((d) => d.key === current);
-  return (
-    <div className="relative inline-block">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text hover:border-accent/40"
-      >
-        {cur ? cur.label : "choose dimension"} <span className="text-text-faint">▾</span>
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full z-30 mt-1 max-h-72 w-52 overflow-y-auto rounded-lg border border-border bg-surface/95 p-1 text-xs shadow-lg backdrop-blur-md">
-            {options.length === 0 && <div className="px-2 py-1 text-text-faint">No varying dimensions</div>}
-            {options.map((d) => (
-              <button
-                key={d.key}
-                onClick={() => { onPick(d.key); setOpen(false); }}
-                className={`flex w-full items-center rounded px-2 py-1 text-left hover:bg-surface-alt hover:text-accent ${d.key === current ? "text-accent" : "text-text/90"}`}
-              >
-                {d.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
     </div>
   );
 }

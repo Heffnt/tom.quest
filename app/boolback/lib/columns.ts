@@ -1,7 +1,7 @@
 // app/boolback/lib/columns.ts
 //
 // The bridge between the builder's column_groups (which name columns BARE, e.g.
-// "arity", "asr", "asr_drop", "interp_measurement", "scan_auroc") and the
+// "arity", "asr", "asr_drop", "interp_reading", "scan_auroc") and the
 // internal column-id surface used by select.ts cellValue/numericValue (dotted
 // paths like "headline.asr" / "defense.asr_drop", and bare FUNCTION complexity
 // names that resolve against function.complexity).
@@ -65,6 +65,7 @@ const TRAINING_PATHS: Record<string, string> = {
 
 const OUTCOME_PATHS: Record<string, string> = {
   plantedness: "headline.plantedness",
+  planted_fraction: "headline.planted_fraction",
   asr: "headline.asr",
   ftr: "headline.ftr",
   triggerless_correctness: "headline.triggerless_correctness",
@@ -86,9 +87,9 @@ const DEFENSE_PATHS: Record<string, string> = {
   recovery_rate: "defense.recovery_rate",
 };
 
-// INTERP bare names from column_groups are interp_measurement / interp_null_control.
+// INTERP bare names from column_groups are interp_reading / interp_null_control.
 const INTERP_PATHS: Record<string, string> = {
-  interp_measurement: "interp.value",
+  interp_reading: "interp.value",
   interp_null_control: "interp.null_control",
 };
 

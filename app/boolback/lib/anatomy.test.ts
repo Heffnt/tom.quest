@@ -58,7 +58,7 @@ import {
 } from "./anatomy";
 import { rowLayerCount } from "./method-metrics";
 import { DEFAULT_ANATOMY } from "./types";
-import type { InterpMeasurement, RunRow } from "./types";
+import type { InterpReading, RunRow } from "./types";
 
 const bundle = asBundle(structuredClone(sample));
 const rows: RunRow[] = bundle.rows;
@@ -66,11 +66,11 @@ const rows: RunRow[] = bundle.rows;
 // The planted 2:8 run (14 measurements incl. circuit/head/components/NULL)
 // and its function-false twin, located via the twin_hash cross-link.
 const run = rows.find((r) =>
-  r.interp?.measurements?.some((m) => m.kind === "sae_feature"),
+  r.interp?.readings?.some((m) => m.kind === "sae_feature"),
 )!;
-const twinHash = run.interp!.measurements!.find((m) => m.twin_hash)!.twin_hash!;
+const twinHash = run.interp!.readings!.find((m) => m.twin_hash)!.twin_hash!;
 const twin = rows.find((r) => r.identity.function_hash === twinHash)!;
-const legacyRow = rows.find((r) => r.interp != null && !r.interp.measurements)!;
+const legacyRow = rows.find((r) => r.interp != null && !r.interp.readings)!;
 const noInterpRow = rows.find((r) => r.interp === null)!;
 
 const shape = rowShape(run)!;
@@ -173,7 +173,7 @@ describe("buildScale", () => {
     const headless: ModelShape = { nLayers: 32, nHeads: null, dMlp: null };
     const scale = buildScale({}, headless, W);
     expect(scale.xForPath("L14/attn/h9")).toBeNull();
-    const headM = run.interp!.measurements!.find((m) => m.locus_shape === "head")!;
+    const headM = run.interp!.readings!.find((m) => m.locus_shape === "head")!;
     expect(scale.xForMeasurement(headM)).toBeCloseTo(mid(scale.xForPath("L14/attn")!), 6);
   });
 });
@@ -237,7 +237,7 @@ describe("focus ops", () => {
   });
 
   it("fitCircuit expands every node layer evenly past the LAYER threshold", () => {
-    const circuit = run.interp!.measurements!.find((m) => m.kind === "circuit")!;
+    const circuit = run.interp!.readings!.find((m) => m.kind === "circuit")!;
     const f = fitCircuit({ L3: 99 }, circuit.nodes!, shape);
     expect(f.L3).toBeUndefined(); // fresh map
     const circuitLayers = [...new Set(circuit.nodes!.map((n) => n.layer))];
@@ -387,7 +387,7 @@ describe("measurement id codec (sel round-trip)", () => {
 
 describe("locusLabel", () => {
   it("labels every fixture locus type", () => {
-    const ms = run.interp!.measurements!;
+    const ms = run.interp!.readings!;
     expect(locusLabel(ms.find((m) => m.kind === "linear_probe" && m.layer === 16)!)).toBe("L16");
     expect(locusLabel(ms.find((m) => m.locus_shape === "head")!)).toBe("L14/attn/h9");
     expect(locusLabel(ms.find((m) => m.kind === "sae_feature")!)).toBe("L16/mlp");
@@ -424,7 +424,7 @@ describe("LOD ladder", () => {
 
 describe("xForMeasurement — every fixture locus type", () => {
   const scale = buildScale({}, shape, W);
-  const ms = run.interp!.measurements!;
+  const ms = run.interp!.readings!;
 
   it("resid point loci center on the layer span", () => {
     const probe16 = ms.find((m) => m.kind === "linear_probe" && m.layer === 16)!;
@@ -461,7 +461,7 @@ describe("xForMeasurement — every fixture locus type", () => {
   });
 
   it("embed/unembed loci center on the pinned end spans", () => {
-    const at = (locus: "embed" | "unembed"): InterpMeasurement => ({
+    const at = (locus: "embed" | "unembed"): InterpReading => ({
       kind: "x",
       value: 0.1,
       null_control: 0,
@@ -498,7 +498,7 @@ describe("xForMeasurement — every fixture locus type", () => {
 
 describe("measurementsOf + deltaOf (legacy normalization)", () => {
   it("prefers the measurements list, verbatim", () => {
-    expect(measurementsOf(run)).toBe(run.interp!.measurements);
+    expect(measurementsOf(run)).toBe(run.interp!.readings);
     expect(measurementsOf(run)).toHaveLength(14);
   });
 
@@ -506,7 +506,7 @@ describe("measurementsOf + deltaOf (legacy normalization)", () => {
     const ms = measurementsOf(legacyRow);
     expect(ms).toEqual([
       {
-        kind: legacyRow.interp!.measurement_kind,
+        kind: legacyRow.interp!.reading_kind,
         value: legacyRow.interp!.value,
         null_control: legacyRow.interp!.null_control,
       },
@@ -517,13 +517,13 @@ describe("measurementsOf + deltaOf (legacy normalization)", () => {
     expect(measurementsOf(noInterpRow)).toEqual([]);
     const emptied: RunRow = {
       ...legacyRow,
-      interp: { ...legacyRow.interp!, measurement_kind: null, measurements: [] },
+      interp: { ...legacyRow.interp!, reading_kind: null, readings: [] },
     };
     expect(measurementsOf(emptied)).toEqual([]);
   });
 
   it("deltaOf prefers the shipped delta, falls back to value − null_control", () => {
-    const probe16 = run.interp!.measurements!.find(
+    const probe16 = run.interp!.readings!.find(
       (m) => m.kind === "linear_probe" && m.layer === 16,
     )!;
     expect(deltaOf(probe16)).toBe(0.42);
@@ -589,18 +589,18 @@ describe("matchMeasurements — the fixture's run/twin pairing", () => {
   });
 
   it("measurementKey separates same-kind measurements at different loci", () => {
-    const runCaa = run.interp!.measurements!.find((m) => m.kind === "caa")!;
-    const twinCaa = twin.interp!.measurements!.find((m) => m.kind === "caa")!;
+    const runCaa = run.interp!.readings!.find((m) => m.kind === "caa")!;
+    const twinCaa = twin.interp!.readings!.find((m) => m.kind === "caa")!;
     expect(measurementKey(runCaa)).not.toBe(measurementKey(twinCaa));
     const p8 = (r: RunRow) =>
-      r.interp!.measurements!.find((m) => m.kind === "linear_probe" && m.layer === 8)!;
+      r.interp!.readings!.find((m) => m.kind === "linear_probe" && m.layer === 8)!;
     expect(measurementKey(p8(run))).toBe(measurementKey(p8(twin)));
   });
 });
 
 describe("circuitDiff — the fixture's one-edge rewiring", () => {
-  const runCircuit = run.interp!.measurements!.find((m) => m.kind === "circuit")!;
-  const twinCircuit = twin.interp!.measurements!.find((m) => m.kind === "circuit")!;
+  const runCircuit = run.interp!.readings!.find((m) => m.kind === "circuit")!;
+  const twinCircuit = twin.interp!.readings!.find((m) => m.kind === "circuit")!;
 
   it("finds the edge each side owns, by node signature", () => {
     const diff = circuitDiff(runCircuit, twinCircuit);
@@ -619,7 +619,7 @@ describe("circuitDiff — the fixture's one-edge rewiring", () => {
     const solo = circuitDiff(runCircuit, null);
     expect(solo.onlyRun).toHaveLength(6);
     expect(solo.shared).toHaveLength(0);
-    const dangling: InterpMeasurement = {
+    const dangling: InterpReading = {
       ...runCircuit,
       edges: [...runCircuit.edges!, [0, 99]],
     };
@@ -918,7 +918,7 @@ describe("residLayerHeat — the bar's model-LOD heat cells", () => {
     // Legacy record: no layer → nothing to place on the bar.
     expect(residLayerHeat(measurementsOf(legacyRow)).size).toBe(0);
     expect(residLayerHeat([]).size).toBe(0);
-    const junk: InterpMeasurement[] = [
+    const junk: InterpReading[] = [
       { kind: "g", value: 1, null_control: 0, locus_shape: "global" }, // layer-less
       { kind: "m", value: 1, null_control: 0, layer: 5, locus_component: "mlp" },
       { kind: "r", value: null, null_control: null, layer: 5 }, // no delta
@@ -934,7 +934,7 @@ describe("residLayerHeat — the bar's model-LOD heat cells", () => {
 });
 
 describe("neuronBins — top-k components → strip bins", () => {
-  const sae = run.interp!.measurements!.find((m) => m.kind === "sae_feature")!;
+  const sae = run.interp!.readings!.find((m) => m.kind === "sae_feature")!;
 
   it("bins the fixture's 16 components by max |weight| with top indices", () => {
     const bins = neuronBins(sae.components, shape.dMlp, 64);
@@ -1039,7 +1039,7 @@ describe("hostile shape counts (n_layers / n_heads)", () => {
     // shape's existing "refuses to subdivide" degrade); huge finite clamps.
     const inf = buildScale({}, { nLayers: 8, nHeads: Infinity, dMlp: null }, 800);
     expect(inf.shape.nHeads).toBeNull();
-    const headM: InterpMeasurement = {
+    const headM: InterpReading = {
       kind: "x", value: 1, null_control: 0,
       layer: 3, head: 5, locus_component: "attn", locus_shape: "head",
     };
@@ -1060,7 +1060,7 @@ describe("hostile shape counts (n_layers / n_heads)", () => {
     // Head inference from a junk measurement head clamps too.
     const junkHeads = mkRow({
       n_layers: 8,
-      interp: { measurements: [
+      interp: { readings: [
         { kind: "x", value: 1, null_control: 0, layer: 3, head: 1e999, locus_shape: "head" },
         { kind: "y", value: 1, null_control: 0, layer: 4 },
       ] },
@@ -1069,7 +1069,7 @@ describe("hostile shape counts (n_layers / n_heads)", () => {
     // A row whose ONLY layer evidence is junk degrades to null (no spine),
     // never an Infinity-sized scale.
     const junkOnly = mkRow({
-      interp: { measurements: [{ kind: "x", value: 1, null_control: 0, layer: 1e999 }] },
+      interp: { readings: [{ kind: "x", value: 1, null_control: 0, layer: 1e999 }] },
     } as Partial<RunRow>);
     expect(rowLayerCount(junkOnly)).toBeNull();
   });
@@ -1083,7 +1083,7 @@ describe("hostile measurement values", () => {
     ).toBeNull();
     expect(scale.xForNode({ layer: 2.5, component: "mlp" })).toBeNull();
     // Fractional heads degrade to the attn center instead of a NaN slot.
-    const fracHead: InterpMeasurement = {
+    const fracHead: InterpReading = {
       kind: "x", value: 1, null_control: 0,
       layer: 14, head: 9.5, locus_component: "attn", locus_shape: "head",
     };
@@ -1101,7 +1101,7 @@ describe("hostile measurement values", () => {
   it("one Infinity value cannot flatten the |Δ| normalizer pane-wide", () => {
     const junkRun = mkRow({
       n_layers: 8,
-      interp: { measurements: [
+      interp: { readings: [
         { kind: "x", metric_name: "m", value: 1e999, null_control: 0, layer: 3 },
         { kind: "y", metric_name: "m", delta: 0.5, value: 0.5, null_control: 0, layer: 4 },
       ] },
@@ -1119,13 +1119,13 @@ describe("out-of-range layer clamping (nLayers param)", () => {
   // "twin ↓ +5" peak no cell on screen could show.
   const runRow = mkRow({
     n_layers: 8,
-    interp: { measurements: [
+    interp: { readings: [
       { kind: "probe", method: "lp", metric_name: "auroc", layer: 3, delta: 0.5, locus_shape: "point" },
     ] },
   } as Partial<RunRow>);
   const twinRow = mkRow({
     n_layers: 8,
-    interp: { measurements: [
+    interp: { readings: [
       { kind: "probe", method: "lp", metric_name: "auroc", layer: 20, delta: 5.0, locus_shape: "point" },
       { kind: "sweep", method: "lens", metric_name: "kl", value: null, null_control: null,
         layer_profile: [[2, 0.3], [20, 5.0]] },

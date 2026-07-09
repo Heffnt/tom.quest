@@ -16,10 +16,10 @@ import { describe, it, expect } from "vitest";
 import sample from "./sample-snapshot.json";
 import { asBundle } from "./normalize";
 import { findTwinRow } from "../lib/anatomy";
-import type { InterpMeasurement, RunRow } from "../lib/types";
+import type { InterpReading, RunRow } from "../lib/types";
 
 const bundle = asBundle(structuredClone(sample));
-const measurementsOf = (r: RunRow): InterpMeasurement[] => r.interp?.measurements ?? [];
+const measurementsOf = (r: RunRow): InterpReading[] => r.interp?.readings ?? [];
 const allMeasurements = bundle.rows.flatMap(measurementsOf);
 
 /** base_model -> expected [n_layers, n_heads, d_mlp]. */
@@ -40,14 +40,14 @@ const circuitsOf = (r: RunRow) =>
   measurementsOf(r).filter((m) => m.locus_shape === "subgraph" || m.locus_shape === "path");
 
 /** Edge keys by node signature so index-identical circuits compare honestly. */
-const edgeKeys = (m: InterpMeasurement): Set<string> => {
+const edgeKeys = (m: InterpReading): Set<string> => {
   const sig = (i: number) => {
     const n = m.nodes![i];
     return `${n.layer}:${n.component}:${n.head ?? ""}`;
   };
   return new Set(m.edges!.map(([a, b]) => `${sig(a)}>${sig(b)}`));
 };
-const exclusiveEdges = (a: InterpMeasurement, b: InterpMeasurement): [number, number] => {
+const exclusiveEdges = (a: InterpReading, b: InterpReading): [number, number] => {
   const [ka, kb] = [edgeKeys(a), edgeKeys(b)];
   return [[...ka].filter((e) => !kb.has(e)).length, [...kb].filter((e) => !ka.has(e)).length];
 };
@@ -402,8 +402,9 @@ describe("pre-anatomy blobs still load (every new field optional)", () => {
       expect(row.n_heads).toBeUndefined();
       expect(row.d_mlp).toBeUndefined();
     }
-    expect(b.rows[0].interp!.measurements).toBeUndefined();
-    const [m] = b.rows[1].interp!.measurements!;
+    // old-vocab blob (measurement_kind / measurements) translated at load:
+    expect(b.rows[0].interp!.readings).toBeUndefined();
+    const [m] = b.rows[1].interp!.readings!;
     expect(m.value).toBe(0.4);
     expect(m.layer).toBeUndefined();
     expect(m.carrier).toBeUndefined();

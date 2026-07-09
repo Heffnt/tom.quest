@@ -24,6 +24,8 @@ export interface RunPoint {
   runId: string;
   /** Split-dimension raw values, in the caller's fixed dimension order. */
   dims: string[];
+  /** Continuous colorBy value (Phase 3); NOT a group key — averaged per group. */
+  c?: number | null;
 }
 
 export interface GroupedPoint {
@@ -35,6 +37,8 @@ export interface GroupedPoint {
   dims: string[];
   /** Set when the group is a single run (click-through to its drawer). */
   runId?: string;
+  /** Mean colorBy value over the group's runs (Phase 3); null when none finite. */
+  c?: number | null;
 }
 
 /** A raw run tagged with its group's split-dim values (ghost rendering). */
@@ -43,6 +47,8 @@ export interface Ghost {
   y: number;
   dims: string[];
   runId: string;
+  /** Continuous colorBy value of the underlying run (Phase 3 ghost tint). */
+  c?: number | null;
 }
 
 export interface GroupResult {
@@ -109,7 +115,7 @@ function sortStable(pts: RunPoint[]): RunPoint[] {
 
 function ghostSample(pts: RunPoint[]): { list: Ghost[]; subsampled: boolean } {
   const sorted = sortStable(pts);
-  const toGhost = (p: RunPoint): Ghost => ({ x: p.x, y: p.y, dims: p.dims, runId: p.runId });
+  const toGhost = (p: RunPoint): Ghost => ({ x: p.x, y: p.y, dims: p.dims, runId: p.runId, c: p.c ?? null });
   if (sorted.length <= GHOST_CAP) return { list: sorted.map(toGhost), subsampled: false };
   const k = Math.ceil(sorted.length / GHOST_CAP);
   const list: Ghost[] = [];
@@ -131,6 +137,7 @@ export function groupRuns(
     return {
       points: pts.map((p) => ({
         x: p.x, y: p.y, sdX: null, sdY: null, n: 1, dims: p.dims, runId: p.runId,
+        c: p.c ?? null,
       })),
       binned: false,
       ghosts: [],
@@ -141,12 +148,13 @@ export function groupRuns(
 
   const { key: xKey, binned } = makeXBucketer(pts, maxXGroups, bins);
 
-  const groups = new Map<string, { dims: string[]; xs: number[]; ys: number[]; runId: string }>();
+  const groups = new Map<string, { dims: string[]; xs: number[]; ys: number[]; cs: number[]; runId: string }>();
   for (const p of pts) {
     const id = p.dims.join(SEP) + SEP + xKey(p.x);
-    const g = groups.get(id) ?? { dims: p.dims, xs: [], ys: [], runId: p.runId };
+    const g = groups.get(id) ?? { dims: p.dims, xs: [], ys: [], cs: [], runId: p.runId };
     g.xs.push(p.x);
     g.ys.push(p.y);
+    if (typeof p.c === "number" && Number.isFinite(p.c)) g.cs.push(p.c);
     groups.set(id, g);
   }
 
@@ -158,6 +166,7 @@ export function groupRuns(
     n: g.xs.length,
     dims: g.dims,
     runId: g.xs.length === 1 ? g.runId : undefined,
+    c: g.cs.length ? mean(g.cs)! : null,
   }));
   points.sort((a, b) => {
     for (let i = 0; i < a.dims.length; i++) {

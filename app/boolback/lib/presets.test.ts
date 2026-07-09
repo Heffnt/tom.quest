@@ -1,62 +1,48 @@
-// presets loader tests — tolerant hydration must never throw and must apply
-// malformed/stale presets partially.
+// presets tests — spec-based single-kind presets (Phase 5). Hydration must be
+// tolerant (never throw, null on non-spec) and round-trip a saved view-spec.
 
 import { describe, it, expect } from "vitest";
-import { hydratePreset, sanitizeFilters, suggestPresetName } from "./presets";
-import { EMPTY_FILTER } from "./types";
+import { hydratePresetSpec, suggestPresetName, PRESET_SCHEMA_VERSION } from "./presets";
+import { configToSpec, serializeSpec } from "./spec";
+import { EMPTY_FILTER, DEFAULT_PLOT, type PlotConfig } from "./types";
 
-const COLS = ["function.arity", "headline.plantedness"];
-
-describe("sanitizeFilters", () => {
-  it("coerces garbage to a complete FilterState", () => {
-    expect(sanitizeFilters(null)).toEqual(EMPTY_FILTER);
-    expect(sanitizeFilters({ facets: [1, 2], ranges: "x", status: null, subtreeDirs: [1, "ok"], search: 5 }))
-      .toEqual({ facets: {}, ranges: [], status: [], subtreeDirs: ["ok"], search: "" });
+describe("PRESET_SCHEMA_VERSION", () => {
+  it("is bumped to the spec era", () => {
+    expect(PRESET_SCHEMA_VERSION).toBe(3);
   });
 });
 
-describe("hydratePreset", () => {
-  it("filters kind yields only filters (deep-merged onto defaults)", () => {
-    const h = hydratePreset("filters", { filters: { facets: { lr: ["0.001"] } }, chart: { x: "asr" } }, COLS);
-    expect(h.filters.facets).toEqual({ lr: ["0.001"] });
-    expect(h.filters.search).toBe(""); // defaulted
-    expect(h.chart).toBeUndefined(); // filter sets never touch the chart
+describe("hydratePresetSpec", () => {
+  it("round-trips a spec stored as an object", () => {
+    const cfg: PlotConfig = { ...DEFAULT_PLOT, x: "arity", y: "asr", splits: ["base_model"] };
+    const spec = configToSpec("plot", cfg);
+    expect(hydratePresetSpec(spec)).toEqual(spec);
   });
 
-  it("view kind migrates the chart and defaults missing fields", () => {
-    const h = hydratePreset("view", {
-      filters: { search: "hi" },
-      chart: { x: "arity", y: "asr", dims: { baseModel: "color" }, logX: false, logY: false, trend: false },
-      sorts: [{ col: "headline.asr", dir: "desc" }],
-      centerView: "chart", // legacy → plot
-    }, COLS);
-    expect(h.chart?.v).toBe(2);
-    expect(h.chart?.splits).toEqual(["baseModel"]);
-    expect(h.centerView).toBe("plot");
-    expect(h.visibleCols).toEqual(COLS); // missing → fallback
-    expect(h.sorts).toEqual([{ col: "headline.asr", dir: "desc" }]);
+  it("round-trips a spec stored as a serialized string", () => {
+    const spec = configToSpec("table", {
+      filters: { facets: { judge: ["kw"] }, ranges: [] },
+      visibleCols: ["function.arity"],
+      columnWidths: {},
+      sorts: [],
+      search: "",
+    });
+    expect(hydratePresetSpec(serializeSpec(spec))).toEqual(spec);
   });
 
-  it("a hand-corrupted preset applies partially without throwing", () => {
-    const corrupt = { filters: null, chart: "nope", sorts: 42, visibleCols: {}, centerView: "bogus" };
-    const h = hydratePreset("view", corrupt, COLS);
-    expect(h.filters).toEqual(EMPTY_FILTER);
-    expect(h.chart?.v).toBe(2); // migrateChart("nope") → defaults
-    expect(h.sorts).toEqual([]);
-    expect(h.visibleCols).toEqual(COLS);
-    expect(h.centerView).toBeUndefined();
-  });
-
-  it("tolerates a completely empty / non-object state", () => {
-    expect(() => hydratePreset("view", undefined, COLS)).not.toThrow();
-    expect(hydratePreset("filters", "junk", COLS).filters).toEqual(EMPTY_FILTER);
+  it("returns null for legacy / malformed state without throwing", () => {
+    expect(hydratePresetSpec({ filters: { facets: {} } })).toBeNull(); // legacy filters preset
+    expect(hydratePresetSpec({ v: 2, view: "plot" })).toBeNull(); // wrong version
+    expect(hydratePresetSpec(null)).toBeNull();
+    expect(hydratePresetSpec("not json")).toBeNull();
+    expect(() => hydratePresetSpec(undefined)).not.toThrow();
   });
 });
 
 describe("suggestPresetName", () => {
-  it("draws from active facet values, falls back to 'preset'", () => {
-    expect(suggestPresetName(EMPTY_FILTER)).toBe("preset");
-    expect(suggestPresetName({ ...EMPTY_FILTER, facets: { baseModel: ["llama-1b"], lr: ["0.001"] } }))
+  it("draws from active facet values, falls back to 'view'", () => {
+    expect(suggestPresetName(EMPTY_FILTER)).toBe("view");
+    expect(suggestPresetName({ ...EMPTY_FILTER, facets: { base_model: ["llama-1b"], lr: ["0.001"] } }))
       .toBe("llama-1b · 0.001");
   });
 });

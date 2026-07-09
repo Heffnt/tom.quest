@@ -71,7 +71,7 @@ describe("columns bridge", () => {
     expect(def.label).toBe(index[name].label);
     // the planted run's linear_probe sweep peaks at L16
     const r = rowWith(
-      (x) => x.interp?.measurements?.some((m) => m.kind === "sae_feature") ?? false,
+      (x) => x.interp?.readings?.some((m) => m.kind === "sae_feature") ?? false,
     );
     expect(cellValue(r, def.id)).toBe(16);
   });
@@ -83,9 +83,9 @@ describe("columns bridge", () => {
     expect(cellValue(r, def.id)).toBe(r.scan!.auroc);
   });
 
-  it("INTERP interp_measurement reads interp.value on an interp run", () => {
+  it("INTERP interp_reading reads interp.value on an interp run", () => {
     const r = rowWith((x) => x.status.has_interp && x.interp !== null);
-    const def = resolveColumn("INTERP", "interp_measurement", index);
+    const def = resolveColumn("INTERP", "interp_reading", index);
     expect(def.id).toBe("interp.value");
     expect(cellValue(r, def.id)).toBe(r.interp!.value);
   });

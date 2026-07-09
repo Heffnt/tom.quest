@@ -1,4 +1,4 @@
-// Dimension-model tests against the REAL builder fixture: shared/differing
+// Parameter-model tests against the REAL builder fixture: shared/differing
 // partition, biggest-split-first ordering, channel auto-assignment + caps.
 
 import { describe, it, expect } from "vitest";
@@ -7,16 +7,16 @@ import { asBundle } from "../data/normalize";
 import {
   resolveChannels,
   CHANNEL_CAPS,
-  summarizeDimensions,
-} from "./dimensions";
+  summarizeParameters,
+} from "./parameters";
 import type { RunRow } from "./types";
 
 const bundle = asBundle(structuredClone(sample));
 const rows: RunRow[] = bundle.rows;
 
-describe("summarizeDimensions", () => {
+describe("summarizeParameters", () => {
   it("partitions into shared (one value) and differing (sorted biggest first)", () => {
-    const s = summarizeDimensions(rows);
+    const s = summarizeParameters(rows);
     expect(s.shared.length + s.differing.length).toBeGreaterThan(0);
     for (const { dim, value } of s.shared) {
       for (const r of rows) {
@@ -30,7 +30,7 @@ describe("summarizeDimensions", () => {
   });
 
   it("counts values and sorts numerically when flagged", () => {
-    const one = summarizeDimensions([rows[0]]);
+    const one = summarizeParameters([rows[0]]);
     expect(one.differing).toHaveLength(0); // a single row differs on nothing
     const arity = [...one.shared].find((x) => x.dim.key === "arity");
     expect(arity).toBeTruthy();

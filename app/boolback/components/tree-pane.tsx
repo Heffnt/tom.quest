@@ -7,10 +7,9 @@
 // levels: function -> dataset -> training. There is no census fold, no DAG, no
 // scope/focus concept.
 //
-// Each row carries two affordances plus an expand zone:
-//   - FILTER button: toggles a subtree chip in the shared FilterState
-//     (filters.subtreeDirs). A chip keeps runs whose chain_dirs intersect the
-//     node.path (OR-composed across chips), independent of expansion.
+// The tree is a PURE NAVIGATOR (Phase 1): clicking selects/expands and reveals
+// the chain — it never filters. (Subtree scope chips were removed; the function
+// becomes an ordinary parameter filter in a later phase.)
 //   - DETAILS button: opens the right detail panel for that node (openDetail).
 //   - Clicking ELSEWHERE on the row expands/collapses it (and selects it).
 // A typeahead box at the top finds dirs nested under the tree cursor.
@@ -104,16 +103,14 @@ function Caret({ open, hasChildren }: { open: boolean; hasChildren: boolean }) {
 interface TreeRowProps {
   row: FlatRow;
   selected: boolean;
-  chipped: boolean;
   open: boolean;
   onExpand: (node: TreeNode, isRoot: boolean) => void;
-  onToggleChip: (path: string) => void;
   onDetails: (path: string) => void;
   onHover: (path: string | null) => void;
 }
 
 function TreeRow({
-  row, selected, chipped, open, onExpand, onToggleChip, onDetails, onHover,
+  row, selected, open, onExpand, onDetails, onHover,
 }: TreeRowProps) {
   const { node, depth, isRoot } = row;
   const hasChildren = node.children.length > 0;
@@ -131,7 +128,6 @@ function TreeRow({
       className={[
         "group flex items-center gap-1.5 pr-1.5 h-7 cursor-pointer select-none whitespace-nowrap text-xs",
         selected ? "bg-surface-alt text-text" : "text-text-muted hover:text-text",
-        chipped ? "border-l-2 border-accent" : "",
       ].join(" ")}
     >
       <Caret open={open} hasChildren={hasChildren} />
@@ -153,27 +149,9 @@ function TreeRow({
         </span>
       )}
 
-      {/* per-row affordances (hidden until row hover; chip toggle stays visible when active) */}
+      {/* per-row affordance (hidden until row hover) */}
       {!isRoot && (
         <span className="ml-auto flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            tabIndex={-1}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleChip(node.path);
-            }}
-            title={chipped ? "Remove this scope chip" : "Scope the table to this subtree"}
-            aria-pressed={chipped}
-            className={[
-              "rounded px-1 py-0.5 text-[10px] font-mono leading-none transition-opacity",
-              chipped
-                ? "text-accent opacity-100"
-                : "text-text-faint opacity-0 group-hover:opacity-100 hover:text-accent",
-            ].join(" ")}
-          >
-            ⧉ filter
-          </button>
           <button
             type="button"
             tabIndex={-1}
@@ -200,19 +178,16 @@ export function TreePane({ bundle, onCollapse }: TreePaneProps) {
 
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
   const expanded = useBoolbackStore((s) => s.expanded);
-  const subtreeDirs = useBoolbackStore((s) => s.filters.subtreeDirs);
   const treeCursor = useBoolbackStore((s) => s.treeCursor);
 
   const select = useBoolbackStore((s) => s.select);
   const hover = useBoolbackStore((s) => s.hover);
   const toggleExpand = useBoolbackStore((s) => s.toggleExpand);
   const expandChain = useBoolbackStore((s) => s.expandChain);
-  const toggleSubtreeDir = useBoolbackStore((s) => s.toggleSubtreeDir);
   const openDetail = useBoolbackStore((s) => s.openDetail);
   const setTreeCursor = useBoolbackStore((s) => s.setTreeCursor);
 
   const rows = useMemo(() => flatten(roots, expanded), [roots, expanded]);
-  const chipSet = useMemo(() => new Set(subtreeDirs), [subtreeDirs]);
 
   // expand/collapse + select on a plain row click
   const onExpand = useCallback(
@@ -273,16 +248,13 @@ export function TreePane({ bundle, onCollapse }: TreePaneProps) {
           const path = row.isRoot ? ROOT_PATH : row.node.path;
           const open = expanded.has(path);
           const isSel = !row.isRoot && row.node.path === selectedDir;
-          const chipped = !row.isRoot && chipSet.has(row.node.path);
           return (
             <TreeRow
               key={path}
               row={row}
               selected={isSel}
-              chipped={chipped}
               open={open}
               onExpand={onExpand}
-              onToggleChip={toggleSubtreeDir}
               onDetails={openDetail}
               onHover={hover}
             />
