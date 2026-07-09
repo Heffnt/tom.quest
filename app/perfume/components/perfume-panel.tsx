@@ -666,6 +666,8 @@ function PerfumeRow({
   // one calm left accent bar — success only when the brew satisfies a recipe;
   // there is no craftable/reachability state any more.
   const accent = satisfied.size > 0 ? "var(--color-success)" : "transparent";
+  // a discovered effect reads on the resting row itself; "unknown" stays hidden.
+  const hasEffect = !!perfume.effect && perfume.effect !== "unknown";
 
   return (
     <article className="overflow-hidden rounded-lg border border-border bg-bg/40">
@@ -687,19 +689,31 @@ function PerfumeRow({
             setStrikesShown(0);
           }
         }}
-        className="flex cursor-pointer items-center gap-2 px-2.5 py-2 hover:bg-surface/40"
+        className="block w-full cursor-pointer px-2.5 py-2 text-left hover:bg-surface/40"
         style={{ boxShadow: `inset 3px 0 0 ${accent}` }}
       >
-        <PinButton perfume={perfume} pinned={pinned} canPin={canPin} onToggle={onTogglePin} />
-        <h3 className="min-w-0 shrink truncate text-sm font-semibold leading-tight text-text" title={perfume.name}>
-          {perfume.name}
-        </h3>
-        {/* the frequency requirement, compact, on the resting row itself */}
-        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1">
-          <IntegratedRequirement integ={integ} size={14} />
+        <div className="flex items-center gap-2">
+          <PinButton perfume={perfume} pinned={pinned} canPin={canPin} onToggle={onTogglePin} />
+          <h3 className="min-w-0 shrink truncate text-sm font-semibold leading-tight text-text" title={perfume.name}>
+            {perfume.name}
+          </h3>
+          {/* the frequency requirement, compact, on the resting row itself */}
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1">
+            <IntegratedRequirement integ={integ} size={14} />
+          </div>
+          {!brewEmpty && satisfied.size > 0 && (
+            <SatisfiedChip perfume={perfume} satisfied={satisfied} />
+          )}
         </div>
-        {!brewEmpty && satisfied.size > 0 && (
-          <SatisfiedChip perfume={perfume} satisfied={satisfied} />
+        {/* the effect, once discovered in play, reads right on the resting row
+            (no need to open the fold); unknown effects stay hidden until then. */}
+        {hasEffect && (
+          <p
+            className="mt-1 line-clamp-2 pl-7 pr-1 text-[11px] italic leading-snug text-text-muted"
+            title={perfume.effect}
+          >
+            {perfume.effect}
+          </p>
         )}
       </div>
 
@@ -721,8 +735,13 @@ function PerfumeRow({
             </div>
           )}
 
-          {/* what the perfume DOES — "unknown" until discovered in play */}
-          <p className="text-[11px] italic leading-snug text-text-muted">{perfume.effect}</p>
+          {/* what the perfume DOES — a known effect already reads on the resting
+              row above; here we only note when it's still undiscovered. */}
+          {!hasEffect && (
+            <p className="text-[11px] italic leading-snug text-text-faint">
+              effect unknown — discovered in play
+            </p>
+          )}
 
           {/* the recipe combos, grabbable as recipe frames (DESIGN.md §1) */}
           <RecipeFolds
