@@ -32,8 +32,8 @@ import {
 } from "../lib/types";
 import { useBoolbackStore, DEFAULT_TABLE, DEFAULT_COLS } from "../state/store";
 import {
-  applyFilters, applySorts, matchesSearch, metricRange, normalizeToRange, numericValue,
-  cellValue, facetKeyForColumn, type MetricIndex,
+  applyFilters, applySorts, matchesSearch, metricRange, modeFilters, normalizeToRange,
+  numericValue, cellValue, facetKeyForColumn, type MetricIndex,
 } from "../lib/select";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
 import { resolveById, type ColumnDef } from "../lib/columns";
@@ -144,10 +144,19 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
     didHydrate.current = true;
     // Sanitizers coerce a partial/hostile persisted blob to a valid config
     // without throwing (no v1→v2→v3 migration — old blobs are dropped).
+    // Fresh plot/groupplot (no saved filters) default to the "core sweep" view:
+    // every varying parameter pinned to its mode (the dominant cell). A returning
+    // user's saved non-empty filters are kept as-is.
+    const plotCfg = sanitizePlotConfig(pPlot);
+    const groupCfg = sanitizeGroupPlotConfig(pGroup);
+    const noFilters = (f: FilterState) =>
+      Object.keys(f.facets).length === 0 && f.ranges.length === 0;
     setStore({
       table: sanitizeTableConfig(pTable, DEFAULT_COLS),
-      plot: sanitizePlotConfig(pPlot),
-      groupPlot: sanitizeGroupPlotConfig(pGroup),
+      plot: noFilters(plotCfg.filters)
+        ? { ...plotCfg, filters: modeFilters(bundle.rows) } : plotCfg,
+      groupPlot: noFilters(groupCfg.filters)
+        ? { ...groupCfg, filters: modeFilters(bundle.rows) } : groupCfg,
       anatomy: sanitizeAnatomyConfig(pAnat),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

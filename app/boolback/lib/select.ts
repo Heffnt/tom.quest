@@ -199,6 +199,23 @@ export function facetOptions(
     .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
 }
 
+/** Default "core sweep" filters: pin every VARYING facet parameter to its single
+ *  most-common value, so the initial plot lands on the dominant experimental
+ *  cell (the config with the most samples) instead of every run superimposed.
+ *  Constant/absent facets (<2 distinct values) are left unfiltered; the function
+ *  parameter has no facet key, so it stays free — the complexity sweep axis. */
+export function modeFilters(rows: RunRow[]): FilterState {
+  const facets: Partial<Record<FacetKey, string[]>> = {};
+  for (const key of FACET_KEYS) {
+    const opts = facetOptions(rows, key);
+    if (opts.length < 2) continue; // constant or absent — leave free
+    let best = opts[0];
+    for (const o of opts) if (o.count > best.count) best = o;
+    facets[key] = [best.value];
+  }
+  return { facets, ranges: [] };
+}
+
 // ---------------------------------------------------------------------------
 // Table search (repurposed: find runs by PATH FRAGMENT, not a filter
 // alternative). The haystack is run_id + dir_path + node_path ONLY — the old
