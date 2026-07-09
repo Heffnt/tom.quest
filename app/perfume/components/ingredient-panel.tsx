@@ -718,7 +718,7 @@ function inventoryGridSections(
         inBrew: 0,
         provenance: inst
           ? provenanceTooltip(
-              { brewedByKey: inst.brewedByKey, witnesses: inst.witnesses, brewedAt: inst.brewedAt, chain: inst.owners },
+              { brewedByKey: inst.brewedByKey, witnesses: inst.witnesses, brewedAt: inst.brewedAt },
               opts.resolveName,
             )
           : undefined,

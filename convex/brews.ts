@@ -221,16 +221,6 @@ async function requireBrew(
   return brew;
 }
 
-// Perfumes resting on the cauldron. PROD-SAFE: un-migrated prod rows carry the
-// legacy `outputs` field instead of `cauldron` (see schema.ts). New code always
-// writes `cauldron`; every read goes through here so pre-migration rows don't
-// throw. The ship migration renames outputs→cauldron and drops `outputs`.
-function restingOn(
-  brew: Doc<"perfumeBrews">,
-): NonNullable<Doc<"perfumeBrews">["cauldron"]> {
-  return brew.cauldron ?? brew.outputs ?? [];
-}
-
 async function partyBrewDoc(
   ctx: QueryCtx | MutationCtx,
 ): Promise<Doc<"perfumeBrews"> | null> {
@@ -1218,7 +1208,7 @@ export const brew = mutation({
     };
     await ctx.db.patch(brewDoc._id, {
       items,
-      cauldron: [...restingOn(brewDoc), instance],
+      cauldron: [...brewDoc.cauldron, instance],
       updatedAt: now,
     });
     return { instanceId: instance.instanceId };
@@ -1253,7 +1243,7 @@ export const takeFromCauldron = mutation({
     const actor = await identifyMember(ctx);
     const brew = await requireBrew(ctx, brewId);
     requireOwnerAct(actor, brew, "take from the cauldron");
-    const resting_ = restingOn(brew);
+    const resting_ = brew.cauldron;
     const idx = resting_.findIndex((o) => o.instanceId === instanceId);
     if (idx < 0) throw new Error("No such perfume on the cauldron");
     const resting = resting_[idx];
@@ -1560,7 +1550,7 @@ function brewSummary(brew: Doc<"perfumeBrews">) {
     seq: brew.seq,
     itemCount: brew.items.length,
     hasHypotheticals: brew.items.some((p) => !p.real),
-    cauldronCount: restingOn(brew).reduce((n, o) => n + o.count, 0),
+    cauldronCount: brew.cauldron.reduce((n, o) => n + o.count, 0),
     // The pin is a target PERFUME now (DESIGN.md §5); any legacy `recipeIndex`
     // on un-migrated rows is ignored — normalize to the {perfumeId} shape.
     pinned: brew.pinned ? { perfumeId: brew.pinned.perfumeId } : null,

@@ -5,18 +5,16 @@
 // synonyms it replaces).
 
 // ── inventory ────────────────────────────────────────────────────────────────
-// A held perfume instance (DESIGN.md §9 "Perfumes are instances"): its
-// provenance travels with it — who brewed it, who witnessed it, when, and the
-// ownership chain (oldest→newest) as it was gifted between members. This is the
-// inventory counterpart to OutputInstance (which rests on the cauldron); the two
-// feed the SAME provenance tooltip (lib/provenance.ts).
+// A held perfume instance (DESIGN.md §9 "Perfumes are instances"): its flat
+// provenance travels with it — who brewed it, who witnessed it, and when. This
+// is the inventory counterpart to OutputInstance (which rests on the cauldron);
+// the two feed the SAME provenance tooltip (lib/provenance.ts).
 export type PerfumeInstance = {
   instanceId: string;
   perfumeId: string;
   brewedByKey: string;
   witnesses: string[];
   brewedAt: number;
-  owners: OwnerHop[]; // ownership chain oldest→newest
 };
 
 // Fungible-stack counts keyed by catalog item key ("base:<name>" | "pure:<id>").
@@ -136,11 +134,8 @@ export type WildPlay = { chosenFreq: string; byMemberKey: string };
 // it to steer toward (DESIGN.md §5), so no recipe index is stored.
 export type PinnedPerfume = { perfumeId: string } | null;
 
-// One ownership hop in a perfume instance's chain, oldest→newest.
-export type OwnerHop = { key: string; at: number };
-
-// A perfume instance resting on the cauldron until taken. Provenance travels
-// with it: who brewed it, who witnessed it, and its ownership chain.
+// A perfume instance resting on the cauldron until taken. Flat provenance
+// travels with it: who brewed it, who witnessed it, and when (DESIGN.md §1,§9).
 export type OutputInstance = {
   instanceId: string;
   perfumeId: string;
@@ -148,7 +143,6 @@ export type OutputInstance = {
   brewedByKey: string;
   witnesses: string[]; // memberKeys present at completion
   brewedAt: number;
-  provenance: OwnerHop[];
 };
 
 // The open brew as the UI reads it.

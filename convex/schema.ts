@@ -242,12 +242,7 @@ export default defineSchema({
       v.object({
         key: v.string(), // catalog item key ("base:<name>" | "pure:<id>")
         real: v.boolean(),
-        contributorKey: v.string(),
-        // DEPRECATED (dropped from logic): the denormalized contributor name.
-        // Names are resolved at read now (listBrews-style). Kept v.optional so
-        // existing prod rows still validate; never written by new code, stripped
-        // by the ship migration, then removed from this schema.
-        contributorName: v.optional(v.string()),
+        contributorKey: v.string(), // names are resolved at read (listBrews-style)
       }),
     ),
     strikePlays: v.array(
@@ -259,61 +254,22 @@ export default defineSchema({
         byMemberKey: v.string(),
       }),
     ),
-    // The pinned perfume. The forward-compatible shape is {perfumeId} (DESIGN.md
-    // §9); `recipeIndex` is DEPRECATED (Phase 4 finalizes per-perfume pins) and
-    // kept v.optional so old prod rows shaped {perfumeId, recipeIndex} still
-    // validate. The ship migration (perfumeMigration.migrate) strips recipeIndex;
-    // the post-ship cleanup commit then removes it from this schema.
-    pinned: v.union(
-      v.object({ perfumeId: v.string(), recipeIndex: v.optional(v.number()) }),
-      v.null(),
-    ),
-    // Perfume instances resting on the cauldron until taken (renamed from the
-    // dead word `outputs` — DESIGN.md §2). Provenance is FLAT (DESIGN.md §1,§9):
-    // who brewed it (brewedByKey), who witnessed it (witnesses), and when
-    // (brewedAt) — there is no ownership chain.
-    //
-    // PROD-SAFE RENAME: existing prod rows carry the old required field `outputs`
-    // (never `cauldron`), so `cauldron` is v.optional and the legacy `outputs`
-    // is kept v.optional too, so both un-migrated and new rows validate. Reads
-    // fall back `cauldron ?? outputs ?? []` (restingOn() in brews.ts). New code
-    // only ever writes `cauldron`. The ship migration renames outputs→cauldron
-    // and drops `outputs`; the post-ship cleanup then removes `outputs` here and
-    // makes `cauldron` required.
-    cauldron: v.optional(
-      v.array(
-        v.object({
-          instanceId: v.string(),
-          perfumeId: v.string(),
-          count: v.number(),
-          brewedByKey: v.string(),
-          witnesses: v.array(v.string()), // memberKeys present at completion
-          brewedAt: v.number(),
-          // DEPRECATED (dropped from logic): the old ownership chain. Kept
-          // v.optional so existing prod rows still validate; never written by
-          // new code, stripped by the ship migration, then removed here.
-          provenance: v.optional(
-            v.array(v.object({ key: v.string(), at: v.number() })),
-          ),
-        }),
-      ),
-    ),
-    // DEPRECATED legacy field (dead word `outputs`): the exact shape prod rows
-    // shipped with (provenance chain required). Kept v.optional so pre-migration
-    // rows validate; never written by new code; renamed to `cauldron` and
-    // dropped by the ship migration.
-    outputs: v.optional(
-      v.array(
-        v.object({
-          instanceId: v.string(),
-          perfumeId: v.string(),
-          count: v.number(),
-          brewedByKey: v.string(),
-          witnesses: v.array(v.string()),
-          brewedAt: v.number(),
-          provenance: v.array(v.object({ key: v.string(), at: v.number() })),
-        }),
-      ),
+    // The pinned perfume — a target perfume by id (DESIGN.md §9). The engine's
+    // closest path picks which recipe of it to steer toward, so no recipe index
+    // is stored.
+    pinned: v.union(v.object({ perfumeId: v.string() }), v.null()),
+    // Perfume instances resting on the cauldron until taken (DESIGN.md §2).
+    // Provenance is FLAT (DESIGN.md §1,§9): who brewed it (brewedByKey), who
+    // witnessed it (witnesses), and when (brewedAt) — there is no ownership chain.
+    cauldron: v.array(
+      v.object({
+        instanceId: v.string(),
+        perfumeId: v.string(),
+        count: v.number(),
+        brewedByKey: v.string(),
+        witnesses: v.array(v.string()), // memberKeys present at completion
+        brewedAt: v.number(),
+      }),
     ),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -328,20 +284,6 @@ export default defineSchema({
     memberKey: v.string(),
     ingredients: v.record(v.string(), v.number()), // base:* keys
     pures: v.record(v.string(), v.number()), // pure:* keys
-    // DEPRECATED (dropped from logic): the old append-only gift log. Kept
-    // v.optional so existing prod rows still validate; never written by new
-    // code, stripped by the ship migration, then removed from this schema.
-    giftEvents: v.optional(
-      v.array(
-        v.object({
-          itemKey: v.string(),
-          n: v.number(),
-          fromKey: v.string(),
-          toKey: v.string(),
-          at: v.number(),
-        }),
-      ),
-    ),
     perfumes: v.array(
       v.object({
         instanceId: v.string(),
@@ -349,9 +291,6 @@ export default defineSchema({
         brewedByKey: v.string(),
         witnesses: v.array(v.string()),
         brewedAt: v.number(),
-        // DEPRECATED (dropped from logic): the old ownership chain. Kept
-        // v.optional for prod-row validation only; never written by new code.
-        owners: v.optional(v.array(v.object({ key: v.string(), at: v.number() }))),
       }),
     ),
     updatedAt: v.number(),

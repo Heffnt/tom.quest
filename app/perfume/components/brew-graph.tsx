@@ -1160,7 +1160,7 @@ function OutputRim({
           // (DESIGN.md §1) and the take affordance line follow it in the hover
           // tooltip.
           const provenance = provenanceTooltip(
-            { brewedByKey: o.brewedByKey, witnesses: o.witnesses, brewedAt: o.brewedAt, chain: o.provenance },
+            { brewedByKey: o.brewedByKey, witnesses: o.witnesses, brewedAt: o.brewedAt },
             resolveName,
           );
           const effect = `Effect: ${perfumeEffect(o.perfumeId)}`;

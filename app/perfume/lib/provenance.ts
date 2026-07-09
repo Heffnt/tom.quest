@@ -1,17 +1,14 @@
 // Provenance tooltip copy (DESIGN.md §1 "provenance", §9). A perfume instance —
 // whether resting on the cauldron (OutputInstance) or held in an inventory
-// (PerfumeInstance) — carries who brewed it, who witnessed it, when, and its
-// ownership chain. This is the SINGLE phrasing for that hover tooltip, shared by
-// the inventory perfume slots and the cauldron output perfumes so the two never
-// drift.
+// (PerfumeInstance) — carries who brewed it, who witnessed it, and when. This is
+// the SINGLE phrasing for that hover tooltip, shared by the inventory perfume
+// slots and the cauldron output perfumes so the two never drift.
 
-// The minimal shape both instance kinds project to. `chain` is the ownership
-// chain oldest→newest (OutputInstance.provenance / PerfumeInstance.owners).
+// The minimal flat-provenance shape both instance kinds project to.
 export type ProvenanceView = {
   brewedByKey: string;
   witnesses: string[];
   brewedAt: number;
-  chain: { key: string; at: number }[];
 };
 
 /** Resolve a memberKey to a display name; falls back to the key itself (already
@@ -53,8 +50,6 @@ function formatDate(at: number): string {
 /**
  * The provenance hover string:
  *   "brewed by {name} · witnessed by {names|nobody} · {date}"
- * plus, when the ownership chain has more than one hop:
- *   " · passed: A → B"
  */
 export function provenanceTooltip(p: ProvenanceView, resolveName: NameResolver): string {
   const brewer = resolveName(p.brewedByKey);
@@ -62,9 +57,5 @@ export function provenanceTooltip(p: ProvenanceView, resolveName: NameResolver):
     p.witnesses.length > 0
       ? p.witnesses.map(resolveName).join(", ")
       : "nobody";
-  let out = `brewed by ${brewer} · witnessed by ${witnessed} · ${formatDate(p.brewedAt)}`;
-  if (p.chain.length > 1) {
-    out += ` · passed: ${p.chain.map((hop) => resolveName(hop.key)).join(" → ")}`;
-  }
-  return out;
+  return `brewed by ${brewer} · witnessed by ${witnessed} · ${formatDate(p.brewedAt)}`;
 }

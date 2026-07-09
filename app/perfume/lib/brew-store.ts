@@ -422,16 +422,14 @@ export function useConvexBrewStore(
       // The pin is a target PERFUME now (DESIGN.md §5); any legacy `recipeIndex`
       // on un-migrated rows is ignored — normalize to the {perfumeId} shape.
       pinned: brewDoc.pinned ? { perfumeId: brewDoc.pinned.perfumeId } : null,
-      // Provenance is flat now (no ownership chain); the deprecated `provenance`
-      // field is no longer written, so default the client-side chain to empty.
-      outputs: (brewDoc.cauldron ?? brewDoc.outputs ?? []).map((o) => ({
+      // Provenance is flat (no ownership chain — DESIGN.md §1,§9).
+      outputs: brewDoc.cauldron.map((o) => ({
         instanceId: o.instanceId,
         perfumeId: o.perfumeId,
         count: o.count,
         brewedByKey: o.brewedByKey,
         witnesses: o.witnesses,
         brewedAt: o.brewedAt,
-        provenance: o.provenance ?? [],
       })),
       ui,
     };
@@ -573,15 +571,14 @@ export function useConvexBrewStore(
 }
 
 // The raw held-perfume instance the server returns (schema.ts
-// perfumeInventories.perfumes) — instance identity + flat provenance. `owners`
-// is the deprecated ownership chain: no longer written, optional here.
+// perfumeInventories.perfumes) — instance identity + flat provenance
+// ({brewedBy, witnesses, brewedAt}); no ownership chain (DESIGN.md §1,§9).
 type RawPerfumeInstance = {
   instanceId: string;
   perfumeId: string;
   brewedByKey: string;
   witnesses: string[];
   brewedAt: number;
-  owners?: { key: string; at: number }[];
 };
 
 // Project the instance list down to the count view the legacy input panel
@@ -605,6 +602,5 @@ function perfumeInstanceView(p: RawPerfumeInstance): PerfumeInstance {
     brewedByKey: p.brewedByKey,
     witnesses: p.witnesses,
     brewedAt: p.brewedAt,
-    owners: p.owners?.map((o) => ({ key: o.key, at: o.at })) ?? [],
   };
 }
