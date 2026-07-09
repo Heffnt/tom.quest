@@ -25,6 +25,7 @@ import type {
   Bundle, Channel, ValueStyle, RangeFilter,
   PlotConfig, GroupPlotConfig, TableConfig, BinSpec, MetricSchemaEntry,
 } from "../lib/types";
+import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT } from "../lib/types";
 import { useBoolbackStore, configViewOf, type ViewKey } from "../state/store";
 import type { ViewKind } from "../lib/spec";
 import { configToSpec, specToConfig, serializeSpec, parseSpec } from "../lib/spec";
@@ -33,7 +34,7 @@ import {
   type ParameterDef, type ParamValues, type ParamSection,
 } from "../lib/parameters";
 import {
-  applyFilters, histogramBins, metricRange, numericValue, type MetricIndex,
+  applyFilters, histogramBins, metricRange, modeFilters, numericValue, type MetricIndex,
 } from "../lib/select";
 import { resolveById } from "../lib/columns";
 import {
@@ -141,7 +142,7 @@ function ConfigMode({
   if (vk === null) {
     return (
       <div className="flex h-full w-full flex-col min-h-0">
-        <PanelHeader vk={null} chartRef={chartRef} />
+        <PanelHeader vk={null} chartRef={chartRef} bundle={bundle} />
         <p className="px-3 py-3 font-mono text-xs text-text-faint">
           Anatomy has its own controls.
         </p>
@@ -326,7 +327,7 @@ function ViewConfig({
 
   return (
     <div className="flex h-full w-full flex-col min-h-0">
-      <PanelHeader vk={vk} chartRef={chartRef} />
+      <PanelHeader vk={vk} chartRef={chartRef} bundle={bundle} />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2 text-xs text-text-muted">
         {vk === "table" && <TableExtras bundle={bundle} index={index} />}
@@ -418,13 +419,23 @@ function ViewConfig({
 // ===========================================================================
 
 function PanelHeader({
-  vk, chartRef,
+  vk, chartRef, bundle,
 }: {
   vk: ViewKey | null;
   chartRef: React.MutableRefObject<PlotExportHandle | null>;
+  bundle: Bundle;
 }) {
   const centerView = useBoolbackStore((s) => s.centerView);
   const resetView = useBoolbackStore((s) => s.resetView);
+  const setPlot = useBoolbackStore((s) => s.setPlot);
+  const setGroupPlot = useBoolbackStore((s) => s.setGroupPlot);
+  // Reset returns plot/groupplot to the "core sweep" default (every varying
+  // parameter pinned to its mode); table/anatomy reset to their plain defaults.
+  const onReset = () => {
+    if (vk === "plot") setPlot({ ...DEFAULT_PLOT, filters: modeFilters(bundle.rows) });
+    else if (vk === "groupPlot") setGroupPlot({ ...DEFAULT_GROUP_PLOT, filters: modeFilters(bundle.rows) });
+    else resetView(centerView);
+  };
   const [note, setNote] = useState<string | null>(null);
   const flash = (m: string) => { setNote(m); setTimeout(() => setNote(null), 1400); };
 
@@ -462,7 +473,7 @@ function PanelHeader({
           PNG
         </button>
       )}
-      <button type="button" onClick={() => resetView(centerView)} title="Reset this view"
+      <button type="button" onClick={onReset} title="Reset this view"
         className="ml-auto rounded border border-border px-1.5 py-0.5 text-text-muted hover:border-accent/40 hover:text-accent">
         Reset
       </button>
