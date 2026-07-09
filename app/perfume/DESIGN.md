@@ -267,6 +267,13 @@ a **translucent preview** of it.
 The target tab shows a translucent drop preview while hovering. The gift is
 **instant** — no acceptance step. (This replaces the old transfer feature.)
 
+**Inventory context menu.** Right-clicking an item in **your own** inventory
+opens a small menu: **return one from brew** (when copies of it sit in the brew)
+and **delete** it — one copy, or the whole stack. Deleting is **permanent** and
+destroys the stock (it does not go to any brew or member); it is the one destroy
+path besides brewing. The menu is owner-only — other members' inventories are
+read-only and never show it.
+
 **Brew-scale controls.** Three controls act on the whole brew at once:
 - **Fill from inventory** — turn every hypothetical item the relevant inventory
   can cover into a real one; what can't be covered stays hypothetical and the
@@ -426,5 +433,6 @@ engine) imported by both the store and Convex.
 
 There is **no event/activity log table**. Identity, the "WHERE not WHAT"
 permission checks, and the conservation invariant (no mutation creates or
-destroys items except inventory import (+) and brewing (brew → k perfumes per the
-engine)) are enforced in the mutations, mirroring §4.
+destroys items except inventory import (+), owner discard (−, from one's own
+inventory), and brewing (brew → k perfumes per the engine)) are enforced in the
+mutations, mirroring §4.

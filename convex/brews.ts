@@ -1373,6 +1373,41 @@ export const giftPerfume = mutation({
   },
 });
 
+// Discard items from the CALLER's OWN inventory — a permanent removal (DESIGN.md
+// §5 inventory context menu). Owner-only by construction: it only ever touches
+// the caller's own inventory and never a brew. Removes up to n of an
+// ingredient/pure STACK, or up to n perfume INSTANCES of a perfumeId. Capped at
+// what's held (a stale count can't over-remove). Not undoable, like gift/brew/
+// take. This is the one destroy path besides brewing (DESIGN.md §9 conservation).
+export const discardFromInventory = mutation({
+  args: { itemKey: v.string(), n: v.number() },
+  handler: async (ctx, { itemKey, n }) => {
+    const actor = await identifyMember(ctx);
+    requireCount(n, "count");
+    const inv = await ensureInventory(ctx, actor.key);
+    const now = Date.now();
+    if (CATALOG[itemKey]) {
+      // an ingredient / pure stack — withStock removes the key at 0
+      const have = stackStockOf(inv, itemKey);
+      if (have <= 0) return;
+      const stacks = withStock(inv, itemKey, -Math.min(n, have));
+      await ctx.db.patch(inv._id, { ...stacks, updatedAt: now });
+    } else {
+      // a perfume — drop up to n instances of this perfumeId
+      let removed = 0;
+      const kept = inv.perfumes.filter((p) => {
+        if (removed < n && p.perfumeId === itemKey) {
+          removed++;
+          return false;
+        }
+        return true;
+      });
+      if (removed === 0) return;
+      await ctx.db.patch(inv._id, { perfumes: kept, updatedAt: now });
+    }
+  },
+});
+
 // ── undo / redo (per member, per brew; arrangement actions only) ─────────────
 
 // Undo the caller's most recent DONE action on this brew; redo the most recent

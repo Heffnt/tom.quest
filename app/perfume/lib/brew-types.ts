@@ -215,6 +215,8 @@ export interface BrewActions {
   // gifting (WHAT — instant, permanent)
   giftItem(toMemberKey: string, itemKey: string, n: number): void;
   giftPerfume(toMemberKey: string, instanceId: string): void;
+  // discard from your own inventory (WHAT — permanent, destroys stock)
+  discardItem(itemKey: string, n: number): void;
   // pin (one target perfume per brew, on the brew object)
   pinPerfume(pinned: PinnedPerfume): void;
   // per-user undo/redo (own moves only)

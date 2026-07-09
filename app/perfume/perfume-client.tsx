@@ -249,6 +249,10 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
     (itemKey: string) => actions.moveToInventory(itemKey, 1),
     [actions],
   );
+  const onDiscard = useCallback(
+    (itemKey: string, n: number) => actions.discardItem(itemKey, n),
+    [actions],
+  );
 
   // ---- gift: the drop plays the 'gift' cue (DESIGN.md §6; mute honoured by
   // useSound), then delegates to the store. Gifting is instant/permanent, so the
@@ -356,6 +360,7 @@ function BrewView({ store, isAnon, viewerKey, header, overlays }: BrewViewProps)
       onSelectMemberTab={store.selectMemberTab}
       onShiftToBrew={onShiftToBrew}
       onUnbrewOne={onUnbrewOne}
+      onDiscard={onDiscard}
     />
   );
   const perfumePanel = snapshot && (

@@ -118,25 +118,33 @@ export interface InventoryGridProps {
   hand: BrewHand;
   canMove: boolean;
   canGift: boolean;
+  /** May act on this (own) inventory — gates the right-click discard menu. */
+  canEditInventory: boolean;
   members: { memberKey: string; name: string }[];
   onGift: (toMemberKey: string, itemKey: string, n: number) => void;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
+  /** Discard n of an item from this inventory (permanent). §5 context menu. */
+  onDiscard?: (itemKey: string, n: number) => void;
 }
 
 type SendAnchor = { itemKey: string; name: string; max: number; x: number; y: number };
+type MenuAnchor = { itemKey: string; name: string; count: number; inBrew: number; x: number; y: number };
 
 export default function InventoryGrid({
   sections,
   hand,
   canMove,
   canGift,
+  canEditInventory,
   members,
   onGift,
   onShiftToBrew,
   onUnbrewOne,
+  onDiscard,
 }: InventoryGridProps) {
   const [send, setSend] = useState<SendAnchor | null>(null);
+  const [menu, setMenu] = useState<MenuAnchor | null>(null);
 
   return (
     <div className="pb-1">
@@ -159,9 +167,11 @@ export default function InventoryGrid({
                   hand={hand}
                   canMove={canMove}
                   showSend={canGift && members.length > 0}
+                  canEditInventory={canEditInventory && !!onDiscard}
                   onShiftToBrew={onShiftToBrew}
                   onUnbrewOne={onUnbrewOne}
                   onSend={setSend}
+                  onMenu={setMenu}
                 />
               ))}
             </ul>
@@ -176,7 +186,73 @@ export default function InventoryGrid({
           onClose={() => setSend(null)}
         />
       )}
+      {menu && (
+        <SlotMenu
+          anchor={menu}
+          onUnbrewOne={onUnbrewOne}
+          onDiscard={onDiscard}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// Right-click context menu for an OWN-inventory slot (DESIGN.md §5): return one
+// copy from the brew (when some sit there) and DELETE the item — one copy or the
+// whole stack. Delete is permanent (DESIGN.md §9 conservation: the one destroy
+// path besides brewing). Built on the shared Popover.
+function SlotMenu({
+  anchor,
+  onUnbrewOne,
+  onDiscard,
+  onClose,
+}: {
+  anchor: MenuAnchor;
+  onUnbrewOne?: (itemKey: string) => void;
+  onDiscard?: (itemKey: string, n: number) => void;
+  onClose: () => void;
+}) {
+  const item = (label: string, danger: boolean, run: () => void) => (
+    <button
+      type="button"
+      onClick={() => {
+        run();
+        onClose();
+      }}
+      className={cn(
+        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono text-xs",
+        danger ? "text-error hover:bg-error/10" : "text-text-muted hover:bg-surface-alt",
+      )}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <Popover
+      anchor={{ x: anchor.x, y: anchor.y }}
+      align="left"
+      width={200}
+      role="menu"
+      label={`${anchor.name} actions`}
+      onClose={onClose}
+      className="p-1"
+    >
+      <p className="truncate px-2 pb-1 pt-0.5 font-mono text-[10px] uppercase tracking-wider text-text-faint">
+        {anchor.name}
+      </p>
+      {anchor.inBrew > 0 &&
+        onUnbrewOne &&
+        item("return one from brew", false, () => onUnbrewOne(anchor.itemKey))}
+      {onDiscard && anchor.count > 1 &&
+        item("delete one", true, () => onDiscard(anchor.itemKey, 1))}
+      {onDiscard &&
+        item(
+          anchor.count > 1 ? `delete all ×${anchor.count}` : "delete",
+          true,
+          () => onDiscard(anchor.itemKey, anchor.count),
+        )}
+    </Popover>
   );
 }
 
@@ -198,17 +274,21 @@ function Slot({
   hand,
   canMove,
   showSend,
+  canEditInventory,
   onShiftToBrew,
   onUnbrewOne,
   onSend,
+  onMenu,
 }: {
   item: InventorySlotItem;
   hand: BrewHand;
   canMove: boolean;
   showSend: boolean;
+  canEditInventory: boolean;
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
   onSend: (a: SendAnchor) => void;
+  onMenu: (a: MenuAnchor) => void;
 }) {
   const g = grabHandlers({
     itemKey: item.key,
@@ -223,6 +303,27 @@ function Slot({
   });
   const ghost = item.inBrew > 0;
 
+  // Right-click opens the context menu (return-one / delete) instead of the
+  // grab grammar's bare unbrew — the menu carries that action too (DESIGN §5).
+  // While carrying, the hand's own window listener returns one, so skip.
+  const handlers = canEditInventory
+    ? {
+        ...g,
+        onContextMenu: (e: ReactMouseEvent<HTMLElement>) => {
+          e.preventDefault();
+          if (hand.hand) return;
+          onMenu({
+            itemKey: item.key,
+            name: item.name,
+            count: item.count,
+            inBrew: item.inBrew,
+            x: e.clientX,
+            y: e.clientY,
+          });
+        },
+      }
+    : g;
+
   return (
     <li>
       <ItemFrame
@@ -231,7 +332,7 @@ function Slot({
         fill
         ghosted={ghost}
         count={item.count}
-        handlers={g}
+        handlers={handlers}
         label={`Pick up ${item.name}`}
         title={`${item.name} ×${item.count}${ghost ? ` — ${item.inBrew} in the brew` : ""}${item.provenance ? `\n${item.provenance}` : ""}`}
         disabled={!canMove}

@@ -90,6 +90,8 @@ export interface IngredientPanelProps {
   // one unit brew -> inventory. Wire to moveToBrew / moveToInventory, n=1.
   onShiftToBrew?: (itemKey: string) => void;
   onUnbrewOne?: (itemKey: string) => void;
+  // right-click an OWN-inventory slot to discard n of it (permanent). §5.
+  onDiscard?: (itemKey: string, n: number) => void;
 }
 
 // ── ordering (unchanged from the stepper-era panel) ──────────────────────────
@@ -165,6 +167,7 @@ export default function IngredientPanel({
   onSelectMemberTab,
   onShiftToBrew,
   onUnbrewOne,
+  onDiscard,
 }: IngredientPanelProps) {
   const [importOpen, setImportOpen] = useState(false);
   const resolveName = useMemo(() => makeNameResolver(members), [members]);
@@ -345,10 +348,12 @@ export default function IngredientPanel({
                 hand={hand}
                 canMove={canMove}
                 canGift={canGift}
+                canEditInventory={canEditInventory}
                 members={giftTargets}
                 onGift={onGift}
                 onShiftToBrew={onShiftToBrew}
                 onUnbrewOne={onUnbrewOne}
+                onDiscard={onDiscard}
               />
             </section>
           ) : openMember ? (

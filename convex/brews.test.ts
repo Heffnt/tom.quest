@@ -638,6 +638,54 @@ describe("gifting", () => {
   });
 });
 
+// ── discard from inventory (DESIGN.md §5 context menu, §9 conservation) ──────
+
+describe("discard from inventory", () => {
+  it("discards n of a stack, removing the key at zero; caps at what's held", async () => {
+    const { t, alice, aliceKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await seedStock(t, aliceKey, { [PURE_N]: 3 });
+    // delete one
+    await alice.mutation(api.brews.discardFromInventory, { itemKey: PURE_N, n: 1 });
+    expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBe(2);
+    // delete more than held → clamps to gone (no negative, no throw)
+    await alice.mutation(api.brews.discardFromInventory, { itemKey: PURE_N, n: 9 });
+    expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBeUndefined();
+  });
+
+  it("discards a perfume by perfumeId, dropping n instances", async () => {
+    const { t, alice, aliceKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await seedStock(t, aliceKey, { [PURE_N]: 1 });
+    const brewId = await alice.mutation(api.brews.createBrew, {});
+    await alice.mutation(api.brews.moveItemToBrew, { brewId, itemKey: PURE_N, n: 1 });
+    const { instanceId } = await alice.mutation(api.brews.brew, { brewId, perfumeId: BLACK_GAS, recipeIndex: 0, k: 1 });
+    await alice.mutation(api.brews.takeFromCauldron, { brewId, instanceId });
+    expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).perfumes).toHaveLength(1);
+    await alice.mutation(api.brews.discardFromInventory, { itemKey: BLACK_GAS, n: 1 });
+    expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).perfumes).toHaveLength(0);
+  });
+
+  it("only ever touches the caller's OWN inventory", async () => {
+    const { t, alice, bob, aliceKey, bobKey } = await setup();
+    await alice.mutation(api.brews.registerMember, {});
+    await bob.mutation(api.brews.registerMember, {});
+    await seedStock(t, aliceKey, { [PURE_N]: 2 });
+    await seedStock(t, bobKey, { [PURE_N]: 2 });
+    await alice.mutation(api.brews.discardFromInventory, { itemKey: PURE_N, n: 2 });
+    expect((await alice.query(api.brews.getInventory, { memberKey: aliceKey })).pures[PURE_N]).toBeUndefined();
+    // Bob's identical stock is untouched — discard is caller-scoped.
+    expect((await bob.query(api.brews.getInventory, { memberKey: bobKey })).pures[PURE_N]).toBe(2);
+  });
+
+  it("a visitor (not logged in) cannot discard — membership is login-only", async () => {
+    const { t } = await setup();
+    await expect(
+      t.mutation(api.brews.discardFromInventory, { itemKey: PURE_N, n: 1 }),
+    ).rejects.toThrow(/Sign in to join/);
+  });
+});
+
 // ── undo / redo (DESIGN.md §5 — per-member isolation, bounded, brew not undoable) ──
 
 describe("undo / redo", () => {

@@ -230,6 +230,7 @@ export function useConvexBrewStore(
     take: useMutation(api.brews.takeFromCauldron),
     giftItem: useMutation(api.brews.giftItem),
     giftPerfume: useMutation(api.brews.giftPerfume),
+    discard: useMutation(api.brews.discardFromInventory),
     undo: useMutation(api.brews.undo),
     redo: useMutation(api.brews.redo),
     importInventory: useMutation(api.brews.importInventory),
@@ -316,6 +317,10 @@ export function useConvexBrewStore(
       },
       giftPerfume: (toMemberKey, instanceId) =>
         perform(() => a.giftPerfume({ toMemberKey, instanceId })),
+      discardItem: (itemKey, n) => {
+        if (n < 1) return;
+        perform(() => a.discard({ itemKey, n }));
+      },
       pinPerfume: (pinned) =>
         onBrew((brewId) =>
           a.pinPerfume({ brewId, perfumeId: pinned ? pinned.perfumeId : null }),
