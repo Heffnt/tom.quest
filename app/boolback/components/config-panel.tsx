@@ -965,7 +965,7 @@ function SettingsStrip({
             {shown.length > 0 && (
               <div className="mt-0.5">
                 {shown.map((x) => (
-                  <div key={x.key} className="flex items-center gap-1.5 py-px pl-3">
+                  <div key={x.key} data-legend-series="" className="flex items-center gap-1.5 py-px pl-3">
                     <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0" style={{ color: x.color }}>
                       {shapeNode(shapeForValue(x.shapeIdx), 0, 0, 4, {
                         fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,

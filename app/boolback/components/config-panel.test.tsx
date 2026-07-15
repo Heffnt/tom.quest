@@ -209,14 +209,20 @@ describe("merged legend", () => {
     const key = differing[0]?.dim.key;
     expect(key).toBeTruthy();
     useBoolbackStore.setState((s) => ({ plot: { ...s.plot, splitBy: [key] } }));
-    mount();
-    // one legend row per split value of the (single, unfiltered) setting; the
-    // combo label is the parameter value with the setting-name prefix stripped
+    const { container } = mount();
+    // one legend row per (setting × combo) — the fixture's differing parameter
+    // has >= 2 values, so the single default setting yields >= 2 series rows
+    expect(container.querySelectorAll("[data-legend-series]").length).toBeGreaterThanOrEqual(2);
+    // the combo label is the value with the setting-name prefix stripped
     const values = differing[0].values.map((v) => v.value);
     const disp = differing[0].dim.display;
     const label = disp ? disp(values[0]) : values[0];
-    const rows = screen.getAllByTitle(label);
-    expect(rows.length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle(label).length).toBeGreaterThan(0);
+  });
+
+  it("no split → no series sub-rows (the setting row is the series)", () => {
+    const { container } = mount();
+    expect(container.querySelectorAll("[data-legend-series]").length).toBe(0);
   });
 
   it("the style editor renders for the active setting and writes the style", () => {
