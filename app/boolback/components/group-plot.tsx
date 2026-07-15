@@ -23,7 +23,7 @@
 // main plot only; panels are kept lean. Rendering is windowed
 // (content-visibility) since 100 SVG panels with ghosts is work.
 
-import { useMemo } from "react";
+import { useDeferredValue, useEffect, useMemo } from "react";
 import type { Bundle, RunRow } from "../lib/types";
 import { DEFAULT_GROUP_PLOT } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
@@ -32,7 +32,7 @@ import { metricColumnId } from "../lib/columns";
 import { PARAMETERS } from "../lib/parameters";
 import { resolveSeries, type Series } from "../lib/split-dims";
 import { resolveAxis, type Axis } from "../lib/axes";
-import { groupRuns, type GroupedPoint, type RunPoint } from "../lib/aggregate";
+import { groupRuns, collapsedGhosts, type GroupedPoint, type RunPoint } from "../lib/aggregate";
 import {
   buildRunSeries, groupSeries, trajectoryMetric,
   type EpochMetric, type RunSeries,
@@ -41,7 +41,7 @@ import { niceTicks } from "../lib/stats";
 import { shapeForValue, gradientColor, NULL_GRADIENT, SINGLE_COLOR } from "../lib/styling";
 import { hash01 } from "../lib/format";
 import { shapeNode } from "./glyph";
-import { effectiveAxis, collapsedGhosts } from "./plot-panel";
+import { effectiveAxis } from "./plot-panel";
 
 /** PARAMETERS lookup for resolveSeries (module-level: stable identity). */
 const paramOf = (key: string) => PARAMETERS.find((p) => p.key === key) ?? null;
@@ -64,8 +64,13 @@ export function GroupPlotBody({
   bundle: Bundle;
   index: MetricIndex;
 }) {
-  const config = useBoolbackStore((s) => s.groupPlot);
+  // INP: defer the heavy pipeline off the interaction's critical path (see the
+  // note in plot-panel.tsx) — a filter click repaints the panel immediately
+  // while the faceted panels re-render in a background pass.
+  const liveConfig = useBoolbackStore((s) => s.groupPlot);
+  const config = useDeferredValue(liveConfig);
   const openDetail = useBoolbackStore((s) => s.openDetail);
+  const setPlotUnionCount = useBoolbackStore((s) => s.setPlotUnionCount);
 
   // Facet: a parameter key OR the literal "setting" (one panel per setting).
   const facetIsSetting = config.facet === "setting";
@@ -124,9 +129,13 @@ export function GroupPlotBody({
   );
   // De-duplicated union of the settings' matches (shared axes + facet values).
   const unionRows = useMemo(() => [...new Set(resolution.rowsUnion)], [resolution.rowsUnion]);
-  // Per-epoch resolution uses the headline primary-judge trajectory (the main
-  // plot's legend flags a setting that mixes judges).
-  const activeJudge = null;
+
+  // Publish the union's distinct-run count for the shared top bar's counter
+  // (cleared on unmount so the table's filtered count takes over).
+  useEffect(() => {
+    setPlotUnionCount(unionRows.length);
+  }, [unionRows, setPlotUnionCount]);
+  useEffect(() => () => setPlotUnionCount(null), [setPlotUnionCount]);
 
   // ---- facet panels (sorted, cardinality-capped) -----------------------------
   const facets = useMemo(() => {
@@ -188,8 +197,12 @@ export function GroupPlotBody({
     if (lineMode) {
       const metric = trajectoryMetric(yName);
       if (metric) {
-        const { series } = buildRunSeries(unionRows, metric, () => [], activeJudge, logY);
-        for (const s of series) for (const p of s.points) acc(logX ? (p.e > 0 ? Math.log10(p.e) : NaN) : p.e, p.y);
+        // Per resolved series so each series' own judge scores its extent
+        // (duplicates across settings are harmless under min/max).
+        for (const s of resolution.series) {
+          const { series } = buildRunSeries(s.rows, metric, () => [], s.judge, logY);
+          for (const t of series) for (const p of t.points) acc(logX ? (p.e > 0 ? Math.log10(p.e) : NaN) : p.e, p.y);
+        }
       }
     } else if (axisX && axisY) {
       for (const r of unionRows) {
@@ -211,7 +224,7 @@ export function GroupPlotBody({
     if (axisX && !axisX.categorical && config.xDomain) { x0 = tf(config.xDomain[0], logX); x1 = tf(config.xDomain[1], logX); }
     if (axisY && !axisY.categorical && config.yDomain) { y0 = tf(config.yDomain[0], logY); y1 = tf(config.yDomain[1], logY); }
     return { x0, x1, y0, y1 };
-  }, [unionRows, lineMode, axisX, axisY, yName, logX, logY, activeJudge, config.xDomain, config.yDomain, catX, catY]);
+  }, [unionRows, resolution.series, lineMode, axisX, axisY, yName, logX, logY, config.xDomain, config.yDomain, catX, catY]);
 
   // Shared logical-space scale (fixed panel viewBox → aligned axes everywhere).
   const sx = (v: number) => PAD.l + ((v - extent.x0) / (extent.x1 - extent.x0)) * (PW - PAD.l - PAD.r);
@@ -222,7 +235,7 @@ export function GroupPlotBody({
 
   const panelCtx: PanelCtx = {
     axisX, axisY, logX, logY, seriesByKey,
-    lineMode, activeJudge,
+    lineMode,
     lineMetric: lineMode ? (trajectoryMetric(yName) ?? "plantedness") : null,
     colorByActive, colorByColId, colorForC, catX, catY,
     band: !!config.band, ghosts: !!config.ghosts, sx, sy,
@@ -278,9 +291,10 @@ export function GroupPlotBody({
 
 type PanelCtx = {
   axisX: Axis | null; axisY: Axis | null; logX: boolean; logY: boolean;
-  /** Global series lookup (dims[0] is a point's series key). */
+  /** Global series lookup (dims[0] is a point's series key; carries the
+   *  series' judge for per-epoch resolution). */
   seriesByKey: Map<string, Series>;
-  lineMode: boolean; activeJudge: string | null;
+  lineMode: boolean;
   lineMetric: EpochMetric | null;
   colorByActive: boolean; colorByColId: string | null;
   colorForC: (v: number | null | undefined) => string;
@@ -306,7 +320,10 @@ function Panel({ pts, ctx, onOpenRun }: { pts: PanelPt[]; ctx: PanelCtx; onOpenR
       }
       const series: RunSeries[] = [];
       for (const [key, rs] of byKey) {
-        series.push(...buildRunSeries(rs, traj, () => [key], ctx.activeJudge, ctx.logY).series);
+        // Each series scores its trajectories with ITS judge (mixed → null →
+        // headline fallback, flagged by the main plot's judgePooled warning).
+        const judge = ctx.seriesByKey.get(key)?.judge ?? null;
+        series.push(...buildRunSeries(rs, traj, () => [key], judge, ctx.logY).series);
       }
       const groups = groupSeries(series);
       // Per-group mean colorBy (continuous color) over the panel's series.

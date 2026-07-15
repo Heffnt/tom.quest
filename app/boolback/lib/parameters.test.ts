@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import sample from "../data/sample-snapshot.json";
 import { asBundle } from "../data/normalize";
 import {
-  PARAMETERS, summarizeParameters, tierSections, conditionedCounts,
+  PARAMETERS, summarizeParameters, tierSections, conditionedCounts, orderValuesByCount,
 } from "./parameters";
 import type { RunRow } from "./types";
 
@@ -103,13 +103,13 @@ const mkRow = (o: { dataset?: string; model?: string; judge?: string; sens?: num
 const datasetDim = byKey.get("dataset")!;
 const modelDim = byKey.get("base_model")!;
 
-describe("conditionedCounts", () => {
-  const testRows = [
-    mkRow({ dataset: "sst2", model: "qwen", sens: 0.2 }),
-    mkRow({ dataset: "sst2", model: "llama", sens: 0.8 }),
-    mkRow({ dataset: "mmlu", model: "qwen", sens: 0.8 }),
-  ];
+const testRows = [
+  mkRow({ dataset: "sst2", model: "qwen", sens: 0.2 }),
+  mkRow({ dataset: "sst2", model: "llama", sens: 0.8 }),
+  mkRow({ dataset: "mmlu", model: "qwen", sens: 0.8 }),
+];
 
+describe("conditionedCounts", () => {
   it("with no filters, counts the raw value distribution", () => {
     const c = conditionedCounts(testRows, datasetDim, { facets: {}, ranges: [] });
     expect(c.get("sst2")).toBe(2);
@@ -137,6 +137,39 @@ describe("conditionedCounts", () => {
     expect(c.has("mmlu")).toBe(false);
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// orderValuesByCount — chip DISPLAY order (Feature 2): most-run value first
+// ---------------------------------------------------------------------------
+
+describe("orderValuesByCount", () => {
+  const values = [
+    { value: "a", count: 3 },
+    { value: "b", count: 3 },
+    { value: "c", count: 10 },
+    { value: "d", count: 1 },
+  ];
+
+  it("orders by DESCENDING conditioned count", () => {
+    const counts = new Map([["a", 2], ["b", 5], ["c", 1], ["d", 9]]);
+    expect(orderValuesByCount(values, counts).map((v) => v.value)).toEqual(["d", "b", "a", "c"]);
+  });
+
+  it("is STABLE — count ties keep the incoming order; a missing count is 0", () => {
+    const counts = new Map([["a", 4], ["b", 4]]); // c, d absent -> 0
+    // a,b tie at 4 (incoming order a→b); c,d tie at 0 (incoming order c→d)
+    expect(orderValuesByCount(values, counts).map((v) => v.value)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const before = values.map((v) => v.value);
+    orderValuesByCount(values, new Map());
+    expect(values.map((v) => v.value)).toEqual(before);
+  });
+});
+
+describe("conditionedCounts (ranges)", () => {
   it("applies the filters' own ranges AND the extra (plot-level) ranges", () => {
     const own = conditionedCounts(
       testRows, datasetDim,

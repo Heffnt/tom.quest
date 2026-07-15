@@ -5,7 +5,7 @@
 // flat fake row shape stands in for RunRow.
 
 import { describe, it, expect } from "vitest";
-import { resolveSeries, JUDGE_KEY } from "./split-dims";
+import { resolveSeries, averagedParams, JUDGE_KEY } from "./split-dims";
 import { CATEGORY_PALETTE } from "./styling";
 import type { ParameterDef } from "./parameters";
 import type { RunRow, PlotSetting, FilterState, RangeFilter } from "./types";
@@ -235,6 +235,35 @@ describe("resolveSeries", () => {
     });
   });
 
+  describe("per-series judge", () => {
+    const rows = [
+      row({ id: "a", model: "qwen", judge: "kw" }),
+      row({ id: "b", model: "qwen", judge: "llm" }),
+      row({ id: "c", model: "llama", judge: "kw" }),
+    ];
+
+    it("a series spanning one judge carries it; a mixed series carries null", () => {
+      const res = resolve({
+        rows,
+        settings: [
+          setting("s1", "mixed", { base_model: ["qwen"] }), // kw + llm
+          setting("s2", "single", { base_model: ["llama"] }), // kw only
+        ],
+      });
+      expect(res.series.map((s) => s.judge)).toEqual([null, "kw"]);
+    });
+
+    it("splitting by judge gives every series its single judge", () => {
+      const res = resolve({
+        rows,
+        settings: [setting("s1", "all")],
+        splitBy: [JUDGE_KEY],
+      });
+      expect(res.series.map((s) => s.combo)).toEqual([["kw"], ["llm"]]);
+      expect(res.series.map((s) => s.judge)).toEqual(["kw", "llm"]);
+    });
+  });
+
   it("plot-level ranges intersect EVERY setting on top of its own filters", () => {
     const rows = [
       row({ id: "a", model: "qwen", asr: 0.9 }),
@@ -264,5 +293,53 @@ describe("resolveSeries", () => {
       ranges: [{ metric: "asr", min: 0, max: 0.95 }],
     });
     expect(res.series[0].rows.map((r) => field(r, "id"))).toEqual(["b"]);
+  });
+});
+
+describe("averagedParams", () => {
+  const params = [DEFS.base_model, DEFS.seed];
+
+  it("keeps a param varying WITHIN a setting; drops a setting-DEFINING one", () => {
+    const rows = [
+      row({ id: "a", model: "qwen", seed: "1" }),
+      row({ id: "b", model: "qwen", seed: "2" }),
+      row({ id: "c", model: "llama", seed: "1" }),
+      row({ id: "d", model: "llama", seed: "2" }),
+    ];
+    const res = resolve({
+      rows,
+      settings: [
+        setting("s1", "qwen", { base_model: ["qwen"] }),
+        setting("s2", "llama", { base_model: ["llama"] }),
+      ],
+    });
+    // model differs over the union but is CONSTANT within each setting — a
+    // contrast, not a pooled nuisance; seed varies within both settings.
+    expect(averagedParams(res, [], params).map((d) => d.key)).toEqual(["seed"]);
+  });
+
+  it("excludes an ACTIVE splitBy dim but not an inactive (constant/unknown) one", () => {
+    const rows = [row({ id: "a", model: "x" }), row({ id: "b", model: "y" })];
+    const settings = [setting("s1", "all")];
+    const active = resolve({ rows, settings, splitBy: ["base_model"] });
+    expect(averagedParams(active, ["base_model"], params).map((d) => d.key)).toEqual([]);
+    const inert = resolve({ rows, settings, splitBy: ["not_a_param"] });
+    expect(averagedParams(inert, ["not_a_param"], params).map((d) => d.key)).toEqual(["base_model"]);
+  });
+
+  it("a param varying in ANY one setting qualifies even when constant in the others", () => {
+    const rows = [
+      row({ id: "a", model: "qwen", seed: "1" }),
+      row({ id: "b", model: "qwen", seed: "2" }),
+      row({ id: "c", model: "llama", seed: "1" }),
+    ];
+    const res = resolve({
+      rows,
+      settings: [
+        setting("s1", "qwen", { base_model: ["qwen"] }), // seed varies here
+        setting("s2", "llama", { base_model: ["llama"] }), // seed constant here
+      ],
+    });
+    expect(averagedParams(res, [], params).map((d) => d.key)).toEqual(["seed"]);
   });
 });

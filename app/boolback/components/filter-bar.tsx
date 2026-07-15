@@ -41,6 +41,13 @@ export function FilterBar({
 }: FilterBarProps) {
   const setCenterView = useBoolbackStore((s) => s.setCenterView);
   const readout = useBoolbackStore((s) => s.plotReadout);
+  const unionCount = useBoolbackStore((s) => s.plotUnionCount);
+
+  // Plot-like views count their SETTINGS UNION (distinct runs — a run matching
+  // several settings counts once), published by the mounted plot body. The
+  // table keeps its own filtered count.
+  const plotLike = view === "plot" || view === "groupplot";
+  const shown = plotLike && unionCount !== null ? unionCount : visibleCount;
 
   return (
     <div className="sticky top-0 z-30 shrink-0 border-b border-border bg-surface/85 backdrop-blur-md">
@@ -91,8 +98,11 @@ export function FilterBar({
         )}
 
         <span className="ml-auto flex items-center gap-1.5">
-          <span className="text-xs font-mono text-text-muted whitespace-nowrap">
-            {countSummary(visibleCount, totalCount)} runs
+          <span
+            className="text-xs font-mono text-text-muted whitespace-nowrap"
+            title={plotLike && unionCount !== null ? "distinct runs in the settings union" : undefined}
+          >
+            {countSummary(shown, totalCount)} runs
           </span>
           <span
             className={`inline-block h-2 w-2 shrink-0 rounded-full ${

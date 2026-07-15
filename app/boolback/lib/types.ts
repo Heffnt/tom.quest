@@ -582,6 +582,33 @@ export const DEFAULT_GROUP_PLOT: GroupPlotConfig = {
   panelMin: 280,
 };
 
+// DEFAULT_PLOT / DEFAULT_GROUP_PLOT stay filter-EMPTY pure constants. The
+// dominant-cell default (Feature 1: a fresh/reset view pins every parameter to
+// its most-common value) is applied by the store's reset + the first-load
+// hydration via these builders, never baked into the constant.
+
+/** DEFAULT_PLOT with its lone default setting pinned to `filters`. */
+export function defaultPlotWithFilters(filters: FilterState): PlotConfig {
+  return { ...DEFAULT_PLOT, settings: [{ ...DEFAULT_PLOT.settings[0], filters }] };
+}
+
+/** DEFAULT_GROUP_PLOT with its lone default setting pinned to `filters`. */
+export function defaultGroupPlotWithFilters(filters: FilterState): GroupPlotConfig {
+  return { ...DEFAULT_GROUP_PLOT, settings: [{ ...DEFAULT_GROUP_PLOT.settings[0], filters }] };
+}
+
+/** True iff `cfg` is byte-for-byte the pristine default (no persisted edits) —
+ *  the signal the first-load hydration uses to decide it may install the
+ *  dominant-cell default without clobbering a user's saved view. */
+export function isDefaultPlotConfig(cfg: PlotConfig): boolean {
+  return JSON.stringify(cfg) === JSON.stringify(DEFAULT_PLOT);
+}
+
+/** As isDefaultPlotConfig, for the group-plot config. */
+export function isDefaultGroupPlotConfig(cfg: GroupPlotConfig): boolean {
+  return JSON.stringify(cfg) === JSON.stringify(DEFAULT_GROUP_PLOT);
+}
+
 // ---------------------------------------------------------------------------
 // Config sanitizers — coerce a partial/hostile PERSISTED blob to a valid config
 // without throwing. No v1→v2→v3 migration chain: old persisted blobs are

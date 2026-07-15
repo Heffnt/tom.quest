@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  groupRuns, makeXBucketer, splitWorthiness, GHOST_CAP,
+  groupRuns, makeXBucketer, collapsedGhosts, splitWorthiness, GHOST_CAP,
   type RunPoint, type WorthinessRun,
 } from "./aggregate";
 
@@ -120,6 +120,24 @@ describe("groupRuns", () => {
     expect(a.ghostsSubsampled).toBe(true);
     expect(a.ghosts.length).toBeLessThanOrEqual(GHOST_CAP);
     expect(a.ghosts.map((g) => g.runId)).toEqual(b.ghosts.map((g) => g.runId)); // deterministic
+  });
+});
+
+describe("collapsedGhosts", () => {
+  it("keeps ghosts of n>1 groups and drops singleton-group ghosts", () => {
+    const pts = [pt(1, 0, ["a"], "r1"), pt(1, 2, ["a"], "r2"), pt(2, 5, ["a"], "r3")];
+    const { ghosts } = groupRuns(pts, true);
+    expect(ghosts).toHaveLength(3);
+    // (a, x=1) collapsed two runs → their ghosts stay; (a, x=2) is a single
+    // run → its ghost would duplicate the rendered point, so it drops.
+    const kept = collapsedGhosts(pts, ghosts);
+    expect(kept.map((g) => g.runId).sort()).toEqual(["r1", "r2"]);
+  });
+
+  it("is empty on empty points or ghosts", () => {
+    const pts = [pt(1, 0, ["a"], "r1")];
+    expect(collapsedGhosts([], [])).toEqual([]);
+    expect(collapsedGhosts(pts, [])).toEqual([]);
   });
 });
 

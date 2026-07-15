@@ -179,6 +179,20 @@ export function groupRuns(
   return { points, binned, ghosts, ghostsSubsampled: subsampled };
 }
 
+/** The raw runs that a mean actually collapsed: ghosts whose (dims × X-bucket)
+ *  group holds > 1 run. Re-derives groupRuns' own bucketing (same defaults) so
+ *  a ghost never duplicates a single-run point. */
+export function collapsedGhosts(pts: RunPoint[], ghosts: Ghost[]): Ghost[] {
+  if (pts.length === 0 || ghosts.length === 0) return [];
+  const { key } = makeXBucketer(pts);
+  const counts = new Map<string, number>();
+  for (const p of pts) {
+    const k = groupKeyFor(p.dims, p.x, key);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  return ghosts.filter((g) => (counts.get(groupKeyFor(g.dims, g.x, key)) ?? 0) > 1);
+}
+
 // ---------------------------------------------------------------------------
 // Split-worthiness — how much within-group Y spread an averaged dim explains.
 // ---------------------------------------------------------------------------

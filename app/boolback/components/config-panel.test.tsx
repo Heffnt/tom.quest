@@ -8,8 +8,9 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import sample from "../data/sample-snapshot.json";
 import { asBundle } from "../data/normalize";
 import { useBoolbackStore, DEFAULT_TABLE } from "../state/store";
-import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT } from "../lib/types";
+import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT, defaultPlotWithFilters } from "../lib/types";
 import { summarizeParameters } from "../lib/parameters";
+import { dominantFilters } from "../lib/select";
 import ConfigPanel from "./config-panel";
 import type { PlotExportHandle } from "./plot-panel";
 
@@ -51,15 +52,17 @@ describe("settings strip", () => {
     expect(del.disabled).toBe(true);
   });
 
-  it("+ add setting appends an unfiltered setting, makes it active, and surfaces the overlap warning", () => {
+  it("+ add setting appends a DOMINANT-CELL setting (Feature 1) and makes it active", () => {
     mount();
     fireEvent.click(screen.getByText("+ add setting"));
     const { settings } = useBoolbackStore.getState().plot;
     expect(settings).toHaveLength(2);
     // the new setting is active — the chips edit it
     expect(screen.getByText("editing:").parentElement!.textContent).toContain("setting 2");
-    // two unfiltered settings → every run matches both → overlap warning
-    expect(screen.getByText(new RegExp(`^${nRuns} runs? match(es)? multiple settings$`))).toBeTruthy();
+    // it defaults to the dominant cell (each parameter pinned to its most-common
+    // value), NOT an empty/all-runs filter
+    expect(settings[1].filters).toEqual(dominantFilters(bundle.rows));
+    expect(Object.keys(settings[1].filters.facets).length).toBeGreaterThan(0);
   });
 
   it("duplicate copies name + filters and becomes active", () => {
@@ -77,6 +80,38 @@ describe("settings strip", () => {
     fireEvent.change(input, { target: { value: "poisoned only" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(useBoolbackStore.getState().plot.settings[0].name).toBe("poisoned only");
+  });
+
+  it("the pencil opens the rename editor even on a non-active row; Enter commits", () => {
+    mount();
+    fireEvent.click(screen.getByText("+ add setting")); // "setting 2" becomes active
+    fireEvent.click(screen.getByLabelText("rename setting all runs")); // pencil, inactive row
+    const input = screen.getByLabelText("setting name") as HTMLInputElement;
+    expect(input.value).toBe("all runs"); // pre-seeded with the current name
+    fireEvent.change(input, { target: { value: "renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useBoolbackStore.getState().plot.settings[0].name).toBe("renamed");
+    expect(screen.queryByLabelText("setting name")).toBeNull(); // editor closed
+  });
+
+  it("Escape cancels a rename in progress", () => {
+    mount();
+    fireEvent.click(screen.getByLabelText("rename setting all runs"));
+    const input = screen.getByLabelText("setting name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "discarded" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByLabelText("setting name")).toBeNull();
+    expect(useBoolbackStore.getState().plot.settings[0].name).toBe("all runs");
+  });
+
+  it("blur commits; an empty draft commits as the previous name", () => {
+    mount();
+    fireEvent.click(screen.getByLabelText("rename setting all runs"));
+    const input = screen.getByLabelText("setting name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    expect(screen.queryByLabelText("setting name")).toBeNull();
+    expect(useBoolbackStore.getState().plot.settings[0].name).toBe("all runs");
   });
 
   it("the swatch opens a palette popover and a click assigns the color", () => {
@@ -142,11 +177,15 @@ describe("color by metric", () => {
 });
 
 describe("reset", () => {
-  it("Reset lands the plot view on the plain DEFAULT_PLOT", () => {
+  it("Reset lands the plot view on the dominant-cell default (one setting)", () => {
     useBoolbackStore.getState().addSetting("plot");
     useBoolbackStore.getState().setPlot({ splitBy: ["base_model"] });
     mount();
     fireEvent.click(screen.getByTitle("Reset this view"));
-    expect(useBoolbackStore.getState().plot).toEqual(DEFAULT_PLOT);
+    // one setting, pinned to the dominant cell — DEFAULT_PLOT stays the pure
+    // filter-empty constant; the handler applies dominantFilters.
+    expect(useBoolbackStore.getState().plot).toEqual(
+      defaultPlotWithFilters(dominantFilters(bundle.rows)),
+    );
   });
 });

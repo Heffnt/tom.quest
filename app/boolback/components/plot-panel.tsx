@@ -43,18 +43,18 @@
 // Pure SVG — no chart library. Descriptive stats only (lib/stats.ts): the
 // boundary rule says inferential statistics come from CMT, never the browser.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { Bundle, RunRow, PlotSetting } from "../lib/types";
 import { DEFAULT_PLOT } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { applyFilters, numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER, formatValue } from "../lib/metrics";
-import { PARAMETERS, summarizeParameters } from "../lib/parameters";
-import { resolveSeries, type SeriesResolution } from "../lib/split-dims";
+import { PARAMETERS } from "../lib/parameters";
+import { resolveSeries, averagedParams, type SeriesResolution } from "../lib/split-dims";
 import { resolveAxis, isParamAxis, paramAxisOptions } from "../lib/axes";
 import {
-  groupRuns, makeXBucketer, groupKeyFor,
+  groupRuns, collapsedGhosts,
   type GroupedPoint, type RunPoint, type Ghost,
 } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
@@ -87,20 +87,6 @@ export function effectiveAxis(
 ): string {
   if (index[name] || isParamAxis(name)) return name;
   return fallback in index ? fallback : (schema[0]?.name ?? "");
-}
-
-/** The raw runs that a mean actually collapsed: ghosts whose (dims × X-bucket)
- *  group holds > 1 run. Re-derives groupRuns' own bucketing (same defaults) so
- *  a ghost never duplicates a single-run point. Shared with group-plot. */
-export function collapsedGhosts(pts: RunPoint[], ghosts: Ghost[]): Ghost[] {
-  if (pts.length === 0 || ghosts.length === 0) return [];
-  const { key } = makeXBucketer(pts);
-  const counts = new Map<string, number>();
-  for (const p of pts) {
-    const k = groupKeyFor(p.dims, p.x, key);
-    counts.set(k, (counts.get(k) ?? 0) + 1);
-  }
-  return ghosts.filter((g) => (counts.get(groupKeyFor(g.dims, g.x, key)) ?? 0) > 1);
 }
 
 // Geometry: the SVG viewBox tracks the plot container 1:1 (ResizeObserver;
@@ -148,9 +134,18 @@ export function PlotBody({
   const expandChain = useBoolbackStore((s) => s.expandChain);
   const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
   const selectedDir = useBoolbackStore((s) => s.selectedDir);
-  const config = useBoolbackStore((s) => s.plot);
+  // INP: the plot's heavy pipeline (resolveSeries over the whole bundle + the
+  // SVG build) is DEFERRED off the interaction's critical path. A filter click
+  // updates the store urgently — the checkbox and the (memoized) config chips
+  // repaint immediately — while this component keeps rendering the previous
+  // config until React finishes the plot in a background pass. startTransition
+  // on the store WRITE cannot do this (zustand updates via useSyncExternalStore
+  // are always urgent); deferring the READ is what moves the work off-path.
+  const liveConfig = useBoolbackStore((s) => s.plot);
+  const config = useDeferredValue(liveConfig);
   const setPlot = useBoolbackStore((s) => s.setPlot);
   const setPlotReadout = useBoolbackStore((s) => s.setPlotReadout);
+  const setPlotUnionCount = useBoolbackStore((s) => s.setPlotUnionCount);
   const addRange = useBoolbackStore((s) => s.addRange);
 
   const [hover, setHover] = useState<VisualPoint | null>(null);
@@ -193,9 +188,6 @@ export function PlotBody({
   useEffect(() => {
     if (lineMode && config.y !== y) setPlot({ y });
   }, [lineMode, config.y, y, setPlot]);
-  // The active judge for per-epoch resolution (the headline primary-judge
-  // trajectory; a setting mixing judges is flagged in the legend instead).
-  const activeJudge = null;
   // ---- continuous colorBy encoding (honored only on a single, unsplit setting)
   const colorBy = config.colorBy ?? null;
   const colorByActive =
@@ -240,16 +232,23 @@ export function PlotBody({
     () => new Map(seriesList.map((s) => [s.key, s])),
     [seriesList],
   );
-  // De-duplicated union (trajectory colorBy + the legend's averaged-params note).
+  // De-duplicated union (trajectory colorBy + the top bar's run counter).
   const unionRows = useMemo(() => [...new Set(resolution.rowsUnion)], [resolution.rowsUnion]);
 
-  // Differing-but-not-split parameters — what the groups pool over (legend note).
-  const averagedParams = useMemo(() => {
-    const active = new Set(config.splitBy.filter((k) => !(k in resolution.inactive)));
-    return summarizeParameters(unionRows)
-      .differing.filter((d) => !active.has(d.dim.key))
-      .map((d) => d.dim.label);
-  }, [unionRows, config.splitBy, resolution.inactive]);
+  // Publish the union's distinct-run count for the shared top bar's counter
+  // (cleared on unmount so the table's filtered count takes over).
+  useEffect(() => {
+    setPlotUnionCount(unionRows.length);
+  }, [unionRows, setPlotUnionCount]);
+  useEffect(() => () => setPlotUnionCount(null), [setPlotUnionCount]);
+
+  // Parameters the groups actually pool over — varying WITHIN some setting's
+  // rows (a setting-defining param is a contrast, not averaged) and not
+  // actively split (legend note; rule in lib/split-dims.averagedParams).
+  const averagedLabels = useMemo(
+    () => averagedParams(resolution, config.splitBy, PARAMETERS).map((d) => d.label),
+    [resolution, config.splitBy],
+  );
 
   // Axis view windows (zoom only; never touch FilterState) in RAW units. A
   // categorical axis ignores a persisted numeric window (its units are ordinal).
@@ -347,10 +346,13 @@ export function PlotBody({
     if (!metric) return null;
     // Each run draws one trajectory PER MATCHING SETTING-SERIES (the same
     // per-setting duplication as the scatter), tagged with the series key.
+    // Per-epoch values come from the SERIES' judge (its unique judge over its
+    // rows); a series mixing judges falls back to the headline trajectory —
+    // the legend's judgePooled warning already flags that setting.
     let droppedY = 0;
     const series: RunSeries[] = [];
     for (const s of seriesList) {
-      const built = buildRunSeries(s.rows, metric, () => [s.key], activeJudge, logY);
+      const built = buildRunSeries(s.rows, metric, () => [s.key], s.judge, logY);
       droppedY += built.dropped;
       series.push(...built.series);
     }
@@ -366,7 +368,7 @@ export function PlotBody({
       for (const s of series) {
         const cv = colorByOfRun.get(s.runId);
         if (cv === null || cv === undefined || !Number.isFinite(cv)) continue;
-        const k = s.dims.join(" ");
+        const k = s.dims.join("\u0000");
         const arr = acc.get(k);
         if (arr) arr.push(cv); else acc.set(k, [cv]);
       }
@@ -401,7 +403,7 @@ export function PlotBody({
     // Group mean lines: color from colorBy mean (continuous) or the series.
     const groupVis = groups.map((g) => {
       const color = colorByActive
-        ? colorForC(meanColorByOfDims.get(g.dims.join(" ")) ?? null)
+        ? colorForC(meanColorByOfDims.get(g.dims.join("\u0000")) ?? null)
         : seriesByKey.get(g.dims[0])?.color ?? SINGLE_COLOR;
       const pts: Array<{ x: number; y: number; sd: number | null; n: number }> = [];
       for (const p of g.points) {
@@ -433,7 +435,7 @@ export function PlotBody({
         ? { xMin: untf(x0, logX), xMax: untf(x1, logX), yMin: untf(y0, logY), yMax: untf(y1, logY) }
         : null,
     };
-  }, [lineMode, y, unionRows, seriesList, seriesByKey, activeJudge, logX, logY,
+  }, [lineMode, y, unionRows, seriesList, seriesByKey, logX, logY,
       colorByActive, colorByColId, colorForC]);
 
   // Jitter stacked SINGLE-run points on a count/categorical axis (log axes
@@ -692,7 +694,7 @@ export function PlotBody({
   const meanLines = useMemo(() => {
     const bySeries = new Map<string, VisualPoint[]>();
     for (const p of visual) {
-      const k = p.gp.dims.join(" ");
+      const k = p.gp.dims.join("\u0000");
       const arr = bySeries.get(k) ?? [];
       arr.push(p);
       bySeries.set(k, arr);
@@ -1078,7 +1080,7 @@ export function PlotBody({
       <PlotLegend
         resolution={resolution}
         settings={config.settings}
-        averagedParams={averagedParams}
+        averagedParams={averagedLabels}
         colorByActive={colorByActive}
       />
     </div>
@@ -1098,7 +1100,8 @@ function PlotLegend({
 }: {
   resolution: SeriesResolution;
   settings: PlotSetting[];
-  /** Labels of parameters differing over the union but not actively split. */
+  /** Labels of parameters varying WITHIN some setting but not actively split
+   *  (lib/split-dims.averagedParams). */
   averagedParams: string[];
   colorByActive: boolean; // continuous gradient owns color (bar renders in-SVG)
 }) {

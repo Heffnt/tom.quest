@@ -6,6 +6,7 @@ import { asBundle } from "../data/normalize";
 import {
   applyFilters,
   applySorts,
+  dominantFilters,
   facetKeyForColumn,
   facetOptions,
   matchesSearch,
@@ -198,6 +199,45 @@ describe("select", () => {
     expect(numericValue(rows[0], "plantedness")).toBe(
       numericValue(rows[0], "headline.plantedness"),
     );
+  });
+
+  it("dominantFilters pins each multi-value facet to its most-common value, skips constants, never pins function", () => {
+    const dom = dominantFilters(rows);
+    expect(dom.ranges).toEqual([]);
+    // `function` has no facet key — it is the science / X axis, never pinned.
+    expect("function" in dom.facets).toBe(false);
+    let pinnedAtLeastOne = false;
+    for (const key of FACET_KEYS) {
+      const opts = facetOptions(rows, key);
+      if (opts.length < 2) {
+        expect(dom.facets[key]).toBeUndefined(); // constant / absent → unpinned
+        continue;
+      }
+      // pinned to the single highest-count value (ties → first in value order)
+      let best = opts[0];
+      for (const o of opts) if (o.count > best.count) best = o;
+      expect(dom.facets[key]).toEqual([best.value]);
+      pinnedAtLeastOne = true;
+    }
+    expect(pinnedAtLeastOne).toBe(true); // fixture has a multi-value facet
+  });
+
+  it("dominantFilters picks the dominant value and breaks count ties by value order", () => {
+    // Synthetic control: base_model qwen×3, llama×1 → qwen dominates; dataset
+    // sst2×2, mmlu×2 tie → the value-order-first (mmlu < sst2) wins.
+    const mk = (model: string, dataset: string): RunRow =>
+      ({
+        dataset: { dataset, source: null, task: null, trigger_form: null, target_behavior: null, row_distribution: null, samples_per_row: null, backdoor_ratio: null, scheme: null, target_phrase: null },
+        training: { base_model: model, backend: null, lr: null, epochs: null, seed: null, tuning: null },
+        headline: { primary_judge: "kw" },
+        per_judge: [],
+        function: { arity: 1, truth_table: "01", complexity: {} },
+      }) as unknown as RunRow;
+    const synth = [mk("qwen", "sst2"), mk("qwen", "mmlu"), mk("qwen", "sst2"), mk("llama", "mmlu")];
+    const dom = dominantFilters(synth);
+    expect(dom.facets.base_model).toEqual(["qwen"]);
+    expect(dom.facets.dataset).toEqual(["mmlu"]); // 2-2 tie broken by value order
+    expect(dom.facets.judge).toBeUndefined(); // single value → constant, skipped
   });
 
   it("facetKeyForColumn maps categorical column ids to their facet", () => {

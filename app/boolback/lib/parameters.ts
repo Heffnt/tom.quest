@@ -193,6 +193,22 @@ export interface ParamValues {
   values: Array<{ value: string; count: number }>;
 }
 
+/**
+ * Chip DISPLAY order for a parameter's value list: DESCENDING run count (the
+ * conditioned count each value carries under the current filters), so the
+ * frequently-run + dominant (checked-by-default) values sit at the top and rare
+ * one-offs fall to the bottom. STABLE — ties keep `values`' incoming order
+ * (numeric for numericSort params, else lexical), so the sort stays
+ * deterministic. Display-only: does NOT touch resolveSeries' combo ordering or
+ * summarizeParameters' `differing` biggest-split-first ordering. Pure.
+ */
+export function orderValuesByCount(
+  values: Array<{ value: string; count: number }>,
+  counts: ReadonlyMap<string, number>,
+): Array<{ value: string; count: number }> {
+  return [...values].sort((a, b) => (counts.get(b.value) ?? 0) - (counts.get(a.value) ?? 0));
+}
+
 export interface ParamSummary {
   /** One distinct value across every row — the points' common context. */
   shared: Array<{ dim: ParameterDef; value: string }>;

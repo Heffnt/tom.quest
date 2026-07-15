@@ -9,6 +9,7 @@ import type {
 } from "../lib/types";
 import {
   DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER, nextSettingId,
+  defaultPlotWithFilters, defaultGroupPlotWithFilters,
 } from "../lib/types";
 import { paletteColor } from "../lib/styling";
 import type { CenterView } from "../components/table-pane";
@@ -83,6 +84,11 @@ interface BoolbackState {
   // center view + published plot readout + anatomy config
   centerView: CenterView;
   plotReadout: PlotReadout | null;   // published by the mounted PlotBody
+  /** DISTINCT runs in the settings union of the mounted plot-like view (a run
+   *  matching several settings counts once) — the top bar's run counter on the
+   *  Plot / Group Plot views. Null while neither plot view is mounted (the
+   *  table's filtered count renders instead). */
+  plotUnionCount: number | null;
   anatomy: AnatomyConfig;
   // detail panel (decoupled from selection — opened ONLY by a Details button)
   detailOpen: boolean;
@@ -97,6 +103,7 @@ interface BoolbackState {
   setPlot: (patch: Partial<PlotConfig>) => void;
   setGroupPlot: (patch: Partial<GroupPlotConfig>) => void;
   setPlotReadout: (r: PlotReadout | null) => void;
+  setPlotUnionCount: (n: number | null) => void;
   setAnatomy: (patch: Partial<AnatomyConfig>) => void;
   toggleExpand: (dir: string) => void;
   setExpanded: (next: Set<string>) => void;
@@ -105,7 +112,9 @@ interface BoolbackState {
   // setting management (plot-like views only). addSetting / duplicateSetting
   // return the NEW setting's id so the panel can make it active.
   patchSetting: (view: PlotViewKey, settingId: string, patch: Partial<PlotSetting>) => void;
-  addSetting: (view: PlotViewKey) => string;
+  /** `filters` seeds the new setting (the panel passes the dominant-cell
+   *  default); omitted → an empty, unfiltered setting. */
+  addSetting: (view: PlotViewKey, filters?: FilterState) => string;
   /** Copy name (+" copy") and filters; next palette color; inserted after the
    * source. Returns the new id, or null when settingId doesn't resolve. */
   duplicateSetting: (view: PlotViewKey, settingId: string) => string | null;
@@ -122,8 +131,10 @@ interface BoolbackState {
   patchViewFilters: (view: ViewKey, settingId: string | null, next: FilterState) => void;
   // table-only search
   setSearch: (q: string) => void;
-  // reset one view's config to its defaults
-  resetView: (view: CenterView) => void;
+  // reset one view's config to its defaults. `plotFilters` (the panel passes
+  // the dominant-cell default) seeds the single default setting on a plot-like
+  // view; omitted → the plain filter-empty default.
+  resetView: (view: CenterView, plotFilters?: FilterState) => void;
   // sorts (table config)
   pushSort: (col: string) => void;             // header click: prepend (or toggle dir if already primary)
   setPrimarySort: (col: string, dir: SortDir) => void; // header menu: explicit direction
@@ -186,6 +197,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       groupPlot: DEFAULT_GROUP_PLOT,
       centerView: "table" as const,
       plotReadout: null,
+      plotUnionCount: null,
       anatomy: DEFAULT_ANATOMY,
       detailOpen: false,
       detailWidth: DEFAULT_DETAIL_WIDTH,
@@ -198,6 +210,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       setPlot: (patch) => set((s) => ({ plot: { ...s.plot, ...patch } })),
       setGroupPlot: (patch) => set((s) => ({ groupPlot: { ...s.groupPlot, ...patch } })),
       setPlotReadout: (r) => set({ plotReadout: r }),
+      setPlotUnionCount: (n) => set((s) => (s.plotUnionCount === n ? s : { plotUnionCount: n })),
       // Skip no-op patches: every anatomy change fans out to table-pane's
       // persist effect (synchronous full-settings localStorage write + a
       // scheduled Convex mutation), so a background click re-asserting
@@ -230,7 +243,7 @@ export const useBoolbackStore = create<BoolbackState>()(
           },
         } as Partial<BoolbackState>;
       }),
-      addSetting: (view) => {
+      addSetting: (view, filters) => {
         let newId = "";
         set((s) => {
           const cfg = s[view];
@@ -240,7 +253,7 @@ export const useBoolbackStore = create<BoolbackState>()(
             id,
             name: `setting ${id.slice(1)}`,
             color: paletteColor(cfg.settings.length),
-            filters: EMPTY_FILTER,
+            filters: filters ?? EMPTY_FILTER,
           };
           return { [view]: { ...cfg, settings: [...cfg.settings, next] } } as Partial<BoolbackState>;
         });
@@ -315,10 +328,14 @@ export const useBoolbackStore = create<BoolbackState>()(
 
       setSearch: (q) => set((s) => ({ table: { ...s.table, search: q } })),
 
-      resetView: (view) => set(() => {
+      resetView: (view, plotFilters) => set(() => {
         if (view === "table") return { table: DEFAULT_TABLE };
-        if (view === "plot") return { plot: DEFAULT_PLOT };
-        if (view === "groupplot") return { groupPlot: DEFAULT_GROUP_PLOT };
+        if (view === "plot") {
+          return { plot: plotFilters ? defaultPlotWithFilters(plotFilters) : DEFAULT_PLOT };
+        }
+        if (view === "groupplot") {
+          return { groupPlot: plotFilters ? defaultGroupPlotWithFilters(plotFilters) : DEFAULT_GROUP_PLOT };
+        }
         return { anatomy: DEFAULT_ANATOMY };
       }),
 

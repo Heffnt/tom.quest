@@ -29,11 +29,13 @@ import type {
 import {
   DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER,
   sanitizePlotConfig, sanitizeGroupPlotConfig, sanitizeTableConfig,
+  defaultPlotWithFilters, defaultGroupPlotWithFilters,
+  isDefaultPlotConfig, isDefaultGroupPlotConfig,
 } from "../lib/types";
 import { useBoolbackStore, DEFAULT_TABLE, DEFAULT_COLS } from "../state/store";
 import {
   applyFilters, applySorts, matchesSearch, metricRange, normalizeToRange,
-  numericValue, cellValue, facetKeyForColumn, type MetricIndex,
+  numericValue, cellValue, facetKeyForColumn, dominantFilters, type MetricIndex,
 } from "../lib/select";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
 import { resolveById, type ColumnDef } from "../lib/columns";
@@ -144,12 +146,17 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
     didHydrate.current = true;
     // Sanitizers coerce a partial/hostile persisted blob to a valid config
     // without throwing (no v1→v2→v3 migration — old blobs are dropped).
-    // A fresh plot/groupplot lands on DEFAULT_PLOT (the one unfiltered
-    // "all runs" setting) — mode-pinning is gone.
+    // A fresh (never-edited) plot/groupplot lands on the DOMINANT-CELL default:
+    // one setting pinning every parameter to its most-common value, so the very
+    // first landing shows the dominant cell instead of every rare run overlaid.
+    // A persisted (edited) view is respected verbatim.
+    const sPlot = sanitizePlotConfig(pPlot);
+    const sGroup = sanitizeGroupPlotConfig(pGroup);
+    const dominant = dominantFilters(rows);
     setStore({
       table: sanitizeTableConfig(pTable, DEFAULT_COLS),
-      plot: sanitizePlotConfig(pPlot),
-      groupPlot: sanitizeGroupPlotConfig(pGroup),
+      plot: isDefaultPlotConfig(sPlot) ? defaultPlotWithFilters(dominant) : sPlot,
+      groupPlot: isDefaultGroupPlotConfig(sGroup) ? defaultGroupPlotWithFilters(dominant) : sGroup,
       anatomy: sanitizeAnatomyConfig(pAnat),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

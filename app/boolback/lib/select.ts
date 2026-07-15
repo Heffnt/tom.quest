@@ -196,6 +196,24 @@ export function facetOptions(
     .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
 }
 
+/** Facet filters pinning every facet parameter to its single most-common value
+ *  over `rows` (the dominant experimental cell). A facet with < 2 distinct
+ *  values is left unpinned (constant — no need). The `function` parameter has
+ *  no facet key and is never pinned (it is the science / X sweep axis). */
+export function dominantFilters(rows: RunRow[]): FilterState {
+  const facets: FilterState["facets"] = {};
+  for (const key of FACET_KEYS) {
+    const opts = facetOptions(rows, key);
+    if (opts.length < 2) continue; // constant / absent — nothing to declutter
+    // Highest count wins; ties keep the first in facetOptions' value order
+    // (strict `>` so the earliest maximum sticks — deterministic).
+    let best = opts[0];
+    for (const o of opts) if (o.count > best.count) best = o;
+    facets[key] = [best.value];
+  }
+  return { facets, ranges: [] };
+}
+
 // ---------------------------------------------------------------------------
 // Table search (repurposed: find runs by PATH FRAGMENT, not a filter
 // alternative). The haystack is run_id + dir_path + node_path ONLY — the old

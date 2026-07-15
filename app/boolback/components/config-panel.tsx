@@ -25,9 +25,9 @@
 // about series/warnings comes from lib/split-dims.resolveSeries (the same
 // pure resolver the plot renders from), never a parallel computation.
 
-import { useMemo, useRef, useState } from "react";
+import { memo, startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  Bundle, RangeFilter, FilterState,
+  Bundle, RangeFilter, FilterState, RunRow,
   PlotConfig, GroupPlotConfig, TableConfig, MetricSchemaEntry, PlotSetting,
 } from "../lib/types";
 import { EMPTY_FILTER } from "../lib/types";
@@ -35,14 +35,14 @@ import { useBoolbackStore, configViewOf, type ViewKey, type PlotViewKey } from "
 import type { ViewKind } from "../lib/spec";
 import { configToSpec, specToConfig, serializeSpec, parseSpec } from "../lib/spec";
 import {
-  PARAMETERS, summarizeParameters, tierSections, conditionedCounts,
+  PARAMETERS, summarizeParameters, tierSections, conditionedCounts, orderValuesByCount,
   TIER_LABEL, PARAM_TIERS,
   type ParameterDef, type ParamValues, type ParamTier,
 } from "../lib/parameters";
 import { resolveSeries, type SeriesResolution } from "../lib/split-dims";
 import { CATEGORY_PALETTE } from "../lib/styling";
 import {
-  applyFilters, histogramBins, metricRange, type MetricIndex,
+  applyFilters, histogramBins, metricRange, dominantFilters, type MetricIndex,
 } from "../lib/select";
 import { resolveById } from "../lib/columns";
 import {
@@ -63,6 +63,12 @@ const MIN_W = 320;
 const MAX_W = 900;
 const MAX_VALUES = 16;
 const HIST_BINS = 24;
+
+/** Shared empty selection — a stable reference so an unfiltered chip's
+ *  `selected` prop keeps identity across renders (React.memo skip). */
+const NO_VALUES: readonly string[] = [];
+/** Shared empty conditioned-count map (stable fallback ref, same reason). */
+const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 
 /** Split-by dropdown group order: sweep-tier axes first, then setting-tier. */
 const SPLIT_TIER_ORDER: ParamTier[] = ["sweep", "setting", "function"];
@@ -150,7 +156,7 @@ function ConfigMode({
   if (vk === null) {
     return (
       <div className="flex h-full w-full flex-col min-h-0">
-        <PanelHeader vk={null} chartRef={chartRef} />
+        <PanelHeader vk={null} rows={bundle.rows} chartRef={chartRef} />
         <p className="px-3 py-3 font-mono text-xs text-text-faint">
           Anatomy has its own controls.
         </p>
@@ -191,11 +197,19 @@ function ViewConfig({
   const plotConfig = isPlotLike ? (config as PlotConfig) : null;
   const groupConfig = vk === "groupPlot" ? (config as GroupPlotConfig) : null;
 
-  /** Whole-config patch for the active plot-like view. */
+  /** Whole-config patch for the active plot-like view. Wrapped in a transition
+   *  so the click/toggle repaints immediately and the expensive downstream
+   *  render (resolveSeries + plot) is non-blocking (INP). */
   const patchPlot = (patch: Partial<GroupPlotConfig>) => {
-    if (vk === "plot") setPlot(patch);
-    else if (vk === "groupPlot") setGroupPlot(patch);
+    startTransition(() => {
+      if (vk === "plot") setPlot(patch);
+      else if (vk === "groupPlot") setGroupPlot(patch);
+    });
   };
+
+  /** The dominant-cell default filters (Feature 1) — seeds a newly-added
+   *  setting. Memoized: only the row set changes it. */
+  const dominant = useMemo(() => dominantFilters(bundle.rows), [bundle.rows]);
 
   // ---- ACTIVE setting (UI-local; the parameter rows edit ITS filters) --------
   const [activeSettingId, setActiveSettingId] = useState<string | null>(null);
@@ -224,19 +238,24 @@ function ViewConfig({
   // ---- series resolution — the ONE source for counts + warnings ---------------
   // The panel never re-derives what the plot shows: matched-run counts,
   // overlap/empty/judge warnings, and inactive splits all read resolveSeries.
+  // Memoized on the resolver's real inputs (settings/ranges/splitBy) — NOT the
+  // whole plotConfig — so a band/colorBy/axis toggle doesn't re-run it (INP).
+  const rsSettings = plotConfig?.settings;
+  const rsRanges = plotConfig?.ranges;
+  const rsSplitBy = plotConfig?.splitBy;
   const resolution: SeriesResolution | null = useMemo(
     () =>
-      plotConfig
+      rsSettings && rsRanges && rsSplitBy
         ? resolveSeries({
             rows: bundle.rows,
-            settings: plotConfig.settings,
-            ranges: plotConfig.ranges,
-            splitBy: plotConfig.splitBy,
+            settings: rsSettings,
+            ranges: rsRanges,
+            splitBy: rsSplitBy,
             paramOf: paramOfKey,
             applyTo: applyFilters,
           })
         : null,
-    [bundle.rows, plotConfig],
+    [bundle.rows, rsSettings, rsRanges, rsSplitBy],
   );
   /** Matched-run count per setting id, summed over its resolved series. */
   const countsBySetting = useMemo(() => {
@@ -255,14 +274,30 @@ function ViewConfig({
   // Per parameter: drop ITS facet, apply the active setting's other facets +
   // its own ranges + the plot-level ranges. Values keep showing globally
   // (reachability); zero-count values render muted.
+  //
+  // Keyed on the FILTER inputs only (plotConfig.ranges, not the whole config),
+  // and each parameter's Map is kept referentially stable across renders via a
+  // signature cache (its own facet excluded from the signature): toggling facet
+  // A leaves A's own count list identical AND lets every OTHER chip that didn't
+  // change skip re-render (React.memo on CategoricalRow). This is the bulk of
+  // the per-click work (a full applyFilters over the rows per parameter).
+  const condCacheRef = useRef(new Map<string, { sig: string; counts: Map<string, number> }>());
   const conditionedByKey = useMemo(() => {
-    const extra = plotConfig?.ranges ?? [];
+    const extra = rsRanges ?? [];
+    const cache = condCacheRef.current;
     const m = new Map<string, Map<string, number>>();
     for (const dim of differingDims) {
-      m.set(dim.key, conditionedCounts(bundle.rows, dim, activeFilters, extra));
+      const facets = { ...(activeFilters.facets ?? {}) };
+      if (dim.facetKey) delete facets[dim.facetKey];
+      const sig = JSON.stringify({ f: facets, r: activeFilters.ranges ?? [], e: extra });
+      const prev = cache.get(dim.key);
+      if (prev && prev.sig === sig) { m.set(dim.key, prev.counts); continue; }
+      const counts = conditionedCounts(bundle.rows, dim, activeFilters, extra);
+      cache.set(dim.key, { sig, counts });
+      m.set(dim.key, counts);
     }
     return m;
-  }, [differingDims, bundle.rows, activeFilters, plotConfig]);
+  }, [differingDims, bundle.rows, activeFilters, rsRanges]);
 
   const roleOf = (key: string): ParamRole => {
     if (!plotConfig) return null;
@@ -281,20 +316,31 @@ function ViewConfig({
   );
 
   // ---- filter mutators (table → its own filters; plot → the active setting) --
-  const selectionOf = (dim: ParameterDef): string[] =>
-    dim.facetKey ? (activeFilters.facets[dim.facetKey] ?? []) : [];
-  const toggleValue = (dim: ParameterDef, value: string) => {
-    if (dim.facetKey) storeToggleFacetValue(vk, sid, dim.facetKey, value);
-  };
-  const clearFilter = (dim: ParameterDef) => {
-    if (dim.facetKey) storeSetFacet(vk, sid, dim.facetKey, []);
-  };
-  const isolateValue = (dim: ParameterDef, value: string) => {
-    if (dim.facetKey) storeSetFacet(vk, sid, dim.facetKey, [value]);
-  };
-  const excludeValue = (dim: ParameterDef, value: string, values: string[]) => {
-    if (dim.facetKey) storeSetFacet(vk, sid, dim.facetKey, values.filter((v) => v !== value));
-  };
+  const selectionOf = (dim: ParameterDef): readonly string[] =>
+    dim.facetKey ? (activeFilters.facets[dim.facetKey] ?? NO_VALUES) : NO_VALUES;
+  // Per-parameter handler bundles, memoized so an untouched chip keeps stable
+  // callback identity (React.memo skip). Rebuilt only when the target
+  // view/setting or the store mutators change — never on a filter toggle. Every
+  // store write is wrapped in a transition (the checkbox repaints first; the
+  // heavy resolveSeries + plot render is non-blocking).
+  const rowHandlers = useMemo(() => {
+    const m = new Map<string, {
+      onToggleValue: (v: string) => void;
+      onClear: () => void;
+      onIsolate: (v: string) => void;
+      onExclude: (v: string, all: string[]) => void;
+    }>();
+    for (const dim of differingDims) {
+      const fk = dim.facetKey;
+      m.set(dim.key, {
+        onToggleValue: (v) => { if (fk) startTransition(() => storeToggleFacetValue(vk, sid, fk, v)); },
+        onClear: () => { if (fk) startTransition(() => storeSetFacet(vk, sid, fk, [])); },
+        onIsolate: (v) => { if (fk) startTransition(() => storeSetFacet(vk, sid, fk, [v])); },
+        onExclude: (v, all) => { if (fk) startTransition(() => storeSetFacet(vk, sid, fk, all.filter((x) => x !== v))); },
+      });
+    }
+    return m;
+  }, [differingDims, vk, sid, storeToggleFacetValue, storeSetFacet]);
 
   // ---- continuous treatment (filter / color) --------------------------------
   const rangeFor = (m: string): RangeFilter | undefined => activeFilters.ranges.find((r) => r.metric === m);
@@ -304,17 +350,20 @@ function ViewConfig({
     return null;
   };
   const setContTreatment = (m: string, t: "filter" | "color" | null) => {
-    // Clear any existing treatment for this metric first.
-    if (rangeFor(m)) storeRemoveRange(vk, sid, m);
-    if (plotConfig?.colorBy === m) patchPlot({ colorBy: null });
-    if (t === "filter") {
-      const { min, max } = metricRange(bundle.rows, m, index);
-      storeAddRange(vk, sid, { metric: m, min, max });
-    } else if (t === "color" && plotConfig) {
-      // colorBy is only honored on a single, unsplit setting (the plot ignores
-      // it otherwise) — stored regardless, per the config contract.
-      patchPlot({ colorBy: m });
-    }
+    // Store writes off the transition path (patchPlot already wraps itself).
+    startTransition(() => {
+      // Clear any existing treatment for this metric first.
+      if (rangeFor(m)) storeRemoveRange(vk, sid, m);
+      if (plotConfig?.colorBy === m) patchPlot({ colorBy: null });
+      if (t === "filter") {
+        const { min, max } = metricRange(bundle.rows, m, index);
+        storeAddRange(vk, sid, { metric: m, min, max });
+      } else if (t === "color" && plotConfig) {
+        // colorBy is only honored on a single, unsplit setting (the plot ignores
+        // it otherwise) — stored regardless, per the config contract.
+        patchPlot({ colorBy: m });
+      }
+    });
   };
 
   // ---- render ----------------------------------------------------------------
@@ -326,7 +375,7 @@ function ViewConfig({
    *  collapses to a read-only "follows target" line when it conditions to a
    *  single distinct value and carries no explicit selection. */
   const renderParamRow = (dim: ParameterDef) => {
-    const conditioned = conditionedByKey.get(dim.key) ?? new Map<string, number>();
+    const conditioned = conditionedByKey.get(dim.key) ?? EMPTY_COUNTS;
     const selected = selectionOf(dim);
     if (dim.key === "judge" && selected.length === 0) {
       const present = [...conditioned.entries()].filter(([, c]) => c > 0);
@@ -345,6 +394,7 @@ function ViewConfig({
         );
       }
     }
+    const h = rowHandlers.get(dim.key)!;
     return (
       <CategoricalRow
         key={dim.key}
@@ -353,17 +403,17 @@ function ViewConfig({
         conditioned={conditioned}
         role={isPlotLike ? roleOf(dim.key) : null}
         selected={selected}
-        onToggleValue={(v) => toggleValue(dim, v)}
-        onClear={() => clearFilter(dim)}
-        onIsolate={(v) => isolateValue(dim, v)}
-        onExclude={(v, all) => excludeValue(dim, v, all)}
+        onToggleValue={h.onToggleValue}
+        onClear={h.onClear}
+        onIsolate={h.onIsolate}
+        onExclude={h.onExclude}
       />
     );
   };
 
   return (
     <div className="flex h-full w-full flex-col min-h-0">
-      <PanelHeader vk={vk} chartRef={chartRef} />
+      <PanelHeader vk={vk} rows={bundle.rows} chartRef={chartRef} />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2 text-xs text-text-muted">
         {vk === "table" && <TableExtras bundle={bundle} index={index} />}
@@ -377,15 +427,16 @@ function ViewConfig({
             activeId={activeSetting?.id ?? null}
             counts={countsBySetting}
             resolution={resolution}
-            onSelect={setActiveSettingId}
-            onRename={(id, name) => patchSetting(vk as PlotViewKey, id, { name })}
-            onRecolor={(id, color) => patchSetting(vk as PlotViewKey, id, { color })}
-            onDuplicate={(id) => {
+            onSelect={(id) => startTransition(() => setActiveSettingId(id))}
+            onRename={(id, name) => startTransition(() => patchSetting(vk as PlotViewKey, id, { name }))}
+            onRecolor={(id, color) => startTransition(() => patchSetting(vk as PlotViewKey, id, { color }))}
+            onDuplicate={(id) => startTransition(() => {
               const nid = duplicateSetting(vk as PlotViewKey, id);
               if (nid) setActiveSettingId(nid);
-            }}
-            onRemove={(id) => removeSetting(vk as PlotViewKey, id)}
-            onAdd={() => setActiveSettingId(addSetting(vk as PlotViewKey))}
+            })}
+            onRemove={(id) => startTransition(() => removeSetting(vk as PlotViewKey, id))}
+            // A new setting defaults to the DOMINANT CELL (Feature 1), not empty.
+            onAdd={() => startTransition(() => setActiveSettingId(addSetting(vk as PlotViewKey, dominant)))}
           />
         )}
 
@@ -407,7 +458,7 @@ function ViewConfig({
               label="Facet by"
               value={groupConfig.facet}
               options={facetOptions}
-              onChange={(v) => setGroupPlot({ facet: v })}
+              onChange={(v) => startTransition(() => setGroupPlot({ facet: v }))}
             />
           </div>
         )}
@@ -455,7 +506,7 @@ function ViewConfig({
           rangeFor={rangeFor}
           treatmentOf={contTreatmentOf}
           onSetTreatment={setContTreatment}
-          updateRange={(m, p) => storeUpdateRange(vk, sid, m, p)}
+          updateRange={(m, p) => startTransition(() => storeUpdateRange(vk, sid, m, p))}
         />
 
         {/* constants */}
@@ -488,7 +539,7 @@ function ViewConfig({
             panel size
             <input
               type="range" min={160} max={480} step={20} value={groupConfig.panelMin}
-              onChange={(e) => setGroupPlot({ panelMin: Number(e.target.value) })}
+              onChange={(e) => startTransition(() => setGroupPlot({ panelMin: Number(e.target.value) }))}
               className="accent-accent" aria-label="panel size"
             />
           </label>
@@ -503,16 +554,25 @@ function ViewConfig({
 // ===========================================================================
 
 function PanelHeader({
-  vk, chartRef,
+  vk, rows, chartRef,
 }: {
   vk: ViewKey | null;
+  /** Bundle rows — reset seeds a plot-like view with their dominant cell. */
+  rows: RunRow[];
   chartRef: React.MutableRefObject<PlotExportHandle | null>;
 }) {
   const centerView = useBoolbackStore((s) => s.centerView);
   const resetView = useBoolbackStore((s) => s.resetView);
-  // Reset lands every view on its plain default — for plot/groupplot that is
-  // DEFAULT_PLOT's one unfiltered "all runs" setting (mode-pinning is gone).
-  const onReset = () => resetView(centerView);
+  // Reset lands every view on its default — for plot/groupplot that is one
+  // setting pinned to the DOMINANT CELL (each parameter at its most-common
+  // value), the same declutter a fresh/added setting gets. Visible per-setting
+  // checkboxes, not the old hidden mode-pins.
+  const onReset = () => {
+    const dominant = centerView === "plot" || centerView === "groupplot"
+      ? dominantFilters(rows)
+      : undefined;
+    resetView(centerView, dominant);
+  };
   const [note, setNote] = useState<string | null>(null);
   const flash = (m: string) => { setNote(m); setTimeout(() => setNote(null), 1400); };
 
@@ -915,9 +975,14 @@ function SwatchPicker({
   );
 }
 
-/** Inline click-to-edit setting name; commit on blur/Enter, Escape cancels.
- *  Clicking the name of an INACTIVE row bubbles to the row (select first);
- *  clicking it again once active begins editing. */
+/** Inline setting rename. The pencil ALWAYS opens the editor (any row); the
+ *  name button still opens it on the ACTIVE row and bubbles to row-select on
+ *  an inactive one. Enter/blur commit (an empty draft commits as the previous
+ *  name), Escape cancels — so clicking the swatch or another row while editing
+ *  commits via blur. The pencil prevents default on mousedown so the opening
+ *  click cannot move focus (which would blur-commit another open editor and
+ *  re-render the strip under the cursor before the click completes); the
+ *  input is focused + selected in an effect on open, never left unfocused. */
 function SettingName({
   name, active, onCommit,
 }: {
@@ -927,31 +992,52 @@ function SettingName({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!editing) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [editing]);
+  const open = () => {
+    setDraft(name);
+    setEditing(true);
+  };
   const commit = () => {
     setEditing(false);
     const n = draft.trim();
-    if (n && n !== name) onCommit(n);
+    if (n && n !== name) onCommit(n); // empty → keep the previous name
   };
   if (!editing) {
     return (
-      <button
-        type="button"
-        onClick={(e) => {
-          if (!active) return; // bubble → row select
-          e.stopPropagation();
-          setDraft(name);
-          setEditing(true);
-        }}
-        title={active ? "rename this setting" : undefined}
-        className="min-w-0 truncate text-left text-text/90 hover:text-accent"
-      >
-        {name}
-      </button>
+      <>
+        <button
+          type="button"
+          onClick={(e) => {
+            if (!active) return; // bubble → row select
+            e.stopPropagation();
+            open();
+          }}
+          title={active ? "rename this setting" : undefined}
+          className="min-w-0 truncate text-left text-text/90 hover:text-accent"
+        >
+          {name}
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()} // keep focus where it is
+          onClick={open} // bubbles → the row becomes active too
+          title={`rename setting "${name}"`}
+          aria-label={`rename setting ${name}`}
+          className="shrink-0 text-text-faint hover:text-accent"
+        >
+          ✎
+        </button>
+      </>
     );
   }
   return (
     <input
-      autoFocus
+      ref={inputRef}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onClick={(e) => e.stopPropagation()}
@@ -1097,7 +1183,11 @@ function ColorByRow({
 // categorical parameter row — a filter chip with a derived role badge
 // ===========================================================================
 
-function CategoricalRow({
+// React.memo: with stable props (conditioned map, selected array, and handler
+// bundle all kept referentially stable by ViewConfig) an untouched chip skips
+// re-render entirely when an unrelated control changes — the bulk of the INP
+// win alongside the memoized conditioned counts.
+const CategoricalRow = memo(function CategoricalRow({
   dim, pv, conditioned, role, selected,
   onToggleValue, onClear, onIsolate, onExclude,
 }: {
@@ -1105,17 +1195,24 @@ function CategoricalRow({
   pv: ParamValues;
   /** Faceted-search counts (this facet dropped, every other filter applied);
    *  a globally-observed value missing here renders as 0 / muted. */
-  conditioned: Map<string, number>;
+  conditioned: ReadonlyMap<string, number>;
   /** Derived from the plot config (split/facet membership; null = none / table). */
   role: ParamRole;
-  selected: string[];
+  selected: readonly string[];
   onToggleValue: (value: string) => void;
   onClear: () => void;
   onIsolate: (value: string) => void;
   onExclude: (value: string, all: string[]) => void;
 }) {
   const [filter, setFilter] = useState("");
-  const allValues = pv.values;
+  // Feature 2: chip values render by DESCENDING run count (most-run first, so
+  // the dominant/checked-by-default values sit at the top and the ×16 cap drops
+  // the rare tail). Stable within count ties (numeric/lexical from
+  // summarizeParameters). Display-only — resolveSeries ordering is untouched.
+  const allValues = useMemo(
+    () => orderValuesByCount(pv.values, conditioned),
+    [pv.values, conditioned],
+  );
   const shown = filter
     ? allValues.filter(({ value }) => (dim.display ? dim.display(value) : value).toLowerCase().includes(filter.toLowerCase()))
     : allValues;
@@ -1185,7 +1282,7 @@ function CategoricalRow({
       </div>
     </div>
   );
-}
+});
 
 function TreatBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
