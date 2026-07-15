@@ -42,6 +42,16 @@ const DEFENSE_FIELDS = [
 ] as const;
 type DefenseField = (typeof DEFENSE_FIELDS)[number];
 
+// The depth-profile HEADLINE summary fields a reading entry can carry (newer
+// builders fold the per-layer curve via CMT's summarize_profile home).
+const PROFILE_SUMMARY_FIELDS = [
+  "min_value",
+  "divergence_auc",
+  "argmin_depth",
+  "first_drop_depth",
+  "peak_strength",
+] as const;
+
 /** base metric name -> how to read one method's value off a row. */
 const BASE_ACCESSORS: Record<string, (r: RunRow, method: string) => number | null> = {
   interp_reading: (r, m) => interpKindValue(r, m, "value"),
@@ -54,6 +64,9 @@ const BASE_ACCESSORS: Record<string, (r: RunRow, method: string) => number | nul
 };
 for (const field of DEFENSE_FIELDS) {
   BASE_ACCESSORS[field] = (r, m) => defenseMethodValue(r, m, field);
+}
+for (const field of PROFILE_SUMMARY_FIELDS) {
+  BASE_ACCESSORS[`interp_${field}`] = (r, m) => interpKindValue(r, m, field);
 }
 
 export const PER_METHOD_BASES = Object.keys(BASE_ACCESSORS);
@@ -78,7 +91,7 @@ function defenseMethodValue(
 function interpKindValue(
   r: RunRow,
   kind: string,
-  field: "value" | "null_control",
+  field: "value" | "null_control" | (typeof PROFILE_SUMMARY_FIELDS)[number],
 ): number | null {
   // Newer builders ship ALL kinds in interp.measurements; older blobs carry
   // only the headline kind, so a row measuring several shows just that one.
@@ -87,7 +100,8 @@ function interpKindValue(
     const v = list.find((m) => m.kind === kind)?.[field];
     return typeof v === "number" ? v : null;
   }
-  if (r.interp && r.interp.reading_kind === kind) {
+  if (r.interp && (field === "value" || field === "null_control") &&
+      r.interp.reading_kind === kind) {
     const v = r.interp[field];
     return typeof v === "number" ? v : null;
   }

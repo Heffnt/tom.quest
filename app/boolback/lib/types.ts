@@ -314,6 +314,14 @@ export interface InterpReading {
   null_control: number | null;
   /** v3: method class — always "interp" on a reading entry. */
   type?: string;
+  // --- depth-profile HEADLINE summaries (newer builders fold the per-layer
+  // curve via CMT's summarize_profile home; ALL optional — older blobs and
+  // single-layer kinds lack them). Metric names interp_<summary>@<kind>. ---
+  min_value?: number;
+  divergence_auc?: number;
+  argmin_depth?: number;
+  first_drop_depth?: number;
+  peak_strength?: number;
   // --- anatomy locus/taxonomy (ALL optional — see section comment) ---
   method?: string;
   metric_name?: string;
