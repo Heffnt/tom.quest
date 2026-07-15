@@ -19,8 +19,8 @@
 // duplication rule as the main plot; under the setting facet each panel is
 // simply that setting's own series. Points group per (series × X bucket)
 // exactly like the main plot (mean ± SD whiskers on n>1 groups, per-series
-// connecting lines, collapsed-run ghosts) — the legend warnings stay on the
-// main plot only; panels are kept lean. Rendering is windowed
+// connecting lines, collapsed-run ghosts) — the legend + warnings live in the
+// config panel's settings strip; panels are kept lean. Rendering is windowed
 // (content-visibility) since 100 SVG panels with ghosts is work.
 
 import { useDeferredValue, useEffect, useMemo } from "react";

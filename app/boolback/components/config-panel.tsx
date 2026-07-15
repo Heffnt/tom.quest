@@ -9,11 +9,14 @@
 //   config        — otherwise: the active view's controls. Content depends on
 //     configViewOf(centerView):
 //       table     → filter-only parameter rows + Columns + Sort keys + search;
-//       plot      → the SETTINGS strip (per-setting swatch/name/count/dup/del,
-//                   overlap + judge warnings) + the ordered multi "Split by"
-//                   editor + the gated "Color by metric" gradient select +
-//                   tiered parameter chips editing the ACTIVE setting +
-//                   continuous rows (filter/color) + band/ghosts/trend;
+//       plot      → the SETTINGS strip (per-setting swatch/name/count/reset/
+//                   dup/del + the INLINE SERIES LEGEND: one row per split
+//                   combo under its setting, plus the averaged/overlap/judge/
+//                   palette notes — the plot has no separate legend panel) +
+//                   the ordered multi "Split by" editor + the gated "Color by
+//                   metric" gradient select + tiered parameter chips editing
+//                   the ACTIVE setting + continuous rows (filter/color) +
+//                   band/ghosts/trend;
 //       groupPlot → + "Facet by" select (parameters or "setting") +
 //                   panel-size slider;
 //       anatomy   → a tiny note (anatomy owns its own controls).
@@ -27,7 +30,7 @@
 
 import { memo, startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  Bundle, RangeFilter, FilterState, RunRow,
+  Bundle, RangeFilter, FilterState,
   PlotConfig, GroupPlotConfig, TableConfig, MetricSchemaEntry, PlotSetting,
 } from "../lib/types";
 import { EMPTY_FILTER } from "../lib/types";
@@ -39,8 +42,9 @@ import {
   TIER_LABEL, PARAM_TIERS,
   type ParameterDef, type ParamValues, type ParamTier,
 } from "../lib/parameters";
-import { resolveSeries, type SeriesResolution } from "../lib/split-dims";
-import { CATEGORY_PALETTE } from "../lib/styling";
+import { resolveSeries, averagedParams, type SeriesResolution } from "../lib/split-dims";
+import { CATEGORY_PALETTE, shapeForValue } from "../lib/styling";
+import { shapeNode } from "./glyph";
 import {
   applyFilters, histogramBins, metricRange, dominantFilters, type MetricIndex,
 } from "../lib/select";
@@ -156,7 +160,7 @@ function ConfigMode({
   if (vk === null) {
     return (
       <div className="flex h-full w-full flex-col min-h-0">
-        <PanelHeader vk={null} rows={bundle.rows} chartRef={chartRef} />
+        <PanelHeader vk={null} chartRef={chartRef} />
         <p className="px-3 py-3 font-mono text-xs text-text-faint">
           Anatomy has its own controls.
         </p>
@@ -265,6 +269,14 @@ function ViewConfig({
     }
     return m;
   }, [resolution]);
+  /** Parameters the plot's groups pool over ("averaged: …" legend note). */
+  const averagedLabels = useMemo(
+    () =>
+      resolution && rsSplitBy
+        ? averagedParams(resolution, rsSplitBy, PARAMETERS).map((d) => d.label)
+        : [],
+    [resolution, rsSplitBy],
+  );
 
   // Rows matching the ACTIVE setting (or the table filters) drive the
   // continuous editors' histograms.
@@ -413,20 +425,23 @@ function ViewConfig({
 
   return (
     <div className="flex h-full w-full flex-col min-h-0">
-      <PanelHeader vk={vk} rows={bundle.rows} chartRef={chartRef} />
+      <PanelHeader vk={vk} chartRef={chartRef} />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2 text-xs text-text-muted">
         {vk === "table" && <TableExtras bundle={bundle} index={index} />}
 
         {/* SETTINGS strip — one row per setting (swatch / name / matched-run
-            count / duplicate / delete), warnings from resolveSeries. The
-            parameter chips below edit the ACTIVE setting's filters. */}
+            count / reset / duplicate / delete) with the plot's series legend
+            INLINE: each split combo renders under its setting (shape glyph +
+            combo + count). Warnings/notes from resolveSeries. The parameter
+            chips below edit the ACTIVE setting's filters. */}
         {isPlotLike && plotConfig && resolution && (
           <SettingsStrip
             settings={plotConfig.settings}
             activeId={activeSetting?.id ?? null}
             counts={countsBySetting}
             resolution={resolution}
+            averaged={averagedLabels}
             onSelect={(id) => startTransition(() => setActiveSettingId(id))}
             onRename={(id, name) => startTransition(() => patchSetting(vk as PlotViewKey, id, { name }))}
             onRecolor={(id, color) => startTransition(() => patchSetting(vk as PlotViewKey, id, { color }))}
@@ -435,6 +450,16 @@ function ViewConfig({
               if (nid) setActiveSettingId(nid);
             })}
             onRemove={(id) => startTransition(() => removeSetting(vk as PlotViewKey, id))}
+            // Per-setting reset — back to the DOMINANT CELL a fresh setting
+            // gets (deep copy so settings never share filter references).
+            onReset={(id) => startTransition(() => patchSetting(vk as PlotViewKey, id, {
+              filters: {
+                facets: Object.fromEntries(
+                  Object.entries(dominant.facets).map(([k, v]) => [k, [...(v ?? [])]]),
+                ) as FilterState["facets"],
+                ranges: dominant.ranges.map((r) => ({ ...r })),
+              },
+            }))}
             // A new setting defaults to the DOMINANT CELL (Feature 1), not empty.
             onAdd={() => startTransition(() => setActiveSettingId(addSetting(vk as PlotViewKey, dominant)))}
           />
@@ -550,29 +575,21 @@ function ViewConfig({
 }
 
 // ===========================================================================
-// header — Views · Copy · Paste · Export · Reset
+// header — Views · Copy · Paste · Export · Reset (table/anatomy only; the
+// plot-like views reset per setting via the strip's ⟲)
 // ===========================================================================
 
 function PanelHeader({
-  vk, rows, chartRef,
+  vk, chartRef,
 }: {
   vk: ViewKey | null;
-  /** Bundle rows — reset seeds a plot-like view with their dominant cell. */
-  rows: RunRow[];
   chartRef: React.MutableRefObject<PlotExportHandle | null>;
 }) {
   const centerView = useBoolbackStore((s) => s.centerView);
   const resetView = useBoolbackStore((s) => s.resetView);
-  // Reset lands every view on its default — for plot/groupplot that is one
-  // setting pinned to the DOMINANT CELL (each parameter at its most-common
-  // value), the same declutter a fresh/added setting gets. Visible per-setting
-  // checkboxes, not the old hidden mode-pins.
-  const onReset = () => {
-    const dominant = centerView === "plot" || centerView === "groupplot"
-      ? dominantFilters(rows)
-      : undefined;
-    resetView(centerView, dominant);
-  };
+  // Reset (table/anatomy only) lands the view on its default. The plot-like
+  // views have NO global reset — each setting carries its own ⟲ in the strip.
+  const onReset = () => resetView(centerView);
   const [note, setNote] = useState<string | null>(null);
   const flash = (m: string) => { setNote(m); setTimeout(() => setNote(null), 1400); };
 
@@ -610,10 +627,12 @@ function PanelHeader({
           PNG
         </button>
       )}
-      <button type="button" onClick={onReset} title="Reset this view"
-        className="ml-auto rounded border border-border px-1.5 py-0.5 text-text-muted hover:border-accent/40 hover:text-accent">
-        Reset
-      </button>
+      {!isPlotLike && (
+        <button type="button" onClick={onReset} title="Reset this view"
+          className="ml-auto rounded border border-border px-1.5 py-0.5 text-text-muted hover:border-accent/40 hover:text-accent">
+          Reset
+        </button>
+      )}
     </header>
   );
 }
@@ -839,23 +858,30 @@ function ParamSelect({
 }
 
 // ===========================================================================
-// SETTINGS strip — one row per setting + warnings (all from resolveSeries)
+// SETTINGS strip — one row per setting + the INLINE SERIES LEGEND + warnings
+// (all from resolveSeries). This IS the plot's legend: under an active split,
+// each setting lists its (setting × combo) series — shape glyph in the series
+// color, combo label, matched-run count — exactly what the plot draws.
 // ===========================================================================
 
 function SettingsStrip({
-  settings, activeId, counts, resolution,
-  onSelect, onRename, onRecolor, onDuplicate, onRemove, onAdd,
+  settings, activeId, counts, resolution, averaged,
+  onSelect, onRename, onRecolor, onDuplicate, onRemove, onReset, onAdd,
 }: {
   settings: PlotSetting[];
   activeId: string | null;
   /** Matched-run count per setting id (summed from resolveSeries). */
   counts: Map<string, number>;
   resolution: SeriesResolution;
+  /** Labels of parameters pooled into the groups' mean ± SD (legend note). */
+  averaged: string[];
   onSelect: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onRecolor: (id: string, color: string) => void;
   onDuplicate: (id: string) => void;
   onRemove: (id: string) => void;
+  /** Reset ONE setting's filters to the dominant-cell default. */
+  onReset: (id: string) => void;
   onAdd: () => void;
 }) {
   return (
@@ -864,46 +890,83 @@ function SettingsStrip({
         const active = s.id === activeId;
         const empty = resolution.emptySettings.includes(s.name);
         const n = counts.get(s.id) ?? 0;
+        // The setting's split-combo series (legend rows). Empty when no split
+        // is active — the setting row itself is the series then.
+        const own = resolution.series.filter(
+          (sr) => sr.settingId === s.id && sr.combo.length > 0,
+        );
         return (
           <div
             key={s.id}
             onClick={() => onSelect(s.id)}
             title={active ? undefined : `edit setting "${s.name}"`}
-            className={`group mb-0.5 flex cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-1 ${
+            className={`group mb-0.5 cursor-pointer rounded-md border px-1.5 py-1 ${
               active
                 ? "border-accent bg-accent/10"
                 : "border-border/60 hover:border-accent/40"
             }`}
           >
-            <SwatchPicker name={s.name} color={s.color} onPick={(c) => onRecolor(s.id, c)} />
-            <SettingName name={s.name} active={active} onCommit={(name) => onRename(s.id, name)} />
-            <span
-              className={`ml-auto shrink-0 rounded border px-1 py-px text-[10px] tabular-nums ${
-                empty ? "border-warning/60 text-warning" : "border-border text-text-faint"
-              }`}
-              title={empty ? "no runs match this setting's filters" : `${n} matched runs`}
-            >
-              {empty ? "0 runs" : n}
-            </span>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onDuplicate(s.id); }}
-              title={`duplicate setting "${s.name}"`}
-              aria-label={`duplicate setting ${s.name}`}
-              className="shrink-0 text-text-faint hover:text-accent"
-            >
-              ⧉
-            </button>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onRemove(s.id); }}
-              disabled={settings.length <= 1}
-              title={settings.length <= 1 ? "the last setting cannot be removed" : `remove setting "${s.name}"`}
-              aria-label={`remove setting ${s.name}`}
-              className="shrink-0 text-text-faint hover:text-error disabled:opacity-30"
-            >
-              ×
-            </button>
+            <div className="flex items-center gap-1.5">
+              <SwatchPicker name={s.name} color={s.color} onPick={(c) => onRecolor(s.id, c)} />
+              <SettingName name={s.name} active={active} onCommit={(name) => onRename(s.id, name)} />
+              <span
+                className={`ml-auto shrink-0 rounded border px-1 py-px text-[10px] tabular-nums ${
+                  empty ? "border-warning/60 text-warning" : "border-border text-text-faint"
+                }`}
+                title={empty ? "no runs match this setting's filters" : `${n} matched runs`}
+              >
+                {empty ? "0 runs" : n}
+              </span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onReset(s.id); }}
+                title={`reset setting "${s.name}" to the dominant cell (name and color kept)`}
+                aria-label={`reset setting ${s.name}`}
+                className="shrink-0 text-text-faint hover:text-accent"
+              >
+                ⟲
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onDuplicate(s.id); }}
+                title={`duplicate setting "${s.name}"`}
+                aria-label={`duplicate setting ${s.name}`}
+                className="shrink-0 text-text-faint hover:text-accent"
+              >
+                ⧉
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onRemove(s.id); }}
+                disabled={settings.length <= 1}
+                title={settings.length <= 1 ? "the last setting cannot be removed" : `remove setting "${s.name}"`}
+                aria-label={`remove setting ${s.name}`}
+                className="shrink-0 text-text-faint hover:text-error disabled:opacity-30"
+              >
+                ×
+              </button>
+            </div>
+            {own.length > 0 && (
+              <div className="mt-0.5">
+                {own.map((sr) => (
+                  <div
+                    key={sr.key}
+                    data-legend-series=""
+                    className="flex items-center gap-1.5 py-0.5 pl-4 text-[11px] text-text-muted"
+                  >
+                    <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0" style={{ color: sr.color }}>
+                      {shapeNode(shapeForValue(sr.shapeIdx), 0, 0, 4, {
+                        fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
+                      })}
+                    </svg>
+                    <span className="min-w-0 flex-1 truncate" title={sr.label}>
+                      {comboLabel(sr.label, sr.settingName)}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-text-faint tabular-nums">{sr.rows.length}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         );
       })}
@@ -915,6 +978,12 @@ function SettingsStrip({
         + add setting
       </button>
 
+      {averaged.length > 0 && (
+        <div className="mt-1 text-[11px] text-text-faint"
+          title="parameters varying within a setting's groups — pooled into each mean ± SD point">
+          averaged: {averaged.join(", ")} (mean ± SD)
+        </div>
+      )}
       {resolution.overlapCount > 0 && (
         <div className="mt-1 text-[11px] text-warning" title="a run matching several settings is drawn once per setting">
           {resolution.overlapCount} run{resolution.overlapCount === 1 ? "" : "s"} match
@@ -927,8 +996,21 @@ function SettingsStrip({
           {name}: mixes judges
         </div>
       ))}
+      {resolution.paletteExceeded && (
+        <div className="mt-0.5 text-[11px] text-warning">
+          more series than colors — colors repeat
+        </div>
+      )}
     </div>
   );
+}
+
+/** The combo half of a series label ("jailbreak · Qwen2.5" → "Qwen2.5"):
+ *  Series.label is [settingName, ...comboValues].join(" · "), so the prefix
+ *  strip is exact. */
+function comboLabel(label: string, settingName: string): string {
+  const prefix = `${settingName} · `;
+  return label.startsWith(prefix) ? label.slice(prefix.length) : label;
 }
 
 /** Color swatch; click opens a CATEGORY_PALETTE popover, click a swatch assigns. */

@@ -8,7 +8,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import sample from "../data/sample-snapshot.json";
 import { asBundle } from "../data/normalize";
 import { useBoolbackStore, DEFAULT_TABLE } from "../state/store";
-import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT, defaultPlotWithFilters } from "../lib/types";
+import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER } from "../lib/types";
 import { summarizeParameters } from "../lib/parameters";
 import { dominantFilters } from "../lib/select";
 import ConfigPanel from "./config-panel";
@@ -177,15 +177,50 @@ describe("color by metric", () => {
 });
 
 describe("reset", () => {
-  it("Reset lands the plot view on the dominant-cell default (one setting)", () => {
-    useBoolbackStore.getState().addSetting("plot");
-    useBoolbackStore.getState().setPlot({ splitBy: ["base_model"] });
+  it("plot views carry NO global Reset — each setting resets individually", () => {
     mount();
-    fireEvent.click(screen.getByTitle("Reset this view"));
-    // one setting, pinned to the dominant cell — DEFAULT_PLOT stays the pure
-    // filter-empty constant; the handler applies dominantFilters.
-    expect(useBoolbackStore.getState().plot).toEqual(
-      defaultPlotWithFilters(dominantFilters(bundle.rows)),
-    );
+    expect(screen.queryByTitle("Reset this view")).toBeNull();
+    expect(screen.getByLabelText("reset setting all runs")).toBeTruthy();
+  });
+
+  it("⟲ resets ONE setting's filters to the dominant cell, keeping name/color/others", () => {
+    // Dirty the first setting's filters and add a second (untouched) setting.
+    const filterable = differing.find((d) => d.dim.facetKey)!;
+    const fk = filterable.dim.facetKey!;
+    const v = filterable.values[0].value;
+    useBoolbackStore.getState().setFacet("plot", "s1", fk, [v]);
+    const secondId = useBoolbackStore.getState().addSetting("plot");
+    mount();
+    fireEvent.click(screen.getByLabelText("reset setting all runs"));
+    const { settings } = useBoolbackStore.getState().plot;
+    const s0 = settings[0];
+    expect(s0.name).toBe("all runs");
+    expect(s0.filters).toEqual(dominantFilters(bundle.rows));
+    // the sibling setting is untouched (store-level addSetting seeds empty)
+    expect(settings.find((s) => s.id === secondId)!.filters).toEqual(EMPTY_FILTER);
+  });
+
+  it("the table view keeps the single Reset", () => {
+    useBoolbackStore.setState({ centerView: "table" });
+    mount();
+    expect(screen.getByTitle("Reset this view")).toBeTruthy();
+  });
+});
+
+describe("inline series legend", () => {
+  it("an active split renders per-combo series rows under the setting", () => {
+    const key = differing[0]?.dim.key;
+    expect(key).toBeTruthy();
+    useBoolbackStore.setState((s) => ({ plot: { ...s.plot, splitBy: [key] } }));
+    const { container } = mount();
+    const rows = container.querySelectorAll("[data-legend-series]");
+    // one legend row per (setting × combo) — the fixture's differing parameter
+    // has >= 2 values, so the single default setting yields >= 2 series rows
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("no split → no series sub-rows (the setting row is the series)", () => {
+    const { container } = mount();
+    expect(container.querySelectorAll("[data-legend-series]").length).toBe(0);
   });
 });

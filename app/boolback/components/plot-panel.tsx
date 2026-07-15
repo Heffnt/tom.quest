@@ -31,8 +31,8 @@
 // a mean point with ±SD whiskers (config.band), its series' groups connect
 // across X, and the raw runs it collapsed draw behind as faint ghosts
 // (config.ghosts). A group with n=1 stays an ordinary click-to-inspect run
-// point. The parameters left varying inside groups are listed in the legend
-// ("averaged: …").
+// point. The parameters left varying inside groups are listed in the config
+// panel's settings strip ("averaged: …") — the strip is the live legend.
 //
 // Hover a point for its series + values; click a single-run point to open
 // its drawer. Drag a rectangle on the background to add PLOT-LEVEL X+Y range
@@ -44,14 +44,14 @@
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, RunRow, PlotSetting } from "../lib/types";
+import type { Bundle, RunRow } from "../lib/types";
 import { DEFAULT_PLOT } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { applyFilters, numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER, formatValue } from "../lib/metrics";
 import { PARAMETERS } from "../lib/parameters";
-import { resolveSeries, averagedParams, type SeriesResolution } from "../lib/split-dims";
+import { resolveSeries } from "../lib/split-dims";
 import { resolveAxis, isParamAxis, paramAxisOptions } from "../lib/axes";
 import {
   groupRuns, collapsedGhosts,
@@ -242,14 +242,6 @@ export function PlotBody({
   }, [unionRows, setPlotUnionCount]);
   useEffect(() => () => setPlotUnionCount(null), [setPlotUnionCount]);
 
-  // Parameters the groups actually pool over — varying WITHIN some setting's
-  // rows (a setting-defining param is a contrast, not averaged) and not
-  // actively split (legend note; rule in lib/split-dims.averagedParams).
-  const averagedLabels = useMemo(
-    () => averagedParams(resolution, config.splitBy, PARAMETERS).map((d) => d.label),
-    [resolution, config.splitBy],
-  );
-
   // Axis view windows (zoom only; never touch FilterState) in RAW units. A
   // categorical axis ignores a persisted numeric window (its units are ordinal).
   // Epoch (line) mode has no resolved axis object but is numeric on BOTH axes,
@@ -348,7 +340,7 @@ export function PlotBody({
     // per-setting duplication as the scatter), tagged with the series key.
     // Per-epoch values come from the SERIES' judge (its unique judge over its
     // rows); a series mixing judges falls back to the headline trajectory —
-    // the legend's judgePooled warning already flags that setting.
+    // the config panel's judgePooled warning already flags that setting.
     let droppedY = 0;
     const series: RunSeries[] = [];
     for (const s of seriesList) {
@@ -764,8 +756,9 @@ export function PlotBody({
                 transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
                 fill="var(--color-text-muted)">{(axisY?.label ?? index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
             </g>
-            {/* series legend — export-only: the live view docks the HTML legend
-                panel right of the plot, which an SVG snapshot cannot capture */}
+            {/* series legend — export-only: the live legend lives in the
+                config panel's settings strip (HTML, outside this SVG), which
+                a snapshot cannot capture */}
             {!colorByActive && (
               <g data-export-only style={{ display: "none" }}>
                 {seriesList.filter((s) => s.rows.length > 0).slice(0, 14).map((s, i) => (
@@ -1076,120 +1069,11 @@ export function PlotBody({
         })()}
       </div>
 
-      {/* legend panel — docked right, inside the plot view */}
-      <PlotLegend
-        resolution={resolution}
-        settings={config.settings}
-        averagedParams={averagedLabels}
-        colorByActive={colorByActive}
-      />
+      {/* NO in-view legend panel — the config panel's settings strip IS the
+          legend (per-setting series rows + averaged/overlap/judge/palette
+          notes, all from the same resolveSeries result). */}
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-// The legend panel: series grouped BY SETTING (setting name + swatch header
-// with its matched-run count; one entry per split combo underneath), then the
-// resolution notes — the averaged (pooled) parameters, overlap (a run drawn in
-// several settings), judge pooling, inactive split dims, palette cycling.
-// Everything derives from the SAME resolveSeries result the plot renders from.
-// ---------------------------------------------------------------------------
-
-function PlotLegend({
-  resolution, settings, averagedParams, colorByActive,
-}: {
-  resolution: SeriesResolution;
-  settings: PlotSetting[];
-  /** Labels of parameters varying WITHIN some setting but not actively split
-   *  (lib/split-dims.averagedParams). */
-  averagedParams: string[];
-  colorByActive: boolean; // continuous gradient owns color (bar renders in-SVG)
-}) {
-  const { series, overlapCount, emptySettings, judgePooled, paletteExceeded, inactive } = resolution;
-  const inactiveKeys = Object.keys(inactive);
-  const emptySet = new Set(emptySettings);
-  return (
-    <div className="w-48 shrink-0 overflow-y-auto border-l border-border/60 px-2 py-1.5 text-[11px] text-text-muted">
-      {!colorByActive && (
-        <div className="mb-2">
-          {settings.map((st) => {
-            const own = series.filter((s) => s.settingId === st.id);
-            const count = own.reduce((n, s) => n + s.rows.length, 0);
-            const empty = emptySet.has(st.name) || count === 0;
-            return (
-              <div key={st.id} className="mb-1.5">
-                <div className="flex items-center gap-1.5 py-0.5">
-                  <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
-                    style={{ backgroundColor: st.color }}
-                    aria-hidden
-                  />
-                  <span className="min-w-0 flex-1 truncate text-text" title={st.name}>{st.name}</span>
-                  <span
-                    className={`shrink-0 text-[10px] tabular-nums ${empty ? "text-amber-500" : "text-text-faint"}`}
-                  >
-                    · {count} run{count === 1 ? "" : "s"}
-                  </span>
-                </div>
-                {own.filter((s) => s.combo.length > 0).map((s) => (
-                  <div key={s.key} className="flex items-center gap-1.5 py-0.5 pl-3">
-                    <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0" style={{ color: s.color }}>
-                      {shapeNode(shapeForValue(s.shapeIdx), 0, 0, 4, {
-                        fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
-                      })}
-                    </svg>
-                    <span className="min-w-0 flex-1 truncate" title={comboLabel(s.label, s.settingName)}>
-                      {comboLabel(s.label, s.settingName)}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-text-faint tabular-nums">{s.rows.length}</span>
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {averagedParams.length > 0 && (
-        <div className="mb-2 text-text-faint">
-          averaged: {averagedParams.join(", ")} (mean ± SD)
-        </div>
-      )}
-      {overlapCount > 0 && (
-        <div className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-1 text-amber-500">
-          {overlapCount} run{overlapCount === 1 ? "" : "s"} match multiple settings
-          (drawn once per setting)
-        </div>
-      )}
-      {judgePooled.length > 0 && (
-        <div className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-1 text-amber-500">
-          {judgePooled.join(", ")}: mixes judges
-        </div>
-      )}
-      {inactiveKeys.map((key) => (
-        <div key={key} className="mb-1 text-text-faint">
-          {paramLabel(key)}: one value in view
-        </div>
-      ))}
-      {paletteExceeded && (
-        <div className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-1 text-amber-500">
-          more series than colors — colors repeat
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** The combo half of a series label ("jailbreak · Qwen2.5" -> "Qwen2.5"):
- *  Series.label is [settingName, ...comboValues].join(" · "), so the prefix
- *  strip is exact. */
-function comboLabel(label: string, settingName: string): string {
-  const prefix = `${settingName} · `;
-  return label.startsWith(prefix) ? label.slice(prefix.length) : label;
-}
-
-/** Display label for a parameter key (falls back to the key itself). */
-function paramLabel(key: string): string {
-  return PARAMETERS.find((p) => p.key === key)?.label ?? key;
 }
 
 // A small absolutely-positioned log-scale checkbox. Both live by the plot's
