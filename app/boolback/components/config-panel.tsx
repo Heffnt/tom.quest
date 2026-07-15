@@ -15,8 +15,11 @@
 //                   (single layer only), the parameter chips editing the ACTIVE
 //                   layer, the unified FUNCTION section (arity + fn_hex + engaged
 //                   complexity with a bin-into-layers control), outcome metric
-//                   rows, and constants. On the groupplot tab a "Facet by" select
-//                   + panel-size slider are added;
+//                   rows, and constants. On the groupplot tab a kind-aware
+//                   "Facet by" select (layer / parameter / a binned metric —
+//                   complexity, outcome groups, or the derived max trained
+//                   epoch, with an n + quantile|width row when binning) +
+//                   panel-size slider are added;
 //       anatomy   → a tiny note (anatomy owns its own controls).
 //
 // A layer is ONE trace. Multiple traces are minted as multiple LAYERS by the
@@ -31,7 +34,7 @@
 import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Bundle, RangeFilter, FilterState, FacetKey, RunRow,
-  PlotConfig, MetricSchemaEntry, PlotLayer, LayerStyle,
+  PlotConfig, MetricSchemaEntry, PlotLayer, LayerStyle, GroupFacet,
 } from "../lib/types";
 import { EMPTY_FILTER, DEFAULT_LAYER_STYLE } from "../lib/types";
 import { useBoolbackStore, configViewOf, type ViewKey } from "../state/store";
@@ -48,7 +51,7 @@ import { CATEGORY_PALETTE, DASH_PATTERNS, SHAPE_COUNT } from "../lib/styling";
 import { shapeNode } from "./glyph";
 import {
   applyFilters, histogramBins, metricRange, dominantFilters, repairPins,
-  FACET_LABELS, type MetricIndex,
+  FACET_LABELS, MAX_EPOCH, type MetricIndex,
 } from "../lib/select";
 import { expandLayers, binLayers, type GeneratorTargets } from "../lib/generators";
 import { resolveById } from "../lib/columns";
@@ -297,11 +300,12 @@ function ViewConfig({
   }, [differingDims, bundle.rows, activeFilters, rsRanges]);
 
   // ---- facet slot (group plot) -------------------------------------------------
-  const facetOptions = useMemo(
-    () => [
-      { value: "layer", label: "layer (one panel per layer)" },
-      ...summary.differing.map((d) => ({ value: d.dim.key, label: d.dim.label })),
-    ],
+  // Plain options: layer + the differing parameters. Binnable metrics (complexity
+  // / outcome groups / max_epoch) render as separate optgroups in FacetBySelect
+  // below, sourced from the same `complexity` / `outcomeGroups` the FUNCTION and
+  // outcomes sections use.
+  const facetParamOptions = useMemo(
+    () => summary.differing.map((d) => ({ value: d.dim.key, label: d.dim.label })),
     [summary],
   );
 
@@ -444,7 +448,7 @@ function ViewConfig({
         dim={dim}
         pv={differingByKey.get(dim.key)!}
         conditioned={conditioned}
-        facet={isGroupPlot && groupPlot.facet === dim.key}
+        facet={isGroupPlot && groupPlot.facet?.kind === "param" && groupPlot.facet.key === dim.key}
         selected={selected}
         onToggleValue={h.onToggleValue}
         onClear={h.onClear}
@@ -524,14 +528,13 @@ function ViewConfig({
         {/* group plot: facet + panel size (centerView === "groupplot") */}
         {isGroupPlot && (
           <div className="mb-2">
-            <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
-              <ParamSelect
-                label="Facet by"
-                value={groupPlot.facet}
-                options={facetOptions}
-                onChange={(v) => startTransition(() => setGroupPlot({ facet: v }))}
-              />
-            </div>
+            <FacetBySelect
+              facet={groupPlot.facet}
+              paramOptions={facetParamOptions}
+              complexity={complexity}
+              outcomeGroups={outcomeGroups}
+              onChange={(f) => startTransition(() => setGroupPlot({ facet: f }))}
+            />
             <label className="mt-1 flex items-center gap-2 text-[11px] text-text-muted">
               panel size
               <input
@@ -887,32 +890,90 @@ function CollapsibleSection({
 }
 
 // ===========================================================================
-// style-slot select (Facet by)
+// Facet-by select — kind-aware over the GroupFacet union. Plain options for
+// (none) / layer / the differing parameters; optgroups for the BINNABLE
+// metrics (complexity, each outcome group, the pinned max_epoch). Choosing a
+// metric writes {kind:"bins", metric, n:3, mode:"quantile"} and reveals a
+// compact n + quantile|width row (same controls as the bin-into-layers row)
+// that patches the facet in place.
 // ===========================================================================
 
-function ParamSelect({
-  label, value, options, onChange,
+/** Derive the select's flat string value from the facet union. */
+function facetSelectValue(facet: GroupFacet | null): string {
+  if (!facet) return "";
+  if (facet.kind === "layer") return "layer";
+  if (facet.kind === "param") return facet.key;
+  return `bins:${facet.metric}`;
+}
+
+function FacetBySelect({
+  facet, paramOptions, complexity, outcomeGroups, onChange,
 }: {
-  label: string;
-  value: string | null;
-  options: Array<{ value: string; label: string }>;
-  onChange: (v: string | null) => void;
+  facet: GroupFacet | null;
+  paramOptions: Array<{ value: string; label: string }>;
+  complexity: MetricSchemaEntry[];
+  outcomeGroups: Array<[MetricPickerGroup, MetricSchemaEntry[]]>;
+  onChange: (f: GroupFacet | null) => void;
 }) {
+  const handleSelect = (v: string) => {
+    if (!v) { onChange(null); return; }
+    if (v === "layer") { onChange({ kind: "layer" }); return; }
+    if (v.startsWith("bins:")) {
+      onChange({ kind: "bins", metric: v.slice("bins:".length), n: 3, mode: "quantile" });
+      return;
+    }
+    onChange({ kind: "param", key: v });
+  };
+
   return (
-    <>
-      <span className="text-text-faint">{label}</span>
+    <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+      <span className="text-text-faint">Facet by</span>
       <select
-        value={value ?? ""}
-        onChange={(e) => onChange(e.target.value || null)}
-        aria-label={label}
+        value={facetSelectValue(facet)}
+        onChange={(e) => handleSelect(e.target.value)}
+        aria-label="Facet by"
         className="w-full rounded border border-border bg-surface px-1 py-0.5 text-[11px] text-text focus:border-accent/60 focus:outline-none"
       >
         <option value="">(none)</option>
-        {options.map((o) => (
+        <option value="layer">layer (one panel per layer)</option>
+        {paramOptions.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
         ))}
+        {complexity.length > 0 && (
+          <optgroup label="complexity">
+            {complexity.map((e) => (
+              <option key={e.name} value={`bins:${e.name}`}>{e.label}</option>
+            ))}
+          </optgroup>
+        )}
+        {outcomeGroups.map(([g, entries]) => (
+          <optgroup key={g} label={g}>
+            {entries.map((e) => (
+              <option key={e.name} value={`bins:${e.name}`}>{e.label}</option>
+            ))}
+          </optgroup>
+        ))}
+        <optgroup label="epoch">
+          <option value={`bins:${MAX_EPOCH}`}>Max trained epoch</option>
+        </optgroup>
       </select>
-    </>
+
+      {facet?.kind === "bins" && (
+        <div className="col-span-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+          <label className="flex items-center gap-1 text-text-faint">
+            n
+            <input type="number" min={2} max={8} value={facet.n}
+              onChange={(e) => onChange({ ...facet, n: Math.max(2, Math.min(8, Number(e.target.value) || 2)) })}
+              aria-label="facet bin count"
+              className="w-10 rounded border border-border bg-surface px-1 py-0.5 text-text focus:border-accent/60 focus:outline-none" />
+          </label>
+          <span className="flex items-center gap-0.5">
+            <TreatBtn label="quantile" active={facet.mode === "quantile"} onClick={() => onChange({ ...facet, mode: "quantile" })} />
+            <TreatBtn label="width" active={facet.mode === "width"} onClick={() => onChange({ ...facet, mode: "width" })} />
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 

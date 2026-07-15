@@ -91,7 +91,15 @@ export function cellValue(row: RunRow, col: string): string | number | boolean |
 }
 
 /** Read a numeric value for a column (null if non-numeric / absent). */
+/** Derived metric id: the run's max completed training epoch (facet bins /
+ *  ranges / histograms address it like any schema metric). */
+export const MAX_EPOCH = "max_epoch";
+
 export function numericValue(row: RunRow, col: string): number | null {
+  if (col === MAX_EPOCH) {
+    const es = row.trajectories?.completed_epochs;
+    return es && es.length ? Math.max(...es) : null;
+  }
   const v = cellValue(row, col);
   if (v === null || v === undefined) return null;
   if (typeof v === "boolean") return v ? 1 : 0;

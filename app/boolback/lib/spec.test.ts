@@ -115,16 +115,30 @@ describe("configToSpec / specToConfig round-trip", () => {
     expect(specToConfig(spec).plot).toEqual(cfg);
   });
 
-  it("groupplot = the shared plot fields + a facet (may be the literal \"layer\")", () => {
-    const spec = configToSpec("groupplot", RICH_PLOT, "layer");
-    expect(spec.facet).toBe("layer");
-    expect("panel_min" in spec).toBe(false); // panelMin is a store extra, never serialized
-    expect(spec.layers).toBeDefined(); // shared plot fields carried
+  it("groupplot = the shared plot fields + a GroupFacet object (all three kinds round-trip)", () => {
+    for (const f of [
+      { kind: "layer" },
+      { kind: "param", key: "base_model" },
+      { kind: "bins", metric: "fourier_degree", n: 3, mode: "quantile" },
+      { kind: "bins", metric: "max_epoch", n: 4, mode: "width" },
+    ] as const) {
+      const spec = configToSpec("groupplot", RICH_PLOT, f);
+      expect(spec.facet).toEqual(f);
+      expect("panel_min" in spec).toBe(false); // panelMin is a store extra, never serialized
+      expect(spec.layers).toBeDefined(); // shared plot fields carried
 
-    const { view, plot, facet } = specToConfig(spec);
-    expect(view).toBe("groupplot");
-    expect(plot).toEqual(RICH_PLOT); // same shared config
-    expect(facet).toBe("layer");
+      const { view, plot, facet } = specToConfig(spec);
+      expect(view).toBe("groupplot");
+      expect(plot).toEqual(RICH_PLOT); // same shared config
+      expect(facet).toEqual(f);
+    }
+  });
+
+  it("the pre-bins STRING facet form is rejected on parse (no migration)", () => {
+    const spec = parseSpec(JSON.stringify({ v: 4, view: "groupplot", facet: "layer" }));
+    expect(spec).not.toBeNull();
+    expect(spec!.facet).toBeUndefined();
+    expect(specToConfig(spec!).facet).toBeNull();
   });
 
   it("a groupplot with a null facet omits it and hydrates facet null", () => {
@@ -164,9 +178,11 @@ describe("serializeSpec / parseSpec round-trip", () => {
     expect(parseSpec(text)).toEqual(spec);
   });
 
-  it("round-trips a groupplot spec (facet preserved)", () => {
-    const spec = configToSpec("groupplot", RICH_PLOT, "seed");
+  it("round-trips a groupplot spec (facet object preserved through pretty JSON)", () => {
+    const spec = configToSpec("groupplot", RICH_PLOT, { kind: "bins", metric: "asr", n: 5, mode: "width" });
     expect(parseSpec(serializeSpec(spec))).toEqual(spec);
+    const paramSpec = configToSpec("groupplot", RICH_PLOT, { kind: "param", key: "seed" });
+    expect(parseSpec(serializeSpec(paramSpec))).toEqual(paramSpec);
   });
 
   it("round-trips a table spec", () => {

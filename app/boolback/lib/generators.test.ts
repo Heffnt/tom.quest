@@ -6,7 +6,7 @@
 // metric, read by the real numericValue).
 
 import { describe, it, expect } from "vitest";
-import { expandLayers, binLayers } from "./generators";
+import { expandLayers, binLayers, partitionBins } from "./generators";
 import type { ParameterDef, } from "./parameters";
 import type { MetricIndex } from "./select";
 import type { RunRow, PlotLayer, FilterState } from "./types";
@@ -119,6 +119,28 @@ describe("expandLayers", () => {
     const out = expandLayers({ rows, layers: [parent], targets: "all", activeId: "l1", dim: modelDim, applyTo });
     expect(out[0].filters.facets.base_model).toEqual(["qwen"]);
     expect(out[0].filters.facets).not.toBe(parent.filters.facets);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// partitionBins — the shared bin definition (binLayers + the Group Plot facet)
+// ---------------------------------------------------------------------------
+
+describe("partitionBins", () => {
+  it("width mode: clean-edge labels, ε-shrunk non-last maxes, exact last max", () => {
+    const bins = partitionBins([0, 5, 10], 2, "width");
+    expect(bins.map((b) => b.label)).toEqual(["0–5", "5–10"]);
+    expect(bins[0].lo).toBe(0);
+    expect(bins[0].hi).toBe(5);
+    expect(bins[0].max).toBeLessThan(5); // partition: 5 belongs to bin 2
+    expect(bins[1]).toMatchObject({ lo: 5, hi: 10, max: 10 });
+  });
+
+  it("quantile mode collapses duplicate edges; empty/degenerate inputs", () => {
+    expect(partitionBins([], 4, "quantile")).toEqual([]);
+    expect(partitionBins([3, 3, 3], 4, "quantile")).toHaveLength(1);
+    const bins = partitionBins([1, 1, 1, 5], 4, "quantile");
+    expect(bins).toHaveLength(2); // interpolated edges 1,1,1,2,5 → uniq 1,2,5
   });
 });
 

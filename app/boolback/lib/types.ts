@@ -554,10 +554,18 @@ export interface PlotConfig extends Record<string, unknown> {
   yDomain: [number, number] | null;
 }
 
+/** What the Group Plot facets its panels over. "bins" slices a continuous
+ *  metric (complexity / outcome / the derived "max_epoch") into partitioned
+ *  bins over the layers' union — one panel per bin. */
+export type GroupFacet =
+  | { kind: "layer" }
+  | { kind: "param"; key: string }
+  | { kind: "bins"; metric: string; n: number; mode: "quantile" | "width" };
+
 /** Group Plot EXTRAS only — the plot config itself is SHARED (store.plot). */
 export interface GroupPlotExtras extends Record<string, unknown> {
-  /** Parameter key OR the literal "layer" (one panel per layer); null = pick one. */
-  facet: string | null;
+  /** Panel facet (null = pick one). */
+  facet: GroupFacet | null;
   /** Panel size (px), user-adjustable. */
   panelMin: number;
 }
@@ -728,6 +736,26 @@ export function sanitizePlotConfig(raw: unknown): PlotConfig {
   };
 }
 
+/** Coerce an unknown blob to a valid GroupFacet (or null). The pre-bins
+ *  STRING facet shape is dropped (no migration), as is anything malformed. */
+export function sanitizeGroupFacet(raw: unknown): GroupFacet | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const f = raw as Record<string, unknown>;
+  if (f.kind === "layer") return { kind: "layer" };
+  if (f.kind === "param" && typeof f.key === "string" && f.key) {
+    return { kind: "param", key: f.key };
+  }
+  if (
+    f.kind === "bins" &&
+    typeof f.metric === "string" && f.metric &&
+    typeof f.n === "number" && Number.isFinite(f.n) &&
+    (f.mode === "quantile" || f.mode === "width")
+  ) {
+    return { kind: "bins", metric: f.metric, n: Math.max(2, Math.min(8, Math.round(f.n))), mode: f.mode };
+  }
+  return null;
+}
+
 /** Coerce a persisted Group Plot EXTRAS blob (facet + panelMin). Old fat
  *  group-plot blobs (a full config shape) carry a `facet` key but their other
  *  fields are ignored — only the extras survive. */
@@ -735,7 +763,7 @@ export function sanitizeGroupExtras(raw: unknown): GroupPlotExtras {
   const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   const num = (v: unknown, f: number) => (typeof v === "number" && Number.isFinite(v) ? v : f);
   return {
-    facet: typeof r.facet === "string" ? r.facet : null,
+    facet: sanitizeGroupFacet(r.facet),
     panelMin: num(r.panelMin, DEFAULT_GROUP_EXTRAS.panelMin),
   };
 }

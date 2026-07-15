@@ -207,5 +207,6 @@ export function metricLabel(
   index: Record<string, MetricSchemaEntry>,
   name: string,
 ): string {
+  if (name === "max_epoch") return "Max trained epoch"; // derived, not in the schema
   return index[name]?.label ?? name;
 }

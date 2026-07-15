@@ -135,8 +135,8 @@ describe("filter targeting (shared plot config)", () => {
 
 describe("group plot extras + reset", () => {
   it("setGroupPlot patches ONLY the extras (facet / panelMin)", () => {
-    store.getState().setGroupPlot({ facet: "base_model", panelMin: 400 });
-    expect(store.getState().groupPlot).toEqual({ facet: "base_model", panelMin: 400 });
+    store.getState().setGroupPlot({ facet: { kind: "param", key: "base_model" }, panelMin: 400 });
+    expect(store.getState().groupPlot).toEqual({ facet: { kind: "param", key: "base_model" }, panelMin: 400 });
   });
 
   it("resetView('plot') lands the shared config back on the plain DEFAULT_PLOT", () => {
@@ -150,7 +150,7 @@ describe("group plot extras + reset", () => {
   it("resetView('groupplot') resets the SHARED plot AND clears the extras", () => {
     const s = store.getState();
     s.addLayer();
-    s.setGroupPlot({ facet: "base_model", panelMin: 400 });
+    s.setGroupPlot({ facet: { kind: "layer" }, panelMin: 400 });
     store.getState().resetView("groupplot");
     expect(store.getState().plot).toEqual(DEFAULT_PLOT);
     expect(store.getState().groupPlot).toEqual(DEFAULT_GROUP_EXTRAS);

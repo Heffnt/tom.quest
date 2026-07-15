@@ -300,7 +300,70 @@ describe("group plot", () => {
     const sel = screen.getByLabelText("Facet by") as HTMLSelectElement;
     expect(within(sel).getByText("layer (one panel per layer)")).toBeTruthy();
     fireEvent.change(sel, { target: { value: "layer" } });
-    expect(useBoolbackStore.getState().groupPlot.facet).toBe("layer");
+    expect(useBoolbackStore.getState().groupPlot.facet).toEqual({ kind: "layer" });
     expect(screen.getByLabelText("panel size")).toBeTruthy();
+  });
+
+  it("choosing a parameter writes {kind:'param',key}", () => {
+    useBoolbackStore.setState({ centerView: "groupplot" });
+    mount();
+    const sel = screen.getByLabelText("Facet by") as HTMLSelectElement;
+    fireEvent.change(sel, { target: { value: catDim.key } });
+    expect(useBoolbackStore.getState().groupPlot.facet).toEqual({ kind: "param", key: catDim.key });
+  });
+
+  it("(none) writes null", () => {
+    useBoolbackStore.setState({
+      centerView: "groupplot",
+      groupPlot: { ...structuredClone(DEFAULT_GROUP_EXTRAS), facet: { kind: "layer" } },
+    });
+    mount();
+    const sel = screen.getByLabelText("Facet by") as HTMLSelectElement;
+    expect(sel.value).toBe("layer");
+    fireEvent.change(sel, { target: { value: "" } });
+    expect(useBoolbackStore.getState().groupPlot.facet).toBeNull();
+  });
+
+  it("choosing the pinned 'Max trained epoch' metric writes a bins facet and reveals the n/mode row", () => {
+    useBoolbackStore.setState({ centerView: "groupplot" });
+    mount();
+    const sel = screen.getByLabelText("Facet by") as HTMLSelectElement;
+    expect(within(sel).getByText("Max trained epoch")).toBeTruthy();
+    fireEvent.change(sel, { target: { value: "bins:max_epoch" } });
+    expect(useBoolbackStore.getState().groupPlot.facet).toEqual({ kind: "bins", metric: "max_epoch", n: 3, mode: "quantile" });
+    // the select's value stays in sync with the union
+    expect((screen.getByLabelText("Facet by") as HTMLSelectElement).value).toBe("bins:max_epoch");
+    // the n + quantile|width row appears and patches the facet object
+    fireEvent.change(screen.getByLabelText("facet bin count"), { target: { value: "5" } });
+    expect(useBoolbackStore.getState().groupPlot.facet).toEqual({ kind: "bins", metric: "max_epoch", n: 5, mode: "quantile" });
+    fireEvent.click(screen.getByText("width"));
+    expect(useBoolbackStore.getState().groupPlot.facet).toEqual({ kind: "bins", metric: "max_epoch", n: 5, mode: "width" });
+  });
+
+  it("choosing a complexity metric writes a bins facet; the n/mode row is absent for non-bins facets", () => {
+    useBoolbackStore.setState({ centerView: "groupplot" });
+    mount();
+    const sel = screen.getByLabelText("Facet by") as HTMLSelectElement;
+    const complexityGroup = Array.from(sel.querySelectorAll("optgroup")).find((g) => g.label === "complexity")!;
+    const opt = complexityGroup.querySelector("option") as HTMLOptionElement;
+    fireEvent.change(sel, { target: { value: opt.value } });
+    expect(useBoolbackStore.getState().groupPlot.facet).toEqual({
+      kind: "bins", metric: opt.value.slice("bins:".length), n: 3, mode: "quantile",
+    });
+    expect(screen.getByLabelText("facet bin count")).toBeTruthy();
+
+    // switch to "layer" — the bins row disappears
+    fireEvent.change(sel, { target: { value: "layer" } });
+    expect(screen.queryByLabelText("facet bin count")).toBeNull();
+  });
+
+  it("offers an outcome-group optgroup sourced from the same grouping as Color-by", () => {
+    useBoolbackStore.setState({ centerView: "groupplot" });
+    mount();
+    const sel = screen.getByLabelText("Facet by") as HTMLSelectElement;
+    const groups = Array.from(sel.querySelectorAll("optgroup")).map((g) => g.label);
+    expect(groups).toContain("complexity");
+    expect(groups).toContain("epoch");
+    expect(groups.length).toBeGreaterThan(2); // at least one outcome group too
   });
 });

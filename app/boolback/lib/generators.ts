@@ -177,6 +177,38 @@ function binEdges(values: number[], n: number, mode: "quantile" | "width"): numb
   return uniq.length >= 2 ? uniq : [lo, hi];
 }
 
+/** One partitioned bin: [lo, max] is the INCLUSIVE match interval (`max` is
+ *  ε-shrunk below the clean edge on every non-last bin so shared-edge values
+ *  land in exactly one bin); `hi` is the clean edge for labels/titles. */
+export interface Bin {
+  lo: number;
+  hi: number;
+  max: number;
+  /** "0–1" style clean-edge label (callers prepend the metric label). */
+  label: string;
+}
+
+/** The partitioned bins over `values` (shared by binLayers and the Group
+ *  Plot's bins facet — one definition of what "bin k" means). [] when there
+ *  is nothing to bin. */
+export function partitionBins(values: number[], n: number, mode: "quantile" | "width"): Bin[] {
+  const edges = binEdges(values, n, mode);
+  if (edges.length < 2) return [];
+  const eps = (edges[edges.length - 1] - edges[0]) * 1e-9;
+  const out: Bin[] = [];
+  for (let i = 0; i < edges.length - 1; i++) {
+    const lo = edges[i];
+    const hi = edges[i + 1];
+    out.push({
+      lo,
+      hi,
+      max: i === edges.length - 2 ? hi : hi - eps,
+      label: `${fmtEdge(lo)}–${fmtEdge(hi)}`,
+    });
+  }
+  return out;
+}
+
 /**
  * Replace each target layer with children slicing `metric` into bins. Edges are
  * computed over THAT layer's matched rows (within-arity when the layer pins an
@@ -214,24 +246,18 @@ export function binLayers(opts: {
       const v = numericValue(r, metric);
       if (v !== null) values.push(v);
     }
-    const edges = binEdges(values, n, mode);
-    if (edges.length < 2) continue; // nothing to bin → layer drops
+    // partitionBins carries the ε-shrunk `max` (an edge value lands in exactly
+    // ONE bin) alongside the clean-edge label — shared with the bins facet.
+    const bins = partitionBins(values, n, mode);
+    if (bins.length === 0) continue; // nothing to bin → layer drops
     const lone = isLoneDefault(layers, layer);
     // parent ranges with any existing range on `metric` removed (replaced below)
     const baseRanges = (layer.filters.ranges ?? []).filter((r) => r.metric !== metric);
-    // Bins must PARTITION the extent — with inclusive [min,max] ranges, a run
-    // sitting exactly on a shared edge would match BOTH neighbors (double-drawn,
-    // counts summing past the parent). Shrink every non-last bin's max a hair
-    // below the edge so an edge value belongs to the HIGHER bin; labels keep
-    // the clean edge numbers.
-    const eps = (edges[edges.length - 1] - edges[0]) * 1e-9;
-    for (let i = 0; i < edges.length - 1; i++) {
-      const lo = edges[i];
-      const hi = edges[i + 1];
-      const max = i === edges.length - 2 ? hi : hi - eps;
+    for (let i = 0; i < bins.length; i++) {
+      const bin = bins[i];
       const id = nextLayerId(used);
       used.add(id);
-      const label = `${metricLabel} ${fmtEdge(lo)}–${fmtEdge(hi)}`;
+      const label = `${metricLabel} ${bin.label}`;
       out.push({
         id,
         name: lone ? label : `${layer.name} · ${label}`,
@@ -242,7 +268,7 @@ export function binLayers(opts: {
         },
         filters: {
           facets: copyFacets(layer.filters.facets),
-          ranges: [...baseRanges.map((r) => ({ ...r })), { metric, min: lo, max }],
+          ranges: [...baseRanges.map((r) => ({ ...r })), { metric, min: bin.lo, max: bin.max }],
         },
       });
     }

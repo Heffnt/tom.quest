@@ -322,6 +322,13 @@ describe("select", () => {
     });
   });
 
+  it("max_epoch derives the run's max completed training epoch", () => {
+    const withTraj = rows.find((r) => (r.trajectories?.completed_epochs?.length ?? 0) > 0)!;
+    expect(numericValue(withTraj, "max_epoch")).toBe(Math.max(...withTraj.trajectories.completed_epochs));
+    const bare = { ...withTraj, trajectories: { ...withTraj.trajectories, completed_epochs: [] } } as RunRow;
+    expect(numericValue(bare, "max_epoch")).toBeNull();
+  });
+
   it("facetKeyForColumn maps categorical column ids to their facet", () => {
     expect(facetKeyForColumn("training.base_model")).toBe("base_model");
     expect(facetKeyForColumn("dataset.dataset")).toBe("dataset");

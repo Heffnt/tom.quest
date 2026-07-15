@@ -6,7 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_PLOT, DEFAULT_LAYER_STYLE, DEFAULT_GROUP_EXTRAS,
-  sanitizePlotConfig, sanitizeLayerStyle, sanitizeGroupExtras,
+  sanitizePlotConfig, sanitizeLayerStyle, sanitizeGroupExtras, sanitizeGroupFacet,
   isDefaultPlotConfig, nextLayerId,
 } from "./types";
 
@@ -84,22 +84,42 @@ describe("sanitizePlotConfig — layer style + plot-level size/opacity", () => {
   });
 });
 
+describe("sanitizeGroupFacet", () => {
+  it("passes the three valid kinds through (bins n clamped 2–8)", () => {
+    expect(sanitizeGroupFacet({ kind: "layer" })).toEqual({ kind: "layer" });
+    expect(sanitizeGroupFacet({ kind: "param", key: "base_model" })).toEqual({ kind: "param", key: "base_model" });
+    expect(sanitizeGroupFacet({ kind: "bins", metric: "asr", n: 3, mode: "width" }))
+      .toEqual({ kind: "bins", metric: "asr", n: 3, mode: "width" });
+    const clamped = sanitizeGroupFacet({ kind: "bins", metric: "asr", n: 99, mode: "quantile" });
+    expect(clamped).toEqual({ kind: "bins", metric: "asr", n: 8, mode: "quantile" });
+  });
+
+  it("drops the pre-bins STRING form and malformed blobs (no migration)", () => {
+    expect(sanitizeGroupFacet("layer")).toBeNull();
+    expect(sanitizeGroupFacet("base_model")).toBeNull();
+    expect(sanitizeGroupFacet(null)).toBeNull();
+    expect(sanitizeGroupFacet({ kind: "param" })).toBeNull(); // no key
+    expect(sanitizeGroupFacet({ kind: "bins", metric: "asr", n: 3, mode: "nope" })).toBeNull();
+    expect(sanitizeGroupFacet({ kind: "bogus" })).toBeNull();
+  });
+});
+
 describe("sanitizeGroupExtras", () => {
   it("defaults a missing / non-object blob", () => {
     expect(sanitizeGroupExtras(undefined)).toEqual(DEFAULT_GROUP_EXTRAS);
     expect(sanitizeGroupExtras("nope")).toEqual(DEFAULT_GROUP_EXTRAS);
   });
 
-  it("keeps a facet (incl. the literal \"layer\") and a finite panelMin", () => {
-    expect(sanitizeGroupExtras({ facet: "base_model", panelMin: 400 }))
-      .toEqual({ facet: "base_model", panelMin: 400 });
-    expect(sanitizeGroupExtras({ facet: "layer" }))
-      .toEqual({ facet: "layer", panelMin: DEFAULT_GROUP_EXTRAS.panelMin });
+  it("keeps a valid GroupFacet object and a finite panelMin", () => {
+    expect(sanitizeGroupExtras({ facet: { kind: "param", key: "base_model" }, panelMin: 400 }))
+      .toEqual({ facet: { kind: "param", key: "base_model" }, panelMin: 400 });
+    expect(sanitizeGroupExtras({ facet: { kind: "layer" } }))
+      .toEqual({ facet: { kind: "layer" }, panelMin: DEFAULT_GROUP_EXTRAS.panelMin });
   });
 
-  it("an OLD fat group-plot blob keeps only the extras (facet), rest dropped", () => {
+  it("an OLD blob's STRING facet is dropped; other fields never leak in", () => {
     const fat = { settings: [{ id: "s1" }], splitBy: [], x: "asr", facet: "seed", panelMin: 320, band: false };
-    expect(sanitizeGroupExtras(fat)).toEqual({ facet: "seed", panelMin: 320 });
+    expect(sanitizeGroupExtras(fat)).toEqual({ facet: null, panelMin: 320 });
   });
 
   it("heals a non-numeric panelMin to the default", () => {

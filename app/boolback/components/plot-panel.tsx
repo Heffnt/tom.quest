@@ -7,6 +7,15 @@
 // "does outcome Y move with function-complexity X, and does the context
 // moderate it?"
 //
+// This file owns the PLUMBING: ResizeObserver sizing, axis resolution + the
+// shared scale, series resolution + point/epoch building, the descriptive
+// readout published to the top bar, the Export handle/CSV, the on-axis pickers
+// + log toggles + AxisRange view-window editors + colorbar. The drawing +
+// interaction machinery BETWEEN the axes lives in components/plot-surface.tsx
+// (PlotSurface); this component builds the mode data and renders ONE full-size
+// PlotSurface (the Group Plot renders many compact ones from the same
+// component).
+//
 //   X / Y = any snapshot metric; the pickers live ON the axes (the x picker
 //       under the x axis, the y picker rotated along the y axis) and both
 //       log toggles hug the origin — all off the store-owned chart config.
@@ -48,11 +57,10 @@
 // hovering a mean line shows the layer name, its run count, and its judge
 // when unique. Clicking a ghost opens the run inspector.
 //
-// Hover a point for its layer + values; click a single-run point to open
-// its drawer. Drag a rectangle on the background to add PLOT-LEVEL X+Y range
-// filters (store.addRange with layerId null — every layer ANDs them; the
-// chart rescales to the filtered set, so this is also the zoom gesture). The
-// row hovered or selected elsewhere (table/tree) is ring-highlighted here.
+// Hover a point for its layer + values; click a single-run point to open its
+// drawer (the surface handles hover/click). The row hovered or selected
+// elsewhere (table/tree) is ring-highlighted here. There is NO box-select: the
+// view window is edited only through the AxisRange controls by each axis end.
 //
 // Pure SVG — no chart library. Descriptive stats only (lib/stats.ts): the
 // boundary rule says inferential statistics come from CMT, never the browser.
@@ -69,17 +77,18 @@ import { resolveSeries, averagedParams } from "../lib/split-dims";
 import { resolveAxis, isParamAxis, paramAxisOptions } from "../lib/axes";
 import {
   groupRuns, collapsedGhosts,
-  type GroupedPoint, type RunPoint, type Ghost,
+  type RunPoint, type Ghost,
 } from "../lib/aggregate";
-import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
+import { niceTicks, pearson, spearman } from "../lib/stats";
 import { buildRunSeries, groupSeries, trajectoryMetric, type RunSeries } from "../lib/trajectories";
 import {
-  SINGLE_COLOR, shapeForValue, dashForValue, opac, gradientColor, NULL_GRADIENT,
+  SINGLE_COLOR, shapeForValue, dashForValue, gradientColor, NULL_GRADIENT,
 } from "../lib/styling";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
 import { shapeNode } from "./glyph";
+import { PlotSurface, type SurfacePoint } from "./plot-surface";
 
 /** What the shared Export menu needs from the mounted plot. */
 export interface PlotExportHandle {
@@ -107,9 +116,6 @@ export function effectiveAxis(
 const FALLBACK = { w: 820, h: 430 };
 // PAD.l leaves room for the rotated y-axis picker + tick labels side by side.
 const PAD = { l: 72, r: 16, t: 14, b: 44 };
-// ViewBox units of pointer travel before a background drag counts as a
-// box-select (below it, the gesture stays a click).
-const MIN_DRAG = 8;
 
 function tickFmt(v: number): string {
   if (v === 0) return "0";
@@ -118,19 +124,6 @@ function tickFmt(v: number): string {
   if (a >= 10) return v.toFixed(1).replace(/\.0$/, "");
   if (a >= 0.01) return v.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
   return v.toExponential(0);
-}
-
-interface VisualPoint {
-  gp: GroupedPoint;
-  jx: number; // deterministic jitter (single points on a count/categorical x)
-  jy: number; // deterministic jitter (single points on a categorical y)
-  color: string;
-  shapeIdx: number;
-  r: number;
-  /** The owning layer's style (shape/dash channels only — size/opacity are
-   *  plot-level and read straight from config at render). */
-  style: LayerStyle;
-  label: string[];
 }
 
 /** Dash pattern for a layer style (DASH_PATTERNS index; cycles). */
@@ -147,10 +140,6 @@ export function PlotBody({
   index: MetricIndex;
   exportRef?: React.MutableRefObject<PlotExportHandle | null>;
 }) {
-  const openDetail = useBoolbackStore((s) => s.openDetail);
-  const expandChain = useBoolbackStore((s) => s.expandChain);
-  const hoveredDir = useBoolbackStore((s) => s.hoveredDir);
-  const selectedDir = useBoolbackStore((s) => s.selectedDir);
   // INP: the plot's heavy pipeline (resolveSeries over the whole bundle + the
   // SVG build) is DEFERRED off the interaction's critical path. A filter click
   // updates the store urgently — the checkbox and the (memoized) config chips
@@ -163,10 +152,7 @@ export function PlotBody({
   const setPlot = useBoolbackStore((s) => s.setPlot);
   const setPlotReadout = useBoolbackStore((s) => s.setPlotReadout);
   const setPlotUnionCount = useBoolbackStore((s) => s.setPlotUnionCount);
-  const addRange = useBoolbackStore((s) => s.addRange);
 
-  const [hover, setHover] = useState<VisualPoint | null>(null);
-  const [lineHover, setLineHover] = useState<{ label: string[]; px: number; py: number } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   // The SVG draws at the plot container's real pixel size (see FALLBACK note).
@@ -434,7 +420,8 @@ export function PlotBody({
         const x2 = txX(p.e);
         if (x2 !== null) pts.push({ x: x2, y: p.y, sd: p.sd, n: p.n });
       }
-      return { dims: g.dims, color, dash, runId: g.runId, pts };
+      const label = gSeries?.label ?? g.dims[0] ?? "";
+      return { dims: g.dims, color, dash, runId: g.runId, label, pts };
     });
 
     // Extent over all rendered points.
@@ -467,7 +454,7 @@ export function PlotBody({
   const jitterX = !!axisX?.jitter && !logX;
   const jitterY = !!axisY?.jitter && !logY;
 
-  const visual: VisualPoint[] = useMemo(() => {
+  const visual: SurfacePoint[] = useMemo(() => {
     const xL = axisX?.label ?? x;
     const yL = axisY?.label ?? y;
     const catX = axisX?.categorical ? axisX.categories : null;
@@ -479,7 +466,6 @@ export function PlotBody({
       const style = series?.style ?? DEFAULT_LAYER_STYLE;
       const color = colorByActive ? colorForC(gp.c) : series?.color ?? SINGLE_COLOR;
       const shape = shapeForValue(style.shape);
-      const r = (gp.n > 1 ? Math.min(10, 3 + Math.sqrt(gp.n)) : 3) * config.size;
       const dimsDesc = series?.label ?? "";
       const label: string[] = [];
       if (gp.n === 1 && gp.runId) {
@@ -502,14 +488,13 @@ export function PlotBody({
         jy: jitterY && gp.runId ? (hash01(gp.runId + "#y") - 0.5) * 0.5 : 0,
         color,
         shapeIdx: shape,
-        r,
         style,
         label,
       };
     });
   }, [points, seriesByKey, rowByPath,
       axisX, axisY, x, y, logX, logY, binned, jitterX, jitterY,
-      colorByActive, colorByLabel, colorForC, config.size]);
+      colorByActive, colorByLabel, colorForC]);
 
   // Scales over the TRANSFORMED values. Categorical axes use integer tick
   // positions and a domain spanning all categories (± ½ for the end margins).
@@ -544,11 +529,9 @@ export function PlotBody({
     if (yDomain) { y0 = tf(yDomain[0], logY); y1 = tf(yDomain[1], logY); }
     const sx = (v: number) => PAD.l + ((v - x0) / (x1 - x0)) * (W - PAD.l - PAD.r);
     const sy = (v: number) => H - PAD.b - ((v - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
-    const ix = (px: number) => x0 + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (x1 - x0);
-    const iy = (py: number) => y0 + ((H - PAD.b - py) / (H - PAD.t - PAD.b)) * (y1 - y0);
     const intTicks = (n: number) => Array.from({ length: n }, (_, i) => i);
     return {
-      sx, sy, ix, iy,
+      sx, sy,
       xTicks: catX ? intTicks(catX.length) : niceTicks(x0, x1, 5),
       yTicks: catY ? intTicks(catY.length) : niceTicks(y0, y1, 5),
     };
@@ -567,19 +550,16 @@ export function PlotBody({
     });
   }, [ghosts, config.ghosts, seriesByKey, colorByActive, colorForC]);
 
-  // Trend fit + the r/ρ readout — ALWAYS over the run-deduped underlying pairs
-  // (a fit over group means would overstate the association; a run matching
-  // two layers must not double-weight it). One global OLS line.
+  // The r/ρ readout — ALWAYS over the run-deduped underlying pairs (a
+  // correlation over group means would overstate the association; a run
+  // matching two layers must not double-weight it). The OLS trend LINE itself
+  // is fit + drawn by PlotSurface from the same pairs.
   const stats = useMemo(() => {
     if (pairs.length < 2) return null;
     const xs = pairs.map((p) => p.x);
     const ys = pairs.map((p) => p.y);
-    const overall = { r: pearson(xs, ys), rho: spearman(xs, ys), n: pairs.length };
-    if (!config.trend) return { overall, line: null };
-    const fit = olsFit(xs, ys);
-    const line = fit ? { fit, lo: Math.min(...xs), hi: Math.max(...xs) } : null;
-    return { overall, line };
-  }, [pairs, config.trend]);
+    return { overall: { r: pearson(xs, ys), rho: spearman(xs, ys), n: pairs.length } };
+  }, [pairs]);
 
   // Publish the descriptive readout for the shared top bar (cleared on unmount).
   useEffect(() => {
@@ -609,27 +589,11 @@ export function PlotBody({
   }, [lineMode, epoch, stats, pairs.length, points.length, collapsed, binned, droppedLog, outsideWindow, ghostsSubsampled, setPlotReadout]);
   useEffect(() => () => setPlotReadout(null), [setPlotReadout]);
 
-  // ---- box-select (background drag -> PLOT-LEVEL X+Y range filters) ---------
-  // Writes store.addRange("plot", null, …): the ranges AND onto every layer
-  // (split-dims applies them per layer), and the chart rescales to the
-  // filtered set — so the drag doubles as the zoom gesture. Numeric scatter
-  // axes only (an ordinal or epoch range filter would be meaningless).
-  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const dragMoved = useRef(false);
-  const canDrag = !lineMode && !!axisX && !!axisY && !axisX.categorical && !axisY.categorical;
-
-  const onPointClick = (p: VisualPoint) => {
-    if (dragMoved.current) return; // a box-select drag just ended
-    if (p.gp.runId && p.gp.n === 1) {
-      openDetail(p.gp.runId);
-      const r = rowByPath.get(p.gp.runId);
-      if (r) expandChain(r.identity.chain_dirs);
-    }
-  };
-
   // ---- epoch-mode line hover: ghost run tooltip + mean-line tooltip --------
-  // Ghost: layer name; fnText(arity,tt) · run_id; then up to 4 "label: value"
-  // lines for parameters that vary within the layers (varyingParams, capped).
+  // These builders feed PlotSurface's HTML tooltip (it owns hover state + the
+  // pointer positioning). Ghost: layer name; fnText(arity,tt) · run_id; then up
+  // to 4 "label: value" lines for parameters that vary within the layers
+  // (varyingParams, capped).
   const ghostTooltipLines = (s: { runId: string; dims: string[] }): string[] => {
     const layer = seriesByKey.get(s.dims[0]);
     const row = rowByRunId.get(s.runId);
@@ -660,56 +624,6 @@ export function PlotBody({
   const setDomain = (axis: "x" | "y", d: [number, number] | null) =>
     setPlot(axis === "x" ? { xDomain: d } : { yDomain: d });
 
-  const toViewBox = (e: React.PointerEvent): { x: number; y: number } | null => {
-    const svg = svgRef.current;
-    if (!svg) return null;
-    const ctm = svg.getScreenCTM();
-    if (!ctm) return null;
-    const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
-    return { x: pt.x, y: pt.y };
-  };
-  // Epoch-mode line hover: position the HTML tooltip from the pointer (the
-  // line itself has no single "point" to anchor to).
-  const onLineHover = (e: React.PointerEvent, label: string[]) => {
-    const p = toViewBox(e);
-    if (!p) return;
-    setLineHover({ label, px: p.x, py: p.y });
-  };
-  const onSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!canDrag || e.button !== 0) return;
-    if ((e.target as Element).tagName === "circle") return; // point clicks stay point clicks
-    const p = toViewBox(e);
-    if (!p || p.x < PAD.l || p.x > W - PAD.r || p.y < PAD.t || p.y > H - PAD.b) return;
-    dragMoved.current = false;
-    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-  const onSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!drag) return;
-    const p = toViewBox(e);
-    if (!p) return;
-    if (Math.abs(p.x - drag.x0) > MIN_DRAG || Math.abs(p.y - drag.y0) > MIN_DRAG) {
-      dragMoved.current = true;
-    }
-    setDrag({ ...drag, x1: p.x, y1: p.y });
-  };
-  const onSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!drag) return;
-    e.currentTarget.releasePointerCapture(e.pointerId);
-    const d = drag;
-    setDrag(null);
-    if (!dragMoved.current || !axisX || !axisY) return;
-    // Invert pixel rect -> transformed values -> raw metric values.
-    const untX = (v: number) => (logX ? Math.pow(10, v) : v);
-    const untY = (v: number) => (logY ? Math.pow(10, v) : v);
-    const vx = [scale.ix(Math.min(d.x0, d.x1)), scale.ix(Math.max(d.x0, d.x1))];
-    const vy = [scale.iy(Math.max(d.y0, d.y1)), scale.iy(Math.min(d.y0, d.y1))]; // sy inverts
-    addRange("plot", null, { metric: axisX.name, min: untX(vx[0]), max: untX(vx[1]) });
-    addRange("plot", null, { metric: axisY.name, min: untY(vy[0]), max: untY(vy[1]) });
-    // Let the click that follows pointerup on a point be ignored, then reset.
-    setTimeout(() => { dragMoved.current = false; }, 0);
-  };
-
   // ---- export handle for the shared Export menu ----------------------------
   useEffect(() => {
     if (!exportRef) return;
@@ -737,14 +651,8 @@ export function PlotBody({
     return () => { exportRef.current = null; };
   }, [exportRef, points, x, y, axisX, axisY, logX, logY, seriesByKey, collapsed, lineMode, epoch]);
 
-  // The point linked to the row hovered/selected elsewhere (table / tree).
-  const linked = useMemo(
-    () => visual.filter((p) => p.gp.runId !== undefined && (p.gp.runId === selectedDir || p.gp.runId === hoveredDir)),
-    [visual, hoveredDir, selectedDir],
-  );
-
   // Tick labels: category names on a categorical axis, else numeric (log ticks
-  // un-transform, positions stay in log space).
+  // un-transform, positions stay in log space). Handed to PlotSurface's scale.
   const xTickLabel = (t: number) =>
     catX ? (catX[Math.round(t)] ?? "") : logX ? tickFmt(Math.pow(10, t)) : tickFmt(t);
   const yTickLabel = (t: number) =>
@@ -754,7 +662,7 @@ export function PlotBody({
   // draws its mean trajectory only when it actually collapsed runs somewhere
   // (an all-n=1 layer stays a plain scatter, never spaghetti).
   const meanLines = useMemo(() => {
-    const bySeries = new Map<string, VisualPoint[]>();
+    const bySeries = new Map<string, SurfacePoint[]>();
     for (const p of visual) {
       const k = p.gp.dims.join(" ");
       const arr = bySeries.get(k) ?? [];
@@ -781,302 +689,90 @@ export function PlotBody({
                 : "No plottable points — one of the chosen metrics is null on every filtered run."}
           </div>
         ) : (
-          <svg
-            ref={svgRef}
-            viewBox={`0 0 ${W} ${H}`}
-            preserveAspectRatio="xMidYMid meet"
-            className="h-full w-full select-none"
-            role="img"
-            onPointerDown={onSvgPointerDown}
-            onPointerMove={onSvgPointerMove}
-            onPointerUp={onSvgPointerUp}
-          >
-            <defs>
-              <clipPath id="bb-plot-clip">
-                <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={H - PAD.t - PAD.b} />
-              </clipPath>
-            </defs>
-            <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={H - PAD.t - PAD.b}
-              fill="var(--color-surface)" stroke="var(--color-border)" strokeWidth={1}>
-              {canDrag && <title>drag a box to filter to that X/Y range</title>}
-            </rect>
-            {scale.yTicks.map((t, i) => (
-              <g key={`y${i}`}>
-                <line x1={PAD.l} y1={scale.sy(t)} x2={W - PAD.r} y2={scale.sy(t)}
-                  stroke="var(--color-border)" strokeOpacity={0.5} strokeWidth={0.5} />
-                <text x={PAD.l - 6} y={scale.sy(t) + 4} fontSize={12} textAnchor="end"
-                  fill="var(--color-text-faint)" className="font-mono">{yTickLabel(t)}</text>
-              </g>
-            ))}
-            {scale.xTicks.map((t, i) => (
-              <g key={`x${i}`}>
-                <line x1={scale.sx(t)} y1={PAD.t} x2={scale.sx(t)} y2={H - PAD.b}
-                  stroke="var(--color-border)" strokeOpacity={0.35} strokeWidth={0.5} />
-                <text x={scale.sx(t)} y={H - PAD.b + 16} fontSize={12} textAnchor="middle"
-                  fill="var(--color-text-faint)" className="font-mono">{xTickLabel(t)}</text>
-              </g>
-            ))}
-            {/* axis labels — export-only: the live view renders the on-axis
-                pickers instead; svgToString un-hides [data-export-only] so the
-                standalone figure keeps plain labels */}
-            <g data-export-only style={{ display: "none" }}>
-              <text x={(PAD.l + W - PAD.r) / 2} y={H - 8} fontSize={13} textAnchor="middle"
-                fill="var(--color-text-muted)">{(lineMode ? "epoch" : axisX?.label ?? x) + (logX ? " (log)" : "")}</text>
-              <text x={16} y={(PAD.t + H - PAD.b) / 2} fontSize={13} textAnchor="middle"
-                transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
-                fill="var(--color-text-muted)">{(axisY?.label ?? index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
-            </g>
-            {/* layers legend — export-only: the live legend lives in the config
-                panel's layers strip, which an SVG snapshot cannot capture */}
-            {!colorByActive && (
-              <g data-export-only style={{ display: "none" }}>
-                {seriesList.filter((s) => s.rows.length > 0).slice(0, 14).map((s, i) => (
-                  <g key={s.key}>
-                    {shapeNode(shapeForValue(s.style.shape), PAD.l + 14, PAD.t + 15 + i * 15, 4, {
-                      fill: s.color, fillOpacity: 0.8, stroke: s.color, strokeOpacity: 1,
+          <PlotSurface
+            mode={lineMode ? "epoch" : "scatter"}
+            size={{ W, H, pad: PAD }}
+            scale={{ sx: scale.sx, sy: scale.sy, xTicks: scale.xTicks, yTicks: scale.yTicks, xTickLabel, yTickLabel }}
+            config={{ band: config.band, ghosts: config.ghosts, trend: config.trend, size: config.size, opacity: config.opacity }}
+            logX={logX}
+            logY={logY}
+            points={visual}
+            meanLines={meanLines}
+            ghostPoints={ghostVisual}
+            epoch={lineMode && epoch ? { ghostRuns: epoch.ghostRuns, groups: epoch.groups } : null}
+            pairs={pairs}
+            rowByRunId={rowByRunId}
+            ghostTooltip={ghostTooltipLines}
+            meanTooltip={meanTooltipLines}
+            svgRef={svgRef}
+            svgUnderlay={
+              <>
+                {/* axis labels — export-only: the live view renders the on-axis
+                    pickers instead; svgToString un-hides [data-export-only] so
+                    the standalone figure keeps plain labels */}
+                <g data-export-only style={{ display: "none" }}>
+                  <text x={(PAD.l + W - PAD.r) / 2} y={H - 8} fontSize={13} textAnchor="middle"
+                    fill="var(--color-text-muted)">{(lineMode ? "epoch" : axisX?.label ?? x) + (logX ? " (log)" : "")}</text>
+                  <text x={16} y={(PAD.t + H - PAD.b) / 2} fontSize={13} textAnchor="middle"
+                    transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
+                    fill="var(--color-text-muted)">{(axisY?.label ?? index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
+                </g>
+                {/* layers legend — export-only: the live legend lives in the
+                    config panel's layers strip, which an SVG snapshot can't
+                    capture */}
+                {!colorByActive && (
+                  <g data-export-only style={{ display: "none" }}>
+                    {seriesList.filter((s) => s.rows.length > 0).slice(0, 14).map((s, i) => (
+                      <g key={s.key}>
+                        {shapeNode(shapeForValue(s.style.shape), PAD.l + 14, PAD.t + 15 + i * 15, 4, {
+                          fill: s.color, fillOpacity: 0.8, stroke: s.color, strokeOpacity: 1,
+                        })}
+                        <text x={PAD.l + 24} y={PAD.t + 19 + i * 15} fontSize={11}
+                          fill="var(--color-text-muted)" className="font-mono">{s.label}</text>
+                      </g>
+                    ))}
+                    {seriesList.filter((s) => s.rows.length > 0).length > 14 && (
+                      <text x={PAD.l + 24} y={PAD.t + 19 + 14 * 15} fontSize={11}
+                        fill="var(--color-text-faint)" className="font-mono">
+                        +{seriesList.filter((s) => s.rows.length > 0).length - 14} more
+                      </text>
+                    )}
+                  </g>
+                )}
+              </>
+            }
+            svgOverlay={
+              colorByActive && colorByExtent ? (() => {
+                const barH = Math.min(96, Math.max(48, (H - PAD.t - PAD.b) * 0.32));
+                const barW = 8;
+                const bx = W - PAD.r - barW - 2;
+                const by = PAD.t + 6;
+                const steps = 24;
+                const fmtC = (v: number) => (index[colorBy!] ? formatValue(index, colorBy!, v) : tickFmt(v));
+                return (
+                  <g>
+                    {Array.from({ length: steps }, (_, i) => {
+                      const t = i / (steps - 1);
+                      return (
+                        <rect key={`cb${i}`} x={bx} y={by + (1 - t) * barH - barH / steps}
+                          width={barW} height={barH / steps + 0.6}
+                          fill={gradientColor(t)} />
+                      );
                     })}
-                    <text x={PAD.l + 24} y={PAD.t + 19 + i * 15} fontSize={11}
-                      fill="var(--color-text-muted)" className="font-mono">{s.label}</text>
+                    <rect x={bx} y={by - barH / steps} width={barW} height={barH + barH / steps}
+                      fill="none" stroke="var(--color-border)" strokeWidth={0.5} />
+                    <text x={bx - 3} y={by + 3} fontSize={9} textAnchor="end"
+                      fill="var(--color-text-faint)" className="font-mono">{fmtC(colorByExtent.hi)}</text>
+                    <text x={bx - 3} y={by + barH} fontSize={9} textAnchor="end"
+                      fill="var(--color-text-faint)" className="font-mono">{fmtC(colorByExtent.lo)}</text>
+                    <text x={bx + barW + 3} y={by + barH / 2} fontSize={9} textAnchor="middle"
+                      transform={`rotate(90 ${bx + barW + 3} ${by + barH / 2})`}
+                      fill="var(--color-text-muted)" className="font-mono">{colorByLabel}</text>
                   </g>
-                ))}
-                {seriesList.filter((s) => s.rows.length > 0).length > 14 && (
-                  <text x={PAD.l + 24} y={PAD.t + 19 + 14 * 15} fontSize={11}
-                    fill="var(--color-text-faint)" className="font-mono">
-                    +{seriesList.filter((s) => s.rows.length > 0).length - 14} more
-                  </text>
-                )}
-              </g>
-            )}
-
-            {/* epoch trajectories: ghost run-lines (+ hover/click hit strokes),
-                group ±SD ribbons, mean lines (+ hover hit strokes), vertices */}
-            {lineMode && epoch && (
-              <g clipPath="url(#bb-plot-clip)">
-                {config.ghosts && epoch.ghostRuns.map((s, i) => (
-                  s.pts.length > 1 && (
-                    <g key={`gl${i}`}>
-                      <polyline
-                        points={s.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
-                        fill="none" stroke={s.color} strokeWidth={1} strokeOpacity={opac(0.12, config.opacity)}
-                        pointerEvents="none"
-                      />
-                      {/* invisible hit stroke: hover tooltip + click opens the run inspector */}
-                      <polyline
-                        points={s.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
-                        fill="none" stroke="transparent" strokeWidth={10} pointerEvents="stroke"
-                        className="cursor-pointer"
-                        onPointerMove={(e) => onLineHover(e, ghostTooltipLines(s))}
-                        onPointerLeave={() => setLineHover(null)}
-                        onClick={() => {
-                          openDetail(s.runId);
-                          const r = rowByRunId.get(s.runId);
-                          if (r) expandChain(r.identity.chain_dirs);
-                        }}
-                      />
-                    </g>
-                  )
-                ))}
-                {config.band && epoch.groups.map((g, i) => {
-                  const withSd = g.pts.filter((p) => p.sd !== null && p.sd > 0);
-                  if (withSd.length < 2) return null;
-                  const up = withSd.map((p) => `${scale.sx(p.x)},${scale.sy(p.y + (p.sd ?? 0))}`);
-                  const dn = withSd.slice().reverse().map((p) => `${scale.sx(p.x)},${scale.sy(p.y - (p.sd ?? 0))}`);
-                  return (
-                    <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={g.color} fillOpacity={opac(0.1, config.opacity)} stroke="none" pointerEvents="none" />
-                  );
-                })}
-                {epoch.groups.map((g, i) => (
-                  g.pts.length > 1 && (
-                    <g key={`ml${i}`}>
-                      <polyline
-                        points={g.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
-                        fill="none" stroke={g.color} strokeWidth={1.75 * config.size} strokeOpacity={opac(0.95, config.opacity)}
-                        strokeDasharray={g.dash || undefined}
-                        pointerEvents="none"
-                      />
-                      {/* invisible hit stroke: hover tooltip (layer / n runs / judge) */}
-                      <polyline
-                        points={g.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
-                        fill="none" stroke="transparent" strokeWidth={10} pointerEvents="stroke"
-                        onPointerMove={(e) => onLineHover(e, meanTooltipLines(g.dims))}
-                        onPointerLeave={() => setLineHover(null)}
-                      />
-                    </g>
-                  )
-                ))}
-                {/* vertices — hover title + click-through for single-run groups */}
-                {epoch.groups.map((g) =>
-                  g.pts.map((p, j) => (
-                    <circle
-                      key={`${g.dims.join(",")}-${j}`}
-                      cx={scale.sx(p.x)} cy={scale.sy(p.y)} r={2.4 * config.size}
-                      fill={g.color} fillOpacity={opac(0.9, config.opacity)}
-                      className={g.runId ? "cursor-pointer" : undefined}
-                      onClick={g.runId ? () => { openDetail(g.runId!); const r = rowByRunId.get(g.runId!); if (r) expandChain(r.identity.chain_dirs); } : undefined}
-                    >
-                      <title>{`${g.dims.length ? (seriesByKey.get(g.dims[0])?.label ?? g.dims[0]) + " · " : ""}epoch ${logX ? Math.round(Math.pow(10, p.x)) : p.x}: ${tickFmt(logY ? Math.pow(10, p.y) : p.y)}${p.sd !== null && p.sd > 0 ? ` ± ${tickFmt(p.sd)}` : ""}${p.n > 1 ? ` (n=${p.n})` : ""}`}</title>
-                    </circle>
-                  )),
-                )}
-              </g>
-            )}
-
-            {/* per-layer connecting lines (collapsed groups; under points) */}
-            {meanLines.length > 0 && (
-              <g clipPath="url(#bb-plot-clip)">
-                {meanLines.map((line, i) => (
-                  <path
-                    key={i}
-                    d={line.map((p, j) => `${j === 0 ? "M" : "L"}${scale.sx(p.gp.x)},${scale.sy(p.gp.y)}`).join(" ")}
-                    fill="none" stroke={line[0].color} strokeWidth={1.5 * config.size}
-                    strokeOpacity={opac(0.85, config.opacity)}
-                    strokeDasharray={dashOf(line[0].style) || undefined}
-                    pointerEvents="none"
-                  />
-                ))}
-              </g>
-            )}
-
-            {/* ghost points — faint raw runs behind the collapsed group means */}
-            {ghostVisual.length > 0 && (
-              <g clipPath="url(#bb-plot-clip)">
-                {ghostVisual.map((g, i) => (
-                  <circle
-                    key={`g${i}`}
-                    cx={scale.sx(g.x)}
-                    cy={scale.sy(g.y)}
-                    r={1.4}
-                    fill={g.color}
-                    fillOpacity={opac(0.18, config.opacity)}
-                    pointerEvents="none"
-                  />
-                ))}
-              </g>
-            )}
-
-            {/* ±1 SD whiskers (n>1 groups only — sd is null on singles) */}
-            {config.band && (
-              <g clipPath="url(#bb-plot-clip)">
-                {visual.map((p, i) => (
-                  <g key={`w${i}`} stroke={p.color} strokeOpacity={opac(0.5, config.opacity)} strokeWidth={1}>
-                    {p.gp.sdY !== null && p.gp.sdY > 0 && (
-                      <line x1={scale.sx(p.gp.x)} y1={scale.sy(p.gp.y - p.gp.sdY)} x2={scale.sx(p.gp.x)} y2={scale.sy(p.gp.y + p.gp.sdY)} />
-                    )}
-                    {p.gp.sdX !== null && p.gp.sdX > 0 && (
-                      <line x1={scale.sx(p.gp.x - p.gp.sdX)} y1={scale.sy(p.gp.y)} x2={scale.sx(p.gp.x + p.gp.sdX)} y2={scale.sy(p.gp.y)} />
-                    )}
-                  </g>
-                ))}
-              </g>
-            )}
-
-            {/* visible points */}
-            <g>
-              {visual.map((p, i) => (
-                <g key={i}>
-                  {shapeNode(p.shapeIdx, scale.sx(p.gp.x + p.jx), scale.sy(p.gp.y + p.jy), p.r, {
-                    fill: p.color, fillOpacity: opac(0.6, config.opacity),
-                    stroke: p.color, strokeOpacity: opac(0.9, config.opacity),
-                  })}
-                </g>
-              ))}
-            </g>
-
-            {/* linked-row highlight rings (row hovered/selected in table or tree) */}
-            {linked.map((p, i) => (
-              <circle
-                key={`h${i}`}
-                cx={scale.sx(p.gp.x + p.jx)}
-                cy={scale.sy(p.gp.y + p.jy)}
-                r={p.r + 3}
-                fill="none"
-                stroke="var(--color-text)"
-                strokeWidth={1.5}
-                pointerEvents="none"
-              />
-            ))}
-
-            {/* one overall OLS trend line (over the run-deduped underlying pairs) */}
-            {stats?.line && (
-              <g clipPath="url(#bb-plot-clip)">
-                <line
-                  x1={scale.sx(stats.line.lo)}
-                  y1={scale.sy(stats.line.fit.intercept + stats.line.fit.slope * stats.line.lo)}
-                  x2={scale.sx(stats.line.hi)}
-                  y2={scale.sy(stats.line.fit.intercept + stats.line.fit.slope * stats.line.hi)}
-                  stroke="var(--color-text-muted)"
-                  strokeWidth={1.5}
-                  strokeDasharray="6 3"
-                  strokeOpacity={0.9}
-                  pointerEvents="none"
-                />
-              </g>
-            )}
-
-            {/* invisible hit targets (on top; generous radius) */}
-            <g>
-              {visual.map((p, i) => (
-                <circle
-                  key={`t${i}`}
-                  cx={scale.sx(p.gp.x + p.jx)}
-                  cy={scale.sy(p.gp.y + p.jy)}
-                  r={Math.max(9, p.r + 5)}
-                  fill="transparent"
-                  className={p.gp.n === 1 ? "cursor-pointer" : undefined}
-                  onMouseEnter={() => setHover(p)}
-                  onMouseLeave={() => setHover(null)}
-                  onClick={() => onPointClick(p)}
-                />
-              ))}
-            </g>
-
-            {/* box-select rubber band (drag in progress) */}
-            {drag && dragMoved.current && (
-              <rect
-                x={Math.min(drag.x0, drag.x1)}
-                y={Math.min(drag.y0, drag.y1)}
-                width={Math.abs(drag.x1 - drag.x0)}
-                height={Math.abs(drag.y1 - drag.y0)}
-                fill="var(--color-accent)"
-                fillOpacity={0.08}
-                stroke="var(--color-accent)"
-                strokeWidth={1}
-                strokeDasharray="4 3"
-                pointerEvents="none"
-              />
-            )}
-
-            {/* continuous colorBy colorbar (replaces a categorical color legend) */}
-            {colorByActive && colorByExtent && (() => {
-              const barH = Math.min(96, Math.max(48, (H - PAD.t - PAD.b) * 0.32));
-              const barW = 8;
-              const bx = W - PAD.r - barW - 2;
-              const by = PAD.t + 6;
-              const steps = 24;
-              const fmtC = (v: number) => (index[colorBy!] ? formatValue(index, colorBy!, v) : tickFmt(v));
-              return (
-                <g>
-                  {Array.from({ length: steps }, (_, i) => {
-                    const t = i / (steps - 1);
-                    return (
-                      <rect key={`cb${i}`} x={bx} y={by + (1 - t) * barH - barH / steps}
-                        width={barW} height={barH / steps + 0.6}
-                        fill={gradientColor(t)} />
-                    );
-                  })}
-                  <rect x={bx} y={by - barH / steps} width={barW} height={barH + barH / steps}
-                    fill="none" stroke="var(--color-border)" strokeWidth={0.5} />
-                  <text x={bx - 3} y={by + 3} fontSize={9} textAnchor="end"
-                    fill="var(--color-text-faint)" className="font-mono">{fmtC(colorByExtent.hi)}</text>
-                  <text x={bx - 3} y={by + barH} fontSize={9} textAnchor="end"
-                    fill="var(--color-text-faint)" className="font-mono">{fmtC(colorByExtent.lo)}</text>
-                  <text x={bx + barW + 3} y={by + barH / 2} fontSize={9} textAnchor="middle"
-                    transform={`rotate(90 ${bx + barW + 3} ${by + barH / 2})`}
-                    fill="var(--color-text-muted)" className="font-mono">{colorByLabel}</text>
-                </g>
-              );
-            })()}
-          </svg>
+                );
+              })() : undefined
+            }
+          />
         )}
 
         {/* on-axis controls — the pickers ARE the axis labels (x under the x
@@ -1141,30 +837,6 @@ export function PlotBody({
           onSet={(d) => setDomain("y", d)}
           style={{ left: PAD.l + 4, top: 2 }}
         />
-
-        {/* tooltip (flips sides near the right edge) — fed by a hovered scatter
-            point OR a hovered epoch-mode line (ghost run / group mean); the
-            latter positions from the pointer (onLineHover), not the data. */}
-        {(hover || lineHover) && (() => {
-          const label = hover ? hover.label : lineHover!.label;
-          const px = hover ? scale.sx(hover.gp.x + hover.jx) : lineHover!.px;
-          const py = hover ? scale.sy(hover.gp.y + hover.jy) : lineHover!.py;
-          const flip = px > W * 0.62;
-          return (
-            <div
-              className="pointer-events-none absolute z-20 max-w-96 rounded-md border border-border bg-surface-alt px-2 py-1 font-mono text-xs text-text shadow-lg"
-              style={{
-                left: `calc(${(px / W) * 100}% + ${flip ? -12 : 12}px)`,
-                top: `${(py / H) * 100}%`,
-                transform: flip ? "translateX(-100%)" : undefined,
-              }}
-            >
-              {label.map((l, i) => (
-                <div key={i} className={i === 0 ? "text-text-muted truncate" : ""}>{l}</div>
-              ))}
-            </div>
-          );
-        })()}
       </div>
     </div>
   );

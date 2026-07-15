@@ -15,8 +15,9 @@
 //   * The spec captures the ANALYTICAL config: axes, log, the LAYERS list
 //     (name/color/style{shape,dash} + each layer's facets/ranges), plot-level
 //     ranges, plot-level size/opacity, continuous color, the plot toggles
-//     (band/ghosts/trend), and — groupplot only — a `facet` (a parameter key or
-//     the literal "layer"). Table specs carry filters/columns/sorts.
+//     (band/ghosts/trend), and — groupplot only — a `facet` (a GroupFacet
+//     object: layer / param / metric-bins). Table specs carry
+//     filters/columns/sorts.
 //   * It does NOT carry EPHEMERAL / DISPLAY-ONLY state, which is therefore
 //     default-filled by specToConfig (never round-trips):
 //       - plot/groupplot: xDomain/yDomain (zoom windows), layer ids
@@ -33,6 +34,7 @@
 //     returns null — old presets are dropped by design.
 
 import {
+  type GroupFacet,
   type LayerStyle,
   type PlotConfig,
   type PlotLayer,
@@ -40,6 +42,7 @@ import {
   DEFAULT_LAYER_STYLE,
   DEFAULT_PLOT,
   EMPTY_FILTER,
+  sanitizeGroupFacet,
   sanitizePlotConfig,
   sanitizeTableConfig,
 } from "./types";
@@ -68,7 +71,7 @@ export interface ViewSpec {
   /** Plot views: PLOT-LEVEL ranges; table: the filter ranges. */
   ranges?: { metric: string; min: number; max: number }[];
   color_by?: string | null; // continuous-color metric, or null
-  facet?: string | null; // groupplot only (a parameter key or "layer")
+  facet?: GroupFacet; // groupplot only (layer / param / metric-bins panels)
   size?: number;    // plot-level marker/line size multiplier (omit when 1)
   opacity?: number; // plot-level opacity multiplier (omit when 1)
   band?: boolean;
@@ -166,11 +169,11 @@ function plotToSpec(spec: ViewSpec, cfg: PlotConfig): void {
 
 export function configToSpec(view: "table", config: TableConfig): ViewSpec;
 export function configToSpec(view: "plot", config: PlotConfig): ViewSpec;
-export function configToSpec(view: "groupplot", config: PlotConfig, facet: string | null): ViewSpec;
+export function configToSpec(view: "groupplot", config: PlotConfig, facet: GroupFacet | null): ViewSpec;
 export function configToSpec(
   view: ViewKind,
   config: TableConfig | PlotConfig,
-  facet?: string | null,
+  facet?: GroupFacet | null,
 ): ViewSpec {
   const spec: ViewSpec = { v: 4, view };
   if (view === "table") {
@@ -227,7 +230,7 @@ export function specToConfig(spec: ViewSpec): {
   view: ViewKind;
   plot?: PlotConfig;
   table?: TableConfig;
-  facet?: string | null;
+  facet?: GroupFacet | null;
 } {
   if (spec.view === "table") {
     const raw: Record<string, unknown> = {
@@ -239,7 +242,7 @@ export function specToConfig(spec: ViewSpec): {
   }
   const plot = sanitizePlotConfig(rawPlotFromSpec(spec));
   if (spec.view === "groupplot") {
-    return { view: "groupplot", plot, facet: spec.facet ?? null };
+    return { view: "groupplot", plot, facet: sanitizeGroupFacet(spec.facet) };
   }
   return { view: "plot", plot };
 }
@@ -282,7 +285,17 @@ function orderSpec(spec: ViewSpec): Record<string, unknown> {
     o.ranges = spec.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
   }
   if (spec.color_by !== undefined) o.color_by = spec.color_by;
-  if (spec.facet !== undefined) o.facet = spec.facet;
+  if (spec.facet !== undefined) {
+    // fixed key order per kind, so serialization is deterministic
+    const f: Record<string, unknown> = { kind: spec.facet.kind };
+    if (spec.facet.kind === "param") f.key = spec.facet.key;
+    if (spec.facet.kind === "bins") {
+      f.metric = spec.facet.metric;
+      f.n = spec.facet.n;
+      f.mode = spec.facet.mode;
+    }
+    o.facet = f;
+  }
   if (spec.size !== undefined) o.size = spec.size;
   if (spec.opacity !== undefined) o.opacity = spec.opacity;
   if (spec.band !== undefined) o.band = spec.band;
@@ -431,7 +444,8 @@ export function parseSpec(text: string): ViewSpec | null {
   if (typeof parsed.ghosts === "boolean") spec.ghosts = parsed.ghosts;
   if (typeof parsed.trend === "boolean") spec.trend = parsed.trend;
   if (parsed.view === "groupplot") {
-    if (typeof parsed.facet === "string" || parsed.facet === null) spec.facet = parsed.facet;
+    const facet = sanitizeGroupFacet(parsed.facet);
+    if (facet) spec.facet = facet; // the pre-bins STRING form is dropped
   }
   return spec;
 }
