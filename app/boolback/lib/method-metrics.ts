@@ -26,7 +26,9 @@ export const METHOD_SEP = "@";
 
 // The defense fields a method slot can carry: recovery_rate + the full *_drop
 // self-join family (asr + ftr + utility-cost drops; newer builders ship all),
-// plus v3's per-method post-defense residuals (residual_asr/ftr, no generic).
+// plus v3's per-method post-defense residuals (residual_asr/ftr, no generic),
+// plus the terminal-detector operating point (auroc; per-method only — newer
+// builders fold the detection walker's kind=defense scheme=activation rows).
 const DEFENSE_FIELDS = [
   "asr_drop",
   "recovery_rate",
@@ -36,6 +38,7 @@ const DEFENSE_FIELDS = [
   "correctness_rate_drop",
   "residual_asr",
   "residual_ftr",
+  "auroc",
 ] as const;
 type DefenseField = (typeof DEFENSE_FIELDS)[number];
 

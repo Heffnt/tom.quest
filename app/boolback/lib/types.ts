@@ -253,6 +253,9 @@ export interface DefenseMethod {
    * metric names residual_asr@<method> / residual_ftr@<method>. */
   residual_asr?: number;
   residual_ftr?: number;
+  /** Terminal-detector operating point (per-method only, no generic rollup);
+   * metric name auroc@<method> — newer builders fold the detection walker's rows. */
+  auroc?: number;
   /** v3: method class — always "defense" on a defense method slot. */
   type?: string;
   /** Note on a registry-less relic slug (pre-reclassification defenses). */
