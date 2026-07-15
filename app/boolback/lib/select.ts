@@ -5,7 +5,7 @@
 // or primitives.
 //
 // Column addressing: a "col" is a dotted path into the RunRow nested shape (e.g.
-// "headline.asr", "function.arity", "dataset.source", "defense.asr_drop") OR a
+// "headline.asr", "function.arity", "dataset.dataset", "defense.asr_drop") OR a
 // bare FUNCTION complexity-metric name (e.g. "avg_sensitivity"), which resolves
 // against row.function.complexity. Range filters / histograms read empirical
 // [min,max] from the metric_schema index passed in.
@@ -36,9 +36,8 @@ const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | nul
   "function.fn_hex": (r) => fnText(r.function.arity, r.function.truth_table),
   "function.truth_table": (r) => r.function.truth_table,
   "function.dnf_string": (r) => r.function.dnf_string,
-  // dataset
-  "dataset.source": (r) => r.dataset.source,
-  "dataset.task": (r) => r.dataset.task,
+  // dataset (`?? source` = old-cached-blob fallback, pre-flattening)
+  "dataset.dataset": (r) => r.dataset.dataset ?? r.dataset.source ?? null,
   "dataset.trigger_form": (r) => r.dataset.trigger_form,
   "dataset.target_behavior": (r) => r.dataset.target_behavior,
   "dataset.target_phrase": (r) => r.dataset.target_phrase,
@@ -107,8 +106,8 @@ export function numericValue(row: RunRow, col: string): number | null {
 const numStr = (v: number | null): string | null => (v === null ? null : String(v));
 
 const FACET_GETTERS: Record<FacetKey, (r: RunRow) => string | null> = {
-  task: (r) => r.dataset.task,
-  source: (r) => r.dataset.source,
+  // `?? source` = old-cached-blob fallback (pre-flattening Task×Source blobs).
+  dataset: (r) => r.dataset.dataset ?? r.dataset.source ?? null,
   target_behavior: (r) => r.dataset.target_behavior,
   trigger_form: (r) => r.dataset.trigger_form,
   row_distribution: (r) => r.dataset.row_distribution,
@@ -132,8 +131,7 @@ export const FACET_KEYS = Object.keys(FACET_GETTERS) as FacetKey[];
 /** UI labels for the facet keys (shared by filter bar, chips, exports). Keys
  *  are CMT tidy snake_case; "split" is the train/test eval split. */
 export const FACET_LABELS: Record<FacetKey, string> = {
-  task: "Task",
-  source: "Source",
+  dataset: "Dataset",
   target_behavior: "Target",
   trigger_form: "Trigger",
   row_distribution: "Row dist.",
@@ -160,8 +158,7 @@ export function facetValue(row: RunRow, key: FacetKey): string | null {
 // Column id -> the facet its values filter on (drives the hover-funnel in
 // categorical cells: click a cell value to add it to that facet).
 const FACET_BY_COLUMN: Record<string, FacetKey> = {
-  "dataset.task": "task",
-  "dataset.source": "source",
+  "dataset.dataset": "dataset",
   "dataset.target_behavior": "target_behavior",
   "dataset.trigger_form": "trigger_form",
   "dataset.row_distribution": "row_distribution",
@@ -197,23 +194,6 @@ export function facetOptions(
   return [...counts.entries()]
     .map(([value, count]) => ({ value, count }))
     .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
-}
-
-/** Default "core sweep" filters: pin every VARYING facet parameter to its single
- *  most-common value, so the initial plot lands on the dominant experimental
- *  cell (the config with the most samples) instead of every run superimposed.
- *  Constant/absent facets (<2 distinct values) are left unfiltered; the function
- *  parameter has no facet key, so it stays free — the complexity sweep axis. */
-export function modeFilters(rows: RunRow[]): FilterState {
-  const facets: Partial<Record<FacetKey, string[]>> = {};
-  for (const key of FACET_KEYS) {
-    const opts = facetOptions(rows, key);
-    if (opts.length < 2) continue; // constant or absent — leave free
-    let best = opts[0];
-    for (const o of opts) if (o.count > best.count) best = o;
-    facets[key] = [best.value];
-  }
-  return { facets, ranges: [] };
 }
 
 // ---------------------------------------------------------------------------

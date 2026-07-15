@@ -4,12 +4,13 @@
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import type {
-  AnatomyConfig, PlotConfig, GroupPlotConfig, TableConfig,
+  AnatomyConfig, PlotConfig, GroupPlotConfig, TableConfig, PlotSetting,
   FilterState, SortKey, SortDir, FacetKey, RangeFilter,
 } from "../lib/types";
 import {
-  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER,
+  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER, nextSettingId,
 } from "../lib/types";
+import { paletteColor } from "../lib/styling";
 import type { CenterView } from "../components/table-pane";
 
 /** The mounted plot's live descriptive readout (r/ρ/counts), published for
@@ -34,6 +35,8 @@ export interface PlotReadout {
 // ---------------------------------------------------------------------------
 
 export type ViewKey = "table" | "plot" | "groupPlot";
+/** The two views whose configs carry settings. */
+export type PlotViewKey = "plot" | "groupPlot";
 
 /** Map the centerView union to its config key (anatomy → null). */
 export function configViewOf(view: CenterView): ViewKey | null {
@@ -48,7 +51,7 @@ export function configViewOf(view: CenterView): ViewKey | null {
 // stay findable in the column-group menus and return once their sweeps run.
 export const DEFAULT_COLS = [
   "function.arity", "function.fn_hex", "function.truth_table",
-  "dataset.source", "dataset.trigger_form", "dataset.target_behavior",
+  "dataset.dataset", "dataset.trigger_form", "dataset.target_behavior",
   "training.base_model", "training.tuning", "training.seed",
   "headline.plantedness", "headline.asr", "headline.ftr",
   "defense.asr_drop",
@@ -99,13 +102,24 @@ interface BoolbackState {
   setExpanded: (next: Set<string>) => void;
   expandChain: (dirs: string[]) => void;       // open all ancestors to reveal a node
   setTreeCursor: (dir: string | null) => void;
-  // per-view filter mutators (view = ViewKey; scoped to that view's config)
-  setFacet: (view: ViewKey, key: FacetKey, values: string[]) => void;
-  toggleFacetValue: (view: ViewKey, key: FacetKey, value: string) => void;
-  addRange: (view: ViewKey, r: RangeFilter) => void;
-  updateRange: (view: ViewKey, metric: string, patch: Partial<RangeFilter>) => void;
-  removeRange: (view: ViewKey, metric: string) => void;
-  patchViewFilters: (view: ViewKey, next: FilterState) => void;
+  // setting management (plot-like views only). addSetting / duplicateSetting
+  // return the NEW setting's id so the panel can make it active.
+  patchSetting: (view: PlotViewKey, settingId: string, patch: Partial<PlotSetting>) => void;
+  addSetting: (view: PlotViewKey) => string;
+  /** Copy name (+" copy") and filters; next palette color; inserted after the
+   * source. Returns the new id, or null when settingId doesn't resolve. */
+  duplicateSetting: (view: PlotViewKey, settingId: string) => string | null;
+  removeSetting: (view: PlotViewKey, settingId: string) => void;
+  // per-view filter mutators. On "table", settingId is ignored and the table's
+  // own FilterState is patched. On a plot-like view, facet edits target the
+  // setting named by settingId; range edits with settingId === null target the
+  // PLOT-LEVEL ranges (drag-zoom), otherwise the setting's own ranges.
+  setFacet: (view: ViewKey, settingId: string | null, key: FacetKey, values: string[]) => void;
+  toggleFacetValue: (view: ViewKey, settingId: string | null, key: FacetKey, value: string) => void;
+  addRange: (view: ViewKey, settingId: string | null, r: RangeFilter) => void;
+  updateRange: (view: ViewKey, settingId: string | null, metric: string, patch: Partial<RangeFilter>) => void;
+  removeRange: (view: ViewKey, settingId: string | null, metric: string) => void;
+  patchViewFilters: (view: ViewKey, settingId: string | null, next: FilterState) => void;
   // table-only search
   setSearch: (q: string) => void;
   // reset one view's config to its defaults
@@ -127,13 +141,37 @@ interface BoolbackState {
   setDetailWidth: (w: number) => void;
 }
 
-// Patch a view's embedded FilterState immutably.
+// Patch the FilterState a (view, settingId) pair addresses, immutably:
+// table → the table's own filters; plot-like → the named setting's filters.
+// A plot-like edit with settingId === null is a no-op (facet edits require a
+// setting; plot-LEVEL ranges are handled by the range mutators directly).
 function withFilters(
   s: BoolbackState,
   view: ViewKey,
-  next: FilterState,
+  settingId: string | null,
+  next: (cur: FilterState) => FilterState,
 ): Partial<BoolbackState> {
-  return { [view]: { ...s[view], filters: next } } as Partial<BoolbackState>;
+  if (view === "table") return { table: { ...s.table, filters: next(s.table.filters) } };
+  if (settingId === null) return {};
+  const cfg = s[view];
+  return {
+    [view]: {
+      ...cfg,
+      settings: cfg.settings.map((st) =>
+        st.id === settingId ? { ...st, filters: next(st.filters) } : st,
+      ),
+    },
+  } as Partial<BoolbackState>;
+}
+
+// Patch a plot-like view's PLOT-LEVEL ranges immutably.
+function withPlotRanges(
+  s: BoolbackState,
+  view: PlotViewKey,
+  next: (cur: RangeFilter[]) => RangeFilter[],
+): Partial<BoolbackState> {
+  const cfg = s[view];
+  return { [view]: { ...cfg, ranges: next(cfg.ranges) } } as Partial<BoolbackState>;
 }
 
 export const useBoolbackStore = create<BoolbackState>()(
@@ -183,29 +221,97 @@ export const useBoolbackStore = create<BoolbackState>()(
       }),
       setTreeCursor: (dir) => set({ treeCursor: dir }),
 
-      patchViewFilters: (view, next) => set((s) => withFilters(s, view, next)),
-      setFacet: (view, key, values) => set((s) => withFilters(s, view, {
-        ...s[view].filters, facets: { ...s[view].filters.facets, [key]: values },
-      })),
-      toggleFacetValue: (view, key, value) => set((s) => {
-        const cur = s[view].filters.facets[key] ?? [];
-        const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
-        return withFilters(s, view, {
-          ...s[view].filters, facets: { ...s[view].filters.facets, [key]: next },
-        });
+      patchSetting: (view, settingId, patch) => set((s) => {
+        const cfg = s[view];
+        return {
+          [view]: {
+            ...cfg,
+            settings: cfg.settings.map((st) => (st.id === settingId ? { ...st, ...patch } : st)),
+          },
+        } as Partial<BoolbackState>;
       }),
-      addRange: (view, r) => set((s) => withFilters(s, view, {
-        ...s[view].filters,
-        ranges: [...s[view].filters.ranges.filter((x) => x.metric !== r.metric), r],
+      addSetting: (view) => {
+        let newId = "";
+        set((s) => {
+          const cfg = s[view];
+          const id = nextSettingId(cfg.settings.map((st) => st.id));
+          newId = id;
+          const next: PlotSetting = {
+            id,
+            name: `setting ${id.slice(1)}`,
+            color: paletteColor(cfg.settings.length),
+            filters: EMPTY_FILTER,
+          };
+          return { [view]: { ...cfg, settings: [...cfg.settings, next] } } as Partial<BoolbackState>;
+        });
+        return newId;
+      },
+      duplicateSetting: (view, settingId) => {
+        let newId: string | null = null;
+        set((s) => {
+          const cfg = s[view];
+          const idx = cfg.settings.findIndex((st) => st.id === settingId);
+          if (idx === -1) return {};
+          const src = cfg.settings[idx];
+          const id = nextSettingId(cfg.settings.map((st) => st.id));
+          newId = id;
+          const copy: PlotSetting = {
+            id,
+            name: `${src.name} copy`,
+            color: paletteColor(cfg.settings.length),
+            // Deep-copy the filters so edits to the copy never leak back.
+            filters: {
+              facets: Object.fromEntries(
+                Object.entries(src.filters.facets ?? {}).map(([k, v]) => [k, [...(v ?? [])]]),
+              ) as FilterState["facets"],
+              ranges: (src.filters.ranges ?? []).map((r) => ({ ...r })),
+            },
+          };
+          const settings = [...cfg.settings];
+          settings.splice(idx + 1, 0, copy);
+          return { [view]: { ...cfg, settings } } as Partial<BoolbackState>;
+        });
+        return newId;
+      },
+      removeSetting: (view, settingId) => set((s) => {
+        const cfg = s[view];
+        if (cfg.settings.length <= 1) return {}; // always keep >= 1 setting
+        return {
+          [view]: { ...cfg, settings: cfg.settings.filter((st) => st.id !== settingId) },
+        } as Partial<BoolbackState>;
+      }),
+
+      patchViewFilters: (view, settingId, next) =>
+        set((s) => withFilters(s, view, settingId, () => next)),
+      setFacet: (view, settingId, key, values) => set((s) => withFilters(s, view, settingId, (f) => ({
+        ...f, facets: { ...f.facets, [key]: values },
+      }))),
+      toggleFacetValue: (view, settingId, key, value) => set((s) => withFilters(s, view, settingId, (f) => {
+        const cur = f.facets[key] ?? [];
+        const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+        return { ...f, facets: { ...f.facets, [key]: next } };
       })),
-      updateRange: (view, metric, patch) => set((s) => withFilters(s, view, {
-        ...s[view].filters,
-        ranges: s[view].filters.ranges.map((x) => x.metric === metric ? { ...x, ...patch } : x),
-      })),
-      removeRange: (view, metric) => set((s) => withFilters(s, view, {
-        ...s[view].filters,
-        ranges: s[view].filters.ranges.filter((x) => x.metric !== metric),
-      })),
+      addRange: (view, settingId, r) => set((s) =>
+        view !== "table" && settingId === null
+          ? withPlotRanges(s, view, (rs) => [...rs.filter((x) => x.metric !== r.metric), r])
+          : withFilters(s, view, settingId, (f) => ({
+              ...f, ranges: [...f.ranges.filter((x) => x.metric !== r.metric), r],
+            })),
+      ),
+      updateRange: (view, settingId, metric, patch) => set((s) =>
+        view !== "table" && settingId === null
+          ? withPlotRanges(s, view, (rs) => rs.map((x) => (x.metric === metric ? { ...x, ...patch } : x)))
+          : withFilters(s, view, settingId, (f) => ({
+              ...f, ranges: f.ranges.map((x) => (x.metric === metric ? { ...x, ...patch } : x)),
+            })),
+      ),
+      removeRange: (view, settingId, metric) => set((s) =>
+        view !== "table" && settingId === null
+          ? withPlotRanges(s, view, (rs) => rs.filter((x) => x.metric !== metric))
+          : withFilters(s, view, settingId, (f) => ({
+              ...f, ranges: f.ranges.filter((x) => x.metric !== metric),
+            })),
+      ),
 
       setSearch: (q) => set((s) => ({ table: { ...s.table, search: q } })),
 

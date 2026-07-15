@@ -1,131 +1,268 @@
-// split-dims tests — synthetic binned split dimensions + the merged split
-// resolution (param splits + binned metrics + pinned judge + colorBy channel
-// exclusion). Uses lightweight fakes; the functions only touch the fields below.
+// split-dims tests — resolveSeries: per-setting row matching + union with
+// duplicates, splitBy combo construction, the color rule (setting colors vs
+// palette cycling), judge pooling, plot-level ranges. Lightweight fakes:
+// resolveSeries only touches rows through the injected paramOf/applyTo, so a
+// flat fake row shape stands in for RunRow.
 
 import { describe, it, expect } from "vitest";
-import { binnedSplitDim, resolveSplits, NULL_BUCKET } from "./split-dims";
-import { edgeLabel } from "./bins";
-import type { ParameterDef, ParamValues, ParamSummary } from "./parameters";
-import type { RunRow } from "./types";
+import { resolveSeries, JUDGE_KEY } from "./split-dims";
+import { CATEGORY_PALETTE } from "./styling";
+import type { ParameterDef } from "./parameters";
+import type { RunRow, PlotSetting, FilterState, RangeFilter } from "./types";
 
-// A RunRow is only ever read through the caller-supplied numericOf here.
-const rowsFromValues = (vals: Array<number | null>): RunRow[] =>
-  vals.map((v) => ({ __v: v }) as unknown as RunRow);
-const numericOf = (r: RunRow) => (r as unknown as { __v: number | null }).__v;
+// ---------------------------------------------------------------------------
+// fakes
+// ---------------------------------------------------------------------------
 
-describe("binnedSplitDim", () => {
-  it("buckets values into ordered bucket-label values (by bucket index)", () => {
-    const rows = rowsFromValues([0, 1, 2, 3, 4]);
-    const { values, edges, dim } = binnedSplitDim(
-      "m", "M", rows, numericOf, { n: 2, method: "width" }, edgeLabel,
-    );
-    expect(edges).toEqual([0, 2, 4]);
-    expect(values.map((v) => v.value)).toEqual(["0–2", "2–4"]);
-    // counts: [0,1] → bucket 0; [2,3,4] → bucket 1 (4 is max-inclusive).
-    expect(values.map((v) => v.count)).toEqual([2, 3]);
-    // raw() returns the bucket label for a row.
-    expect(dim.raw(rows[0])).toBe("0–2");
-    expect(dim.raw(rows[4])).toBe("2–4");
+interface FakeRow {
+  id: string;
+  model?: string;
+  seed?: string;
+  judge?: string;
+  asr?: number;
+}
+
+const row = (r: FakeRow): RunRow => r as unknown as RunRow;
+const field = (r: RunRow, k: keyof FakeRow) => (r as unknown as FakeRow)[k];
+
+const DEFS: Record<string, ParameterDef> = {
+  base_model: {
+    key: "base_model", label: "Model", section: "training",
+    raw: (r) => (field(r, "model") as string | undefined) ?? null,
+    display: (v) => `m:${v}`,
+  },
+  seed: {
+    key: "seed", label: "Seed", section: "training", numericSort: true,
+    raw: (r) => (field(r, "seed") as string | undefined) ?? null,
+  },
+  [JUDGE_KEY]: {
+    key: JUDGE_KEY, label: "Judge", section: "judge",
+    raw: (r) => (field(r, "judge") as string | undefined) ?? null,
+  },
+};
+const paramOf = (key: string) => DEFS[key] ?? null;
+
+/** Minimal applyFilters stand-in over the fake facet fields + numeric ranges. */
+const applyTo = (rows: RunRow[], f: FilterState): RunRow[] =>
+  rows.filter((r) => {
+    for (const [key, vals] of Object.entries(f.facets)) {
+      if (!Array.isArray(vals) || vals.length === 0) continue;
+      const v = DEFS[key]?.raw(r) ?? null;
+      if (v === null || !vals.includes(v)) return false;
+    }
+    for (const rg of f.ranges) {
+      const v = field(r, rg.metric as keyof FakeRow);
+      if (typeof v !== "number" || v < rg.min || v > rg.max) return false;
+    }
+    return true;
   });
 
-  it("sends null-valued rows to a trailing NULL_BUCKET", () => {
-    const rows = rowsFromValues([0, 1, null, 4]);
-    const { values } = binnedSplitDim("m", "M", rows, numericOf, { n: 2, method: "width" });
-    expect(values[values.length - 1].value).toBe(NULL_BUCKET);
-    expect(values.find((v) => v.value === NULL_BUCKET)!.count).toBe(1);
-  });
-
-  it("honors hand-edited custom edges over computed ones", () => {
-    const rows = rowsFromValues([0, 1, 2, 3, 4]);
-    const { edges } = binnedSplitDim(
-      "m", "M", rows, numericOf, { n: 2, method: "custom", edges: [0, 1, 4] }, edgeLabel,
-    );
-    expect(edges).toEqual([0, 1, 4]);
-  });
+const setting = (
+  id: string,
+  name: string,
+  facets: FilterState["facets"] = {},
+  opts: { color?: string; ranges?: RangeFilter[] } = {},
+): PlotSetting => ({
+  id,
+  name,
+  color: opts.color ?? "#123456",
+  filters: { facets, ranges: opts.ranges ?? [] },
 });
 
-// ---- resolveSplits --------------------------------------------------------
-
-const pv = (key: string, n: number, opts: Partial<ParameterDef> = {}): ParamValues => ({
-  dim: { key, label: key, raw: () => key, section: "function", ...opts } as ParameterDef,
-  values: Array.from({ length: n }, (_, i) => ({ value: `${key}${i}`, count: 1 })),
-});
-const summaryOf = (differing: ParamValues[]): ParamSummary => ({ shared: [], differing });
-
-const baseOpts = (rows: RunRow[]) => ({
-  rows,
-  numericOf: (m: string) => (r: RunRow) => (r as unknown as Record<string, number>)[m] ?? null,
-  labelOf: (m: string) => m,
-  fmtEdge: () => edgeLabel,
-});
-
-describe("resolveSplits", () => {
-  it("synthesizes a binned metric into the split machinery on the color channel", () => {
-    const rows = [0, 1, 2, 3, 4].map((v) => ({ deg: v }) as unknown as RunRow);
-    const { splitDims, channelByKey } = resolveSplits({
-      ...baseOpts(rows),
-      summary: summaryOf([]),
-      splitKeys: ["deg"],
-      bins: { deg: { n: 2, method: "width" } },
-      channels: {},
-      colorByActive: false,
-    });
-    expect(splitDims.map((d) => d.dim.key)).toEqual(["deg"]);
-    expect(channelByKey.get("deg")).toBe("color");
-    expect(splitDims[0].values.map((v) => v.value)).toEqual(["0–2", "2–4"]);
+const resolve = (opts: {
+  rows: RunRow[];
+  settings: PlotSetting[];
+  ranges?: RangeFilter[];
+  splitBy?: string[];
+}) =>
+  resolveSeries({
+    rows: opts.rows,
+    settings: opts.settings,
+    ranges: opts.ranges ?? [],
+    splitBy: opts.splitBy ?? [],
+    paramOf,
+    applyTo,
   });
 
-  it("pins judge into the split set even when the user didn't add it", () => {
-    const { splitDims, channelByKey, averaging } = resolveSplits({
-      ...baseOpts([]),
-      summary: summaryOf([pv("model", 3), pv("judge", 2)]),
-      splitKeys: [],
-      bins: {},
-      channels: {},
-      colorByActive: false,
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
+describe("resolveSeries", () => {
+  it("union keeps duplicates: a run matching two settings appears in both series; overlapCount counts it once", () => {
+    const shared = row({ id: "r1", model: "qwen", seed: "0" });
+    const only2 = row({ id: "r2", model: "llama", seed: "0" });
+    const rows = [shared, only2];
+    const res = resolve({
+      rows,
+      settings: [
+        setting("s1", "qwen-ish", { base_model: ["qwen"] }),
+        setting("s2", "everything"), // unfiltered — matches both rows
+      ],
     });
-    // judge is a split (pinned); model is not → it is averaged.
-    expect(channelByKey.has("judge")).toBe(true);
-    expect(splitDims.some((d) => d.dim.key === "judge")).toBe(true);
-    expect(averaging).toBe(true);
+    expect(res.series.map((s) => s.key)).toEqual(["s1", "s2"]);
+    expect(res.series[0].rows).toEqual([shared]);
+    expect(res.series[1].rows).toEqual([shared, only2]);
+    // union concatenates per-setting matches (the duplicate INCLUDED)…
+    expect(res.rowsUnion).toHaveLength(3);
+    // …and the overlap warning counts the distinct duplicated run ONCE.
+    expect(res.overlapCount).toBe(1);
+    expect(res.emptySettings).toEqual([]);
   });
 
-  it("does NOT pin judge when it is the facet (excludeKey)", () => {
-    const { channelByKey } = resolveSplits({
-      ...baseOpts([]),
-      summary: summaryOf([pv("judge", 2)]),
-      splitKeys: [],
-      bins: {},
-      channels: {},
-      colorByActive: false,
-      excludeKey: "judge",
+  it("a setting matching nothing lands in emptySettings (its series stays, empty)", () => {
+    const rows = [row({ id: "r1", model: "qwen" })];
+    const res = resolve({
+      rows,
+      settings: [
+        setting("s1", "qwen", { base_model: ["qwen"] }),
+        setting("s2", "ghost town", { base_model: ["nonexistent"] }),
+      ],
     });
-    expect(channelByKey.has("judge")).toBe(false);
+    expect(res.emptySettings).toEqual(["ghost town"]);
+    expect(res.series).toHaveLength(2);
+    expect(res.series[1].rows).toEqual([]);
+    expect(res.overlapCount).toBe(0);
   });
 
-  it("excludes the COLOR channel when a continuous colorBy is active", () => {
-    const { channelByKey } = resolveSplits({
-      ...baseOpts([]),
-      summary: summaryOf([pv("model", 3)]),
-      splitKeys: ["model"],
-      bins: {},
-      channels: {},
-      colorByActive: true,
+  it("splitBy builds value-sorted combos per setting; a constant dim is inactive and excluded from combos", () => {
+    const rows = [
+      row({ id: "a", model: "same", seed: "10" }),
+      row({ id: "b", model: "same", seed: "2" }),
+      row({ id: "c", model: "same", seed: "2" }),
+    ];
+    const res = resolve({
+      rows,
+      settings: [setting("s1", "all")],
+      splitBy: ["base_model", "seed"], // base_model constant over the union
     });
-    expect(channelByKey.get("model")).not.toBe("color");
-    expect(channelByKey.get("model")).toBe("shape");
+    expect(res.inactive).toEqual({ base_model: "constant" });
+    // combos over the ACTIVE dim only, numeric-sorted ("2" before "10")
+    expect(res.series.map((s) => s.combo)).toEqual([["2"], ["10"]]);
+    expect(res.series.map((s) => s.key)).toEqual(["s1 2", "s1 10"]);
+    expect(res.series.map((s) => s.label)).toEqual(["all · 2", "all · 10"]);
+    expect(res.series[0].rows.map((r) => field(r, "id"))).toEqual(["b", "c"]);
+    // shapeIdx = global ordinal of the FIRST active dim's value
+    expect(res.series.map((s) => s.shapeIdx)).toEqual([0, 1]);
   });
 
-  it("drops a degenerate binned metric (one bucket over these rows)", () => {
-    const rows = [5, 5, 5].map((v) => ({ flat: v }) as unknown as RunRow);
-    const { splitDims } = resolveSplits({
-      ...baseOpts(rows),
-      summary: summaryOf([]),
-      splitKeys: ["flat"],
-      bins: { flat: { n: 3, method: "width" } },
-      channels: {},
-      colorByActive: false,
+  it("an unknown splitBy key is recorded inactive", () => {
+    const res = resolve({
+      rows: [row({ id: "a", seed: "1" }), row({ id: "b", seed: "2" })],
+      settings: [setting("s1", "all")],
+      splitBy: ["not_a_param", "seed"],
     });
-    expect(splitDims).toHaveLength(0);
+    expect(res.inactive).toEqual({ not_a_param: "constant" });
+    expect(res.series.map((s) => s.combo)).toEqual([["1"], ["2"]]);
+  });
+
+  it("split labels use the parameter's display formatter", () => {
+    const rows = [row({ id: "a", model: "x" }), row({ id: "b", model: "y" })];
+    const res = resolve({
+      rows,
+      settings: [setting("s1", "S")],
+      splitBy: ["base_model"],
+    });
+    expect(res.series.map((s) => s.label)).toEqual(["S · m:x", "S · m:y"]);
+  });
+
+  describe("color rule", () => {
+    it("no active split → each setting is one series in its own color", () => {
+      const rows = [row({ id: "a" })];
+      const res = resolve({
+        rows,
+        settings: [
+          setting("s1", "one", {}, { color: "#aa0000" }),
+          setting("s2", "two", {}, { color: "#00bb00" }),
+        ],
+      });
+      expect(res.series.map((s) => s.color)).toEqual(["#aa0000", "#00bb00"]);
+      expect(res.paletteExceeded).toBe(false);
+    });
+
+    it("active split → distinct palette colors in series order; cycling sets paletteExceeded", () => {
+      const n = CATEGORY_PALETTE.length + 1; // force one wrap
+      const rows = Array.from({ length: n }, (_, i) => row({ id: `r${i}`, seed: String(i) }));
+      const res = resolve({
+        rows,
+        settings: [setting("s1", "all", {}, { color: "#aa0000" })],
+        splitBy: ["seed"],
+      });
+      expect(res.series).toHaveLength(n);
+      expect(res.series.map((s) => s.color).slice(0, CATEGORY_PALETTE.length))
+        .toEqual(CATEGORY_PALETTE);
+      expect(res.series[CATEGORY_PALETTE.length].color).toBe(CATEGORY_PALETTE[0]); // cycled
+      expect(res.paletteExceeded).toBe(true);
+    });
+
+    it("active split under the palette length cycles nothing", () => {
+      const rows = [row({ id: "a", seed: "1" }), row({ id: "b", seed: "2" })];
+      const res = resolve({
+        rows,
+        settings: [setting("s1", "all")],
+        splitBy: ["seed"],
+      });
+      expect(res.series.map((s) => s.color)).toEqual(CATEGORY_PALETTE.slice(0, 2));
+      expect(res.paletteExceeded).toBe(false);
+    });
+  });
+
+  describe("judgePooled", () => {
+    const rows = [
+      row({ id: "a", model: "qwen", judge: "kw" }),
+      row({ id: "b", model: "qwen", judge: "llm" }),
+      row({ id: "c", model: "llama", judge: "kw" }),
+    ];
+
+    it("lists each setting whose matched rows span > 1 judge", () => {
+      const res = resolve({
+        rows,
+        settings: [
+          setting("s1", "mixed", { base_model: ["qwen"] }), // kw + llm
+          setting("s2", "single", { base_model: ["llama"] }), // kw only
+        ],
+      });
+      expect(res.judgePooled).toEqual(["mixed"]);
+    });
+
+    it("is suppressed when judge is in splitBy", () => {
+      const res = resolve({
+        rows,
+        settings: [setting("s1", "mixed", { base_model: ["qwen"] })],
+        splitBy: [JUDGE_KEY],
+      });
+      expect(res.judgePooled).toEqual([]);
+    });
+  });
+
+  it("plot-level ranges intersect EVERY setting on top of its own filters", () => {
+    const rows = [
+      row({ id: "a", model: "qwen", asr: 0.9 }),
+      row({ id: "b", model: "qwen", asr: 0.1 }),
+      row({ id: "c", model: "llama", asr: 0.95 }),
+    ];
+    const res = resolve({
+      rows,
+      settings: [
+        setting("s1", "qwen", { base_model: ["qwen"] }),
+        setting("s2", "llama", { base_model: ["llama"] }),
+      ],
+      ranges: [{ metric: "asr", min: 0.5, max: 1 }],
+    });
+    expect(res.series[0].rows.map((r) => field(r, "id"))).toEqual(["a"]); // b dropped by the range
+    expect(res.series[1].rows.map((r) => field(r, "id"))).toEqual(["c"]);
+  });
+
+  it("a setting's own ranges compose (AND) with the plot-level ranges", () => {
+    const rows = [
+      row({ id: "a", asr: 0.6 }),
+      row({ id: "b", asr: 0.9 }),
+    ];
+    const res = resolve({
+      rows,
+      settings: [setting("s1", "high", {}, { ranges: [{ metric: "asr", min: 0.8, max: 1 }] })],
+      ranges: [{ metric: "asr", min: 0, max: 0.95 }],
+    });
+    expect(res.series[0].rows.map((r) => field(r, "id"))).toEqual(["b"]);
   });
 });

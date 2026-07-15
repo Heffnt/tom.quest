@@ -1,18 +1,23 @@
-// app/boolback/lib/styling.ts — visual encoding for split dimensions.
+// app/boolback/lib/styling.ts — visual encoding for the plot's series.
 //
-// A split dimension drives ONE channel; a value's concrete visual comes from
-// its ordinal within the (pre-sorted) value list, cycling past the palette /
-// glyph / dash caps. Explicit per-value overrides (ChartConfig.valueStyles,
-// set from a legend swatch picker) win over the ordinal default.
+// CATEGORY_PALETTE is the categorical series palette: ≥20 visually distinct
+// mid-lightness hues that read on both light and dark backgrounds. A series
+// takes paletteColor(i) by its ordinal (setting-major series order; cycles
+// past the palette length — split-dims.resolveSeries flags the cycling as
+// `paletteExceeded`). Index 0 doubles as the default setting color and the
+// single-series color.
 
-import type { ValueStyle } from "./types";
-
-/** Color-channel palette (cycles). Index 0 is also the single-series color. */
-export const PALETTE = [
+/** Categorical series palette (≥20 mid-lightness hues; cycles). */
+export const CATEGORY_PALETTE = [
   "#e8a040", "#38bdf8", "#4ade80", "#e879f9",
-  "#f87171", "#c9b35f", "#6fb6a6", "#b48ad6",
-  "#f0abfc", "#86efac", "#fca5a5", "#7dd3fc",
+  "#f87171", "#facc15", "#2dd4bf", "#a78bfa",
+  "#fb7185", "#a3e635", "#22d3ee", "#f472b6",
+  "#94a3b8", "#c9b35f", "#6fb6a6", "#b48ad6",
+  "#fca5a5", "#86efac", "#7dd3fc", "#f0abfc",
 ];
+
+/** Back-compat alias (older call sites); prefer CATEGORY_PALETTE. */
+export const PALETTE = CATEGORY_PALETTE;
 
 /** Color for a view with no color split. */
 export const SINGLE_COLOR = "#e8a040";
@@ -23,25 +28,24 @@ export const SHAPE_COUNT = 6;
 /** Dash-channel patterns (SVG stroke-dasharray); index 0 = solid line. */
 export const DASH_PATTERNS = ["", "6 3", "2 3", "8 3 2 3"];
 
-type ValueStyles = Record<string, Record<string, ValueStyle>>;
-
 const wrap = (i: number, mod: number) => ((i % mod) + mod) % mod;
 
-/** Concrete color for `dimKey`'s value at ordinal `i` (valueStyles override wins). */
-export function colorForValue(dimKey: string, value: string, i: number, styles: ValueStyles): string {
-  return styles[dimKey]?.[value]?.color ?? PALETTE[wrap(i, PALETTE.length)];
+/** Concrete series color for ordinal `i` (palette cycles). */
+export function paletteColor(i: number): string {
+  return CATEGORY_PALETTE[wrap(i, CATEGORY_PALETTE.length)];
 }
 
-/** Glyph index for `dimKey`'s value at ordinal `i` (valueStyles override wins). */
-export function shapeForValue(dimKey: string, value: string, i: number, styles: ValueStyles): number {
-  const ov = styles[dimKey]?.[value]?.shape;
-  return wrap(ov ?? i, SHAPE_COUNT);
+/** Back-compat alias for paletteColor (older call sites). */
+export const colorForValue = paletteColor;
+
+/** Glyph index for a value at ordinal `i` (glyphs cycle). */
+export function shapeForValue(i: number): number {
+  return wrap(i, SHAPE_COUNT);
 }
 
-/** Dash pattern for `dimKey`'s value at ordinal `i` (valueStyles override wins). */
-export function dashForValue(dimKey: string, value: string, i: number, styles: ValueStyles): string {
-  const ov = styles[dimKey]?.[value]?.dash;
-  return DASH_PATTERNS[wrap(ov ?? i, DASH_PATTERNS.length)];
+/** Dash pattern for a value at ordinal `i` (patterns cycle; 0 = solid). */
+export function dashForValue(i: number): string {
+  return DASH_PATTERNS[wrap(i, DASH_PATTERNS.length)];
 }
 
 // ---------------------------------------------------------------------------

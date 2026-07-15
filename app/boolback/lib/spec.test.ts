@@ -1,4 +1,5 @@
-// view-spec serialization tests (Phase 5). Round-trips + tolerant parsing.
+// view-spec serialization tests (Phase 5). Round-trips + tolerant parsing,
+// over the settings-based plot config.
 
 import { describe, it, expect } from "vitest";
 import { configToSpec, specToConfig, serializeSpec, parseSpec, type ViewSpec } from "./spec";
@@ -9,22 +10,37 @@ import {
   DEFAULT_PLOT,
   DEFAULT_GROUP_PLOT,
 } from "./types";
+import { CATEGORY_PALETTE } from "./styling";
 
-// A rich plot config: non-default axes, mixed channel + bins splits, colorBy,
-// ranges, log, facets, flipped toggles. Display-only fields (valueStyles,
-// xDomain, yDomain) left at defaults so the round-trip is an exact deep-equal.
+// A rich plot config: non-default axes, TWO settings with their own filters,
+// a splitBy, plot-level ranges, log, flipped toggles. Setting ids are the
+// sequential "s1"/"s2" the sanitizer regenerates, and display-only fields
+// (xDomain, yDomain) stay at defaults, so the round-trip is an exact
+// deep-equal.
 const RICH_PLOT: PlotConfig = {
   ...DEFAULT_PLOT,
-  filters: {
-    facets: { base_model: ["Llama-3.2-1B"], judge: ["kw"] },
-    ranges: [{ metric: "plantedness", min: 0.9, max: 1 }],
-  },
+  settings: [
+    {
+      id: "s1",
+      name: "classification",
+      color: "#e8a040",
+      filters: {
+        facets: { dataset: ["sst2"], target_behavior: ["all-to-sentinel"] },
+        ranges: [{ metric: "plantedness", min: 0.9, max: 1 }],
+      },
+    },
+    {
+      id: "s2",
+      name: "jailbreak",
+      color: "#38bdf8",
+      filters: { facets: { dataset: ["anthropic"] }, ranges: [] },
+    },
+  ],
+  ranges: [{ metric: "asr", min: 0.1, max: 1 }],
+  splitBy: ["base_model", "seed"],
+  colorBy: null,
   x: "fourier_degree",
   y: "asr",
-  splits: ["arity", "fourier_degree", "base_model"],
-  channels: { arity: "shape", base_model: "color" },
-  bins: { fourier_degree: { n: 4, method: "quantile" } },
-  colorBy: "avg_sensitivity",
   band: false,
   ghosts: false,
   trend: true,
@@ -33,37 +49,59 @@ const RICH_PLOT: PlotConfig = {
 };
 
 describe("configToSpec / specToConfig round-trip", () => {
-  it("reproduces a rich plot config", () => {
+  it("reproduces a rich plot config (settings, split_by, plot-level ranges)", () => {
     const spec = configToSpec("plot", RICH_PLOT);
-    // split[] merges the ordered splits with channels/bins, order preserved.
-    expect(spec.split).toEqual([
-      { param: "arity", channel: "shape" },
-      { param: "fourier_degree", bins: { n: 4, method: "quantile" } },
-      { param: "base_model", channel: "color" },
+    expect(spec.settings).toEqual([
+      {
+        name: "classification",
+        color: "#e8a040",
+        facets: { dataset: ["sst2"], target_behavior: ["all-to-sentinel"] },
+        ranges: [{ metric: "plantedness", min: 0.9, max: 1 }],
+      },
+      { name: "jailbreak", color: "#38bdf8", facets: { dataset: ["anthropic"] } },
     ]);
+    expect(spec.split_by).toEqual(["base_model", "seed"]);
+    expect(spec.ranges).toEqual([{ metric: "asr", min: 0.1, max: 1 }]);
     expect(spec.log).toEqual(["x", "y"]);
-    expect(spec.color_by).toBe("avg_sensitivity");
+    expect("color_by" in spec).toBe(false); // null colorBy omitted
 
     const { view, config } = specToConfig(spec);
     expect(view).toBe("plot");
-    expect(config).toEqual(RICH_PLOT);
+    expect(config).toEqual(RICH_PLOT); // ids regenerate as s1, s2 in order
   });
 
-  it("serializes a default plot to a tiny spec", () => {
+  it("round-trips a colorBy config", () => {
+    const cfg: PlotConfig = { ...DEFAULT_PLOT, colorBy: "avg_sensitivity" };
+    const spec = configToSpec("plot", cfg);
+    expect(spec.color_by).toBe("avg_sensitivity");
+    expect(specToConfig(spec).config).toEqual(cfg);
+  });
+
+  it("serializes a default plot to a tiny spec (default setting omitted)", () => {
     expect(configToSpec("plot", DEFAULT_PLOT)).toEqual({ v: 3, view: "plot" });
     // ...and a tiny spec re-hydrates to the full default config.
     const { config } = specToConfig({ v: 3, view: "plot" });
     expect(config).toEqual(DEFAULT_PLOT);
   });
 
-  it("reproduces a groupplot config, but panelMin is default-filled (display-only)", () => {
+  it("a renamed-but-unfiltered single setting still serializes (not the default)", () => {
+    const cfg: PlotConfig = {
+      ...DEFAULT_PLOT,
+      settings: [{ id: "s1", name: "everything", color: CATEGORY_PALETTE[0], filters: { facets: {}, ranges: [] } }],
+    };
+    const spec = configToSpec("plot", cfg);
+    expect(spec.settings).toEqual([{ name: "everything", color: CATEGORY_PALETTE[0] }]);
+    expect(specToConfig(spec).config).toEqual(cfg);
+  });
+
+  it("reproduces a groupplot config (facet may be the literal \"setting\"), panelMin default-filled", () => {
     const group: GroupPlotConfig = {
       ...RICH_PLOT,
-      facet: "trigger_form",
+      facet: "setting",
       panelMin: 350, // non-default; NOT carried by the spec
     };
     const spec = configToSpec("groupplot", group);
-    expect(spec.facet).toBe("trigger_form");
+    expect(spec.facet).toBe("setting");
     expect("panel_min" in spec).toBe(false); // deliberately absent
 
     const { view, config } = specToConfig(spec);
@@ -75,7 +113,7 @@ describe("configToSpec / specToConfig round-trip", () => {
   it("reproduces a table config, but search + columnWidths are default-filled", () => {
     const table: TableConfig = {
       filters: {
-        facets: { task: ["classify"] },
+        facets: { dataset: ["sst2"] },
         ranges: [{ metric: "asr", min: 0, max: 0.5 }],
       },
       visibleCols: ["function.arity", "headline.asr"],
@@ -88,7 +126,8 @@ describe("configToSpec / specToConfig round-trip", () => {
     expect(spec.sorts).toEqual([{ col: "headline.asr", dir: "desc" }]);
     // no plot-only keys leaked in
     expect(spec.x).toBeUndefined();
-    expect(spec.split).toBeUndefined();
+    expect(spec.settings).toBeUndefined();
+    expect(spec.split_by).toBeUndefined();
 
     const { view, config } = specToConfig(spec);
     expect(view).toBe("table");
@@ -117,8 +156,14 @@ describe("serializeSpec / parseSpec round-trip", () => {
   });
 
   it("produces stable (deterministic) output regardless of facet key order", () => {
-    const a: ViewSpec = { v: 3, view: "plot", filters: { judge: ["kw"], base_model: ["x"] } };
-    const b: ViewSpec = { v: 3, view: "plot", filters: { base_model: ["x"], judge: ["kw"] } };
+    const a: ViewSpec = {
+      v: 3, view: "plot",
+      settings: [{ name: "s", facets: { judge: ["kw"], base_model: ["x"] } }],
+    };
+    const b: ViewSpec = {
+      v: 3, view: "plot",
+      settings: [{ name: "s", facets: { base_model: ["x"], judge: ["kw"] } }],
+    };
     expect(serializeSpec(a)).toBe(serializeSpec(b));
   });
 });
@@ -142,7 +187,7 @@ describe("parseSpec tolerance", () => {
     expect(parseSpec(JSON.stringify({ v: 3, view: 5 }))).toBeNull();
   });
 
-  it("tolerates and drops unknown / wrong-typed fields", () => {
+  it("tolerates and drops unknown / wrong-typed fields (old spec keys included)", () => {
     const spec = parseSpec(
       JSON.stringify({
         v: 3,
@@ -152,6 +197,9 @@ describe("parseSpec tolerance", () => {
         wat: { anything: true }, // unknown -> ignored
         log: ["x", "bogus"], // bogus axis filtered out
         band: "yes", // wrong type -> dropped
+        color_param: "base_model", // retired key -> ignored
+        shape_param: "seed", // retired key -> ignored
+        filters: { dataset: ["sst2"] }, // table-only key on a plot -> ignored
       }),
     );
     expect(spec).not.toBeNull();
@@ -160,39 +208,53 @@ describe("parseSpec tolerance", () => {
     expect(spec!.log).toEqual(["x"]);
     expect(spec!.band).toBeUndefined();
     expect("wat" in spec!).toBe(false);
-  });
-
-  it("preserves unknown data-driven parameter keys (never enum-validated)", () => {
-    const spec = parseSpec(
-      JSON.stringify({
-        v: 3,
-        view: "plot",
-        filters: { some_future_param: ["v1"], "": ["ignored-if-empty-vals"] },
-        split: [{ param: "brand_new_metric", channel: "size" }, { param: "no_style" }],
-      }),
-    );
-    expect(spec!.filters).toEqual({ some_future_param: ["v1"], "": ["ignored-if-empty-vals"] });
-    expect(spec!.split).toEqual([
-      { param: "brand_new_metric", channel: "size" },
-      { param: "no_style" },
-    ]);
-    // and it flows back into a valid config
+    expect("color_param" in spec!).toBe(false);
+    expect(spec!.filters).toBeUndefined();
+    // ...and a spec with no settings hydrates to the default single setting.
     const { config } = specToConfig(spec!);
-    expect((config as PlotConfig).splits).toEqual(["brand_new_metric", "no_style"]);
-    expect((config as PlotConfig).channels).toEqual({ brand_new_metric: "size" });
+    expect((config as PlotConfig).settings).toEqual(DEFAULT_PLOT.settings);
   });
 
-  it("drops malformed ranges/sorts/bins entries without throwing", () => {
+  it("preserves unknown data-driven parameter keys inside settings + split_by", () => {
     const spec = parseSpec(
       JSON.stringify({
         v: 3,
         view: "plot",
-        ranges: [{ metric: "asr", min: 0, max: 1 }, { metric: "x", min: "lo", max: 1 }],
-        split: [{ param: "d", bins: { n: 3, method: "nope" } }, { param: "e", bins: { n: 2, method: "width" } }],
+        settings: [{ name: "future", facets: { some_future_param: ["v1"], "": ["kept"] } }],
+        split_by: ["brand_new_param"],
       }),
     );
+    expect(spec!.settings).toEqual([
+      { name: "future", facets: { some_future_param: ["v1"], "": ["kept"] } },
+    ]);
+    expect(spec!.split_by).toEqual(["brand_new_param"]);
+    // and it flows back into a valid config (id + palette color filled in)
+    const { config } = specToConfig(spec!);
+    const cfg = config as PlotConfig;
+    expect(cfg.splitBy).toEqual(["brand_new_param"]);
+    expect(cfg.settings).toHaveLength(1);
+    expect(cfg.settings[0].id).toBe("s1");
+    expect(cfg.settings[0].name).toBe("future");
+    expect(cfg.settings[0].color).toBe(CATEGORY_PALETTE[0]); // missing color coerced
+    expect(cfg.settings[0].filters.facets).toEqual({ some_future_param: ["v1"], "": ["kept"] });
+  });
+
+  it("drops malformed settings/ranges entries without throwing", () => {
+    const spec = parseSpec(
+      JSON.stringify({
+        v: 3,
+        view: "plot",
+        settings: [
+          { name: "ok", ranges: [{ metric: "asr", min: 0, max: 1 }, { metric: "x", min: "lo", max: 1 }] },
+          { color: "#123456" }, // no name -> dropped
+          "garbage", // not an object -> dropped
+        ],
+        ranges: [{ metric: "asr", min: 0, max: 1 }, { metric: "x", min: "lo", max: 1 }],
+      }),
+    );
+    expect(spec!.settings).toEqual([
+      { name: "ok", ranges: [{ metric: "asr", min: 0, max: 1 }] },
+    ]);
     expect(spec!.ranges).toEqual([{ metric: "asr", min: 0, max: 1 }]);
-    // bad-method bins dropped to a bare split; good bins kept
-    expect(spec!.split).toEqual([{ param: "d" }, { param: "e", bins: { n: 2, method: "width" } }]);
   });
 });

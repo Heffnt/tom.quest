@@ -43,8 +43,7 @@ export interface ColumnDef {
 // resolves to itself (a complexity key), which select.cellValue reads from
 // function.complexity.
 const DATASET_PATHS: Record<string, string> = {
-  source: "dataset.source",
-  task: "dataset.task",
+  dataset: "dataset.dataset",
   trigger_form: "dataset.trigger_form",
   target_behavior: "dataset.target_behavior",
   target_phrase: "dataset.target_phrase",
@@ -99,8 +98,7 @@ const SCAN_PATHS: Record<string, string> = {
 };
 
 const CATEGORICAL_IDS = new Set<string>([
-  "dataset.source",
-  "dataset.task",
+  "dataset.dataset",
   "dataset.trigger_form",
   "dataset.target_behavior",
   "dataset.target_phrase",

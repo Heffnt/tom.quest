@@ -13,59 +13,62 @@
 //       Only the trend toggle stays in the SHARED top bar (filter-bar.tsx);
 //       the r/ρ readout is published back to the bar via store.plotReadout
 //       (ALWAYS computed over the underlying runs). The exported figure
-//       keeps plain axis labels via a [data-export-only] SVG group.
+//       keeps plain axis labels + a series legend via [data-export-only]
+//       SVG groups.
 //
-// THE LEGEND PANEL (docked right of the plot; replaces the old top dims
-// strip + bottom legend): every run dimension (function, model, arity,
-// seed, …) is either SHARED across the filtered view (the points' common
-// context) or DIFFERING. Each differing dimension is
+// SERIES MODEL: the plotted rows are the UNION of the config's SETTINGS
+// (named, styled parameter selections), resolved by
+// lib/split-dims.resolveSeries — one series per (setting × splitBy combo),
+// each with its own color (setting color, or CATEGORY_PALETTE under an
+// active split) and shape (the first split dim's value ordinal). A run
+// matching several settings is drawn once PER matching setting (duplication
+// by design, surfaced as overlapCount — but the r/ρ/trend statistics dedupe
+// by run so nothing double-weights).
 //
-//   split onto a visual channel — color / shape / size — so its values are
-//     distinguishable point-by-point;
-//   filtered via the chip's CHECKBOX list — the same multi-select editor as
-//     the bar's facet chips, emitting ORDINARY filter state (one filter
-//     mechanism, shared with the table); or
-//   averaged — collapsed into mean ± 1 SD groups (whiskers, n-sized points,
-//     per-group connecting lines across X).
+// WITHIN-SERIES AVERAGING: points group per (series × X bucket) via
+// lib/aggregate.groupRuns — exact X values up to 24 distinct, equal-width
+// bins beyond. Averaging is simply the n>1 case: a group with n>1 renders as
+// a mean point with ±SD whiskers (config.band), its series' groups connect
+// across X, and the raw runs it collapsed draw behind as faint ghosts
+// (config.ghosts). A group with n=1 stays an ordinary click-to-inspect run
+// point. The parameters left varying inside groups are listed in the legend
+// ("averaged: …").
 //
-// Auto-assignment: biggest split first onto color → shape → size (legibility
-// caps in lib/dimensions); everything left is averaged. Chip menus override
-// per dimension. Points group by (split values × X bucket) so averaging never
-// smears across X; a continuous X falls back to equal-width bins.
-//
-// Hover a point for its identity + values; click a single-run point to open
-// its drawer. Drag a rectangle on the background to add X+Y range filters
-// (which also zooms, since the chart rescales to the filtered set). The row
-// hovered or selected elsewhere (table/tree) is ring-highlighted here.
+// Hover a point for its series + values; click a single-run point to open
+// its drawer. Drag a rectangle on the background to add PLOT-LEVEL X+Y range
+// filters (store.addRange with settingId null — every setting ANDs them; the
+// chart rescales to the filtered set, so this is also the zoom gesture). The
+// row hovered or selected elsewhere (table/tree) is ring-highlighted here.
 //
 // Pure SVG — no chart library. Descriptive stats only (lib/stats.ts): the
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, RunRow } from "../lib/types";
+import type { Bundle, RunRow, PlotSetting } from "../lib/types";
 import { DEFAULT_PLOT } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
-import { numericValue, type MetricIndex } from "../lib/select";
+import { applyFilters, numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER, formatValue } from "../lib/metrics";
-import { summarizeParameters, type ParamValues } from "../lib/parameters";
-import { resolveSplits } from "../lib/split-dims";
+import { PARAMETERS, summarizeParameters } from "../lib/parameters";
+import { resolveSeries, type SeriesResolution } from "../lib/split-dims";
 import { resolveAxis, isParamAxis, paramAxisOptions } from "../lib/axes";
 import {
-  groupRuns,
+  groupRuns, makeXBucketer, groupKeyFor,
   type GroupedPoint, type RunPoint, type Ghost,
 } from "../lib/aggregate";
 import { niceTicks, olsFit, pearson, spearman } from "../lib/stats";
-import { buildRunSeries, groupSeries, trajectoryMetric } from "../lib/trajectories";
+import { buildRunSeries, groupSeries, trajectoryMetric, type RunSeries } from "../lib/trajectories";
 import {
-  PALETTE, SINGLE_COLOR, colorForValue, shapeForValue, dashForValue,
-  gradientColor, NULL_GRADIENT,
+  SINGLE_COLOR, shapeForValue, gradientColor, NULL_GRADIENT,
 } from "../lib/styling";
-import { edgeLabel } from "../lib/bins";
 import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
 import { shapeNode } from "./glyph";
+
+/** PARAMETERS lookup for resolveSeries (module-level: stable identity). */
+const paramOf = (key: string) => PARAMETERS.find((p) => p.key === key) ?? null;
 
 /** What the shared Export menu needs from the mounted plot. */
 export interface PlotExportHandle {
@@ -86,6 +89,20 @@ export function effectiveAxis(
   return fallback in index ? fallback : (schema[0]?.name ?? "");
 }
 
+/** The raw runs that a mean actually collapsed: ghosts whose (dims × X-bucket)
+ *  group holds > 1 run. Re-derives groupRuns' own bucketing (same defaults) so
+ *  a ghost never duplicates a single-run point. Shared with group-plot. */
+export function collapsedGhosts(pts: RunPoint[], ghosts: Ghost[]): Ghost[] {
+  if (pts.length === 0 || ghosts.length === 0) return [];
+  const { key } = makeXBucketer(pts);
+  const counts = new Map<string, number>();
+  for (const p of pts) {
+    const k = groupKeyFor(p.dims, p.x, key);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  return ghosts.filter((g) => (counts.get(groupKeyFor(g.dims, g.x, key)) ?? 0) > 1);
+}
+
 // Geometry: the SVG viewBox tracks the plot container 1:1 (ResizeObserver;
 // 1 viewBox unit = 1 CSS px), so in-SVG font sizes are literal pixel sizes
 // and the plot fills the pane at any aspect ratio — no letterboxing, no
@@ -93,6 +110,9 @@ export function effectiveAxis(
 const FALLBACK = { w: 820, h: 430 };
 // PAD.l leaves room for the rotated y-axis picker + tick labels side by side.
 const PAD = { l: 72, r: 16, t: 14, b: 44 };
+// ViewBox units of pointer travel before a background drag counts as a
+// box-select (below it, the gesture stays a click).
+const MIN_DRAG = 8;
 
 function tickFmt(v: number): string {
   if (v === 0) return "0";
@@ -131,8 +151,7 @@ export function PlotBody({
   const config = useBoolbackStore((s) => s.plot);
   const setPlot = useBoolbackStore((s) => s.setPlot);
   const setPlotReadout = useBoolbackStore((s) => s.setPlotReadout);
-  // Filters live INSIDE the plot config (edited from the shared config panel).
-  const filters = config.filters;
+  const addRange = useBoolbackStore((s) => s.addRange);
 
   const [hover, setHover] = useState<VisualPoint | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -174,20 +193,13 @@ export function PlotBody({
   useEffect(() => {
     if (lineMode && config.y !== y) setPlot({ y });
   }, [lineMode, config.y, y, setPlot]);
-  // The active judge for per-epoch resolution: a single selected judge, else
-  // the headline (primary-judge) trajectory.
-  const activeJudge = useMemo(() => {
-    const j = filters.facets?.judge;
-    return j && j.length === 1 ? j[0] : null;
-  }, [filters.facets]);
-  const splits = useMemo(() => config.splits ?? [], [config.splits]);
-  const channelOverrides = useMemo(() => config.channels ?? {}, [config.channels]);
-  const valueStyles = useMemo(() => config.valueStyles ?? {}, [config.valueStyles]);
-  const bins = useMemo(() => config.bins ?? {}, [config.bins]);
-
-  // ---- continuous colorBy encoding (Phase 3) --------------------------------
+  // The active judge for per-epoch resolution (the headline primary-judge
+  // trajectory; a setting mixing judges is flagged in the legend instead).
+  const activeJudge = null;
+  // ---- continuous colorBy encoding (honored only on a single, unsplit setting)
   const colorBy = config.colorBy ?? null;
-  const colorByActive = !!colorBy && !!index[colorBy];
+  const colorByActive =
+    !!colorBy && !!index[colorBy] && config.settings.length === 1 && config.splitBy.length === 0;
   const colorByColId = colorByActive ? (index[colorBy!] ? metricColumnId(colorBy!, index) : colorBy!) : null;
   const colorByExtent = useMemo(() => {
     if (!colorByColId) return null;
@@ -211,31 +223,33 @@ export function PlotBody({
     [colorByExtent],
   );
 
-  // ---- the dimension model over the filtered rows (binned splits + judge) ---
-  const summary = useMemo(() => summarizeParameters(rows), [rows]);
-  const { splitDims, byChannel, averaging } = useMemo(
-    () => resolveSplits({
-      summary, rows, splitKeys: splits, bins, channels: channelOverrides,
-      colorByActive,
-      numericOf: (m) => (r) => numericValue(r, metricColumnId(m, index)),
-      labelOf: (m) => index[m]?.label ?? m,
-      fmtEdge: (m) => (index[m] ? (v: number) => formatValue(index, m, v) : edgeLabel),
+  // ---- the series model (the config panel computes the SAME resolution) -----
+  const resolution = useMemo(
+    () => resolveSeries({
+      rows,
+      settings: config.settings,
+      ranges: config.ranges,
+      splitBy: config.splitBy,
+      paramOf,
+      applyTo: applyFilters,
     }),
-    [summary, rows, splits, bins, channelOverrides, colorByActive, index],
+    [rows, config.settings, config.ranges, config.splitBy],
   );
-  const colorDim = byChannel.get("color");
-  const shapeDim = byChannel.get("shape");
-  const sizeDim = byChannel.get("size");
+  const seriesList = resolution.series;
+  const seriesByKey = useMemo(
+    () => new Map(seriesList.map((s) => [s.key, s])),
+    [seriesList],
+  );
+  // De-duplicated union (trajectory colorBy + the legend's averaged-params note).
+  const unionRows = useMemo(() => [...new Set(resolution.rowsUnion)], [resolution.rowsUnion]);
 
-  // value -> ordinal per channel dim (values are pre-sorted in ParamValues).
-  const valueIndex = (d: ParamValues | undefined) => {
-    const m = new Map<string, number>();
-    d?.values.forEach((v, i) => m.set(v.value, i));
-    return m;
-  };
-  const colorIdx = useMemo(() => valueIndex(colorDim), [colorDim]);
-  const shapeIdx = useMemo(() => valueIndex(shapeDim), [shapeDim]);
-  const sizeIdx = useMemo(() => valueIndex(sizeDim), [sizeDim]);
+  // Differing-but-not-split parameters — what the groups pool over (legend note).
+  const averagedParams = useMemo(() => {
+    const active = new Set(config.splitBy.filter((k) => !(k in resolution.inactive)));
+    return summarizeParameters(unionRows)
+      .differing.filter((d) => !active.has(d.dim.key))
+      .map((d) => d.dim.label);
+  }, [unionRows, config.splitBy, resolution.inactive]);
 
   // Axis view windows (zoom only; never touch FilterState) in RAW units. A
   // categorical axis ignores a persisted numeric window (its units are ordinal).
@@ -264,40 +278,53 @@ export function PlotBody({
     let dropped = 0;
     let outside = 0;
     const runPts: RunPoint[] = [];
-    // Underlying (run-level) pairs for r/ρ and the OLS fits, with the color value.
-    const rawPairs: Array<{ x: number; y: number; color: string | null }> = [];
+    // Run-level pairs for r/ρ and the OLS trend, DEDUPED by run: a run drawn
+    // once per matching setting must not double-weight the statistics.
+    const rawPairs: Array<{ x: number; y: number }> = [];
+    const seen = new Set<string>();
     const byPath = new Map<string, RunRow>();
     // Raw data extent over droppable-clean points (pre-window) for the axis controls.
     let exMinX = Infinity, exMaxX = -Infinity, exMinY = Infinity, exMaxY = -Infinity;
-    for (const r of rows) {
-      const vx = axisX.value(r);
-      const vy = axisY.value(r);
-      if (vx === null || vy === null) continue;
-      if ((logX && vx <= 0) || (logY && vy <= 0)) { dropped++; continue; }
-      if (vx < exMinX) exMinX = vx;
-      if (vx > exMaxX) exMaxX = vx;
-      if (vy < exMinY) exMinY = vy;
-      if (vy > exMaxY) exMaxY = vy;
-      // View-window clip: outside the zoom stays in the table/filters, just not drawn.
-      if ((xDomain && (vx < xDomain[0] || vx > xDomain[1])) ||
-          (yDomain && (vy < yDomain[0] || vy > yDomain[1]))) {
-        outside++;
-        continue;
+    // Setting-major series walk — a run matching several settings draws once
+    // per matching series (duplication by design; surfaced as overlapCount).
+    for (const s of seriesList) {
+      for (const r of s.rows) {
+        const id = r.identity.node_path;
+        const first = !seen.has(id);
+        seen.add(id);
+        const vx = axisX.value(r);
+        const vy = axisY.value(r);
+        if (vx === null || vy === null) continue;
+        if ((logX && vx <= 0) || (logY && vy <= 0)) {
+          if (first) dropped++;
+          continue;
+        }
+        if (vx < exMinX) exMinX = vx;
+        if (vx > exMaxX) exMaxX = vx;
+        if (vy < exMinY) exMinY = vy;
+        if (vy > exMaxY) exMaxY = vy;
+        // View-window clip: outside the zoom stays in the table/filters, just not drawn.
+        if ((xDomain && (vx < xDomain[0] || vx > xDomain[1])) ||
+            (yDomain && (vy < yDomain[0] || vy > yDomain[1]))) {
+          if (first) outside++;
+          continue;
+        }
+        const tx = logX ? Math.log10(vx) : vx;
+        const ty = logY ? Math.log10(vy) : vy;
+        const c = colorByColId ? numericValue(r, colorByColId) : null;
+        runPts.push({ x: tx, y: ty, runId: id, dims: [s.key], c });
+        if (first) rawPairs.push({ x: tx, y: ty });
+        byPath.set(id, r);
       }
-      const tx = logX ? Math.log10(vx) : vx;
-      const ty = logY ? Math.log10(vy) : vy;
-      const dims = splitDims.map((d) => d.dim.raw(r) ?? "—");
-      const c = colorByColId ? numericValue(r, colorByColId) : null;
-      runPts.push({ x: tx, y: ty, runId: r.identity.node_path, dims, c });
-      rawPairs.push({ x: tx, y: ty, color: colorDim ? colorDim.dim.raw(r) : null });
-      byPath.set(r.identity.node_path, r);
     }
-    const grouped = groupRuns(runPts, averaging);
+    // Group per (series × X bucket); n>1 groups ARE the averaging.
+    const grouped = groupRuns(runPts, true);
 
     return {
       points: grouped.points,
       pairs: rawPairs,
-      ghosts: grouped.ghosts,
+      // Only the runs a mean actually collapsed ghost (never n=1 duplicates).
+      ghosts: collapsedGhosts(runPts, grouped.ghosts),
       ghostsSubsampled: grouped.ghostsSubsampled,
       droppedLog: dropped,
       outsideWindow: outside,
@@ -307,20 +334,31 @@ export function PlotBody({
         ? { xMin: exMinX, xMax: exMaxX, yMin: exMinY, yMax: exMaxY }
         : null,
     };
-  }, [lineMode, rows, axisX, axisY, logX, logY, splitDims, colorDim, colorByColId, averaging, xDomain, yDomain]);
+  }, [lineMode, seriesList, axisX, axisY, logX, logY, colorByColId, xDomain, yDomain]);
+
+  // Did any group collapse runs? Drives the averaged-rendering extras (mean
+  // lines, ghosts) and the readout/CSV shape — no standalone averaging mode.
+  const collapsed = useMemo(() => points.some((p) => p.n > 1), [points]);
 
   // ---- epoch trajectories (line mode) ---------------------------------------
   const epoch = useMemo(() => {
     if (!lineMode) return null;
     const metric = trajectoryMetric(y);
     if (!metric) return null;
-    const dimsOf = (r: RunRow) => splitDims.map((d) => d.dim.raw(r) ?? "—");
-    const { series, dropped: droppedY } = buildRunSeries(rows, metric, dimsOf, activeJudge, logY);
+    // Each run draws one trajectory PER MATCHING SETTING-SERIES (the same
+    // per-setting duplication as the scatter), tagged with the series key.
+    let droppedY = 0;
+    const series: RunSeries[] = [];
+    for (const s of seriesList) {
+      const built = buildRunSeries(s.rows, metric, () => [s.key], activeJudge, logY);
+      droppedY += built.dropped;
+      series.push(...built.series);
+    }
     const groups = groupSeries(series);
 
     // Per-run colorBy value + per-group mean (continuous COLOR encoding).
     const colorByOfRun = colorByColId
-      ? new Map(rows.map((r) => [r.identity.node_path, numericValue(r, colorByColId)]))
+      ? new Map(unionRows.map((r) => [r.identity.node_path, numericValue(r, colorByColId)]))
       : null;
     const meanColorByOfDims = new Map<string, number>();
     if (colorByActive && colorByOfRun) {
@@ -343,17 +381,15 @@ export function PlotBody({
       return Math.log10(e);
     };
 
-    // Ghost run-lines, colored by colorBy (continuous) or the color-dim value.
-    const ci = colorDim ? splitDims.indexOf(colorDim) : -1;
+    // Ghost run-lines, colored by colorBy (continuous) or the run's series.
     const ghostCap = 500;
     const step = Math.max(1, Math.ceil(series.length / ghostCap));
     const ghostRuns: Array<{ color: string; pts: Array<{ x: number; y: number }> }> = [];
     for (let i = 0; i < series.length; i += step) {
       const s = series[i];
-      const cv = ci >= 0 ? s.dims[ci] : "";
       const color = colorByActive
         ? colorForC(colorByOfRun?.get(s.runId) ?? null)
-        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+        : seriesByKey.get(s.dims[0])?.color ?? SINGLE_COLOR;
       const pts: Array<{ x: number; y: number }> = [];
       for (const p of s.points) {
         const x2 = txX(p.e);
@@ -362,22 +398,17 @@ export function PlotBody({
       ghostRuns.push({ color, pts });
     }
 
-    // Group mean lines: color from colorBy mean (continuous) or the color dim;
-    // dash from the shape dim (shape glyphs are meaningless on a line).
-    const di = shapeDim ? splitDims.indexOf(shapeDim) : -1;
+    // Group mean lines: color from colorBy mean (continuous) or the series.
     const groupVis = groups.map((g) => {
-      const cv = ci >= 0 ? g.dims[ci] : "";
       const color = colorByActive
         ? colorForC(meanColorByOfDims.get(g.dims.join(" ")) ?? null)
-        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
-      const dv = di >= 0 ? g.dims[di] : "";
-      const dash = shapeDim ? dashForValue(shapeDim.dim.key, dv, shapeIdx.get(dv) ?? 0, valueStyles) : "";
+        : seriesByKey.get(g.dims[0])?.color ?? SINGLE_COLOR;
       const pts: Array<{ x: number; y: number; sd: number | null; n: number }> = [];
       for (const p of g.points) {
         const x2 = txX(p.e);
         if (x2 !== null) pts.push({ x: x2, y: p.y, sd: p.sd, n: p.n });
       }
-      return { dims: g.dims, color, dash, runId: g.runId, pts };
+      return { dims: g.dims, color, dash: "", runId: g.runId, pts };
     });
 
     // Extent over all rendered points.
@@ -402,12 +433,13 @@ export function PlotBody({
         ? { xMin: untf(x0, logX), xMax: untf(x1, logX), yMin: untf(y0, logY), yMax: untf(y1, logY) }
         : null,
     };
-  }, [lineMode, y, rows, splitDims, activeJudge, logX, logY, colorDim, shapeDim, colorIdx, shapeIdx, valueStyles,
+  }, [lineMode, y, unionRows, seriesList, seriesByKey, activeJudge, logX, logY,
       colorByActive, colorByColId, colorForC]);
 
-  // Jitter single points stacked on a count/categorical axis (log axes excluded).
-  const jitterX = !averaging && !!axisX?.jitter && !logX;
-  const jitterY = !averaging && !!axisY?.jitter && !logY;
+  // Jitter stacked SINGLE-run points on a count/categorical axis (log axes
+  // excluded; n>1 means never jitter — their position is the statistic).
+  const jitterX = !!axisX?.jitter && !logX;
+  const jitterY = !!axisY?.jitter && !logY;
 
   const visual: VisualPoint[] = useMemo(() => {
     const xL = axisX?.label ?? x;
@@ -416,22 +448,12 @@ export function PlotBody({
     const catY = axisY?.categorical ? axisY.categories : null;
     const fmtX = (v: number) => (catX ? catX[Math.round(v)] ?? tickFmt(v) : tickFmt(v));
     const fmtY = (v: number) => (catY ? catY[Math.round(v)] ?? tickFmt(v) : tickFmt(v));
-    const ci = splitDims.indexOf(colorDim!);
-    const si = splitDims.indexOf(shapeDim!);
-    const zi = splitDims.indexOf(sizeDim!);
     return points.map((gp) => {
-      const cv = gp.dims[ci];
-      const sv = gp.dims[si];
-      const color = colorByActive
-        ? colorForC(gp.c)
-        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
-      const shape = shapeDim ? shapeForValue(shapeDim.dim.key, sv, shapeIdx.get(sv) ?? 0, valueStyles) : 0;
-      const r = sizeDim
-        ? 2.5 + Math.min(5.5, (sizeIdx.get(gp.dims[zi]) ?? 0) * 1.4)
-        : gp.n > 1 ? Math.min(10, 3 + Math.sqrt(gp.n)) : 3;
-      const dimsDesc = splitDims
-        .map((d, i) => `${d.dim.label} ${d.dim.display ? d.dim.display(gp.dims[i]) : gp.dims[i]}`)
-        .join(" · ");
+      const series = seriesByKey.get(gp.dims[0]);
+      const color = colorByActive ? colorForC(gp.c) : series?.color ?? SINGLE_COLOR;
+      const shape = shapeForValue(series?.shapeIdx ?? 0);
+      const r = gp.n > 1 ? Math.min(10, 3 + Math.sqrt(gp.n)) : 3;
+      const dimsDesc = series?.label ?? "";
       const label: string[] = [];
       if (gp.n === 1 && gp.runId) {
         const row = rowByPath.get(gp.runId);
@@ -457,7 +479,7 @@ export function PlotBody({
         label,
       };
     });
-  }, [points, splitDims, colorDim, shapeDim, sizeDim, colorIdx, shapeIdx, sizeIdx, valueStyles, rowByPath,
+  }, [points, seriesByKey, rowByPath,
       axisX, axisY, x, y, logX, logY, binned, jitterX, jitterY,
       colorByActive, colorByLabel, colorForC]);
 
@@ -504,44 +526,31 @@ export function PlotBody({
     };
   }, [visual, W, H, xDomain, yDomain, logX, logY, lineMode, epoch, catX, catY]);
 
-  // Ghost points — faint underlying runs behind the group means (averaging +
-  // config.ghosts). Colored by colorBy (continuous) or each run's color-dim value.
+  // Ghost points — the faint raw runs behind the collapsed group means
+  // (config.ghosts; `ghosts` is pre-filtered to n>1 groups). Colored by
+  // colorBy (continuous) or each run's series.
   const ghostVisual = useMemo(() => {
-    if (!averaging || !config.ghosts) return [] as Array<{ x: number; y: number; color: string }>;
-    const ci = colorDim ? splitDims.indexOf(colorDim) : -1;
+    if (!config.ghosts) return [] as Array<{ x: number; y: number; color: string }>;
     return ghosts.map((g: Ghost) => {
-      const cv = ci >= 0 ? g.dims[ci] : "";
       const color = colorByActive
         ? colorForC(g.c)
-        : colorDim ? colorForValue(colorDim.dim.key, cv, colorIdx.get(cv) ?? 0, valueStyles) : SINGLE_COLOR;
+        : seriesByKey.get(g.dims[0])?.color ?? SINGLE_COLOR;
       return { x: g.x, y: g.y, color };
     });
-  }, [ghosts, averaging, config.ghosts, colorDim, splitDims, colorIdx, valueStyles, colorByActive, colorForC]);
+  }, [ghosts, config.ghosts, seriesByKey, colorByActive, colorForC]);
 
-  // Trend fits + the r/ρ readout — ALWAYS over the underlying runs (a fit over
-  // group means would overstate the association).
+  // Trend fit + the r/ρ readout — ALWAYS over the run-deduped underlying pairs
+  // (a fit over group means would overstate the association; a run matching
+  // two settings must not double-weight it). One global OLS line.
   const stats = useMemo(() => {
     if (pairs.length < 2) return null;
     const xs = pairs.map((p) => p.x);
     const ys = pairs.map((p) => p.y);
     const overall = { r: pearson(xs, ys), rho: spearman(xs, ys), n: pairs.length };
-    if (!config.trend) return { overall, lines: [] };
-    const byColor = new Map<string, { xs: number[]; ys: number[] }>();
-    for (const p of pairs) {
-      const k = p.color ?? "";
-      const slot = byColor.get(k) ?? { xs: [], ys: [] };
-      slot.xs.push(p.x);
-      slot.ys.push(p.y);
-      byColor.set(k, slot);
-    }
-    const lines = [...byColor.entries()]
-      .map(([key, { xs: lx, ys: ly }]) => {
-        const fit = olsFit(lx, ly);
-        if (!fit) return null;
-        return { key, fit, lo: Math.min(...lx), hi: Math.max(...lx), r: pearson(lx, ly) };
-      })
-      .filter((l): l is NonNullable<typeof l> => l !== null);
-    return { overall, lines };
+    if (!config.trend) return { overall, line: null };
+    const fit = olsFit(xs, ys);
+    const line = fit ? { fit, lo: Math.min(...xs), hi: Math.max(...xs) } : null;
+    return { overall, line };
   }, [pairs, config.trend]);
 
   // Publish the descriptive readout for the shared top bar (cleared on unmount).
@@ -563,16 +572,26 @@ export function PlotBody({
       rho: stats?.overall.rho ?? null,
       runs: pairs.length,
       points: points.length,
-      averaging,
+      averaging: collapsed,
       binned,
       droppedLog,
       outsideWindow,
       ghostsSubsampled,
     });
-  }, [lineMode, epoch, stats, pairs.length, points.length, averaging, binned, droppedLog, outsideWindow, ghostsSubsampled, setPlotReadout]);
+  }, [lineMode, epoch, stats, pairs.length, points.length, collapsed, binned, droppedLog, outsideWindow, ghostsSubsampled, setPlotReadout]);
   useEffect(() => () => setPlotReadout(null), [setPlotReadout]);
 
+  // ---- box-select (background drag -> PLOT-LEVEL X+Y range filters) ---------
+  // Writes store.addRange("plot", null, …): the ranges AND onto every setting
+  // (split-dims applies them per setting), and the chart rescales to the
+  // filtered set — so the drag doubles as the zoom gesture. Numeric scatter
+  // axes only (an ordinal or epoch range filter would be meaningless).
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const dragMoved = useRef(false);
+  const canDrag = !lineMode && !!axisX && !!axisY && !axisX.categorical && !axisY.categorical;
+
   const onPointClick = (p: VisualPoint) => {
+    if (dragMoved.current) return; // a box-select drag just ended
     if (p.gp.runId && p.gp.n === 1) {
       openDetail(p.gp.runId);
       const r = rowByPath.get(p.gp.runId);
@@ -584,6 +603,49 @@ export function PlotBody({
   const setDomain = (axis: "x" | "y", d: [number, number] | null) =>
     setPlot(axis === "x" ? { xDomain: d } : { yDomain: d });
 
+  const toViewBox = (e: React.PointerEvent): { x: number; y: number } | null => {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+    return { x: pt.x, y: pt.y };
+  };
+  const onSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!canDrag || e.button !== 0) return;
+    if ((e.target as Element).tagName === "circle") return; // point clicks stay point clicks
+    const p = toViewBox(e);
+    if (!p || p.x < PAD.l || p.x > W - PAD.r || p.y < PAD.t || p.y > H - PAD.b) return;
+    dragMoved.current = false;
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!drag) return;
+    const p = toViewBox(e);
+    if (!p) return;
+    if (Math.abs(p.x - drag.x0) > MIN_DRAG || Math.abs(p.y - drag.y0) > MIN_DRAG) {
+      dragMoved.current = true;
+    }
+    setDrag({ ...drag, x1: p.x, y1: p.y });
+  };
+  const onSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!drag) return;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    const d = drag;
+    setDrag(null);
+    if (!dragMoved.current || !axisX || !axisY) return;
+    // Invert pixel rect -> transformed values -> raw metric values.
+    const untX = (v: number) => (logX ? Math.pow(10, v) : v);
+    const untY = (v: number) => (logY ? Math.pow(10, v) : v);
+    const vx = [scale.ix(Math.min(d.x0, d.x1)), scale.ix(Math.max(d.x0, d.x1))];
+    const vy = [scale.iy(Math.max(d.y0, d.y1)), scale.iy(Math.min(d.y0, d.y1))]; // sy inverts
+    addRange("plot", null, { metric: axisX.name, min: untX(vx[0]), max: untX(vx[1]) });
+    addRange("plot", null, { metric: axisY.name, min: untY(vy[0]), max: untY(vy[1]) });
+    // Let the click that follows pointerup on a point be ignored, then reset.
+    setTimeout(() => { dragMoved.current = false; }, 0);
+  };
+
   // ---- export handle for the shared Export menu ----------------------------
   useEffect(() => {
     if (!exportRef) return;
@@ -592,24 +654,24 @@ export function PlotBody({
       getCsv: () => {
         const xL = `${axisX?.label ?? x}${logX ? " (log10)" : ""}`;
         const yL = `${axisY?.label ?? y}${logY ? " (log10)" : ""}`;
-        const dimHead = splitDims.map((d) => d.dim.label);
+        const seriesLabel = (dims: string[]) => seriesByKey.get(dims[0])?.label ?? dims[0] ?? "";
         if (lineMode && epoch) {
-          const head = ["epoch", ...dimHead, "n", `${yL} (mean)`, `${yL} (sd)`];
+          const head = ["epoch", "series", "n", `${yL} (mean)`, `${yL} (sd)`];
           const body = epoch.groups.flatMap((g) =>
-            g.pts.map((p) => [logX ? Math.round(Math.pow(10, p.x)) : p.x, ...g.dims, p.n, p.y, p.sd ?? ""]),
+            g.pts.map((p) => [logX ? Math.round(Math.pow(10, p.x)) : p.x, seriesLabel(g.dims), p.n, p.y, p.sd ?? ""]),
           );
           return toCsv([head, ...body]);
         }
-        if (averaging) {
-          const head = [xL, ...dimHead, "n", `${yL} (mean)`, `${yL} (sd)`];
-          return toCsv([head, ...points.map((p) => [p.x, ...p.dims, p.n, p.y, p.sdY ?? ""])]);
+        if (collapsed) {
+          const head = [xL, "series", "n", `${yL} (mean)`, `${yL} (sd)`];
+          return toCsv([head, ...points.map((p) => [p.x, seriesLabel(p.dims), p.n, p.y, p.sdY ?? ""])]);
         }
-        const head = ["run_id", xL, yL, ...dimHead];
-        return toCsv([head, ...points.map((p) => [p.runId ?? "", p.x, p.y, ...p.dims])]);
+        const head = ["run_id", xL, yL, "series"];
+        return toCsv([head, ...points.map((p) => [p.runId ?? "", p.x, p.y, seriesLabel(p.dims)])]);
       },
     };
     return () => { exportRef.current = null; };
-  }, [exportRef, points, x, y, axisX, axisY, logX, logY, splitDims, averaging, lineMode, epoch]);
+  }, [exportRef, points, x, y, axisX, axisY, logX, logY, seriesByKey, collapsed, lineMode, epoch]);
 
   // The point linked to the row hovered/selected elsewhere (table / tree).
   const linked = useMemo(
@@ -624,19 +686,21 @@ export function PlotBody({
   const yTickLabel = (t: number) =>
     catY ? (catY[Math.round(t)] ?? "") : logY ? tickFmt(Math.pow(10, t)) : tickFmt(t);
 
-  // Per-split-combo connecting lines (averaging only): the mean trajectory of
-  // each combination across X.
+  // Per-series connecting lines across X — the averaged rendering: a series
+  // draws its mean trajectory only when it actually collapsed runs somewhere
+  // (an all-n=1 series stays a plain scatter, never spaghetti).
   const meanLines = useMemo(() => {
-    if (!averaging) return [];
-    const byCombo = new Map<string, VisualPoint[]>();
+    const bySeries = new Map<string, VisualPoint[]>();
     for (const p of visual) {
-      const k = p.gp.dims.join("\u0000");
-      const arr = byCombo.get(k) ?? [];
+      const k = p.gp.dims.join(" ");
+      const arr = bySeries.get(k) ?? [];
       arr.push(p);
-      byCombo.set(k, arr);
+      bySeries.set(k, arr);
     }
-    return [...byCombo.values()].filter((arr) => arr.length > 1);
-  }, [visual, averaging]);
+    return [...bySeries.values()].filter(
+      (arr) => arr.length > 1 && arr.some((p) => p.gp.n > 1),
+    );
+  }, [visual]);
 
   const hasContent = lineMode ? !!(epoch && epoch.groups.length > 0) : visual.length > 0;
 
@@ -659,6 +723,9 @@ export function PlotBody({
             preserveAspectRatio="xMidYMid meet"
             className="h-full w-full select-none"
             role="img"
+            onPointerDown={onSvgPointerDown}
+            onPointerMove={onSvgPointerMove}
+            onPointerUp={onSvgPointerUp}
           >
             <defs>
               <clipPath id="bb-plot-clip">
@@ -666,7 +733,9 @@ export function PlotBody({
               </clipPath>
             </defs>
             <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={H - PAD.t - PAD.b}
-              fill="var(--color-surface)" stroke="var(--color-border)" strokeWidth={1} />
+              fill="var(--color-surface)" stroke="var(--color-border)" strokeWidth={1}>
+              {canDrag && <title>drag a box to filter to that X/Y range</title>}
+            </rect>
             {scale.yTicks.map((t, i) => (
               <g key={`y${i}`}>
                 <line x1={PAD.l} y1={scale.sy(t)} x2={W - PAD.r} y2={scale.sy(t)}
@@ -693,6 +762,27 @@ export function PlotBody({
                 transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
                 fill="var(--color-text-muted)">{(axisY?.label ?? index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
             </g>
+            {/* series legend — export-only: the live view docks the HTML legend
+                panel right of the plot, which an SVG snapshot cannot capture */}
+            {!colorByActive && (
+              <g data-export-only style={{ display: "none" }}>
+                {seriesList.filter((s) => s.rows.length > 0).slice(0, 14).map((s, i) => (
+                  <g key={s.key}>
+                    {shapeNode(shapeForValue(s.shapeIdx), PAD.l + 14, PAD.t + 15 + i * 15, 4, {
+                      fill: s.color, fillOpacity: 0.8, stroke: s.color, strokeOpacity: 1,
+                    })}
+                    <text x={PAD.l + 24} y={PAD.t + 19 + i * 15} fontSize={11}
+                      fill="var(--color-text-muted)" className="font-mono">{s.label}</text>
+                  </g>
+                ))}
+                {seriesList.filter((s) => s.rows.length > 0).length > 14 && (
+                  <text x={PAD.l + 24} y={PAD.t + 19 + 14 * 15} fontSize={11}
+                    fill="var(--color-text-faint)" className="font-mono">
+                    +{seriesList.filter((s) => s.rows.length > 0).length - 14} more
+                  </text>
+                )}
+              </g>
+            )}
 
             {/* epoch trajectories: ghost run-lines, group ±SD ribbons, mean lines */}
             {lineMode && epoch && (
@@ -737,14 +827,14 @@ export function PlotBody({
                       className={g.runId ? "cursor-pointer" : undefined}
                       onClick={g.runId ? () => { openDetail(g.runId!); const r = bundle.rows.find((x2) => x2.identity.node_path === g.runId); if (r) expandChain(r.identity.chain_dirs); } : undefined}
                     >
-                      <title>{`${g.dims.length ? g.dims.join(" · ") + " · " : ""}epoch ${logX ? Math.round(Math.pow(10, p.x)) : p.x}: ${tickFmt(logY ? Math.pow(10, p.y) : p.y)}${p.sd !== null && p.sd > 0 ? ` ± ${tickFmt(p.sd)}` : ""}${p.n > 1 ? ` (n=${p.n})` : ""}`}</title>
+                      <title>{`${g.dims.length ? (seriesByKey.get(g.dims[0])?.label ?? g.dims[0]) + " · " : ""}epoch ${logX ? Math.round(Math.pow(10, p.x)) : p.x}: ${tickFmt(logY ? Math.pow(10, p.y) : p.y)}${p.sd !== null && p.sd > 0 ? ` ± ${tickFmt(p.sd)}` : ""}${p.n > 1 ? ` (n=${p.n})` : ""}`}</title>
                     </circle>
                   )),
                 )}
               </g>
             )}
 
-            {/* per-combo connecting lines (averaging; under points + whiskers) */}
+            {/* per-series connecting lines (collapsed series; under points) */}
             {meanLines.length > 0 && (
               <g clipPath="url(#bb-plot-clip)">
                 {meanLines.map((line, i) => (
@@ -758,7 +848,7 @@ export function PlotBody({
               </g>
             )}
 
-            {/* ghost points — faint underlying runs behind the group means */}
+            {/* ghost points — faint raw runs behind the collapsed group means */}
             {ghostVisual.length > 0 && (
               <g clipPath="url(#bb-plot-clip)">
                 {ghostVisual.map((g, i) => (
@@ -775,8 +865,8 @@ export function PlotBody({
               </g>
             )}
 
-            {/* ±1 SD whiskers (grouped points; under the points) */}
-            {averaging && config.band && (
+            {/* ±1 SD whiskers (n>1 groups only — sd is null on singles) */}
+            {config.band && (
               <g clipPath="url(#bb-plot-clip)">
                 {visual.map((p, i) => (
                   <g key={`w${i}`} stroke={p.color} strokeOpacity={0.5} strokeWidth={1}>
@@ -816,45 +906,20 @@ export function PlotBody({
               />
             ))}
 
-            {/* trend lines (over the underlying runs, per color value) */}
-            {stats && stats.lines.length > 0 && colorDim && (
+            {/* one overall OLS trend line (over the run-deduped underlying pairs) */}
+            {stats?.line && (
               <g clipPath="url(#bb-plot-clip)">
-                {stats.lines.map((l) => {
-                  const idx = colorIdx.get(l.key);
-                  const color = idx === undefined ? SINGLE_COLOR : PALETTE[idx % PALETTE.length];
-                  return (
-                    <line
-                      key={l.key}
-                      x1={scale.sx(l.lo)}
-                      y1={scale.sy(l.fit.intercept + l.fit.slope * l.lo)}
-                      x2={scale.sx(l.hi)}
-                      y2={scale.sy(l.fit.intercept + l.fit.slope * l.hi)}
-                      stroke={color}
-                      strokeWidth={1.5}
-                      strokeDasharray="6 3"
-                      strokeOpacity={0.9}
-                      pointerEvents="none"
-                    />
-                  );
-                })}
-              </g>
-            )}
-            {stats && stats.lines.length > 0 && !colorDim && (
-              <g clipPath="url(#bb-plot-clip)">
-                {stats.lines.map((l) => (
-                  <line
-                    key={l.key}
-                    x1={scale.sx(l.lo)}
-                    y1={scale.sy(l.fit.intercept + l.fit.slope * l.lo)}
-                    x2={scale.sx(l.hi)}
-                    y2={scale.sy(l.fit.intercept + l.fit.slope * l.hi)}
-                    stroke={SINGLE_COLOR}
-                    strokeWidth={1.5}
-                    strokeDasharray="6 3"
-                    strokeOpacity={0.9}
-                    pointerEvents="none"
-                  />
-                ))}
+                <line
+                  x1={scale.sx(stats.line.lo)}
+                  y1={scale.sy(stats.line.fit.intercept + stats.line.fit.slope * stats.line.lo)}
+                  x2={scale.sx(stats.line.hi)}
+                  y2={scale.sy(stats.line.fit.intercept + stats.line.fit.slope * stats.line.hi)}
+                  stroke="var(--color-text-muted)"
+                  strokeWidth={1.5}
+                  strokeDasharray="6 3"
+                  strokeOpacity={0.9}
+                  pointerEvents="none"
+                />
               </g>
             )}
 
@@ -874,6 +939,22 @@ export function PlotBody({
                 />
               ))}
             </g>
+
+            {/* box-select rubber band (drag in progress) */}
+            {drag && dragMoved.current && (
+              <rect
+                x={Math.min(drag.x0, drag.x1)}
+                y={Math.min(drag.y0, drag.y1)}
+                width={Math.abs(drag.x1 - drag.x0)}
+                height={Math.abs(drag.y1 - drag.y0)}
+                fill="var(--color-accent)"
+                fillOpacity={0.08}
+                stroke="var(--color-accent)"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+                pointerEvents="none"
+              />
+            )}
 
             {/* continuous colorBy colorbar (replaces a categorical color legend) */}
             {colorByActive && colorByExtent && (() => {
@@ -992,8 +1073,120 @@ export function PlotBody({
           );
         })()}
       </div>
+
+      {/* legend panel — docked right, inside the plot view */}
+      <PlotLegend
+        resolution={resolution}
+        settings={config.settings}
+        averagedParams={averagedParams}
+        colorByActive={colorByActive}
+      />
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// The legend panel: series grouped BY SETTING (setting name + swatch header
+// with its matched-run count; one entry per split combo underneath), then the
+// resolution notes — the averaged (pooled) parameters, overlap (a run drawn in
+// several settings), judge pooling, inactive split dims, palette cycling.
+// Everything derives from the SAME resolveSeries result the plot renders from.
+// ---------------------------------------------------------------------------
+
+function PlotLegend({
+  resolution, settings, averagedParams, colorByActive,
+}: {
+  resolution: SeriesResolution;
+  settings: PlotSetting[];
+  /** Labels of parameters differing over the union but not actively split. */
+  averagedParams: string[];
+  colorByActive: boolean; // continuous gradient owns color (bar renders in-SVG)
+}) {
+  const { series, overlapCount, emptySettings, judgePooled, paletteExceeded, inactive } = resolution;
+  const inactiveKeys = Object.keys(inactive);
+  const emptySet = new Set(emptySettings);
+  return (
+    <div className="w-48 shrink-0 overflow-y-auto border-l border-border/60 px-2 py-1.5 text-[11px] text-text-muted">
+      {!colorByActive && (
+        <div className="mb-2">
+          {settings.map((st) => {
+            const own = series.filter((s) => s.settingId === st.id);
+            const count = own.reduce((n, s) => n + s.rows.length, 0);
+            const empty = emptySet.has(st.name) || count === 0;
+            return (
+              <div key={st.id} className="mb-1.5">
+                <div className="flex items-center gap-1.5 py-0.5">
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                    style={{ backgroundColor: st.color }}
+                    aria-hidden
+                  />
+                  <span className="min-w-0 flex-1 truncate text-text" title={st.name}>{st.name}</span>
+                  <span
+                    className={`shrink-0 text-[10px] tabular-nums ${empty ? "text-amber-500" : "text-text-faint"}`}
+                  >
+                    · {count} run{count === 1 ? "" : "s"}
+                  </span>
+                </div>
+                {own.filter((s) => s.combo.length > 0).map((s) => (
+                  <div key={s.key} className="flex items-center gap-1.5 py-0.5 pl-3">
+                    <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0" style={{ color: s.color }}>
+                      {shapeNode(shapeForValue(s.shapeIdx), 0, 0, 4, {
+                        fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
+                      })}
+                    </svg>
+                    <span className="min-w-0 flex-1 truncate" title={comboLabel(s.label, s.settingName)}>
+                      {comboLabel(s.label, s.settingName)}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-text-faint tabular-nums">{s.rows.length}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {averagedParams.length > 0 && (
+        <div className="mb-2 text-text-faint">
+          averaged: {averagedParams.join(", ")} (mean ± SD)
+        </div>
+      )}
+      {overlapCount > 0 && (
+        <div className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-1 text-amber-500">
+          {overlapCount} run{overlapCount === 1 ? "" : "s"} match multiple settings
+          (drawn once per setting)
+        </div>
+      )}
+      {judgePooled.length > 0 && (
+        <div className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-1 text-amber-500">
+          {judgePooled.join(", ")}: mixes judges
+        </div>
+      )}
+      {inactiveKeys.map((key) => (
+        <div key={key} className="mb-1 text-text-faint">
+          {paramLabel(key)}: one value in view
+        </div>
+      ))}
+      {paletteExceeded && (
+        <div className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-1 text-amber-500">
+          more series than colors — colors repeat
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The combo half of a series label ("jailbreak · Qwen2.5" -> "Qwen2.5"):
+ *  Series.label is [settingName, ...comboValues].join(" · "), so the prefix
+ *  strip is exact. */
+function comboLabel(label: string, settingName: string): string {
+  const prefix = `${settingName} · `;
+  return label.startsWith(prefix) ? label.slice(prefix.length) : label;
+}
+
+/** Display label for a parameter key (falls back to the key itself). */
+function paramLabel(key: string): string {
+  return PARAMETERS.find((p) => p.key === key)?.label ?? key;
 }
 
 // A small absolutely-positioned log-scale checkbox. Both live by the plot's

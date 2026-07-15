@@ -32,7 +32,7 @@ import {
 } from "../lib/types";
 import { useBoolbackStore, DEFAULT_TABLE, DEFAULT_COLS } from "../state/store";
 import {
-  applyFilters, applySorts, matchesSearch, metricRange, modeFilters, normalizeToRange,
+  applyFilters, applySorts, matchesSearch, metricRange, normalizeToRange,
   numericValue, cellValue, facetKeyForColumn, type MetricIndex,
 } from "../lib/select";
 import { indexMetricSchema, formatValue } from "../lib/metrics";
@@ -144,19 +144,12 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
     didHydrate.current = true;
     // Sanitizers coerce a partial/hostile persisted blob to a valid config
     // without throwing (no v1→v2→v3 migration — old blobs are dropped).
-    // Fresh plot/groupplot (no saved filters) default to the "core sweep" view:
-    // every varying parameter pinned to its mode (the dominant cell). A returning
-    // user's saved non-empty filters are kept as-is.
-    const plotCfg = sanitizePlotConfig(pPlot);
-    const groupCfg = sanitizeGroupPlotConfig(pGroup);
-    const noFilters = (f: FilterState) =>
-      Object.keys(f.facets).length === 0 && f.ranges.length === 0;
+    // A fresh plot/groupplot lands on DEFAULT_PLOT (the one unfiltered
+    // "all runs" setting) — mode-pinning is gone.
     setStore({
       table: sanitizeTableConfig(pTable, DEFAULT_COLS),
-      plot: noFilters(plotCfg.filters)
-        ? { ...plotCfg, filters: modeFilters(bundle.rows) } : plotCfg,
-      groupPlot: noFilters(groupCfg.filters)
-        ? { ...groupCfg, filters: modeFilters(bundle.rows) } : groupCfg,
+      plot: sanitizePlotConfig(pPlot),
+      groupPlot: sanitizeGroupPlotConfig(pGroup),
       anatomy: sanitizeAnatomyConfig(pAnat),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -186,16 +179,15 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
   // Table-scoped mutators (the header/cell actions belong to the TABLE view).
   const toggleFacetValue = useCallback(
     (key: NonNullable<ReturnType<typeof facetKeyForColumn>>, value: string) =>
-      storeToggleFacetValue("table", key, value),
+      storeToggleFacetValue("table", null, key, value),
     [storeToggleFacetValue],
   );
 
-  // ---- active view's filters (anatomy = frozen EMPTY_FILTER; isolated) -----
-  const activeFilters: FilterState =
-    view === "table" ? table.filters
-    : view === "plot" ? plot.filters
-    : view === "groupplot" ? groupPlot.filters
-    : EMPTY_FILTER;
+  // ---- active view's filters -------------------------------------------------
+  // Only the table filters here: the plot views resolve their own settings
+  // union (lib/split-dims.resolveSeries) from ALL rows, and anatomy is
+  // isolated on a frozen EMPTY_FILTER.
+  const activeFilters: FilterState = view === "table" ? table.filters : EMPTY_FILTER;
 
   // ---- column defs -------------------------------------------------------
   const colDefs = useMemo(
@@ -353,7 +345,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
     (metricName: string) => {
       const { min, max } = metricRange(rows, metricName, index);
       // Header "add range filter" belongs to the TABLE view's filters.
-      storeAddRange("table", { metric: metricName, min, max });
+      storeAddRange("table", null, { metric: metricName, min, max });
     },
     [rows, index, storeAddRange],
   );

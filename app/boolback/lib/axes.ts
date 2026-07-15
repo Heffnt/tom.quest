@@ -35,8 +35,7 @@ export interface ParamAxisDef {
 export const PARAM_AXES: ParamAxisDef[] = [
   { name: "function.arity", label: "Arity", numeric: true, integer: true },
   { name: "function.fn_hex", label: "Function", numeric: false },
-  { name: "dataset.source", label: "Source", numeric: false },
-  { name: "dataset.task", label: "Task", numeric: false },
+  { name: "dataset.dataset", label: "Dataset", numeric: false },
   { name: "dataset.trigger_form", label: "Trigger", numeric: false },
   { name: "dataset.target_behavior", label: "Target", numeric: false },
   { name: "dataset.target_phrase", label: "Target phrase", numeric: false },

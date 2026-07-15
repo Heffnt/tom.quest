@@ -21,6 +21,8 @@
 // measurement vocab (interp.measurements / measurement_kind); data/normalize
 // is the ONE airlock that translates old→new at load. See normalize.ts.
 
+import { CATEGORY_PALETTE, paletteColor } from "./styling";
+
 // ---------------------------------------------------------------------------
 // Snapshot envelope (tom_quest/build.py, normalized)
 // ---------------------------------------------------------------------------
@@ -172,8 +174,12 @@ export interface FunctionBlock {
 }
 
 export interface DatasetBlock {
-  source: string | null;
-  task: string | null;
+  /** The flat dataset-registry name (sst2/mmlu/…). Newer blobs only; older
+   * cached blobs carry `source`/`task` instead (the CMT Task×Source duality,
+   * now flattened) — consumers fall back `dataset ?? source`. */
+  dataset?: string | null;
+  source?: string | null;
+  task?: string | null;
   trigger_form: string | null;
   target_behavior: string | null;
   row_distribution: string | null;
@@ -433,8 +439,7 @@ export type RangeFilter = { metric: string; min: number; max: number };
 // the paper figure). "split" is train/test (labelled "train/test" in the UI);
 // it is NOT the "split" treatment.
 export type FacetKey =
-  | "task"
-  | "source"
+  | "dataset"
   | "target_behavior"
   | "trigger_form"
   | "row_distribution"
@@ -481,49 +486,42 @@ export function sanitizeFilters(raw: unknown): FilterState {
 // Plot config (store-owned; the Plot / Group Plot views render from it, and the
 // table's per-header "plot on X/Y" bridge writes into it).
 //
-// The user's per-parameter question is split / averaged / filtered — NOT "which
-// visual slot". `splits` is the ORDERED list of parameters the user chose to
-// separate; everything differing but not in `splits` is averaged (with visible
-// spread). Styling is auto-assigned from split order but overridable at every
-// layer (channel reassignment, split reorder, per-value styles).
+// The plot's core object is a list of named, styled SETTINGS. A setting is a
+// saved selection across all parameters (an experimental condition, e.g.
+// "classification" = dataset sst2 + target all-to-sentinel). The plotted rows
+// are the UNION of the settings' matching rows; a run matching several
+// settings is drawn once PER matching setting (duplication is surfaced as a
+// warning count, never silently deduped). Within settings the user may split
+// by MULTIPLE parameters; each (setting × split-combo) is a SERIES —
+// lib/split-dims.resolveSeries is the single source of truth.
 // ---------------------------------------------------------------------------
 
-/** A visual encoding channel a split parameter can drive. `dash` (line-style)
- * is meaningful only for line/trajectory (epoch-x) rendering. */
-export type Channel = "color" | "shape" | "size" | "dash";
-
-/** Explicit per-value style override (a legend swatch edit). Size is never
- * per-value overridable (it reads ordinally). */
-export interface ValueStyle {
-  color?: string; // custom hex or palette entry
-  shape?: number; // glyph index
-  dash?: number;  // dash-pattern index
+/** One named, styled experimental condition on the plot. */
+export interface PlotSetting extends Record<string, unknown> {
+  /** Stable within the config; generated as "s" + smallest unused integer. */
+  id: string;
+  name: string;
+  /** Hex; used as the series color when splitBy is empty. */
+  color: string;
+  /** Facet selections (may also carry the setting's own ranges). */
+  filters: FilterState;
 }
 
-/** How a continuous parameter's values bucket into split groups (Phase 2/3
- * consume this; Phase 1 just persists it). `edges` present ⇒ method "custom". */
-export interface BinSpec {
-  n: number;
-  method: "quantile" | "width" | "custom";
-  edges?: number[];
-}
-
-/** The Plot view's full config — filters + axes + split/style state.
+/** The Plot view's full config — settings + axes + style state.
  *  extends Record so it round-trips through usePersistedSettings. */
 export interface PlotConfig extends Record<string, unknown> {
-  filters: FilterState;
+  /** The plotted conditions (sanitizer guarantees >= 1). */
+  settings: PlotSetting[];
+  /** PLOT-LEVEL ranges (drag-zoom writes here), applied to every setting on
+   * top of its own filters. */
+  ranges: RangeFilter[];
+  /** Ordered parameter keys split WITHIN settings. */
+  splitBy: string[];
+  /** Continuous metric gradient; only honored when settings.length === 1 &&
+   * splitBy.length === 0. */
+  colorBy: string | null;
   x: string; // metric_schema name, or the sentinel "epoch" (training progress)
   y: string; // metric_schema name
-  /** ORDERED parameter keys the user chose to split; [] = everything averaged. */
-  splits: string[];
-  /** paramKey → bucketing for a continuous split (Phase 2/3). */
-  bins: Record<string, BinSpec>;
-  /** Continuous-color encoding: metric/parameter key, or null (Phase 2/3). */
-  colorBy: string | null;
-  /** Per-split-param channel OVERRIDE; absent = auto by split order. */
-  channels: Record<string, Channel>;
-  /** paramKey → raw value → explicit style override. */
-  valueStyles: Record<string, Record<string, ValueStyle>>;
   band: boolean;   // ±SD band / whiskers
   ghosts: boolean; // faint underlying runs
   trend: boolean;  // OLS line + r/ρ readout
@@ -534,12 +532,21 @@ export interface PlotConfig extends Record<string, unknown> {
   yDomain: [number, number] | null;
 }
 
-/** The Group Plot view's config — the Plot shape faceted across one parameter. */
+/** The Group Plot view's config — the Plot shape faceted across one parameter,
+ * or the literal "setting" (one panel per setting). */
 export interface GroupPlotConfig extends PlotConfig {
-  /** The parameter key faceted across panels (null = pick one). */
+  /** Parameter key OR the literal "setting" (null = pick one). */
   facet: string | null;
   /** Panel size (px), user-adjustable. */
   panelMin: number;
+}
+
+/** Smallest-unused-integer setting id ("s1", "s2", …). */
+export function nextSettingId(existing: Iterable<string>): string {
+  const used = new Set(existing);
+  let i = 1;
+  while (used.has(`s${i}`)) i++;
+  return `s${i}`;
 }
 
 /** The Table view's config. `search` is table-only, with dir-path / run-id
@@ -554,14 +561,12 @@ export interface TableConfig extends Record<string, unknown> {
 }
 
 export const DEFAULT_PLOT: PlotConfig = {
-  filters: EMPTY_FILTER,
+  settings: [{ id: "s1", name: "all runs", color: CATEGORY_PALETTE[0], filters: EMPTY_FILTER }],
+  ranges: [],
+  splitBy: [],
+  colorBy: null,
   x: "avg_sensitivity",
   y: "plantedness",
-  splits: [],
-  bins: {},
-  colorBy: null,
-  channels: {},
-  valueStyles: {},
   band: true,
   ghosts: true,
   trend: false,
@@ -584,30 +589,6 @@ export const DEFAULT_GROUP_PLOT: GroupPlotConfig = {
 // of the CURRENT shape (missing keys defaulted, wrong-typed fields dropped).
 // ---------------------------------------------------------------------------
 
-function isChannel(v: unknown): v is Channel {
-  return v === "color" || v === "shape" || v === "size" || v === "dash";
-}
-
-function sanitizeValueStyles(raw: unknown): PlotConfig["valueStyles"] {
-  const out: PlotConfig["valueStyles"] = {};
-  if (!raw || typeof raw !== "object") return out;
-  for (const [dim, vals] of Object.entries(raw as Record<string, unknown>)) {
-    if (!vals || typeof vals !== "object") continue;
-    const inner: Record<string, ValueStyle> = {};
-    for (const [val, style] of Object.entries(vals as Record<string, unknown>)) {
-      if (!style || typeof style !== "object") continue;
-      const s = style as Record<string, unknown>;
-      const vs: ValueStyle = {};
-      if (typeof s.color === "string") vs.color = s.color;
-      if (typeof s.shape === "number") vs.shape = s.shape;
-      if (typeof s.dash === "number") vs.dash = s.dash;
-      if (Object.keys(vs).length) inner[val] = vs;
-    }
-    if (Object.keys(inner).length) out[dim] = inner;
-  }
-  return out;
-}
-
 function sanitizeDomain(v: unknown): [number, number] | null {
   return Array.isArray(v) && v.length === 2 &&
     typeof v[0] === "number" && Number.isFinite(v[0]) &&
@@ -616,44 +597,68 @@ function sanitizeDomain(v: unknown): [number, number] | null {
     : null;
 }
 
-function sanitizeBins(raw: unknown): PlotConfig["bins"] {
-  const out: PlotConfig["bins"] = {};
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!v || typeof v !== "object") continue;
-    const b = v as Record<string, unknown>;
-    const n = typeof b.n === "number" && Number.isFinite(b.n) ? Math.max(1, Math.floor(b.n)) : null;
-    const method = b.method === "quantile" || b.method === "width" || b.method === "custom" ? b.method : null;
-    if (n === null || method === null) continue;
-    const edges = Array.isArray(b.edges)
-      ? b.edges.filter((e): e is number => typeof e === "number" && Number.isFinite(e))
-      : undefined;
-    out[k] = edges && edges.length ? { n, method, edges } : { n, method };
+/** Coerce an unknown blob to a valid RangeFilter list (drops malformed entries). */
+export function sanitizeRanges(raw: unknown): RangeFilter[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RangeFilter[] = [];
+  for (const r of raw) {
+    if (
+      r && typeof r === "object" && !Array.isArray(r) &&
+      typeof (r as RangeFilter).metric === "string" &&
+      typeof (r as RangeFilter).min === "number" && Number.isFinite((r as RangeFilter).min) &&
+      typeof (r as RangeFilter).max === "number" && Number.isFinite((r as RangeFilter).max)
+    ) {
+      const { metric, min, max } = r as RangeFilter;
+      out.push({ metric, min, max });
+    }
   }
   return out;
 }
 
-/** Coerce a partial/hostile blob to a valid PlotConfig (see section comment). */
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+/** Coerce a settings blob: drop malformed entries; if none survive, install
+ *  the default one; ensure unique ids; coerce a missing/invalid color to a
+ *  palette hex by position. */
+function sanitizeSettings(raw: unknown): PlotSetting[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const out: PlotSetting[] = [];
+  const used = new Set<string>();
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    const id = typeof e.id === "string" && e.id && !used.has(e.id) ? e.id : nextSettingId(used);
+    used.add(id);
+    out.push({
+      id,
+      name: typeof e.name === "string" && e.name ? e.name : id,
+      color: typeof e.color === "string" && HEX_COLOR.test(e.color) ? e.color : paletteColor(out.length),
+      filters: sanitizeFilters(e.filters),
+    });
+  }
+  if (out.length === 0) {
+    out.push({ id: "s1", name: "all runs", color: CATEGORY_PALETTE[0], filters: { facets: {}, ranges: [] } });
+  }
+  return out;
+}
+
+/** Coerce a partial/hostile blob to a valid PlotConfig (see section comment).
+ *  Removed-era keys (filters/colorParam/shapeParam/splits/channels/…) are
+ *  silently dropped — old persisted blobs get no migration. */
 export function sanitizePlotConfig(raw: unknown): PlotConfig {
   const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   const d = DEFAULT_PLOT;
   const str = (v: unknown, f: string) => (typeof v === "string" ? v : f);
   const bool = (v: unknown, f: boolean) => (typeof v === "boolean" ? v : f);
-  const channels: Record<string, Channel> = {};
-  if (r.channels && typeof r.channels === "object") {
-    for (const [k, v] of Object.entries(r.channels as Record<string, unknown>)) {
-      if (isChannel(v)) channels[k] = v;
-    }
-  }
   return {
-    filters: sanitizeFilters(r.filters),
+    settings: sanitizeSettings(r.settings),
+    ranges: sanitizeRanges(r.ranges),
+    splitBy: Array.isArray(r.splitBy)
+      ? r.splitBy.filter((k): k is string => typeof k === "string")
+      : [],
+    colorBy: typeof r.colorBy === "string" ? r.colorBy : null,
     x: str(r.x, d.x),
     y: str(r.y, d.y),
-    splits: Array.isArray(r.splits) ? r.splits.filter((s): s is string => typeof s === "string") : [],
-    bins: sanitizeBins(r.bins),
-    colorBy: typeof r.colorBy === "string" ? r.colorBy : null,
-    channels,
-    valueStyles: sanitizeValueStyles(r.valueStyles),
     band: bool(r.band, d.band),
     ghosts: bool(r.ghosts, d.ghosts),
     trend: bool(r.trend, d.trend),

@@ -11,12 +11,11 @@ import {
   matchesSearch,
   numericValue,
   metricRange,
-  modeFilters,
   normalizeToRange,
   FACET_KEYS,
 } from "./select";
 import { indexMetricSchema } from "./metrics";
-import { EMPTY_FILTER, type RunRow, type FacetKey } from "./types";
+import { EMPTY_FILTER, type RunRow } from "./types";
 
 const bundle = asBundle(sample);
 const rows: RunRow[] = bundle.rows;
@@ -28,32 +27,17 @@ describe("select", () => {
   });
 
   it("facetOptions: distinct, counted, sorted ascending; every facet key resolves", () => {
-    const src = facetOptions(rows, "source");
-    expect(src.length).toBeGreaterThan(0);
-    expect(src.map((o) => o.value)).toEqual([...src.map((o) => o.value)].sort());
+    const ds = facetOptions(rows, "dataset");
+    expect(ds.length).toBeGreaterThan(0);
+    expect(ds.map((o) => o.value)).toEqual([...ds.map((o) => o.value)].sort());
     for (const k of FACET_KEYS) expect(() => facetOptions(rows, k)).not.toThrow();
   });
 
-  it("modeFilters: pins every VARYING facet to its single most-common value; leaves ranges empty", () => {
-    const f = modeFilters(rows);
-    expect(f.ranges).toEqual([]);
-    for (const key of Object.keys(f.facets) as FacetKey[]) {
-      const vals = f.facets[key]!;
-      expect(vals).toHaveLength(1);
-      const opts = facetOptions(rows, key);
-      expect(opts.length).toBeGreaterThanOrEqual(2); // only varying facets get pinned
-      const mode = opts.reduce((a, b) => (b.count > a.count ? b : a)).value;
-      expect(vals[0]).toBe(mode);
-    }
-    // the resulting filter narrows to a non-empty dominant cell
-    expect(applyFilters(rows, f).length).toBeGreaterThan(0);
-  });
-
-  it("facet filter keeps only rows whose value is selected", () => {
-    const src = facetOptions(rows, "source")[0].value;
-    const out = applyFilters(rows, { ...EMPTY_FILTER, facets: { source: [src] } });
+  it("facet filter keeps only rows whose value is selected (dataset reads the source fallback)", () => {
+    const ds = facetOptions(rows, "dataset")[0].value;
+    const out = applyFilters(rows, { ...EMPTY_FILTER, facets: { dataset: [ds] } });
     expect(out.length).toBeGreaterThan(0);
-    expect(out.every((r) => r.dataset.source === src)).toBe(true);
+    expect(out.every((r) => (r.dataset.dataset ?? r.dataset.source) === ds)).toBe(true);
   });
 
   it("range filter on a dotted column id keeps in-range non-null rows", () => {
@@ -218,8 +202,9 @@ describe("select", () => {
 
   it("facetKeyForColumn maps categorical column ids to their facet", () => {
     expect(facetKeyForColumn("training.base_model")).toBe("base_model");
-    expect(facetKeyForColumn("dataset.source")).toBe("source");
+    expect(facetKeyForColumn("dataset.dataset")).toBe("dataset");
     expect(facetKeyForColumn("function.arity")).toBe("arity");
+    expect(facetKeyForColumn("dataset.source")).toBeNull(); // retired column id
     expect(facetKeyForColumn("headline.plantedness")).toBeNull();
   });
 });

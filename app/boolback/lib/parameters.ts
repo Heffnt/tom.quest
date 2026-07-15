@@ -1,27 +1,18 @@
 // app/boolback/lib/parameters.ts — the plot's parameter model.
 //
 // A run is identified by PARAMETERS (function identity + every dataset/training
-// facet + judge/split); X and Y are readings over them. For the currently
-// filtered rows each parameter is either SHARED (one distinct value — the
-// context every plotted point has in common) or DIFFERING. Each differing
-// parameter gets a treatment:
+// facet + judge/split); X and Y are readings over them. For a given row set
+// each parameter is either SHARED (one distinct value — the context every
+// plotted point has in common) or DIFFERING. A differing parameter is either
 //
-//   split onto a visual channel (color / shape / size) — points separate;
-//   filter to a value — handled by the ORDINARY filter mechanism (facet
-//     selections), never here;
-//   average — collapsed into group means.
-//
-// Auto-assignment (no override): differing parameters sorted biggest-split
-// first take the channels in color → shape → size order, skipping parameters
-// whose cardinality exceeds the channel's legibility cap; everything left is
-// averaged. Users override per parameter (plot config `channels`); an override
-// may exceed the caps (palette/glyphs cycle).
+//   split — named in the plot config's splitBy, so each of its values gets
+//     its own series within every setting (lib/split-dims.resolveSeries);
+//   selected — pinned by a SETTING's filters (facet selections); or
+//   pooled — left varying inside each series (everything else).
 
-import type { RunRow, FacetKey, Channel } from "./types";
-import { facetValue, FACET_LABELS } from "./select";
+import type { RunRow, FacetKey, FilterState, RangeFilter } from "./types";
+import { facetValue, FACET_LABELS, applyFilters } from "./select";
 import { fnText, shortModel } from "./format";
-
-export type { Channel };
 
 /** Origin bucket for the config panel's collapsible parameter sections. */
 export type ParamSection = "function" | "dataset" | "training" | "judge";
@@ -42,8 +33,6 @@ export interface ParameterDef {
   facetKey?: FacetKey;
   /** Which origin section the config panel groups this parameter under. */
   section: ParamSection;
-  /** Judge never pools (cmt pool_guard): pinned split, never averaged/faceted. */
-  alwaysSplit?: boolean;
 }
 
 const facetParam = (
@@ -68,8 +57,7 @@ export const PARAMETERS: ParameterDef[] = [
     section: "function",
   },
   facetParam("arity", "function", { numericSort: true }),
-  facetParam("source", "dataset"),
-  facetParam("task", "dataset"),
+  facetParam("dataset", "dataset"),
   facetParam("trigger_form", "dataset"),
   facetParam("target_behavior", "dataset"),
   facetParam("target_phrase", "dataset"),
@@ -83,9 +71,121 @@ export const PARAMETERS: ParameterDef[] = [
   facetParam("lr", "training", { numericSort: true }),
   facetParam("epochs", "training", { numericSort: true }),
   facetParam("seed", "training", { numericSort: true }),
-  facetParam("judge", "judge", { alwaysSplit: true }),
+  facetParam("judge", "judge"),
   facetParam("split", "judge"),
 ];
+
+// ---------------------------------------------------------------------------
+// Parameter tiers + nesting — the settings editor's grouping model. A
+// "setting" parameter defines an experimental condition; a "sweep" parameter
+// is a training-sweep axis; "function" is the complexity axis. NESTED_UNDER
+// records the CMT dependency edges: target_phrase and judge are consequences
+// of the target_behavior choice, so the editor nests them under it.
+// ---------------------------------------------------------------------------
+
+export type ParamTier = "setting" | "sweep" | "function";
+
+export const PARAM_TIERS: Record<string, ParamTier> = {
+  function: "function",
+  arity: "setting",
+  dataset: "setting",
+  target_behavior: "setting",
+  target_phrase: "setting",
+  trigger_form: "setting",
+  row_distribution: "setting",
+  scheme: "setting",
+  samples_per_row: "setting",
+  backdoor_ratio: "setting",
+  judge: "setting",
+  split: "setting",
+  base_model: "sweep",
+  tuning: "sweep",
+  backend: "sweep",
+  lr: "sweep",
+  epochs: "sweep",
+  seed: "sweep",
+};
+
+/** Parameter key → the setting parameter it is a consequence of. */
+export const NESTED_UNDER: Record<string, string> = {
+  target_phrase: "target_behavior",
+  judge: "target_behavior",
+};
+
+/** Editor section order (settings editor): condition first, then sweep axes. */
+export const TIER_ORDER: ParamTier[] = ["setting", "sweep", "function"];
+
+/** Sentence-case section titles for the editor's tier sections. */
+export const TIER_LABEL: Record<ParamTier, string> = {
+  setting: "Setting",
+  sweep: "Sweep",
+  function: "Function",
+};
+
+/** One editor row: a top-level parameter plus its NESTED_UNDER children. */
+export interface TierEntry {
+  dim: ParameterDef;
+  /** Parameters nested (indented) under this one, in input order. */
+  children: ParameterDef[];
+}
+
+/**
+ * Group `dims` (in desired display order) into tier sections per PARAM_TIERS,
+ * nesting each NESTED_UNDER child under its parent WHEN the parent is also
+ * present; an orphaned child renders top-level in its own tier. Empty
+ * sections are dropped. Pure — unit-tested.
+ */
+export function tierSections(
+  dims: ParameterDef[],
+): Array<{ tier: ParamTier; entries: TierEntry[] }> {
+  const present = new Set(dims.map((d) => d.key));
+  const childrenOf = new Map<string, ParameterDef[]>();
+  const topLevel: ParameterDef[] = [];
+  for (const d of dims) {
+    const parent = NESTED_UNDER[d.key];
+    if (parent !== undefined && present.has(parent)) {
+      const list = childrenOf.get(parent);
+      if (list) list.push(d);
+      else childrenOf.set(parent, [d]);
+    } else {
+      topLevel.push(d);
+    }
+  }
+  return TIER_ORDER.map((tier) => ({
+    tier,
+    entries: topLevel
+      .filter((d) => (PARAM_TIERS[d.key] ?? "setting") === tier)
+      .map((dim) => ({ dim, children: childrenOf.get(dim.key) ?? [] })),
+  })).filter((s) => s.entries.length > 0);
+}
+
+/**
+ * Standard faceted-search counting for one parameter's value list: DROP the
+ * parameter's own facet from `filters`, apply every OTHER facet + the
+ * filters' own ranges + `extraRanges` (the plot-level ranges), then count
+ * `dim.raw` over the surviving rows. Values observed globally but absent
+ * here are simply missing from the map (render them as 0 / muted). Pure.
+ */
+export function conditionedCounts(
+  rows: RunRow[],
+  dim: ParameterDef,
+  filters: FilterState,
+  extraRanges: RangeFilter[] = [],
+): Map<string, number> {
+  const facets = { ...(filters.facets ?? {}) };
+  if (dim.facetKey) delete facets[dim.facetKey];
+  const conditioned = applyFilters(rows, {
+    facets,
+    ranges: [...(filters.ranges ?? []), ...extraRanges],
+  });
+  const counts = new Map<string, number>();
+  for (const r of conditioned) {
+    const v = dim.raw(r);
+    if (v === null) continue;
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  return counts;
+}
 
 export interface ParamValues {
   dim: ParameterDef;
@@ -122,57 +222,4 @@ export function summarizeParameters(rows: RunRow[]): ParamSummary {
   }
   differing.sort((a, b) => b.values.length - a.values.length);
   return { shared, differing };
-}
-
-// ---------------------------------------------------------------------------
-// Channel assignment (user-chosen `splits` → visual channels)
-// ---------------------------------------------------------------------------
-
-/** Auto channel order for splits without an explicit channel. */
-export const CHANNELS: Channel[] = ["color", "shape", "size", "dash"];
-
-/** Legibility caps: auto-assignment prefers a channel whose cap fits the value
- *  count, but a split ALWAYS gets some channel (glyphs/palette cycle past caps).
- *  Explicit user assignment may exceed a cap freely. */
-export const CHANNEL_CAPS: Record<Channel, number> = { color: 12, shape: 6, size: 5, dash: 4 };
-
-/**
- * Resolve each split parameter (in `splits` order) to a visual channel.
- * Explicit `channels[key]` wins when its channel is still free; otherwise the
- * next free auto channel is taken, preferring one whose cap fits
- * `valueCount(key)` but always assigning something. Parameters absent from
- * `splits` are averaged (not present in the returned map).
- *
- * `available` restricts which channels may be assigned (default: all). Phase 3
- * passes ["shape","size","dash"] when a continuous `colorBy` gradient owns the
- * COLOR channel, so categorical/binned splits take the remaining channels.
- */
-export function resolveChannels(
-  splits: string[],
-  channels: Record<string, Channel>,
-  valueCount: (key: string) => number,
-  available: Channel[] = CHANNELS,
-): Map<string, Channel> {
-  const out = new Map<string, Channel>();
-  const free = new Set<Channel>(available);
-  // Pass 1: honor explicit channel overrides that are still free.
-  for (const key of splits) {
-    const c = channels[key];
-    if (c && free.has(c)) {
-      out.set(key, c);
-      free.delete(c);
-    }
-  }
-  // Pass 2: auto-assign the remaining splits in order.
-  for (const key of splits) {
-    if (out.has(key)) continue;
-    const n = valueCount(key);
-    const chosen =
-      CHANNELS.find((c) => free.has(c) && n <= CHANNEL_CAPS[c]) ??
-      CHANNELS.find((c) => free.has(c)) ??
-      "color";
-    out.set(key, chosen);
-    free.delete(chosen);
-  }
-  return out;
 }

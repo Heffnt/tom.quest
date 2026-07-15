@@ -12,29 +12,32 @@
 //   parseSpec(text)             →  ViewSpec | null (tolerant; never throws)
 //
 // DESIGN NOTES — what the spec carries and what it deliberately does NOT:
-//   * The spec captures the ANALYTICAL config (axes, log, filters, ranges,
-//     ordered splits + their channel/bins, continuous color, facet, plot
-//     toggles, table columns/sorts).
+//   * The spec captures the ANALYTICAL config: axes, log, the SETTINGS list
+//     (name/color + each setting's facets/ranges), plot-level ranges,
+//     split_by, continuous color, facet (a parameter key or the literal
+//     "setting"), plot toggles, table filters/columns/sorts.
 //   * It does NOT carry EPHEMERAL / DISPLAY-ONLY state, which is therefore
 //     default-filled by specToConfig (never round-trips):
-//       - plot/groupplot: valueStyles (legend swatch edits), xDomain/yDomain
-//         (zoom windows);
+//       - plot/groupplot: xDomain/yDomain (zoom windows), setting ids
+//         (regenerated "s1", "s2", … in order);
 //       - groupplot: panelMin (panel size preference);
 //       - table: search (dir-path/run-id box) and columnWidths.
-//     This matches the plan's JSON example, keeps a default spec tiny, and
-//     lets render.py read only what it needs.
 //   * Default fields are OMITTED from the spec (a default plot serializes to
-//     just {v, view}); specToConfig re-fills them from DEFAULT_PLOT /
-//     DEFAULT_GROUP_PLOT / the local table default.
+//     just {v, view} — including the default single "all runs" setting);
+//     specToConfig re-fills them from DEFAULT_PLOT / DEFAULT_GROUP_PLOT /
+//     the local table default.
 //   * Parameter keys are DATA-DRIVEN: unknown facet/param keys are preserved
 //     verbatim (never validated against the FacetKey enum) — only STRUCTURE
 //     and value TYPES are checked.
+//   * Unknown keys in an OLD stored spec (the color_param/shape_param or the
+//     split/channels era) are simply ignored — old presets keep their
+//     axes and lose their styling (no migration); a spec with no settings
+//     parses to the default single setting.
 
 import {
-  type BinSpec,
-  type Channel,
   type GroupPlotConfig,
   type PlotConfig,
+  type PlotSetting,
   type TableConfig,
   DEFAULT_PLOT,
   EMPTY_FILTER,
@@ -45,11 +48,13 @@ import {
 
 export type ViewKind = "table" | "plot" | "groupplot";
 
-/** One ordered split entry. A param carries EITHER an explicit channel OR bins
- *  (bins imply a binned continuous split); a bare `{param}` is auto-styled. */
-export type SplitSpec =
-  | { param: string; channel?: Channel }
-  | { param: string; bins: BinSpec };
+/** One serialized setting (no id — ids regenerate on parse). */
+export interface SpecSetting {
+  name: string;
+  color?: string;
+  facets?: Record<string, string[]>; // facetKey -> allowed values
+  ranges?: { metric: string; min: number; max: number }[];
+}
 
 export interface ViewSpec {
   v: 3;
@@ -58,15 +63,19 @@ export interface ViewSpec {
   x?: string;
   y?: string;
   log?: ("x" | "y")[]; // present axes that are log-scaled
-  filters?: Record<string, string[]>; // facetKey -> allowed values
+  /** The settings list (ABSENT = the default single "all runs" setting). */
+  settings?: SpecSetting[];
+  /** Plot views: PLOT-LEVEL ranges; table: the filter ranges. */
   ranges?: { metric: string; min: number; max: number }[];
-  split?: SplitSpec[]; // ORDERED
-  color_by?: string | null; // continuous-color metric/param, or null
-  facet?: string | null; // groupplot only
+  /** Ordered parameter keys split within settings. */
+  split_by?: string[];
+  color_by?: string | null; // continuous-color metric, or null
+  facet?: string | null; // groupplot only (a parameter key or "setting")
   band?: boolean;
   ghosts?: boolean;
   trend?: boolean;
   // table
+  filters?: Record<string, string[]>; // facetKey -> allowed values (table only)
   columns?: string[];
   sorts?: { col: string; dir: "asc" | "desc" }[];
 }
@@ -85,7 +94,7 @@ const DEFAULT_TABLE: TableConfig = {
 // configToSpec — config → compact spec (omit empty/default fields)
 // ---------------------------------------------------------------------------
 
-function facetsToSpec(facets: PlotConfig["filters"]["facets"]): Record<string, string[]> | undefined {
+function facetsToSpec(facets: TableConfig["filters"]["facets"]): Record<string, string[]> | undefined {
   const out: Record<string, string[]> = {};
   for (const [k, v] of Object.entries(facets)) {
     if (Array.isArray(v) && v.length) out[k] = [...v];
@@ -93,7 +102,7 @@ function facetsToSpec(facets: PlotConfig["filters"]["facets"]): Record<string, s
   return Object.keys(out).length ? out : undefined;
 }
 
-function rangesToSpec(ranges: PlotConfig["filters"]["ranges"]): ViewSpec["ranges"] {
+function rangesToSpec(ranges: PlotConfig["ranges"]): ViewSpec["ranges"] {
   return ranges.length ? ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max })) : undefined;
 }
 
@@ -104,22 +113,25 @@ function logToSpec(logX: boolean, logY: boolean): ViewSpec["log"] {
   return out.length ? out : undefined;
 }
 
-/** Merge ordered splits + channels + bins into one ordered split[]. A param
- *  gets bins if it has them (binned continuous), else its channel override,
- *  else a bare entry (auto-styled by split order downstream). */
-function splitsToSpec(cfg: PlotConfig): ViewSpec["split"] {
-  if (!cfg.splits.length) return undefined;
-  const out: SplitSpec[] = [];
-  for (const param of cfg.splits) {
-    const bins = cfg.bins[param];
-    if (bins) {
-      out.push({ param, bins });
-      continue;
-    }
-    const channel = cfg.channels[param];
-    out.push(channel ? { param, channel } : { param });
+/** Serialize the settings list; undefined when it IS the default single
+ *  unfiltered "all runs" setting (the tiny-default-spec rule). */
+function settingsToSpec(settings: PlotSetting[]): SpecSetting[] | undefined {
+  const d = DEFAULT_PLOT.settings[0];
+  if (settings.length === 1) {
+    const s = settings[0];
+    const unfiltered =
+      Object.values(s.filters.facets).every((v) => !v || v.length === 0) &&
+      s.filters.ranges.length === 0;
+    if (unfiltered && s.name === d.name && s.color === d.color) return undefined;
   }
-  return out;
+  return settings.map((s) => {
+    const out: SpecSetting = { name: s.name, color: s.color };
+    const facets = facetsToSpec(s.filters.facets);
+    if (facets) out.facets = facets;
+    const ranges = rangesToSpec(s.filters.ranges);
+    if (ranges) out.ranges = ranges;
+    return out;
+  });
 }
 
 function plotToSpec(spec: ViewSpec, cfg: PlotConfig): void {
@@ -127,12 +139,11 @@ function plotToSpec(spec: ViewSpec, cfg: PlotConfig): void {
   if (cfg.y !== DEFAULT_PLOT.y) spec.y = cfg.y;
   const log = logToSpec(cfg.logX, cfg.logY);
   if (log) spec.log = log;
-  const filters = facetsToSpec(cfg.filters.facets);
-  if (filters) spec.filters = filters;
-  const ranges = rangesToSpec(cfg.filters.ranges);
+  const settings = settingsToSpec(cfg.settings);
+  if (settings) spec.settings = settings;
+  const ranges = rangesToSpec(cfg.ranges);
   if (ranges) spec.ranges = ranges;
-  const split = splitsToSpec(cfg);
-  if (split) spec.split = split;
+  if (cfg.splitBy.length) spec.split_by = [...cfg.splitBy];
   if (cfg.colorBy != null) spec.color_by = cfg.colorBy;
   if (cfg.band !== DEFAULT_PLOT.band) spec.band = cfg.band;
   if (cfg.ghosts !== DEFAULT_PLOT.ghosts) spec.ghosts = cfg.ghosts;
@@ -169,38 +180,24 @@ export function configToSpec(
 // ---------------------------------------------------------------------------
 // specToConfig — spec → COMPLETE, valid config (merged over defaults).
 // Builds a raw config-shaped object from the spec, then runs it through the
-// Phase-1 sanitizer, which fills missing keys and drops wrong-typed ones.
+// Phase-1 sanitizer, which fills missing keys and drops wrong-typed ones
+// (and regenerates setting ids "s1", "s2", … in order).
 // ---------------------------------------------------------------------------
 
-/** Invert split[] back into splits / channels / bins. */
-function splitFromSpec(split: ViewSpec["split"]): {
-  splits: string[];
-  channels: Record<string, Channel>;
-  bins: Record<string, BinSpec>;
-} {
-  const splits: string[] = [];
-  const channels: Record<string, Channel> = {};
-  const bins: Record<string, BinSpec> = {};
-  for (const e of split ?? []) {
-    if (!e || typeof e.param !== "string") continue;
-    splits.push(e.param);
-    if ("bins" in e && e.bins) bins[e.param] = e.bins;
-    else if ("channel" in e && e.channel) channels[e.param] = e.channel;
-  }
-  return { splits, channels, bins };
-}
-
-/** Raw plot-shaped object from a spec (pre-sanitize). */
+/** Raw plot-shaped object from a spec (pre-sanitize). Absent settings stay
+ *  undefined so the sanitizer installs the default single setting. */
 function rawPlotFromSpec(spec: ViewSpec): Record<string, unknown> {
-  const { splits, channels, bins } = splitFromSpec(spec.split);
   return {
-    filters: { facets: spec.filters ?? {}, ranges: spec.ranges ?? [] },
+    settings: spec.settings?.map((s) => ({
+      name: s.name,
+      color: s.color,
+      filters: { facets: s.facets ?? {}, ranges: s.ranges ?? [] },
+    })),
+    ranges: spec.ranges ?? [],
+    splitBy: spec.split_by ?? [],
+    colorBy: spec.color_by ?? null,
     x: spec.x,
     y: spec.y,
-    splits,
-    channels,
-    bins,
-    colorBy: spec.color_by ?? null,
     band: spec.band,
     ghosts: spec.ghosts,
     trend: spec.trend,
@@ -236,30 +233,31 @@ export function specToConfig(spec: ViewSpec): {
 /** Rebuild the spec as a plain object with a fixed top-level key order and
  *  alphabetically-ordered facet keys, so serialization is deterministic. */
 function orderSpec(spec: ViewSpec): Record<string, unknown> {
+  const orderFacets = (facets: Record<string, string[]>): Record<string, string[]> => {
+    const f: Record<string, string[]> = {};
+    for (const k of Object.keys(facets).sort()) f[k] = facets[k];
+    return f;
+  };
   const o: Record<string, unknown> = { v: spec.v, view: spec.view };
   if (spec.x !== undefined) o.x = spec.x;
   if (spec.y !== undefined) o.y = spec.y;
   if (spec.log !== undefined) o.log = spec.log;
-  if (spec.filters !== undefined) {
-    const f: Record<string, string[]> = {};
-    for (const k of Object.keys(spec.filters).sort()) f[k] = spec.filters[k];
-    o.filters = f;
+  if (spec.settings !== undefined) {
+    o.settings = spec.settings.map((s) => {
+      const out: Record<string, unknown> = { name: s.name };
+      if (s.color !== undefined) out.color = s.color;
+      if (s.facets !== undefined) out.facets = orderFacets(s.facets);
+      if (s.ranges !== undefined) {
+        out.ranges = s.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
+      }
+      return out;
+    });
   }
+  if (spec.filters !== undefined) o.filters = orderFacets(spec.filters);
   if (spec.ranges !== undefined) {
     o.ranges = spec.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
   }
-  if (spec.split !== undefined) {
-    o.split = spec.split.map((e) => {
-      if ("bins" in e && e.bins) {
-        const b = e.bins;
-        return {
-          param: e.param,
-          bins: b.edges ? { n: b.n, method: b.method, edges: b.edges } : { n: b.n, method: b.method },
-        };
-      }
-      return "channel" in e && e.channel ? { param: e.param, channel: e.channel } : { param: e.param };
-    });
-  }
+  if (spec.split_by !== undefined) o.split_by = spec.split_by;
   if (spec.color_by !== undefined) o.color_by = spec.color_by;
   if (spec.facet !== undefined) o.facet = spec.facet;
   if (spec.band !== undefined) o.band = spec.band;
@@ -314,35 +312,18 @@ function coerceRanges(raw: unknown): ViewSpec["ranges"] {
   return out.length ? out : undefined;
 }
 
-function isChannelValue(v: unknown): v is Channel {
-  return v === "color" || v === "shape" || v === "size" || v === "dash";
-}
-
-function coerceBins(raw: unknown): BinSpec | null {
-  if (!isPlainObject(raw)) return null;
-  const n = typeof raw.n === "number" && Number.isFinite(raw.n) ? Math.max(1, Math.floor(raw.n)) : null;
-  const method =
-    raw.method === "quantile" || raw.method === "width" || raw.method === "custom" ? raw.method : null;
-  if (n === null || method === null) return null;
-  const edges = Array.isArray(raw.edges)
-    ? raw.edges.filter((e): e is number => typeof e === "number" && Number.isFinite(e))
-    : undefined;
-  return edges && edges.length ? { n, method, edges } : { n, method };
-}
-
-function coerceSplit(raw: unknown): ViewSpec["split"] {
+function coerceSettings(raw: unknown): SpecSetting[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const out: SplitSpec[] = [];
-  for (const e of raw) {
-    if (!isPlainObject(e) || typeof e.param !== "string") continue;
-    const bins = coerceBins(e.bins);
-    if (bins) {
-      out.push({ param: e.param, bins });
-    } else if (isChannelValue(e.channel)) {
-      out.push({ param: e.param, channel: e.channel });
-    } else {
-      out.push({ param: e.param });
-    }
+  const out: SpecSetting[] = [];
+  for (const s of raw) {
+    if (!isPlainObject(s) || typeof s.name !== "string") continue;
+    const entry: SpecSetting = { name: s.name };
+    if (typeof s.color === "string") entry.color = s.color;
+    const facets = coerceFilters(s.facets);
+    if (facets) entry.facets = facets;
+    const ranges = coerceRanges(s.ranges);
+    if (ranges) entry.ranges = ranges;
+    out.push(entry);
   }
   return out.length ? out : undefined;
 }
@@ -402,12 +383,12 @@ export function parseSpec(text: string): ViewSpec | null {
   if (typeof parsed.y === "string") spec.y = parsed.y;
   const log = coerceLog(parsed.log);
   if (log) spec.log = log;
-  const filters = coerceFilters(parsed.filters);
-  if (filters) spec.filters = filters;
+  const settings = coerceSettings(parsed.settings);
+  if (settings) spec.settings = settings;
   const ranges = coerceRanges(parsed.ranges);
   if (ranges) spec.ranges = ranges;
-  const split = coerceSplit(parsed.split);
-  if (split) spec.split = split;
+  const splitBy = coerceStrings(parsed.split_by);
+  if (splitBy) spec.split_by = splitBy;
   if (typeof parsed.color_by === "string" || parsed.color_by === null) spec.color_by = parsed.color_by;
   if (typeof parsed.band === "boolean") spec.band = parsed.band;
   if (typeof parsed.ghosts === "boolean") spec.ghosts = parsed.ghosts;

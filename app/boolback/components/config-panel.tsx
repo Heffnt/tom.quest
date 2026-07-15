@@ -9,41 +9,46 @@
 //   config        — otherwise: the active view's controls. Content depends on
 //     configViewOf(centerView):
 //       table     → filter-only parameter rows + Columns + Sort keys + search;
-//       plot      → parameter rows with split/averaged treatments (channel
-//                   badges, per-value swatches, drag reorder) + continuous rows
-//                   (filter/bins/color) + band/ghosts/trend;
-//       groupPlot → + facet treatment + panel-size slider;
+//       plot      → the SETTINGS strip (per-setting swatch/name/count/dup/del,
+//                   overlap + judge warnings) + the ordered multi "Split by"
+//                   editor + the gated "Color by metric" gradient select +
+//                   tiered parameter chips editing the ACTIVE setting +
+//                   continuous rows (filter/color) + band/ghosts/trend;
+//       groupPlot → + "Facet by" select (parameters or "setting") +
+//                   panel-size slider;
 //       anatomy   → a tiny note (anatomy owns its own controls).
 //
-// This panel WRITES config (splits/channels/valueStyles/filters/bins/colorBy);
-// the plot renders splits/channels/averaging today and bins/colorBy in Phase 3.
-// The panel is decoupled from the mounted plot — it recomputes the parameter
-// model from bundle.rows itself.
+// This panel WRITES config (settings/splitBy/colorBy/facet). Phase 3: the
+// full settings editor — strip (rename/recolor/duplicate/counts/warnings),
+// ordered multi-split, tiered + nested parameter chips with conditioned
+// counts, and the gated colorBy gradient select. Everything the panel says
+// about series/warnings comes from lib/split-dims.resolveSeries (the same
+// pure resolver the plot renders from), never a parallel computation.
 
 import { useMemo, useRef, useState } from "react";
 import type {
-  Bundle, Channel, ValueStyle, RangeFilter,
-  PlotConfig, GroupPlotConfig, TableConfig, BinSpec, MetricSchemaEntry,
+  Bundle, RangeFilter, FilterState,
+  PlotConfig, GroupPlotConfig, TableConfig, MetricSchemaEntry, PlotSetting,
 } from "../lib/types";
-import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT } from "../lib/types";
-import { useBoolbackStore, configViewOf, type ViewKey } from "../state/store";
+import { EMPTY_FILTER } from "../lib/types";
+import { useBoolbackStore, configViewOf, type ViewKey, type PlotViewKey } from "../state/store";
 import type { ViewKind } from "../lib/spec";
 import { configToSpec, specToConfig, serializeSpec, parseSpec } from "../lib/spec";
 import {
-  PARAMETERS, summarizeParameters, resolveChannels, CHANNELS,
-  type ParameterDef, type ParamValues, type ParamSection,
+  PARAMETERS, summarizeParameters, tierSections, conditionedCounts,
+  TIER_LABEL, PARAM_TIERS,
+  type ParameterDef, type ParamValues, type ParamTier,
 } from "../lib/parameters";
+import { resolveSeries, type SeriesResolution } from "../lib/split-dims";
+import { CATEGORY_PALETTE } from "../lib/styling";
 import {
-  applyFilters, histogramBins, metricRange, modeFilters, numericValue, type MetricIndex,
+  applyFilters, histogramBins, metricRange, type MetricIndex,
 } from "../lib/select";
 import { resolveById } from "../lib/columns";
 import {
   indexMetricSchema, groupedMetricOptions, metricLabel, formatValue,
   Y_GROUP_ORDER, type MetricPickerGroup,
 } from "../lib/metrics";
-import { computeBinEdges, binLabel, edgeLabel, clampBinCount } from "../lib/bins";
-import { PALETTE, DASH_PATTERNS, colorForValue, shapeForValue, dashForValue } from "../lib/styling";
-import { shapeNode } from "./glyph";
 import { RunInspector, resolveRun } from "./run-inspector";
 import { ColumnGroupMenu } from "./column-group-menu";
 import { copyText, downloadBlob, svgToPngBlob } from "../lib/export";
@@ -58,13 +63,16 @@ const MIN_W = 320;
 const MAX_W = 900;
 const MAX_VALUES = 16;
 const HIST_BINS = 24;
-const CHANNEL_BADGE: Record<Channel, string> = { color: "●", shape: "▲", size: "⬤", dash: "┄" };
-const SECTION_ORDER: ParamSection[] = ["function", "dataset", "training", "judge"];
-const SECTION_LABEL: Record<ParamSection, string> = {
-  function: "function", dataset: "dataset", training: "training", judge: "judge",
-};
 
-type ValueStyles = Record<string, Record<string, ValueStyle>>;
+/** Split-by dropdown group order: sweep-tier axes first, then setting-tier. */
+const SPLIT_TIER_ORDER: ParamTier[] = ["sweep", "setting", "function"];
+
+/** paramOf for resolveSeries — the PARAMETERS registry keyed by param key. */
+const PARAM_BY_KEY = new Map(PARAMETERS.map((p) => [p.key, p]));
+const paramOfKey = (key: string): ParameterDef | null => PARAM_BY_KEY.get(key) ?? null;
+
+/** The visual role a parameter chip plays on the CURRENT plot config. */
+type ParamRole = "split" | "facet" | null;
 
 /** Map the store ViewKey to the spec ViewKind (groupPlot → groupplot). */
 function specKindOf(vk: ViewKey): ViewKind {
@@ -142,7 +150,7 @@ function ConfigMode({
   if (vk === null) {
     return (
       <div className="flex h-full w-full flex-col min-h-0">
-        <PanelHeader vk={null} chartRef={chartRef} bundle={bundle} />
+        <PanelHeader vk={null} chartRef={chartRef} />
         <p className="px-3 py-3 font-mono text-xs text-text-faint">
           Anatomy has its own controls.
         </p>
@@ -167,6 +175,10 @@ function ViewConfig({
 
   const setPlot = useBoolbackStore((s) => s.setPlot);
   const setGroupPlot = useBoolbackStore((s) => s.setGroupPlot);
+  const addSetting = useBoolbackStore((s) => s.addSetting);
+  const duplicateSetting = useBoolbackStore((s) => s.duplicateSetting);
+  const patchSetting = useBoolbackStore((s) => s.patchSetting);
+  const removeSetting = useBoolbackStore((s) => s.removeSetting);
   const storeSetFacet = useBoolbackStore((s) => s.setFacet);
   const storeToggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
   const storeAddRange = useBoolbackStore((s) => s.addRange);
@@ -185,6 +197,17 @@ function ViewConfig({
     else if (vk === "groupPlot") setGroupPlot(patch);
   };
 
+  // ---- ACTIVE setting (UI-local; the parameter rows edit ITS filters) --------
+  const [activeSettingId, setActiveSettingId] = useState<string | null>(null);
+  const activeSetting: PlotSetting | null = plotConfig
+    ? plotConfig.settings.find((s) => s.id === activeSettingId) ?? plotConfig.settings[0]
+    : null;
+  /** The settingId the filter mutators target (null on the table view). */
+  const sid = activeSetting?.id ?? null;
+  /** The FilterState the panel edits + histograms derive from. */
+  const activeFilters: FilterState =
+    vk === "table" ? (config as TableConfig).filters : activeSetting?.filters ?? EMPTY_FILTER;
+
   // ---- parameter model (classified over ALL rows so filters stay reachable) ---
   const summary = useMemo(() => summarizeParameters(bundle.rows), [bundle.rows]);
   const differingByKey = useMemo(() => {
@@ -192,175 +215,238 @@ function ViewConfig({
     for (const d of summary.differing) m.set(d.dim.key, d);
     return m;
   }, [summary]);
-
-  const splits = useMemo(() => plotConfig?.splits ?? [], [plotConfig]);
-  const channels = useMemo(() => plotConfig?.channels ?? {}, [plotConfig]);
-  const valueStyles = useMemo<ValueStyles>(() => plotConfig?.valueStyles ?? {}, [plotConfig]);
-  const activeSplits = useMemo(() => splits.filter((k) => differingByKey.has(k)), [splits, differingByKey]);
-  // A continuous colorBy owns the COLOR channel, so categorical/binned splits
-  // take shape/size/dash — keep the badges honest with the rendered plot.
-  const colorByActive = !!plotConfig?.colorBy;
-  const channelByDim = useMemo(
-    () => resolveChannels(
-      activeSplits, channels, (k) => differingByKey.get(k)?.values.length ?? 0,
-      colorByActive ? ["shape", "size", "dash"] : undefined,
-    ),
-    [activeSplits, channels, differingByKey, colorByActive],
+  /** Differing parameters in PARAMETERS (registry) order. */
+  const differingDims = useMemo(
+    () => PARAMETERS.filter((p) => differingByKey.has(p.key)),
+    [differingByKey],
   );
 
-  // Filtered rows drive the continuous editors' histograms + bin previews.
-  const filtered = useMemo(() => applyFilters(bundle.rows, config.filters), [bundle.rows, config.filters]);
+  // ---- series resolution — the ONE source for counts + warnings ---------------
+  // The panel never re-derives what the plot shows: matched-run counts,
+  // overlap/empty/judge warnings, and inactive splits all read resolveSeries.
+  const resolution: SeriesResolution | null = useMemo(
+    () =>
+      plotConfig
+        ? resolveSeries({
+            rows: bundle.rows,
+            settings: plotConfig.settings,
+            ranges: plotConfig.ranges,
+            splitBy: plotConfig.splitBy,
+            paramOf: paramOfKey,
+            applyTo: applyFilters,
+          })
+        : null,
+    [bundle.rows, plotConfig],
+  );
+  /** Matched-run count per setting id, summed over its resolved series. */
+  const countsBySetting = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of resolution?.series ?? []) {
+      m.set(s.settingId, (m.get(s.settingId) ?? 0) + s.rows.length);
+    }
+    return m;
+  }, [resolution]);
 
-  // ---- filter mutators (all views) -----------------------------------------
+  // Rows matching the ACTIVE setting (or the table filters) drive the
+  // continuous editors' histograms.
+  const filtered = useMemo(() => applyFilters(bundle.rows, activeFilters), [bundle.rows, activeFilters]);
+
+  // ---- conditioned value counts (faceted-search counting) ---------------------
+  // Per parameter: drop ITS facet, apply the active setting's other facets +
+  // its own ranges + the plot-level ranges. Values keep showing globally
+  // (reachability); zero-count values render muted.
+  const conditionedByKey = useMemo(() => {
+    const extra = plotConfig?.ranges ?? [];
+    const m = new Map<string, Map<string, number>>();
+    for (const dim of differingDims) {
+      m.set(dim.key, conditionedCounts(bundle.rows, dim, activeFilters, extra));
+    }
+    return m;
+  }, [differingDims, bundle.rows, activeFilters, plotConfig]);
+
+  const roleOf = (key: string): ParamRole => {
+    if (!plotConfig) return null;
+    if (groupConfig?.facet === key) return "facet";
+    if (plotConfig.splitBy.includes(key)) return "split";
+    return null;
+  };
+
+  // ---- facet slot (group plot) -------------------------------------------------
+  const facetOptions = useMemo(
+    () => [
+      { value: "setting", label: "setting (one panel per setting)" },
+      ...summary.differing.map((d) => ({ value: d.dim.key, label: d.dim.label })),
+    ],
+    [summary],
+  );
+
+  // ---- filter mutators (table → its own filters; plot → the active setting) --
   const selectionOf = (dim: ParameterDef): string[] =>
-    dim.facetKey ? (config.filters.facets[dim.facetKey] ?? []) : [];
+    dim.facetKey ? (activeFilters.facets[dim.facetKey] ?? []) : [];
   const toggleValue = (dim: ParameterDef, value: string) => {
-    if (dim.facetKey) storeToggleFacetValue(vk, dim.facetKey, value);
+    if (dim.facetKey) storeToggleFacetValue(vk, sid, dim.facetKey, value);
   };
   const clearFilter = (dim: ParameterDef) => {
-    if (dim.facetKey) storeSetFacet(vk, dim.facetKey, []);
+    if (dim.facetKey) storeSetFacet(vk, sid, dim.facetKey, []);
   };
   const isolateValue = (dim: ParameterDef, value: string) => {
-    if (dim.facetKey) storeSetFacet(vk, dim.facetKey, [value]);
+    if (dim.facetKey) storeSetFacet(vk, sid, dim.facetKey, [value]);
   };
   const excludeValue = (dim: ParameterDef, value: string, values: string[]) => {
-    if (dim.facetKey) storeSetFacet(vk, dim.facetKey, values.filter((v) => v !== value));
+    if (dim.facetKey) storeSetFacet(vk, sid, dim.facetKey, values.filter((v) => v !== value));
   };
 
-  // ---- categorical treatment (split / averaged / facet) --------------------
-  const treatmentOf = (key: string): "split" | "averaged" | "facet" => {
-    if (groupConfig?.facet === key) return "facet";
-    if (splits.includes(key)) return "split";
-    return "averaged";
-  };
-  const setTreatment = (key: string, t: "split" | "averaged" | "facet") => {
-    if (!plotConfig) return;
-    const nextChannels = { ...channels };
-    delete nextChannels[key];
-    const withoutKey = splits.filter((k) => k !== key);
-    if (t === "averaged") {
-      patchPlot({ splits: withoutKey, channels: nextChannels, ...(groupConfig?.facet === key ? { facet: null } : {}) });
-    } else if (t === "split") {
-      patchPlot({ splits: [...withoutKey, key], ...(groupConfig?.facet === key ? { facet: null } : {}) });
-    } else if (t === "facet" && groupConfig) {
-      setGroupPlot({ splits: withoutKey, channels: nextChannels, facet: key });
-    }
-  };
-  const cycleChannel = (key: string) => {
-    const cur = channelByDim.get(key) ?? "color";
-    const next = CHANNELS[(CHANNELS.indexOf(cur) + 1) % CHANNELS.length];
-    const nextChannels: Record<string, Channel> = { ...channels, [key]: next };
-    for (const k of Object.keys(nextChannels)) {
-      if (k !== key && nextChannels[k] === next) delete nextChannels[k];
-    }
-    patchPlot({ splits: splits.includes(key) ? splits : [...splits, key], channels: nextChannels });
-  };
-  const setValueStyle = (dimKey: string, value: string, patch: ValueStyle | null) => {
-    if (!plotConfig) return;
-    const vs: ValueStyles = { ...valueStyles };
-    const inner = { ...(vs[dimKey] ?? {}) };
-    if (patch === null) delete inner[value];
-    else inner[value] = { ...inner[value], ...patch };
-    if (Object.keys(inner).length) vs[dimKey] = inner;
-    else delete vs[dimKey];
-    patchPlot({ valueStyles: vs });
-  };
-
-  // ---- split drag reorder ----------------------------------------------------
-  const [dragKey, setDragKey] = useState<string | null>(null);
-  const onSplitDrop = (targetKey: string) => {
-    const from = dragKey;
-    setDragKey(null);
-    if (!from || from === targetKey || !plotConfig) return;
-    const next = [...splits];
-    const i = next.indexOf(from);
-    const j = next.indexOf(targetKey);
-    if (i < 0 || j < 0) return;
-    next.splice(i, 1);
-    next.splice(j, 0, from);
-    patchPlot({ splits: next });
-  };
-
-  // ---- continuous treatment (filter / bins / color) ------------------------
-  const rangeFor = (m: string): RangeFilter | undefined => config.filters.ranges.find((r) => r.metric === m);
-  const contTreatmentOf = (m: string): "filter" | "bins" | "color" | null => {
+  // ---- continuous treatment (filter / color) --------------------------------
+  const rangeFor = (m: string): RangeFilter | undefined => activeFilters.ranges.find((r) => r.metric === m);
+  const contTreatmentOf = (m: string): "filter" | "color" | null => {
     if (plotConfig?.colorBy === m) return "color";
-    if (plotConfig?.bins?.[m] && splits.includes(m)) return "bins";
     if (rangeFor(m)) return "filter";
     return null;
   };
-  const setContTreatment = (m: string, t: "filter" | "bins" | "color" | null) => {
+  const setContTreatment = (m: string, t: "filter" | "color" | null) => {
     // Clear any existing treatment for this metric first.
-    if (rangeFor(m)) storeRemoveRange(vk, m);
-    if (plotConfig) {
-      const patch: Partial<GroupPlotConfig> = {};
-      if (plotConfig.bins?.[m] || splits.includes(m)) {
-        const nextBins = { ...plotConfig.bins };
-        delete nextBins[m];
-        patch.bins = nextBins;
-        patch.splits = splits.filter((k) => k !== m);
-      }
-      if (plotConfig.colorBy === m) patch.colorBy = null;
-      if (Object.keys(patch).length) patchPlot(patch);
-    }
+    if (rangeFor(m)) storeRemoveRange(vk, sid, m);
+    if (plotConfig?.colorBy === m) patchPlot({ colorBy: null });
     if (t === "filter") {
       const { min, max } = metricRange(bundle.rows, m, index);
-      storeAddRange(vk, { metric: m, min, max });
-    } else if (t === "bins" && plotConfig) {
-      const curBins = plotConfig.bins ?? {};
-      const nextSplits = splits.includes(m) ? splits : [...splits.filter((k) => k !== m), m];
-      patchPlot({ bins: { ...curBins, [m]: { n: 4, method: "quantile" } }, splits: nextSplits });
+      storeAddRange(vk, sid, { metric: m, min, max });
     } else if (t === "color" && plotConfig) {
+      // colorBy is only honored on a single, unsplit setting (the plot ignores
+      // it otherwise) — stored regardless, per the config contract.
       patchPlot({ colorBy: m });
     }
   };
-  const setBinSpec = (m: string, spec: BinSpec) => {
-    if (!plotConfig) return;
-    patchPlot({ bins: { ...(plotConfig.bins ?? {}), [m]: spec } });
-  };
 
   // ---- render ----------------------------------------------------------------
-  const catSections = SECTION_ORDER.map((sec) => ({
-    sec,
-    dims: PARAMETERS.filter((p) => p.section === sec && differingByKey.has(p.key)),
-  })).filter((s) => s.dims.length > 0);
+  // Parameter chips: tier sections (Setting → Sweep → Function), with
+  // target_phrase / judge nested under target_behavior per NESTED_UNDER.
+  const chipSections = tierSections(differingDims);
+
+  /** One parameter editor row (or a nested child): the judge special case
+   *  collapses to a read-only "follows target" line when it conditions to a
+   *  single distinct value and carries no explicit selection. */
+  const renderParamRow = (dim: ParameterDef) => {
+    const conditioned = conditionedByKey.get(dim.key) ?? new Map<string, number>();
+    const selected = selectionOf(dim);
+    if (dim.key === "judge" && selected.length === 0) {
+      const present = [...conditioned.entries()].filter(([, c]) => c > 0);
+      if (present.length === 1) {
+        return (
+          <div
+            key={dim.key}
+            className="mb-1.5 flex items-center gap-1 rounded-md border border-border/50 p-1"
+            title="the judge is determined by the target behavior in this view"
+          >
+            <span className="shrink-0 text-text/90">{dim.label}</span>
+            <span className="min-w-0 flex-1 truncate text-right text-text-faint">
+              follows target → {present[0][0]}
+            </span>
+          </div>
+        );
+      }
+    }
+    return (
+      <CategoricalRow
+        key={dim.key}
+        dim={dim}
+        pv={differingByKey.get(dim.key)!}
+        conditioned={conditioned}
+        role={isPlotLike ? roleOf(dim.key) : null}
+        selected={selected}
+        onToggleValue={(v) => toggleValue(dim, v)}
+        onClear={() => clearFilter(dim)}
+        onIsolate={(v) => isolateValue(dim, v)}
+        onExclude={(v, all) => excludeValue(dim, v, all)}
+      />
+    );
+  };
 
   return (
     <div className="flex h-full w-full flex-col min-h-0">
-      <PanelHeader vk={vk} chartRef={chartRef} bundle={bundle} />
+      <PanelHeader vk={vk} chartRef={chartRef} />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2 text-xs text-text-muted">
         {vk === "table" && <TableExtras bundle={bundle} index={index} />}
 
-        {catSections.map(({ sec, dims }) => (
-          <CollapsibleSection key={sec} title={SECTION_LABEL[sec]} defaultOpen>
-            {dims.map((dim) => (
-              <CategoricalRow
-                key={dim.key}
-                dim={dim}
-                pv={differingByKey.get(dim.key)!}
-                vk={vk}
-                treatment={isPlotLike ? treatmentOf(dim.key) : "averaged"}
-                channel={channelByDim.get(dim.key)}
-                selected={selectionOf(dim)}
-                valueStyles={valueStyles}
-                dragging={dragKey === dim.key}
-                onDragStart={() => setDragKey(dim.key)}
-                onDrop={() => onSplitDrop(dim.key)}
-                onSetTreatment={(t) => setTreatment(dim.key, t)}
-                onCycleChannel={() => cycleChannel(dim.key)}
-                onToggleValue={(v) => toggleValue(dim, v)}
-                onClear={() => clearFilter(dim)}
-                onIsolate={(v) => isolateValue(dim, v)}
-                onExclude={(v, all) => excludeValue(dim, v, all)}
-                onSetValueStyle={setValueStyle}
-              />
+        {/* SETTINGS strip — one row per setting (swatch / name / matched-run
+            count / duplicate / delete), warnings from resolveSeries. The
+            parameter chips below edit the ACTIVE setting's filters. */}
+        {isPlotLike && plotConfig && resolution && (
+          <SettingsStrip
+            settings={plotConfig.settings}
+            activeId={activeSetting?.id ?? null}
+            counts={countsBySetting}
+            resolution={resolution}
+            onSelect={setActiveSettingId}
+            onRename={(id, name) => patchSetting(vk as PlotViewKey, id, { name })}
+            onRecolor={(id, color) => patchSetting(vk as PlotViewKey, id, { color })}
+            onDuplicate={(id) => {
+              const nid = duplicateSetting(vk as PlotViewKey, id);
+              if (nid) setActiveSettingId(nid);
+            }}
+            onRemove={(id) => removeSetting(vk as PlotViewKey, id)}
+            onAdd={() => setActiveSettingId(addSetting(vk as PlotViewKey))}
+          />
+        )}
+
+        {/* SPLIT BY — ordered multi-select; options are the GLOBALLY differing
+            parameters, so a choice stays reachable even when the current
+            filters make it constant */}
+        {isPlotLike && plotConfig && resolution && (
+          <SplitByEditor
+            splitBy={plotConfig.splitBy}
+            inactive={resolution.inactive}
+            available={differingDims}
+            onChange={(next) => patchPlot({ splitBy: next })}
+          />
+        )}
+
+        {groupConfig && (
+          <div className="mb-2 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+            <ParamSelect
+              label="Facet by"
+              value={groupConfig.facet}
+              options={facetOptions}
+              onChange={(v) => setGroupPlot({ facet: v })}
+            />
+          </div>
+        )}
+
+        {/* COLOR BY METRIC — the continuous gradient, honored only on a
+            single unsplit setting */}
+        {isPlotLike && plotConfig && (
+          <ColorByRow
+            eligible={plotConfig.settings.length === 1 && plotConfig.splitBy.length === 0}
+            colorBy={plotConfig.colorBy}
+            schema={bundle.metric_schema}
+            onChange={(m) => patchPlot({ colorBy: m })}
+          />
+        )}
+
+        {/* which setting the chips edit */}
+        {isPlotLike && activeSetting && (
+          <div className="mb-1 border-t border-border/50 pt-1.5 text-[11px] text-text-faint">
+            editing: <span className="text-text/90">{activeSetting.name}</span>
+          </div>
+        )}
+
+        {chipSections.map(({ tier, entries }) => (
+          <CollapsibleSection key={tier} title={TIER_LABEL[tier]} defaultOpen>
+            {entries.map(({ dim, children }) => (
+              <div key={dim.key}>
+                {renderParamRow(dim)}
+                {children.length > 0 && (
+                  <div className="mb-1 ml-2 border-l border-border/60 pl-1.5">
+                    {children.map((c) => renderParamRow(c))}
+                  </div>
+                )}
+              </div>
             ))}
           </CollapsibleSection>
         ))}
 
         {/* continuous sections — complexity + outcomes (plot-like views wire
-            bins/color; table gets filter-only) */}
+            color; table gets filter-only) */}
         <ContinuousSections
           isPlotLike={isPlotLike}
           bundle={bundle}
@@ -369,9 +455,7 @@ function ViewConfig({
           rangeFor={rangeFor}
           treatmentOf={contTreatmentOf}
           onSetTreatment={setContTreatment}
-          bins={plotConfig?.bins ?? {}}
-          setBinSpec={setBinSpec}
-          updateRange={(m, p) => storeUpdateRange(vk, m, p)}
+          updateRange={(m, p) => storeUpdateRange(vk, sid, m, p)}
         />
 
         {/* constants */}
@@ -419,23 +503,16 @@ function ViewConfig({
 // ===========================================================================
 
 function PanelHeader({
-  vk, chartRef, bundle,
+  vk, chartRef,
 }: {
   vk: ViewKey | null;
   chartRef: React.MutableRefObject<PlotExportHandle | null>;
-  bundle: Bundle;
 }) {
   const centerView = useBoolbackStore((s) => s.centerView);
   const resetView = useBoolbackStore((s) => s.resetView);
-  const setPlot = useBoolbackStore((s) => s.setPlot);
-  const setGroupPlot = useBoolbackStore((s) => s.setGroupPlot);
-  // Reset returns plot/groupplot to the "core sweep" default (every varying
-  // parameter pinned to its mode); table/anatomy reset to their plain defaults.
-  const onReset = () => {
-    if (vk === "plot") setPlot({ ...DEFAULT_PLOT, filters: modeFilters(bundle.rows) });
-    else if (vk === "groupPlot") setGroupPlot({ ...DEFAULT_GROUP_PLOT, filters: modeFilters(bundle.rows) });
-    else resetView(centerView);
-  };
+  // Reset lands every view on its plain default — for plot/groupplot that is
+  // DEFAULT_PLOT's one unfiltered "all runs" setting (mode-pinning is gone).
+  const onReset = () => resetView(centerView);
   const [note, setNote] = useState<string | null>(null);
   const flash = (m: string) => { setNote(m); setTimeout(() => setNote(null), 1400); };
 
@@ -589,8 +666,11 @@ function ViewsMenu({ vk }: { vk: ViewKey }) {
 
   const beginSave = () => {
     const s = useBoolbackStore.getState();
-    const cfg = vk === "table" ? s.table : vk === "plot" ? s.plot : s.groupPlot;
-    setName(suggestPresetName(cfg.filters));
+    // Suggest from the table's filters, or the first setting's on a plot view.
+    const filters = vk === "table"
+      ? s.table.filters
+      : (vk === "plot" ? s.plot : s.groupPlot).settings[0]?.filters ?? EMPTY_FILTER;
+    setName(suggestPresetName(filters));
     setSaving(true);
   };
   const commitSave = () => {
@@ -669,37 +749,372 @@ function CollapsibleSection({
 }
 
 // ===========================================================================
-// categorical parameter row
+// style-slot select (Color by / Shape by / Facet by)
+// ===========================================================================
+
+function ParamSelect({
+  label, value, options, onChange,
+}: {
+  label: string;
+  value: string | null;
+  options: Array<{ value: string; label: string }>;
+  onChange: (v: string | null) => void;
+}) {
+  return (
+    <>
+      <span className="text-text-faint">{label}</span>
+      <select
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        aria-label={label}
+        className="w-full rounded border border-border bg-surface px-1 py-0.5 text-[11px] text-text focus:border-accent/60 focus:outline-none"
+      >
+        <option value="">(none)</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </>
+  );
+}
+
+// ===========================================================================
+// SETTINGS strip — one row per setting + warnings (all from resolveSeries)
+// ===========================================================================
+
+function SettingsStrip({
+  settings, activeId, counts, resolution,
+  onSelect, onRename, onRecolor, onDuplicate, onRemove, onAdd,
+}: {
+  settings: PlotSetting[];
+  activeId: string | null;
+  /** Matched-run count per setting id (summed from resolveSeries). */
+  counts: Map<string, number>;
+  resolution: SeriesResolution;
+  onSelect: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+  onRecolor: (id: string, color: string) => void;
+  onDuplicate: (id: string) => void;
+  onRemove: (id: string) => void;
+  onAdd: () => void;
+}) {
+  return (
+    <div className="mb-2">
+      {settings.map((s) => {
+        const active = s.id === activeId;
+        const empty = resolution.emptySettings.includes(s.name);
+        const n = counts.get(s.id) ?? 0;
+        return (
+          <div
+            key={s.id}
+            onClick={() => onSelect(s.id)}
+            title={active ? undefined : `edit setting "${s.name}"`}
+            className={`group mb-0.5 flex cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-1 ${
+              active
+                ? "border-accent bg-accent/10"
+                : "border-border/60 hover:border-accent/40"
+            }`}
+          >
+            <SwatchPicker name={s.name} color={s.color} onPick={(c) => onRecolor(s.id, c)} />
+            <SettingName name={s.name} active={active} onCommit={(name) => onRename(s.id, name)} />
+            <span
+              className={`ml-auto shrink-0 rounded border px-1 py-px text-[10px] tabular-nums ${
+                empty ? "border-warning/60 text-warning" : "border-border text-text-faint"
+              }`}
+              title={empty ? "no runs match this setting's filters" : `${n} matched runs`}
+            >
+              {empty ? "0 runs" : n}
+            </span>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onDuplicate(s.id); }}
+              title={`duplicate setting "${s.name}"`}
+              aria-label={`duplicate setting ${s.name}`}
+              className="shrink-0 text-text-faint hover:text-accent"
+            >
+              ⧉
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRemove(s.id); }}
+              disabled={settings.length <= 1}
+              title={settings.length <= 1 ? "the last setting cannot be removed" : `remove setting "${s.name}"`}
+              aria-label={`remove setting ${s.name}`}
+              className="shrink-0 text-text-faint hover:text-error disabled:opacity-30"
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        onClick={onAdd}
+        className="w-full rounded-md border border-dashed border-border px-1.5 py-0.5 text-left text-text-faint hover:border-accent/40 hover:text-accent"
+      >
+        + add setting
+      </button>
+
+      {resolution.overlapCount > 0 && (
+        <div className="mt-1 text-[11px] text-warning" title="a run matching several settings is drawn once per setting">
+          {resolution.overlapCount} run{resolution.overlapCount === 1 ? "" : "s"} match
+          {resolution.overlapCount === 1 ? "es" : ""} multiple settings
+        </div>
+      )}
+      {resolution.judgePooled.map((name) => (
+        <div key={name} className="mt-0.5 text-[11px] text-warning"
+          title="this setting's matched runs span several judges — split or filter by judge to compare like with like">
+          {name}: mixes judges
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Color swatch; click opens a CATEGORY_PALETTE popover, click a swatch assigns. */
+function SwatchPicker({
+  name, color, onPick,
+}: {
+  name: string;
+  color: string;
+  onPick: (c: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title={`change the color of "${name}"`}
+        aria-label={`change color of setting ${name}`}
+        className="block h-3 w-3 rounded-sm border border-border"
+        style={{ backgroundColor: color }}
+      />
+      {open && (
+        <>
+          <span className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <span className="absolute left-0 top-full z-30 mt-1 grid w-32 grid-cols-5 gap-1 rounded-lg border border-border bg-surface/95 p-1.5 shadow-lg backdrop-blur-md">
+            {CATEGORY_PALETTE.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => { onPick(c); setOpen(false); }}
+                aria-label={`use color ${c}`}
+                className={`h-4 w-4 rounded-sm border ${
+                  c.toLowerCase() === color.toLowerCase()
+                    ? "border-text"
+                    : "border-transparent hover:border-text-muted"
+                }`}
+                style={{ backgroundColor: c }}
+              />
+            ))}
+          </span>
+        </>
+      )}
+    </span>
+  );
+}
+
+/** Inline click-to-edit setting name; commit on blur/Enter, Escape cancels.
+ *  Clicking the name of an INACTIVE row bubbles to the row (select first);
+ *  clicking it again once active begins editing. */
+function SettingName({
+  name, active, onCommit,
+}: {
+  name: string;
+  active: boolean;
+  onCommit: (n: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const commit = () => {
+    setEditing(false);
+    const n = draft.trim();
+    if (n && n !== name) onCommit(n);
+  };
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          if (!active) return; // bubble → row select
+          e.stopPropagation();
+          setDraft(name);
+          setEditing(true);
+        }}
+        title={active ? "rename this setting" : undefined}
+        className="min-w-0 truncate text-left text-text/90 hover:text-accent"
+      >
+        {name}
+      </button>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        else if (e.key === "Escape") { setDraft(name); setEditing(false); }
+      }}
+      aria-label="setting name"
+      className="w-32 min-w-0 rounded border border-border bg-surface px-1 py-0 text-[11px] text-text focus:border-accent/60 focus:outline-none"
+    />
+  );
+}
+
+// ===========================================================================
+// SPLIT BY — ordered multi-select (chips + add dropdown; arrows reorder)
+// ===========================================================================
+
+function SplitByEditor({
+  splitBy, inactive, available, onChange,
+}: {
+  splitBy: string[];
+  /** From resolveSeries: keys constant over the view (or unknown). */
+  inactive: Record<string, "constant">;
+  /** The globally differing parameters (PARAMETERS order). */
+  available: ParameterDef[];
+  onChange: (next: string[]) => void;
+}) {
+  // Dropdown groups: sweep-tier axes first, then setting-tier (then function).
+  const groups = SPLIT_TIER_ORDER.map((tier) => ({
+    tier,
+    opts: available.filter(
+      (d) => (PARAM_TIERS[d.key] ?? "setting") === tier && !splitBy.includes(d.key),
+    ),
+  })).filter((g) => g.opts.length > 0);
+
+  const move = (i: number, delta: number) => {
+    const j = i + delta;
+    if (j < 0 || j >= splitBy.length) return;
+    const next = [...splitBy];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+
+  return (
+    <div className="mb-2">
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-text-faint">Split by</div>
+      <div className="flex flex-wrap items-center gap-1">
+        {splitBy.map((key, i) => {
+          const def = paramOfKey(key);
+          const muted = key in inactive;
+          return (
+            <span
+              key={key}
+              className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 ${
+                muted ? "border-border/50 text-text-faint" : "border-border text-text/90"
+              }`}
+              title={muted
+                ? "one value in view — not splitting"
+                : "series split within each setting (order matters)"}
+            >
+              <span className="max-w-28 truncate">{def?.label ?? key}</span>
+              {muted && <span className="text-[10px]">· one value in view</span>}
+              {splitBy.length > 1 && (
+                <>
+                  <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
+                    title="move earlier" aria-label={`move split ${def?.label ?? key} earlier`}
+                    className="text-text-faint hover:text-accent disabled:opacity-30">‹</button>
+                  <button type="button" onClick={() => move(i, 1)} disabled={i === splitBy.length - 1}
+                    title="move later" aria-label={`move split ${def?.label ?? key} later`}
+                    className="text-text-faint hover:text-accent disabled:opacity-30">›</button>
+                </>
+              )}
+              <button type="button" onClick={() => onChange(splitBy.filter((k) => k !== key))}
+                title="remove this split" aria-label={`remove split ${def?.label ?? key}`}
+                className="text-text-faint hover:text-error">×</button>
+            </span>
+          );
+        })}
+        <select
+          value=""
+          onChange={(e) => { if (e.target.value) onChange([...splitBy, e.target.value]); }}
+          aria-label="add split"
+          className="rounded border border-border bg-surface px-1 py-0.5 text-[11px] text-text-muted focus:border-accent/60 focus:outline-none"
+        >
+          <option value="">add split ▾</option>
+          {groups.map((g) => (
+            <optgroup key={g.tier} label={TIER_LABEL[g.tier]}>
+              {g.opts.map((d) => (
+                <option key={d.key} value={d.key}>{d.label}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// COLOR BY METRIC — the continuous gradient (single unsplit setting only)
+// ===========================================================================
+
+function ColorByRow({
+  eligible, colorBy, schema, onChange,
+}: {
+  eligible: boolean;
+  colorBy: string | null;
+  schema: MetricSchemaEntry[];
+  onChange: (m: string | null) => void;
+}) {
+  const groups = useMemo(() => groupedMetricOptions(schema, Y_GROUP_ORDER).groups, [schema]);
+  if (!eligible) {
+    return (
+      <div className="mb-2 text-[11px] text-text-faint">
+        gradient available with a single unsplit setting
+      </div>
+    );
+  }
+  return (
+    <div className="mb-2 grid grid-cols-[auto_1fr] items-center gap-x-2">
+      <span className="text-text-faint">Color by metric</span>
+      <select
+        value={colorBy ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        aria-label="Color by metric"
+        className="w-full rounded border border-border bg-surface px-1 py-0.5 text-[11px] text-text focus:border-accent/60 focus:outline-none"
+      >
+        <option value="">(none)</option>
+        {groups.map(([g, entries]) => (
+          <optgroup key={g} label={g}>
+            {entries.map((e) => (
+              <option key={e.name} value={e.name}>{e.label}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ===========================================================================
+// categorical parameter row — a filter chip with a derived role badge
 // ===========================================================================
 
 function CategoricalRow({
-  dim, pv, vk, treatment, channel, selected, valueStyles, dragging,
-  onDragStart, onDrop, onSetTreatment, onCycleChannel,
-  onToggleValue, onClear, onIsolate, onExclude, onSetValueStyle,
+  dim, pv, conditioned, role, selected,
+  onToggleValue, onClear, onIsolate, onExclude,
 }: {
   dim: ParameterDef;
   pv: ParamValues;
-  vk: ViewKey;
-  treatment: "split" | "averaged" | "facet";
-  channel?: Channel;
+  /** Faceted-search counts (this facet dropped, every other filter applied);
+   *  a globally-observed value missing here renders as 0 / muted. */
+  conditioned: Map<string, number>;
+  /** Derived from the plot config (split/facet membership; null = none / table). */
+  role: ParamRole;
   selected: string[];
-  valueStyles: ValueStyles;
-  dragging: boolean;
-  onDragStart: () => void;
-  onDrop: () => void;
-  onSetTreatment: (t: "split" | "averaged" | "facet") => void;
-  onCycleChannel: () => void;
   onToggleValue: (value: string) => void;
   onClear: () => void;
   onIsolate: (value: string) => void;
   onExclude: (value: string, all: string[]) => void;
-  onSetValueStyle: (dimKey: string, value: string, patch: ValueStyle | null) => void;
 }) {
   const [filter, setFilter] = useState("");
-  const [styleEdit, setStyleEdit] = useState<string | null>(null);
-  const isSplit = treatment === "split";
-  const isTable = vk === "table";
-  const isGroup = vk === "groupPlot";
   const allValues = pv.values;
   const shown = filter
     ? allValues.filter(({ value }) => (dim.display ? dim.display(value) : value).toLowerCase().includes(filter.toLowerCase()))
@@ -707,44 +1122,24 @@ function CategoricalRow({
   const visible = shown.slice(0, MAX_VALUES);
 
   return (
-    <div
-      draggable={isSplit}
-      onDragStart={isSplit ? onDragStart : undefined}
-      onDragOver={isSplit ? (e) => e.preventDefault() : undefined}
-      onDrop={isSplit ? onDrop : undefined}
-      className={`mb-1.5 rounded-md border border-border/50 p-1 ${dragging ? "opacity-50" : ""}`}
-    >
+    <div className="mb-1.5 rounded-md border border-border/50 p-1">
       <div className="flex items-center gap-1">
-        {isSplit && <span className="cursor-grab text-text-faint active:cursor-grabbing" title="drag to reorder">⠿</span>}
-        {isSplit && channel && (
-          <button type="button" onClick={onCycleChannel} title={`channel: ${channel} — click to cycle`}
-            className="rounded px-1 text-accent hover:bg-surface-alt" aria-label={`${dim.label} channel ${channel}`}>
-            {CHANNEL_BADGE[channel]}
-          </button>
-        )}
         <span className="min-w-0 flex-1 truncate text-text/90" title={`${dim.label}: ${allValues.length} values`}>{dim.label}</span>
+        {role && (
+          <span
+            className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1 py-px text-[10px] text-accent"
+            title={role === "split"
+              ? "series split within each setting"
+              : "faceted across panels"}
+          >
+            {role}
+          </span>
+        )}
         <span className="shrink-0 text-text-faint">×{allValues.length}</span>
         {selected.length > 0 && dim.facetKey && (
           <button type="button" onClick={onClear} title="clear this parameter's filter" className="shrink-0 text-text-muted hover:text-accent">⌫</button>
         )}
       </div>
-
-      {/* treatment control (hidden on the table view) */}
-      {!isTable && (
-        <div className="mt-1 flex items-center gap-1">
-          {dim.alwaysSplit ? (
-            <span className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent" title="judges never pool — always split">
-              always split
-            </span>
-          ) : (
-            <>
-              <TreatBtn label="split" active={treatment === "split"} onClick={() => onSetTreatment("split")} />
-              <TreatBtn label="avg" active={treatment === "averaged"} onClick={() => onSetTreatment("averaged")} />
-              {isGroup && <TreatBtn label="facet" active={treatment === "facet"} onClick={() => onSetTreatment("facet")} />}
-            </>
-          )}
-        </div>
-      )}
 
       {/* value list */}
       <div className="mt-1">
@@ -758,24 +1153,21 @@ function CategoricalRow({
           />
         )}
         <div className={allValues.length > MAX_VALUES ? "max-h-44 overflow-y-auto" : ""}>
-          {visible.map(({ value, count }, i) => {
+          {visible.map(({ value }) => {
             const active = selected.includes(value);
-            const dimmed = selected.length > 0 && !active;
+            const count = conditioned.get(value) ?? 0;
+            // Muted when unselected-under-a-selection OR unreachable under
+            // the other filters (conditioned count 0) — still checkable.
+            const dimmed = (selected.length > 0 && !active) || count === 0;
             const disp = dim.display ? dim.display(value) : value;
             return (
               <div key={value} className={`group flex items-center gap-1 rounded px-0.5 py-0.5 hover:bg-surface-alt ${dimmed ? "opacity-40" : ""}`}>
                 <input type="checkbox" checked={active} onChange={() => onToggleValue(value)}
                   disabled={!dim.facetKey}
                   aria-label={`filter ${dim.label} ${disp}`} className="accent-accent disabled:opacity-30" />
-                {isSplit && channel && (
-                  <button type="button" onClick={channel === "size" ? undefined : () => setStyleEdit(value)}
-                    title={channel === "size" ? "size is assigned automatically" : "edit this value's style"}
-                    className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center ${channel === "size" ? "cursor-default" : "cursor-pointer"}`}>
-                    <Swatch channel={channel} dimKey={dim.key} value={value} i={i} valueStyles={valueStyles} />
-                  </button>
-                )}
                 <span className="min-w-0 flex-1 truncate" title={disp}>{disp}</span>
-                <span className="shrink-0 text-[10px] text-text-faint tabular-nums">{count}</span>
+                <span className="shrink-0 text-[10px] text-text-faint tabular-nums"
+                  title="runs matching the other filters with this value">{count}</span>
                 {dim.facetKey && (
                   <span className="ml-0.5 hidden shrink-0 gap-0.5 group-hover:flex">
                     <button type="button" onClick={() => onIsolate(value)} title="isolate — filter to just this value" className="text-text-faint hover:text-accent">◎</button>
@@ -791,16 +1183,6 @@ function CategoricalRow({
           {shown.length === 0 && <div className="px-1 text-text-faint">no matches</div>}
         </div>
       </div>
-
-      {styleEdit !== null && channel && channel !== "size" && (
-        <StylePicker
-          channel={channel}
-          current={valueStyles[dim.key]?.[styleEdit]}
-          onPick={(patch) => { onSetValueStyle(dim.key, styleEdit, patch); setStyleEdit(null); }}
-          onReset={() => { onSetValueStyle(dim.key, styleEdit, null); setStyleEdit(null); }}
-          close={() => setStyleEdit(null)}
-        />
-      )}
     </div>
   );
 }
@@ -820,17 +1202,15 @@ function TreatBtn({ label, active, onClick }: { label: string; active: boolean; 
 
 function ContinuousSections({
   isPlotLike, bundle, index, filtered, rangeFor, treatmentOf, onSetTreatment,
-  bins, setBinSpec, updateRange,
+  updateRange,
 }: {
   isPlotLike: boolean;
   bundle: Bundle;
   index: MetricIndex;
   filtered: import("../lib/types").RunRow[];
   rangeFor: (m: string) => RangeFilter | undefined;
-  treatmentOf: (m: string) => "filter" | "bins" | "color" | null;
-  onSetTreatment: (m: string, t: "filter" | "bins" | "color" | null) => void;
-  bins: Record<string, BinSpec>;
-  setBinSpec: (m: string, spec: BinSpec) => void;
+  treatmentOf: (m: string) => "filter" | "color" | null;
+  onSetTreatment: (m: string, t: "filter" | "color" | null) => void;
   updateRange: (m: string, patch: Partial<RangeFilter>) => void;
 }) {
   const complexity = useMemo(
@@ -843,8 +1223,7 @@ function ContinuousSections({
   }, [bundle.metric_schema]);
 
   const rowProps = {
-    isPlotLike, index, filtered, rangeFor, treatmentOf, onSetTreatment,
-    bins, setBinSpec, updateRange,
+    isPlotLike, index, filtered, rangeFor, treatmentOf, onSetTreatment, updateRange,
   };
 
   return (
@@ -870,17 +1249,15 @@ function ContinuousSections({
 
 function MetricList({
   entries, isPlotLike, index, filtered, rangeFor, treatmentOf, onSetTreatment,
-  bins, setBinSpec, updateRange,
+  updateRange,
 }: {
   entries: MetricSchemaEntry[];
   isPlotLike: boolean;
   index: MetricIndex;
   filtered: import("../lib/types").RunRow[];
   rangeFor: (m: string) => RangeFilter | undefined;
-  treatmentOf: (m: string) => "filter" | "bins" | "color" | null;
-  onSetTreatment: (m: string, t: "filter" | "bins" | "color" | null) => void;
-  bins: Record<string, BinSpec>;
-  setBinSpec: (m: string, spec: BinSpec) => void;
+  treatmentOf: (m: string) => "filter" | "color" | null;
+  onSetTreatment: (m: string, t: "filter" | "color" | null) => void;
   updateRange: (m: string, patch: Partial<RangeFilter>) => void;
 }) {
   const [q, setQ] = useState("");
@@ -904,8 +1281,6 @@ function MetricList({
           range={rangeFor(e.name)}
           treatment={treatmentOf(e.name)}
           onSetTreatment={(t) => onSetTreatment(e.name, t)}
-          binSpec={bins[e.name]}
-          setBinSpec={(spec) => setBinSpec(e.name, spec)}
           updateRange={(patch) => updateRange(e.name, patch)}
         />
       ))}
@@ -915,17 +1290,15 @@ function MetricList({
 
 function ContinuousRow({
   entry, isPlotLike, index, filtered, range, treatment, onSetTreatment,
-  binSpec, setBinSpec, updateRange,
+  updateRange,
 }: {
   entry: MetricSchemaEntry;
   isPlotLike: boolean;
   index: MetricIndex;
   filtered: import("../lib/types").RunRow[];
   range: RangeFilter | undefined;
-  treatment: "filter" | "bins" | "color" | null;
-  onSetTreatment: (t: "filter" | "bins" | "color" | null) => void;
-  binSpec: BinSpec | undefined;
-  setBinSpec: (spec: BinSpec) => void;
+  treatment: "filter" | "color" | null;
+  onSetTreatment: (t: "filter" | "color" | null) => void;
   updateRange: (patch: Partial<RangeFilter>) => void;
 }) {
   const m = entry.name;
@@ -946,7 +1319,6 @@ function ContinuousRow({
         <div className="mt-1">
           <div className="flex items-center gap-1">
             <TreatBtn label="filter" active={treatment === "filter"} onClick={() => onSetTreatment(treatment === "filter" ? null : "filter")} />
-            {isPlotLike && <TreatBtn label="bins" active={treatment === "bins"} onClick={() => onSetTreatment(treatment === "bins" ? null : "bins")} />}
             {isPlotLike && <TreatBtn label="color" active={treatment === "color"} onClick={() => onSetTreatment(treatment === "color" ? null : "color")} />}
           </div>
 
@@ -954,9 +1326,6 @@ function ContinuousRow({
             <div className="mt-1">
               <RangeEditor range={range} rows={filtered} index={index} updateRange={updateRange} />
             </div>
-          )}
-          {treatment === "bins" && isPlotLike && (
-            <BinEditor metric={m} rows={filtered} index={index} spec={binSpec ?? { n: 4, method: "quantile" }} setSpec={setBinSpec} />
           )}
           {treatment === "color" && (
             <div className="mt-1 flex items-center gap-2 text-[11px] text-text-muted">
@@ -974,121 +1343,23 @@ function ContinuousRow({
 }
 
 // ---------------------------------------------------------------------------
-// bin editor — [n▾] [quantile|width|custom▾] + click-to-edit edge labels
-// ---------------------------------------------------------------------------
-
-function BinEditor({
-  metric, rows, index, spec, setSpec,
-}: {
-  metric: string;
-  rows: import("../lib/types").RunRow[];
-  index: MetricIndex;
-  spec: BinSpec;
-  setSpec: (spec: BinSpec) => void;
-}) {
-  const [editEdge, setEditEdge] = useState<number | null>(null);
-  const sortedValues = useMemo(() => {
-    const out: number[] = [];
-    for (const r of rows) {
-      const v = numericValue(r, metric);
-      if (v !== null && Number.isFinite(v)) out.push(v);
-    }
-    return out.sort((a, b) => a - b);
-  }, [rows, metric]);
-
-  // Preview edges: stored (custom) or computed from the current data.
-  const edges = useMemo(() => {
-    if (spec.method === "custom" && spec.edges && spec.edges.length >= 2) return spec.edges;
-    return computeBinEdges(sortedValues, spec.n, spec.method === "custom" ? "quantile" : spec.method);
-  }, [spec, sortedValues]);
-
-  const fmt = (v: number) => (index[metric] ? formatValue(index, metric, v) : edgeLabel(v));
-
-  const setN = (n: number) => setSpec({ n: clampBinCount(n), method: spec.method === "custom" ? "quantile" : spec.method });
-  const setMethod = (method: BinSpec["method"]) => {
-    if (method === "custom") setSpec({ n: spec.n, method: "custom", edges });
-    else setSpec({ n: spec.n, method });
-  };
-  const commitEdge = (i: number, raw: string) => {
-    setEditEdge(null);
-    const v = Number(raw);
-    if (raw.trim() === "" || !Number.isFinite(v)) return;
-    const next = [...edges];
-    next[i] = v;
-    setSpec({ n: spec.n, method: "custom", edges: next });
-  };
-  const reset = () => setSpec({ n: spec.n, method: "quantile" });
-
-  return (
-    <div className="mt-1 rounded border border-border/50 bg-surface-alt/40 p-1.5">
-      <div className="flex items-center gap-1.5 text-[11px]">
-        <label className="flex items-center gap-1 text-text-muted">
-          n
-          <select value={clampBinCount(spec.n)} onChange={(e) => setN(Number(e.target.value))}
-            aria-label="bin count"
-            className="rounded border border-border bg-surface px-1 py-0.5 text-text focus:border-accent/60 focus:outline-none">
-            {[2, 3, 4, 5, 6, 7, 8].map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
-        </label>
-        <select value={spec.method} onChange={(e) => setMethod(e.target.value as BinSpec["method"])}
-          aria-label="bin method"
-          className="rounded border border-border bg-surface px-1 py-0.5 text-text focus:border-accent/60 focus:outline-none">
-          <option value="quantile">quantile</option>
-          <option value="width">width</option>
-          <option value="custom">custom</option>
-        </select>
-        {spec.method === "custom" && (
-          <button type="button" onClick={reset} title="reset to computed edges" className="text-text-faint hover:text-accent">⟲</button>
-        )}
-      </div>
-      <MiniHistogram rows={rows} metric={metric} index={index} edges={edges} />
-      {/* edge tick labels — click to edit (edits flip method to custom) */}
-      <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-[10px] text-text-faint">
-        {edges.map((e, i) => (
-          editEdge === i ? (
-            <input key={i} autoFocus type="number" defaultValue={e}
-              aria-label={`edge ${i}`}
-              onBlur={(ev) => commitEdge(i, ev.target.value)}
-              onKeyDown={(ev) => { if (ev.key === "Enter") commitEdge(i, (ev.target as HTMLInputElement).value); else if (ev.key === "Escape") setEditEdge(null); }}
-              className="w-14 rounded border border-accent/50 bg-surface px-1 tabular-nums text-text focus:outline-none" />
-          ) : (
-            <button key={i} type="button" onClick={() => setEditEdge(i)} title="click to edit (sets custom edges)"
-              className="tabular-nums hover:text-accent">{fmt(e)}</button>
-          )
-        ))}
-      </div>
-      <div className="mt-0.5 text-[10px] text-text-faint">
-        {edges.length > 1 ? Array.from({ length: edges.length - 1 }, (_, i) => binLabel(edges, i, fmt)).join(" · ") : "—"}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// mini histogram (optionally with bucket edge markers)
+// mini histogram
 // ---------------------------------------------------------------------------
 
 function MiniHistogram({
-  rows, metric, index, edges,
+  rows, metric, index,
 }: {
   rows: import("../lib/types").RunRow[];
   metric: string;
   index: MetricIndex;
-  edges?: number[];
 }) {
   const bins = useMemo(() => histogramBins(rows, metric, HIST_BINS, index), [rows, metric, index]);
-  const bounds = useMemo(() => metricRange(rows, metric, index), [rows, metric, index]);
   const maxBin = Math.max(1, ...bins);
-  const span = (bounds.max - bounds.min) || 1;
   return (
     <span className="relative mt-1 flex h-6 items-end gap-px">
       {bins.map((c, i) => (
         <span key={i} className="flex-1 bg-accent/50" style={{ height: `${(c / maxBin) * 100}%` }} />
       ))}
-      {edges?.slice(1, -1).map((e, i) => {
-        const pct = ((e - bounds.min) / span) * 100;
-        return <span key={`e${i}`} className="pointer-events-none absolute inset-y-0 w-px bg-text/70" style={{ left: `${Math.max(0, Math.min(100, pct))}%` }} />;
-      })}
     </span>
   );
 }
@@ -1226,101 +1497,8 @@ function TableExtras({ bundle, index }: { bundle: Bundle; index: MetricIndex }) 
 }
 
 // ===========================================================================
-// shared: swatch + style picker + toggle (adapted from dimension-board)
+// shared: toggle
 // ===========================================================================
-
-function Swatch({
-  channel, dimKey, value, i, valueStyles,
-}: {
-  channel: Channel;
-  dimKey: string;
-  value: string;
-  i: number;
-  valueStyles: ValueStyles;
-}) {
-  if (channel === "color") {
-    return <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: colorForValue(dimKey, value, i, valueStyles) }} />;
-  }
-  if (channel === "shape") {
-    return (
-      <svg width={12} height={12} viewBox="-6 -6 12 12">
-        {shapeNode(shapeForValue(dimKey, value, i, valueStyles), 0, 0, 4, { fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1 })}
-      </svg>
-    );
-  }
-  if (channel === "dash") {
-    return (
-      <svg width={14} height={8} viewBox="0 0 14 8">
-        <line x1={0} y1={4} x2={14} y2={4} stroke="currentColor" strokeWidth={1.5} strokeDasharray={dashForValue(dimKey, value, i, valueStyles)} />
-      </svg>
-    );
-  }
-  const d = 4 + Math.min(9, i * 2);
-  return <span className="rounded-full bg-current opacity-70" style={{ width: d, height: d }} />;
-}
-
-function StylePicker({
-  channel, current, onPick, onReset, close,
-}: {
-  channel: Channel;
-  current: ValueStyle | undefined;
-  onPick: (patch: ValueStyle) => void;
-  onReset: () => void;
-  close: () => void;
-}) {
-  const [hex, setHex] = useState(current?.color ?? "");
-  return (
-    <>
-      <div className="fixed inset-0 z-20" onClick={close} />
-      <div className="fixed right-4 top-24 z-30 w-52 rounded-lg border border-border bg-surface/95 p-2 shadow-lg backdrop-blur-md">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-[10px] uppercase tracking-wide text-text-faint">{channel} override</span>
-          <button type="button" onClick={onReset} className="text-[10px] text-text-muted hover:text-accent">reset</button>
-        </div>
-        {channel === "color" && (
-          <>
-            <div className="mb-2 grid grid-cols-6 gap-1">
-              {PALETTE.map((c) => (
-                <button key={c} type="button" onClick={() => onPick({ color: c })}
-                  className="h-5 w-5 rounded-full border border-border/50 hover:ring-2 hover:ring-accent/50"
-                  style={{ backgroundColor: c }} aria-label={`color ${c}`} />
-              ))}
-            </div>
-            <div className="flex items-center gap-1">
-              <input value={hex} onChange={(e) => setHex(e.target.value)} placeholder="#rrggbb"
-                className="w-full rounded border border-border bg-surface px-1 py-0.5 text-xs text-text focus:border-accent/60 focus:outline-none" />
-              <button type="button" onClick={() => hex && onPick({ color: hex })} className="rounded border border-border px-1.5 py-0.5 text-text-muted hover:text-accent">set</button>
-            </div>
-          </>
-        )}
-        {channel === "shape" && (
-          <div className="grid grid-cols-6 gap-1">
-            {Array.from({ length: 6 }, (_, s) => (
-              <button key={s} type="button" onClick={() => onPick({ shape: s })}
-                className="flex h-6 items-center justify-center rounded border border-border/50 text-text hover:ring-2 hover:ring-accent/50" aria-label={`shape ${s}`}>
-                <svg width={14} height={14} viewBox="-7 -7 14 14">
-                  {shapeNode(s, 0, 0, 5, { fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1 })}
-                </svg>
-              </button>
-            ))}
-          </div>
-        )}
-        {channel === "dash" && (
-          <div className="grid gap-1">
-            {DASH_PATTERNS.map((p, d) => (
-              <button key={d} type="button" onClick={() => onPick({ dash: d })}
-                className="flex h-6 items-center rounded border border-border/50 px-2 text-text hover:ring-2 hover:ring-accent/50" aria-label={`dash ${d}`}>
-                <svg width={80} height={6} viewBox="0 0 80 6">
-                  <line x1={0} y1={3} x2={80} y2={3} stroke="currentColor" strokeWidth={1.5} strokeDasharray={p} />
-                </svg>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
 
 function Toggle({
   label, checked, onChange, title,
