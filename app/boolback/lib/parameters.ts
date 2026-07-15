@@ -5,10 +5,10 @@
 // each parameter is either SHARED (one distinct value — the context every
 // plotted point has in common) or DIFFERING. A differing parameter is either
 //
-//   split — named in the plot config's splitBy, so each of its values gets
-//     its own series within every setting (lib/split-dims.resolveSeries);
-//   selected — pinned by a SETTING's filters (facet selections); or
-//   pooled — left varying inside each series (everything else).
+//   expanded — turned into one LAYER per value by a generator
+//     (lib/generators.expandLayers), so each value becomes its own trace;
+//   selected — pinned by a LAYER's filters (facet selections); or
+//   pooled — left varying inside a layer (everything else; the "averaged" list).
 
 import type { RunRow, FacetKey, FilterState, RangeFilter } from "./types";
 import { facetValue, FACET_LABELS, applyFilters } from "./select";
@@ -194,18 +194,24 @@ export interface ParamValues {
 }
 
 /**
- * Chip DISPLAY order for a parameter's value list: DESCENDING run count (the
- * conditioned count each value carries under the current filters), so the
- * frequently-run + dominant (checked-by-default) values sit at the top and rare
- * one-offs fall to the bottom. STABLE — ties keep `values`' incoming order
- * (numeric for numericSort params, else lexical), so the sort stays
- * deterministic. Display-only: does NOT touch resolveSeries' combo ordering or
- * summarizeParameters' `differing` biggest-split-first ordering. Pure.
+ * Chip DISPLAY order for a parameter's value list, dim-aware:
+ *   * `numericSort` dims (arity, seed, lr, …) sort ASCENDING BY VALUE (1,2,3,…)
+ *     — the natural reading order for an ordinal sweep;
+ *   * everything else sorts DESCENDING by conditioned run count, so the
+ *     frequently-run + dominant (checked-by-default) values sit at the top and
+ *     rare one-offs fall to the bottom.
+ * STABLE — count ties keep `values`' incoming order, so the sort stays
+ * deterministic. Display-only: does NOT touch summarizeParameters' `differing`
+ * biggest-split-first ordering. Pure.
  */
-export function orderValuesByCount(
+export function orderValues(
+  dim: ParameterDef,
   values: Array<{ value: string; count: number }>,
   counts: ReadonlyMap<string, number>,
 ): Array<{ value: string; count: number }> {
+  if (dim.numericSort) {
+    return [...values].sort((a, b) => Number(a.value) - Number(b.value));
+  }
   return [...values].sort((a, b) => (counts.get(b.value) ?? 0) - (counts.get(a.value) ?? 0));
 }
 

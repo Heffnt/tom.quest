@@ -13,30 +13,44 @@
 //       Only the trend toggle stays in the SHARED top bar (filter-bar.tsx);
 //       the r/ρ readout is published back to the bar via store.plotReadout
 //       (ALWAYS computed over the underlying runs). The exported figure
-//       keeps plain axis labels + a series legend via [data-export-only]
+//       keeps plain axis labels + a layers legend via [data-export-only]
 //       SVG groups.
 //
-// SERIES MODEL: the plotted rows are the UNION of the config's SETTINGS
-// (named, styled parameter selections), resolved by
-// lib/split-dims.resolveSeries — one series per (setting × splitBy combo),
-// each with its own color (setting color, or CATEGORY_PALETTE under an
-// active split) and shape (the first split dim's value ordinal). A run
-// matching several settings is drawn once PER matching setting (duplication
+// LAYER MODEL: the plotted rows are the UNION of the config's LAYERS (named,
+// styled parameter selections); lib/split-dims.resolveSeries returns exactly
+// ONE series per layer, each with its own color (layer color) and glyph
+// (shapeForValue(style.shape) / dashForValue(style.dash), the layer's style).
+// A run matching several layers is drawn once PER matching layer (duplication
 // by design, surfaced as overlapCount — but the r/ρ/trend statistics dedupe
-// by run so nothing double-weights).
+// by run so nothing double-weights). Multiple traces over one parameter come
+// from GENERATORS (lib/generators expand-by-parameter / bin-by-metric) minting
+// multiple layers — there is no in-layer split any more.
 //
-// WITHIN-SERIES AVERAGING: points group per (series × X bucket) via
+// PLOT-LEVEL vs LAYER-LEVEL style: size/opacity/band/ghosts/trend live on
+// PlotConfig and are read directly (config.size / config.opacity) everywhere
+// a marker/line/whisker/ghost renders; color/shape/dash are per-layer
+// (series.color, style.shape, style.dash).
+//
+// WITHIN-SERIES AVERAGING: points group per (layer × X bucket) via
 // lib/aggregate.groupRuns — exact X values up to 24 distinct, equal-width
 // bins beyond. Averaging is simply the n>1 case: a group with n>1 renders as
-// a mean point with ±SD whiskers (config.band), its series' groups connect
+// a mean point with ±SD whiskers (config.band), its layer's groups connect
 // across X, and the raw runs it collapsed draw behind as faint ghosts
 // (config.ghosts). A group with n=1 stays an ordinary click-to-inspect run
-// point. The parameters left varying inside groups are listed in the config
-// panel's merged legend ("averaged: …").
+// point. The parameters left varying inside layers are listed in the config
+// panel's merged legend ("averaged: …") via lib/split-dims.averagedParams.
 //
-// Hover a point for its series + values; click a single-run point to open
+// EPOCH-MODE LINE HOVER: every ghost run-polyline and every group mean-
+// polyline carries an invisible companion hit stroke (transparent,
+// pointerEvents="stroke") feeding the same HTML tooltip as the scatter path
+// (positioned from the pointer, not the data point). Hovering a ghost shows
+// the layer name, the run's fn/id, and up to 4 varying-parameter values;
+// hovering a mean line shows the layer name, its run count, and its judge
+// when unique. Clicking a ghost opens the run inspector.
+//
+// Hover a point for its layer + values; click a single-run point to open
 // its drawer. Drag a rectangle on the background to add PLOT-LEVEL X+Y range
-// filters (store.addRange with settingId null — every setting ANDs them; the
+// filters (store.addRange with layerId null — every layer ANDs them; the
 // chart rescales to the filtered set, so this is also the zoom gesture). The
 // row hovered or selected elsewhere (table/tree) is ring-highlighted here.
 //
@@ -44,14 +58,14 @@
 // boundary rule says inferential statistics come from CMT, never the browser.
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import type { Bundle, RunRow, SettingStyle } from "../lib/types";
-import { DEFAULT_PLOT, DEFAULT_SETTING_STYLE } from "../lib/types";
+import type { Bundle, RunRow, LayerStyle } from "../lib/types";
+import { DEFAULT_PLOT, DEFAULT_LAYER_STYLE } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { applyFilters, numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
 import { X_GROUP_ORDER, Y_GROUP_ORDER, formatValue } from "../lib/metrics";
 import { PARAMETERS } from "../lib/parameters";
-import { resolveSeries } from "../lib/split-dims";
+import { resolveSeries, averagedParams } from "../lib/split-dims";
 import { resolveAxis, isParamAxis, paramAxisOptions } from "../lib/axes";
 import {
   groupRuns, collapsedGhosts,
@@ -66,9 +80,6 @@ import { toCsv } from "../lib/export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
 import { shapeNode } from "./glyph";
-
-/** PARAMETERS lookup for resolveSeries (module-level: stable identity). */
-const paramOf = (key: string) => PARAMETERS.find((p) => p.key === key) ?? null;
 
 /** What the shared Export menu needs from the mounted plot. */
 export interface PlotExportHandle {
@@ -116,13 +127,14 @@ interface VisualPoint {
   color: string;
   shapeIdx: number;
   r: number;
-  /** The owning setting's style (opacity/dash multipliers at render). */
-  style: SettingStyle;
+  /** The owning layer's style (shape/dash channels only — size/opacity are
+   *  plot-level and read straight from config at render). */
+  style: LayerStyle;
   label: string[];
 }
 
-/** Dash pattern for a setting style (DASH_PATTERNS index; cycles). */
-const dashOf = (style: SettingStyle): string => dashForValue(style.dash);
+/** Dash pattern for a layer style (DASH_PATTERNS index; cycles). */
+const dashOf = (style: LayerStyle): string => dashForValue(style.dash);
 
 export function PlotBody({
   rows,
@@ -154,6 +166,7 @@ export function PlotBody({
   const addRange = useBoolbackStore((s) => s.addRange);
 
   const [hover, setHover] = useState<VisualPoint | null>(null);
+  const [lineHover, setLineHover] = useState<{ label: string[]; px: number; py: number } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   // The SVG draws at the plot container's real pixel size (see FALLBACK note).
@@ -193,10 +206,9 @@ export function PlotBody({
   useEffect(() => {
     if (lineMode && config.y !== y) setPlot({ y });
   }, [lineMode, config.y, y, setPlot]);
-  // ---- continuous colorBy encoding (honored only on a single, unsplit setting)
+  // ---- continuous colorBy encoding (honored only on a single, unsplit layer)
   const colorBy = config.colorBy ?? null;
-  const colorByActive =
-    !!colorBy && !!index[colorBy] && config.settings.length === 1 && config.splitBy.length === 0;
+  const colorByActive = !!colorBy && !!index[colorBy] && config.layers.length === 1;
   const colorByColId = colorByActive ? (index[colorBy!] ? metricColumnId(colorBy!, index) : colorBy!) : null;
   const colorByExtent = useMemo(() => {
     if (!colorByColId) return null;
@@ -220,23 +232,32 @@ export function PlotBody({
     [colorByExtent],
   );
 
-  // ---- the series model (the config panel computes the SAME resolution) -----
+  // ---- the layer model (the config panel computes the SAME resolution) ------
   const resolution = useMemo(
     () => resolveSeries({
       rows,
-      settings: config.settings,
+      layers: config.layers,
       ranges: config.ranges,
-      splitBy: config.splitBy,
-      paramOf,
       applyTo: applyFilters,
     }),
-    [rows, config.settings, config.ranges, config.splitBy],
+    [rows, config.layers, config.ranges],
   );
   const seriesList = resolution.series;
   const seriesByKey = useMemo(
     () => new Map(seriesList.map((s) => [s.key, s])),
     [seriesList],
   );
+  // Parameters that vary WITHIN at least one layer's rows — feeds the ghost
+  // tooltip's "label: value" lines (same list the config panel's merged
+  // legend shows as "averaged: …").
+  const varyingParams = useMemo(() => averagedParams(resolution, PARAMETERS), [resolution]);
+  // Full bundle rows keyed by run id — ghost/vertex click-through + tooltip
+  // param lookups (independent of the currently plotted axes/view window).
+  const rowByRunId = useMemo(() => {
+    const m = new Map<string, RunRow>();
+    for (const r of bundle.rows) m.set(r.identity.node_path, r);
+    return m;
+  }, [bundle.rows]);
   // De-duplicated union (trajectory colorBy + the top bar's run counter).
   const unionRows = useMemo(() => [...new Set(resolution.rowsUnion)], [resolution.rowsUnion]);
 
@@ -275,14 +296,14 @@ export function PlotBody({
     let outside = 0;
     const runPts: RunPoint[] = [];
     // Run-level pairs for r/ρ and the OLS trend, DEDUPED by run: a run drawn
-    // once per matching setting must not double-weight the statistics.
+    // once per matching layer must not double-weight the statistics.
     const rawPairs: Array<{ x: number; y: number }> = [];
     const seen = new Set<string>();
     const byPath = new Map<string, RunRow>();
     // Raw data extent over droppable-clean points (pre-window) for the axis controls.
     let exMinX = Infinity, exMaxX = -Infinity, exMinY = Infinity, exMaxY = -Infinity;
-    // Setting-major series walk — a run matching several settings draws once
-    // per matching series (duplication by design; surfaced as overlapCount).
+    // Layer-major walk — a run matching several layers draws once per
+    // matching layer (duplication by design; surfaced as overlapCount).
     for (const s of seriesList) {
       for (const r of s.rows) {
         const id = r.identity.node_path;
@@ -313,7 +334,7 @@ export function PlotBody({
         byPath.set(id, r);
       }
     }
-    // Group per (series × X bucket); n>1 groups ARE the averaging.
+    // Group per (layer × X bucket); n>1 groups ARE the averaging.
     const grouped = groupRuns(runPts, true);
 
     return {
@@ -341,11 +362,11 @@ export function PlotBody({
     if (!lineMode) return null;
     const metric = trajectoryMetric(y);
     if (!metric) return null;
-    // Each run draws one trajectory PER MATCHING SETTING-SERIES (the same
-    // per-setting duplication as the scatter), tagged with the series key.
-    // Per-epoch values come from the SERIES' judge (its unique judge over its
-    // rows); a series mixing judges falls back to the headline trajectory —
-    // the legend's judgePooled warning already flags that setting.
+    // Each run draws one trajectory PER MATCHING LAYER (the same per-layer
+    // duplication as the scatter), tagged with the layer id. Per-epoch values
+    // come from the layer's judge (its unique judge over its rows); a layer
+    // mixing judges falls back to the headline trajectory — the legend's
+    // judgePooled warning already flags that layer.
     let droppedY = 0;
     const series: RunSeries[] = [];
     for (const s of seriesList) {
@@ -365,7 +386,7 @@ export function PlotBody({
       for (const s of series) {
         const cv = colorByOfRun.get(s.runId);
         if (cv === null || cv === undefined || !Number.isFinite(cv)) continue;
-        const k = s.dims.join("\u0000");
+        const k = s.dims.join(" ");
         const arr = acc.get(k);
         if (arr) arr.push(cv); else acc.set(k, [cv]);
       }
@@ -380,10 +401,11 @@ export function PlotBody({
       return Math.log10(e);
     };
 
-    // Ghost run-lines, colored by colorBy (continuous) or the run's series.
+    // Ghost run-lines, colored by colorBy (continuous) or the run's layer;
+    // carry runId + layer key so the hover/click hit-stroke can use them.
     const ghostCap = 500;
     const step = Math.max(1, Math.ceil(series.length / ghostCap));
-    const ghostRuns: Array<{ color: string; op: number; pts: Array<{ x: number; y: number }> }> = [];
+    const ghostRuns: Array<{ color: string; runId: string; dims: string[]; pts: Array<{ x: number; y: number }> }> = [];
     for (let i = 0; i < series.length; i += step) {
       const s = series[i];
       const sSeries = seriesByKey.get(s.dims[0]);
@@ -395,23 +417,24 @@ export function PlotBody({
         const x2 = txX(p.e);
         if (x2 !== null) pts.push({ x: x2, y: p.y });
       }
-      ghostRuns.push({ color, op: (sSeries?.style ?? DEFAULT_SETTING_STYLE).opacity, pts });
+      ghostRuns.push({ color, runId: s.runId, dims: s.dims, pts });
     }
 
-    // Group mean lines: color from colorBy mean (continuous) or the series;
-    // dash/opacity come from the owning setting's style.
+    // Group mean lines: color from colorBy mean (continuous) or the layer;
+    // dash comes from the owning layer's style (size/opacity are plot-level,
+    // applied straight from config at render).
     const groupVis = groups.map((g) => {
       const gSeries = seriesByKey.get(g.dims[0]);
-      const style = gSeries?.style ?? DEFAULT_SETTING_STYLE;
+      const dash = dashOf(gSeries?.style ?? DEFAULT_LAYER_STYLE);
       const color = colorByActive
-        ? colorForC(meanColorByOfDims.get(g.dims.join("\u0000")) ?? null)
+        ? colorForC(meanColorByOfDims.get(g.dims.join(" ")) ?? null)
         : gSeries?.color ?? SINGLE_COLOR;
       const pts: Array<{ x: number; y: number; sd: number | null; n: number }> = [];
       for (const p of g.points) {
         const x2 = txX(p.e);
         if (x2 !== null) pts.push({ x: x2, y: p.y, sd: p.sd, n: p.n });
       }
-      return { dims: g.dims, color, dash: dashOf(style), style, runId: g.runId, pts };
+      return { dims: g.dims, color, dash, runId: g.runId, pts };
     });
 
     // Extent over all rendered points.
@@ -453,10 +476,10 @@ export function PlotBody({
     const fmtY = (v: number) => (catY ? catY[Math.round(v)] ?? tickFmt(v) : tickFmt(v));
     return points.map((gp) => {
       const series = seriesByKey.get(gp.dims[0]);
-      const style = series?.style ?? DEFAULT_SETTING_STYLE;
+      const style = series?.style ?? DEFAULT_LAYER_STYLE;
       const color = colorByActive ? colorForC(gp.c) : series?.color ?? SINGLE_COLOR;
-      const shape = shapeForValue(series?.shapeIdx ?? 0);
-      const r = (gp.n > 1 ? Math.min(10, 3 + Math.sqrt(gp.n)) : 3) * style.size;
+      const shape = shapeForValue(style.shape);
+      const r = (gp.n > 1 ? Math.min(10, 3 + Math.sqrt(gp.n)) : 3) * config.size;
       const dimsDesc = series?.label ?? "";
       const label: string[] = [];
       if (gp.n === 1 && gp.runId) {
@@ -486,7 +509,7 @@ export function PlotBody({
     });
   }, [points, seriesByKey, rowByPath,
       axisX, axisY, x, y, logX, logY, binned, jitterX, jitterY,
-      colorByActive, colorByLabel, colorForC]);
+      colorByActive, colorByLabel, colorForC, config.size]);
 
   // Scales over the TRANSFORMED values. Categorical axes use integer tick
   // positions and a domain spanning all categories (± ½ for the end margins).
@@ -533,19 +556,20 @@ export function PlotBody({
 
   // Ghost points — the faint raw runs behind the collapsed group means
   // (config.ghosts; `ghosts` is pre-filtered to n>1 groups). Colored by
-  // colorBy (continuous) or each run's series.
+  // colorBy (continuous) or each run's layer; opacity is the plot-level
+  // multiplier (config.opacity), applied at render.
   const ghostVisual = useMemo(() => {
-    if (!config.ghosts) return [] as Array<{ x: number; y: number; color: string; op: number }>;
+    if (!config.ghosts) return [] as Array<{ x: number; y: number; color: string }>;
     return ghosts.map((g: Ghost) => {
       const gSeries = seriesByKey.get(g.dims[0]);
       const color = colorByActive ? colorForC(g.c) : gSeries?.color ?? SINGLE_COLOR;
-      return { x: g.x, y: g.y, color, op: (gSeries?.style ?? DEFAULT_SETTING_STYLE).opacity };
+      return { x: g.x, y: g.y, color };
     });
   }, [ghosts, config.ghosts, seriesByKey, colorByActive, colorForC]);
 
   // Trend fit + the r/ρ readout — ALWAYS over the run-deduped underlying pairs
   // (a fit over group means would overstate the association; a run matching
-  // two settings must not double-weight it). One global OLS line.
+  // two layers must not double-weight it). One global OLS line.
   const stats = useMemo(() => {
     if (pairs.length < 2) return null;
     const xs = pairs.map((p) => p.x);
@@ -586,8 +610,8 @@ export function PlotBody({
   useEffect(() => () => setPlotReadout(null), [setPlotReadout]);
 
   // ---- box-select (background drag -> PLOT-LEVEL X+Y range filters) ---------
-  // Writes store.addRange("plot", null, …): the ranges AND onto every setting
-  // (split-dims applies them per setting), and the chart rescales to the
+  // Writes store.addRange("plot", null, …): the ranges AND onto every layer
+  // (split-dims applies them per layer), and the chart rescales to the
   // filtered set — so the drag doubles as the zoom gesture. Numeric scatter
   // axes only (an ordinal or epoch range filter would be meaningless).
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
@@ -603,6 +627,35 @@ export function PlotBody({
     }
   };
 
+  // ---- epoch-mode line hover: ghost run tooltip + mean-line tooltip --------
+  // Ghost: layer name; fnText(arity,tt) · run_id; then up to 4 "label: value"
+  // lines for parameters that vary within the layers (varyingParams, capped).
+  const ghostTooltipLines = (s: { runId: string; dims: string[] }): string[] => {
+    const layer = seriesByKey.get(s.dims[0]);
+    const row = rowByRunId.get(s.runId);
+    const lines: string[] = [];
+    if (layer) lines.push(layer.label);
+    if (row) {
+      lines.push(`${fnText(row.function.arity, row.function.truth_table)} · ${row.identity.run_id}`);
+      for (const def of varyingParams.slice(0, 4)) {
+        const v = def.raw(row);
+        if (v !== null) lines.push(`${def.label}: ${def.display ? def.display(v) : v}`);
+      }
+    } else {
+      lines.push(s.runId);
+    }
+    return lines;
+  };
+
+  // Mean line: layer name, run count (series rows length), judge when unique.
+  const meanTooltipLines = (dims: string[]): string[] => {
+    const layer = seriesByKey.get(dims[0]);
+    if (!layer) return [];
+    const lines = [layer.label, `${layer.rows.length} runs`];
+    if (layer.judge) lines.push(`judge: ${layer.judge}`);
+    return lines;
+  };
+
   // ---- axis view window (zoom-only min/max; never touches FilterState) -------
   const setDomain = (axis: "x" | "y", d: [number, number] | null) =>
     setPlot(axis === "x" ? { xDomain: d } : { yDomain: d });
@@ -614,6 +667,13 @@ export function PlotBody({
     if (!ctm) return null;
     const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
     return { x: pt.x, y: pt.y };
+  };
+  // Epoch-mode line hover: position the HTML tooltip from the pointer (the
+  // line itself has no single "point" to anchor to).
+  const onLineHover = (e: React.PointerEvent, label: string[]) => {
+    const p = toViewBox(e);
+    if (!p) return;
+    setLineHover({ label, px: p.x, py: p.y });
   };
   const onSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!canDrag || e.button !== 0) return;
@@ -660,17 +720,17 @@ export function PlotBody({
         const yL = `${axisY?.label ?? y}${logY ? " (log10)" : ""}`;
         const seriesLabel = (dims: string[]) => seriesByKey.get(dims[0])?.label ?? dims[0] ?? "";
         if (lineMode && epoch) {
-          const head = ["epoch", "series", "n", `${yL} (mean)`, `${yL} (sd)`];
+          const head = ["epoch", "layer", "n", `${yL} (mean)`, `${yL} (sd)`];
           const body = epoch.groups.flatMap((g) =>
             g.pts.map((p) => [logX ? Math.round(Math.pow(10, p.x)) : p.x, seriesLabel(g.dims), p.n, p.y, p.sd ?? ""]),
           );
           return toCsv([head, ...body]);
         }
         if (collapsed) {
-          const head = [xL, "series", "n", `${yL} (mean)`, `${yL} (sd)`];
+          const head = [xL, "layer", "n", `${yL} (mean)`, `${yL} (sd)`];
           return toCsv([head, ...points.map((p) => [p.x, seriesLabel(p.dims), p.n, p.y, p.sdY ?? ""])]);
         }
-        const head = ["run_id", xL, yL, "series"];
+        const head = ["run_id", xL, yL, "layer"];
         return toCsv([head, ...points.map((p) => [p.runId ?? "", p.x, p.y, seriesLabel(p.dims)])]);
       },
     };
@@ -690,13 +750,13 @@ export function PlotBody({
   const yTickLabel = (t: number) =>
     catY ? (catY[Math.round(t)] ?? "") : logY ? tickFmt(Math.pow(10, t)) : tickFmt(t);
 
-  // Per-series connecting lines across X — the averaged rendering: a series
+  // Per-layer connecting lines across X — the averaged rendering: a layer
   // draws its mean trajectory only when it actually collapsed runs somewhere
-  // (an all-n=1 series stays a plain scatter, never spaghetti).
+  // (an all-n=1 layer stays a plain scatter, never spaghetti).
   const meanLines = useMemo(() => {
     const bySeries = new Map<string, VisualPoint[]>();
     for (const p of visual) {
-      const k = p.gp.dims.join("\u0000");
+      const k = p.gp.dims.join(" ");
       const arr = bySeries.get(k) ?? [];
       arr.push(p);
       bySeries.set(k, arr);
@@ -766,13 +826,13 @@ export function PlotBody({
                 transform={`rotate(-90 16 ${(PAD.t + H - PAD.b) / 2})`}
                 fill="var(--color-text-muted)">{(axisY?.label ?? index[y]?.label ?? y) + (logY ? " (log)" : "")}</text>
             </g>
-            {/* series legend — export-only: the live legend lives in the config
-                panel's settings strip, which an SVG snapshot cannot capture */}
+            {/* layers legend — export-only: the live legend lives in the config
+                panel's layers strip, which an SVG snapshot cannot capture */}
             {!colorByActive && (
               <g data-export-only style={{ display: "none" }}>
                 {seriesList.filter((s) => s.rows.length > 0).slice(0, 14).map((s, i) => (
                   <g key={s.key}>
-                    {shapeNode(shapeForValue(s.shapeIdx), PAD.l + 14, PAD.t + 15 + i * 15, 4, {
+                    {shapeNode(shapeForValue(s.style.shape), PAD.l + 14, PAD.t + 15 + i * 15, 4, {
                       fill: s.color, fillOpacity: 0.8, stroke: s.color, strokeOpacity: 1,
                     })}
                     <text x={PAD.l + 24} y={PAD.t + 19 + i * 15} fontSize={11}
@@ -788,17 +848,32 @@ export function PlotBody({
               </g>
             )}
 
-            {/* epoch trajectories: ghost run-lines, group ±SD ribbons, mean lines */}
+            {/* epoch trajectories: ghost run-lines (+ hover/click hit strokes),
+                group ±SD ribbons, mean lines (+ hover hit strokes), vertices */}
             {lineMode && epoch && (
               <g clipPath="url(#bb-plot-clip)">
                 {config.ghosts && epoch.ghostRuns.map((s, i) => (
                   s.pts.length > 1 && (
-                    <polyline
-                      key={`gl${i}`}
-                      points={s.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
-                      fill="none" stroke={s.color} strokeWidth={1} strokeOpacity={opac(0.12, s.op)}
-                      pointerEvents="none"
-                    />
+                    <g key={`gl${i}`}>
+                      <polyline
+                        points={s.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
+                        fill="none" stroke={s.color} strokeWidth={1} strokeOpacity={opac(0.12, config.opacity)}
+                        pointerEvents="none"
+                      />
+                      {/* invisible hit stroke: hover tooltip + click opens the run inspector */}
+                      <polyline
+                        points={s.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
+                        fill="none" stroke="transparent" strokeWidth={10} pointerEvents="stroke"
+                        className="cursor-pointer"
+                        onPointerMove={(e) => onLineHover(e, ghostTooltipLines(s))}
+                        onPointerLeave={() => setLineHover(null)}
+                        onClick={() => {
+                          openDetail(s.runId);
+                          const r = rowByRunId.get(s.runId);
+                          if (r) expandChain(r.identity.chain_dirs);
+                        }}
+                      />
+                    </g>
                   )
                 ))}
                 {config.band && epoch.groups.map((g, i) => {
@@ -807,18 +882,26 @@ export function PlotBody({
                   const up = withSd.map((p) => `${scale.sx(p.x)},${scale.sy(p.y + (p.sd ?? 0))}`);
                   const dn = withSd.slice().reverse().map((p) => `${scale.sx(p.x)},${scale.sy(p.y - (p.sd ?? 0))}`);
                   return (
-                    <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={g.color} fillOpacity={opac(0.1, g.style.opacity)} stroke="none" pointerEvents="none" />
+                    <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={g.color} fillOpacity={opac(0.1, config.opacity)} stroke="none" pointerEvents="none" />
                   );
                 })}
                 {epoch.groups.map((g, i) => (
                   g.pts.length > 1 && (
-                    <polyline
-                      key={`ml${i}`}
-                      points={g.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
-                      fill="none" stroke={g.color} strokeWidth={1.75 * g.style.size} strokeOpacity={opac(0.95, g.style.opacity)}
-                      strokeDasharray={g.dash || undefined}
-                      pointerEvents="none"
-                    />
+                    <g key={`ml${i}`}>
+                      <polyline
+                        points={g.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
+                        fill="none" stroke={g.color} strokeWidth={1.75 * config.size} strokeOpacity={opac(0.95, config.opacity)}
+                        strokeDasharray={g.dash || undefined}
+                        pointerEvents="none"
+                      />
+                      {/* invisible hit stroke: hover tooltip (layer / n runs / judge) */}
+                      <polyline
+                        points={g.pts.map((p) => `${scale.sx(p.x)},${scale.sy(p.y)}`).join(" ")}
+                        fill="none" stroke="transparent" strokeWidth={10} pointerEvents="stroke"
+                        onPointerMove={(e) => onLineHover(e, meanTooltipLines(g.dims))}
+                        onPointerLeave={() => setLineHover(null)}
+                      />
+                    </g>
                   )
                 ))}
                 {/* vertices — hover title + click-through for single-run groups */}
@@ -826,10 +909,10 @@ export function PlotBody({
                   g.pts.map((p, j) => (
                     <circle
                       key={`${g.dims.join(",")}-${j}`}
-                      cx={scale.sx(p.x)} cy={scale.sy(p.y)} r={2.4 * g.style.size}
-                      fill={g.color} fillOpacity={opac(0.9, g.style.opacity)}
+                      cx={scale.sx(p.x)} cy={scale.sy(p.y)} r={2.4 * config.size}
+                      fill={g.color} fillOpacity={opac(0.9, config.opacity)}
                       className={g.runId ? "cursor-pointer" : undefined}
-                      onClick={g.runId ? () => { openDetail(g.runId!); const r = bundle.rows.find((x2) => x2.identity.node_path === g.runId); if (r) expandChain(r.identity.chain_dirs); } : undefined}
+                      onClick={g.runId ? () => { openDetail(g.runId!); const r = rowByRunId.get(g.runId!); if (r) expandChain(r.identity.chain_dirs); } : undefined}
                     >
                       <title>{`${g.dims.length ? (seriesByKey.get(g.dims[0])?.label ?? g.dims[0]) + " · " : ""}epoch ${logX ? Math.round(Math.pow(10, p.x)) : p.x}: ${tickFmt(logY ? Math.pow(10, p.y) : p.y)}${p.sd !== null && p.sd > 0 ? ` ± ${tickFmt(p.sd)}` : ""}${p.n > 1 ? ` (n=${p.n})` : ""}`}</title>
                     </circle>
@@ -838,15 +921,15 @@ export function PlotBody({
               </g>
             )}
 
-            {/* per-series connecting lines (collapsed series; under points) */}
+            {/* per-layer connecting lines (collapsed groups; under points) */}
             {meanLines.length > 0 && (
               <g clipPath="url(#bb-plot-clip)">
                 {meanLines.map((line, i) => (
                   <path
                     key={i}
                     d={line.map((p, j) => `${j === 0 ? "M" : "L"}${scale.sx(p.gp.x)},${scale.sy(p.gp.y)}`).join(" ")}
-                    fill="none" stroke={line[0].color} strokeWidth={1.5 * line[0].style.size}
-                    strokeOpacity={opac(0.85, line[0].style.opacity)}
+                    fill="none" stroke={line[0].color} strokeWidth={1.5 * config.size}
+                    strokeOpacity={opac(0.85, config.opacity)}
                     strokeDasharray={dashOf(line[0].style) || undefined}
                     pointerEvents="none"
                   />
@@ -864,7 +947,7 @@ export function PlotBody({
                     cy={scale.sy(g.y)}
                     r={1.4}
                     fill={g.color}
-                    fillOpacity={opac(0.18, g.op)}
+                    fillOpacity={opac(0.18, config.opacity)}
                     pointerEvents="none"
                   />
                 ))}
@@ -875,7 +958,7 @@ export function PlotBody({
             {config.band && (
               <g clipPath="url(#bb-plot-clip)">
                 {visual.map((p, i) => (
-                  <g key={`w${i}`} stroke={p.color} strokeOpacity={opac(0.5, p.style.opacity)} strokeWidth={1}>
+                  <g key={`w${i}`} stroke={p.color} strokeOpacity={opac(0.5, config.opacity)} strokeWidth={1}>
                     {p.gp.sdY !== null && p.gp.sdY > 0 && (
                       <line x1={scale.sx(p.gp.x)} y1={scale.sy(p.gp.y - p.gp.sdY)} x2={scale.sx(p.gp.x)} y2={scale.sy(p.gp.y + p.gp.sdY)} />
                     )}
@@ -892,8 +975,8 @@ export function PlotBody({
               {visual.map((p, i) => (
                 <g key={i}>
                   {shapeNode(p.shapeIdx, scale.sx(p.gp.x + p.jx), scale.sy(p.gp.y + p.jy), p.r, {
-                    fill: p.color, fillOpacity: opac(0.6, p.style.opacity),
-                    stroke: p.color, strokeOpacity: opac(0.9, p.style.opacity),
+                    fill: p.color, fillOpacity: opac(0.6, config.opacity),
+                    stroke: p.color, strokeOpacity: opac(0.9, config.opacity),
                   })}
                 </g>
               ))}
@@ -1059,10 +1142,13 @@ export function PlotBody({
           style={{ left: PAD.l + 4, top: 2 }}
         />
 
-        {/* tooltip (flips sides near the right edge) */}
-        {hover && (() => {
-          const px = scale.sx(hover.gp.x + hover.jx);
-          const py = scale.sy(hover.gp.y + hover.jy);
+        {/* tooltip (flips sides near the right edge) — fed by a hovered scatter
+            point OR a hovered epoch-mode line (ghost run / group mean); the
+            latter positions from the pointer (onLineHover), not the data. */}
+        {(hover || lineHover) && (() => {
+          const label = hover ? hover.label : lineHover!.label;
+          const px = hover ? scale.sx(hover.gp.x + hover.jx) : lineHover!.px;
+          const py = hover ? scale.sy(hover.gp.y + hover.jy) : lineHover!.py;
           const flip = px > W * 0.62;
           return (
             <div
@@ -1073,7 +1159,7 @@ export function PlotBody({
                 transform: flip ? "translateX(-100%)" : undefined,
               }}
             >
-              {hover.label.map((l, i) => (
+              {label.map((l, i) => (
                 <div key={i} className={i === 0 ? "text-text-muted truncate" : ""}>{l}</div>
               ))}
             </div>
@@ -1083,9 +1169,9 @@ export function PlotBody({
     </div>
   );
 }
-// NOTE: the docked legend panel is gone — the config panel's settings strip
-// IS the legend now (per-setting split series, counts and resolution notes
-// all render there, from the same resolveSeries result).
+// NOTE: the docked legend panel is gone — the config panel's layers strip IS
+// the legend now (per-layer series, counts and resolution notes all render
+// there, from the same resolveSeries result).
 
 // A small absolutely-positioned log-scale checkbox. Both live by the plot's
 // origin; the y one rotates vertical so it costs no horizontal padding.

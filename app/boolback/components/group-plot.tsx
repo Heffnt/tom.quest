@@ -1,31 +1,34 @@
 "use client";
 
 // app/boolback/components/group-plot.tsx — the Group Plot center view: the same
-// Plot config faceted across ONE parameter's values, or across the SETTINGS
-// (facet === "setting": one panel per setting, titled with the setting's name
-// and matched-run count). Every panel is the identical plot (shared axes,
-// consistent styling); panels vary across the facet.
+// shared Plot config (store.plot) faceted across ONE parameter's values, or
+// across the LAYERS (facet === "layer": one panel per layer, titled with the
+// layer's name and matched-run count). Every panel is the identical plot
+// (shared axes, consistent styling); panels vary across the facet.
 //
 // The config panel OWNS the facet choice (groupPlot.facet) and panel size
-// (groupPlot.panelMin) — this view only reads them. Panel titles are inert
-// (value + run count, hover only); a point inside a panel still opens the run
-// inspector.
+// (groupPlot.panelMin) — this view only reads them (plus the SHARED plot
+// config, store.plot, for everything else: axes, layers, style). Panel
+// titles are inert (value + run count, hover only); a point inside a panel
+// still opens the run inspector.
 //
 // SERIES MODEL: lib/split-dims.resolveSeries runs GLOBALLY (over all panels'
-// rows), so a series' color/shape and the categorical axis positions mean the
-// same thing in every panel. Panels carry (row × series) PAIRS: under a
-// parameter facet the panel VALUES come from the deduped union, but within a
-// panel a run renders once per matching setting-series — the same per-setting
-// duplication rule as the main plot; under the setting facet each panel is
-// simply that setting's own series. Points group per (series × X bucket)
-// exactly like the main plot (mean ± SD whiskers on n>1 groups, per-series
-// connecting lines, collapsed-run ghosts) — the legend + warnings live in the
-// config panel's settings strip; panels are kept lean. Rendering is windowed
+// rows) and returns exactly ONE series per layer, so a layer's color/shape/
+// dash and the categorical axis positions mean the same thing in every panel.
+// Panels carry (row × series) PAIRS: under a parameter facet the panel VALUES
+// come from the deduped union, but within a panel a run renders once per
+// matching layer-series — the same per-layer duplication rule as the main
+// plot; under the layer facet each panel is simply that layer's own series.
+// Points group per (series × X bucket) exactly like the main plot (mean ± SD
+// whiskers on n>1 groups, per-series connecting lines, collapsed-run ghosts)
+// — the legend + warnings live in the config panel's layers strip; panels are
+// kept lean. Plot-level `size`/`opacity` (config panel's plot style row) scale
+// every mark the same way they do on the main plot. Rendering is windowed
 // (content-visibility) since 100 SVG panels with ghosts is work.
 
 import { useDeferredValue, useEffect, useMemo } from "react";
-import type { Bundle, RunRow, SettingStyle } from "../lib/types";
-import { DEFAULT_GROUP_PLOT, DEFAULT_SETTING_STYLE } from "../lib/types";
+import type { Bundle, RunRow } from "../lib/types";
+import { DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, DEFAULT_LAYER_STYLE } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { applyFilters, numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
@@ -42,9 +45,6 @@ import { shapeForValue, dashForValue, opac, gradientColor, NULL_GRADIENT, SINGLE
 import { hash01 } from "../lib/format";
 import { shapeNode } from "./glyph";
 import { effectiveAxis } from "./plot-panel";
-
-/** PARAMETERS lookup for resolveSeries (module-level: stable identity). */
-const paramOf = (key: string) => PARAMETERS.find((p) => p.key === key) ?? null;
 
 const PW = 260, PH = 176; // panel logical size (viewBox); CSS scales it
 const PAD = { l: 34, r: 8, t: 8, b: 20 };
@@ -67,31 +67,33 @@ export function GroupPlotBody({
   // INP: defer the heavy pipeline off the interaction's critical path (see the
   // note in plot-panel.tsx) — a filter click repaints the panel immediately
   // while the faceted panels re-render in a background pass.
-  const liveConfig = useBoolbackStore((s) => s.groupPlot);
-  const config = useDeferredValue(liveConfig);
+  const livePlot = useBoolbackStore((s) => s.plot);
+  const liveGroupPlot = useBoolbackStore((s) => s.groupPlot);
+  const plot = useDeferredValue(livePlot);
+  const groupPlot = useDeferredValue(liveGroupPlot);
   const openDetail = useBoolbackStore((s) => s.openDetail);
   const setPlotUnionCount = useBoolbackStore((s) => s.setPlotUnionCount);
 
-  // Facet: a parameter key OR the literal "setting" (one panel per setting).
-  const facetIsSetting = config.facet === "setting";
+  // Facet: a parameter key OR the literal "layer" (one panel per layer).
+  const facetIsLayer = groupPlot.facet === "layer";
   const facetDef =
-    config.facet && !facetIsSetting ? PARAMETERS.find((d) => d.key === config.facet) ?? null : null;
-  const panelMin = config.panelMin || DEFAULT_GROUP_PLOT.panelMin;
+    groupPlot.facet && !facetIsLayer ? PARAMETERS.find((d) => d.key === groupPlot.facet) ?? null : null;
+  const panelMin = groupPlot.panelMin || DEFAULT_GROUP_EXTRAS.panelMin;
 
-  const lineMode = config.x === "epoch";
-  const xName = lineMode ? "epoch" : effectiveAxis(config.x, index, bundle.metric_schema, DEFAULT_GROUP_PLOT.x);
+  const lineMode = plot.x === "epoch";
+  const xName = lineMode ? "epoch" : effectiveAxis(plot.x, index, bundle.metric_schema, DEFAULT_PLOT.x);
   const yName = lineMode
-    ? (trajectoryMetric(config.y) ?? "plantedness")
-    : effectiveAxis(config.y, index, bundle.metric_schema, DEFAULT_GROUP_PLOT.y);
+    ? (trajectoryMetric(plot.y) ?? "plantedness")
+    : effectiveAxis(plot.y, index, bundle.metric_schema, DEFAULT_PLOT.y);
   // Resolved axes over ALL rows (categories/positions align across panels).
   const axisX = useMemo(() => (lineMode ? null : resolveAxis(xName, index, rows)), [lineMode, xName, index, rows]);
   const axisY = useMemo(() => (lineMode ? null : resolveAxis(yName, index, rows)), [lineMode, yName, index, rows]);
-  const logX = !!config.logX && (axisX?.allowLog ?? true);
-  const logY = !!config.logY && (axisY?.allowLog ?? true);
+  const logX = !!plot.logX && (axisX?.allowLog ?? true);
+  const logY = !!plot.logY && (axisY?.allowLog ?? true);
 
-  // ---- continuous colorBy encoding ------------------------------------------
-  const colorBy = config.colorBy ?? null;
-  const colorByActive = !!colorBy && !!index[colorBy];
+  // ---- continuous colorBy encoding (honored only on a single layer) --------
+  const colorBy = plot.colorBy ?? null;
+  const colorByActive = !!colorBy && !!index[colorBy] && plot.layers.length === 1;
   const colorByColId = colorByActive ? (index[colorBy!] ? metricColumnId(colorBy!, index) : colorBy!) : null;
   const colorByExtent = useMemo(() => {
     if (!colorByColId) return null;
@@ -115,19 +117,17 @@ export function GroupPlotBody({
   const resolution = useMemo(
     () => resolveSeries({
       rows,
-      settings: config.settings,
-      ranges: config.ranges,
-      splitBy: config.splitBy,
-      paramOf,
+      layers: plot.layers,
+      ranges: plot.ranges,
       applyTo: applyFilters,
     }),
-    [rows, config.settings, config.ranges, config.splitBy],
+    [rows, plot.layers, plot.ranges],
   );
   const seriesByKey = useMemo(
     () => new Map(resolution.series.map((s) => [s.key, s])),
     [resolution.series],
   );
-  // De-duplicated union of the settings' matches (shared axes + facet values).
+  // De-duplicated union of the layers' matches (shared axes + facet values).
   const unionRows = useMemo(() => [...new Set(resolution.rowsUnion)], [resolution.rowsUnion]);
 
   // Publish the union's distinct-run count for the shared top bar's counter
@@ -139,20 +139,20 @@ export function GroupPlotBody({
 
   // ---- facet panels (sorted, cardinality-capped) -----------------------------
   const facets = useMemo(() => {
-    if (facetIsSetting) {
-      // One panel per setting — that setting's own series (duplication across
-      // panels is by design: a run matching two settings appears in both).
-      const list: FacetPanel[] = config.settings.map((st) => {
+    if (facetIsLayer) {
+      // One panel per layer — that layer's own series (duplication across
+      // panels is by design: a run matching two layers appears in both).
+      const list: FacetPanel[] = plot.layers.map((l) => {
         const pts = resolution.series
-          .filter((s) => s.settingId === st.id)
+          .filter((s) => s.layerId === l.id)
           .flatMap((s) => s.rows.map((row) => ({ row, key: s.key })));
-        return { id: st.id, value: st.name, count: pts.length, pts };
+        return { id: l.id, value: l.name, count: pts.length, pts };
       });
       return { list, hidden: 0 };
     }
     if (!facetDef) return { list: [] as FacetPanel[], hidden: 0 };
     // Panels per facet value over the DEDUPED union; within a panel a run
-    // renders once per matching setting-series (the pair walk keeps the
+    // renders once per matching layer-series (the pair walk keeps the
     // duplicates; `count` reports DISTINCT runs).
     const groups = new Map<string, PanelPt[]>();
     for (const s of resolution.series) {
@@ -181,7 +181,7 @@ export function GroupPlotBody({
       list.sort(byValue);
     }
     return { list, hidden };
-  }, [facetIsSetting, facetDef, config.settings, resolution.series]);
+  }, [facetIsLayer, facetDef, plot.layers, resolution.series]);
 
   // Categorical axis category lists (positions 0..n-1), null for numeric axes.
   const catX = !lineMode && axisX?.categorical ? axisX.categories : null;
@@ -198,7 +198,7 @@ export function GroupPlotBody({
       const metric = trajectoryMetric(yName);
       if (metric) {
         // Per resolved series so each series' own judge scores its extent
-        // (duplicates across settings are harmless under min/max).
+        // (duplicates across layers are harmless under min/max).
         for (const s of resolution.series) {
           const { series } = buildRunSeries(s.rows, metric, () => [], s.judge, logY);
           for (const t of series) for (const p of t.points) acc(logX ? (p.e > 0 ? Math.log10(p.e) : NaN) : p.e, p.y);
@@ -221,32 +221,33 @@ export function GroupPlotBody({
     if (catX) { x0 = -0.5; x1 = catX.length - 0.5; }
     if (catY) { y0 = -0.5; y1 = catY.length - 0.5; }
     const tf = (v: number, log: boolean) => (log ? Math.log10(Math.max(v, 1e-12)) : v);
-    if (axisX && !axisX.categorical && config.xDomain) { x0 = tf(config.xDomain[0], logX); x1 = tf(config.xDomain[1], logX); }
-    if (axisY && !axisY.categorical && config.yDomain) { y0 = tf(config.yDomain[0], logY); y1 = tf(config.yDomain[1], logY); }
+    if (axisX && !axisX.categorical && plot.xDomain) { x0 = tf(plot.xDomain[0], logX); x1 = tf(plot.xDomain[1], logX); }
+    if (axisY && !axisY.categorical && plot.yDomain) { y0 = tf(plot.yDomain[0], logY); y1 = tf(plot.yDomain[1], logY); }
     return { x0, x1, y0, y1 };
-  }, [unionRows, resolution.series, lineMode, axisX, axisY, yName, logX, logY, config.xDomain, config.yDomain, catX, catY]);
+  }, [unionRows, resolution.series, lineMode, axisX, axisY, yName, logX, logY, plot.xDomain, plot.yDomain, catX, catY]);
 
   // Shared logical-space scale (fixed panel viewBox → aligned axes everywhere).
   const sx = (v: number) => PAD.l + ((v - extent.x0) / (extent.x1 - extent.x0)) * (PW - PAD.l - PAD.r);
   const sy = (v: number) => PH - PAD.b - ((v - extent.y0) / (extent.y1 - extent.y0)) * (PH - PAD.t - PAD.b);
 
   const dispFacet = (v: string) => (facetDef?.display ? facetDef.display(v) : v);
-  const facetLabel = facetIsSetting ? "setting" : facetDef?.label ?? "";
+  const facetLabel = facetIsLayer ? "layer" : facetDef?.label ?? "";
 
   const panelCtx: PanelCtx = {
     axisX, axisY, logX, logY, seriesByKey,
     lineMode,
     lineMetric: lineMode ? (trajectoryMetric(yName) ?? "plantedness") : null,
     colorByActive, colorByColId, colorForC, catX, catY,
-    band: !!config.band, ghosts: !!config.ghosts, sx, sy,
+    band: !!plot.band, ghosts: !!plot.ghosts, size: plot.size, opacity: plot.opacity,
+    sx, sy,
   };
 
-  if (!facetDef && !facetIsSetting) {
+  if (!facetDef && !facetIsLayer) {
     return (
       <div className="flex-1 min-h-0 flex items-center justify-center p-6">
         <p className="max-w-sm text-center text-xs text-text-faint">
           Choose a facet in the config panel — a parameter (one panel per value) or
-          <span className="text-text-muted"> setting</span> (one panel per setting).
+          <span className="text-text-muted"> layer</span> (one panel per layer).
         </p>
       </div>
     );
@@ -286,13 +287,15 @@ export function GroupPlotBody({
 // One facet panel — a lean plot in shared logical coordinates over its
 // (row × series) pairs. Grouping/averaging mirrors the main plot: points group
 // per (series × X bucket); n>1 groups render as means with ±SD whiskers,
-// per-series connecting lines, and collapsed-run ghosts.
+// per-series connecting lines, and collapsed-run ghosts. Size/opacity are the
+// PLOT-LEVEL multipliers (ctx.size/ctx.opacity); shape/dash come from each
+// series' own layer style.
 // ---------------------------------------------------------------------------
 
 type PanelCtx = {
   axisX: Axis | null; axisY: Axis | null; logX: boolean; logY: boolean;
-  /** Global series lookup (dims[0] is a point's series key; carries the
-   *  series' judge for per-epoch resolution). */
+  /** Global series lookup (dims[0] is a point's series key === layer id;
+   *  carries the series' judge for per-epoch resolution). */
   seriesByKey: Map<string, Series>;
   lineMode: boolean;
   lineMetric: EpochMetric | null;
@@ -300,14 +303,15 @@ type PanelCtx = {
   colorForC: (v: number | null | undefined) => string;
   catX: string[] | null; catY: string[] | null;
   band: boolean; ghosts: boolean;
+  /** PLOT-LEVEL style multipliers (config.size / config.opacity). */
+  size: number; opacity: number;
   sx: (v: number) => number; sy: (v: number) => number;
 };
 
 function Panel({ pts, ctx, onOpenRun }: { pts: PanelPt[]; ctx: PanelCtx; onOpenRun: (id: string) => void }) {
   const colorOf = (dims: string[]) => ctx.seriesByKey.get(dims[0])?.color ?? SINGLE_COLOR;
-  const shapeOf = (dims: string[]) => shapeForValue(ctx.seriesByKey.get(dims[0])?.shapeIdx ?? 0);
-  const styleOf = (dims: string[]): SettingStyle =>
-    ctx.seriesByKey.get(dims[0])?.style ?? DEFAULT_SETTING_STYLE;
+  const styleOf = (dims: string[]) => ctx.seriesByKey.get(dims[0])?.style ?? DEFAULT_LAYER_STYLE;
+  const shapeOf = (dims: string[]) => shapeForValue(styleOf(dims).shape);
 
   const content = useMemo(() => {
     if (ctx.lineMode) {
@@ -391,35 +395,31 @@ function Panel({ pts, ctx, onOpenRun }: { pts: PanelPt[]; ctx: PanelCtx; onOpenR
       {content?.kind === "scatter" && (
         <g clipPath="url(#gp-clip)">
           {ctx.ghosts && content.ghosts.map((g, i) => (
-            <circle key={`g${i}`} cx={ctx.sx(g.x)} cy={ctx.sy(g.y)} r={1.1} fill={ctx.colorByActive ? ctx.colorForC(g.c) : colorOf(g.dims)} fillOpacity={opac(0.16, styleOf(g.dims).opacity)} />
+            <circle key={`g${i}`} cx={ctx.sx(g.x)} cy={ctx.sy(g.y)} r={1.1} fill={ctx.colorByActive ? ctx.colorForC(g.c) : colorOf(g.dims)} fillOpacity={opac(0.16, ctx.opacity)} />
           ))}
-          {content.meanLines.map((line, i) => {
-            const style = styleOf(line[0].dims);
-            return (
-              <path
-                key={`l${i}`}
-                d={line.map((gp, j) => `${j === 0 ? "M" : "L"}${ctx.sx(gp.x)},${ctx.sy(gp.y)}`).join(" ")}
-                fill="none" stroke={ctx.colorByActive ? ctx.colorForC(line[0].c) : colorOf(line[0].dims)}
-                strokeWidth={1 * style.size} strokeOpacity={opac(0.8, style.opacity)}
-                strokeDasharray={dashForValue(style.dash) || undefined} pointerEvents="none"
-              />
-            );
-          })}
+          {content.meanLines.map((line, i) => (
+            <path
+              key={`l${i}`}
+              d={line.map((gp, j) => `${j === 0 ? "M" : "L"}${ctx.sx(gp.x)},${ctx.sy(gp.y)}`).join(" ")}
+              fill="none" stroke={ctx.colorByActive ? ctx.colorForC(line[0].c) : colorOf(line[0].dims)}
+              strokeWidth={1 * ctx.size} strokeOpacity={opac(0.8, ctx.opacity)}
+              strokeDasharray={dashForValue(styleOf(line[0].dims).dash) || undefined} pointerEvents="none"
+            />
+          ))}
           {content.grouped.points.map((p, i) => {
             const color = pointColor(p);
-            const style = styleOf(p.dims);
             const jx = jitterX && p.runId ? (hash01(p.runId) - 0.5) * 0.5 : 0;
             const jy = jitterY && p.runId ? (hash01(p.runId + "#y") - 0.5) * 0.5 : 0;
-            const r = (p.n > 1 ? Math.min(6, 2 + Math.sqrt(p.n)) : 2.4) * style.size;
+            const r = (p.n > 1 ? Math.min(6, 2 + Math.sqrt(p.n)) : 2.4) * ctx.size;
             return (
               <g key={`p${i}`}>
                 {ctx.band && p.sdY !== null && p.sdY > 0 && (
-                  <line x1={ctx.sx(p.x + jx)} y1={ctx.sy(p.y - p.sdY)} x2={ctx.sx(p.x + jx)} y2={ctx.sy(p.y + p.sdY)} stroke={color} strokeOpacity={opac(0.4, style.opacity)} strokeWidth={0.75} />
+                  <line x1={ctx.sx(p.x + jx)} y1={ctx.sy(p.y - p.sdY)} x2={ctx.sx(p.x + jx)} y2={ctx.sy(p.y + p.sdY)} stroke={color} strokeOpacity={opac(0.4, ctx.opacity)} strokeWidth={0.75} />
                 )}
                 {ctx.band && p.sdX !== null && p.sdX > 0 && (
-                  <line x1={ctx.sx(p.x - p.sdX)} y1={ctx.sy(p.y + jy)} x2={ctx.sx(p.x + p.sdX)} y2={ctx.sy(p.y + jy)} stroke={color} strokeOpacity={opac(0.4, style.opacity)} strokeWidth={0.75} />
+                  <line x1={ctx.sx(p.x - p.sdX)} y1={ctx.sy(p.y + jy)} x2={ctx.sx(p.x + p.sdX)} y2={ctx.sy(p.y + jy)} stroke={color} strokeOpacity={opac(0.4, ctx.opacity)} strokeWidth={0.75} />
                 )}
-                {shapeNode(shapeOf(p.dims), ctx.sx(p.x + jx), ctx.sy(p.y + jy), r, { fill: color, fillOpacity: opac(0.65, style.opacity), stroke: color, strokeOpacity: opac(0.9, style.opacity) })}
+                {shapeNode(shapeOf(p.dims), ctx.sx(p.x + jx), ctx.sy(p.y + jy), r, { fill: color, fillOpacity: opac(0.65, ctx.opacity), stroke: color, strokeOpacity: opac(0.9, ctx.opacity) })}
                 {p.runId && p.n === 1 && (
                   <circle cx={ctx.sx(p.x + jx)} cy={ctx.sy(p.y + jy)} r={Math.max(4, r + 2)} fill="transparent" className="cursor-pointer" onClick={() => onOpenRun(p.runId!)} />
                 )}
@@ -437,13 +437,12 @@ function Panel({ pts, ctx, onOpenRun }: { pts: PanelPt[]; ctx: PanelCtx; onOpenR
             const lineColor = ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims);
             const up = withSd.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y + (p.sd ?? 0))}`);
             const dn = withSd.slice().reverse().map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y - (p.sd ?? 0))}`);
-            return <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={lineColor} fillOpacity={opac(0.1, styleOf(g.dims).opacity)} />;
+            return <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={lineColor} fillOpacity={opac(0.1, ctx.opacity)} />;
           })}
           {content.groups.map((g, i) => {
             if (g.points.length <= 1) return null;
-            const style = styleOf(g.dims);
             return (
-              <polyline key={`ml${i}`} points={g.points.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y)}`).join(" ")} fill="none" stroke={ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims)} strokeWidth={1.25 * style.size} strokeOpacity={opac(0.95, style.opacity)} strokeDasharray={dashForValue(style.dash) || undefined} />
+              <polyline key={`ml${i}`} points={g.points.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y)}`).join(" ")} fill="none" stroke={ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims)} strokeWidth={1.25 * ctx.size} strokeOpacity={opac(0.95, ctx.opacity)} strokeDasharray={dashForValue(styleOf(g.dims).dash) || undefined} />
             );
           })}
         </g>

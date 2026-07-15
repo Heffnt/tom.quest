@@ -43,8 +43,8 @@ export function FilterBar({
   const readout = useBoolbackStore((s) => s.plotReadout);
   const unionCount = useBoolbackStore((s) => s.plotUnionCount);
 
-  // Plot-like views count their SETTINGS UNION (distinct runs — a run matching
-  // several settings counts once), published by the mounted plot body. The
+  // Plot-like views count their LAYERS UNION (distinct runs — a run matching
+  // several layers counts once), published by the mounted plot body. The
   // table keeps its own filtered count.
   const plotLike = view === "plot" || view === "groupplot";
   const shown = plotLike && unionCount !== null ? unionCount : visibleCount;
@@ -100,7 +100,7 @@ export function FilterBar({
         <span className="ml-auto flex items-center gap-1.5">
           <span
             className="text-xs font-mono text-text-muted whitespace-nowrap"
-            title={plotLike && unionCount !== null ? "distinct runs in the settings union" : undefined}
+            title={plotLike && unionCount !== null ? "distinct runs in the layers union" : undefined}
           >
             {countSummary(shown, totalCount)} runs
           </span>

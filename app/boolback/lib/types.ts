@@ -486,65 +486,64 @@ export function sanitizeFilters(raw: unknown): FilterState {
 // Plot config (store-owned; the Plot / Group Plot views render from it, and the
 // table's per-header "plot on X/Y" bridge writes into it).
 //
-// The plot's core object is a list of named, styled SETTINGS. A setting is a
-// saved selection across all parameters (an experimental condition, e.g.
-// "classification" = dataset sst2 + target all-to-sentinel). The plotted rows
-// are the UNION of the settings' matching rows; a run matching several
-// settings is drawn once PER matching setting (duplication is surfaced as a
-// warning count, never silently deduped). Within settings the user may split
-// by MULTIPLE parameters; each (setting × split-combo) is a SERIES —
-// lib/split-dims.resolveSeries is the single source of truth.
+// The plot's core object is a list of named, styled LAYERS. A layer is ONE
+// trace: a saved selection across all parameters (an experimental condition,
+// e.g. "classification" = dataset sst2 + target all-to-sentinel). The plotted
+// rows are the UNION of the layers' matching rows; a run matching several
+// layers is drawn once PER matching layer (duplication is surfaced as a warning
+// count, never silently deduped). lib/split-dims.resolveSeries returns exactly
+// ONE series per layer — multiple traces come from GENERATORS (lib/generators
+// expand-by-parameter / bin-by-metric), which mint multiple layers, never from
+// an in-layer split.
+//
+// Style splits two ways: PLOT-LEVEL style (size/opacity/band/ghosts/trend) lives
+// on PlotConfig; LAYER-LEVEL style is the two glyph channels shape + dash (color
+// is a first-class layer field). The Group Plot SHARES this PlotConfig — the
+// store keeps one `plot` used by both tabs plus a separate GroupPlotExtras for
+// the facet / panel-size preferences.
 // ---------------------------------------------------------------------------
 
-/** Per-setting visual style. Every field has a neutral default (see
- *  DEFAULT_SETTING_STYLE) so an unstyled setting renders exactly as before. */
-export interface SettingStyle {
-  /** Marker glyph index (styling.SHAPE_COUNT cycle); null = auto — the shape
-   * channel stays driven by the first active splitBy dim's value. */
-  shape: number | null;
-  /** Marker size multiplier (1 = default). */
-  size: number;
-  /** Fill/line opacity multiplier (1 = default; clamped to [0,1] at render). */
-  opacity: number;
-  /** DASH_PATTERNS index for this setting's lines (0 = solid). */
+/** Per-layer glyph style — the two semantic channels a layer owns besides its
+ *  color. shape = styling.SHAPE_COUNT glyph index; dash = DASH_PATTERNS index.
+ *  Both default to 0 (plain circle / solid line). No per-layer size/opacity
+ *  (those are plot-level) and no auto/null shape (that served splits). */
+export interface LayerStyle {
+  shape: number;
   dash: number;
 }
 
-export const DEFAULT_SETTING_STYLE: SettingStyle = {
-  shape: null,
-  size: 1,
-  opacity: 1,
-  dash: 0,
-};
+export const DEFAULT_LAYER_STYLE: LayerStyle = { shape: 0, dash: 0 };
 
-/** One named, styled experimental condition on the plot. */
-export interface PlotSetting extends Record<string, unknown> {
-  /** Stable within the config; generated as "s" + smallest unused integer. */
+/** One named, styled trace on the plot. extends Record so it round-trips
+ *  through usePersistedSettings. */
+export interface PlotLayer extends Record<string, unknown> {
+  /** Stable within the config; generated as "l" + smallest unused integer. */
   id: string;
   name: string;
-  /** Hex; used as the series color when splitBy is empty. */
+  /** Hex; the series color (always — no palette-cycling rule). */
   color: string;
-  /** Marker/line styling (shape/size/opacity/dash). */
-  style: SettingStyle;
-  /** Facet selections (may also carry the setting's own ranges). */
+  /** Glyph styling (shape + dash). */
+  style: LayerStyle;
+  /** Facet selections (may also carry the layer's own ranges). */
   filters: FilterState;
 }
 
-/** The Plot view's full config — settings + axes + style state.
- *  extends Record so it round-trips through usePersistedSettings. */
+/** The Plot view's full config — layers + axes + PLOT-LEVEL style state. Shared
+ *  by the Plot AND Group Plot views. extends Record so it round-trips through
+ *  usePersistedSettings. */
 export interface PlotConfig extends Record<string, unknown> {
-  /** The plotted conditions (sanitizer guarantees >= 1). */
-  settings: PlotSetting[];
-  /** PLOT-LEVEL ranges (drag-zoom writes here), applied to every setting on
-   * top of its own filters. */
+  /** The plotted traces (sanitizer guarantees >= 1). */
+  layers: PlotLayer[];
+  /** PLOT-LEVEL ranges (drag-zoom writes here), ANDed onto every layer on top
+   * of its own filters. */
   ranges: RangeFilter[];
-  /** Ordered parameter keys split WITHIN settings. */
-  splitBy: string[];
-  /** Continuous metric gradient; only honored when settings.length === 1 &&
-   * splitBy.length === 0. */
+  /** Continuous metric gradient; only honored when layers.length === 1. */
   colorBy: string | null;
   x: string; // metric_schema name, or the sentinel "epoch" (training progress)
   y: string; // metric_schema name
+  // ---- PLOT-LEVEL style (was per-setting size/opacity + the bottom toggles) --
+  size: number;    // marker/line size multiplier (1 = default)
+  opacity: number; // opacity multiplier (1 = default)
   band: boolean;   // ±SD band / whiskers
   ghosts: boolean; // faint underlying runs
   trend: boolean;  // OLS line + r/ρ readout
@@ -555,21 +554,22 @@ export interface PlotConfig extends Record<string, unknown> {
   yDomain: [number, number] | null;
 }
 
-/** The Group Plot view's config — the Plot shape faceted across one parameter,
- * or the literal "setting" (one panel per setting). */
-export interface GroupPlotConfig extends PlotConfig {
-  /** Parameter key OR the literal "setting" (null = pick one). */
+/** Group Plot EXTRAS only — the plot config itself is SHARED (store.plot). */
+export interface GroupPlotExtras extends Record<string, unknown> {
+  /** Parameter key OR the literal "layer" (one panel per layer); null = pick one. */
   facet: string | null;
   /** Panel size (px), user-adjustable. */
   panelMin: number;
 }
 
-/** Smallest-unused-integer setting id ("s1", "s2", …). */
-export function nextSettingId(existing: Iterable<string>): string {
+export const DEFAULT_GROUP_EXTRAS: GroupPlotExtras = { facet: null, panelMin: 280 };
+
+/** Smallest-unused-integer layer id ("l1", "l2", …). */
+export function nextLayerId(existing: Iterable<string>): string {
   const used = new Set(existing);
   let i = 1;
-  while (used.has(`s${i}`)) i++;
-  return `s${i}`;
+  while (used.has(`l${i}`)) i++;
+  return `l${i}`;
 }
 
 /** The Table view's config. `search` is table-only, with dir-path / run-id
@@ -584,12 +584,13 @@ export interface TableConfig extends Record<string, unknown> {
 }
 
 export const DEFAULT_PLOT: PlotConfig = {
-  settings: [{ id: "s1", name: "all runs", color: CATEGORY_PALETTE[0], style: DEFAULT_SETTING_STYLE, filters: EMPTY_FILTER }],
+  layers: [{ id: "l1", name: "all runs", color: CATEGORY_PALETTE[0], style: DEFAULT_LAYER_STYLE, filters: EMPTY_FILTER }],
   ranges: [],
-  splitBy: [],
   colorBy: null,
-  x: "avg_sensitivity",
+  x: "epoch",
   y: "plantedness",
+  size: 1,
+  opacity: 1,
   band: true,
   ghosts: true,
   trend: false,
@@ -599,37 +600,22 @@ export const DEFAULT_PLOT: PlotConfig = {
   yDomain: null,
 };
 
-export const DEFAULT_GROUP_PLOT: GroupPlotConfig = {
-  ...DEFAULT_PLOT,
-  facet: null,
-  panelMin: 280,
-};
+// DEFAULT_PLOT stays a filter-EMPTY pure constant. The dominant-cell default
+// (Feature 1: a fresh/reset view pins every parameter to its most-common value)
+// is applied by the store's reset + the first-load hydration via the builder
+// below, never baked into the constant.
 
-// DEFAULT_PLOT / DEFAULT_GROUP_PLOT stay filter-EMPTY pure constants. The
-// dominant-cell default (Feature 1: a fresh/reset view pins every parameter to
-// its most-common value) is applied by the store's reset + the first-load
-// hydration via these builders, never baked into the constant.
-
-/** DEFAULT_PLOT with its lone default setting pinned to `filters`. */
+/** DEFAULT_PLOT with its lone default layer pinned to `filters`. */
 export function defaultPlotWithFilters(filters: FilterState): PlotConfig {
-  return { ...DEFAULT_PLOT, settings: [{ ...DEFAULT_PLOT.settings[0], filters }] };
-}
-
-/** DEFAULT_GROUP_PLOT with its lone default setting pinned to `filters`. */
-export function defaultGroupPlotWithFilters(filters: FilterState): GroupPlotConfig {
-  return { ...DEFAULT_GROUP_PLOT, settings: [{ ...DEFAULT_GROUP_PLOT.settings[0], filters }] };
+  return { ...DEFAULT_PLOT, layers: [{ ...DEFAULT_PLOT.layers[0], filters }] };
 }
 
 /** True iff `cfg` is byte-for-byte the pristine default (no persisted edits) —
  *  the signal the first-load hydration uses to decide it may install the
- *  dominant-cell default without clobbering a user's saved view. */
+ *  dominant-cell default without clobbering a user's saved view. The
+ *  sanitizer emits keys in DEFAULT_PLOT's order so this JSON compare holds. */
 export function isDefaultPlotConfig(cfg: PlotConfig): boolean {
   return JSON.stringify(cfg) === JSON.stringify(DEFAULT_PLOT);
-}
-
-/** As isDefaultPlotConfig, for the group-plot config. */
-export function isDefaultGroupPlotConfig(cfg: GroupPlotConfig): boolean {
-  return JSON.stringify(cfg) === JSON.stringify(DEFAULT_GROUP_PLOT);
 }
 
 // ---------------------------------------------------------------------------
@@ -667,71 +653,71 @@ export function sanitizeRanges(raw: unknown): RangeFilter[] {
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
-/** Coerce an unknown blob to a complete SettingStyle (missing/invalid fields
- *  take their neutral defaults) — this is what lets a persisted pre-style blob
- *  AND a hand-edited spec both round-trip without dropping styling. */
-export function sanitizeSettingStyle(raw: unknown): SettingStyle {
+/** Coerce an unknown blob to a complete LayerStyle (missing/invalid fields take
+ *  their neutral defaults) — this is what lets a persisted style blob AND a
+ *  hand-edited spec both round-trip without dropping styling. */
+export function sanitizeLayerStyle(raw: unknown): LayerStyle {
   const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   const num = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
   const shape = num(r.shape);
-  const size = num(r.size);
-  const opacity = num(r.opacity);
   const dash = num(r.dash);
   return {
-    shape: shape === null ? null : Math.max(0, Math.round(shape)),
-    size: size === null ? 1 : Math.min(4, Math.max(0.2, size)),
-    opacity: opacity === null ? 1 : Math.min(1, Math.max(0.05, opacity)),
+    shape: shape === null ? 0 : Math.max(0, Math.round(shape)),
     dash: dash === null ? 0 : Math.max(0, Math.round(dash)),
   };
 }
 
-/** Coerce a settings blob: drop malformed entries; if none survive, install
- *  the default one; ensure unique ids; coerce a missing/invalid color to a
- *  palette hex by position; heal a missing/partial style. */
-function sanitizeSettings(raw: unknown): PlotSetting[] {
+/** Coerce a layers blob: drop malformed entries; if none survive, install the
+ *  default one; ensure unique ids; coerce a missing/invalid color to a palette
+ *  hex by position; heal a missing/partial style. */
+function sanitizeLayers(raw: unknown): PlotLayer[] {
   const list = Array.isArray(raw) ? raw : [];
-  const out: PlotSetting[] = [];
+  const out: PlotLayer[] = [];
   const used = new Set<string>();
   for (const entry of list) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const e = entry as Record<string, unknown>;
-    const id = typeof e.id === "string" && e.id && !used.has(e.id) ? e.id : nextSettingId(used);
+    const id = typeof e.id === "string" && e.id && !used.has(e.id) ? e.id : nextLayerId(used);
     used.add(id);
     out.push({
       id,
       name: typeof e.name === "string" && e.name ? e.name : id,
       color: typeof e.color === "string" && HEX_COLOR.test(e.color) ? e.color : paletteColor(out.length),
-      style: sanitizeSettingStyle(e.style),
+      style: sanitizeLayerStyle(e.style),
       filters: sanitizeFilters(e.filters),
     });
   }
   if (out.length === 0) {
     out.push({
-      id: "s1", name: "all runs", color: CATEGORY_PALETTE[0],
-      style: { ...DEFAULT_SETTING_STYLE }, filters: { facets: {}, ranges: [] },
+      id: "l1", name: "all runs", color: CATEGORY_PALETTE[0],
+      style: { ...DEFAULT_LAYER_STYLE }, filters: { facets: {}, ranges: [] },
     });
   }
   return out;
 }
 
 /** Coerce a partial/hostile blob to a valid PlotConfig (see section comment).
- *  Removed-era keys (filters/colorParam/shapeParam/splits/channels/…) are
- *  silently dropped — old persisted blobs get no migration. */
+ *  A blob of the OLD `settings`/`splitBy` shape is dropped ENTIRELY — every
+ *  field, not just the unreadable ones — so it heals to the byte-for-byte
+ *  pristine default and the first-load hydration installs the dominant-cell
+ *  default (no migration). Key order matches DEFAULT_PLOT so
+ *  isDefaultPlotConfig's JSON compare recognizes a healed pristine blob. */
 export function sanitizePlotConfig(raw: unknown): PlotConfig {
-  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  let r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  if ("settings" in r || "splitBy" in r) r = {}; // pre-layers blob → full drop
   const d = DEFAULT_PLOT;
   const str = (v: unknown, f: string) => (typeof v === "string" ? v : f);
   const bool = (v: unknown, f: boolean) => (typeof v === "boolean" ? v : f);
+  const num = (v: unknown, f: number) => (typeof v === "number" && Number.isFinite(v) ? v : f);
   return {
-    settings: sanitizeSettings(r.settings),
+    layers: sanitizeLayers(r.layers),
     ranges: sanitizeRanges(r.ranges),
-    splitBy: Array.isArray(r.splitBy)
-      ? r.splitBy.filter((k): k is string => typeof k === "string")
-      : [],
     colorBy: typeof r.colorBy === "string" ? r.colorBy : null,
     x: str(r.x, d.x),
     y: str(r.y, d.y),
+    size: num(r.size, d.size),
+    opacity: num(r.opacity, d.opacity),
     band: bool(r.band, d.band),
     ghosts: bool(r.ghosts, d.ghosts),
     trend: bool(r.trend, d.trend),
@@ -742,14 +728,15 @@ export function sanitizePlotConfig(raw: unknown): PlotConfig {
   };
 }
 
-export function sanitizeGroupPlotConfig(raw: unknown): GroupPlotConfig {
+/** Coerce a persisted Group Plot EXTRAS blob (facet + panelMin). Old fat
+ *  group-plot blobs (a full config shape) carry a `facet` key but their other
+ *  fields are ignored — only the extras survive. */
+export function sanitizeGroupExtras(raw: unknown): GroupPlotExtras {
   const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
-  const base = sanitizePlotConfig(raw);
   const num = (v: unknown, f: number) => (typeof v === "number" && Number.isFinite(v) ? v : f);
   return {
-    ...base,
     facet: typeof r.facet === "string" ? r.facet : null,
-    panelMin: num(r.panelMin, DEFAULT_GROUP_PLOT.panelMin),
+    panelMin: num(r.panelMin, DEFAULT_GROUP_EXTRAS.panelMin),
   };
 }
 

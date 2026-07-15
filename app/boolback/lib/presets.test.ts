@@ -14,7 +14,7 @@ describe("PRESET_SCHEMA_VERSION", () => {
 
 describe("hydratePresetSpec", () => {
   it("round-trips a spec stored as an object", () => {
-    const cfg: PlotConfig = { ...DEFAULT_PLOT, x: "arity", y: "asr", splitBy: ["base_model"] };
+    const cfg: PlotConfig = { ...DEFAULT_PLOT, x: "arity", y: "asr", size: 1.5 };
     const spec = configToSpec("plot", cfg);
     expect(hydratePresetSpec(spec)).toEqual(spec);
   });

@@ -5,8 +5,9 @@ import { describe, it, expect } from "vitest";
 import sample from "../data/sample-snapshot.json";
 import { asBundle } from "../data/normalize";
 import {
-  PARAMETERS, summarizeParameters, tierSections, conditionedCounts, orderValuesByCount,
+  PARAMETERS, summarizeParameters, tierSections, conditionedCounts, orderValues,
 } from "./parameters";
+import type { ParameterDef } from "./parameters";
 import type { RunRow } from "./types";
 
 const bundle = asBundle(structuredClone(sample));
@@ -140,10 +141,14 @@ describe("conditionedCounts", () => {
 });
 
 // ---------------------------------------------------------------------------
-// orderValuesByCount — chip DISPLAY order (Feature 2): most-run value first
+// orderValues — chip DISPLAY order, dim-aware: numericSort dims ascending by
+// value, everything else count-descending.
 // ---------------------------------------------------------------------------
 
-describe("orderValuesByCount", () => {
+const catDim: ParameterDef = { key: "dataset", label: "Dataset", raw: () => null, section: "dataset" };
+const numDim: ParameterDef = { key: "seed", label: "Seed", raw: () => null, section: "training", numericSort: true };
+
+describe("orderValues", () => {
   const values = [
     { value: "a", count: 3 },
     { value: "b", count: 3 },
@@ -151,20 +156,30 @@ describe("orderValuesByCount", () => {
     { value: "d", count: 1 },
   ];
 
-  it("orders by DESCENDING conditioned count", () => {
+  it("a NON-numeric dim orders by DESCENDING conditioned count", () => {
     const counts = new Map([["a", 2], ["b", 5], ["c", 1], ["d", 9]]);
-    expect(orderValuesByCount(values, counts).map((v) => v.value)).toEqual(["d", "b", "a", "c"]);
+    expect(orderValues(catDim, values, counts).map((v) => v.value)).toEqual(["d", "b", "a", "c"]);
   });
 
-  it("is STABLE — count ties keep the incoming order; a missing count is 0", () => {
+  it("a non-numeric dim is STABLE — count ties keep incoming order; a missing count is 0", () => {
     const counts = new Map([["a", 4], ["b", 4]]); // c, d absent -> 0
-    // a,b tie at 4 (incoming order a→b); c,d tie at 0 (incoming order c→d)
-    expect(orderValuesByCount(values, counts).map((v) => v.value)).toEqual(["a", "b", "c", "d"]);
+    expect(orderValues(catDim, values, counts).map((v) => v.value)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("a numericSort dim orders ASCENDING BY VALUE, ignoring count", () => {
+    const nums = [
+      { value: "10", count: 1 },
+      { value: "2", count: 99 },
+      { value: "3", count: 5 },
+      { value: "1", count: 2 },
+    ];
+    // by value: 1,2,3,10 — NOT by count (which would put "2" first)
+    expect(orderValues(numDim, nums, new Map()).map((v) => v.value)).toEqual(["1", "2", "3", "10"]);
   });
 
   it("does not mutate the input array", () => {
     const before = values.map((v) => v.value);
-    orderValuesByCount(values, new Map());
+    orderValues(catDim, values, new Map());
     expect(values.map((v) => v.value)).toEqual(before);
   });
 });

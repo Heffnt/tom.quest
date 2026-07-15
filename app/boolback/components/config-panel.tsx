@@ -1,55 +1,56 @@
 "use client";
 
 // app/boolback/components/config-panel.tsx — the SINGLE right-docked control
-// surface, shared across all center views (replaces dimension-board +
-// detail-panel). Two modes:
+// surface, shared across all center views. Two modes:
 //
 //   run inspector — when a run is open (detailOpen && a run resolves from the
 //     selection): renders <RunInspector> with a back affordance.
 //   config        — otherwise: the active view's controls. Content depends on
 //     configViewOf(centerView):
 //       table     → filter-only parameter rows + Columns + Sort keys + search;
-//       plot      → the SETTINGS strip, which IS the plot legend (per-setting
-//                   swatch/name/count/reset/dup/del, the setting's split
-//                   series inline, the active setting's STYLE editor, and the
-//                   averaged/overlap/judge/palette notes) + the ordered multi
-//                   "Split by" editor + the gated "Color by metric" gradient
-//                   select + tiered parameter chips editing the ACTIVE
-//                   setting + continuous rows (filter/color) + band/ghosts/trend;
-//       groupPlot → + "Facet by" select (parameters or "setting") +
-//                   panel-size slider;
+//       plot /    → the PLOT-STYLE row (size/opacity + band/ghosts/trend) above
+//       groupplot   the LAYERS STRIP (per-layer glyph/swatch/rename/count/reset/
+//                   duplicate/remove + the active layer's 3-channel style editor
+//                   color/shape/dash), then the gated "Color by metric" gradient
+//                   (single layer only), the parameter chips editing the ACTIVE
+//                   layer, the unified FUNCTION section (arity + fn_hex + engaged
+//                   complexity with a bin-into-layers control), outcome metric
+//                   rows, and constants. On the groupplot tab a "Facet by" select
+//                   + panel-size slider are added;
 //       anatomy   → a tiny note (anatomy owns its own controls).
 //
-// This panel WRITES config (settings/splitBy/colorBy/facet). Phase 3: the
-// full settings editor — strip (rename/recolor/duplicate/counts/warnings),
-// ordered multi-split, tiered + nested parameter chips with conditioned
-// counts, and the gated colorBy gradient select. Everything the panel says
-// about series/warnings comes from lib/split-dims.resolveSeries (the same
-// pure resolver the plot renders from), never a parallel computation.
+// A layer is ONE trace. Multiple traces are minted as multiple LAYERS by the
+// GENERATORS (lib/generators.expandLayers / binLayers), wired to the expand
+// affordance on every categorical parameter row and the bin control on every
+// engaged complexity metric; both commit through store.replaceLayers. Facet
+// edits on a plot layer run through lib/select.repairPins (the cascade), so a
+// narrowing edit re-pins other now-stale pins and announces the moves. Every
+// count / warning the panel shows comes from lib/split-dims.resolveSeries (the
+// same pure resolver the plot renders from), never a parallel computation.
 
-import { memo, startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  Bundle, RangeFilter, FilterState,
-  PlotConfig, GroupPlotConfig, TableConfig, MetricSchemaEntry, PlotSetting,
-  SettingStyle,
+  Bundle, RangeFilter, FilterState, FacetKey, RunRow,
+  PlotConfig, MetricSchemaEntry, PlotLayer, LayerStyle,
 } from "../lib/types";
-import { EMPTY_FILTER, DEFAULT_SETTING_STYLE } from "../lib/types";
-import { useBoolbackStore, configViewOf, type ViewKey, type PlotViewKey } from "../state/store";
+import { EMPTY_FILTER, DEFAULT_LAYER_STYLE } from "../lib/types";
+import { useBoolbackStore, configViewOf, type ViewKey } from "../state/store";
+import type { CenterView } from "./table-pane";
 import type { ViewKind } from "../lib/spec";
 import { configToSpec, specToConfig, serializeSpec, parseSpec } from "../lib/spec";
 import {
-  PARAMETERS, summarizeParameters, tierSections, conditionedCounts, orderValuesByCount,
-  TIER_LABEL, PARAM_TIERS,
-  type ParameterDef, type ParamValues, type ParamTier,
+  PARAMETERS, summarizeParameters, tierSections, conditionedCounts, orderValues,
+  TIER_LABEL,
+  type ParameterDef, type ParamValues,
 } from "../lib/parameters";
 import { resolveSeries, averagedParams, type SeriesResolution } from "../lib/split-dims";
-import {
-  CATEGORY_PALETTE, DASH_PATTERNS, SHAPE_COUNT, shapeForValue,
-} from "../lib/styling";
+import { CATEGORY_PALETTE, DASH_PATTERNS, SHAPE_COUNT } from "../lib/styling";
 import { shapeNode } from "./glyph";
 import {
-  applyFilters, histogramBins, metricRange, dominantFilters, type MetricIndex,
+  applyFilters, histogramBins, metricRange, dominantFilters, repairPins,
+  FACET_LABELS, type MetricIndex,
 } from "../lib/select";
+import { expandLayers, binLayers, type GeneratorTargets } from "../lib/generators";
 import { resolveById } from "../lib/columns";
 import {
   indexMetricSchema, groupedMetricOptions, metricLabel, formatValue,
@@ -76,19 +77,16 @@ const NO_VALUES: readonly string[] = [];
 /** Shared empty conditioned-count map (stable fallback ref, same reason). */
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 
-/** Split-by dropdown group order: sweep-tier axes first, then setting-tier. */
-const SPLIT_TIER_ORDER: ParamTier[] = ["sweep", "setting", "function"];
+/** Keys pulled OUT of the tier sections and rendered in the FUNCTION section:
+ *  arity (the complexity sweep axis) and the function identity (fn_hex). */
+const FUNCTION_SECTION_KEYS = new Set(["arity", "function"]);
 
-/** paramOf for resolveSeries — the PARAMETERS registry keyed by param key. */
-const PARAM_BY_KEY = new Map(PARAMETERS.map((p) => [p.key, p]));
-const paramOfKey = (key: string): ParameterDef | null => PARAM_BY_KEY.get(key) ?? null;
-
-/** The visual role a parameter chip plays on the CURRENT plot config. */
-type ParamRole = "split" | "facet" | null;
-
-/** Map the store ViewKey to the spec ViewKind (groupPlot → groupplot). */
-function specKindOf(vk: ViewKey): ViewKind {
-  return vk === "groupPlot" ? "groupplot" : vk;
+/** Map the center view to the spec ViewKind it copies/pastes as (anatomy → null). */
+function specKindOf(view: CenterView): ViewKind | null {
+  if (view === "table") return "table";
+  if (view === "plot") return "plot";
+  if (view === "groupplot") return "groupplot";
+  return null;
 }
 
 // ===========================================================================
@@ -155,14 +153,14 @@ function ConfigMode({
   bundle: Bundle;
   index: MetricIndex;
   chartRef: React.MutableRefObject<PlotExportHandle | null>;
-  centerView: import("./table-pane").CenterView;
+  centerView: CenterView;
 }) {
   const vk = configViewOf(centerView);
 
   if (vk === null) {
     return (
       <div className="flex h-full w-full flex-col min-h-0">
-        <PanelHeader vk={null} chartRef={chartRef} />
+        <PanelHeader vk={null} centerView={centerView} chartRef={chartRef} />
         <p className="px-3 py-3 font-mono text-xs text-text-faint">
           Anatomy has its own controls.
         </p>
@@ -170,13 +168,14 @@ function ConfigMode({
     );
   }
 
-  return <ViewConfig vk={vk} bundle={bundle} index={index} chartRef={chartRef} />;
+  return <ViewConfig vk={vk} centerView={centerView} bundle={bundle} index={index} chartRef={chartRef} />;
 }
 
 function ViewConfig({
-  vk, bundle, index, chartRef,
+  vk, centerView, bundle, index, chartRef,
 }: {
   vk: ViewKey;
+  centerView: CenterView;
   bundle: Bundle;
   index: MetricIndex;
   chartRef: React.MutableRefObject<PlotExportHandle | null>;
@@ -185,48 +184,53 @@ function ViewConfig({
   const plot = useBoolbackStore((s) => s.plot);
   const groupPlot = useBoolbackStore((s) => s.groupPlot);
 
-  const setPlot = useBoolbackStore((s) => s.setPlot);
+  const setPlotStore = useBoolbackStore((s) => s.setPlot);
   const setGroupPlot = useBoolbackStore((s) => s.setGroupPlot);
-  const addSetting = useBoolbackStore((s) => s.addSetting);
-  const duplicateSetting = useBoolbackStore((s) => s.duplicateSetting);
-  const patchSetting = useBoolbackStore((s) => s.patchSetting);
-  const removeSetting = useBoolbackStore((s) => s.removeSetting);
+  const patchLayer = useBoolbackStore((s) => s.patchLayer);
+  const addLayer = useBoolbackStore((s) => s.addLayer);
+  const duplicateLayer = useBoolbackStore((s) => s.duplicateLayer);
+  const removeLayer = useBoolbackStore((s) => s.removeLayer);
   const storeSetFacet = useBoolbackStore((s) => s.setFacet);
-  const storeToggleFacetValue = useBoolbackStore((s) => s.toggleFacetValue);
   const storeAddRange = useBoolbackStore((s) => s.addRange);
   const storeRemoveRange = useBoolbackStore((s) => s.removeRange);
   const storeUpdateRange = useBoolbackStore((s) => s.updateRange);
 
-  const isPlotLike = vk === "plot" || vk === "groupPlot";
-  const config = (vk === "plot" ? plot : vk === "groupPlot" ? groupPlot : table) as
-    PlotConfig | GroupPlotConfig | TableConfig;
-  const plotConfig = isPlotLike ? (config as PlotConfig) : null;
-  const groupConfig = vk === "groupPlot" ? (config as GroupPlotConfig) : null;
+  const isPlotLike = vk === "plot";
+  const isGroupPlot = centerView === "groupplot";
+  const plotConfig = isPlotLike ? plot : null;
 
-  /** Whole-config patch for the active plot-like view. Wrapped in a transition
-   *  so the click/toggle repaints immediately and the expensive downstream
-   *  render (resolveSeries + plot) is non-blocking (INP). */
-  const patchPlot = (patch: Partial<GroupPlotConfig>) => {
-    startTransition(() => {
-      if (vk === "plot") setPlot(patch);
-      else if (vk === "groupPlot") setGroupPlot(patch);
-    });
+  /** Whole-config patch for the shared plot config. Wrapped in a transition so
+   *  the click/toggle repaints immediately and the expensive downstream render
+   *  (resolveSeries + plot) is non-blocking (INP). */
+  const setPlot = (patch: Partial<PlotConfig>) => {
+    startTransition(() => setPlotStore(patch));
   };
 
-  /** The dominant-cell default filters (Feature 1) — seeds a newly-added
-   *  setting. Memoized: only the row set changes it. */
+  /** The dominant-cell default filters (Feature 1) — seeds a newly-added layer
+   *  and a per-layer reset. Memoized: only the row set changes it. */
   const dominant = useMemo(() => dominantFilters(bundle.rows), [bundle.rows]);
 
-  // ---- ACTIVE setting (UI-local; the parameter rows edit ITS filters) --------
-  const [activeSettingId, setActiveSettingId] = useState<string | null>(null);
-  const activeSetting: PlotSetting | null = plotConfig
-    ? plotConfig.settings.find((s) => s.id === activeSettingId) ?? plotConfig.settings[0]
+  // ---- ACTIVE layer (UI-local; the parameter rows edit ITS filters) ----------
+  const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
+  const activeLayer: PlotLayer | null = plotConfig
+    ? plotConfig.layers.find((l) => l.id === activeLayerId) ?? plotConfig.layers[0]
     : null;
-  /** The settingId the filter mutators target (null on the table view). */
-  const sid = activeSetting?.id ?? null;
+  /** The layerId the filter mutators target (null on the table view). */
+  const sid = activeLayer?.id ?? null;
   /** The FilterState the panel edits + histograms derive from. */
   const activeFilters: FilterState =
-    vk === "table" ? (config as TableConfig).filters : activeSetting?.filters ?? EMPTY_FILTER;
+    vk === "table" ? table.filters : activeLayer?.filters ?? EMPTY_FILTER;
+
+  // ---- cascade note (transient "X, Y followed Z" after a repairPins move) -----
+  const [cascadeNote, setCascadeNote] = useState<string | null>(null);
+  const cascadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashCascade = useCallback((editedKey: FacetKey, repaired: FacetKey[]) => {
+    const moved = repaired.map((k) => FACET_LABELS[k] ?? k).join(", ");
+    setCascadeNote(`${moved} followed ${FACET_LABELS[editedKey] ?? editedKey}`);
+    if (cascadeTimer.current) clearTimeout(cascadeTimer.current);
+    cascadeTimer.current = setTimeout(() => setCascadeNote(null), 3000);
+  }, []);
+  useEffect(() => () => { if (cascadeTimer.current) clearTimeout(cascadeTimer.current); }, []);
 
   // ---- parameter model (classified over ALL rows so filters stay reachable) ---
   const summary = useMemo(() => summarizeParameters(bundle.rows), [bundle.rows]);
@@ -242,60 +246,38 @@ function ViewConfig({
   );
 
   // ---- series resolution — the ONE source for counts + warnings ---------------
-  // The panel never re-derives what the plot shows: matched-run counts,
-  // overlap/empty/judge warnings, and inactive splits all read resolveSeries.
-  // Memoized on the resolver's real inputs (settings/ranges/splitBy) — NOT the
-  // whole plotConfig — so a band/colorBy/axis toggle doesn't re-run it (INP).
-  const rsSettings = plotConfig?.settings;
+  // Memoized on the resolver's real inputs (layers/ranges) so a band/colorBy/
+  // axis toggle doesn't re-run it (INP).
+  const rsLayers = plotConfig?.layers;
   const rsRanges = plotConfig?.ranges;
-  const rsSplitBy = plotConfig?.splitBy;
   const resolution: SeriesResolution | null = useMemo(
     () =>
-      rsSettings && rsRanges && rsSplitBy
-        ? resolveSeries({
-            rows: bundle.rows,
-            settings: rsSettings,
-            ranges: rsRanges,
-            splitBy: rsSplitBy,
-            paramOf: paramOfKey,
-            applyTo: applyFilters,
-          })
+      rsLayers && rsRanges
+        ? resolveSeries({ rows: bundle.rows, layers: rsLayers, ranges: rsRanges, applyTo: applyFilters })
         : null,
-    [bundle.rows, rsSettings, rsRanges, rsSplitBy],
+    [bundle.rows, rsLayers, rsRanges],
   );
-  /** Matched-run count per setting id, summed over its resolved series. */
-  const countsBySetting = useMemo(() => {
+  /** Matched-run count per layer id (one series per layer). */
+  const countsByLayer = useMemo(() => {
     const m = new Map<string, number>();
-    for (const s of resolution?.series ?? []) {
-      m.set(s.settingId, (m.get(s.settingId) ?? 0) + s.rows.length);
-    }
+    for (const s of resolution?.series ?? []) m.set(s.layerId, s.rows.length);
     return m;
   }, [resolution]);
 
-  /** Labels of the parameters the plot's groups pool over — the merged
-   *  legend's "averaged: …" note (rule in lib/split-dims.averagedParams). */
+  /** Labels of the parameters the plot's layers pool over — the "averaged" note. */
   const averagedLabels = useMemo(
-    () => (resolution && rsSplitBy
-      ? averagedParams(resolution, rsSplitBy, PARAMETERS).map((d) => d.label)
-      : []),
-    [resolution, rsSplitBy],
+    () => (resolution ? averagedParams(resolution, PARAMETERS).map((d) => d.label) : []),
+    [resolution],
   );
 
-  // Rows matching the ACTIVE setting (or the table filters) drive the
-  // continuous editors' histograms.
+  // Rows matching the ACTIVE layer (or the table filters) drive the continuous
+  // editors' histograms.
   const filtered = useMemo(() => applyFilters(bundle.rows, activeFilters), [bundle.rows, activeFilters]);
 
   // ---- conditioned value counts (faceted-search counting) ---------------------
-  // Per parameter: drop ITS facet, apply the active setting's other facets +
-  // its own ranges + the plot-level ranges. Values keep showing globally
-  // (reachability); zero-count values render muted.
-  //
-  // Keyed on the FILTER inputs only (plotConfig.ranges, not the whole config),
-  // and each parameter's Map is kept referentially stable across renders via a
-  // signature cache (its own facet excluded from the signature): toggling facet
-  // A leaves A's own count list identical AND lets every OTHER chip that didn't
-  // change skip re-render (React.memo on CategoricalRow). This is the bulk of
-  // the per-click work (a full applyFilters over the rows per parameter).
+  // Per parameter: drop ITS facet, apply the active layer's other facets + its
+  // own ranges + the plot-level ranges. Kept referentially stable via a
+  // signature cache so an unchanged chip skips re-render (React.memo).
   const condCacheRef = useRef(new Map<string, { sig: string; counts: Map<string, number> }>());
   const conditionedByKey = useMemo(() => {
     const extra = rsRanges ?? [];
@@ -314,50 +296,92 @@ function ViewConfig({
     return m;
   }, [differingDims, bundle.rows, activeFilters, rsRanges]);
 
-  const roleOf = (key: string): ParamRole => {
-    if (!plotConfig) return null;
-    if (groupConfig?.facet === key) return "facet";
-    if (plotConfig.splitBy.includes(key)) return "split";
-    return null;
-  };
-
   // ---- facet slot (group plot) -------------------------------------------------
   const facetOptions = useMemo(
     () => [
-      { value: "setting", label: "setting (one panel per setting)" },
+      { value: "layer", label: "layer (one panel per layer)" },
       ...summary.differing.map((d) => ({ value: d.dim.key, label: d.dim.label })),
     ],
     [summary],
   );
 
-  // ---- filter mutators (table → its own filters; plot → the active setting) --
-  const selectionOf = (dim: ParameterDef): readonly string[] =>
-    dim.facetKey ? (activeFilters.facets[dim.facetKey] ?? NO_VALUES) : NO_VALUES;
+  // ---- facet editing + cascade (plot view repairs stale pins; table doesn't) --
+  const applyFacetValues = useCallback((fk: FacetKey, nextValues: string[]) => {
+    startTransition(() => {
+      const st = useBoolbackStore.getState();
+      const base = vk === "table"
+        ? st.table.filters
+        : st.plot.layers.find((l) => l.id === sid)?.filters ?? EMPTY_FILTER;
+      const next: FilterState = { facets: { ...base.facets, [fk]: nextValues }, ranges: base.ranges };
+      if (vk === "plot") {
+        const res = repairPins(bundle.rows, next, fk);
+        st.patchViewFilters(vk, sid, res.filters);
+        if (res.repaired.length) flashCascade(fk, res.repaired);
+      } else {
+        st.patchViewFilters(vk, sid, next);
+      }
+    });
+  }, [vk, sid, bundle.rows, flashCascade]);
+
+  const applyFacetToggle = useCallback((fk: FacetKey, value: string) => {
+    const st = useBoolbackStore.getState();
+    const base = vk === "table"
+      ? st.table.filters
+      : st.plot.layers.find((l) => l.id === sid)?.filters ?? EMPTY_FILTER;
+    const cur = base.facets[fk] ?? [];
+    applyFacetValues(fk, cur.includes(value) ? cur.filter((x) => x !== value) : [...cur, value]);
+  }, [vk, sid, applyFacetValues]);
+
+  // ---- generators (expand a categorical dim / bin a metric into layers) -------
+  // Both read the LIVE layers at call time, commit through replaceLayers, and
+  // make the first newly-minted child the active layer.
+  const commitGenerated = (next: PlotLayer[], prevIds: Set<string>) => {
+    useBoolbackStore.getState().replaceLayers(next);
+    const child = next.find((l) => !prevIds.has(l.id));
+    if (child) setActiveLayerId(child.id);
+  };
+  const runExpand = useCallback((dim: ParameterDef, targets: GeneratorTargets) => {
+    startTransition(() => {
+      const layers = useBoolbackStore.getState().plot.layers;
+      const activeId = sid ?? layers[0]?.id ?? "";
+      const next = expandLayers({ rows: bundle.rows, layers, targets, activeId, dim, applyTo: applyFilters });
+      commitGenerated(next, new Set(layers.map((l) => l.id)));
+    });
+  }, [sid, bundle.rows]);
+  const runBin = useCallback((metric: string, n: number, mode: "quantile" | "width", targets: GeneratorTargets) => {
+    startTransition(() => {
+      const layers = useBoolbackStore.getState().plot.layers;
+      const activeId = sid ?? layers[0]?.id ?? "";
+      const next = binLayers({ rows: bundle.rows, layers, targets, activeId, metric, n, mode, index, applyTo: applyFilters });
+      commitGenerated(next, new Set(layers.map((l) => l.id)));
+    });
+  }, [sid, bundle.rows, index]);
+
   // Per-parameter handler bundles, memoized so an untouched chip keeps stable
-  // callback identity (React.memo skip). Rebuilt only when the target
-  // view/setting or the store mutators change — never on a filter toggle. Every
-  // store write is wrapped in a transition (the checkbox repaints first; the
-  // heavy resolveSeries + plot render is non-blocking).
+  // callback identity (React.memo skip).
   const rowHandlers = useMemo(() => {
     const m = new Map<string, {
       onToggleValue: (v: string) => void;
       onClear: () => void;
       onIsolate: (v: string) => void;
       onExclude: (v: string, all: string[]) => void;
+      onExpand?: (targets: GeneratorTargets) => void;
     }>();
     for (const dim of differingDims) {
       const fk = dim.facetKey;
       m.set(dim.key, {
-        onToggleValue: (v) => { if (fk) startTransition(() => storeToggleFacetValue(vk, sid, fk, v)); },
+        onToggleValue: (v) => { if (fk) applyFacetToggle(fk, v); },
+        // Clearing (widening) can't stale another pin — skip the cascade.
         onClear: () => { if (fk) startTransition(() => storeSetFacet(vk, sid, fk, [])); },
-        onIsolate: (v) => { if (fk) startTransition(() => storeSetFacet(vk, sid, fk, [v])); },
-        onExclude: (v, all) => { if (fk) startTransition(() => storeSetFacet(vk, sid, fk, all.filter((x) => x !== v))); },
+        onIsolate: (v) => { if (fk) applyFacetValues(fk, [v]); },
+        onExclude: (v, all) => { if (fk) applyFacetValues(fk, all.filter((x) => x !== v)); },
+        onExpand: fk && isPlotLike ? (targets) => runExpand(dim, targets) : undefined,
       });
     }
     return m;
-  }, [differingDims, vk, sid, storeToggleFacetValue, storeSetFacet]);
+  }, [differingDims, vk, sid, isPlotLike, storeSetFacet, applyFacetValues, applyFacetToggle, runExpand]);
 
-  // ---- continuous treatment (filter / color) --------------------------------
+  // ---- continuous treatment (filter / color) for OUTCOME metrics --------------
   const rangeFor = (m: string): RangeFilter | undefined => activeFilters.ranges.find((r) => r.metric === m);
   const contTreatmentOf = (m: string): "filter" | "color" | null => {
     if (plotConfig?.colorBy === m) return "color";
@@ -365,26 +389,30 @@ function ViewConfig({
     return null;
   };
   const setContTreatment = (m: string, t: "filter" | "color" | null) => {
-    // Store writes off the transition path (patchPlot already wraps itself).
     startTransition(() => {
-      // Clear any existing treatment for this metric first.
       if (rangeFor(m)) storeRemoveRange(vk, sid, m);
-      if (plotConfig?.colorBy === m) patchPlot({ colorBy: null });
+      if (plotConfig?.colorBy === m) setPlotStore({ colorBy: null });
       if (t === "filter") {
         const { min, max } = metricRange(bundle.rows, m, index);
         storeAddRange(vk, sid, { metric: m, min, max });
       } else if (t === "color" && plotConfig) {
-        // colorBy is only honored on a single, unsplit setting (the plot ignores
-        // it otherwise) — stored regardless, per the config contract.
-        patchPlot({ colorBy: m });
+        setPlotStore({ colorBy: m });
       }
     });
   };
 
-  // ---- render ----------------------------------------------------------------
-  // Parameter chips: tier sections (Setting → Sweep → Function), with
-  // target_phrase / judge nested under target_behavior per NESTED_UNDER.
-  const chipSections = tierSections(differingDims);
+  // ---- complexity filter mutators (function section; active layer) ------------
+  const addComplexityFilter = (metric: string) => startTransition(() => {
+    const { min, max } = metricRange(bundle.rows, metric, index);
+    storeAddRange(vk, sid, { metric, min, max });
+  });
+  const removeComplexityFilter = (metric: string) => startTransition(() => storeRemoveRange(vk, sid, metric));
+  const updateActiveRange = (metric: string, patch: Partial<RangeFilter>) =>
+    startTransition(() => storeUpdateRange(vk, sid, metric, patch));
+
+  // ---- render helpers ---------------------------------------------------------
+  const selectionOf = (dim: ParameterDef): readonly string[] =>
+    dim.facetKey ? (activeFilters.facets[dim.facetKey] ?? NO_VALUES) : NO_VALUES;
 
   /** One parameter editor row (or a nested child): the judge special case
    *  collapses to a read-only "follows target" line when it conditions to a
@@ -416,100 +444,119 @@ function ViewConfig({
         dim={dim}
         pv={differingByKey.get(dim.key)!}
         conditioned={conditioned}
-        role={isPlotLike ? roleOf(dim.key) : null}
+        facet={isGroupPlot && groupPlot.facet === dim.key}
         selected={selected}
         onToggleValue={h.onToggleValue}
         onClear={h.onClear}
         onIsolate={h.onIsolate}
         onExclude={h.onExclude}
+        onExpand={h.onExpand}
       />
     );
   };
 
+  // Chip sections (Setting → Sweep): arity + fn_hex are pulled into the FUNCTION
+  // section, so they leave the tier sections here.
+  const chipDims = differingDims.filter((d) => !FUNCTION_SECTION_KEYS.has(d.key));
+  const chipSections = tierSections(chipDims);
+  const arityDim = differingByKey.has("arity") ? differingByKey.get("arity")!.dim : null;
+  const functionDim = differingByKey.has("function") ? differingByKey.get("function")!.dim : null;
+
+  const complexity = useMemo(
+    () => bundle.metric_schema.filter((e) => e.group === "FUNCTION" && !(e.min === null && e.max === null)),
+    [bundle.metric_schema],
+  );
+  const outcomeGroups = useMemo(() => {
+    const { groups } = groupedMetricOptions(bundle.metric_schema, Y_GROUP_ORDER);
+    return groups.filter(([g]) => g !== "FUNCTION") as Array<[MetricPickerGroup, MetricSchemaEntry[]]>;
+  }, [bundle.metric_schema]);
+
   return (
     <div className="flex h-full w-full flex-col min-h-0">
-      <PanelHeader vk={vk} chartRef={chartRef} />
+      <PanelHeader vk={vk} centerView={centerView} chartRef={chartRef} />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2 text-xs text-text-muted">
         {vk === "table" && <TableExtras bundle={bundle} index={index} />}
 
-        {/* SETTINGS strip — the MERGED LEGEND + editor: one entry per setting
-            (swatch / name / matched-run count / reset / duplicate / delete),
-            each setting's split series inline underneath (glyph + combo +
-            count), the active setting's style editor, and the resolution
-            notes (averaged / overlap / judge / palette) — all from the SAME
-            resolveSeries result the plot renders. The parameter chips below
-            edit the ACTIVE setting's filters. */}
+        {/* PLOT-STYLE row — the plot-level channels (size/opacity + band/ghosts/
+            trend), parallel to a layer entry but labeled "plot". */}
+        {isPlotLike && plotConfig && (
+          <PlotStyleRow config={plotConfig} onChange={setPlot} />
+        )}
+
+        {/* LAYERS strip — the MERGED LEGEND + editor: one entry per layer (glyph
+            / swatch / name / matched-run count / reset / duplicate / remove),
+            the active layer's 3-channel style editor, and the resolution notes
+            (averaged / overlap / judge) + the transient cascade note. */}
         {isPlotLike && plotConfig && resolution && (
-          <SettingsStrip
-            settings={plotConfig.settings}
-            activeId={activeSetting?.id ?? null}
-            counts={countsBySetting}
+          <LayersStrip
+            layers={plotConfig.layers}
+            activeId={activeLayer?.id ?? null}
+            counts={countsByLayer}
             resolution={resolution}
             averaged={averagedLabels}
-            onSelect={(id) => startTransition(() => setActiveSettingId(id))}
-            onRename={(id, name) => startTransition(() => patchSetting(vk as PlotViewKey, id, { name }))}
-            onRecolor={(id, color) => startTransition(() => patchSetting(vk as PlotViewKey, id, { color }))}
-            onStyle={(id, style) => startTransition(() => patchSetting(vk as PlotViewKey, id, { style }))}
-            // Per-setting reset: filters back to the DOMINANT CELL (the same
-            // seed a fresh setting gets) + style back to the neutral defaults.
-            onReset={(id) => startTransition(() => patchSetting(vk as PlotViewKey, id, {
+            cascadeNote={cascadeNote}
+            onSelect={(id) => startTransition(() => setActiveLayerId(id))}
+            onRename={(id, name) => startTransition(() => patchLayer(id, { name }))}
+            onRecolor={(id, color) => startTransition(() => patchLayer(id, { color }))}
+            onStyle={(id, style) => startTransition(() => patchLayer(id, { style }))}
+            // Per-layer reset: filters back to the DOMINANT CELL (the same seed a
+            // fresh layer gets) + style back to the neutral defaults.
+            onReset={(id) => startTransition(() => patchLayer(id, {
               filters: {
                 facets: Object.fromEntries(
                   Object.entries(dominant.facets).map(([k, v]) => [k, [...(v ?? [])]]),
                 ) as FilterState["facets"],
                 ranges: dominant.ranges.map((r) => ({ ...r })),
               },
-              style: { ...DEFAULT_SETTING_STYLE },
+              style: { ...DEFAULT_LAYER_STYLE },
             }))}
             onDuplicate={(id) => startTransition(() => {
-              const nid = duplicateSetting(vk as PlotViewKey, id);
-              if (nid) setActiveSettingId(nid);
+              const nid = duplicateLayer(id);
+              if (nid) setActiveLayerId(nid);
             })}
-            onRemove={(id) => startTransition(() => removeSetting(vk as PlotViewKey, id))}
-            // A new setting defaults to the DOMINANT CELL (Feature 1), not empty.
-            onAdd={() => startTransition(() => setActiveSettingId(addSetting(vk as PlotViewKey, dominant)))}
+            onRemove={(id) => startTransition(() => removeLayer(id))}
+            // A new layer defaults to the DOMINANT CELL (Feature 1), not empty.
+            onAdd={() => startTransition(() => setActiveLayerId(addLayer(dominant)))}
           />
         )}
 
-        {/* SPLIT BY — ordered multi-select; options are the GLOBALLY differing
-            parameters, so a choice stays reachable even when the current
-            filters make it constant */}
-        {isPlotLike && plotConfig && resolution && (
-          <SplitByEditor
-            splitBy={plotConfig.splitBy}
-            inactive={resolution.inactive}
-            available={differingDims}
-            onChange={(next) => patchPlot({ splitBy: next })}
-          />
-        )}
-
-        {groupConfig && (
-          <div className="mb-2 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
-            <ParamSelect
-              label="Facet by"
-              value={groupConfig.facet}
-              options={facetOptions}
-              onChange={(v) => startTransition(() => setGroupPlot({ facet: v }))}
-            />
+        {/* group plot: facet + panel size (centerView === "groupplot") */}
+        {isGroupPlot && (
+          <div className="mb-2">
+            <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+              <ParamSelect
+                label="Facet by"
+                value={groupPlot.facet}
+                options={facetOptions}
+                onChange={(v) => startTransition(() => setGroupPlot({ facet: v }))}
+              />
+            </div>
+            <label className="mt-1 flex items-center gap-2 text-[11px] text-text-muted">
+              panel size
+              <input
+                type="range" min={160} max={480} step={20} value={groupPlot.panelMin}
+                onChange={(e) => startTransition(() => setGroupPlot({ panelMin: Number(e.target.value) }))}
+                className="accent-accent" aria-label="panel size"
+              />
+            </label>
           </div>
         )}
 
-        {/* COLOR BY METRIC — the continuous gradient, honored only on a
-            single unsplit setting */}
+        {/* COLOR BY METRIC — the continuous gradient, honored only on a single layer */}
         {isPlotLike && plotConfig && (
           <ColorByRow
-            eligible={plotConfig.settings.length === 1 && plotConfig.splitBy.length === 0}
+            eligible={plotConfig.layers.length === 1}
             colorBy={plotConfig.colorBy}
             schema={bundle.metric_schema}
-            onChange={(m) => patchPlot({ colorBy: m })}
+            onChange={(m) => setPlot({ colorBy: m })}
           />
         )}
 
-        {/* which setting the chips edit */}
-        {isPlotLike && activeSetting && (
+        {/* which layer the chips edit */}
+        {isPlotLike && activeLayer && (
           <div className="mb-1 border-t border-border/50 pt-1.5 text-[11px] text-text-faint">
-            editing: <span className="text-text/90">{activeSetting.name}</span>
+            editing: <span className="text-text/90">{activeLayer.name}</span>
           </div>
         )}
 
@@ -528,18 +575,47 @@ function ViewConfig({
           </CollapsibleSection>
         ))}
 
-        {/* continuous sections — complexity + outcomes (plot-like views wire
-            color; table gets filter-only) */}
-        <ContinuousSections
-          isPlotLike={isPlotLike}
-          bundle={bundle}
-          index={index}
-          filtered={filtered}
-          rangeFor={rangeFor}
-          treatmentOf={contTreatmentOf}
-          onSetTreatment={setContTreatment}
-          updateRange={(m, p) => startTransition(() => storeUpdateRange(vk, sid, m, p))}
-        />
+        {/* FUNCTION section — arity + fn_hex + engaged complexity (with binning) */}
+        {(arityDim || functionDim || complexity.length > 0) && (
+          <CollapsibleSection title="function" defaultOpen>
+            {arityDim && renderParamRow(arityDim)}
+            {functionDim && renderParamRow(functionDim)}
+            {complexity.length > 0 && (
+              <ComplexityBlock
+                complexity={complexity}
+                index={index}
+                filtered={filtered}
+                activeRanges={activeFilters.ranges}
+                canBin={isPlotLike}
+                onAddFilter={addComplexityFilter}
+                onRemoveFilter={removeComplexityFilter}
+                updateRange={updateActiveRange}
+                onBin={runBin}
+              />
+            )}
+          </CollapsibleSection>
+        )}
+
+        {/* outcome metric rows (plot-like views wire color; table filter-only) */}
+        {outcomeGroups.length > 0 && (
+          <CollapsibleSection title="outcomes">
+            {outcomeGroups.map(([g, entries]) => (
+              <div key={g} className="mb-1">
+                <div className="px-0.5 pb-0.5 text-[10px] uppercase tracking-wide text-text-faint">{g}</div>
+                <MetricList
+                  entries={entries}
+                  isPlotLike={isPlotLike}
+                  index={index}
+                  filtered={filtered}
+                  rangeFor={rangeFor}
+                  treatmentOf={contTreatmentOf}
+                  onSetTreatment={setContTreatment}
+                  updateRange={updateActiveRange}
+                />
+              </div>
+            ))}
+          </CollapsibleSection>
+        )}
 
         {/* constants */}
         {summary.shared.length > 0 && (
@@ -557,25 +633,6 @@ function ViewConfig({
             </div>
           </CollapsibleSection>
         )}
-
-        {/* footer toggles (plot-like) */}
-        {plotConfig && (
-          <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-border/50 pt-2 text-[11px]">
-            <Toggle label="band" checked={!!plotConfig.band} onChange={(b) => patchPlot({ band: b })} title="±1 SD spread band / whiskers" />
-            <Toggle label="ghosts" checked={!!plotConfig.ghosts} onChange={(b) => patchPlot({ ghosts: b })} title="faint underlying runs" />
-            <Toggle label="trend" checked={!!plotConfig.trend} onChange={(b) => patchPlot({ trend: b })} title="OLS fit + r/ρ readout" />
-          </div>
-        )}
-        {groupConfig && (
-          <label className="mt-2 flex items-center gap-2 border-t border-border/50 pt-2 text-[11px] text-text-muted">
-            panel size
-            <input
-              type="range" min={160} max={480} step={20} value={groupConfig.panelMin}
-              onChange={(e) => startTransition(() => setGroupPlot({ panelMin: Number(e.target.value) }))}
-              className="accent-accent" aria-label="panel size"
-            />
-          </label>
-        )}
       </div>
     </div>
   );
@@ -586,24 +643,30 @@ function ViewConfig({
 // ===========================================================================
 
 function PanelHeader({
-  vk, chartRef,
+  vk, centerView, chartRef,
 }: {
   vk: ViewKey | null;
+  centerView: CenterView;
   chartRef: React.MutableRefObject<PlotExportHandle | null>;
 }) {
-  const centerView = useBoolbackStore((s) => s.centerView);
   const resetView = useBoolbackStore((s) => s.resetView);
-  // The global Reset only serves the table (and anatomy) — plot-like views
-  // reset PER SETTING instead (the ⟲ on each settings-strip entry).
+  // The global Reset only serves the table (and anatomy) — plot-like views reset
+  // PER LAYER instead (the ⟲ on each layers-strip entry).
   const onReset = () => resetView(centerView);
   const [note, setNote] = useState<string | null>(null);
   const flash = (m: string) => { setNote(m); setTimeout(() => setNote(null), 1400); };
 
-  const activeConfig = useActiveConfig(vk);
+  const kind = specKindOf(centerView);
 
   const copySpec = async () => {
-    if (!vk || !activeConfig) return;
-    await copyText(serializeSpec(configToSpec(specKindOf(vk), activeConfig)));
+    if (!kind) return;
+    const s = useBoolbackStore.getState();
+    const spec = kind === "table"
+      ? configToSpec("table", s.table)
+      : kind === "plot"
+        ? configToSpec("plot", s.plot)
+        : configToSpec("groupplot", s.plot, s.groupPlot.facet);
+    await copyText(serializeSpec(spec));
     flash("copied ✓");
   };
 
@@ -614,11 +677,11 @@ function PanelHeader({
     downloadBlob(blob, "boolback-plot.png");
   };
 
-  const isPlotLike = vk === "plot" || vk === "groupPlot";
+  const isPlotLike = kind === "plot" || kind === "groupplot";
 
   return (
     <header className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2 text-xs">
-      {vk && <ViewsMenu vk={vk} />}
+      {vk && <ViewsMenu centerView={centerView} />}
       {vk && (
         <button type="button" onClick={copySpec} title="Copy this view's spec to the clipboard"
           className="rounded border border-border px-1.5 py-0.5 text-text-muted hover:border-accent/40 hover:text-accent">
@@ -643,17 +706,6 @@ function PanelHeader({
   );
 }
 
-/** Read the active view's full config out of the store (for spec copy/save). */
-function useActiveConfig(vk: ViewKey | null): PlotConfig | GroupPlotConfig | TableConfig | null {
-  const table = useBoolbackStore((s) => s.table);
-  const plot = useBoolbackStore((s) => s.plot);
-  const groupPlot = useBoolbackStore((s) => s.groupPlot);
-  if (vk === "table") return table;
-  if (vk === "plot") return plot;
-  if (vk === "groupPlot") return groupPlot;
-  return null;
-}
-
 function PasteSpec() {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -675,11 +727,10 @@ function PasteSpec() {
   const apply = () => {
     const spec = parseSpec(text);
     if (!spec) { setErr(true); return; }
-    const { view, config } = specToConfig(spec);
-    if (view === "table") setTableConfig(config as TableConfig);
-    else if (view === "plot") setPlot(config as PlotConfig);
-    else setGroupPlot(config as GroupPlotConfig);
-    setCenterView(view === "groupplot" ? "groupplot" : view);
+    const { view, plot, table, facet } = specToConfig(spec);
+    if (view === "table") { if (table) setTableConfig(table); setCenterView("table"); }
+    else if (view === "plot") { if (plot) setPlot(plot); setCenterView("plot"); }
+    else { if (plot) setPlot(plot); setGroupPlot({ facet: facet ?? null }); setCenterView("groupplot"); }
     setOpen(false);
     setText("");
   };
@@ -719,7 +770,7 @@ function PasteSpec() {
 
 type PresetRow = { _id: Id<"boolbackPresets">; name: string; state: unknown };
 
-function ViewsMenu({ vk }: { vk: ViewKey }) {
+function ViewsMenu({ centerView }: { centerView: CenterView }) {
   const presets = (useQuery(api.boolbackPresets.list) ?? []) as PresetRow[];
   const savePreset = useMutation(api.boolbackPresets.save);
   const removePreset = useMutation(api.boolbackPresets.remove);
@@ -732,29 +783,31 @@ function ViewsMenu({ vk }: { vk: ViewKey }) {
   const setPlot = useBoolbackStore((s) => s.setPlot);
   const setGroupPlot = useBoolbackStore((s) => s.setGroupPlot);
 
+  const kind = specKindOf(centerView);
+
   const specOfActive = () => {
     const s = useBoolbackStore.getState();
-    const cfg = vk === "table" ? s.table : vk === "plot" ? s.plot : s.groupPlot;
-    return configToSpec(specKindOf(vk), cfg);
+    return kind === "table"
+      ? configToSpec("table", s.table)
+      : kind === "groupplot"
+        ? configToSpec("groupplot", s.plot, s.groupPlot.facet)
+        : configToSpec("plot", s.plot);
   };
 
   const apply = (p: PresetRow) => {
     const spec = hydratePresetSpec(p.state);
     if (!spec) { setOpen(false); return; }
-    const { view, config } = specToConfig(spec);
-    if (view === "table") setTableConfig(config as TableConfig);
-    else if (view === "plot") setPlot(config as PlotConfig);
-    else setGroupPlot(config as GroupPlotConfig);
-    setCenterView(view === "groupplot" ? "groupplot" : view);
+    const { view, plot, table, facet } = specToConfig(spec);
+    if (view === "table") { if (table) setTableConfig(table); setCenterView("table"); }
+    else if (view === "plot") { if (plot) setPlot(plot); setCenterView("plot"); }
+    else { if (plot) setPlot(plot); setGroupPlot({ facet: facet ?? null }); setCenterView("groupplot"); }
     setOpen(false);
   };
 
   const beginSave = () => {
     const s = useBoolbackStore.getState();
-    // Suggest from the table's filters, or the first setting's on a plot view.
-    const filters = vk === "table"
-      ? s.table.filters
-      : (vk === "plot" ? s.plot : s.groupPlot).settings[0]?.filters ?? EMPTY_FILTER;
+    // Suggest from the table's filters, or the first layer's on a plot view.
+    const filters = kind === "table" ? s.table.filters : s.plot.layers[0]?.filters ?? EMPTY_FILTER;
     setName(suggestPresetName(filters));
     setSaving(true);
   };
@@ -834,7 +887,7 @@ function CollapsibleSection({
 }
 
 // ===========================================================================
-// style-slot select (Color by / Shape by / Facet by)
+// style-slot select (Facet by)
 // ===========================================================================
 
 function ParamSelect({
@@ -864,37 +917,68 @@ function ParamSelect({
 }
 
 // ===========================================================================
-// SETTINGS strip — the MERGED LEGEND: one entry per setting with its split
-// series inline, per-setting reset, and the active setting's style editor.
-// Everything derives from resolveSeries (never a parallel computation).
+// PLOT-STYLE row — the plot-level channels (size / opacity + band/ghosts/trend)
 // ===========================================================================
 
-/** The combo half of a series label ("jailbreak · Qwen2.5" -> "Qwen2.5"):
- *  Series.label is [settingName, ...comboValues].join(" · "), so the prefix
- *  strip is exact. */
-function comboLabel(label: string, settingName: string): string {
-  const prefix = `${settingName} · `;
-  return label.startsWith(prefix) ? label.slice(prefix.length) : label;
+function PlotStyleRow({
+  config, onChange,
+}: {
+  config: PlotConfig;
+  onChange: (patch: Partial<PlotConfig>) => void;
+}) {
+  return (
+    <div className="mb-2 rounded-md border border-border/60 px-1.5 py-1">
+      <div className="mb-1 flex items-center gap-1.5">
+        <span className="text-text/90">plot</span>
+        <span className="ml-auto flex items-center gap-3 text-[11px]">
+          <Toggle label="band" checked={!!config.band} onChange={(b) => onChange({ band: b })} title="±1 SD spread band / whiskers" />
+          <Toggle label="ghosts" checked={!!config.ghosts} onChange={(b) => onChange({ ghosts: b })} title="faint underlying runs" />
+          <Toggle label="trend" checked={!!config.trend} onChange={(b) => onChange({ trend: b })} title="OLS fit + r/ρ readout" />
+        </span>
+      </div>
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-x-2 gap-y-1 text-[11px]">
+        <span className="text-text-faint">size</span>
+        <input
+          type="range" min={0.4} max={2.5} step={0.1} value={config.size}
+          onChange={(e) => onChange({ size: Number(e.target.value) })}
+          aria-label="plot marker size" className="min-w-0 accent-accent"
+        />
+        <span className="w-8 text-right tabular-nums text-text-faint">{config.size.toFixed(1)}×</span>
+
+        <span className="text-text-faint">opacity</span>
+        <input
+          type="range" min={0.1} max={1} step={0.05} value={config.opacity}
+          onChange={(e) => onChange({ opacity: Number(e.target.value) })}
+          aria-label="plot opacity" className="min-w-0 accent-accent"
+        />
+        <span className="w-8 text-right tabular-nums text-text-faint">{config.opacity.toFixed(2)}</span>
+      </div>
+    </div>
+  );
 }
 
-/** Inline series (legend) rows shown per setting entry — capped. */
-const MAX_LEGEND_SERIES = 12;
+// ===========================================================================
+// LAYERS strip — the MERGED LEGEND: one entry per layer + the active layer's
+// 3-channel style editor. Everything derives from resolveSeries.
+// ===========================================================================
 
-function SettingsStrip({
-  settings, activeId, counts, resolution, averaged,
+function LayersStrip({
+  layers, activeId, counts, resolution, averaged, cascadeNote,
   onSelect, onRename, onRecolor, onStyle, onReset, onDuplicate, onRemove, onAdd,
 }: {
-  settings: PlotSetting[];
+  layers: PlotLayer[];
   activeId: string | null;
-  /** Matched-run count per setting id (summed from resolveSeries). */
+  /** Matched-run count per layer id (from resolveSeries). */
   counts: Map<string, number>;
   resolution: SeriesResolution;
-  /** Labels of parameters pooled inside groups (the "averaged: …" note). */
+  /** Labels of parameters pooled inside layers (the "averaged: …" note). */
   averaged: string[];
+  /** Transient "X, Y followed Z" cascade note (null when idle). */
+  cascadeNote: string | null;
   onSelect: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onRecolor: (id: string, color: string) => void;
-  onStyle: (id: string, style: SettingStyle) => void;
+  onStyle: (id: string, style: LayerStyle) => void;
   onReset: (id: string) => void;
   onDuplicate: (id: string) => void;
   onRemove: (id: string) => void;
@@ -902,127 +986,93 @@ function SettingsStrip({
 }) {
   return (
     <div className="mb-2">
-      {settings.map((s) => {
-        const active = s.id === activeId;
-        const empty = resolution.emptySettings.includes(s.name);
-        const n = counts.get(s.id) ?? 0;
-        // This setting's split series (the legend entries, in render order).
-        const own = resolution.series.filter((x) => x.settingId === s.id && x.combo.length > 0);
-        const shown = own.slice(0, MAX_LEGEND_SERIES);
+      {layers.map((l) => {
+        const active = l.id === activeId;
+        const empty = resolution.emptyLayers.includes(l.name);
+        const n = counts.get(l.id) ?? 0;
+        const style = l.style ?? DEFAULT_LAYER_STYLE;
         return (
           <div
-            key={s.id}
-            onClick={() => onSelect(s.id)}
-            title={active ? undefined : `edit setting "${s.name}"`}
+            key={l.id}
+            onClick={() => onSelect(l.id)}
+            title={active ? undefined : `edit layer "${l.name}"`}
             className={`group mb-0.5 cursor-pointer rounded-md border px-1.5 py-1 ${
-              active
-                ? "border-accent bg-accent/10"
-                : "border-border/60 hover:border-accent/40"
+              active ? "border-accent bg-accent/10" : "border-border/60 hover:border-accent/40"
             }`}
           >
             <div className="flex items-center gap-1.5">
-              <SwatchPicker name={s.name} color={s.color} onPick={(c) => onRecolor(s.id, c)} />
-              <SettingName name={s.name} active={active} onCommit={(name) => onRename(s.id, name)} />
+              <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0" style={{ color: l.color }} aria-hidden>
+                {shapeNode(style.shape, 0, 0, 4, {
+                  fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
+                })}
+              </svg>
+              <SwatchPicker
+                ariaLabel={`change color of layer ${l.name}`}
+                title={`change the color of "${l.name}"`}
+                color={l.color}
+                onPick={(c) => onRecolor(l.id, c)}
+              />
+              <LayerName name={l.name} active={active} onCommit={(name) => onRename(l.id, name)} />
               <span
                 className={`ml-auto shrink-0 rounded border px-1 py-px text-[10px] tabular-nums ${
                   empty ? "border-warning/60 text-warning" : "border-border text-text-faint"
                 }`}
-                title={empty ? "no runs match this setting's filters" : `${n} matched runs`}
+                title={empty ? "no runs match this layer's filters" : `${n} matched runs`}
               >
                 {empty ? "0 runs" : n}
               </span>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onReset(s.id); }}
-                title={`reset setting "${s.name}" — filters back to the dominant cell, style back to defaults`}
-                aria-label={`reset setting ${s.name}`}
-                className="shrink-0 text-text-faint hover:text-accent"
-              >
-                ⟲
-              </button>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onDuplicate(s.id); }}
-                title={`duplicate setting "${s.name}"`}
-                aria-label={`duplicate setting ${s.name}`}
-                className="shrink-0 text-text-faint hover:text-accent"
-              >
-                ⧉
-              </button>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onRemove(s.id); }}
-                disabled={settings.length <= 1}
-                title={settings.length <= 1 ? "the last setting cannot be removed" : `remove setting "${s.name}"`}
-                aria-label={`remove setting ${s.name}`}
-                className="shrink-0 text-text-faint hover:text-error disabled:opacity-30"
-              >
-                ×
-              </button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onReset(l.id); }}
+                title={`reset layer "${l.name}" — filters back to the dominant cell, style back to defaults`}
+                aria-label={`reset layer ${l.name}`}
+                className="shrink-0 text-text-faint hover:text-accent">⟲</button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onDuplicate(l.id); }}
+                title={`duplicate layer "${l.name}"`} aria-label={`duplicate layer ${l.name}`}
+                className="shrink-0 text-text-faint hover:text-accent">⧉</button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onRemove(l.id); }}
+                disabled={layers.length <= 1}
+                title={layers.length <= 1 ? "the last layer cannot be removed" : `remove layer "${l.name}"`}
+                aria-label={`remove layer ${l.name}`}
+                className="shrink-0 text-text-faint hover:text-error disabled:opacity-30">×</button>
             </div>
 
-            {/* the setting's split series — the legend, in line */}
-            {shown.length > 0 && (
-              <div className="mt-0.5">
-                {shown.map((x) => (
-                  <div key={x.key} data-legend-series="" className="flex items-center gap-1.5 py-px pl-3">
-                    <svg width={12} height={12} viewBox="-6 -6 12 12" className="shrink-0" style={{ color: x.color }}>
-                      {shapeNode(shapeForValue(x.shapeIdx), 0, 0, 4, {
-                        fill: "currentColor", fillOpacity: 0.7, stroke: "currentColor", strokeOpacity: 1,
-                      })}
-                    </svg>
-                    <span className="min-w-0 flex-1 truncate text-[11px]" title={comboLabel(x.label, x.settingName)}>
-                      {comboLabel(x.label, x.settingName)}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-text-faint tabular-nums">{x.rows.length}</span>
-                  </div>
-                ))}
-                {own.length > shown.length && (
-                  <div className="pl-3 text-[10px] text-text-faint">+{own.length - shown.length} more series</div>
-                )}
-              </div>
-            )}
-
-            {/* the active setting's style editor */}
             {active && (
-              <StyleEditor
-                name={s.name}
-                style={s.style ?? DEFAULT_SETTING_STYLE}
-                onChange={(st) => onStyle(s.id, st)}
+              <LayerStyleEditor
+                name={l.name}
+                color={l.color}
+                style={style}
+                onRecolor={(c) => onRecolor(l.id, c)}
+                onStyle={(st) => onStyle(l.id, st)}
               />
             )}
           </div>
         );
       })}
-      <button
-        type="button"
-        onClick={onAdd}
-        className="w-full rounded-md border border-dashed border-border px-1.5 py-0.5 text-left text-text-faint hover:border-accent/40 hover:text-accent"
-      >
-        + add setting
+      <button type="button" onClick={onAdd}
+        className="w-full rounded-md border border-dashed border-border px-1.5 py-0.5 text-left text-text-faint hover:border-accent/40 hover:text-accent">
+        + add layer
       </button>
 
-      {/* resolution notes — the rest of the old plot legend */}
+      {/* resolution notes */}
       {averaged.length > 0 && (
         <div className="mt-1 text-[11px] text-text-faint">
           averaged: {averaged.join(", ")} (mean ± SD)
         </div>
       )}
       {resolution.overlapCount > 0 && (
-        <div className="mt-1 text-[11px] text-warning" title="a run matching several settings is drawn once per setting">
+        <div className="mt-1 text-[11px] text-warning" title="a run matching several layers is drawn once per layer">
           {resolution.overlapCount} run{resolution.overlapCount === 1 ? "" : "s"} match
-          {resolution.overlapCount === 1 ? "es" : ""} multiple settings
+          {resolution.overlapCount === 1 ? "es" : ""} multiple layers
         </div>
       )}
       {resolution.judgePooled.map((name) => (
         <div key={name} className="mt-0.5 text-[11px] text-warning"
-          title="this setting's matched runs span several judges — split or filter by judge to compare like with like">
+          title="this layer's matched runs span several judges — filter by judge to compare like with like">
           {name}: mixes judges
         </div>
       ))}
-      {resolution.paletteExceeded && (
-        <div className="mt-0.5 text-[11px] text-warning">
-          more series than colors — colors repeat
+      {cascadeNote && (
+        <div className="mt-1 text-[11px] text-accent" role="status">
+          {cascadeNote}
         </div>
       )}
     </div>
@@ -1030,43 +1080,46 @@ function SettingsStrip({
 }
 
 // ===========================================================================
-// STYLE editor — every visual channel a setting owns, in its entry
+// LAYER STYLE editor — the three semantic channels a layer owns: color, shape,
+// dash. No size/opacity (those are plot-level), no "auto" shape (served splits).
 // ===========================================================================
 
 const DASH_LABEL = ["solid", "dashed", "dotted", "dash-dot"];
 
-function StyleEditor({
-  name, style, onChange,
+function LayerStyleEditor({
+  name, color, style, onRecolor, onStyle,
 }: {
   name: string;
-  style: SettingStyle;
-  onChange: (s: SettingStyle) => void;
+  color: string;
+  style: LayerStyle;
+  onRecolor: (c: string) => void;
+  onStyle: (s: LayerStyle) => void;
 }) {
-  const patch = (p: Partial<SettingStyle>) => onChange({ ...style, ...p });
+  const patch = (p: Partial<LayerStyle>) => onStyle({ ...style, ...p });
   return (
     <div
       className="mt-1 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 border-t border-border/50 pt-1 text-[11px]"
       onClick={(e) => e.stopPropagation()}
     >
+      <span className="text-text-faint">color</span>
+      <span className="flex items-center">
+        <SwatchPicker
+          ariaLabel={`set color for layer ${name}`}
+          title={`set the color of "${name}"`}
+          color={color}
+          onPick={onRecolor}
+        />
+      </span>
+
       <span className="text-text-faint">shape</span>
       <span className="flex items-center gap-0.5">
-        <button
-          type="button"
-          onClick={() => patch({ shape: null })}
-          title="auto — the split channel picks the shape"
-          className={`rounded border px-1 py-px text-[10px] ${
-            style.shape === null ? "border-accent text-accent" : "border-border text-text-muted hover:border-accent/40"
-          }`}
-        >
-          auto
-        </button>
         {Array.from({ length: SHAPE_COUNT }, (_, i) => (
           <button
             key={i}
             type="button"
             onClick={() => patch({ shape: i })}
             title={`marker shape ${i}`}
-            aria-label={`set marker shape ${i} for setting ${name}`}
+            aria-label={`set marker shape ${i} for layer ${name}`}
             className={`rounded border p-0.5 ${
               style.shape === i ? "border-accent text-accent" : "border-transparent text-text-muted hover:border-accent/40"
             }`}
@@ -1080,28 +1133,6 @@ function StyleEditor({
         ))}
       </span>
 
-      <span className="text-text-faint">size</span>
-      <span className="flex items-center gap-1.5">
-        <input
-          type="range" min={0.4} max={2.5} step={0.1} value={style.size}
-          onChange={(e) => patch({ size: Number(e.target.value) })}
-          aria-label={`marker size for setting ${name}`}
-          className="min-w-0 flex-1 accent-accent"
-        />
-        <span className="w-8 shrink-0 text-right tabular-nums text-text-faint">{style.size.toFixed(1)}×</span>
-      </span>
-
-      <span className="text-text-faint">opacity</span>
-      <span className="flex items-center gap-1.5">
-        <input
-          type="range" min={0.1} max={1} step={0.05} value={style.opacity}
-          onChange={(e) => patch({ opacity: Number(e.target.value) })}
-          aria-label={`opacity for setting ${name}`}
-          className="min-w-0 flex-1 accent-accent"
-        />
-        <span className="w-8 shrink-0 text-right tabular-nums text-text-faint">{style.opacity.toFixed(2)}</span>
-      </span>
-
       <span className="text-text-faint">line</span>
       <span className="flex items-center gap-0.5">
         {DASH_PATTERNS.map((pattern, i) => (
@@ -1110,7 +1141,7 @@ function StyleEditor({
             type="button"
             onClick={() => patch({ dash: i })}
             title={DASH_LABEL[i] ?? `dash ${i}`}
-            aria-label={`set ${DASH_LABEL[i] ?? `dash ${i}`} lines for setting ${name}`}
+            aria-label={`set ${DASH_LABEL[i] ?? `dash ${i}`} lines for layer ${name}`}
             className={`rounded border px-0.5 py-1 ${
               style.dash === i ? "border-accent text-accent" : "border-border text-text-muted hover:border-accent/40"
             }`}
@@ -1128,9 +1159,10 @@ function StyleEditor({
 
 /** Color swatch; click opens a CATEGORY_PALETTE popover, click a swatch assigns. */
 function SwatchPicker({
-  name, color, onPick,
+  ariaLabel, title, color, onPick,
 }: {
-  name: string;
+  ariaLabel: string;
+  title: string;
   color: string;
   onPick: (c: string) => void;
 }) {
@@ -1140,8 +1172,8 @@ function SwatchPicker({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title={`change the color of "${name}"`}
-        aria-label={`change color of setting ${name}`}
+        title={title}
+        aria-label={ariaLabel}
         className="block h-3 w-3 rounded-sm border border-border"
         style={{ backgroundColor: color }}
       />
@@ -1157,9 +1189,7 @@ function SwatchPicker({
                   onClick={() => { onPick(c); setOpen(false); }}
                   aria-label={`use color ${c}`}
                   className={`h-4 w-4 rounded-sm border ${
-                    c.toLowerCase() === color.toLowerCase()
-                      ? "border-text"
-                      : "border-transparent hover:border-text-muted"
+                    c.toLowerCase() === color.toLowerCase() ? "border-text" : "border-transparent hover:border-text-muted"
                   }`}
                   style={{ backgroundColor: c }}
                 />
@@ -1171,7 +1201,7 @@ function SwatchPicker({
                 type="color"
                 value={color}
                 onChange={(e) => onPick(e.target.value)}
-                aria-label={`custom color for setting ${name}`}
+                aria-label={`custom color`}
                 className="h-4 w-6 shrink-0 cursor-pointer rounded-sm border border-border bg-transparent p-0"
               />
               custom…
@@ -1183,15 +1213,12 @@ function SwatchPicker({
   );
 }
 
-/** Inline setting rename. The pencil ALWAYS opens the editor (any row); the
- *  name button still opens it on the ACTIVE row and bubbles to row-select on
- *  an inactive one. Enter/blur commit (an empty draft commits as the previous
- *  name), Escape cancels — so clicking the swatch or another row while editing
- *  commits via blur. The pencil prevents default on mousedown so the opening
- *  click cannot move focus (which would blur-commit another open editor and
- *  re-render the strip under the cursor before the click completes); the
- *  input is focused + selected in an effect on open, never left unfocused. */
-function SettingName({
+/** Inline layer rename. The pencil ALWAYS opens the editor (any row); the name
+ *  button opens it on the ACTIVE row and bubbles to row-select on an inactive
+ *  one. Enter/blur commit (an empty draft commits as the previous name), Escape
+ *  cancels. The pencil prevents default on mousedown so the opening click cannot
+ *  move focus; the input is focused + selected in an effect on open. */
+function LayerName({
   name, active, onCommit,
 }: {
   name: string;
@@ -1225,7 +1252,7 @@ function SettingName({
             e.stopPropagation();
             open();
           }}
-          title={active ? "rename this setting" : undefined}
+          title={active ? "rename this layer" : undefined}
           className="min-w-0 truncate text-left text-text/90 hover:text-accent"
         >
           {name}
@@ -1234,8 +1261,8 @@ function SettingName({
           type="button"
           onMouseDown={(e) => e.preventDefault()} // keep focus where it is
           onClick={open} // bubbles → the row becomes active too
-          title={`rename setting "${name}"`}
-          aria-label={`rename setting ${name}`}
+          title={`rename layer "${name}"`}
+          aria-label={`rename layer ${name}`}
           className="shrink-0 text-text-faint hover:text-accent"
         >
           ✎
@@ -1254,99 +1281,14 @@ function SettingName({
         if (e.key === "Enter") commit();
         else if (e.key === "Escape") { setDraft(name); setEditing(false); }
       }}
-      aria-label="setting name"
+      aria-label="layer name"
       className="w-32 min-w-0 rounded border border-border bg-surface px-1 py-0 text-[11px] text-text focus:border-accent/60 focus:outline-none"
     />
   );
 }
 
 // ===========================================================================
-// SPLIT BY — ordered multi-select (chips + add dropdown; arrows reorder)
-// ===========================================================================
-
-function SplitByEditor({
-  splitBy, inactive, available, onChange,
-}: {
-  splitBy: string[];
-  /** From resolveSeries: keys constant over the view (or unknown). */
-  inactive: Record<string, "constant">;
-  /** The globally differing parameters (PARAMETERS order). */
-  available: ParameterDef[];
-  onChange: (next: string[]) => void;
-}) {
-  // Dropdown groups: sweep-tier axes first, then setting-tier (then function).
-  const groups = SPLIT_TIER_ORDER.map((tier) => ({
-    tier,
-    opts: available.filter(
-      (d) => (PARAM_TIERS[d.key] ?? "setting") === tier && !splitBy.includes(d.key),
-    ),
-  })).filter((g) => g.opts.length > 0);
-
-  const move = (i: number, delta: number) => {
-    const j = i + delta;
-    if (j < 0 || j >= splitBy.length) return;
-    const next = [...splitBy];
-    [next[i], next[j]] = [next[j], next[i]];
-    onChange(next);
-  };
-
-  return (
-    <div className="mb-2">
-      <div className="mb-1 text-[10px] uppercase tracking-wide text-text-faint">Split by</div>
-      <div className="flex flex-wrap items-center gap-1">
-        {splitBy.map((key, i) => {
-          const def = paramOfKey(key);
-          const muted = key in inactive;
-          return (
-            <span
-              key={key}
-              className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 ${
-                muted ? "border-border/50 text-text-faint" : "border-border text-text/90"
-              }`}
-              title={muted
-                ? "one value in view — not splitting"
-                : "series split within each setting (order matters)"}
-            >
-              <span className="max-w-28 truncate">{def?.label ?? key}</span>
-              {muted && <span className="text-[10px]">· one value in view</span>}
-              {splitBy.length > 1 && (
-                <>
-                  <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
-                    title="move earlier" aria-label={`move split ${def?.label ?? key} earlier`}
-                    className="text-text-faint hover:text-accent disabled:opacity-30">‹</button>
-                  <button type="button" onClick={() => move(i, 1)} disabled={i === splitBy.length - 1}
-                    title="move later" aria-label={`move split ${def?.label ?? key} later`}
-                    className="text-text-faint hover:text-accent disabled:opacity-30">›</button>
-                </>
-              )}
-              <button type="button" onClick={() => onChange(splitBy.filter((k) => k !== key))}
-                title="remove this split" aria-label={`remove split ${def?.label ?? key}`}
-                className="text-text-faint hover:text-error">×</button>
-            </span>
-          );
-        })}
-        <select
-          value=""
-          onChange={(e) => { if (e.target.value) onChange([...splitBy, e.target.value]); }}
-          aria-label="add split"
-          className="rounded border border-border bg-surface px-1 py-0.5 text-[11px] text-text-muted focus:border-accent/60 focus:outline-none"
-        >
-          <option value="">add split ▾</option>
-          {groups.map((g) => (
-            <optgroup key={g.tier} label={TIER_LABEL[g.tier]}>
-              {g.opts.map((d) => (
-                <option key={d.key} value={d.key}>{d.label}</option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-      </div>
-    </div>
-  );
-}
-
-// ===========================================================================
-// COLOR BY METRIC — the continuous gradient (single unsplit setting only)
+// COLOR BY METRIC — the continuous gradient (single layer only)
 // ===========================================================================
 
 function ColorByRow({
@@ -1361,7 +1303,7 @@ function ColorByRow({
   if (!eligible) {
     return (
       <div className="mb-2 text-[11px] text-text-faint">
-        gradient available with a single unsplit setting
+        gradient available with a single layer
       </div>
     );
   }
@@ -1388,38 +1330,37 @@ function ColorByRow({
 }
 
 // ===========================================================================
-// categorical parameter row — a filter chip with a derived role badge
+// categorical parameter row — a filter chip with an expand-into-layers popover
 // ===========================================================================
 
 // React.memo: with stable props (conditioned map, selected array, and handler
 // bundle all kept referentially stable by ViewConfig) an untouched chip skips
-// re-render entirely when an unrelated control changes — the bulk of the INP
-// win alongside the memoized conditioned counts.
+// re-render entirely when an unrelated control changes.
 const CategoricalRow = memo(function CategoricalRow({
-  dim, pv, conditioned, role, selected,
-  onToggleValue, onClear, onIsolate, onExclude,
+  dim, pv, conditioned, facet, selected,
+  onToggleValue, onClear, onIsolate, onExclude, onExpand,
 }: {
   dim: ParameterDef;
   pv: ParamValues;
   /** Faceted-search counts (this facet dropped, every other filter applied);
    *  a globally-observed value missing here renders as 0 / muted. */
   conditioned: ReadonlyMap<string, number>;
-  /** Derived from the plot config (split/facet membership; null = none / table). */
-  role: ParamRole;
+  /** True when this parameter is the group-plot facet. */
+  facet: boolean;
   selected: readonly string[];
   onToggleValue: (value: string) => void;
   onClear: () => void;
   onIsolate: (value: string) => void;
   onExclude: (value: string, all: string[]) => void;
+  /** Present on plot-view categorical rows: expand into one layer per value. */
+  onExpand?: (targets: GeneratorTargets) => void;
 }) {
   const [filter, setFilter] = useState("");
-  // Feature 2: chip values render by DESCENDING run count (most-run first, so
-  // the dominant/checked-by-default values sit at the top and the ×16 cap drops
-  // the rare tail). Stable within count ties (numeric/lexical from
-  // summarizeParameters). Display-only — resolveSeries ordering is untouched.
+  // Chip DISPLAY order: numericSort dims (arity, seed, …) ascending BY VALUE;
+  // everything else DESCENDING by conditioned run count. Display-only.
   const allValues = useMemo(
-    () => orderValuesByCount(pv.values, conditioned),
-    [pv.values, conditioned],
+    () => orderValues(dim, pv.values, conditioned),
+    [dim, pv.values, conditioned],
   );
   const shown = filter
     ? allValues.filter(({ value }) => (dim.display ? dim.display(value) : value).toLowerCase().includes(filter.toLowerCase()))
@@ -1430,17 +1371,13 @@ const CategoricalRow = memo(function CategoricalRow({
     <div className="mb-1.5 rounded-md border border-border/50 p-1">
       <div className="flex items-center gap-1">
         <span className="min-w-0 flex-1 truncate text-text/90" title={`${dim.label}: ${allValues.length} values`}>{dim.label}</span>
-        {role && (
-          <span
-            className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1 py-px text-[10px] text-accent"
-            title={role === "split"
-              ? "series split within each setting"
-              : "faceted across panels"}
-          >
-            {role}
+        {facet && (
+          <span className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1 py-px text-[10px] text-accent" title="faceted across panels">
+            facet
           </span>
         )}
         <span className="shrink-0 text-text-faint">×{allValues.length}</span>
+        {onExpand && <ExpandMenu label={dim.label} onExpand={onExpand} />}
         {selected.length > 0 && dim.facetKey && (
           <button type="button" onClick={onClear} title="clear this parameter's filter" className="shrink-0 text-text-muted hover:text-accent">⌫</button>
         )}
@@ -1461,8 +1398,8 @@ const CategoricalRow = memo(function CategoricalRow({
           {visible.map(({ value }) => {
             const active = selected.includes(value);
             const count = conditioned.get(value) ?? 0;
-            // Muted when unselected-under-a-selection OR unreachable under
-            // the other filters (conditioned count 0) — still checkable.
+            // Muted when unselected-under-a-selection OR unreachable under the
+            // other filters (conditioned count 0) — still checkable.
             const dimmed = (selected.length > 0 && !active) || count === 0;
             const disp = dim.display ? dim.display(value) : value;
             return (
@@ -1492,6 +1429,31 @@ const CategoricalRow = memo(function CategoricalRow({
   );
 });
 
+/** Expand-into-layers popover: mint one layer per value of this parameter over
+ *  all layers (Tom's usual — listed first) or just the active one. */
+function ExpandMenu({ label, onExpand }: { label: string; onExpand: (targets: GeneratorTargets) => void }) {
+  const [open, setOpen] = useState(false);
+  const choose = (t: GeneratorTargets) => { onExpand(t); setOpen(false); };
+  return (
+    <span className="relative shrink-0">
+      <button type="button" onClick={() => setOpen((o) => !o)}
+        title={`one layer per ${label} value`} aria-label={`expand ${label} into layers`}
+        className="text-text-faint hover:text-accent">⧉▾</button>
+      {open && (
+        <>
+          <span className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <span className="absolute right-0 top-full z-30 mt-1 block w-32 rounded-lg border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md">
+            <button type="button" onClick={() => choose("all")}
+              className="block w-full rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent">all layers</button>
+            <button type="button" onClick={() => choose("active")}
+              className="block w-full rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent">active layer</button>
+          </span>
+        </>
+      )}
+    </span>
+  );
+}
+
 function TreatBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button type="button" onClick={onClick}
@@ -1502,55 +1464,152 @@ function TreatBtn({ label, active, onClick }: { label: string; active: boolean; 
 }
 
 // ===========================================================================
-// continuous sections + rows (complexity / outcomes)
+// FUNCTION section — engaged-only complexity metrics (with a bin-into-layers
+// control on each). Arity + fn_hex render above this via renderParamRow.
 // ===========================================================================
 
-function ContinuousSections({
-  isPlotLike, bundle, index, filtered, rangeFor, treatmentOf, onSetTreatment,
-  updateRange,
+function ComplexityBlock({
+  complexity, index, filtered, activeRanges, canBin,
+  onAddFilter, onRemoveFilter, updateRange, onBin,
 }: {
-  isPlotLike: boolean;
-  bundle: Bundle;
+  complexity: MetricSchemaEntry[];
   index: MetricIndex;
-  filtered: import("../lib/types").RunRow[];
-  rangeFor: (m: string) => RangeFilter | undefined;
-  treatmentOf: (m: string) => "filter" | "color" | null;
-  onSetTreatment: (m: string, t: "filter" | "color" | null) => void;
-  updateRange: (m: string, patch: Partial<RangeFilter>) => void;
+  filtered: RunRow[];
+  /** The active layer's own ranges (a range on a complexity metric = engaged). */
+  activeRanges: RangeFilter[];
+  canBin: boolean;
+  onAddFilter: (metric: string) => void;
+  onRemoveFilter: (metric: string) => void;
+  updateRange: (metric: string, patch: Partial<RangeFilter>) => void;
+  onBin: (metric: string, n: number, mode: "quantile" | "width", targets: GeneratorTargets) => void;
 }) {
-  const complexity = useMemo(
-    () => bundle.metric_schema.filter((e) => e.group === "FUNCTION" && !(e.min === null && e.max === null)),
-    [bundle.metric_schema],
-  );
-  const outcomeGroups = useMemo(() => {
-    const { groups } = groupedMetricOptions(bundle.metric_schema, Y_GROUP_ORDER);
-    return groups.filter(([g]) => g !== "FUNCTION") as Array<[MetricPickerGroup, MetricSchemaEntry[]]>;
-  }, [bundle.metric_schema]);
+  // "Opened this session" — a metric added from the picker (or auto-engaged by a
+  // range on the active layer). Both count as engaged.
+  const [opened, setOpened] = useState<Set<string>>(new Set());
+  const rangeMetrics = new Set(activeRanges.map((r) => r.metric));
+  const engaged = complexity.filter((e) => opened.has(e.name) || rangeMetrics.has(e.name));
+  const available = complexity.filter((e) => !opened.has(e.name) && !rangeMetrics.has(e.name));
 
-  const rowProps = {
-    isPlotLike, index, filtered, rangeFor, treatmentOf, onSetTreatment, updateRange,
+  const openMetric = (name: string) => setOpened((s) => new Set(s).add(name));
+  const closeMetric = (name: string) => {
+    setOpened((s) => { const n = new Set(s); n.delete(name); return n; });
+    if (rangeMetrics.has(name)) onRemoveFilter(name);
   };
 
   return (
-    <>
-      {complexity.length > 0 && (
-        <CollapsibleSection title={`complexity ×${complexity.length}`}>
-          <MetricList entries={complexity} {...rowProps} />
-        </CollapsibleSection>
-      )}
-      {outcomeGroups.length > 0 && (
-        <CollapsibleSection title="outcomes">
-          {outcomeGroups.map(([g, entries]) => (
-            <div key={g} className="mb-1">
-              <div className="px-0.5 pb-0.5 text-[10px] uppercase tracking-wide text-text-faint">{g}</div>
-              <MetricList entries={entries} {...rowProps} />
-            </div>
+    <div className="mt-1">
+      <div className="mb-1 flex items-center gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-text-faint">complexity</span>
+        <select
+          value=""
+          onChange={(e) => { if (e.target.value) openMetric(e.target.value); }}
+          aria-label="add complexity metric"
+          className="ml-auto rounded border border-border bg-surface px-1 py-0.5 text-[11px] text-text-muted focus:border-accent/60 focus:outline-none"
+        >
+          <option value="">add metric ▾</option>
+          {available.map((e) => (
+            <option key={e.name} value={e.name}>{e.label}</option>
           ))}
-        </CollapsibleSection>
+        </select>
+      </div>
+      {engaged.length === 0 && (
+        <div className="px-1 text-[11px] text-text-faint">no metric engaged — add one to filter or bin</div>
       )}
-    </>
+      {engaged.map((e) => (
+        <ComplexityMetricRow
+          key={e.name}
+          entry={e}
+          index={index}
+          filtered={filtered}
+          range={activeRanges.find((r) => r.metric === e.name)}
+          canBin={canBin}
+          onAddFilter={() => onAddFilter(e.name)}
+          onRemoveFilter={() => onRemoveFilter(e.name)}
+          onClose={() => closeMetric(e.name)}
+          updateRange={(patch) => updateRange(e.name, patch)}
+          onBin={(n, mode, targets) => onBin(e.name, n, mode, targets)}
+        />
+      ))}
+    </div>
   );
 }
+
+function ComplexityMetricRow({
+  entry, index, filtered, range, canBin,
+  onAddFilter, onRemoveFilter, onClose, updateRange, onBin,
+}: {
+  entry: MetricSchemaEntry;
+  index: MetricIndex;
+  filtered: RunRow[];
+  range: RangeFilter | undefined;
+  canBin: boolean;
+  onAddFilter: () => void;
+  onRemoveFilter: () => void;
+  onClose: () => void;
+  updateRange: (patch: Partial<RangeFilter>) => void;
+  onBin: (n: number, mode: "quantile" | "width", targets: GeneratorTargets) => void;
+}) {
+  const [n, setN] = useState(3);
+  const [mode, setMode] = useState<"quantile" | "width">("quantile");
+  const [targets, setTargets] = useState<GeneratorTargets>("all");
+  const m = entry.name;
+
+  return (
+    <div className="mb-1 rounded border border-border/40 px-1 py-0.5">
+      <div className="flex items-center gap-1">
+        <span className="min-w-0 flex-1 truncate text-text/90" title={metricLabel(index, m)}>{metricLabel(index, m)}</span>
+        {range && <span className="shrink-0 text-[10px] text-accent">filter</span>}
+        <button type="button" onClick={onClose} title="remove this metric" aria-label={`remove metric ${entry.label}`}
+          className="shrink-0 text-text-faint hover:text-error">×</button>
+      </div>
+
+      {range ? (
+        <div className="mt-1">
+          <RangeEditor range={range} rows={filtered} index={index} updateRange={updateRange} />
+          <button type="button" onClick={onRemoveFilter} className="mt-0.5 text-[11px] text-text-faint hover:text-accent">clear filter</button>
+        </div>
+      ) : (
+        <div className="mt-1">
+          <MiniHistogram rows={filtered} metric={m} index={index} />
+          <button type="button" onClick={onAddFilter} className="mt-0.5">
+            <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted hover:border-accent/40 hover:text-accent">filter</span>
+          </button>
+        </div>
+      )}
+
+      {/* bin control — slice this metric into n layers (edges over each layer's
+          own rows: within-arity when the layer pins an arity) */}
+      {canBin && (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 border-t border-border/40 pt-1 text-[11px]">
+          <label className="flex items-center gap-1 text-text-faint">
+            n
+            <input type="number" min={2} max={8} value={n}
+              onChange={(e) => setN(Math.max(2, Math.min(8, Number(e.target.value) || 2)))}
+              aria-label={`bin count for ${entry.label}`}
+              className="w-10 rounded border border-border bg-surface px-1 py-0.5 text-text focus:border-accent/60 focus:outline-none" />
+          </label>
+          <span className="flex items-center gap-0.5">
+            <TreatBtn label="quantile" active={mode === "quantile"} onClick={() => setMode("quantile")} />
+            <TreatBtn label="width" active={mode === "width"} onClick={() => setMode("width")} />
+          </span>
+          <span className="flex items-center gap-0.5">
+            <TreatBtn label="all" active={targets === "all"} onClick={() => setTargets("all")} />
+            <TreatBtn label="active" active={targets === "active"} onClick={() => setTargets("active")} />
+          </span>
+          <button type="button" onClick={() => onBin(n, mode, targets)}
+            aria-label={`bin ${entry.label} into layers`}
+            className="rounded border border-accent/50 px-1.5 py-0.5 text-[10px] text-accent hover:bg-accent/10">
+            bin into layers
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// outcome metric rows (filter / color treatment)
+// ===========================================================================
 
 function MetricList({
   entries, isPlotLike, index, filtered, rangeFor, treatmentOf, onSetTreatment,
@@ -1559,7 +1618,7 @@ function MetricList({
   entries: MetricSchemaEntry[];
   isPlotLike: boolean;
   index: MetricIndex;
-  filtered: import("../lib/types").RunRow[];
+  filtered: RunRow[];
   rangeFor: (m: string) => RangeFilter | undefined;
   treatmentOf: (m: string) => "filter" | "color" | null;
   onSetTreatment: (m: string, t: "filter" | "color" | null) => void;
@@ -1600,7 +1659,7 @@ function ContinuousRow({
   entry: MetricSchemaEntry;
   isPlotLike: boolean;
   index: MetricIndex;
-  filtered: import("../lib/types").RunRow[];
+  filtered: RunRow[];
   range: RangeFilter | undefined;
   treatment: "filter" | "color" | null;
   onSetTreatment: (t: "filter" | "color" | null) => void;
@@ -1654,7 +1713,7 @@ function ContinuousRow({
 function MiniHistogram({
   rows, metric, index,
 }: {
-  rows: import("../lib/types").RunRow[];
+  rows: RunRow[];
   metric: string;
   index: MetricIndex;
 }) {
@@ -1670,14 +1729,14 @@ function MiniHistogram({
 }
 
 // ---------------------------------------------------------------------------
-// RANGE EDITOR — lifted from filter-bar (histogram + dual slider popover body).
+// RANGE EDITOR — histogram + dual slider popover body.
 // ---------------------------------------------------------------------------
 
 function RangeEditor({
   range, rows, index, updateRange,
 }: {
   range: RangeFilter;
-  rows: import("../lib/types").RunRow[];
+  rows: RunRow[];
   index: MetricIndex;
   updateRange: (patch: Partial<RangeFilter>) => void;
 }) {

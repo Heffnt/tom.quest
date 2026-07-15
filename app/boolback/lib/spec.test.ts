@@ -1,49 +1,48 @@
-// view-spec serialization tests (Phase 5). Round-trips + tolerant parsing,
-// over the settings-based plot config.
+// view-spec serialization tests (spec v4). Round-trips + tolerant parsing, over
+// the layers-based plot config. specToConfig returns {view, plot?/table?, facet?}
+// (the groupplot facet is a store extra, returned alongside the shared config).
 
 import { describe, it, expect } from "vitest";
 import { configToSpec, specToConfig, serializeSpec, parseSpec, type ViewSpec } from "./spec";
 import {
-  type GroupPlotConfig,
   type PlotConfig,
   type TableConfig,
   DEFAULT_PLOT,
-  DEFAULT_GROUP_PLOT,
-  DEFAULT_SETTING_STYLE,
+  DEFAULT_LAYER_STYLE,
 } from "./types";
 import { CATEGORY_PALETTE } from "./styling";
 
-// A rich plot config: non-default axes, TWO settings with their own filters,
-// a splitBy, plot-level ranges, log, flipped toggles. Setting ids are the
-// sequential "s1"/"s2" the sanitizer regenerates, and display-only fields
-// (xDomain, yDomain) stay at defaults, so the round-trip is an exact
-// deep-equal.
+// A rich plot config: non-default axes, TWO layers with their own filters,
+// plot-level ranges, plot-level size/opacity, log, flipped toggles. Layer ids
+// are the sequential "l1"/"l2" the sanitizer regenerates, and display-only
+// fields (xDomain, yDomain) stay at defaults, so the round-trip is exact.
 const RICH_PLOT: PlotConfig = {
   ...DEFAULT_PLOT,
-  settings: [
+  layers: [
     {
-      id: "s1",
+      id: "l1",
       name: "classification",
       color: "#e8a040",
-      style: { ...DEFAULT_SETTING_STYLE },
+      style: { ...DEFAULT_LAYER_STYLE },
       filters: {
         facets: { dataset: ["sst2"], target_behavior: ["all-to-sentinel"] },
         ranges: [{ metric: "plantedness", min: 0.9, max: 1 }],
       },
     },
     {
-      id: "s2",
+      id: "l2",
       name: "jailbreak",
       color: "#38bdf8",
-      style: { ...DEFAULT_SETTING_STYLE },
+      style: { shape: 2, dash: 1 },
       filters: { facets: { dataset: ["anthropic"] }, ranges: [] },
     },
   ],
   ranges: [{ metric: "asr", min: 0.1, max: 1 }],
-  splitBy: ["base_model", "seed"],
   colorBy: null,
   x: "fourier_degree",
   y: "asr",
+  size: 1.5,
+  opacity: 0.4,
   band: false,
   ghosts: false,
   trend: true,
@@ -52,97 +51,86 @@ const RICH_PLOT: PlotConfig = {
 };
 
 describe("configToSpec / specToConfig round-trip", () => {
-  it("reproduces a rich plot config (settings, split_by, plot-level ranges)", () => {
+  it("is versioned v:4", () => {
+    expect(configToSpec("plot", DEFAULT_PLOT).v).toBe(4);
+  });
+
+  it("reproduces a rich plot config (layers, plot-level ranges + size/opacity, layer style)", () => {
     const spec = configToSpec("plot", RICH_PLOT);
-    expect(spec.settings).toEqual([
+    expect(spec.layers).toEqual([
       {
         name: "classification",
         color: "#e8a040",
         facets: { dataset: ["sst2"], target_behavior: ["all-to-sentinel"] },
         ranges: [{ metric: "plantedness", min: 0.9, max: 1 }],
       },
-      { name: "jailbreak", color: "#38bdf8", facets: { dataset: ["anthropic"] } },
+      { name: "jailbreak", color: "#38bdf8", style: { shape: 2, dash: 1 }, facets: { dataset: ["anthropic"] } },
     ]);
-    expect(spec.split_by).toEqual(["base_model", "seed"]);
     expect(spec.ranges).toEqual([{ metric: "asr", min: 0.1, max: 1 }]);
+    expect(spec.size).toBe(1.5);
+    expect(spec.opacity).toBe(0.4);
     expect(spec.log).toEqual(["x", "y"]);
     expect("color_by" in spec).toBe(false); // null colorBy omitted
+    expect("split_by" in spec).toBe(false); // gone in v4
 
-    const { view, config } = specToConfig(spec);
+    const { view, plot } = specToConfig(spec);
     expect(view).toBe("plot");
-    expect(config).toEqual(RICH_PLOT); // ids regenerate as s1, s2 in order
+    expect(plot).toEqual(RICH_PLOT); // ids regenerate as l1, l2 in order
   });
 
-  it("round-trips a styled setting (non-default fields only in the spec)", () => {
+  it("a default-styled layer emits NO style key; a styled one emits only the non-defaults", () => {
     const cfg: PlotConfig = {
       ...DEFAULT_PLOT,
-      settings: [{
-        id: "s1", name: "styled", color: "#38bdf8",
-        style: { shape: 3, size: 1.5, opacity: 0.4, dash: 2 },
-        filters: { facets: {}, ranges: [] },
-      }],
+      layers: [
+        { id: "l1", name: "plain", color: CATEGORY_PALETTE[1], style: { ...DEFAULT_LAYER_STYLE }, filters: { facets: {}, ranges: [] } },
+        { id: "l2", name: "dashed", color: CATEGORY_PALETTE[2], style: { shape: 0, dash: 3 }, filters: { facets: {}, ranges: [] } },
+      ],
     };
     const spec = configToSpec("plot", cfg);
-    expect(spec.settings).toEqual([
-      { name: "styled", color: "#38bdf8", style: { shape: 3, size: 1.5, opacity: 0.4, dash: 2 } },
-    ]);
-    expect(specToConfig(spec).config).toEqual(cfg);
-    // ...and it survives the pretty-JSON round trip (Copy/Paste, presets).
-    expect(parseSpec(serializeSpec(spec))).toEqual(spec);
-  });
-
-  it("a default-styled setting emits NO style key", () => {
-    const cfg: PlotConfig = {
-      ...DEFAULT_PLOT,
-      settings: [{
-        id: "s1", name: "plain", color: CATEGORY_PALETTE[1],
-        style: { ...DEFAULT_SETTING_STYLE },
-        filters: { facets: {}, ranges: [] },
-      }],
-    };
-    const spec = configToSpec("plot", cfg);
-    expect(spec.settings![0]).toEqual({ name: "plain", color: CATEGORY_PALETTE[1] });
-    expect(specToConfig(spec).config).toEqual(cfg); // style default-fills back
+    expect(spec.layers![0]).toEqual({ name: "plain", color: CATEGORY_PALETTE[1] });
+    expect(spec.layers![1]).toEqual({ name: "dashed", color: CATEGORY_PALETTE[2], style: { dash: 3 } });
+    expect(specToConfig(spec).plot).toEqual(cfg); // style default-fills back
   });
 
   it("round-trips a colorBy config", () => {
     const cfg: PlotConfig = { ...DEFAULT_PLOT, colorBy: "avg_sensitivity" };
     const spec = configToSpec("plot", cfg);
     expect(spec.color_by).toBe("avg_sensitivity");
-    expect(specToConfig(spec).config).toEqual(cfg);
+    expect(specToConfig(spec).plot).toEqual(cfg);
   });
 
-  it("serializes a default plot to a tiny spec (default setting omitted)", () => {
-    expect(configToSpec("plot", DEFAULT_PLOT)).toEqual({ v: 3, view: "plot" });
-    // ...and a tiny spec re-hydrates to the full default config.
-    const { config } = specToConfig({ v: 3, view: "plot" });
-    expect(config).toEqual(DEFAULT_PLOT);
+  it("serializes a default plot to a tiny spec (default layer omitted)", () => {
+    expect(configToSpec("plot", DEFAULT_PLOT)).toEqual({ v: 4, view: "plot" });
+    const { plot } = specToConfig({ v: 4, view: "plot" });
+    expect(plot).toEqual(DEFAULT_PLOT);
   });
 
-  it("a renamed-but-unfiltered single setting still serializes (not the default)", () => {
+  it("a renamed-but-unfiltered single layer still serializes (not the default)", () => {
     const cfg: PlotConfig = {
       ...DEFAULT_PLOT,
-      settings: [{ id: "s1", name: "everything", color: CATEGORY_PALETTE[0], style: { ...DEFAULT_SETTING_STYLE }, filters: { facets: {}, ranges: [] } }],
+      layers: [{ id: "l1", name: "everything", color: CATEGORY_PALETTE[0], style: { ...DEFAULT_LAYER_STYLE }, filters: { facets: {}, ranges: [] } }],
     };
     const spec = configToSpec("plot", cfg);
-    expect(spec.settings).toEqual([{ name: "everything", color: CATEGORY_PALETTE[0] }]);
-    expect(specToConfig(spec).config).toEqual(cfg);
+    expect(spec.layers).toEqual([{ name: "everything", color: CATEGORY_PALETTE[0] }]);
+    expect(specToConfig(spec).plot).toEqual(cfg);
   });
 
-  it("reproduces a groupplot config (facet may be the literal \"setting\"), panelMin default-filled", () => {
-    const group: GroupPlotConfig = {
-      ...RICH_PLOT,
-      facet: "setting",
-      panelMin: 350, // non-default; NOT carried by the spec
-    };
-    const spec = configToSpec("groupplot", group);
-    expect(spec.facet).toBe("setting");
-    expect("panel_min" in spec).toBe(false); // deliberately absent
+  it("groupplot = the shared plot fields + a facet (may be the literal \"layer\")", () => {
+    const spec = configToSpec("groupplot", RICH_PLOT, "layer");
+    expect(spec.facet).toBe("layer");
+    expect("panel_min" in spec).toBe(false); // panelMin is a store extra, never serialized
+    expect(spec.layers).toBeDefined(); // shared plot fields carried
 
-    const { view, config } = specToConfig(spec);
+    const { view, plot, facet } = specToConfig(spec);
     expect(view).toBe("groupplot");
-    // facet round-trips; panelMin falls back to the default (280).
-    expect(config).toEqual({ ...group, panelMin: DEFAULT_GROUP_PLOT.panelMin });
+    expect(plot).toEqual(RICH_PLOT); // same shared config
+    expect(facet).toBe("layer");
+  });
+
+  it("a groupplot with a null facet omits it and hydrates facet null", () => {
+    const spec = configToSpec("groupplot", DEFAULT_PLOT, null);
+    expect("facet" in spec).toBe(false);
+    expect(specToConfig(spec).facet).toBeNull();
   });
 
   it("reproduces a table config, but search + columnWidths are default-filled", () => {
@@ -159,14 +147,12 @@ describe("configToSpec / specToConfig round-trip", () => {
     const spec = configToSpec("table", table);
     expect(spec.columns).toEqual(["function.arity", "headline.asr"]);
     expect(spec.sorts).toEqual([{ col: "headline.asr", dir: "desc" }]);
-    // no plot-only keys leaked in
     expect(spec.x).toBeUndefined();
-    expect(spec.settings).toBeUndefined();
-    expect(spec.split_by).toBeUndefined();
+    expect(spec.layers).toBeUndefined();
 
-    const { view, config } = specToConfig(spec);
+    const { view, table: out } = specToConfig(spec);
     expect(view).toBe("table");
-    expect(config).toEqual({ ...table, search: "", columnWidths: {} });
+    expect(out).toEqual({ ...table, search: "", columnWidths: {} });
   });
 });
 
@@ -176,6 +162,11 @@ describe("serializeSpec / parseSpec round-trip", () => {
     const text = serializeSpec(spec);
     expect(text).toContain("\n"); // pretty-printed
     expect(parseSpec(text)).toEqual(spec);
+  });
+
+  it("round-trips a groupplot spec (facet preserved)", () => {
+    const spec = configToSpec("groupplot", RICH_PLOT, "seed");
+    expect(parseSpec(serializeSpec(spec))).toEqual(spec);
   });
 
   it("round-trips a table spec", () => {
@@ -192,12 +183,12 @@ describe("serializeSpec / parseSpec round-trip", () => {
 
   it("produces stable (deterministic) output regardless of facet key order", () => {
     const a: ViewSpec = {
-      v: 3, view: "plot",
-      settings: [{ name: "s", facets: { judge: ["kw"], base_model: ["x"] } }],
+      v: 4, view: "plot",
+      layers: [{ name: "s", facets: { judge: ["kw"], base_model: ["x"] } }],
     };
     const b: ViewSpec = {
-      v: 3, view: "plot",
-      settings: [{ name: "s", facets: { base_model: ["x"], judge: ["kw"] } }],
+      v: 4, view: "plot",
+      layers: [{ name: "s", facets: { base_model: ["x"], judge: ["kw"] } }],
     };
     expect(serializeSpec(a)).toBe(serializeSpec(b));
   });
@@ -211,29 +202,30 @@ describe("parseSpec tolerance", () => {
     expect(parseSpec("[1,2,3]")).toBeNull();
   });
 
-  it("returns null on wrong version", () => {
+  it("REQUIRES v===4 (a v3 spec is rejected — no back-compat)", () => {
+    expect(parseSpec(JSON.stringify({ v: 3, view: "plot" }))).toBeNull();
     expect(parseSpec(JSON.stringify({ v: 2, view: "plot" }))).toBeNull();
     expect(parseSpec(JSON.stringify({ view: "plot" }))).toBeNull();
   });
 
   it("returns null on missing / bad view", () => {
-    expect(parseSpec(JSON.stringify({ v: 3 }))).toBeNull();
-    expect(parseSpec(JSON.stringify({ v: 3, view: "scatter" }))).toBeNull();
-    expect(parseSpec(JSON.stringify({ v: 3, view: 5 }))).toBeNull();
+    expect(parseSpec(JSON.stringify({ v: 4 }))).toBeNull();
+    expect(parseSpec(JSON.stringify({ v: 4, view: "scatter" }))).toBeNull();
+    expect(parseSpec(JSON.stringify({ v: 4, view: 5 }))).toBeNull();
   });
 
-  it("tolerates and drops unknown / wrong-typed fields (old spec keys included)", () => {
+  it("tolerates and drops unknown / wrong-typed fields (retired keys included)", () => {
     const spec = parseSpec(
       JSON.stringify({
-        v: 3,
+        v: 4,
         view: "plot",
         x: "asr",
         y: 999, // wrong type -> dropped
         wat: { anything: true }, // unknown -> ignored
         log: ["x", "bogus"], // bogus axis filtered out
         band: "yes", // wrong type -> dropped
-        color_param: "base_model", // retired key -> ignored
-        shape_param: "seed", // retired key -> ignored
+        split_by: ["base_model"], // retired key -> ignored
+        size: "big", // wrong type -> dropped
         filters: { dataset: ["sst2"] }, // table-only key on a plot -> ignored
       }),
     );
@@ -242,44 +234,40 @@ describe("parseSpec tolerance", () => {
     expect(spec!.y).toBeUndefined();
     expect(spec!.log).toEqual(["x"]);
     expect(spec!.band).toBeUndefined();
+    expect(spec!.size).toBeUndefined();
     expect("wat" in spec!).toBe(false);
-    expect("color_param" in spec!).toBe(false);
+    expect("split_by" in spec!).toBe(false);
     expect(spec!.filters).toBeUndefined();
-    // ...and a spec with no settings hydrates to the default single setting.
-    const { config } = specToConfig(spec!);
-    expect((config as PlotConfig).settings).toEqual(DEFAULT_PLOT.settings);
+    // ...and a spec with no layers hydrates to the default single layer.
+    const { plot } = specToConfig(spec!);
+    expect(plot!.layers).toEqual(DEFAULT_PLOT.layers);
   });
 
-  it("preserves unknown data-driven parameter keys inside settings + split_by", () => {
+  it("preserves unknown data-driven parameter keys inside layer facets", () => {
     const spec = parseSpec(
       JSON.stringify({
-        v: 3,
+        v: 4,
         view: "plot",
-        settings: [{ name: "future", facets: { some_future_param: ["v1"], "": ["kept"] } }],
-        split_by: ["brand_new_param"],
+        layers: [{ name: "future", facets: { some_future_param: ["v1"], "": ["kept"] } }],
       }),
     );
-    expect(spec!.settings).toEqual([
+    expect(spec!.layers).toEqual([
       { name: "future", facets: { some_future_param: ["v1"], "": ["kept"] } },
     ]);
-    expect(spec!.split_by).toEqual(["brand_new_param"]);
-    // and it flows back into a valid config (id + palette color filled in)
-    const { config } = specToConfig(spec!);
-    const cfg = config as PlotConfig;
-    expect(cfg.splitBy).toEqual(["brand_new_param"]);
-    expect(cfg.settings).toHaveLength(1);
-    expect(cfg.settings[0].id).toBe("s1");
-    expect(cfg.settings[0].name).toBe("future");
-    expect(cfg.settings[0].color).toBe(CATEGORY_PALETTE[0]); // missing color coerced
-    expect(cfg.settings[0].filters.facets).toEqual({ some_future_param: ["v1"], "": ["kept"] });
+    const { plot } = specToConfig(spec!);
+    expect(plot!.layers).toHaveLength(1);
+    expect(plot!.layers[0].id).toBe("l1");
+    expect(plot!.layers[0].name).toBe("future");
+    expect(plot!.layers[0].color).toBe(CATEGORY_PALETTE[0]); // missing color coerced
+    expect(plot!.layers[0].filters.facets).toEqual({ some_future_param: ["v1"], "": ["kept"] });
   });
 
-  it("drops malformed settings/ranges entries without throwing", () => {
+  it("drops malformed layers/ranges entries without throwing", () => {
     const spec = parseSpec(
       JSON.stringify({
-        v: 3,
+        v: 4,
         view: "plot",
-        settings: [
+        layers: [
           { name: "ok", ranges: [{ metric: "asr", min: 0, max: 1 }, { metric: "x", min: "lo", max: 1 }] },
           { color: "#123456" }, // no name -> dropped
           "garbage", // not an object -> dropped
@@ -287,7 +275,7 @@ describe("parseSpec tolerance", () => {
         ranges: [{ metric: "asr", min: 0, max: 1 }, { metric: "x", min: "lo", max: 1 }],
       }),
     );
-    expect(spec!.settings).toEqual([
+    expect(spec!.layers).toEqual([
       { name: "ok", ranges: [{ metric: "asr", min: 0, max: 1 }] },
     ]);
     expect(spec!.ranges).toEqual([{ metric: "asr", min: 0, max: 1 }]);

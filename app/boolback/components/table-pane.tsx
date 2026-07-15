@@ -24,13 +24,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Bundle, RunRow, FilterState, SortDir,
-  AnatomyConfig, TableConfig, PlotConfig, GroupPlotConfig,
+  AnatomyConfig, TableConfig, PlotConfig, GroupPlotExtras,
 } from "../lib/types";
 import {
-  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER,
-  sanitizePlotConfig, sanitizeGroupPlotConfig, sanitizeTableConfig,
-  defaultPlotWithFilters, defaultGroupPlotWithFilters,
-  isDefaultPlotConfig, isDefaultGroupPlotConfig,
+  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, EMPTY_FILTER,
+  sanitizePlotConfig, sanitizeGroupExtras, sanitizeTableConfig,
+  defaultPlotWithFilters, isDefaultPlotConfig,
 } from "../lib/types";
 import { useBoolbackStore, DEFAULT_TABLE, DEFAULT_COLS } from "../state/store";
 import {
@@ -132,8 +131,8 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
   const [pPlot, updatePlot, plotHydrated] = usePersistedSettings<PlotConfig>(
     "boolback:plot", DEFAULT_PLOT,
   );
-  const [pGroup, updateGroup, groupHydrated] = usePersistedSettings<GroupPlotConfig>(
-    "boolback:groupplot", DEFAULT_GROUP_PLOT,
+  const [pGroup, updateGroup, groupHydrated] = usePersistedSettings<GroupPlotExtras>(
+    "boolback:groupplot", DEFAULT_GROUP_EXTRAS,
   );
   const [pAnat, updateAnat, anatHydrated] = usePersistedSettings<AnatomyConfig>(
     "boolback:anatomy", DEFAULT_ANATOMY,
@@ -146,17 +145,18 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
     didHydrate.current = true;
     // Sanitizers coerce a partial/hostile persisted blob to a valid config
     // without throwing (no v1→v2→v3 migration — old blobs are dropped).
-    // A fresh (never-edited) plot/groupplot lands on the DOMINANT-CELL default:
-    // one setting pinning every parameter to its most-common value, so the very
+    // A fresh (never-edited) plot lands on the DOMINANT-CELL default: one
+    // layer pinning every parameter to its most-common value, so the very
     // first landing shows the dominant cell instead of every rare run overlaid.
-    // A persisted (edited) view is respected verbatim.
+    // A persisted (edited) plot is respected verbatim. The Plot and Group Plot
+    // views SHARE this config; groupPlot only ever holds the facet/panelMin
+    // extras, which have no dominant-cell treatment of their own.
     const sPlot = sanitizePlotConfig(pPlot);
-    const sGroup = sanitizeGroupPlotConfig(pGroup);
     const dominant = dominantFilters(rows);
     setStore({
       table: sanitizeTableConfig(pTable, DEFAULT_COLS),
       plot: isDefaultPlotConfig(sPlot) ? defaultPlotWithFilters(dominant) : sPlot,
-      groupPlot: isDefaultGroupPlotConfig(sGroup) ? defaultGroupPlotWithFilters(dominant) : sGroup,
+      groupPlot: sanitizeGroupExtras(pGroup),
       anatomy: sanitizeAnatomyConfig(pAnat),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -191,7 +191,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
   );
 
   // ---- active view's filters -------------------------------------------------
-  // Only the table filters here: the plot views resolve their own settings
+  // Only the table filters here: the plot views resolve their own layers
   // union (lib/split-dims.resolveSeries) from ALL rows, and anatomy is
   // isolated on a frozen EMPTY_FILTER.
   const activeFilters: FilterState = view === "table" ? table.filters : EMPTY_FILTER;

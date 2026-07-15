@@ -215,6 +215,100 @@ export function dominantFilters(rows: RunRow[]): FilterState {
 }
 
 // ---------------------------------------------------------------------------
+// Pin auto-repair (the cascade). After a facet edit narrows the data, other
+// pinned facets can end up matching zero rows; repairPins re-pins each stale
+// one to its single most-frequent compatible value so the plot never goes
+// blank. Walks the facet registry (FACET_KEYS) cumulatively — later keys see
+// earlier repairs — so a whole dependency chain (dataset → target → judge)
+// follows one edit. Ranges and unpinned facets are never touched.
+//
+// NOTE: this walks select's own FACET_KEYS rather than importing the PARAMETERS
+// registry — a select→parameters import would form a cycle (parameters imports
+// select at module-init for FACET_LABELS), so select stays a dependency leaf.
+// NUMERIC_FACETS mirrors parameters.ts `numericSort` purely for tie-breaking.
+// ---------------------------------------------------------------------------
+
+/** Facet keys whose values order numerically (mirror of parameters.numericSort;
+ *  duplicated to keep select.ts free of a parameters import cycle). */
+const NUMERIC_FACETS: ReadonlySet<FacetKey> = new Set<FacetKey>([
+  "arity", "samples_per_row", "backdoor_ratio", "lr", "epochs", "seed",
+]);
+
+/** The single most-frequent facet value over `rs` (ties by the dim's sort);
+ *  null when the key is null on every row. */
+function dominantValue(rs: RunRow[], key: FacetKey): string | null {
+  const counts = new Map<string, number>();
+  for (const r of rs) {
+    const v = FACET_GETTERS[key](r);
+    if (v !== null) counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const numeric = NUMERIC_FACETS.has(key);
+  return [...counts.entries()].sort((a, b) =>
+    b[1] !== a[1]
+      ? b[1] - a[1]
+      : numeric
+        ? Number(a[0]) - Number(b[0])
+        : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+  )[0][0];
+}
+
+/**
+ * Pin auto-repair (the cascade). After an edit to `editedKey`: if the full
+ * cell still matches ANY row, every pin is jointly fine and NOTHING moves —
+ * the cascade never overrides a choice that still works. When the cell went
+ * empty, rebuild it CUMULATIVELY around the edited pin (+ the untouched
+ * ranges): walking the other pinned facets in registry order, a pin that fits
+ * the rebuilt-so-far cell is kept verbatim; a stale one re-pins to the single
+ * most-frequent value under that cell (or unpins entirely when the key is
+ * null there — a dead pin must not re-deadlock the cell). The cumulative walk
+ * is what handles MUTUALLY stale pins: switching dataset re-pins target
+ * against the dataset alone, then target_phrase against dataset+target, and
+ * so on. Unpinned facets stay unpinned; ranges are never touched. Returns the
+ * repaired filters + which keys moved.
+ */
+export function repairPins(
+  rows: RunRow[],
+  filters: FilterState,
+  editedKey: FacetKey,
+): { filters: FilterState; repaired: FacetKey[] } {
+  if (applyFilters(rows, filters).length > 0) return { filters, repaired: [] };
+
+  // Seed: the edited pin + ranges. An edit that matches nothing by itself has
+  // no sensible cell to rebuild toward — leave everything alone.
+  const editedSel = filters.facets[editedKey];
+  let kept: FilterState = {
+    facets: editedSel && editedSel.length ? { [editedKey]: editedSel } : {},
+    ranges: filters.ranges,
+  };
+  if (applyFilters(rows, kept).length === 0) return { filters, repaired: [] };
+
+  const repaired: FacetKey[] = [];
+  const outFacets = { ...filters.facets };
+  for (const key of FACET_KEYS) {
+    if (key === editedKey) continue;
+    const sel = filters.facets[key];
+    if (!sel || sel.length === 0) continue; // unpinned — stays unpinned
+
+    // the existing pin fits the rebuilt cell → keep it verbatim
+    const withPin: FilterState = { facets: { ...kept.facets, [key]: sel }, ranges: kept.ranges };
+    if (applyFilters(rows, withPin).length > 0) {
+      kept = withPin;
+      continue;
+    }
+
+    // stale → the dominant value under the rebuilt cell (or unpin when none)
+    const best = dominantValue(applyFilters(rows, kept), key);
+    outFacets[key] = best === null ? [] : [best];
+    if (best !== null) {
+      kept = { facets: { ...kept.facets, [key]: [best] }, ranges: kept.ranges };
+    }
+    repaired.push(key);
+  }
+  return { filters: { facets: outFacets, ranges: filters.ranges }, repaired };
+}
+
+// ---------------------------------------------------------------------------
 // Table search (repurposed: find runs by PATH FRAGMENT, not a filter
 // alternative). The haystack is run_id + dir_path + node_path ONLY — the old
 // facet-value / fn-text haystack is gone. `search` lives on the TABLE config;

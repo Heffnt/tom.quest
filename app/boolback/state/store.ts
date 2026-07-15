@@ -4,13 +4,12 @@
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import type {
-  AnatomyConfig, PlotConfig, GroupPlotConfig, TableConfig, PlotSetting,
+  AnatomyConfig, PlotConfig, GroupPlotExtras, TableConfig, PlotLayer,
   FilterState, SortKey, SortDir, FacetKey, RangeFilter,
 } from "../lib/types";
 import {
-  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, DEFAULT_SETTING_STYLE,
-  EMPTY_FILTER, nextSettingId,
-  defaultPlotWithFilters, defaultGroupPlotWithFilters,
+  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, DEFAULT_LAYER_STYLE,
+  EMPTY_FILTER, nextLayerId, defaultPlotWithFilters,
 } from "../lib/types";
 import { paletteColor } from "../lib/styling";
 import type { CenterView } from "../components/table-pane";
@@ -30,21 +29,23 @@ export interface PlotReadout {
 }
 
 // ---------------------------------------------------------------------------
-// Per-view config keys. The three views below own their OWN filters (no
-// inheritance on tab switch). Anatomy is deprecated and has NO config here —
-// it reads a frozen EMPTY_FILTER (see table-pane). The centerView union uses
-// the lowercase "groupplot"; the config key is "groupPlot".
+// Per-view config keys. The Plot AND Group Plot views SHARE one `plot` config;
+// Group Plot adds only `groupPlot` extras (facet + panel size). The table owns
+// its own filters (no inheritance on tab switch). Anatomy is deprecated and has
+// NO config here — it reads a frozen EMPTY_FILTER (see table-pane).
 // ---------------------------------------------------------------------------
 
-export type ViewKey = "table" | "plot" | "groupPlot";
-/** The two views whose configs carry settings. */
-export type PlotViewKey = "plot" | "groupPlot";
+/** Filter-mutator targeting: only the table and the shared plot config carry
+ *  filters (group plot writes through `plot`). */
+export type ViewKey = "table" | "plot";
 
-/** Map the centerView union to its config key (anatomy → null). */
+/** Map the centerView union to its filter-config key (anatomy → null). The
+ *  group-plot tab targets the SHARED plot config, so it maps to "plot"; the
+ *  PANEL still checks centerView === "groupplot" to show the facet/panel rows. */
 export function configViewOf(view: CenterView): ViewKey | null {
   if (view === "table") return "table";
   if (view === "plot") return "plot";
-  if (view === "groupplot") return "groupPlot";
+  if (view === "groupplot") return "plot";
   return null; // anatomy — no per-view config
 }
 
@@ -77,16 +78,17 @@ interface BoolbackState {
   expanded: Set<string>;             // open node paths in the tree
   treeCursor: string | null;         // typeahead anchor (path of the focused dir)
 
-  // THREE fully independent per-view configs (no inheritance on tab switch)
+  // per-view configs. The table owns its filters; `plot` is SHARED by the Plot
+  // AND Group Plot views; `groupPlot` holds only the group-plot extras.
   table: TableConfig;
   plot: PlotConfig;
-  groupPlot: GroupPlotConfig;
+  groupPlot: GroupPlotExtras;
 
   // center view + published plot readout + anatomy config
   centerView: CenterView;
   plotReadout: PlotReadout | null;   // published by the mounted PlotBody
-  /** DISTINCT runs in the settings union of the mounted plot-like view (a run
-   *  matching several settings counts once) — the top bar's run counter on the
+  /** DISTINCT runs in the layers union of the mounted plot-like view (a run
+   *  matching several layers counts once) — the top bar's run counter on the
    *  Plot / Group Plot views. Null while neither plot view is mounted (the
    *  table's filtered count renders instead). */
   plotUnionCount: number | null;
@@ -102,7 +104,7 @@ interface BoolbackState {
   // whole-config patch per view
   setTableConfig: (patch: Partial<TableConfig>) => void;
   setPlot: (patch: Partial<PlotConfig>) => void;
-  setGroupPlot: (patch: Partial<GroupPlotConfig>) => void;
+  setGroupPlot: (patch: Partial<GroupPlotExtras>) => void;
   setPlotReadout: (r: PlotReadout | null) => void;
   setPlotUnionCount: (n: number | null) => void;
   setAnatomy: (patch: Partial<AnatomyConfig>) => void;
@@ -110,31 +112,35 @@ interface BoolbackState {
   setExpanded: (next: Set<string>) => void;
   expandChain: (dirs: string[]) => void;       // open all ancestors to reveal a node
   setTreeCursor: (dir: string | null) => void;
-  // setting management (plot-like views only). addSetting / duplicateSetting
-  // return the NEW setting's id so the panel can make it active.
-  patchSetting: (view: PlotViewKey, settingId: string, patch: Partial<PlotSetting>) => void;
-  /** `filters` seeds the new setting (the panel passes the dominant-cell
-   *  default); omitted → an empty, unfiltered setting. */
-  addSetting: (view: PlotViewKey, filters?: FilterState) => string;
+  // layer management (the shared `plot` config only — no view arg). addLayer /
+  // duplicateLayer return the NEW layer's id so the panel can make it active.
+  patchLayer: (id: string, patch: Partial<PlotLayer>) => void;
+  /** `filters` seeds the new layer (the panel passes the dominant-cell
+   *  default); omitted → an empty, unfiltered layer. */
+  addLayer: (filters?: FilterState) => string;
   /** Copy name (+" copy") and filters; next palette color; inserted after the
-   * source. Returns the new id, or null when settingId doesn't resolve. */
-  duplicateSetting: (view: PlotViewKey, settingId: string) => string | null;
-  removeSetting: (view: PlotViewKey, settingId: string) => void;
-  // per-view filter mutators. On "table", settingId is ignored and the table's
-  // own FilterState is patched. On a plot-like view, facet edits target the
-  // setting named by settingId; range edits with settingId === null target the
-  // PLOT-LEVEL ranges (drag-zoom), otherwise the setting's own ranges.
-  setFacet: (view: ViewKey, settingId: string | null, key: FacetKey, values: string[]) => void;
-  toggleFacetValue: (view: ViewKey, settingId: string | null, key: FacetKey, value: string) => void;
-  addRange: (view: ViewKey, settingId: string | null, r: RangeFilter) => void;
-  updateRange: (view: ViewKey, settingId: string | null, metric: string, patch: Partial<RangeFilter>) => void;
-  removeRange: (view: ViewKey, settingId: string | null, metric: string) => void;
-  patchViewFilters: (view: ViewKey, settingId: string | null, next: FilterState) => void;
+   * source. Returns the new id, or null when `id` doesn't resolve. */
+  duplicateLayer: (id: string) => string | null;
+  removeLayer: (id: string) => void;
+  /** Wholesale replace the layers list (the generators write through this). */
+  replaceLayers: (next: PlotLayer[]) => void;
+  // per-view filter mutators. On "table", layerId is ignored and the table's
+  // own FilterState is patched. On "plot", facet edits target the layer named
+  // by layerId; range edits with layerId === null target the PLOT-LEVEL ranges
+  // (drag-zoom), otherwise the layer's own ranges. (Group Plot writes through
+  // "plot" — the shared config.)
+  setFacet: (view: ViewKey, layerId: string | null, key: FacetKey, values: string[]) => void;
+  toggleFacetValue: (view: ViewKey, layerId: string | null, key: FacetKey, value: string) => void;
+  addRange: (view: ViewKey, layerId: string | null, r: RangeFilter) => void;
+  updateRange: (view: ViewKey, layerId: string | null, metric: string, patch: Partial<RangeFilter>) => void;
+  removeRange: (view: ViewKey, layerId: string | null, metric: string) => void;
+  patchViewFilters: (view: ViewKey, layerId: string | null, next: FilterState) => void;
   // table-only search
   setSearch: (q: string) => void;
   // reset one view's config to its defaults. `plotFilters` (the panel passes
-  // the dominant-cell default) seeds the single default setting on a plot-like
-  // view; omitted → the plain filter-empty default.
+  // the dominant-cell default) seeds the single default layer of the shared
+  // plot config; omitted → the plain filter-empty default. "groupplot" ALSO
+  // resets the groupPlot extras.
   resetView: (view: CenterView, plotFilters?: FilterState) => void;
   // sorts (table config)
   pushSort: (col: string) => void;             // header click: prepend (or toggle dir if already primary)
@@ -153,37 +159,35 @@ interface BoolbackState {
   setDetailWidth: (w: number) => void;
 }
 
-// Patch the FilterState a (view, settingId) pair addresses, immutably:
-// table → the table's own filters; plot-like → the named setting's filters.
-// A plot-like edit with settingId === null is a no-op (facet edits require a
-// setting; plot-LEVEL ranges are handled by the range mutators directly).
+// Patch the FilterState a (view, layerId) pair addresses, immutably:
+// table → the table's own filters; plot → the named layer's filters. A plot
+// edit with layerId === null is a no-op (facet edits require a layer;
+// plot-LEVEL ranges are handled by the range mutators directly).
 function withFilters(
   s: BoolbackState,
   view: ViewKey,
-  settingId: string | null,
+  layerId: string | null,
   next: (cur: FilterState) => FilterState,
 ): Partial<BoolbackState> {
   if (view === "table") return { table: { ...s.table, filters: next(s.table.filters) } };
-  if (settingId === null) return {};
-  const cfg = s[view];
+  if (layerId === null) return {};
+  const cfg = s.plot;
   return {
-    [view]: {
+    plot: {
       ...cfg,
-      settings: cfg.settings.map((st) =>
-        st.id === settingId ? { ...st, filters: next(st.filters) } : st,
+      layers: cfg.layers.map((l) =>
+        l.id === layerId ? { ...l, filters: next(l.filters) } : l,
       ),
     },
-  } as Partial<BoolbackState>;
+  };
 }
 
-// Patch a plot-like view's PLOT-LEVEL ranges immutably.
+// Patch the shared plot config's PLOT-LEVEL ranges immutably.
 function withPlotRanges(
   s: BoolbackState,
-  view: PlotViewKey,
   next: (cur: RangeFilter[]) => RangeFilter[],
 ): Partial<BoolbackState> {
-  const cfg = s[view];
-  return { [view]: { ...cfg, ranges: next(cfg.ranges) } } as Partial<BoolbackState>;
+  return { plot: { ...s.plot, ranges: next(s.plot.ranges) } };
 }
 
 export const useBoolbackStore = create<BoolbackState>()(
@@ -195,7 +199,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       treeCursor: null,
       table: DEFAULT_TABLE,
       plot: DEFAULT_PLOT,
-      groupPlot: DEFAULT_GROUP_PLOT,
+      groupPlot: DEFAULT_GROUP_EXTRAS,
       centerView: "table" as const,
       plotReadout: null,
       plotUnionCount: null,
@@ -235,45 +239,39 @@ export const useBoolbackStore = create<BoolbackState>()(
       }),
       setTreeCursor: (dir) => set({ treeCursor: dir }),
 
-      patchSetting: (view, settingId, patch) => set((s) => {
-        const cfg = s[view];
-        return {
-          [view]: {
-            ...cfg,
-            settings: cfg.settings.map((st) => (st.id === settingId ? { ...st, ...patch } : st)),
-          },
-        } as Partial<BoolbackState>;
-      }),
-      addSetting: (view, filters) => {
+      patchLayer: (id, patch) => set((s) => ({
+        plot: { ...s.plot, layers: s.plot.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)) },
+      })),
+      addLayer: (filters) => {
         let newId = "";
         set((s) => {
-          const cfg = s[view];
-          const id = nextSettingId(cfg.settings.map((st) => st.id));
+          const cfg = s.plot;
+          const id = nextLayerId(cfg.layers.map((l) => l.id));
           newId = id;
-          const next: PlotSetting = {
+          const next: PlotLayer = {
             id,
-            name: `setting ${id.slice(1)}`,
-            color: paletteColor(cfg.settings.length),
-            style: { ...DEFAULT_SETTING_STYLE },
+            name: `layer ${id.slice(1)}`,
+            color: paletteColor(cfg.layers.length),
+            style: { ...DEFAULT_LAYER_STYLE },
             filters: filters ?? EMPTY_FILTER,
           };
-          return { [view]: { ...cfg, settings: [...cfg.settings, next] } } as Partial<BoolbackState>;
+          return { plot: { ...cfg, layers: [...cfg.layers, next] } };
         });
         return newId;
       },
-      duplicateSetting: (view, settingId) => {
+      duplicateLayer: (id) => {
         let newId: string | null = null;
         set((s) => {
-          const cfg = s[view];
-          const idx = cfg.settings.findIndex((st) => st.id === settingId);
+          const cfg = s.plot;
+          const idx = cfg.layers.findIndex((l) => l.id === id);
           if (idx === -1) return {};
-          const src = cfg.settings[idx];
-          const id = nextSettingId(cfg.settings.map((st) => st.id));
-          newId = id;
-          const copy: PlotSetting = {
-            id,
+          const src = cfg.layers[idx];
+          const nid = nextLayerId(cfg.layers.map((l) => l.id));
+          newId = nid;
+          const copy: PlotLayer = {
+            id: nid,
             name: `${src.name} copy`,
-            color: paletteColor(cfg.settings.length),
+            color: paletteColor(cfg.layers.length),
             style: { ...src.style },
             // Deep-copy the filters so edits to the copy never leak back.
             filters: {
@@ -283,48 +281,47 @@ export const useBoolbackStore = create<BoolbackState>()(
               ranges: (src.filters.ranges ?? []).map((r) => ({ ...r })),
             },
           };
-          const settings = [...cfg.settings];
-          settings.splice(idx + 1, 0, copy);
-          return { [view]: { ...cfg, settings } } as Partial<BoolbackState>;
+          const layers = [...cfg.layers];
+          layers.splice(idx + 1, 0, copy);
+          return { plot: { ...cfg, layers } };
         });
         return newId;
       },
-      removeSetting: (view, settingId) => set((s) => {
-        const cfg = s[view];
-        if (cfg.settings.length <= 1) return {}; // always keep >= 1 setting
-        return {
-          [view]: { ...cfg, settings: cfg.settings.filter((st) => st.id !== settingId) },
-        } as Partial<BoolbackState>;
+      removeLayer: (id) => set((s) => {
+        const cfg = s.plot;
+        if (cfg.layers.length <= 1) return {}; // always keep >= 1 layer
+        return { plot: { ...cfg, layers: cfg.layers.filter((l) => l.id !== id) } };
       }),
+      replaceLayers: (next) => set((s) => ({ plot: { ...s.plot, layers: next } })),
 
-      patchViewFilters: (view, settingId, next) =>
-        set((s) => withFilters(s, view, settingId, () => next)),
-      setFacet: (view, settingId, key, values) => set((s) => withFilters(s, view, settingId, (f) => ({
+      patchViewFilters: (view, layerId, next) =>
+        set((s) => withFilters(s, view, layerId, () => next)),
+      setFacet: (view, layerId, key, values) => set((s) => withFilters(s, view, layerId, (f) => ({
         ...f, facets: { ...f.facets, [key]: values },
       }))),
-      toggleFacetValue: (view, settingId, key, value) => set((s) => withFilters(s, view, settingId, (f) => {
+      toggleFacetValue: (view, layerId, key, value) => set((s) => withFilters(s, view, layerId, (f) => {
         const cur = f.facets[key] ?? [];
         const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
         return { ...f, facets: { ...f.facets, [key]: next } };
       })),
-      addRange: (view, settingId, r) => set((s) =>
-        view !== "table" && settingId === null
-          ? withPlotRanges(s, view, (rs) => [...rs.filter((x) => x.metric !== r.metric), r])
-          : withFilters(s, view, settingId, (f) => ({
+      addRange: (view, layerId, r) => set((s) =>
+        view !== "table" && layerId === null
+          ? withPlotRanges(s, (rs) => [...rs.filter((x) => x.metric !== r.metric), r])
+          : withFilters(s, view, layerId, (f) => ({
               ...f, ranges: [...f.ranges.filter((x) => x.metric !== r.metric), r],
             })),
       ),
-      updateRange: (view, settingId, metric, patch) => set((s) =>
-        view !== "table" && settingId === null
-          ? withPlotRanges(s, view, (rs) => rs.map((x) => (x.metric === metric ? { ...x, ...patch } : x)))
-          : withFilters(s, view, settingId, (f) => ({
+      updateRange: (view, layerId, metric, patch) => set((s) =>
+        view !== "table" && layerId === null
+          ? withPlotRanges(s, (rs) => rs.map((x) => (x.metric === metric ? { ...x, ...patch } : x)))
+          : withFilters(s, view, layerId, (f) => ({
               ...f, ranges: f.ranges.map((x) => (x.metric === metric ? { ...x, ...patch } : x)),
             })),
       ),
-      removeRange: (view, settingId, metric) => set((s) =>
-        view !== "table" && settingId === null
-          ? withPlotRanges(s, view, (rs) => rs.filter((x) => x.metric !== metric))
-          : withFilters(s, view, settingId, (f) => ({
+      removeRange: (view, layerId, metric) => set((s) =>
+        view !== "table" && layerId === null
+          ? withPlotRanges(s, (rs) => rs.filter((x) => x.metric !== metric))
+          : withFilters(s, view, layerId, (f) => ({
               ...f, ranges: f.ranges.filter((x) => x.metric !== metric),
             })),
       ),
@@ -337,7 +334,11 @@ export const useBoolbackStore = create<BoolbackState>()(
           return { plot: plotFilters ? defaultPlotWithFilters(plotFilters) : DEFAULT_PLOT };
         }
         if (view === "groupplot") {
-          return { groupPlot: plotFilters ? defaultGroupPlotWithFilters(plotFilters) : DEFAULT_GROUP_PLOT };
+          // Group Plot shares `plot`; resetting it ALSO clears the extras.
+          return {
+            plot: plotFilters ? defaultPlotWithFilters(plotFilters) : DEFAULT_PLOT,
+            groupPlot: DEFAULT_GROUP_EXTRAS,
+          };
         }
         return { anatomy: DEFAULT_ANATOMY };
       }),

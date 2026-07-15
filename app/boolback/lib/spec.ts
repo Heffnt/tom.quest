@@ -1,80 +1,76 @@
-// app/boolback/lib/spec.ts — view-spec serialization (Phase 5).
+// app/boolback/lib/spec.ts — view-spec serialization (spec v4).
 //
 // A VIEW-SPEC is the compact, human-editable, CMT-vocabulary JSON form of ONE
 // view's full config. It is the ONLY cross-view transfer object: the config
 // panel's Copy/Paste, the Convex presets ({name, spec}), and CMT-side
-// `render.py` all consume this identical shape. Versioned (`v: 3`).
+// `render.py` all consume this identical shape. Versioned (`v: 4`).
 //
 // This module is PURE LOGIC — no store, no React, no UI. Four exports:
-//   configToSpec(view, config)  →  ViewSpec        (config → spec, omit defaults)
-//   specToConfig(spec)          →  {view, config}  (spec → COMPLETE, valid config)
-//   serializeSpec(spec)         →  string          (pretty JSON, stable key order)
-//   parseSpec(text)             →  ViewSpec | null (tolerant; never throws)
+//   configToSpec(view, config[, facet]) → ViewSpec   (config → spec, omit defaults)
+//   specToConfig(spec)   → {view, plot?/table?, facet?} (spec → COMPLETE config)
+//   serializeSpec(spec)  → string   (pretty JSON, stable key order)
+//   parseSpec(text)      → ViewSpec | null  (tolerant; never throws)
 //
 // DESIGN NOTES — what the spec carries and what it deliberately does NOT:
-//   * The spec captures the ANALYTICAL config: axes, log, the SETTINGS list
-//     (name/color/style + each setting's facets/ranges), plot-level ranges,
-//     split_by, continuous color, facet (a parameter key or the literal
-//     "setting"), plot toggles, table filters/columns/sorts.
+//   * The spec captures the ANALYTICAL config: axes, log, the LAYERS list
+//     (name/color/style{shape,dash} + each layer's facets/ranges), plot-level
+//     ranges, plot-level size/opacity, continuous color, the plot toggles
+//     (band/ghosts/trend), and — groupplot only — a `facet` (a parameter key or
+//     the literal "layer"). Table specs carry filters/columns/sorts.
 //   * It does NOT carry EPHEMERAL / DISPLAY-ONLY state, which is therefore
 //     default-filled by specToConfig (never round-trips):
-//       - plot/groupplot: xDomain/yDomain (zoom windows), setting ids
-//         (regenerated "s1", "s2", … in order);
-//       - groupplot: panelMin (panel size preference);
+//       - plot/groupplot: xDomain/yDomain (zoom windows), layer ids
+//         (regenerated "l1", "l2", … in order);
+//       - groupplot: panelMin (a store extra, never on the shared config);
 //       - table: search (dir-path/run-id box) and columnWidths.
 //   * Default fields are OMITTED from the spec (a default plot serializes to
-//     just {v, view} — including the default single "all runs" setting);
-//     specToConfig re-fills them from DEFAULT_PLOT / DEFAULT_GROUP_PLOT /
-//     the local table default.
+//     just {v, view} — including the default single "all runs" layer);
+//     specToConfig re-fills them from DEFAULT_PLOT / the local table default.
 //   * Parameter keys are DATA-DRIVEN: unknown facet/param keys are preserved
 //     verbatim (never validated against the FacetKey enum) — only STRUCTURE
 //     and value TYPES are checked.
-//   * Unknown keys in an OLD stored spec (the color_param/shape_param or the
-//     split/channels era) are simply ignored — old presets keep their
-//     axes and lose their styling (no migration); a spec with no settings
-//     parses to the default single setting.
+//   * NO back-compat: parseSpec REQUIRES v === 4. A v3 (or any other) spec
+//     returns null — old presets are dropped by design.
 
 import {
-  type GroupPlotConfig,
+  type LayerStyle,
   type PlotConfig,
-  type PlotSetting,
-  type SettingStyle,
+  type PlotLayer,
   type TableConfig,
+  DEFAULT_LAYER_STYLE,
   DEFAULT_PLOT,
-  DEFAULT_SETTING_STYLE,
   EMPTY_FILTER,
-  sanitizeGroupPlotConfig,
   sanitizePlotConfig,
   sanitizeTableConfig,
 } from "./types";
 
 export type ViewKind = "table" | "plot" | "groupplot";
 
-/** One serialized setting (no id — ids regenerate on parse). */
-export interface SpecSetting {
+/** One serialized layer (no id — ids regenerate on parse). */
+export interface SpecLayer {
   name: string;
   color?: string;
-  /** Non-default style fields only (shape/size/opacity/dash); absent = defaults. */
-  style?: Partial<SettingStyle>;
+  /** Non-default style fields only (shape/dash); absent = defaults. */
+  style?: Partial<LayerStyle>;
   facets?: Record<string, string[]>; // facetKey -> allowed values
   ranges?: { metric: string; min: number; max: number }[];
 }
 
 export interface ViewSpec {
-  v: 3;
+  v: 4;
   view: ViewKind;
   // plot / groupplot
   x?: string;
   y?: string;
   log?: ("x" | "y")[]; // present axes that are log-scaled
-  /** The settings list (ABSENT = the default single "all runs" setting). */
-  settings?: SpecSetting[];
+  /** The layers list (ABSENT = the default single "all runs" layer). */
+  layers?: SpecLayer[];
   /** Plot views: PLOT-LEVEL ranges; table: the filter ranges. */
   ranges?: { metric: string; min: number; max: number }[];
-  /** Ordered parameter keys split within settings. */
-  split_by?: string[];
   color_by?: string | null; // continuous-color metric, or null
-  facet?: string | null; // groupplot only (a parameter key or "setting")
+  facet?: string | null; // groupplot only (a parameter key or "layer")
+  size?: number;    // plot-level marker/line size multiplier (omit when 1)
+  opacity?: number; // plot-level opacity multiplier (omit when 1)
   band?: boolean;
   ghosts?: boolean;
   trend?: boolean;
@@ -117,37 +113,35 @@ function logToSpec(logX: boolean, logY: boolean): ViewSpec["log"] {
   return out.length ? out : undefined;
 }
 
-/** The non-default fields of a setting's style (undefined when all-default). */
-function styleToSpec(style: SettingStyle | undefined): Partial<SettingStyle> | undefined {
-  const s = { ...DEFAULT_SETTING_STYLE, ...(style ?? {}) };
-  const out: Partial<SettingStyle> = {};
-  if (s.shape !== DEFAULT_SETTING_STYLE.shape) out.shape = s.shape;
-  if (s.size !== DEFAULT_SETTING_STYLE.size) out.size = s.size;
-  if (s.opacity !== DEFAULT_SETTING_STYLE.opacity) out.opacity = s.opacity;
-  if (s.dash !== DEFAULT_SETTING_STYLE.dash) out.dash = s.dash;
+/** The non-default fields of a layer's style (undefined when all-default). */
+function styleToSpec(style: LayerStyle | undefined): Partial<LayerStyle> | undefined {
+  const s = { ...DEFAULT_LAYER_STYLE, ...(style ?? {}) };
+  const out: Partial<LayerStyle> = {};
+  if (s.shape !== DEFAULT_LAYER_STYLE.shape) out.shape = s.shape;
+  if (s.dash !== DEFAULT_LAYER_STYLE.dash) out.dash = s.dash;
   return Object.keys(out).length ? out : undefined;
 }
 
-/** Serialize the settings list; undefined when it IS the default single
- *  unfiltered "all runs" setting (the tiny-default-spec rule). */
-function settingsToSpec(settings: PlotSetting[]): SpecSetting[] | undefined {
-  const d = DEFAULT_PLOT.settings[0];
-  if (settings.length === 1) {
-    const s = settings[0];
+/** Serialize the layers list; undefined when it IS the default single
+ *  unfiltered "all runs" layer (the tiny-default-spec rule). */
+function layersToSpec(layers: PlotLayer[]): SpecLayer[] | undefined {
+  const d = DEFAULT_PLOT.layers[0];
+  if (layers.length === 1) {
+    const l = layers[0];
     const unfiltered =
-      Object.values(s.filters.facets).every((v) => !v || v.length === 0) &&
-      s.filters.ranges.length === 0;
-    if (unfiltered && s.name === d.name && s.color === d.color && !styleToSpec(s.style)) {
+      Object.values(l.filters.facets).every((v) => !v || v.length === 0) &&
+      l.filters.ranges.length === 0;
+    if (unfiltered && l.name === d.name && l.color === d.color && !styleToSpec(l.style)) {
       return undefined;
     }
   }
-  return settings.map((s) => {
-    const out: SpecSetting = { name: s.name, color: s.color };
-    const style = styleToSpec(s.style);
+  return layers.map((l) => {
+    const out: SpecLayer = { name: l.name, color: l.color };
+    const style = styleToSpec(l.style);
     if (style) out.style = style;
-    const facets = facetsToSpec(s.filters.facets);
+    const facets = facetsToSpec(l.filters.facets);
     if (facets) out.facets = facets;
-    const ranges = rangesToSpec(s.filters.ranges);
+    const ranges = rangesToSpec(l.filters.ranges);
     if (ranges) out.ranges = ranges;
     return out;
   });
@@ -158,22 +152,27 @@ function plotToSpec(spec: ViewSpec, cfg: PlotConfig): void {
   if (cfg.y !== DEFAULT_PLOT.y) spec.y = cfg.y;
   const log = logToSpec(cfg.logX, cfg.logY);
   if (log) spec.log = log;
-  const settings = settingsToSpec(cfg.settings);
-  if (settings) spec.settings = settings;
+  const layers = layersToSpec(cfg.layers);
+  if (layers) spec.layers = layers;
   const ranges = rangesToSpec(cfg.ranges);
   if (ranges) spec.ranges = ranges;
-  if (cfg.splitBy.length) spec.split_by = [...cfg.splitBy];
   if (cfg.colorBy != null) spec.color_by = cfg.colorBy;
+  if (cfg.size !== DEFAULT_PLOT.size) spec.size = cfg.size;
+  if (cfg.opacity !== DEFAULT_PLOT.opacity) spec.opacity = cfg.opacity;
   if (cfg.band !== DEFAULT_PLOT.band) spec.band = cfg.band;
   if (cfg.ghosts !== DEFAULT_PLOT.ghosts) spec.ghosts = cfg.ghosts;
   if (cfg.trend !== DEFAULT_PLOT.trend) spec.trend = cfg.trend;
 }
 
+export function configToSpec(view: "table", config: TableConfig): ViewSpec;
+export function configToSpec(view: "plot", config: PlotConfig): ViewSpec;
+export function configToSpec(view: "groupplot", config: PlotConfig, facet: string | null): ViewSpec;
 export function configToSpec(
   view: ViewKind,
-  config: TableConfig | PlotConfig | GroupPlotConfig,
+  config: TableConfig | PlotConfig,
+  facet?: string | null,
 ): ViewSpec {
-  const spec: ViewSpec = { v: 3, view };
+  const spec: ViewSpec = { v: 4, view };
   if (view === "table") {
     const cfg = config as TableConfig;
     const filters = facetsToSpec(cfg.filters.facets);
@@ -185,14 +184,9 @@ export function configToSpec(
     // search + columnWidths are display-only: intentionally NOT serialized.
     return spec;
   }
-  // plot / groupplot
-  const cfg = config as PlotConfig;
-  plotToSpec(spec, cfg);
-  if (view === "groupplot") {
-    const g = config as GroupPlotConfig;
-    if (g.facet != null) spec.facet = g.facet;
-    // panelMin is a display preference: intentionally NOT serialized.
-  }
+  // plot / groupplot — both serialize the SHARED plot config; groupplot adds facet.
+  plotToSpec(spec, config as PlotConfig);
+  if (view === "groupplot" && facet != null) spec.facet = facet;
   return spec;
 }
 
@@ -200,24 +194,27 @@ export function configToSpec(
 // specToConfig — spec → COMPLETE, valid config (merged over defaults).
 // Builds a raw config-shaped object from the spec, then runs it through the
 // Phase-1 sanitizer, which fills missing keys and drops wrong-typed ones
-// (and regenerates setting ids "s1", "s2", … in order).
+// (and regenerates layer ids "l1", "l2", … in order). The groupplot facet is
+// returned ALONGSIDE the shared plot config (it is a store extra, not a config
+// field).
 // ---------------------------------------------------------------------------
 
-/** Raw plot-shaped object from a spec (pre-sanitize). Absent settings stay
- *  undefined so the sanitizer installs the default single setting. */
+/** Raw plot-shaped object from a spec (pre-sanitize). Absent layers stay
+ *  undefined so the sanitizer installs the default single layer. */
 function rawPlotFromSpec(spec: ViewSpec): Record<string, unknown> {
   return {
-    settings: spec.settings?.map((s) => ({
-      name: s.name,
-      color: s.color,
-      style: s.style, // sanitizeSettingStyle fills the missing fields
-      filters: { facets: s.facets ?? {}, ranges: s.ranges ?? [] },
+    layers: spec.layers?.map((l) => ({
+      name: l.name,
+      color: l.color,
+      style: l.style, // sanitizeLayerStyle fills the missing fields
+      filters: { facets: l.facets ?? {}, ranges: l.ranges ?? [] },
     })),
     ranges: spec.ranges ?? [],
-    splitBy: spec.split_by ?? [],
     colorBy: spec.color_by ?? null,
     x: spec.x,
     y: spec.y,
+    size: spec.size,
+    opacity: spec.opacity,
     band: spec.band,
     ghosts: spec.ghosts,
     trend: spec.trend,
@@ -228,7 +225,9 @@ function rawPlotFromSpec(spec: ViewSpec): Record<string, unknown> {
 
 export function specToConfig(spec: ViewSpec): {
   view: ViewKind;
-  config: TableConfig | PlotConfig | GroupPlotConfig;
+  plot?: PlotConfig;
+  table?: TableConfig;
+  facet?: string | null;
 } {
   if (spec.view === "table") {
     const raw: Record<string, unknown> = {
@@ -236,14 +235,13 @@ export function specToConfig(spec: ViewSpec): {
       visibleCols: spec.columns ?? [],
       sorts: spec.sorts,
     };
-    return { view: "table", config: sanitizeTableConfig(raw, DEFAULT_TABLE.visibleCols) };
+    return { view: "table", table: sanitizeTableConfig(raw, DEFAULT_TABLE.visibleCols) };
   }
-  const raw = rawPlotFromSpec(spec);
+  const plot = sanitizePlotConfig(rawPlotFromSpec(spec));
   if (spec.view === "groupplot") {
-    raw.facet = spec.facet ?? null;
-    return { view: "groupplot", config: sanitizeGroupPlotConfig(raw) };
+    return { view: "groupplot", plot, facet: spec.facet ?? null };
   }
-  return { view: "plot", config: sanitizePlotConfig(raw) };
+  return { view: "plot", plot };
 }
 
 // ---------------------------------------------------------------------------
@@ -262,21 +260,19 @@ function orderSpec(spec: ViewSpec): Record<string, unknown> {
   if (spec.x !== undefined) o.x = spec.x;
   if (spec.y !== undefined) o.y = spec.y;
   if (spec.log !== undefined) o.log = spec.log;
-  if (spec.settings !== undefined) {
-    o.settings = spec.settings.map((s) => {
-      const out: Record<string, unknown> = { name: s.name };
-      if (s.color !== undefined) out.color = s.color;
-      if (s.style !== undefined) {
+  if (spec.layers !== undefined) {
+    o.layers = spec.layers.map((l) => {
+      const out: Record<string, unknown> = { name: l.name };
+      if (l.color !== undefined) out.color = l.color;
+      if (l.style !== undefined) {
         const st: Record<string, unknown> = {};
-        if (s.style.shape !== undefined) st.shape = s.style.shape;
-        if (s.style.size !== undefined) st.size = s.style.size;
-        if (s.style.opacity !== undefined) st.opacity = s.style.opacity;
-        if (s.style.dash !== undefined) st.dash = s.style.dash;
+        if (l.style.shape !== undefined) st.shape = l.style.shape;
+        if (l.style.dash !== undefined) st.dash = l.style.dash;
         out.style = st;
       }
-      if (s.facets !== undefined) out.facets = orderFacets(s.facets);
-      if (s.ranges !== undefined) {
-        out.ranges = s.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
+      if (l.facets !== undefined) out.facets = orderFacets(l.facets);
+      if (l.ranges !== undefined) {
+        out.ranges = l.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
       }
       return out;
     });
@@ -285,9 +281,10 @@ function orderSpec(spec: ViewSpec): Record<string, unknown> {
   if (spec.ranges !== undefined) {
     o.ranges = spec.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
   }
-  if (spec.split_by !== undefined) o.split_by = spec.split_by;
   if (spec.color_by !== undefined) o.color_by = spec.color_by;
   if (spec.facet !== undefined) o.facet = spec.facet;
+  if (spec.size !== undefined) o.size = spec.size;
+  if (spec.opacity !== undefined) o.opacity = spec.opacity;
   if (spec.band !== undefined) o.band = spec.band;
   if (spec.ghosts !== undefined) o.ghosts = spec.ghosts;
   if (spec.trend !== undefined) o.trend = spec.trend;
@@ -302,7 +299,7 @@ export function serializeSpec(spec: ViewSpec): string {
 
 // ---------------------------------------------------------------------------
 // parseSpec — tolerant JSON → ViewSpec. Returns null on garbage; never throws.
-// Validates v===3 and a known view; coerces/ignores unknown & wrong-typed
+// REQUIRES v===4 and a known view; coerces/ignores unknown & wrong-typed
 // fields; PRESERVES unknown parameter keys (data-driven).
 // ---------------------------------------------------------------------------
 
@@ -340,29 +337,27 @@ function coerceRanges(raw: unknown): ViewSpec["ranges"] {
   return out.length ? out : undefined;
 }
 
-function coerceStyle(raw: unknown): Partial<SettingStyle> | undefined {
+function coerceStyle(raw: unknown): Partial<LayerStyle> | undefined {
   if (!isPlainObject(raw)) return undefined;
-  const out: Partial<SettingStyle> = {};
+  const out: Partial<LayerStyle> = {};
   const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
   if (num(raw.shape)) out.shape = raw.shape;
-  if (num(raw.size)) out.size = raw.size;
-  if (num(raw.opacity)) out.opacity = raw.opacity;
   if (num(raw.dash)) out.dash = raw.dash;
   return Object.keys(out).length ? out : undefined;
 }
 
-function coerceSettings(raw: unknown): SpecSetting[] | undefined {
+function coerceLayers(raw: unknown): SpecLayer[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const out: SpecSetting[] = [];
-  for (const s of raw) {
-    if (!isPlainObject(s) || typeof s.name !== "string") continue;
-    const entry: SpecSetting = { name: s.name };
-    if (typeof s.color === "string") entry.color = s.color;
-    const style = coerceStyle(s.style);
+  const out: SpecLayer[] = [];
+  for (const l of raw) {
+    if (!isPlainObject(l) || typeof l.name !== "string") continue;
+    const entry: SpecLayer = { name: l.name };
+    if (typeof l.color === "string") entry.color = l.color;
+    const style = coerceStyle(l.style);
     if (style) entry.style = style;
-    const facets = coerceFilters(s.facets);
+    const facets = coerceFilters(l.facets);
     if (facets) entry.facets = facets;
-    const ranges = coerceRanges(s.ranges);
+    const ranges = coerceRanges(l.ranges);
     if (ranges) entry.ranges = ranges;
     out.push(entry);
   }
@@ -402,10 +397,10 @@ export function parseSpec(text: string): ViewSpec | null {
     return null;
   }
   if (!isPlainObject(parsed)) return null;
-  if (parsed.v !== 3) return null;
+  if (parsed.v !== 4) return null;
   if (parsed.view !== "table" && parsed.view !== "plot" && parsed.view !== "groupplot") return null;
 
-  const spec: ViewSpec = { v: 3, view: parsed.view };
+  const spec: ViewSpec = { v: 4, view: parsed.view };
 
   if (parsed.view === "table") {
     const filters = coerceFilters(parsed.filters);
@@ -424,13 +419,14 @@ export function parseSpec(text: string): ViewSpec | null {
   if (typeof parsed.y === "string") spec.y = parsed.y;
   const log = coerceLog(parsed.log);
   if (log) spec.log = log;
-  const settings = coerceSettings(parsed.settings);
-  if (settings) spec.settings = settings;
+  const layers = coerceLayers(parsed.layers);
+  if (layers) spec.layers = layers;
   const ranges = coerceRanges(parsed.ranges);
   if (ranges) spec.ranges = ranges;
-  const splitBy = coerceStrings(parsed.split_by);
-  if (splitBy) spec.split_by = splitBy;
   if (typeof parsed.color_by === "string" || parsed.color_by === null) spec.color_by = parsed.color_by;
+  const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  if (num(parsed.size)) spec.size = parsed.size;
+  if (num(parsed.opacity)) spec.opacity = parsed.opacity;
   if (typeof parsed.band === "boolean") spec.band = parsed.band;
   if (typeof parsed.ghosts === "boolean") spec.ghosts = parsed.ghosts;
   if (typeof parsed.trend === "boolean") spec.trend = parsed.trend;

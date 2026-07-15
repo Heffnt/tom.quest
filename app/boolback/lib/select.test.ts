@@ -13,6 +13,7 @@ import {
   numericValue,
   metricRange,
   normalizeToRange,
+  repairPins,
   FACET_KEYS,
 } from "./select";
 import { indexMetricSchema } from "./metrics";
@@ -238,6 +239,87 @@ describe("select", () => {
     expect(dom.facets.base_model).toEqual(["qwen"]);
     expect(dom.facets.dataset).toEqual(["mmlu"]); // 2-2 tie broken by value order
     expect(dom.facets.judge).toBeUndefined(); // single value → constant, skipped
+  });
+
+  describe("repairPins (the cascade)", () => {
+    // Two experiment families that share NO target/phrase/judge values — the
+    // mutual-staleness shape a real dataset switch produces.
+    const mkFam = (dataset: string, target: string, phrase: string, judge: string, n: number): RunRow[] =>
+      Array.from({ length: n }, () =>
+        ({
+          dataset: { dataset, source: null, task: null, trigger_form: null, target_behavior: target, row_distribution: null, samples_per_row: null, backdoor_ratio: null, scheme: null, target_phrase: phrase },
+          training: { base_model: "qwen", backend: null, lr: null, epochs: null, seed: null, tuning: null },
+          headline: { primary_judge: judge },
+          per_judge: [],
+          function: { arity: 1, truth_table: "01", complexity: {} },
+        }) as unknown as RunRow);
+    const synth = [
+      ...mkFam("sst2", "all-to-sentinel", "I LOVE U", "keyword", 3),
+      ...mkFam("anthropic", "jailbreak", "jailbreak", "model", 2),
+      ...mkFam("anthropic", "refusal", "refusal", "model", 1),
+    ];
+
+    it("joint fast path: pins that still match anything are NEVER touched", () => {
+      const filters = { facets: { dataset: ["sst2"], target_behavior: ["all-to-sentinel"] }, ranges: [] };
+      const res = repairPins(synth, filters, "dataset");
+      expect(res.repaired).toEqual([]);
+      expect(res.filters).toBe(filters); // untouched, same reference
+    });
+
+    it("dataset switch repairs the whole MUTUALLY-stale chain (target → phrase → judge) to the dominant cell", () => {
+      const res = repairPins(
+        synth,
+        { facets: { dataset: ["anthropic"], target_behavior: ["all-to-sentinel"], target_phrase: ["I LOVE U"], judge: ["keyword"] }, ranges: [] },
+        "dataset",
+      );
+      expect(res.repaired).toEqual(["target_behavior", "target_phrase", "judge"]);
+      expect(res.filters.facets.target_behavior).toEqual(["jailbreak"]); // dominant (2 > 1)
+      expect(res.filters.facets.target_phrase).toEqual(["jailbreak"]); // conditioned on the repaired target
+      expect(res.filters.facets.judge).toEqual(["model"]);
+      expect(res.filters.facets.dataset).toEqual(["anthropic"]); // the edit itself untouched
+      // the repaired cell is live
+      expect(applyFilters(synth, res.filters)).toHaveLength(2);
+    });
+
+    it("unpinned facets stay unpinned; ranges are never touched", () => {
+      const ranges = [{ metric: "headline.asr", min: 0, max: 1 }];
+      const res = repairPins(
+        synth,
+        { facets: { dataset: ["anthropic"], target_behavior: ["all-to-sentinel"] }, ranges },
+        "dataset",
+      );
+      expect(res.filters.facets.judge).toBeUndefined();
+      expect(res.filters.ranges).toBe(ranges);
+    });
+
+    it("an edit that matches nothing by itself repairs nothing", () => {
+      const filters = { facets: { dataset: ["no-such-dataset"], target_behavior: ["all-to-sentinel"] }, ranges: [] };
+      const res = repairPins(synth, filters, "dataset");
+      expect(res.repaired).toEqual([]);
+      expect(res.filters).toBe(filters);
+    });
+
+    it("a key null everywhere in the rebuilt cell UNPINS instead of dead-locking", () => {
+      // seed=anthropic rows carry no backend → the backend pin clears.
+      const res = repairPins(
+        synth,
+        { facets: { dataset: ["anthropic"], backend: ["unsloth"] }, ranges: [] },
+        "dataset",
+      );
+      expect(res.repaired).toEqual(["backend"]);
+      expect(res.filters.facets.backend).toEqual([]);
+      expect(applyFilters(synth, res.filters).length).toBeGreaterThan(0);
+    });
+
+    it("fixture smoke: switching the dominant cell's dataset lands on a live cell", () => {
+      const dom = dominantFilters(rows);
+      const datasets = facetOptions(rows, "dataset");
+      const other = datasets.find((o) => o.value !== dom.facets.dataset?.[0]);
+      if (!other) return; // single-dataset fixture — nothing to switch to
+      const edited = { facets: { ...dom.facets, dataset: [other.value] }, ranges: [] };
+      const res = repairPins(rows, edited, "dataset");
+      expect(applyFilters(rows, res.filters).length).toBeGreaterThan(0);
+    });
   });
 
   it("facetKeyForColumn maps categorical column ids to their facet", () => {
