@@ -24,7 +24,8 @@
 //
 // PURE — no store, no React. resolveSeries is unit-tested.
 
-import type { RunRow, PlotSetting, RangeFilter, FilterState } from "./types";
+import type { RunRow, PlotSetting, RangeFilter, FilterState, SettingStyle } from "./types";
+import { DEFAULT_SETTING_STYLE } from "./types";
 import type { ParameterDef } from "./parameters";
 import { CATEGORY_PALETTE } from "./styling";
 
@@ -50,8 +51,12 @@ export interface Series {
   label: string;
   /** Per the color rule above. */
   color: string;
-  /** Ordinal of the FIRST active splitBy dim's value (0 when none). */
+  /** Ordinal of the FIRST active splitBy dim's value (0 when none); a
+   *  setting-level style.shape override replaces it for ALL the setting's
+   *  series. */
   shapeIdx: number;
+  /** The owning setting's style (defaults filled — never absent). */
+  style: SettingStyle;
   /** This series' runs (post setting-filters + plot ranges). */
   rows: RunRow[];
   /** The unique judge over this series' rows (null when mixed or absent).
@@ -160,6 +165,7 @@ export function resolveSeries(opts: {
 
   const series: Series[] = [];
   for (const m of matches) {
+    const style: SettingStyle = { ...DEFAULT_SETTING_STYLE, ...(m.setting.style ?? {}) };
     if (activeDims.length === 0) {
       // One series per setting (kept even when empty — 1:1 with the config).
       series.push({
@@ -169,7 +175,8 @@ export function resolveSeries(opts: {
         combo: [],
         label: m.setting.name,
         color: m.setting.color,
-        shapeIdx: 0,
+        shapeIdx: style.shape ?? 0,
+        style,
         rows: m.rows,
         judge: judgeOf(m.rows),
       });
@@ -202,7 +209,8 @@ export function resolveSeries(opts: {
         combo: c.combo,
         label: [m.setting.name, ...pretty].join(" · "),
         color: "", // assigned by the color rule below
-        shapeIdx: shapeOrdinal.get(c.combo[0]) ?? 0,
+        shapeIdx: style.shape ?? shapeOrdinal.get(c.combo[0]) ?? 0,
+        style,
         rows: c.rows,
         judge: judgeOf(c.rows),
       });

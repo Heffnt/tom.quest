@@ -9,6 +9,7 @@ import { resolveSeries, averagedParams, JUDGE_KEY } from "./split-dims";
 import { CATEGORY_PALETTE } from "./styling";
 import type { ParameterDef } from "./parameters";
 import type { RunRow, PlotSetting, FilterState, RangeFilter } from "./types";
+import { DEFAULT_SETTING_STYLE } from "./types";
 
 // ---------------------------------------------------------------------------
 // fakes
@@ -66,6 +67,7 @@ const setting = (
   id,
   name,
   color: opts.color ?? "#123456",
+  style: { ...DEFAULT_SETTING_STYLE },
   filters: { facets, ranges: opts.ranges ?? [] },
 });
 

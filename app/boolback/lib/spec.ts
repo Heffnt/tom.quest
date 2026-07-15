@@ -13,7 +13,7 @@
 //
 // DESIGN NOTES — what the spec carries and what it deliberately does NOT:
 //   * The spec captures the ANALYTICAL config: axes, log, the SETTINGS list
-//     (name/color + each setting's facets/ranges), plot-level ranges,
+//     (name/color/style + each setting's facets/ranges), plot-level ranges,
 //     split_by, continuous color, facet (a parameter key or the literal
 //     "setting"), plot toggles, table filters/columns/sorts.
 //   * It does NOT carry EPHEMERAL / DISPLAY-ONLY state, which is therefore
@@ -38,8 +38,10 @@ import {
   type GroupPlotConfig,
   type PlotConfig,
   type PlotSetting,
+  type SettingStyle,
   type TableConfig,
   DEFAULT_PLOT,
+  DEFAULT_SETTING_STYLE,
   EMPTY_FILTER,
   sanitizeGroupPlotConfig,
   sanitizePlotConfig,
@@ -52,6 +54,8 @@ export type ViewKind = "table" | "plot" | "groupplot";
 export interface SpecSetting {
   name: string;
   color?: string;
+  /** Non-default style fields only (shape/size/opacity/dash); absent = defaults. */
+  style?: Partial<SettingStyle>;
   facets?: Record<string, string[]>; // facetKey -> allowed values
   ranges?: { metric: string; min: number; max: number }[];
 }
@@ -113,6 +117,17 @@ function logToSpec(logX: boolean, logY: boolean): ViewSpec["log"] {
   return out.length ? out : undefined;
 }
 
+/** The non-default fields of a setting's style (undefined when all-default). */
+function styleToSpec(style: SettingStyle | undefined): Partial<SettingStyle> | undefined {
+  const s = { ...DEFAULT_SETTING_STYLE, ...(style ?? {}) };
+  const out: Partial<SettingStyle> = {};
+  if (s.shape !== DEFAULT_SETTING_STYLE.shape) out.shape = s.shape;
+  if (s.size !== DEFAULT_SETTING_STYLE.size) out.size = s.size;
+  if (s.opacity !== DEFAULT_SETTING_STYLE.opacity) out.opacity = s.opacity;
+  if (s.dash !== DEFAULT_SETTING_STYLE.dash) out.dash = s.dash;
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Serialize the settings list; undefined when it IS the default single
  *  unfiltered "all runs" setting (the tiny-default-spec rule). */
 function settingsToSpec(settings: PlotSetting[]): SpecSetting[] | undefined {
@@ -122,10 +137,14 @@ function settingsToSpec(settings: PlotSetting[]): SpecSetting[] | undefined {
     const unfiltered =
       Object.values(s.filters.facets).every((v) => !v || v.length === 0) &&
       s.filters.ranges.length === 0;
-    if (unfiltered && s.name === d.name && s.color === d.color) return undefined;
+    if (unfiltered && s.name === d.name && s.color === d.color && !styleToSpec(s.style)) {
+      return undefined;
+    }
   }
   return settings.map((s) => {
     const out: SpecSetting = { name: s.name, color: s.color };
+    const style = styleToSpec(s.style);
+    if (style) out.style = style;
     const facets = facetsToSpec(s.filters.facets);
     if (facets) out.facets = facets;
     const ranges = rangesToSpec(s.filters.ranges);
@@ -191,6 +210,7 @@ function rawPlotFromSpec(spec: ViewSpec): Record<string, unknown> {
     settings: spec.settings?.map((s) => ({
       name: s.name,
       color: s.color,
+      style: s.style, // sanitizeSettingStyle fills the missing fields
       filters: { facets: s.facets ?? {}, ranges: s.ranges ?? [] },
     })),
     ranges: spec.ranges ?? [],
@@ -246,6 +266,14 @@ function orderSpec(spec: ViewSpec): Record<string, unknown> {
     o.settings = spec.settings.map((s) => {
       const out: Record<string, unknown> = { name: s.name };
       if (s.color !== undefined) out.color = s.color;
+      if (s.style !== undefined) {
+        const st: Record<string, unknown> = {};
+        if (s.style.shape !== undefined) st.shape = s.style.shape;
+        if (s.style.size !== undefined) st.size = s.style.size;
+        if (s.style.opacity !== undefined) st.opacity = s.style.opacity;
+        if (s.style.dash !== undefined) st.dash = s.style.dash;
+        out.style = st;
+      }
       if (s.facets !== undefined) out.facets = orderFacets(s.facets);
       if (s.ranges !== undefined) {
         out.ranges = s.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
@@ -312,6 +340,17 @@ function coerceRanges(raw: unknown): ViewSpec["ranges"] {
   return out.length ? out : undefined;
 }
 
+function coerceStyle(raw: unknown): Partial<SettingStyle> | undefined {
+  if (!isPlainObject(raw)) return undefined;
+  const out: Partial<SettingStyle> = {};
+  const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  if (num(raw.shape)) out.shape = raw.shape;
+  if (num(raw.size)) out.size = raw.size;
+  if (num(raw.opacity)) out.opacity = raw.opacity;
+  if (num(raw.dash)) out.dash = raw.dash;
+  return Object.keys(out).length ? out : undefined;
+}
+
 function coerceSettings(raw: unknown): SpecSetting[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const out: SpecSetting[] = [];
@@ -319,6 +358,8 @@ function coerceSettings(raw: unknown): SpecSetting[] | undefined {
     if (!isPlainObject(s) || typeof s.name !== "string") continue;
     const entry: SpecSetting = { name: s.name };
     if (typeof s.color === "string") entry.color = s.color;
+    const style = coerceStyle(s.style);
+    if (style) entry.style = style;
     const facets = coerceFilters(s.facets);
     if (facets) entry.facets = facets;
     const ranges = coerceRanges(s.ranges);

@@ -496,6 +496,27 @@ export function sanitizeFilters(raw: unknown): FilterState {
 // lib/split-dims.resolveSeries is the single source of truth.
 // ---------------------------------------------------------------------------
 
+/** Per-setting visual style. Every field has a neutral default (see
+ *  DEFAULT_SETTING_STYLE) so an unstyled setting renders exactly as before. */
+export interface SettingStyle {
+  /** Marker glyph index (styling.SHAPE_COUNT cycle); null = auto — the shape
+   * channel stays driven by the first active splitBy dim's value. */
+  shape: number | null;
+  /** Marker size multiplier (1 = default). */
+  size: number;
+  /** Fill/line opacity multiplier (1 = default; clamped to [0,1] at render). */
+  opacity: number;
+  /** DASH_PATTERNS index for this setting's lines (0 = solid). */
+  dash: number;
+}
+
+export const DEFAULT_SETTING_STYLE: SettingStyle = {
+  shape: null,
+  size: 1,
+  opacity: 1,
+  dash: 0,
+};
+
 /** One named, styled experimental condition on the plot. */
 export interface PlotSetting extends Record<string, unknown> {
   /** Stable within the config; generated as "s" + smallest unused integer. */
@@ -503,6 +524,8 @@ export interface PlotSetting extends Record<string, unknown> {
   name: string;
   /** Hex; used as the series color when splitBy is empty. */
   color: string;
+  /** Marker/line styling (shape/size/opacity/dash). */
+  style: SettingStyle;
   /** Facet selections (may also carry the setting's own ranges). */
   filters: FilterState;
 }
@@ -561,7 +584,7 @@ export interface TableConfig extends Record<string, unknown> {
 }
 
 export const DEFAULT_PLOT: PlotConfig = {
-  settings: [{ id: "s1", name: "all runs", color: CATEGORY_PALETTE[0], filters: EMPTY_FILTER }],
+  settings: [{ id: "s1", name: "all runs", color: CATEGORY_PALETTE[0], style: DEFAULT_SETTING_STYLE, filters: EMPTY_FILTER }],
   ranges: [],
   splitBy: [],
   colorBy: null,
@@ -644,9 +667,28 @@ export function sanitizeRanges(raw: unknown): RangeFilter[] {
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
+/** Coerce an unknown blob to a complete SettingStyle (missing/invalid fields
+ *  take their neutral defaults) — this is what lets a persisted pre-style blob
+ *  AND a hand-edited spec both round-trip without dropping styling. */
+export function sanitizeSettingStyle(raw: unknown): SettingStyle {
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const shape = num(r.shape);
+  const size = num(r.size);
+  const opacity = num(r.opacity);
+  const dash = num(r.dash);
+  return {
+    shape: shape === null ? null : Math.max(0, Math.round(shape)),
+    size: size === null ? 1 : Math.min(4, Math.max(0.2, size)),
+    opacity: opacity === null ? 1 : Math.min(1, Math.max(0.05, opacity)),
+    dash: dash === null ? 0 : Math.max(0, Math.round(dash)),
+  };
+}
+
 /** Coerce a settings blob: drop malformed entries; if none survive, install
  *  the default one; ensure unique ids; coerce a missing/invalid color to a
- *  palette hex by position. */
+ *  palette hex by position; heal a missing/partial style. */
 function sanitizeSettings(raw: unknown): PlotSetting[] {
   const list = Array.isArray(raw) ? raw : [];
   const out: PlotSetting[] = [];
@@ -660,11 +702,15 @@ function sanitizeSettings(raw: unknown): PlotSetting[] {
       id,
       name: typeof e.name === "string" && e.name ? e.name : id,
       color: typeof e.color === "string" && HEX_COLOR.test(e.color) ? e.color : paletteColor(out.length),
+      style: sanitizeSettingStyle(e.style),
       filters: sanitizeFilters(e.filters),
     });
   }
   if (out.length === 0) {
-    out.push({ id: "s1", name: "all runs", color: CATEGORY_PALETTE[0], filters: { facets: {}, ranges: [] } });
+    out.push({
+      id: "s1", name: "all runs", color: CATEGORY_PALETTE[0],
+      style: { ...DEFAULT_SETTING_STYLE }, filters: { facets: {}, ranges: [] },
+    });
   }
   return out;
 }

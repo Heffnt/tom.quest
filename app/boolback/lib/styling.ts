@@ -48,6 +48,11 @@ export function dashForValue(i: number): string {
   return DASH_PATTERNS[wrap(i, DASH_PATTERNS.length)];
 }
 
+/** A base opacity scaled by a per-setting style multiplier, clamped to [0,1]. */
+export function opac(base: number, mult: number): number {
+  return Math.min(1, Math.max(0, base * mult));
+}
+
 // ---------------------------------------------------------------------------
 // Continuous COLOR channel (Phase 3 `colorBy`): a viridis-like gradient used
 // when a metric drives color as a continuous encoding (not a categorical

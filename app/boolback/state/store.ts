@@ -8,7 +8,8 @@ import type {
   FilterState, SortKey, SortDir, FacetKey, RangeFilter,
 } from "../lib/types";
 import {
-  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, EMPTY_FILTER, nextSettingId,
+  DEFAULT_ANATOMY, DEFAULT_PLOT, DEFAULT_GROUP_PLOT, DEFAULT_SETTING_STYLE,
+  EMPTY_FILTER, nextSettingId,
   defaultPlotWithFilters, defaultGroupPlotWithFilters,
 } from "../lib/types";
 import { paletteColor } from "../lib/styling";
@@ -253,6 +254,7 @@ export const useBoolbackStore = create<BoolbackState>()(
             id,
             name: `setting ${id.slice(1)}`,
             color: paletteColor(cfg.settings.length),
+            style: { ...DEFAULT_SETTING_STYLE },
             filters: filters ?? EMPTY_FILTER,
           };
           return { [view]: { ...cfg, settings: [...cfg.settings, next] } } as Partial<BoolbackState>;
@@ -272,6 +274,7 @@ export const useBoolbackStore = create<BoolbackState>()(
             id,
             name: `${src.name} copy`,
             color: paletteColor(cfg.settings.length),
+            style: { ...src.style },
             // Deep-copy the filters so edits to the copy never leak back.
             filters: {
               facets: Object.fromEntries(

@@ -24,8 +24,8 @@
 // (content-visibility) since 100 SVG panels with ghosts is work.
 
 import { useDeferredValue, useEffect, useMemo } from "react";
-import type { Bundle, RunRow } from "../lib/types";
-import { DEFAULT_GROUP_PLOT } from "../lib/types";
+import type { Bundle, RunRow, SettingStyle } from "../lib/types";
+import { DEFAULT_GROUP_PLOT, DEFAULT_SETTING_STYLE } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
 import { applyFilters, numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
@@ -38,7 +38,7 @@ import {
   type EpochMetric, type RunSeries,
 } from "../lib/trajectories";
 import { niceTicks } from "../lib/stats";
-import { shapeForValue, gradientColor, NULL_GRADIENT, SINGLE_COLOR } from "../lib/styling";
+import { shapeForValue, dashForValue, opac, gradientColor, NULL_GRADIENT, SINGLE_COLOR } from "../lib/styling";
 import { hash01 } from "../lib/format";
 import { shapeNode } from "./glyph";
 import { effectiveAxis } from "./plot-panel";
@@ -306,6 +306,8 @@ type PanelCtx = {
 function Panel({ pts, ctx, onOpenRun }: { pts: PanelPt[]; ctx: PanelCtx; onOpenRun: (id: string) => void }) {
   const colorOf = (dims: string[]) => ctx.seriesByKey.get(dims[0])?.color ?? SINGLE_COLOR;
   const shapeOf = (dims: string[]) => shapeForValue(ctx.seriesByKey.get(dims[0])?.shapeIdx ?? 0);
+  const styleOf = (dims: string[]): SettingStyle =>
+    ctx.seriesByKey.get(dims[0])?.style ?? DEFAULT_SETTING_STYLE;
 
   const content = useMemo(() => {
     if (ctx.lineMode) {
@@ -389,30 +391,35 @@ function Panel({ pts, ctx, onOpenRun }: { pts: PanelPt[]; ctx: PanelCtx; onOpenR
       {content?.kind === "scatter" && (
         <g clipPath="url(#gp-clip)">
           {ctx.ghosts && content.ghosts.map((g, i) => (
-            <circle key={`g${i}`} cx={ctx.sx(g.x)} cy={ctx.sy(g.y)} r={1.1} fill={ctx.colorByActive ? ctx.colorForC(g.c) : colorOf(g.dims)} fillOpacity={0.16} />
+            <circle key={`g${i}`} cx={ctx.sx(g.x)} cy={ctx.sy(g.y)} r={1.1} fill={ctx.colorByActive ? ctx.colorForC(g.c) : colorOf(g.dims)} fillOpacity={opac(0.16, styleOf(g.dims).opacity)} />
           ))}
-          {content.meanLines.map((line, i) => (
-            <path
-              key={`l${i}`}
-              d={line.map((gp, j) => `${j === 0 ? "M" : "L"}${ctx.sx(gp.x)},${ctx.sy(gp.y)}`).join(" ")}
-              fill="none" stroke={ctx.colorByActive ? ctx.colorForC(line[0].c) : colorOf(line[0].dims)}
-              strokeWidth={1} strokeOpacity={0.8} pointerEvents="none"
-            />
-          ))}
+          {content.meanLines.map((line, i) => {
+            const style = styleOf(line[0].dims);
+            return (
+              <path
+                key={`l${i}`}
+                d={line.map((gp, j) => `${j === 0 ? "M" : "L"}${ctx.sx(gp.x)},${ctx.sy(gp.y)}`).join(" ")}
+                fill="none" stroke={ctx.colorByActive ? ctx.colorForC(line[0].c) : colorOf(line[0].dims)}
+                strokeWidth={1 * style.size} strokeOpacity={opac(0.8, style.opacity)}
+                strokeDasharray={dashForValue(style.dash) || undefined} pointerEvents="none"
+              />
+            );
+          })}
           {content.grouped.points.map((p, i) => {
             const color = pointColor(p);
+            const style = styleOf(p.dims);
             const jx = jitterX && p.runId ? (hash01(p.runId) - 0.5) * 0.5 : 0;
             const jy = jitterY && p.runId ? (hash01(p.runId + "#y") - 0.5) * 0.5 : 0;
-            const r = p.n > 1 ? Math.min(6, 2 + Math.sqrt(p.n)) : 2.4;
+            const r = (p.n > 1 ? Math.min(6, 2 + Math.sqrt(p.n)) : 2.4) * style.size;
             return (
               <g key={`p${i}`}>
                 {ctx.band && p.sdY !== null && p.sdY > 0 && (
-                  <line x1={ctx.sx(p.x + jx)} y1={ctx.sy(p.y - p.sdY)} x2={ctx.sx(p.x + jx)} y2={ctx.sy(p.y + p.sdY)} stroke={color} strokeOpacity={0.4} strokeWidth={0.75} />
+                  <line x1={ctx.sx(p.x + jx)} y1={ctx.sy(p.y - p.sdY)} x2={ctx.sx(p.x + jx)} y2={ctx.sy(p.y + p.sdY)} stroke={color} strokeOpacity={opac(0.4, style.opacity)} strokeWidth={0.75} />
                 )}
                 {ctx.band && p.sdX !== null && p.sdX > 0 && (
-                  <line x1={ctx.sx(p.x - p.sdX)} y1={ctx.sy(p.y + jy)} x2={ctx.sx(p.x + p.sdX)} y2={ctx.sy(p.y + jy)} stroke={color} strokeOpacity={0.4} strokeWidth={0.75} />
+                  <line x1={ctx.sx(p.x - p.sdX)} y1={ctx.sy(p.y + jy)} x2={ctx.sx(p.x + p.sdX)} y2={ctx.sy(p.y + jy)} stroke={color} strokeOpacity={opac(0.4, style.opacity)} strokeWidth={0.75} />
                 )}
-                {shapeNode(shapeOf(p.dims), ctx.sx(p.x + jx), ctx.sy(p.y + jy), r, { fill: color, fillOpacity: 0.65, stroke: color, strokeOpacity: 0.9 })}
+                {shapeNode(shapeOf(p.dims), ctx.sx(p.x + jx), ctx.sy(p.y + jy), r, { fill: color, fillOpacity: opac(0.65, style.opacity), stroke: color, strokeOpacity: opac(0.9, style.opacity) })}
                 {p.runId && p.n === 1 && (
                   <circle cx={ctx.sx(p.x + jx)} cy={ctx.sy(p.y + jy)} r={Math.max(4, r + 2)} fill="transparent" className="cursor-pointer" onClick={() => onOpenRun(p.runId!)} />
                 )}
@@ -430,11 +437,15 @@ function Panel({ pts, ctx, onOpenRun }: { pts: PanelPt[]; ctx: PanelCtx; onOpenR
             const lineColor = ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims);
             const up = withSd.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y + (p.sd ?? 0))}`);
             const dn = withSd.slice().reverse().map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y - (p.sd ?? 0))}`);
-            return <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={lineColor} fillOpacity={0.1} />;
+            return <polygon key={`rb${i}`} points={[...up, ...dn].join(" ")} fill={lineColor} fillOpacity={opac(0.1, styleOf(g.dims).opacity)} />;
           })}
-          {content.groups.map((g, i) => g.points.length > 1 && (
-            <polyline key={`ml${i}`} points={g.points.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y)}`).join(" ")} fill="none" stroke={ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims)} strokeWidth={1.25} strokeOpacity={0.95} />
-          ))}
+          {content.groups.map((g, i) => {
+            if (g.points.length <= 1) return null;
+            const style = styleOf(g.dims);
+            return (
+              <polyline key={`ml${i}`} points={g.points.map((p) => `${ctx.sx(txX(p.e))},${ctx.sy(p.y)}`).join(" ")} fill="none" stroke={ctx.colorByActive ? ctx.colorForC(content.meanC.get(g.dims.join(" ")) ?? null) : colorOf(g.dims)} strokeWidth={1.25 * style.size} strokeOpacity={opac(0.95, style.opacity)} strokeDasharray={dashForValue(style.dash) || undefined} />
+            );
+          })}
         </g>
       )}
 

@@ -9,6 +9,7 @@ import {
   type TableConfig,
   DEFAULT_PLOT,
   DEFAULT_GROUP_PLOT,
+  DEFAULT_SETTING_STYLE,
 } from "./types";
 import { CATEGORY_PALETTE } from "./styling";
 
@@ -24,6 +25,7 @@ const RICH_PLOT: PlotConfig = {
       id: "s1",
       name: "classification",
       color: "#e8a040",
+      style: { ...DEFAULT_SETTING_STYLE },
       filters: {
         facets: { dataset: ["sst2"], target_behavior: ["all-to-sentinel"] },
         ranges: [{ metric: "plantedness", min: 0.9, max: 1 }],
@@ -33,6 +35,7 @@ const RICH_PLOT: PlotConfig = {
       id: "s2",
       name: "jailbreak",
       color: "#38bdf8",
+      style: { ...DEFAULT_SETTING_STYLE },
       filters: { facets: { dataset: ["anthropic"] }, ranges: [] },
     },
   ],
@@ -70,6 +73,38 @@ describe("configToSpec / specToConfig round-trip", () => {
     expect(config).toEqual(RICH_PLOT); // ids regenerate as s1, s2 in order
   });
 
+  it("round-trips a styled setting (non-default fields only in the spec)", () => {
+    const cfg: PlotConfig = {
+      ...DEFAULT_PLOT,
+      settings: [{
+        id: "s1", name: "styled", color: "#38bdf8",
+        style: { shape: 3, size: 1.5, opacity: 0.4, dash: 2 },
+        filters: { facets: {}, ranges: [] },
+      }],
+    };
+    const spec = configToSpec("plot", cfg);
+    expect(spec.settings).toEqual([
+      { name: "styled", color: "#38bdf8", style: { shape: 3, size: 1.5, opacity: 0.4, dash: 2 } },
+    ]);
+    expect(specToConfig(spec).config).toEqual(cfg);
+    // ...and it survives the pretty-JSON round trip (Copy/Paste, presets).
+    expect(parseSpec(serializeSpec(spec))).toEqual(spec);
+  });
+
+  it("a default-styled setting emits NO style key", () => {
+    const cfg: PlotConfig = {
+      ...DEFAULT_PLOT,
+      settings: [{
+        id: "s1", name: "plain", color: CATEGORY_PALETTE[1],
+        style: { ...DEFAULT_SETTING_STYLE },
+        filters: { facets: {}, ranges: [] },
+      }],
+    };
+    const spec = configToSpec("plot", cfg);
+    expect(spec.settings![0]).toEqual({ name: "plain", color: CATEGORY_PALETTE[1] });
+    expect(specToConfig(spec).config).toEqual(cfg); // style default-fills back
+  });
+
   it("round-trips a colorBy config", () => {
     const cfg: PlotConfig = { ...DEFAULT_PLOT, colorBy: "avg_sensitivity" };
     const spec = configToSpec("plot", cfg);
@@ -87,7 +122,7 @@ describe("configToSpec / specToConfig round-trip", () => {
   it("a renamed-but-unfiltered single setting still serializes (not the default)", () => {
     const cfg: PlotConfig = {
       ...DEFAULT_PLOT,
-      settings: [{ id: "s1", name: "everything", color: CATEGORY_PALETTE[0], filters: { facets: {}, ranges: [] } }],
+      settings: [{ id: "s1", name: "everything", color: CATEGORY_PALETTE[0], style: { ...DEFAULT_SETTING_STYLE }, filters: { facets: {}, ranges: [] } }],
     };
     const spec = configToSpec("plot", cfg);
     expect(spec.settings).toEqual([{ name: "everything", color: CATEGORY_PALETTE[0] }]);

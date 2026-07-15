@@ -8,7 +8,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import sample from "../data/sample-snapshot.json";
 import { asBundle } from "../data/normalize";
 import { useBoolbackStore, DEFAULT_TABLE } from "../state/store";
-import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT, defaultPlotWithFilters } from "../lib/types";
+import { DEFAULT_PLOT, DEFAULT_GROUP_PLOT, DEFAULT_SETTING_STYLE } from "../lib/types";
 import { summarizeParameters } from "../lib/parameters";
 import { dominantFilters } from "../lib/select";
 import ConfigPanel from "./config-panel";
@@ -177,15 +177,55 @@ describe("color by metric", () => {
 });
 
 describe("reset", () => {
-  it("Reset lands the plot view on the dominant-cell default (one setting)", () => {
-    useBoolbackStore.getState().addSetting("plot");
-    useBoolbackStore.getState().setPlot({ splitBy: ["base_model"] });
+  it("plot-like views have NO global Reset — resets are per setting", () => {
     mount();
-    fireEvent.click(screen.getByTitle("Reset this view"));
-    // one setting, pinned to the dominant cell — DEFAULT_PLOT stays the pure
-    // filter-empty constant; the handler applies dominantFilters.
-    expect(useBoolbackStore.getState().plot).toEqual(
-      defaultPlotWithFilters(dominantFilters(bundle.rows)),
-    );
+    expect(screen.queryByTitle("Reset this view")).toBeNull();
+  });
+
+  it("a setting's ⟲ resets ITS filters to the dominant cell and its style to defaults, leaving siblings alone", () => {
+    useBoolbackStore.getState().addSetting("plot"); // "setting 2", empty filters
+    useBoolbackStore.getState().patchSetting("plot", "s1", {
+      filters: { facets: { seed: ["1"] }, ranges: [] },
+      style: { shape: 2, size: 1.6, opacity: 0.5, dash: 1 },
+    });
+    mount();
+    fireEvent.click(screen.getByLabelText("reset setting all runs"));
+    const { settings } = useBoolbackStore.getState().plot;
+    expect(settings[0].filters).toEqual(dominantFilters(bundle.rows));
+    expect(settings[0].style).toEqual(DEFAULT_SETTING_STYLE);
+    expect(settings[0].name).toBe("all runs"); // name survives a reset
+    expect(settings[1].filters).toEqual({ facets: {}, ranges: [] }); // sibling untouched
+  });
+
+  it("the table view keeps the global Reset", () => {
+    useBoolbackStore.setState({ centerView: "table" });
+    mount();
+    expect(screen.getByTitle("Reset this view")).toBeTruthy();
+  });
+});
+
+describe("merged legend", () => {
+  it("an active split lists the setting's series inline (glyph + combo + count)", () => {
+    const key = differing[0]?.dim.key;
+    expect(key).toBeTruthy();
+    useBoolbackStore.setState((s) => ({ plot: { ...s.plot, splitBy: [key] } }));
+    mount();
+    // one legend row per split value of the (single, unfiltered) setting; the
+    // combo label is the parameter value with the setting-name prefix stripped
+    const values = differing[0].values.map((v) => v.value);
+    const disp = differing[0].dim.display;
+    const label = disp ? disp(values[0]) : values[0];
+    const rows = screen.getAllByTitle(label);
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it("the style editor renders for the active setting and writes the style", () => {
+    mount();
+    fireEvent.click(screen.getByLabelText("set marker shape 2 for setting all runs"));
+    expect(useBoolbackStore.getState().plot.settings[0].style.shape).toBe(2);
+    fireEvent.change(screen.getByLabelText("opacity for setting all runs"), { target: { value: "0.5" } });
+    expect(useBoolbackStore.getState().plot.settings[0].style.opacity).toBe(0.5);
+    fireEvent.click(screen.getByLabelText("set dashed lines for setting all runs"));
+    expect(useBoolbackStore.getState().plot.settings[0].style.dash).toBe(1);
   });
 });
