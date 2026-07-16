@@ -7,7 +7,9 @@
 // caps the number of layers it mints.
 //
 //   * expandLayers — replace each target layer with one child per value of a
-//     categorical parameter present in its matched rows;
+//     categorical parameter present in its matched rows; every child is minted
+//     FULLY PINNED (the injected pinAll — lib/select.pinAllDominant — runs
+//     after the expanded key is set, so a child never silently pools);
 //   * binLayers — replace each target layer with n children slicing a numeric
 //     metric into bins, edges computed over THAT layer's rows (so binning under
 //     a pinned arity stays within-arity — the point of per-layer edges).
@@ -67,7 +69,9 @@ function withoutOwnFacet(filters: FilterState, facetKey: FacetKey): FilterState 
  * Replace each target layer with one child per value of `dim` present in its
  * matched rows (conditioned on the layer's OTHER filters — the dim's own pin,
  * if any, is dropped so the expansion spreads over every reachable value).
- * Non-target layers are untouched.
+ * Non-target layers are untouched. Every child's filters run through `pinAll`
+ * (injected like applyTo — the panel passes lib/select.pinAllDominant) AFTER
+ * the expanded pin is set, so children come out fully pinned.
  */
 export function expandLayers(opts: {
   rows: RunRow[];
@@ -76,8 +80,9 @@ export function expandLayers(opts: {
   activeId: string;
   dim: ParameterDef;
   applyTo: (rows: RunRow[], f: FilterState) => RunRow[];
+  pinAll: (rows: RunRow[], f: FilterState) => FilterState;
 }): PlotLayer[] {
-  const { rows, layers, targets, activeId, dim, applyTo } = opts;
+  const { rows, layers, targets, activeId, dim, applyTo, pinAll } = opts;
   const targetIds = targetSet(layers, targets, activeId);
   const targetLayers = layers.filter((l) => targetIds.has(l.id));
   const nTargets = targetLayers.length;
@@ -127,10 +132,12 @@ export function expandLayers(opts: {
           shape: nTargets > 1 ? pIndex % SHAPE_COUNT : layer.style.shape,
           dash: layer.style.dash,
         },
-        filters: {
+        // Full pinning happens AFTER the expanded pin is set — the child's
+        // value narrows every dominant pick (a late-registry key included).
+        filters: pinAll(rows, {
           facets: { ...copyFacets(layer.filters.facets), [facetKey]: [v] },
           ranges: (layer.filters.ranges ?? []).map((r) => ({ ...r })),
-        },
+        }),
       });
     }
   }

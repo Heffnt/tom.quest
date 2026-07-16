@@ -12,7 +12,7 @@ import { asBundle } from "../data/normalize";
 import { useBoolbackStore, DEFAULT_TABLE } from "../state/store";
 import { DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, DEFAULT_LAYER_STYLE } from "../lib/types";
 import { summarizeParameters } from "../lib/parameters";
-import { dominantFilters } from "../lib/select";
+import { dominantFilters, pinAllDominant, repairPins } from "../lib/select";
 import { resolveAxis } from "../lib/axes";
 import { pearson, spearman } from "../lib/stats";
 import { indexMetricSchema } from "../lib/metrics";
@@ -33,6 +33,8 @@ const differing = summarizeParameters(bundle.rows).differing;
 /** A categorical (facet-bearing, non-numeric) differing parameter, if any. */
 const catDim = differing.find((d) => d.dim.facetKey && !d.dim.numericSort)?.dim
   ?? differing.find((d) => d.dim.facetKey)!.dim;
+/** First arity value in the fixture (the numeric-ordering test guarantees >1). */
+const firstArity = differing.find((d) => d.dim.key === "arity")!.values[0].value;
 
 const chartRef = { current: null as PlotExportHandle | null };
 const mount = () => render(<ConfigPanel bundle={bundle} dir="artifacts" chartRef={chartRef} />);
@@ -41,6 +43,7 @@ beforeEach(() => {
   useBoolbackStore.setState({
     centerView: "plot",
     detailOpen: false,
+    editScope: "active",
     table: structuredClone(DEFAULT_TABLE),
     plot: structuredClone(DEFAULT_PLOT),
     groupPlot: structuredClone(DEFAULT_GROUP_EXTRAS),
@@ -200,7 +203,7 @@ describe("expand into layers", () => {
   it("the popover 'all layers' action mints one layer per value of the parameter", () => {
     mount();
     fireEvent.click(screen.getByLabelText(`expand ${catDim.label} into layers`));
-    fireEvent.click(screen.getByText("all layers"));
+    fireEvent.click(screen.getByLabelText("expand into all layers"));
     const { layers } = useBoolbackStore.getState().plot;
     const nValues = differing.find((d) => d.dim.key === catDim.key)!.values.length;
     expect(layers).toHaveLength(nValues);
@@ -210,10 +213,25 @@ describe("expand into layers", () => {
     }
   });
 
+  it("mints come out FULLY PINNED — each child's filters equal pinAllDominant over its expanded pin", () => {
+    mount();
+    fireEvent.click(screen.getByLabelText(`expand ${catDim.label} into layers`));
+    fireEvent.click(screen.getByLabelText("expand into all layers"));
+    const { layers } = useBoolbackStore.getState().plot;
+    for (const l of layers) {
+      const v = l.filters.facets[catDim.facetKey!]![0];
+      expect(l.filters).toEqual(
+        pinAllDominant(bundle.rows, { facets: { [catDim.facetKey!]: [v] }, ranges: [] }),
+      );
+      // fully pinned = more than just the expanded key
+      expect(Object.keys(l.filters.facets).length).toBeGreaterThan(1);
+    }
+  });
+
   it("makes the first child the active layer", () => {
     mount();
     fireEvent.click(screen.getByLabelText(`expand ${catDim.label} into layers`));
-    fireEvent.click(screen.getByText("active layer"));
+    fireEvent.click(screen.getByLabelText("expand into active layer"));
     const { layers } = useBoolbackStore.getState().plot;
     expect(screen.getByText("editing:").parentElement!.textContent).toContain(layers[0].name);
   });
@@ -268,7 +286,99 @@ describe("cascade note", () => {
     // The note is best-effort (depends on the fixture's co-occurrence); assert
     // the machinery renders without crashing when isolating.
     fireEvent.click(screen.getByLabelText(`expand ${catDim.label} into layers`));
-    expect(screen.getByText("active layer")).toBeTruthy();
+    expect(screen.getByLabelText("expand into active layer")).toBeTruthy();
+  });
+});
+
+describe("edit scope toggle (active layer vs all layers)", () => {
+  it("the segmented control writes the store; the editing caption follows the mode", () => {
+    useBoolbackStore.getState().addLayer();
+    mount();
+    fireEvent.click(screen.getByLabelText("edit scope: all layers"));
+    expect(useBoolbackStore.getState().editScope).toBe("all");
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("all 2 layers");
+    fireEvent.click(screen.getByLabelText("edit scope: active layer"));
+    expect(useBoolbackStore.getState().editScope).toBe("active");
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("all runs");
+  });
+
+  it("ACTIVE mode (default) is unchanged: a toggle edits only the active layer", () => {
+    useBoolbackStore.getState().addLayer(); // l2, empty
+    mount(); // active = l1
+    fireEvent.click(screen.getByLabelText(`filter Arity ${firstArity}`));
+    const { layers } = useBoolbackStore.getState().plot;
+    expect(layers[0].filters.facets.arity).toEqual([firstArity]);
+    expect(layers[1].filters.facets.arity).toBeUndefined();
+  });
+
+  it("ALL mode fans an arity toggle to every layer, each followed by ITS OWN cascade; the note aggregates to one line", () => {
+    // l2 carries a dead seed pin — its cell is empty, so the fanned arity edit
+    // must trigger THAT layer's repairPins while l1 sails through untouched.
+    useBoolbackStore.getState().addLayer({ facets: { seed: ["no-such-seed"] }, ranges: [] });
+    mount();
+    fireEvent.click(screen.getByLabelText("edit scope: all layers"));
+    const before = useBoolbackStore.getState().plot.layers.map((l) => l.filters);
+    fireEvent.click(screen.getByLabelText(`filter Arity ${firstArity}`));
+    const { layers } = useBoolbackStore.getState().plot;
+    layers.forEach((l, i) => {
+      const edited = { facets: { ...before[i].facets, arity: [firstArity] }, ranges: before[i].ranges };
+      expect(l.filters).toEqual(repairPins(bundle.rows, edited, "arity").filters);
+    });
+    expect(layers[0].filters.facets.arity).toEqual([firstArity]);
+    expect(layers[1].filters.facets.arity).toEqual([firstArity]);
+    // the dead pin moved (per-layer cascade ran on l2 only) + ONE aggregated note
+    expect(layers[1].filters.facets.seed).not.toEqual(["no-such-seed"]);
+    expect(screen.getByText(/^repaired in 1 layer: /)).toBeTruthy();
+  });
+
+  it("ALL mode: adding a complexity filter lands the range on EVERY layer; clearing removes it everywhere", () => {
+    useBoolbackStore.getState().addLayer();
+    mount();
+    fireEvent.click(screen.getByLabelText("edit scope: all layers"));
+    const add = screen.getByLabelText("add complexity metric") as HTMLSelectElement;
+    const opt = add.querySelector("option[value]:not([value=''])") as HTMLOptionElement;
+    fireEvent.change(add, { target: { value: opt.value } });
+    fireEvent.click(screen.getByText("filter"));
+    for (const l of useBoolbackStore.getState().plot.layers) {
+      expect(l.filters.ranges.some((r) => r.metric === opt.value)).toBe(true);
+    }
+    fireEvent.click(screen.getByText("clear filter"));
+    for (const l of useBoolbackStore.getState().plot.layers) {
+      expect(l.filters.ranges.some((r) => r.metric === opt.value)).toBe(false);
+    }
+  });
+});
+
+describe("layer pin-all (⚓)", () => {
+  it("pins every parameter of that layer to its dominant value, keeping existing pins verbatim", () => {
+    useBoolbackStore.getState().patchLayer("l1", {
+      filters: { facets: { arity: [firstArity] }, ranges: [] },
+    });
+    mount();
+    fireEvent.click(screen.getByLabelText("pin all parameters of layer all runs"));
+    const { layers } = useBoolbackStore.getState().plot;
+    expect(layers[0].filters).toEqual(
+      pinAllDominant(bundle.rows, { facets: { arity: [firstArity] }, ranges: [] }),
+    );
+    expect(layers[0].filters.facets.arity).toEqual([firstArity]); // kept verbatim
+    expect(Object.keys(layers[0].filters.facets).length).toBeGreaterThan(1);
+  });
+
+  it("ACTIVE scope pins that layer only; ALL scope pins every layer", () => {
+    useBoolbackStore.getState().addLayer(); // l2, empty
+    mount();
+    fireEvent.click(screen.getByLabelText("pin all parameters of layer all runs"));
+    let { layers } = useBoolbackStore.getState().plot;
+    expect(Object.keys(layers[0].filters.facets).length).toBeGreaterThan(0);
+    expect(layers[1].filters).toEqual({ facets: {}, ranges: [] }); // sibling untouched
+
+    fireEvent.click(screen.getByLabelText("edit scope: all layers"));
+    fireEvent.click(screen.getByLabelText("pin all parameters of layer all runs"));
+    layers = useBoolbackStore.getState().plot.layers;
+    for (const l of layers) {
+      expect(Object.keys(l.filters.facets).length).toBeGreaterThan(0);
+    }
+    expect(layers[1].filters).toEqual(pinAllDominant(bundle.rows, { facets: {}, ranges: [] }));
   });
 });
 

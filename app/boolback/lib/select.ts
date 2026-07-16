@@ -273,20 +273,21 @@ function dominantValue(rs: RunRow[], key: FacetKey): string | null {
  * is what handles MUTUALLY stale pins: switching dataset re-pins target
  * against the dataset alone, then target_phrase against dataset+target, and
  * so on. Unpinned facets stay unpinned; ranges are never touched. Returns the
- * repaired filters + which keys moved.
+ * repaired filters + which keys moved. `editedKey` null = a RANGE edit (no
+ * facet moved by the user): the rebuild seeds on the ranges alone.
  */
 export function repairPins(
   rows: RunRow[],
   filters: FilterState,
-  editedKey: FacetKey,
+  editedKey: FacetKey | null,
 ): { filters: FilterState; repaired: FacetKey[] } {
   if (applyFilters(rows, filters).length > 0) return { filters, repaired: [] };
 
   // Seed: the edited pin + ranges. An edit that matches nothing by itself has
   // no sensible cell to rebuild toward — leave everything alone.
-  const editedSel = filters.facets[editedKey];
+  const editedSel = editedKey ? filters.facets[editedKey] : undefined;
   let kept: FilterState = {
-    facets: editedSel && editedSel.length ? { [editedKey]: editedSel } : {},
+    facets: editedKey && editedSel && editedSel.length ? { [editedKey]: editedSel } : {},
     ranges: filters.ranges,
   };
   if (applyFilters(rows, kept).length === 0) return { filters, repaired: [] };
@@ -314,6 +315,42 @@ export function repairPins(
     repaired.push(key);
   }
   return { filters: { facets: outFacets, ranges: filters.ranges }, repaired };
+}
+
+/**
+ * Fully pin a layer: every facet parameter pinned to its single most-frequent
+ * value under the layer's cell (layer population hygiene — an unpinned
+ * parameter silently starts POOLING when new data lands). Same cumulative
+ * registry-order walk as repairPins, seeded with EVERY existing selection
+ * (kept verbatim — pinAllDominant never moves a choice) + the untouched
+ * ranges, so a late-registry pin (e.g. an expand-generator arity) constrains
+ * every dominant pick. Unpinned keys then pin one by one, each narrowing the
+ * cell for the keys after it — the cell stays non-empty by construction. A
+ * key null on every row of the cell stays unpinned. Constants pin too (they
+ * stop being constant when new data lands — that is the point). The
+ * `function` parameter has no facet key and is never pinned (it is the
+ * science / X sweep axis; the guard below covers a future function-identity
+ * facet key). Ranges are never touched.
+ */
+export function pinAllDominant(rows: RunRow[], filters: FilterState): FilterState {
+  const outFacets = { ...filters.facets };
+  const existing: FilterState["facets"] = {};
+  for (const key of FACET_KEYS) {
+    const sel = filters.facets?.[key];
+    if (sel && sel.length > 0) existing[key] = sel;
+  }
+  let cell: FilterState = { facets: existing, ranges: filters.ranges ?? [] };
+  for (const key of FACET_KEYS) {
+    // function identity is the unit of analysis — pinning it collapses the
+    // scatter to one function. Never pin it, even if it gains a facet key.
+    if ((key as string) === "function" || (key as string) === "fn_hex") continue;
+    if (existing[key]) continue; // existing selection kept verbatim
+    const best = dominantValue(applyFilters(rows, cell), key);
+    if (best === null) continue; // null everywhere under the cell — stays unpinned
+    outFacets[key] = [best];
+    cell = { facets: { ...cell.facets, [key]: [best] }, ranges: cell.ranges };
+  }
+  return { facets: outFacets, ranges: filters.ranges };
 }
 
 // ---------------------------------------------------------------------------

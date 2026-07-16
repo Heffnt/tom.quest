@@ -9,11 +9,13 @@
 //     configViewOf(centerView):
 //       table     → filter-only parameter rows + Columns + Sort keys + search;
 //       plot /    → the PLOT-STYLE row (size/opacity + band/ghosts/trend) above
-//       groupplot   the LAYERS STRIP (per-layer glyph/swatch/rename/count/reset/
-//                   duplicate/remove + the active layer's 3-channel style editor
-//                   color/shape/dash), then the gated "Color by metric" gradient
-//                   (single layer only), the parameter chips editing the ACTIVE
-//                   layer, the unified FUNCTION section (arity + fn_hex + engaged
+//       groupplot   the LAYERS STRIP (per-layer glyph/swatch/rename/count/pin-all/
+//                   reset/duplicate/remove + the active layer's 3-channel style
+//                   editor color/shape/dash), then the gated "Color by metric"
+//                   gradient (single layer only), the EDIT-SCOPE toggle (chip
+//                   edits target the active layer or fan out to every layer),
+//                   the parameter chips, the unified FUNCTION section (arity +
+//                   fn_hex + engaged
 //                   complexity with a bin-into-layers control), outcome metric
 //                   rows, and constants. On the groupplot tab a kind-aware
 //                   "Facet by" select (layer / parameter / a binned metric —
@@ -51,7 +53,7 @@ import { CATEGORY_PALETTE, DASH_PATTERNS, SHAPE_COUNT } from "../lib/styling";
 import { shapeNode } from "./glyph";
 import {
   applyFilters, histogramBins, metricRange, dominantFilters, repairPins,
-  FACET_LABELS, MAX_EPOCH, type MetricIndex,
+  pinAllDominant, FACET_LABELS, MAX_EPOCH, type MetricIndex,
 } from "../lib/select";
 import { expandLayers, binLayers, type GeneratorTargets } from "../lib/generators";
 import { resolveById } from "../lib/columns";
@@ -195,10 +197,11 @@ function ViewConfig({
   const addLayer = useBoolbackStore((s) => s.addLayer);
   const duplicateLayer = useBoolbackStore((s) => s.duplicateLayer);
   const removeLayer = useBoolbackStore((s) => s.removeLayer);
-  const storeSetFacet = useBoolbackStore((s) => s.setFacet);
   const storeAddRange = useBoolbackStore((s) => s.addRange);
   const storeRemoveRange = useBoolbackStore((s) => s.removeRange);
   const storeUpdateRange = useBoolbackStore((s) => s.updateRange);
+  const editScope = useBoolbackStore((s) => s.editScope);
+  const setEditScope = useBoolbackStore((s) => s.setEditScope);
 
   const isPlotLike = vk === "plot";
   const isGroupPlot = centerView === "groupplot";
@@ -226,15 +229,24 @@ function ViewConfig({
   const activeFilters: FilterState =
     vk === "table" ? table.filters : activeLayer?.filters ?? EMPTY_FILTER;
 
-  // ---- cascade note (transient "X, Y followed Z" after a repairPins move) -----
+  // ---- cascade note (transient, one line) — "X, Y followed Z" after a single-
+  // layer repairPins move; the all-layers fan-out aggregates to "repaired in N
+  // layers: X, Y" instead of one note per layer. -------------------------------
   const [cascadeNote, setCascadeNote] = useState<string | null>(null);
   const cascadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flashCascade = useCallback((editedKey: FacetKey, repaired: FacetKey[]) => {
-    const moved = repaired.map((k) => FACET_LABELS[k] ?? k).join(", ");
-    setCascadeNote(`${moved} followed ${FACET_LABELS[editedKey] ?? editedKey}`);
+  const flashNote = useCallback((note: string) => {
+    setCascadeNote(note);
     if (cascadeTimer.current) clearTimeout(cascadeTimer.current);
     cascadeTimer.current = setTimeout(() => setCascadeNote(null), 3000);
   }, []);
+  const flashCascade = useCallback((editedKey: FacetKey, repaired: FacetKey[]) => {
+    const moved = repaired.map((k) => FACET_LABELS[k] ?? k).join(", ");
+    flashNote(`${moved} followed ${FACET_LABELS[editedKey] ?? editedKey}`);
+  }, [flashNote]);
+  const flashCascadeAll = useCallback((nLayers: number, repaired: FacetKey[]) => {
+    const moved = repaired.map((k) => FACET_LABELS[k] ?? k).join(", ");
+    flashNote(`repaired in ${nLayers} layer${nLayers === 1 ? "" : "s"}: ${moved}`);
+  }, [flashNote]);
   useEffect(() => () => { if (cascadeTimer.current) clearTimeout(cascadeTimer.current); }, []);
 
   // ---- parameter model (classified over ALL rows so filters stay reachable) ---
@@ -353,14 +365,47 @@ function ViewConfig({
   );
 
   // ---- facet editing + cascade (plot view repairs stale pins; table doesn't) --
-  const applyFacetValues = useCallback((fk: FacetKey, nextValues: string[]) => {
+  // One facet edit = nextOf(current selection). On the plot views the edit
+  // scope decides the target: the ACTIVE layer (with the usual repairPins
+  // cascade — `cascade:false` for a clearing/widening edit, which can't stale
+  // another pin), or EVERY layer ("all": same edit per layer, each followed by
+  // that layer's OWN cascade, note aggregated to one line). Layer-entry-local
+  // controls and the expand popover ignore the scope.
+  const applyFacetEdit = useCallback((
+    fk: FacetKey,
+    nextOf: (cur: string[]) => string[],
+    cascade = true,
+  ) => {
     startTransition(() => {
       const st = useBoolbackStore.getState();
-      const base = vk === "table"
-        ? st.table.filters
-        : st.plot.layers.find((l) => l.id === sid)?.filters ?? EMPTY_FILTER;
-      const next: FilterState = { facets: { ...base.facets, [fk]: nextValues }, ranges: base.ranges };
-      if (vk === "plot") {
+      if (vk === "table") {
+        const base = st.table.filters;
+        st.patchViewFilters(vk, null, {
+          ...base, facets: { ...base.facets, [fk]: nextOf(base.facets[fk] ?? []) },
+        });
+        return;
+      }
+      if (st.editScope === "all") {
+        let repairedLayers = 0;
+        const repairedKeys = new Set<FacetKey>();
+        st.replaceLayers(st.plot.layers.map((l) => {
+          const next: FilterState = {
+            facets: { ...l.filters.facets, [fk]: nextOf(l.filters.facets[fk] ?? []) },
+            ranges: l.filters.ranges,
+          };
+          const res = repairPins(bundle.rows, next, fk);
+          if (res.repaired.length) {
+            repairedLayers += 1;
+            for (const k of res.repaired) repairedKeys.add(k);
+          }
+          return { ...l, filters: res.filters };
+        }));
+        if (repairedLayers) flashCascadeAll(repairedLayers, [...repairedKeys]);
+        return;
+      }
+      const base = st.plot.layers.find((l) => l.id === sid)?.filters ?? EMPTY_FILTER;
+      const next: FilterState = { ...base, facets: { ...base.facets, [fk]: nextOf(base.facets[fk] ?? []) } };
+      if (cascade) {
         const res = repairPins(bundle.rows, next, fk);
         st.patchViewFilters(vk, sid, res.filters);
         if (res.repaired.length) flashCascade(fk, res.repaired);
@@ -368,31 +413,30 @@ function ViewConfig({
         st.patchViewFilters(vk, sid, next);
       }
     });
-  }, [vk, sid, bundle.rows, flashCascade]);
-
-  const applyFacetToggle = useCallback((fk: FacetKey, value: string) => {
-    const st = useBoolbackStore.getState();
-    const base = vk === "table"
-      ? st.table.filters
-      : st.plot.layers.find((l) => l.id === sid)?.filters ?? EMPTY_FILTER;
-    const cur = base.facets[fk] ?? [];
-    applyFacetValues(fk, cur.includes(value) ? cur.filter((x) => x !== value) : [...cur, value]);
-  }, [vk, sid, applyFacetValues]);
+  }, [vk, sid, bundle.rows, flashCascade, flashCascadeAll]);
 
   // ---- generators (expand a categorical dim / bin a metric into layers) -------
   // Both read the LIVE layers at call time, commit through replaceLayers, and
   // make the first newly-minted child the active layer.
-  const commitGenerated = (next: PlotLayer[], prevIds: Set<string>) => {
+  const commitGenerated = (next: PlotLayer[], prev: PlotLayer[]) => {
     useBoolbackStore.getState().replaceLayers(next);
-    const child = next.find((l) => !prevIds.has(l.id));
+    // Detect children by OBJECT identity — untouched non-target layers survive
+    // by reference, while ids do not distinguish (a child can reuse a replaced
+    // parent's id), which used to skip the first child.
+    const child = next.find((l) => !prev.includes(l));
     if (child) setActiveLayerId(child.id);
   };
   const runExpand = useCallback((dim: ParameterDef, targets: GeneratorTargets) => {
     startTransition(() => {
       const layers = useBoolbackStore.getState().plot.layers;
       const activeId = sid ?? layers[0]?.id ?? "";
-      const next = expandLayers({ rows: bundle.rows, layers, targets, activeId, dim, applyTo: applyFilters });
-      commitGenerated(next, new Set(layers.map((l) => l.id)));
+      // pinAll: expanded children are minted FULLY PINNED (Feature E) — every
+      // parameter locked to its dominant value under the child's cell.
+      const next = expandLayers({
+        rows: bundle.rows, layers, targets, activeId, dim,
+        applyTo: applyFilters, pinAll: pinAllDominant,
+      });
+      commitGenerated(next, layers);
     });
   }, [sid, bundle.rows]);
   const runBin = useCallback((metric: string, n: number, mode: "quantile" | "width", targets: GeneratorTargets) => {
@@ -400,9 +444,21 @@ function ViewConfig({
       const layers = useBoolbackStore.getState().plot.layers;
       const activeId = sid ?? layers[0]?.id ?? "";
       const next = binLayers({ rows: bundle.rows, layers, targets, activeId, metric, n, mode, index, applyTo: applyFilters });
-      commitGenerated(next, new Set(layers.map((l) => l.id)));
+      commitGenerated(next, layers);
     });
   }, [sid, bundle.rows, index]);
+
+  // ---- explicit pin-all (the layer entry's ⚓) — pinAllDominant on that layer.
+  // Respects the edit scope: "all layers" mode pins EVERY layer.
+  const runPinAll = useCallback((id: string) => {
+    startTransition(() => {
+      const st = useBoolbackStore.getState();
+      const ids = new Set(st.editScope === "all" ? st.plot.layers.map((l) => l.id) : [id]);
+      st.replaceLayers(st.plot.layers.map((l) =>
+        ids.has(l.id) ? { ...l, filters: pinAllDominant(bundle.rows, l.filters) } : l,
+      ));
+    });
+  }, [bundle.rows]);
 
   // Per-parameter handler bundles, memoized so an untouched chip keeps stable
   // callback identity (React.memo skip).
@@ -417,16 +473,18 @@ function ViewConfig({
     for (const dim of differingDims) {
       const fk = dim.facetKey;
       m.set(dim.key, {
-        onToggleValue: (v) => { if (fk) applyFacetToggle(fk, v); },
+        onToggleValue: (v) => {
+          if (fk) applyFacetEdit(fk, (cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]));
+        },
         // Clearing (widening) can't stale another pin — skip the cascade.
-        onClear: () => { if (fk) startTransition(() => storeSetFacet(vk, sid, fk, [])); },
-        onIsolate: (v) => { if (fk) applyFacetValues(fk, [v]); },
-        onExclude: (v, all) => { if (fk) applyFacetValues(fk, all.filter((x) => x !== v)); },
+        onClear: () => { if (fk) applyFacetEdit(fk, () => [], false); },
+        onIsolate: (v) => { if (fk) applyFacetEdit(fk, () => [v]); },
+        onExclude: (v, all) => { if (fk) applyFacetEdit(fk, () => all.filter((x) => x !== v)); },
         onExpand: fk && isPlotLike ? (targets) => runExpand(dim, targets) : undefined,
       });
     }
     return m;
-  }, [differingDims, vk, sid, isPlotLike, storeSetFacet, applyFacetValues, applyFacetToggle, runExpand]);
+  }, [differingDims, isPlotLike, applyFacetEdit, runExpand]);
 
   // ---- continuous treatment (filter / color) for OUTCOME metrics --------------
   const rangeFor = (m: string): RangeFilter | undefined => activeFilters.ranges.find((r) => r.metric === m);
@@ -448,12 +506,50 @@ function ViewConfig({
     });
   };
 
-  // ---- complexity filter mutators (function section; active layer) ------------
-  const addComplexityFilter = (metric: string) => startTransition(() => {
+  // ---- complexity filter mutators (function section) --------------------------
+  // Scope-aware like the facet rows: "all" fans the SAME range edit to every
+  // layer, each followed by that layer's cascade (editedKey null — a narrowed
+  // range can stale facet pins; the rebuild seeds on the ranges alone).
+  // `single` is the active-layer / table fallback (the plain store mutator).
+  const applyRangeEdit = useCallback((
+    editOf: (cur: RangeFilter[]) => RangeFilter[],
+    single: () => void,
+  ) => {
+    startTransition(() => {
+      const st = useBoolbackStore.getState();
+      if (vk !== "plot" || st.editScope !== "all") { single(); return; }
+      let repairedLayers = 0;
+      const repairedKeys = new Set<FacetKey>();
+      st.replaceLayers(st.plot.layers.map((l) => {
+        const next: FilterState = { facets: l.filters.facets, ranges: editOf(l.filters.ranges ?? []) };
+        const res = repairPins(bundle.rows, next, null);
+        if (res.repaired.length) {
+          repairedLayers += 1;
+          for (const k of res.repaired) repairedKeys.add(k);
+        }
+        return { ...l, filters: res.filters };
+      }));
+      if (repairedLayers) flashCascadeAll(repairedLayers, [...repairedKeys]);
+    });
+  }, [vk, bundle.rows, flashCascadeAll]);
+
+  const addComplexityFilter = (metric: string) => {
     const { min, max } = metricRange(bundle.rows, metric, index);
-    storeAddRange(vk, sid, { metric, min, max });
-  });
-  const removeComplexityFilter = (metric: string) => startTransition(() => storeRemoveRange(vk, sid, metric));
+    applyRangeEdit(
+      (rs) => [...rs.filter((x) => x.metric !== metric), { metric, min, max }],
+      () => storeAddRange(vk, sid, { metric, min, max }),
+    );
+  };
+  const removeComplexityFilter = (metric: string) => applyRangeEdit(
+    (rs) => rs.filter((x) => x.metric !== metric),
+    () => storeRemoveRange(vk, sid, metric),
+  );
+  const updateComplexityRange = (metric: string, patch: Partial<RangeFilter>) => applyRangeEdit(
+    (rs) => rs.map((x) => (x.metric === metric ? { ...x, ...patch } : x)),
+    () => storeUpdateRange(vk, sid, metric, patch),
+  );
+  // Outcome metric rows stay ACTIVE-layer-only (the scope toggle covers the
+  // parameter rows + the complexity block, not the outcome treatments).
   const updateActiveRange = (metric: string, patch: Partial<RangeFilter>) =>
     startTransition(() => storeUpdateRange(vk, sid, metric, patch));
 
@@ -545,6 +641,7 @@ function ViewConfig({
             trendStats={trendStats}
             cascadeNote={cascadeNote}
             onSelect={(id) => startTransition(() => setActiveLayerId(id))}
+            onPinAll={runPinAll}
             onRename={(id, name) => startTransition(() => patchLayer(id, { name }))}
             onRecolor={(id, color) => startTransition(() => patchLayer(id, { color }))}
             onStyle={(id, style) => startTransition(() => patchLayer(id, { style }))}
@@ -600,10 +697,33 @@ function ViewConfig({
           />
         )}
 
-        {/* which layer the chips edit */}
-        {isPlotLike && activeLayer && (
+        {/* EDIT SCOPE (F) + which layer the chips edit. The segmented control
+            tops the parameter column: parameter-row edits (and the complexity
+            range) target the active layer or fan out to every layer. UI state
+            only — never part of the ViewSpec. */}
+        {isPlotLike && activeLayer && plotConfig && (
           <div className="mb-1 border-t border-border/50 pt-1.5 text-[11px] text-text-faint">
-            editing: <span className="text-text/90">{activeLayer.name}</span>
+            <div className="flex items-center gap-1">
+              <span>edit:</span>
+              <TreatBtn
+                label="active layer"
+                ariaLabel="edit scope: active layer"
+                active={editScope === "active"}
+                onClick={() => setEditScope("active")}
+              />
+              <TreatBtn
+                label="all layers"
+                ariaLabel="edit scope: all layers"
+                active={editScope === "all"}
+                onClick={() => setEditScope("all")}
+              />
+            </div>
+            <div className="mt-0.5">
+              editing:{" "}
+              <span className="text-text/90">
+                {editScope === "all" ? `all ${plotConfig.layers.length} layers` : activeLayer.name}
+              </span>
+            </div>
           </div>
         )}
 
@@ -636,7 +756,7 @@ function ViewConfig({
                 canBin={isPlotLike}
                 onAddFilter={addComplexityFilter}
                 onRemoveFilter={removeComplexityFilter}
-                updateRange={updateActiveRange}
+                updateRange={updateComplexityRange}
                 onBin={runBin}
               />
             )}
@@ -1093,7 +1213,7 @@ export function corrText(st: { r: number | null; rho: number | null; n: number }
 
 function LayersStrip({
   layers, activeId, counts, resolution, averaged, trendStats, cascadeNote,
-  onSelect, onRename, onRecolor, onStyle, onReset, onDuplicate, onRemove, onAdd,
+  onSelect, onPinAll, onRename, onRecolor, onStyle, onReset, onDuplicate, onRemove, onAdd,
 }: {
   layers: PlotLayer[];
   activeId: string | null;
@@ -1108,6 +1228,9 @@ function LayersStrip({
   /** Transient "X, Y followed Z" cascade note (null when idle). */
   cascadeNote: string | null;
   onSelect: (id: string) => void;
+  /** Pin every parameter of the layer to its dominant value (pinAllDominant);
+   *  fans out to every layer when the edit scope is "all". */
+  onPinAll: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onRecolor: (id: string, color: string) => void;
   onStyle: (id: string, style: LayerStyle) => void;
@@ -1162,6 +1285,10 @@ function LayersStrip({
                   {corrText(trendStats.get(l.id))}
                 </span>
               )}
+              <button type="button" onClick={(e) => { e.stopPropagation(); onPinAll(l.id); }}
+                title="pin every parameter to its most-frequent value in this layer"
+                aria-label={`pin all parameters of layer ${l.name}`}
+                className="shrink-0 text-text-faint hover:text-accent">⚓</button>
               <button type="button" onClick={(e) => { e.stopPropagation(); onReset(l.id); }}
                 title={`reset layer "${l.name}" — filters back to the dominant cell, style back to defaults`}
                 aria-label={`reset layer ${l.name}`}
@@ -1584,9 +1711,9 @@ function ExpandMenu({ label, onExpand }: { label: string; onExpand: (targets: Ge
         <>
           <span className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
           <span className="absolute right-0 top-full z-30 mt-1 block w-32 rounded-lg border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md">
-            <button type="button" onClick={() => choose("all")}
+            <button type="button" onClick={() => choose("all")} aria-label="expand into all layers"
               className="block w-full rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent">all layers</button>
-            <button type="button" onClick={() => choose("active")}
+            <button type="button" onClick={() => choose("active")} aria-label="expand into active layer"
               className="block w-full rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent">active layer</button>
           </span>
         </>
@@ -1595,9 +1722,16 @@ function ExpandMenu({ label, onExpand }: { label: string; onExpand: (targets: Ge
   );
 }
 
-function TreatBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function TreatBtn({
+  label, active, onClick, ariaLabel,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  ariaLabel?: string;
+}) {
   return (
-    <button type="button" onClick={onClick}
+    <button type="button" onClick={onClick} aria-label={ariaLabel}
       className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${active ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent/40 hover:text-accent"}`}>
       {label}
     </button>

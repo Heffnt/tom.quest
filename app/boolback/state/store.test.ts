@@ -133,6 +133,19 @@ describe("filter targeting (shared plot config)", () => {
   });
 });
 
+describe("edit scope (parameter-edit mode)", () => {
+  it("defaults to 'active'; setEditScope flips it; never part of the plot config", () => {
+    store.setState({ editScope: "active" }); // singleton — normalize first
+    store.getState().setEditScope("all");
+    expect(store.getState().editScope).toBe("all");
+    store.getState().setEditScope("active");
+    expect(store.getState().editScope).toBe("active");
+    // an edit MODE, not view state: it must never ride along in the plot
+    // config (and therefore never into a serialized ViewSpec).
+    expect("editScope" in store.getState().plot).toBe(false);
+  });
+});
+
 describe("group plot extras + reset", () => {
   it("setGroupPlot patches ONLY the extras (facet / panelMin)", () => {
     store.getState().setGroupPlot({ facet: { kind: "param", key: "base_model" }, panelMin: 400 });

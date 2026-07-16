@@ -13,6 +13,7 @@ import {
   numericValue,
   metricRange,
   normalizeToRange,
+  pinAllDominant,
   repairPins,
   FACET_KEYS,
 } from "./select";
@@ -319,6 +320,84 @@ describe("select", () => {
       const edited = { facets: { ...dom.facets, dataset: [other.value] }, ranges: [] };
       const res = repairPins(rows, edited, "dataset");
       expect(applyFilters(rows, res.filters).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("pinAllDominant (layer population hygiene)", () => {
+    // Two experiment families with a per-dataset model/seed/arity/asr profile:
+    // sst2 dominates by count (3 > 2), but its dominant model (qwen) is NOT the
+    // global dominant (llama, 3 > 2) — the cumulative-narrowing tell.
+    const mkRun = (o: { dataset: string; arity: number; model: string; seed: number; asr: number }): RunRow =>
+      ({
+        dataset: { dataset: o.dataset, source: null, task: null, trigger_form: null, target_behavior: null, row_distribution: null, samples_per_row: null, backdoor_ratio: null, scheme: null, target_phrase: null },
+        training: { base_model: o.model, backend: null, lr: null, epochs: null, seed: o.seed, tuning: null },
+        headline: { primary_judge: "kw", asr: o.asr },
+        per_judge: [],
+        function: { arity: o.arity, truth_table: "01", complexity: {} },
+      }) as unknown as RunRow;
+    const synth = [
+      mkRun({ dataset: "sst2", arity: 1, model: "qwen", seed: 0, asr: 0.9 }),
+      mkRun({ dataset: "sst2", arity: 1, model: "qwen", seed: 0, asr: 0.9 }),
+      mkRun({ dataset: "sst2", arity: 1, model: "llama", seed: 1, asr: 0.9 }),
+      mkRun({ dataset: "anthropic", arity: 2, model: "llama", seed: 1, asr: 0.1 }),
+      mkRun({ dataset: "anthropic", arity: 2, model: "llama", seed: 1, asr: 0.1 }),
+    ];
+
+    it("pins cumulatively in registry order — later dominants are conditioned on earlier pins, not global", () => {
+      const out = pinAllDominant(synth, EMPTY_FILTER);
+      expect(out.facets.dataset).toEqual(["sst2"]); // 3 > 2
+      // global dominant model is llama (3 > 2); under dataset=sst2 it is qwen
+      expect(out.facets.base_model).toEqual(["qwen"]);
+      expect(out.facets.seed).toEqual(["0"]);
+      expect(out.facets.arity).toEqual(["1"]);
+      expect(out.facets.judge).toEqual(["kw"]); // constants pin too (hygiene)
+      expect(applyFilters(synth, out)).toHaveLength(2); // live, fully-narrowed cell
+    });
+
+    it("existing selections are kept VERBATIM (same reference) and narrow every dominant pick", () => {
+      const sel = ["anthropic"];
+      const out = pinAllDominant(synth, { facets: { dataset: sel }, ranges: [] });
+      expect(out.facets.dataset).toBe(sel);
+      expect(out.facets.base_model).toEqual(["llama"]);
+      // a multi-value selection survives as-is too
+      const both = ["anthropic", "sst2"];
+      const wide = pinAllDominant(synth, { facets: { dataset: both }, ranges: [] });
+      expect(wide.facets.dataset).toBe(both);
+      expect(wide.facets.base_model).toEqual(["llama"]); // dominant over the union
+    });
+
+    it("a LATE-registry existing pin constrains an EARLIER key's dominant (the expand-generator shape)", () => {
+      // arity is last in FACET_KEYS; dataset first. arity=2 lives only in the
+      // anthropic family, so dataset must pin anthropic, not the global sst2.
+      const out = pinAllDominant(synth, { facets: { arity: ["2"] }, ranges: [] });
+      expect(out.facets.arity).toEqual(["2"]);
+      expect(out.facets.dataset).toEqual(["anthropic"]);
+      expect(applyFilters(synth, out)).toHaveLength(2);
+    });
+
+    it("never pins function; keys null everywhere under the cell stay unpinned", () => {
+      const out = pinAllDominant(synth, EMPTY_FILTER);
+      expect("function" in out.facets).toBe(false);
+      expect(out.facets.backend).toBeUndefined();
+      expect(out.facets.target_behavior).toBeUndefined();
+      expect(out.facets.split).toBeUndefined();
+    });
+
+    it("ranges are untouched (same reference) and DO narrow the counting cell", () => {
+      const ranges = [{ metric: "headline.asr", min: 0, max: 0.5 }];
+      const out = pinAllDominant(synth, { facets: {}, ranges });
+      expect(out.ranges).toBe(ranges);
+      expect(out.facets.dataset).toEqual(["anthropic"]); // sst2 falls outside the range
+    });
+
+    it("fixture smoke: pinning an empty layer lands on a live cell with every reachable parameter pinned", () => {
+      const out = pinAllDominant(rows, EMPTY_FILTER);
+      const cell = applyFilters(rows, out);
+      expect(cell.length).toBeGreaterThan(0);
+      // any facet with a value under the FINAL cell must have been pinned
+      for (const k of FACET_KEYS) {
+        if (facetOptions(cell, k).length > 0) expect(out.facets[k]).toBeDefined();
+      }
     });
   });
 

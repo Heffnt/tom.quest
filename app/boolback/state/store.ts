@@ -39,6 +39,11 @@ export interface PlotReadout {
  *  filters (group plot writes through `plot`). */
 export type ViewKey = "table" | "plot";
 
+/** Where a parameter-row edit lands on the plot-like views: the ACTIVE layer
+ *  (default) or fanned out to EVERY layer. An edit MODE, not view state — it
+ *  never serializes into a ViewSpec and is not persisted. */
+export type EditScope = "active" | "all";
+
 /** Map the centerView union to its filter-config key (anatomy → null). The
  *  group-plot tab targets the SHARED plot config, so it maps to "plot"; the
  *  PANEL still checks centerView === "groupplot" to show the facet/panel rows. */
@@ -93,6 +98,9 @@ interface BoolbackState {
    *  table's filtered count renders instead). */
   plotUnionCount: number | null;
   anatomy: AnatomyConfig;
+  /** Parameter-edit scope on the plot-like views (active layer vs all layers).
+   *  UI state only — NOT part of PlotConfig, never in a ViewSpec. */
+  editScope: EditScope;
   // detail panel (decoupled from selection — opened ONLY by a Details button)
   detailOpen: boolean;
   detailWidth: number;               // px
@@ -108,6 +116,7 @@ interface BoolbackState {
   setPlotReadout: (r: PlotReadout | null) => void;
   setPlotUnionCount: (n: number | null) => void;
   setAnatomy: (patch: Partial<AnatomyConfig>) => void;
+  setEditScope: (s: EditScope) => void;
   toggleExpand: (dir: string) => void;
   setExpanded: (next: Set<string>) => void;
   expandChain: (dirs: string[]) => void;       // open all ancestors to reveal a node
@@ -204,6 +213,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       plotReadout: null,
       plotUnionCount: null,
       anatomy: DEFAULT_ANATOMY,
+      editScope: "active" as const,
       detailOpen: false,
       detailWidth: DEFAULT_DETAIL_WIDTH,
 
@@ -238,6 +248,7 @@ export const useBoolbackStore = create<BoolbackState>()(
         return { expanded: next };
       }),
       setTreeCursor: (dir) => set({ treeCursor: dir }),
+      setEditScope: (s) => set({ editScope: s }),
 
       patchLayer: (id, patch) => set((s) => ({
         plot: { ...s.plot, layers: s.plot.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)) },

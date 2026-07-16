@@ -42,6 +42,11 @@ const layer = (id: string, name: string, facets: FilterState["facets"] = {}, sha
   id, name, color: "#123456", style: { shape, dash }, filters: { facets, ranges: [] },
 });
 
+/** Pass-through pinAll (the real pinAllDominant walks FACET_GETTERS, which the
+ *  fake rows can't satisfy — full-pinning is covered by its own select tests
+ *  plus the marker test below). */
+const noPin = (_: RunRow[], f: FilterState): FilterState => f;
+
 const index: MetricIndex = { sens: { name: "sens", label: "Sens" } as MetricIndex[string] };
 
 // ---------------------------------------------------------------------------
@@ -52,7 +57,7 @@ describe("expandLayers", () => {
   it("splits the lone default layer into one child per value, DROPS the 'all runs · ' prefix, colors by sorted-union ordinal", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
-      rows, layers: [layer("l1", "all runs")], targets: "all", activeId: "l1", dim: modelDim, applyTo,
+      rows, layers: [layer("l1", "all runs")], targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     // union sorted lexically: llama(0), qwen(1) → children in that order
     expect(out.map((l) => l.name)).toEqual(["m:llama", "m:qwen"]);
@@ -66,7 +71,7 @@ describe("expandLayers", () => {
   it("a NAMED (non-lone) parent keeps its name as a child prefix", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
-      rows, layers: [layer("l1", "A", {}), layer("l2", "B", {})], targets: "active", activeId: "l1", dim: modelDim, applyTo,
+      rows, layers: [layer("l1", "A", {}), layer("l2", "B", {})], targets: "active", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     // only l1 expanded; l2 untouched and still present
     const expanded = out.filter((l) => l.name.startsWith("A · "));
@@ -78,7 +83,7 @@ describe("expandLayers", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const l2 = layer("l2", "keep me", { base_model: ["qwen"] }, 3, 1);
     const out = expandLayers({
-      rows, layers: [layer("l1", "A"), l2], targets: "active", activeId: "l1", dim: modelDim, applyTo,
+      rows, layers: [layer("l1", "A"), l2], targets: "active", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     expect(out.find((l) => l.id === "l2")).toEqual(l2);
   });
@@ -86,7 +91,7 @@ describe("expandLayers", () => {
   it("multi-target: PARENT identity moves to SHAPE (parentIndex % SHAPE_COUNT); the same value shares a color across parents", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
-      rows, layers: [layer("l1", "A"), layer("l2", "B")], targets: "all", activeId: "l1", dim: modelDim, applyTo,
+      rows, layers: [layer("l1", "A"), layer("l2", "B")], targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     // 2 parents × 2 values = 4 children
     expect(out).toHaveLength(4);
@@ -108,7 +113,7 @@ describe("expandLayers", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
       rows, layers: [layer("l1", "all runs", { base_model: ["qwen"] })],
-      targets: "all", activeId: "l1", dim: modelDim, applyTo,
+      targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     expect(out.map((l) => l.filters.facets.base_model)).toEqual([["llama"], ["qwen"]]);
   });
@@ -116,9 +121,30 @@ describe("expandLayers", () => {
   it("deep-copies parent facets and adds the expand facet (no shared array leakage)", () => {
     const rows = [mk({ model: "qwen" })];
     const parent = layer("l1", "A", { base_model: [] as string[] });
-    const out = expandLayers({ rows, layers: [parent], targets: "all", activeId: "l1", dim: modelDim, applyTo });
+    const out = expandLayers({ rows, layers: [parent], targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin });
     expect(out[0].filters.facets.base_model).toEqual(["qwen"]);
     expect(out[0].filters.facets).not.toBe(parent.filters.facets);
+  });
+
+  it("every child's filters run through pinAll AFTER the expanded pin is set (fully-pinned mints)", () => {
+    // Marker pinAll: proves it sees the child's expanded pin and that its
+    // result is what lands on the layer — BOTH target paths mint through it.
+    const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
+    const seen: Array<FilterState["facets"]> = [];
+    const markPin = (_: RunRow[], f: FilterState): FilterState => {
+      seen.push(f.facets);
+      return { ...f, facets: { ...f.facets, seed: ["0"] } };
+    };
+    for (const targets of ["all", "active"] as const) {
+      seen.length = 0;
+      const out = expandLayers({
+        rows, layers: [layer("l1", "all runs")], targets, activeId: "l1", dim: modelDim, applyTo, pinAll: markPin,
+      });
+      // pinAll received the expanded pin (one call per child, value already set)
+      expect(seen.map((f) => f.base_model)).toEqual([["llama"], ["qwen"]]);
+      // and its output is the minted filters
+      expect(out.map((l) => l.filters.facets.seed)).toEqual([["0"], ["0"]]);
+    }
   });
 });
 
