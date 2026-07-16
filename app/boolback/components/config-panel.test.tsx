@@ -13,7 +13,10 @@ import { useBoolbackStore, DEFAULT_TABLE } from "../state/store";
 import { DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, DEFAULT_LAYER_STYLE } from "../lib/types";
 import { summarizeParameters } from "../lib/parameters";
 import { dominantFilters } from "../lib/select";
-import ConfigPanel from "./config-panel";
+import { resolveAxis } from "../lib/axes";
+import { pearson, spearman } from "../lib/stats";
+import { indexMetricSchema } from "../lib/metrics";
+import ConfigPanel, { corrText } from "./config-panel";
 import type { PlotExportHandle } from "./plot-panel";
 
 vi.mock("convex/react", () => ({
@@ -290,6 +293,89 @@ describe("merged legend", () => {
   it("no split → no legend sub-rows (each layer entry IS the series)", () => {
     const { container } = mount();
     expect(container.querySelectorAll("[data-legend-series]").length).toBe(0);
+  });
+});
+
+describe("layer strip per-layer r/ρ readout", () => {
+  const index = indexMetricSchema(bundle.metric_schema);
+  // A numeric x (a FUNCTION complexity metric) and a numeric y.
+  const xMetric = bundle.metric_schema.find(
+    (e) => e.group === "FUNCTION" && e.min !== null && e.max !== null,
+  )!;
+  const yMetric =
+    bundle.metric_schema.find((e) => e.name === "plantedness") ??
+    bundle.metric_schema.find((e) => e.group === "OUTCOME" && e.min !== null && e.max !== null)!;
+
+  const numericPlot = () =>
+    useBoolbackStore.setState({
+      plot: { ...structuredClone(DEFAULT_PLOT), x: xMetric.name, y: yMetric.name, trend: true },
+    });
+
+  it("renders per layer, matching lib/stats over the layer's run-deduped pairs", () => {
+    numericPlot();
+    mount();
+    // Expected over the default layer's rows (unfiltered → every run).
+    const ax = resolveAxis(xMetric.name, index, bundle.rows);
+    const ay = resolveAxis(yMetric.name, index, bundle.rows);
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const r of bundle.rows) {
+      const vx = ax.value(r);
+      const vy = ay.value(r);
+      if (vx === null || vy === null) continue;
+      xs.push(vx);
+      ys.push(vy);
+    }
+    const expected = corrText({ r: pearson(xs, ys), rho: spearman(xs, ys), n: xs.length });
+    expect(screen.getByTestId("layer-corr-l1").textContent).toBe(expected);
+  });
+
+  it("shows — for a layer with n < 3 pairs", () => {
+    numericPlot();
+    // A second layer that matches nothing → 0 pairs → "—".
+    useBoolbackStore.getState().addLayer({ facets: { seed: ["no-such-seed"] }, ranges: [] });
+    mount();
+    expect(screen.getByTestId("layer-corr-l2").textContent).toBe("—");
+  });
+
+  it("is absent when trend is off, and when x is the epoch axis", () => {
+    useBoolbackStore.setState({
+      plot: { ...structuredClone(DEFAULT_PLOT), x: xMetric.name, y: yMetric.name, trend: false },
+    });
+    const first = mount();
+    expect(screen.queryByTestId("layer-corr-l1")).toBeNull();
+    first.unmount();
+
+    useBoolbackStore.setState({
+      plot: { ...structuredClone(DEFAULT_PLOT), x: "epoch", trend: true },
+    });
+    mount();
+    expect(screen.queryByTestId("layer-corr-l1")).toBeNull();
+  });
+});
+
+describe("header export buttons", () => {
+  it("plot-like views offer a CSV button next to PNG (both wired to the chart handle)", () => {
+    mount();
+    const png = screen.getByTitle("Download the plot as PNG");
+    const csv = screen.getByTitle("Download the plotted selection as CSV (run grain, raw points)");
+    expect(png.textContent).toBe("PNG");
+    expect(csv.textContent).toBe("CSV");
+    // adjacent in the header cluster
+    expect(png.nextElementSibling).toBe(csv);
+  });
+
+  it("the CSV button also renders on the groupplot view", () => {
+    useBoolbackStore.setState({ centerView: "groupplot" });
+    mount();
+    expect(screen.getByTitle("Download the plotted selection as CSV (run grain, raw points)")).toBeTruthy();
+  });
+
+  it("the table view has neither", () => {
+    useBoolbackStore.setState({ centerView: "table" });
+    mount();
+    expect(screen.queryByText("CSV")).toBeNull();
+    expect(screen.queryByText("PNG")).toBeNull();
   });
 });
 

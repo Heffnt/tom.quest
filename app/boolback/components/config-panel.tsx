@@ -36,7 +36,7 @@ import type {
   Bundle, RangeFilter, FilterState, FacetKey, RunRow,
   PlotConfig, MetricSchemaEntry, PlotLayer, LayerStyle, GroupFacet,
 } from "../lib/types";
-import { EMPTY_FILTER, DEFAULT_LAYER_STYLE } from "../lib/types";
+import { EMPTY_FILTER, DEFAULT_LAYER_STYLE, DEFAULT_PLOT } from "../lib/types";
 import { useBoolbackStore, configViewOf, type ViewKey } from "../state/store";
 import type { CenterView } from "./table-pane";
 import type { ViewKind } from "../lib/spec";
@@ -61,9 +61,11 @@ import {
 } from "../lib/metrics";
 import { RunInspector, resolveRun } from "./run-inspector";
 import { ColumnGroupMenu } from "./column-group-menu";
-import { copyText, downloadBlob, svgToPngBlob } from "../lib/export";
+import { copyText, downloadBlob, downloadText, svgToPngBlob } from "../lib/export";
 import { useResizable } from "../lib/use-resizable";
-import type { PlotExportHandle } from "./plot-panel";
+import { effectiveAxis, type PlotExportHandle } from "./plot-panel";
+import { resolveAxis } from "../lib/axes";
+import { pearson, spearman } from "../lib/stats";
 import { hydratePresetSpec, suggestPresetName, PRESET_SCHEMA_VERSION } from "../lib/presets";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -272,6 +274,47 @@ function ViewConfig({
     () => (resolution ? averagedParams(resolution, PARAMETERS).map((d) => d.label) : []),
     [resolution],
   );
+
+  // ---- per-layer r/ρ (the strip readout) -------------------------------------
+  // Only when trend is on and BOTH axes resolve numeric. Computed over each
+  // layer's run-deduped pairs with the SAME drops as the plotted per-series
+  // trend (log-invalid values, points outside the view window), so the number
+  // beside a layer matches the line drawn for it. Memoized over the resolved
+  // series — never per-render. Null when hidden (epoch / categorical / no trend).
+  const pcX = plotConfig?.x;
+  const pcY = plotConfig?.y;
+  const pcLogX = plotConfig?.logX;
+  const pcLogY = plotConfig?.logY;
+  const pcXDomain = plotConfig?.xDomain;
+  const pcYDomain = plotConfig?.yDomain;
+  const trendOn = !!plotConfig?.trend;
+  const trendStats = useMemo(() => {
+    if (!resolution || !trendOn || !pcX || !pcY || pcX === "epoch") return null;
+    const xName = effectiveAxis(pcX, index, bundle.metric_schema, DEFAULT_PLOT.x);
+    const yName = effectiveAxis(pcY, index, bundle.metric_schema, DEFAULT_PLOT.y);
+    const ax = resolveAxis(xName, index, bundle.rows);
+    const ay = resolveAxis(yName, index, bundle.rows);
+    if (ax.categorical || ay.categorical) return null;
+    const logX = !!pcLogX && ax.allowLog;
+    const logY = !!pcLogY && ay.allowLog;
+    const m = new Map<string, { r: number | null; rho: number | null; n: number }>();
+    for (const s of resolution.series) {
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (const r of s.rows) {
+        const vx = ax.value(r);
+        const vy = ay.value(r);
+        if (vx === null || vy === null) continue;
+        if ((logX && vx <= 0) || (logY && vy <= 0)) continue;
+        if (pcXDomain && (vx < pcXDomain[0] || vx > pcXDomain[1])) continue;
+        if (pcYDomain && (vy < pcYDomain[0] || vy > pcYDomain[1])) continue;
+        xs.push(logX ? Math.log10(vx) : vx);
+        ys.push(logY ? Math.log10(vy) : vy);
+      }
+      m.set(s.layerId, { r: pearson(xs, ys), rho: spearman(xs, ys), n: xs.length });
+    }
+    return m;
+  }, [resolution, trendOn, pcX, pcY, pcLogX, pcLogY, pcXDomain, pcYDomain, index, bundle.metric_schema, bundle.rows]);
 
   // Rows matching the ACTIVE layer (or the table filters) drive the continuous
   // editors' histograms.
@@ -499,6 +542,7 @@ function ViewConfig({
             counts={countsByLayer}
             resolution={resolution}
             averaged={averagedLabels}
+            trendStats={trendStats}
             cascadeNote={cascadeNote}
             onSelect={(id) => startTransition(() => setActiveLayerId(id))}
             onRename={(id, name) => startTransition(() => patchLayer(id, { name }))}
@@ -680,6 +724,14 @@ function PanelHeader({
     downloadBlob(blob, "boolback-plot.png");
   };
 
+  // The DATA export: the plotted selection at run grain (lib/plot-export via
+  // the mounted view's handle — plot AND groupplot both wire it).
+  const exportCsv = () => {
+    const res = chartRef.current?.getCsv();
+    if (!res) return;
+    downloadText(res.csv, res.filename, "text/csv");
+  };
+
   const isPlotLike = kind === "plot" || kind === "groupplot";
 
   return (
@@ -697,6 +749,14 @@ function PanelHeader({
           disabled={!chartRef.current}
           className="rounded border border-border px-1.5 py-0.5 text-text-muted hover:border-accent/40 hover:text-accent disabled:opacity-40">
           PNG
+        </button>
+      )}
+      {isPlotLike && (
+        <button type="button" onClick={exportCsv}
+          title="Download the plotted selection as CSV (run grain, raw points)"
+          disabled={!chartRef.current}
+          className="rounded border border-border px-1.5 py-0.5 text-text-muted hover:border-accent/40 hover:text-accent disabled:opacity-40">
+          CSV
         </button>
       )}
       {!isPlotLike && (
@@ -1023,8 +1083,16 @@ function PlotStyleRow({
 // 3-channel style editor. Everything derives from resolveSeries.
 // ===========================================================================
 
+/** The strip's per-layer correlation readout: `r=+0.38 ρ=+0.35` (signed, 2dp);
+ *  `—` when the layer has fewer than 3 pairs (or a stat is undefined). */
+export function corrText(st: { r: number | null; rho: number | null; n: number } | undefined): string {
+  if (!st || st.n < 3) return "—";
+  const f = (v: number | null) => (v === null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}`);
+  return `r=${f(st.r)} ρ=${f(st.rho)}`;
+}
+
 function LayersStrip({
-  layers, activeId, counts, resolution, averaged, cascadeNote,
+  layers, activeId, counts, resolution, averaged, trendStats, cascadeNote,
   onSelect, onRename, onRecolor, onStyle, onReset, onDuplicate, onRemove, onAdd,
 }: {
   layers: PlotLayer[];
@@ -1034,6 +1102,9 @@ function LayersStrip({
   resolution: SeriesResolution;
   /** Labels of parameters pooled inside layers (the "averaged: …" note). */
   averaged: string[];
+  /** Per-layer r/ρ over run-deduped pairs (null = readout hidden: trend off,
+   *  epoch x, or a categorical axis). */
+  trendStats: Map<string, { r: number | null; rho: number | null; n: number }> | null;
   /** Transient "X, Y followed Z" cascade note (null when idle). */
   cascadeNote: string | null;
   onSelect: (id: string) => void;
@@ -1082,6 +1153,15 @@ function LayersStrip({
               >
                 {empty ? "0 runs" : n}
               </span>
+              {trendStats && (
+                <span
+                  className="shrink-0 whitespace-nowrap font-mono text-[10px] text-text-faint"
+                  title="Pearson r / Spearman ρ over this layer's run-deduped pairs (— when n < 3)"
+                  data-testid={`layer-corr-${l.id}`}
+                >
+                  {corrText(trendStats.get(l.id))}
+                </span>
+              )}
               <button type="button" onClick={(e) => { e.stopPropagation(); onReset(l.id); }}
                 title={`reset layer "${l.name}" — filters back to the dominant cell, style back to defaults`}
                 aria-label={`reset layer ${l.name}`}

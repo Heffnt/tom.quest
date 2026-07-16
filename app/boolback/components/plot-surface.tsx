@@ -24,6 +24,11 @@
 // TREND: when config.trend, the surface fits ONE OLS line over ITS OWN
 // run-deduped `pairs` and draws it. A compact surface also prints a small
 // `r=…` corner readout; the full surface does not (the top bar shows r/ρ).
+// When the FULL surface is handed >= 2 `trendSeries` (one per layer), it
+// instead fits one OLS line PER SERIES over that series' own run-deduped
+// pairs — stroked in the series' color, honoring its dash — and the pooled
+// line is NOT drawn. Compact surfaces (group-plot panels) always keep their
+// per-panel pooled fit + `r=` corner (a panel is already a cell).
 //
 // COMPACT: smaller fonts / radii / no x gridlines. Export-only groups + the
 // colorbar are the caller's business (svgUnderlay / svgOverlay), injected into
@@ -97,6 +102,16 @@ export interface SurfaceEpoch {
   groups: SurfaceMeanGroup[];
 }
 
+/** One per-series trend input: a series' own run-deduped pairs plus its
+ *  resolved color/dash. The FULL surface draws one OLS line per series when
+ *  >= 2 are passed (compact panels keep the pooled per-panel fit). */
+export interface SurfaceTrendSeries {
+  key: string;
+  color: string;
+  dash: string;
+  pairs: Array<{ x: number; y: number }>;
+}
+
 /** Plot geometry in viewBox units (1 unit === 1 CSS px in the full plot). */
 export interface SurfaceSize {
   W: number;
@@ -147,6 +162,9 @@ export interface PlotSurfaceProps {
 
   // ---- trend: the surface fits its OWN run-deduped pairs -------------------
   pairs?: Array<{ x: number; y: number }>;
+  /** Per-series pairs (main plot only): >= 2 switch the full surface to one
+   *  OLS line per series instead of the pooled line. */
+  trendSeries?: SurfaceTrendSeries[];
 
   // ---- interaction lookups -------------------------------------------------
   /** Full-bundle rows keyed by run id — click-through chain expansion. */
@@ -167,6 +185,7 @@ export interface PlotSurfaceProps {
 export function PlotSurface({
   mode, size, scale, config, compact = false, logX = false, logY = false,
   points = [], meanLines = [], ghostPoints = [], epoch = null, pairs = [],
+  trendSeries = [],
   rowByRunId, ghostTooltip, meanTooltip,
   svgRef, svgUnderlay, svgOverlay,
 }: PlotSurfaceProps) {
@@ -213,16 +232,35 @@ export function PlotSurface({
     setLineHover({ label, px: p.x, py: p.y });
   };
 
+  // >= 2 per-series pair sets on the FULL surface → per-series trend mode (the
+  // pooled line is suppressed even when an individual series' fit degenerates).
+  const multiTrend = !compact && trendSeries.length >= 2;
+
   // One overall OLS trend line over the run-deduped pairs (a fit over group
   // means would overstate the association). Compact surfaces also print r.
   const trend = useMemo(() => {
-    if (!config.trend || pairs.length < 2) return null;
+    if (!config.trend || multiTrend || pairs.length < 2) return null;
     const xs = pairs.map((p) => p.x);
     const ys = pairs.map((p) => p.y);
     const fit = olsFit(xs, ys);
     if (!fit) return null;
     return { fit, lo: Math.min(...xs), hi: Math.max(...xs), r: compact ? pearson(xs, ys) : null };
-  }, [pairs, config.trend, compact]);
+  }, [pairs, config.trend, compact, multiTrend]);
+
+  // Per-series OLS lines: one fit per series over ITS OWN run-deduped pairs.
+  // olsFit's null (n<2 / zero x-variance) is the same guard as the pooled fit.
+  const seriesTrends = useMemo(() => {
+    if (!config.trend || !multiTrend) return null;
+    const fits: Array<{ key: string; color: string; dash: string; lo: number; hi: number; fit: { slope: number; intercept: number } }> = [];
+    for (const t of trendSeries) {
+      const xs = t.pairs.map((p) => p.x);
+      const ys = t.pairs.map((p) => p.y);
+      const fit = olsFit(xs, ys);
+      if (!fit) continue;
+      fits.push({ key: t.key, color: t.color, dash: t.dash, lo: Math.min(...xs), hi: Math.max(...xs), fit });
+    }
+    return fits;
+  }, [trendSeries, config.trend, multiTrend]);
 
   // The points linked to the row hovered/selected elsewhere (table / tree).
   const linked = useMemo(
@@ -424,6 +462,7 @@ export function PlotSurface({
         {!lineMode && trend && (
           <g clipPath={`url(#${clipId})`}>
             <line
+              data-testid="trend-pooled"
               x1={sx(trend.lo)}
               y1={sy(trend.fit.intercept + trend.fit.slope * trend.lo)}
               x2={sx(trend.hi)}
@@ -434,6 +473,28 @@ export function PlotSurface({
               strokeOpacity={0.9}
               pointerEvents="none"
             />
+          </g>
+        )}
+
+        {/* per-series OLS trend lines (>= 2 series on the full surface) — each
+            over its series' own run-deduped pairs, in the series' color/dash */}
+        {!lineMode && seriesTrends && seriesTrends.length > 0 && (
+          <g clipPath={`url(#${clipId})`}>
+            {seriesTrends.map((t) => (
+              <line
+                key={t.key}
+                data-testid="trend-series"
+                x1={sx(t.lo)}
+                y1={sy(t.fit.intercept + t.fit.slope * t.lo)}
+                x2={sx(t.hi)}
+                y2={sy(t.fit.intercept + t.fit.slope * t.hi)}
+                stroke={t.color}
+                strokeWidth={1.25}
+                strokeDasharray={t.dash || undefined}
+                strokeOpacity={0.85}
+                pointerEvents="none"
+              />
+            ))}
           </g>
         )}
 

@@ -38,10 +38,11 @@ import { DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, DEFAULT_LAYER_STYLE } from "../lib/
 import { useBoolbackStore } from "../state/store";
 import { applyFilters, numericValue, type MetricIndex } from "../lib/select";
 import { metricColumnId } from "../lib/columns";
-import { metricLabel } from "../lib/metrics";
+import { metricLabel, X_GROUP_ORDER, Y_GROUP_ORDER } from "../lib/metrics";
 import { PARAMETERS, type ParameterDef } from "../lib/parameters";
 import { resolveSeries, averagedParams, type Series } from "../lib/split-dims";
-import { resolveAxis, type Axis } from "../lib/axes";
+import { resolveAxis, paramAxisOptions, type Axis } from "../lib/axes";
+import { plotDataCsv, plotCsvFilename, type ExportSeries } from "../lib/plot-export";
 import { groupRuns, collapsedGhosts, type RunPoint } from "../lib/aggregate";
 import {
   buildRunSeries, groupSeries, trajectoryMetric,
@@ -51,7 +52,8 @@ import { partitionBins } from "../lib/generators";
 import { niceTicks } from "../lib/stats";
 import { shapeForValue, dashForValue, gradientColor, NULL_GRADIENT, SINGLE_COLOR } from "../lib/styling";
 import { fnText, hash01 } from "../lib/format";
-import { effectiveAxis } from "./plot-panel";
+import { effectiveAxis, type PlotExportHandle } from "./plot-panel";
+import { MetricPicker } from "./metric-picker";
 import {
   PlotSurface,
   type SurfacePoint, type SurfaceGhostPoint, type SurfaceEpoch,
@@ -82,11 +84,13 @@ function tickFmt(v: number): string {
 }
 
 export function GroupPlotBody({
-  rows, bundle, index,
+  rows, bundle, index, exportRef,
 }: {
   rows: RunRow[];
   bundle: Bundle;
   index: MetricIndex;
+  /** The shared Export handle (CSV only — a grid of panels has no single SVG). */
+  exportRef?: React.MutableRefObject<PlotExportHandle | null>;
 }) {
   // INP: defer the heavy pipeline off the interaction's critical path (see the
   // note in plot-panel.tsx) — a filter click repaints the panel immediately
@@ -95,6 +99,7 @@ export function GroupPlotBody({
   const liveGroupPlot = useBoolbackStore((s) => s.groupPlot);
   const plot = useDeferredValue(livePlot);
   const groupPlot = useDeferredValue(liveGroupPlot);
+  const setPlot = useBoolbackStore((s) => s.setPlot);
   const setPlotUnionCount = useBoolbackStore((s) => s.setPlotUnionCount);
 
   // Facet: the GroupFacet union — one panel per layer, per parameter value, or
@@ -247,6 +252,37 @@ export function GroupPlotBody({
     return { list, hidden, lacking: 0, lackLabel: "" };
   }, [facet, facetDef, plot.layers, resolution.series, unionRows, index]);
 
+  // ---- export handle (shared header CSV button) ------------------------------
+  // One ExportSeries per (panel × layer) slice, panels in display order, layers
+  // in config order — lib/plot-export adds the `panel` column on this view.
+  // getSvg stays null: a grid of panels has no single figure to rasterize.
+  useEffect(() => {
+    if (!exportRef) return;
+    const axes = { x: lineMode ? "epoch" : xName, y: yName };
+    exportRef.current = {
+      getSvg: () => null,
+      getCsv: () => {
+        const entries: ExportSeries[] = [];
+        for (const f of facets.list) {
+          const byKey = new Map<string, RunRow[]>();
+          for (const p of f.pts) {
+            const arr = byKey.get(p.key);
+            if (arr) arr.push(p.row); else byKey.set(p.key, [p.row]);
+          }
+          for (const s of resolution.series) {
+            const rs = byKey.get(s.key);
+            if (rs && rs.length) entries.push({ layer: s.label, panel: f.value, judge: s.judge, rows: rs });
+          }
+        }
+        return {
+          csv: plotDataCsv(entries, axes, { view: "groupplot" }),
+          filename: plotCsvFilename("groupplot", axes),
+        };
+      },
+    };
+    return () => { exportRef.current = null; };
+  }, [exportRef, facets.list, resolution.series, lineMode, xName, yName]);
+
   // Categorical axis category lists (positions 0..n-1), null for numeric axes.
   const catX = !lineMode && axisX?.categorical ? axisX.categories : null;
   const catY = !lineMode && axisY?.categorical ? axisY.categories : null;
@@ -346,12 +382,39 @@ export function GroupPlotBody({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* facet summary strip (inert — the config panel owns facet + panel size) */}
-      <div className="flex flex-wrap items-center gap-3 border-b border-border/60 px-3 py-1.5 text-xs">
+      {/* toolbar: the SAME x/y MetricPickers as the main plot (writing the
+          shared store.plot), then the facet summary (inert — the config panel
+          owns facet + panel size). Log toggles stay plot-view chrome. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-1.5 text-xs">
+        <span className="flex items-center gap-1">
+          <span className="text-text-faint">x</span>
+          <MetricPicker
+            value={plot.x}
+            onChange={(v) => setPlot({ x: v })}
+            schema={bundle.metric_schema}
+            ariaLabel="x metric"
+            order={X_GROUP_ORDER}
+            pinned={[{ value: "epoch", label: "epoch (training progress)" }]}
+            params={paramAxisOptions()}
+          />
+        </span>
+        <span className="text-text-faint" aria-hidden>·</span>
+        <span className="flex items-center gap-1">
+          <span className="text-text-faint">y</span>
+          <MetricPicker
+            value={yName}
+            onChange={(v) => setPlot({ y: v })}
+            schema={bundle.metric_schema}
+            ariaLabel="y metric"
+            order={Y_GROUP_ORDER}
+            params={paramAxisOptions()}
+          />
+        </span>
+        <span className="text-text-faint" aria-hidden>·</span>
         <span className="text-text-faint">facet:</span>
         <span className="text-text-muted">{facetLabel}</span>
         <span className="text-text-muted">
-          {facets.list.length} panels
+          · {facets.list.length} panels
           {facets.hidden > 0 ? ` · ${facets.hidden} more not shown` : ""}
           {facets.lacking > 0 ? ` · ${facets.lacking} runs lack ${facets.lackLabel}` : ""}
         </span>

@@ -371,7 +371,7 @@ export function TablePane({ bundle, view = "table", source, onShowTree, chartRef
       {view === "plot" ? (
         <PlotBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
       ) : view === "groupplot" ? (
-        <GroupPlotBody rows={visibleRows} bundle={bundle} index={index} />
+        <GroupPlotBody rows={visibleRows} bundle={bundle} index={index} exportRef={chartRef} />
       ) : view === "anatomy" ? (
         <AnatomyBody rows={visibleRows} bundle={bundle} index={index} />
       ) : (

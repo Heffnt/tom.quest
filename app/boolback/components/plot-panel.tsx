@@ -84,16 +84,19 @@ import { buildRunSeries, groupSeries, trajectoryMetric, type RunSeries } from ".
 import {
   SINGLE_COLOR, shapeForValue, dashForValue, gradientColor, NULL_GRADIENT,
 } from "../lib/styling";
-import { toCsv } from "../lib/export";
+import { plotDataCsv, plotCsvFilename } from "../lib/plot-export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
 import { shapeNode } from "./glyph";
-import { PlotSurface, type SurfacePoint } from "./plot-surface";
+import { PlotSurface, type SurfacePoint, type SurfaceTrendSeries } from "./plot-surface";
 
-/** What the shared Export menu needs from the mounted plot. */
+/** What the shared Export menu needs from the mounted plot (the Group Plot
+ *  wires the same handle; its getSvg is null — a grid has no single figure). */
 export interface PlotExportHandle {
   getSvg: () => SVGSVGElement | null;
-  getCsv: () => string;
+  /** The data CSV of the plotted selection + its download filename
+   *  (lib/plot-export.plotDataCsv — run grain, raw underlying points). */
+  getCsv: () => { csv: string; filename: string };
 }
 
 /** Guard a persisted/shared axis name (also used by the top bar's axis pickers
@@ -267,13 +270,14 @@ export function PlotBody({
 
   // ---- points ---------------------------------------------------------------
   const {
-    points, pairs, ghosts, ghostsSubsampled, droppedLog, outsideWindow,
+    points, pairs, seriesPairs, ghosts, ghostsSubsampled, droppedLog, outsideWindow,
     binned, rowByPath, dataExtent,
   } = useMemo(() => {
     if (lineMode || !axisX || !axisY) {
       // Scatter path is inert in epoch mode — the epoch memo drives rendering.
       return {
-        points: [], pairs: [], ghosts: [], ghostsSubsampled: false,
+        points: [], pairs: [], seriesPairs: [] as Array<{ key: string; pairs: Array<{ x: number; y: number }> }>,
+        ghosts: [], ghostsSubsampled: false,
         droppedLog: 0, outsideWindow: 0, binned: false,
         rowByPath: new Map<string, RunRow>(), dataExtent: null,
       };
@@ -284,6 +288,9 @@ export function PlotBody({
     // Run-level pairs for r/ρ and the OLS trend, DEDUPED by run: a run drawn
     // once per matching layer must not double-weight the statistics.
     const rawPairs: Array<{ x: number; y: number }> = [];
+    // Per-series pairs (rows are unique within a layer, so run-deduped by
+    // construction) — the surface's per-series trend fits (>= 2 layers).
+    const rawSeriesPairs: Array<{ key: string; pairs: Array<{ x: number; y: number }> }> = [];
     const seen = new Set<string>();
     const byPath = new Map<string, RunRow>();
     // Raw data extent over droppable-clean points (pre-window) for the axis controls.
@@ -291,6 +298,8 @@ export function PlotBody({
     // Layer-major walk — a run matching several layers draws once per
     // matching layer (duplication by design; surfaced as overlapCount).
     for (const s of seriesList) {
+      const sPairs: Array<{ x: number; y: number }> = [];
+      rawSeriesPairs.push({ key: s.key, pairs: sPairs });
       for (const r of s.rows) {
         const id = r.identity.node_path;
         const first = !seen.has(id);
@@ -317,6 +326,7 @@ export function PlotBody({
         const c = colorByColId ? numericValue(r, colorByColId) : null;
         runPts.push({ x: tx, y: ty, runId: id, dims: [s.key], c });
         if (first) rawPairs.push({ x: tx, y: ty });
+        sPairs.push({ x: tx, y: ty });
         byPath.set(id, r);
       }
     }
@@ -326,6 +336,7 @@ export function PlotBody({
     return {
       points: grouped.points,
       pairs: rawPairs,
+      seriesPairs: rawSeriesPairs,
       // Only the runs a mean actually collapsed ghost (never n=1 duplicates).
       ghosts: collapsedGhosts(runPts, grouped.ghosts),
       ghostsSubsampled: grouped.ghostsSubsampled,
@@ -550,6 +561,21 @@ export function PlotBody({
     });
   }, [ghosts, config.ghosts, seriesByKey, colorByActive, colorForC]);
 
+  // Per-series trend inputs (color/dash from the owning layer) — with >= 2
+  // layers the surface fits one OLS line per series instead of the pooled one.
+  const trendSeries = useMemo<SurfaceTrendSeries[]>(
+    () => seriesPairs.map((sp) => {
+      const s = seriesByKey.get(sp.key);
+      return {
+        key: sp.key,
+        color: s?.color ?? SINGLE_COLOR,
+        dash: dashOf(s?.style ?? DEFAULT_LAYER_STYLE),
+        pairs: sp.pairs,
+      };
+    }),
+    [seriesPairs, seriesByKey],
+  );
+
   // The r/ρ readout — ALWAYS over the run-deduped underlying pairs (a
   // correlation over group means would overstate the association; a run
   // matching two layers must not double-weight it). The OLS trend LINE itself
@@ -625,31 +651,25 @@ export function PlotBody({
     setPlot(axis === "x" ? { xDomain: d } : { yDomain: d });
 
   // ---- export handle for the shared Export menu ----------------------------
+  // CSV is the DATA export: the plotted selection at run grain via
+  // lib/plot-export.plotDataCsv (raw underlying points, one row per layer
+  // match; per (run, epoch) in epoch mode) — never the on-screen aggregates.
   useEffect(() => {
     if (!exportRef) return;
+    const axes = { x: lineMode ? "epoch" : x, y };
     exportRef.current = {
       getSvg: () => svgRef.current,
-      getCsv: () => {
-        const xL = `${axisX?.label ?? x}${logX ? " (log10)" : ""}`;
-        const yL = `${axisY?.label ?? y}${logY ? " (log10)" : ""}`;
-        const seriesLabel = (dims: string[]) => seriesByKey.get(dims[0])?.label ?? dims[0] ?? "";
-        if (lineMode && epoch) {
-          const head = ["epoch", "layer", "n", `${yL} (mean)`, `${yL} (sd)`];
-          const body = epoch.groups.flatMap((g) =>
-            g.pts.map((p) => [logX ? Math.round(Math.pow(10, p.x)) : p.x, seriesLabel(g.dims), p.n, p.y, p.sd ?? ""]),
-          );
-          return toCsv([head, ...body]);
-        }
-        if (collapsed) {
-          const head = [xL, "layer", "n", `${yL} (mean)`, `${yL} (sd)`];
-          return toCsv([head, ...points.map((p) => [p.x, seriesLabel(p.dims), p.n, p.y, p.sdY ?? ""])]);
-        }
-        const head = ["run_id", xL, yL, "layer"];
-        return toCsv([head, ...points.map((p) => [p.runId ?? "", p.x, p.y, seriesLabel(p.dims)])]);
-      },
+      getCsv: () => ({
+        csv: plotDataCsv(
+          seriesList.map((s) => ({ layer: s.label, judge: s.judge, rows: s.rows })),
+          axes,
+          { view: "plot" },
+        ),
+        filename: plotCsvFilename("plot", axes),
+      }),
     };
     return () => { exportRef.current = null; };
-  }, [exportRef, points, x, y, axisX, axisY, logX, logY, seriesByKey, collapsed, lineMode, epoch]);
+  }, [exportRef, seriesList, x, y, lineMode]);
 
   // Tick labels: category names on a categorical axis, else numeric (log ticks
   // un-transform, positions stay in log space). Handed to PlotSurface's scale.
@@ -701,6 +721,7 @@ export function PlotBody({
             ghostPoints={ghostVisual}
             epoch={lineMode && epoch ? { ghostRuns: epoch.ghostRuns, groups: epoch.groups } : null}
             pairs={pairs}
+            trendSeries={trendSeries}
             rowByRunId={rowByRunId}
             ghostTooltip={ghostTooltipLines}
             meanTooltip={meanTooltipLines}
