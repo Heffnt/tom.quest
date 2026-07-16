@@ -2,10 +2,12 @@
 
 // app/boolback/components/group-plot.tsx — the Group Plot center view: the same
 // shared Plot config (store.plot) faceted across ONE parameter's values, across
-// the LAYERS (one panel per layer), or across the BINS of a continuous metric
+// the LAYERS (one panel per layer), across the BINS of a continuous metric
 // (one panel per bin of complexity / an outcome metric / the derived max
-// trained epoch). Every panel is the identical plot (shared axes, consistent
-// styling); panels vary across the facet.
+// trained epoch), or across a GRID of two parameters (row × col — one panel
+// per non-empty cell, column headers across the top, row labels down the
+// left). Every panel is the identical plot (shared axes, consistent styling);
+// panels vary across the facet.
 //
 // The config panel OWNS the facet choice (groupPlot.facet — a GroupFacet union)
 // and panel size (groupPlot.panelMin); this view only reads them (plus the
@@ -22,8 +24,8 @@
 // SERIES MODEL: lib/split-dims.resolveSeries runs GLOBALLY (over all panels'
 // rows) and returns exactly ONE series per layer, so a layer's color/shape/
 // dash and the categorical axis positions mean the same thing in every panel.
-// Panels carry (row × series) PAIRS: under a parameter or bins facet the panel
-// SLICE comes from the deduped union, but within a panel a run renders once per
+// Panels carry (row × series) PAIRS: under a parameter, grid or bins facet the
+// panel SLICE comes from the deduped union, but within a panel a run renders once per
 // matching layer-series — the same per-layer duplication rule as the main plot;
 // under the layer facet each panel is simply that layer's own series. Points
 // group per (series × X bucket) exactly like the main plot (mean ± SD whiskers
@@ -32,7 +34,7 @@
 // Plot-level `size`/`opacity` scale every mark the same way as the main plot.
 // Rendering is windowed (content-visibility) since 150 SVG panels is work.
 
-import { useDeferredValue, useEffect, useMemo } from "react";
+import { Fragment, useDeferredValue, useEffect, useMemo } from "react";
 import type { Bundle, RunRow } from "../lib/types";
 import { DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, DEFAULT_LAYER_STYLE } from "../lib/types";
 import { useBoolbackStore } from "../state/store";
@@ -64,6 +66,9 @@ import {
 const PW = 260, PH = 176; // panel logical size (viewBox); CSS scales it
 const PAD = { l: 34, r: 8, t: 8, b: 20 };
 const MAX_FACETS = 150;
+/** Grid cardinality cap — rows × cols above this shows the warning instead of
+ *  rendering (a crossed pair explodes much faster than a flat facet). */
+export const MAX_GRID_CELLS = 100;
 const GHOST_CAP = 500; // per-panel epoch ghost-line cap (as the main plot)
 
 type Extent = { x0: number; x1: number; y0: number; y1: number };
@@ -71,7 +76,58 @@ type Extent = { x0: number; x1: number; y0: number; y1: number };
 /** A run scheduled into a panel under one series (the duplication unit). */
 type PanelPt = { row: RunRow; key: string };
 
-type FacetPanel = { id: string; value: string; count: number; pts: PanelPt[] };
+export type FacetPanel = { id: string; value: string; count: number; pts: PanelPt[] };
+
+/** Sort a parameter's values by its rule: numericSort ascending, else lexical
+ *  (the same ordering the flat param facet uses for its panels). */
+function paramValueSort(def: ParameterDef): (a: string, b: string) => number {
+  return def.numericSort
+    ? (a, b) => Number(a) - Number(b)
+    : (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+}
+
+/**
+ * Derive a grid facet's occupancy over the layers' resolved series: the sorted
+ * row/col value lists plus one panel per NON-EMPTY (row-value, col-value) cell.
+ * A cell's id/value is the RAW `"<row>|<col>"` pair — it doubles as the CSV
+ * `panel` key; display formatting (shortModel etc.) happens only in the UI.
+ * Within a cell a run renders once per matching layer-series (the same
+ * duplication rule as the flat facets); `count` reports DISTINCT runs. Rows
+ * where either parameter is null are dropped (they belong to no cell). Pure —
+ * exported for tests.
+ */
+export function deriveGridCells(
+  series: Array<{ key: string; rows: RunRow[] }>,
+  rowDef: ParameterDef,
+  colDef: ParameterDef,
+): { rowVals: string[]; colVals: string[]; cells: Map<string, FacetPanel> } {
+  const cells = new Map<string, FacetPanel>();
+  const rowSet = new Set<string>(), colSet = new Set<string>();
+  for (const s of series) {
+    for (const row of s.rows) {
+      const rv = rowDef.raw(row);
+      const cv = colDef.raw(row);
+      if (rv === null || cv === null) continue;
+      rowSet.add(rv);
+      colSet.add(cv);
+      const id = `${rv}|${cv}`;
+      let cell = cells.get(id);
+      if (!cell) {
+        cell = { id, value: id, count: 0, pts: [] };
+        cells.set(id, cell);
+      }
+      cell.pts.push({ row, key: s.key });
+    }
+  }
+  for (const c of cells.values()) {
+    c.count = new Set(c.pts.map((p) => p.row.identity.node_path)).size;
+  }
+  return {
+    rowVals: [...rowSet].sort(paramValueSort(rowDef)),
+    colVals: [...colSet].sort(paramValueSort(colDef)),
+    cells,
+  };
+}
 
 /** Compact numeric label formatter (matches plot-panel's tooltip formatter). */
 function tickFmt(v: number): string {
@@ -102,11 +158,17 @@ export function GroupPlotBody({
   const setPlot = useBoolbackStore((s) => s.setPlot);
   const setPlotUnionCount = useBoolbackStore((s) => s.setPlotUnionCount);
 
-  // Facet: the GroupFacet union — one panel per layer, per parameter value, or
-  // per bin of a continuous metric.
+  // Facet: the GroupFacet union — one panel per layer, per parameter value,
+  // per bin of a continuous metric, or per (row × col) grid cell.
   const facet = groupPlot.facet;
   const facetDef =
     facet?.kind === "param" ? PARAMETERS.find((d) => d.key === facet.key) ?? null : null;
+  // Grid facet parameter defs (null when a hand-edited key names no parameter —
+  // the grid body renders its "unknown parameter" note in that case).
+  const gridRowDef =
+    facet?.kind === "grid" ? PARAMETERS.find((d) => d.key === facet.row) ?? null : null;
+  const gridColDef =
+    facet?.kind === "grid" ? PARAMETERS.find((d) => d.key === facet.col) ?? null : null;
   const panelMin = groupPlot.panelMin || DEFAULT_GROUP_EXTRAS.panelMin;
 
   const lineMode = plot.x === "epoch";
@@ -177,8 +239,30 @@ export function GroupPlotBody({
   }, [unionRows, setPlotUnionCount]);
   useEffect(() => () => setPlotUnionCount(null), [setPlotUnionCount]);
 
+  // ---- grid occupancy (grid facet only) --------------------------------------
+  // Row/col value lists + the non-empty cells; GridPanels lays them out, and
+  // the facets memo below flattens the cells for the toolbar count + export.
+  const grid = useMemo(
+    () => (gridRowDef && gridColDef ? deriveGridCells(resolution.series, gridRowDef, gridColDef) : null),
+    [gridRowDef, gridColDef, resolution.series],
+  );
+
   // ---- facet panels (sorted, cardinality-capped) -----------------------------
   const facets = useMemo(() => {
+    if (facet?.kind === "grid") {
+      // Non-empty cells in display order (row-major) — the export walks this
+      // list; each cell's value is its raw "<row>|<col>" panel key.
+      const list: FacetPanel[] = [];
+      if (grid) {
+        for (const rv of grid.rowVals) {
+          for (const cv of grid.colVals) {
+            const cell = grid.cells.get(`${rv}|${cv}`);
+            if (cell) list.push(cell);
+          }
+        }
+      }
+      return { list, hidden: 0, lacking: 0, lackLabel: "" };
+    }
     if (facet?.kind === "layer") {
       // One panel per layer — that layer's own series (duplication across
       // panels is by design: a run matching two layers appears in both).
@@ -250,7 +334,7 @@ export function GroupPlotBody({
       list.sort(byValue);
     }
     return { list, hidden, lacking: 0, lackLabel: "" };
-  }, [facet, facetDef, plot.layers, resolution.series, unionRows, index]);
+  }, [facet, facetDef, grid, plot.layers, resolution.series, unionRows, index]);
 
   // ---- export handle (shared header CSV button) ------------------------------
   // One ExportSeries per (panel × layer) slice, panels in display order, layers
@@ -344,6 +428,7 @@ export function GroupPlotBody({
   const facetLabel =
     facet?.kind === "layer" ? "layer"
       : facet?.kind === "param" ? (facetDef?.label ?? facet.key)
+      : facet?.kind === "grid" ? `${gridRowDef?.label ?? facet.row} × ${gridColDef?.label ?? facet.col}`
       : facet?.kind === "bins" ? metricLabel(index, facet.metric)
       : "";
   const dispFacet = (v: string) => (facet?.kind === "param" && facetDef?.display ? facetDef.display(v) : v);
@@ -420,21 +505,130 @@ export function GroupPlotBody({
         </span>
       </div>
 
+      {facet.kind === "grid" ? (
+        <GridPanels grid={grid} rowDef={gridRowDef} colDef={gridColDef} panelMin={panelMin} ctx={panelCtx} />
+      ) : (
+        <div
+          className="min-h-0 flex-1 overflow-y-auto p-2"
+          style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${panelMin}px, 1fr))`, gap: 8, alignContent: "start" }}
+        >
+          {facets.list.map((f) => (
+            <LazyPanel key={f.id} minHeight={panelMin * (PH / PW) + 22}>
+              <div
+                title={`${facetLabel}: ${dispFacet(f.value) || "—"} · ${f.count} runs`}
+                className="flex w-full items-center justify-between gap-2 truncate px-1 pt-1 text-left text-[11px] text-text-muted"
+              >
+                <span className="truncate">{dispFacet(f.value) || "—"}</span>
+                <span className="shrink-0 text-text-faint">{f.count}</span>
+              </div>
+              <Panel pts={f.pts} ctx={panelCtx} />
+            </LazyPanel>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Grid facet layout — a REAL CSS grid: column headers across the top (col
+// values, display()-formatted — shortModel for base_model), row labels down
+// the left, one compact PlotSurface per non-empty cell (the per-panel pooled
+// trend + `r=` corner comes free from the surface). Empty cells keep their
+// slot (dashed outline) so the grid stays rectangular. Cells share the same
+// windowed rendering (LazyPanel) as the flat facets. Above MAX_GRID_CELLS the
+// warning replaces the panels (the flat facets' cardinality guard, grid form).
+// ---------------------------------------------------------------------------
+
+function GridPanels({
+  grid, rowDef, colDef, panelMin, ctx,
+}: {
+  grid: ReturnType<typeof deriveGridCells> | null;
+  rowDef: ParameterDef | null;
+  colDef: ParameterDef | null;
+  panelMin: number;
+  ctx: PanelCtx;
+}) {
+  if (!grid || !rowDef || !colDef) {
+    return (
+      <div className="flex-1 min-h-0 flex items-center justify-center p-6">
+        <p className="max-w-sm text-center text-xs text-text-faint">
+          Grid parameters not found in this data — pick another row × col pair
+          in the config panel.
+        </p>
+      </div>
+    );
+  }
+  const nCells = grid.rowVals.length * grid.colVals.length;
+  if (nCells > MAX_GRID_CELLS) {
+    return (
+      <div className="flex-1 min-h-0 flex items-center justify-center p-6">
+        <p className="max-w-sm text-center text-xs text-text-faint">
+          {grid.rowVals.length} × {grid.colVals.length} = {nCells} cells exceeds
+          the {MAX_GRID_CELLS}-panel cap — pick lower-cardinality parameters (or
+          filter the layers down).
+        </p>
+      </div>
+    );
+  }
+  const dispRow = (v: string) => (rowDef.display ? rowDef.display(v) : v);
+  const dispCol = (v: string) => (colDef.display ? colDef.display(v) : v);
+  const minH = panelMin * (PH / PW) + 22;
+  return (
+    <div className="min-h-0 flex-1 overflow-auto p-2">
       <div
-        className="min-h-0 flex-1 overflow-y-auto p-2"
-        style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${panelMin}px, 1fr))`, gap: 8, alignContent: "start" }}
+        style={{
+          display: "grid",
+          gridTemplateColumns: `max-content repeat(${grid.colVals.length}, minmax(${panelMin}px, 1fr))`,
+          gap: 8,
+          alignContent: "start",
+        }}
       >
-        {facets.list.map((f) => (
-          <LazyPanel key={f.id} minHeight={panelMin * (PH / PW) + 22}>
+        <div aria-hidden /> {/* corner spacer above the row labels */}
+        {grid.colVals.map((cv) => (
+          <div
+            key={cv}
+            title={`${colDef.label}: ${dispCol(cv) || "—"}`}
+            className="truncate px-1 text-center text-[11px] text-text-muted"
+          >
+            {dispCol(cv) || "—"}
+          </div>
+        ))}
+        {grid.rowVals.map((rv) => (
+          <Fragment key={rv}>
             <div
-              title={`${facetLabel}: ${dispFacet(f.value) || "—"} · ${f.count} runs`}
-              className="flex w-full items-center justify-between gap-2 truncate px-1 pt-1 text-left text-[11px] text-text-muted"
+              title={`${rowDef.label}: ${dispRow(rv) || "—"}`}
+              className="flex items-center justify-end text-right text-[11px] text-text-muted"
+              style={{ maxWidth: 140 }}
             >
-              <span className="truncate">{dispFacet(f.value) || "—"}</span>
-              <span className="shrink-0 text-text-faint">{f.count}</span>
+              <span className="truncate">{dispRow(rv) || "—"}</span>
             </div>
-            <Panel pts={f.pts} ctx={panelCtx} />
-          </LazyPanel>
+            {grid.colVals.map((cv) => {
+              const cell = grid.cells.get(`${rv}|${cv}`);
+              if (!cell) {
+                // No runs at this (row, col) — keep the slot, render nothing.
+                return (
+                  <div
+                    key={cv}
+                    className="rounded-md border border-dashed border-border/40"
+                    style={{ minHeight: minH }}
+                    aria-hidden
+                  />
+                );
+              }
+              return (
+                <LazyPanel key={cv} minHeight={minH}>
+                  <div
+                    title={`${rowDef.label}: ${dispRow(rv) || "—"} · ${colDef.label}: ${dispCol(cv) || "—"} · ${cell.count} runs`}
+                    className="flex w-full items-center justify-end px-1 pt-1 text-[11px] text-text-faint"
+                  >
+                    {cell.count}
+                  </div>
+                  <Panel pts={cell.pts} ctx={ctx} />
+                </LazyPanel>
+              );
+            })}
+          </Fragment>
         ))}
       </div>
     </div>

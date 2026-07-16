@@ -85,13 +85,26 @@ describe("sanitizePlotConfig — layer style + plot-level size/opacity", () => {
 });
 
 describe("sanitizeGroupFacet", () => {
-  it("passes the three valid kinds through (bins n clamped 2–8)", () => {
+  it("passes the layer / param / bins kinds through (bins n clamped 2–8)", () => {
     expect(sanitizeGroupFacet({ kind: "layer" })).toEqual({ kind: "layer" });
     expect(sanitizeGroupFacet({ kind: "param", key: "base_model" })).toEqual({ kind: "param", key: "base_model" });
     expect(sanitizeGroupFacet({ kind: "bins", metric: "asr", n: 3, mode: "width" }))
       .toEqual({ kind: "bins", metric: "asr", n: 3, mode: "width" });
     const clamped = sanitizeGroupFacet({ kind: "bins", metric: "asr", n: 99, mode: "quantile" });
     expect(clamped).toEqual({ kind: "bins", metric: "asr", n: 8, mode: "quantile" });
+  });
+
+  it("passes a valid grid facet through (row × col parameter keys)", () => {
+    expect(sanitizeGroupFacet({ kind: "grid", row: "target_behavior", col: "base_model" }))
+      .toEqual({ kind: "grid", row: "target_behavior", col: "base_model" });
+  });
+
+  it("nulls a grid facet with a missing, empty or non-distinct key", () => {
+    expect(sanitizeGroupFacet({ kind: "grid", row: "seed" })).toBeNull(); // no col
+    expect(sanitizeGroupFacet({ kind: "grid", col: "seed" })).toBeNull(); // no row
+    expect(sanitizeGroupFacet({ kind: "grid", row: "", col: "base_model" })).toBeNull(); // empty
+    expect(sanitizeGroupFacet({ kind: "grid", row: 3, col: "base_model" })).toBeNull(); // wrong type
+    expect(sanitizeGroupFacet({ kind: "grid", row: "seed", col: "seed" })).toBeNull(); // row === col
   });
 
   it("drops the pre-bins STRING form and malformed blobs (no migration)", () => {

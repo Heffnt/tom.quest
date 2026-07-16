@@ -115,10 +115,11 @@ describe("configToSpec / specToConfig round-trip", () => {
     expect(specToConfig(spec).plot).toEqual(cfg);
   });
 
-  it("groupplot = the shared plot fields + a GroupFacet object (all three kinds round-trip)", () => {
+  it("groupplot = the shared plot fields + a GroupFacet object (every kind round-trips)", () => {
     for (const f of [
       { kind: "layer" },
       { kind: "param", key: "base_model" },
+      { kind: "grid", row: "target_behavior", col: "base_model" },
       { kind: "bins", metric: "fourier_degree", n: 3, mode: "quantile" },
       { kind: "bins", metric: "max_epoch", n: 4, mode: "width" },
     ] as const) {
@@ -183,6 +184,15 @@ describe("serializeSpec / parseSpec round-trip", () => {
     expect(parseSpec(serializeSpec(spec))).toEqual(spec);
     const paramSpec = configToSpec("groupplot", RICH_PLOT, { kind: "param", key: "seed" });
     expect(parseSpec(serializeSpec(paramSpec))).toEqual(paramSpec);
+    const gridSpec = configToSpec("groupplot", RICH_PLOT, { kind: "grid", row: "target_behavior", col: "base_model" });
+    expect(parseSpec(serializeSpec(gridSpec))).toEqual(gridSpec);
+  });
+
+  it("a malformed grid facet (row === col) is dropped on parse, like any bad facet", () => {
+    const spec = parseSpec(JSON.stringify({ v: 4, view: "groupplot", facet: { kind: "grid", row: "seed", col: "seed" } }));
+    expect(spec).not.toBeNull();
+    expect(spec!.facet).toBeUndefined();
+    expect(specToConfig(spec!).facet).toBeNull();
   });
 
   it("round-trips a table spec", () => {

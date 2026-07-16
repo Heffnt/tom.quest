@@ -1071,17 +1071,19 @@ function CollapsibleSection({
 
 // ===========================================================================
 // Facet-by select — kind-aware over the GroupFacet union. Plain options for
-// (none) / layer / the differing parameters; optgroups for the BINNABLE
-// metrics (complexity, each outcome group, the pinned max_epoch). Choosing a
-// metric writes {kind:"bins", metric, n:3, mode:"quantile"} and reveals a
-// compact n + quantile|width row (same controls as the bin-into-layers row)
-// that patches the facet in place.
+// (none) / layer / grid (two parameters) / the differing parameters; optgroups
+// for the BINNABLE metrics (complexity, each outcome group, the pinned
+// max_epoch). Choosing a metric writes {kind:"bins", metric, n:3,
+// mode:"quantile"} and reveals a compact n + quantile|width row (same controls
+// as the bin-into-layers row) that patches the facet in place; choosing grid
+// reveals a row × col parameter pair (target_behavior × base_model suggested).
 // ===========================================================================
 
 /** Derive the select's flat string value from the facet union. */
 function facetSelectValue(facet: GroupFacet | null): string {
   if (!facet) return "";
   if (facet.kind === "layer") return "layer";
+  if (facet.kind === "grid") return "grid";
   if (facet.kind === "param") return facet.key;
   return `bins:${facet.metric}`;
 }
@@ -1098,12 +1100,30 @@ function FacetBySelect({
   const handleSelect = (v: string) => {
     if (!v) { onChange(null); return; }
     if (v === "layer") { onChange({ kind: "layer" }); return; }
+    if (v === "grid") {
+      // Suggest the canonical pair (target_behavior × base_model); fall back
+      // to the first differing parameters when either is absent from the data.
+      const keys = paramOptions.map((o) => o.value);
+      const row = keys.includes("target_behavior") ? "target_behavior" : keys[0] ?? "target_behavior";
+      const col = keys.includes("base_model") && row !== "base_model"
+        ? "base_model"
+        : keys.find((k) => k !== row) ?? (row === "base_model" ? "target_behavior" : "base_model");
+      onChange({ kind: "grid", row, col });
+      return;
+    }
     if (v.startsWith("bins:")) {
       onChange({ kind: "bins", metric: v.slice("bins:".length), n: 3, mode: "quantile" });
       return;
     }
     onChange({ kind: "param", key: v });
   };
+
+  // Grid axis options: the same differing-parameter list; a stale key (spec
+  // hand-edit / data change) stays selectable so the select never goes blank.
+  const gridAxisOptions = (current: string) =>
+    paramOptions.some((o) => o.value === current)
+      ? paramOptions
+      : [{ value: current, label: current }, ...paramOptions];
 
   return (
     <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
@@ -1116,6 +1136,7 @@ function FacetBySelect({
       >
         <option value="">(none)</option>
         <option value="layer">layer (one panel per layer)</option>
+        <option value="grid">grid (two parameters)</option>
         {paramOptions.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
         ))}
@@ -1137,6 +1158,35 @@ function FacetBySelect({
           <option value={`bins:${MAX_EPOCH}`}>Max trained epoch</option>
         </optgroup>
       </select>
+
+      {facet?.kind === "grid" && (
+        <div className="col-span-2 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 text-[11px]">
+          <span className="text-text-faint">rows</span>
+          <select
+            value={facet.row}
+            onChange={(e) => onChange({ ...facet, row: e.target.value })}
+            aria-label="grid row parameter"
+            className="w-full rounded border border-border bg-surface px-1 py-0.5 text-text focus:border-accent/60 focus:outline-none"
+          >
+            {gridAxisOptions(facet.row).map((o) => (
+              // The same parameter on both axes is a plain param facet — keep
+              // the keys distinct (the sanitizer nulls a row === col grid).
+              <option key={o.value} value={o.value} disabled={o.value === facet.col}>{o.label}</option>
+            ))}
+          </select>
+          <span className="text-text-faint">cols</span>
+          <select
+            value={facet.col}
+            onChange={(e) => onChange({ ...facet, col: e.target.value })}
+            aria-label="grid column parameter"
+            className="w-full rounded border border-border bg-surface px-1 py-0.5 text-text focus:border-accent/60 focus:outline-none"
+          >
+            {gridAxisOptions(facet.col).map((o) => (
+              <option key={o.value} value={o.value} disabled={o.value === facet.row}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {facet?.kind === "bins" && (
         <div className="col-span-2 flex flex-wrap items-center gap-1.5 text-[11px]">

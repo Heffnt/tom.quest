@@ -556,10 +556,13 @@ export interface PlotConfig extends Record<string, unknown> {
 
 /** What the Group Plot facets its panels over. "bins" slices a continuous
  *  metric (complexity / outcome / the derived "max_epoch") into partitioned
- *  bins over the layers' union — one panel per bin. */
+ *  bins over the layers' union — one panel per bin. "grid" crosses TWO
+ *  parameters (row × col facet keys, e.g. target_behavior × base_model) —
+ *  one panel per non-empty cell. */
 export type GroupFacet =
   | { kind: "layer" }
   | { kind: "param"; key: string }
+  | { kind: "grid"; row: string; col: string }
   | { kind: "bins"; metric: string; n: number; mode: "quantile" | "width" };
 
 /** Group Plot EXTRAS only — the plot config itself is SHARED (store.plot). */
@@ -744,6 +747,14 @@ export function sanitizeGroupFacet(raw: unknown): GroupFacet | null {
   if (f.kind === "layer") return { kind: "layer" };
   if (f.kind === "param" && typeof f.key === "string" && f.key) {
     return { kind: "param", key: f.key };
+  }
+  if (
+    f.kind === "grid" &&
+    typeof f.row === "string" && f.row &&
+    typeof f.col === "string" && f.col &&
+    f.row !== f.col // a parameter crossed with itself is a plain param facet
+  ) {
+    return { kind: "grid", row: f.row, col: f.col };
   }
   if (
     f.kind === "bins" &&

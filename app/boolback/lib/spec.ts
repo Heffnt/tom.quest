@@ -16,7 +16,7 @@
 //     (name/color/style{shape,dash} + each layer's facets/ranges), plot-level
 //     ranges, plot-level size/opacity, continuous color, the plot toggles
 //     (band/ghosts/trend), and — groupplot only — a `facet` (a GroupFacet
-//     object: layer / param / metric-bins). Table specs carry
+//     object: layer / param / param-grid / metric-bins). Table specs carry
 //     filters/columns/sorts.
 //   * It does NOT carry EPHEMERAL / DISPLAY-ONLY state, which is therefore
 //     default-filled by specToConfig (never round-trips):
@@ -71,7 +71,7 @@ export interface ViewSpec {
   /** Plot views: PLOT-LEVEL ranges; table: the filter ranges. */
   ranges?: { metric: string; min: number; max: number }[];
   color_by?: string | null; // continuous-color metric, or null
-  facet?: GroupFacet; // groupplot only (layer / param / metric-bins panels)
+  facet?: GroupFacet; // groupplot only (layer / param / grid / metric-bins panels)
   size?: number;    // plot-level marker/line size multiplier (omit when 1)
   opacity?: number; // plot-level opacity multiplier (omit when 1)
   band?: boolean;
@@ -289,6 +289,10 @@ function orderSpec(spec: ViewSpec): Record<string, unknown> {
     // fixed key order per kind, so serialization is deterministic
     const f: Record<string, unknown> = { kind: spec.facet.kind };
     if (spec.facet.kind === "param") f.key = spec.facet.key;
+    if (spec.facet.kind === "grid") {
+      f.row = spec.facet.row;
+      f.col = spec.facet.col;
+    }
     if (spec.facet.kind === "bins") {
       f.metric = spec.facet.metric;
       f.n = spec.facet.n;
