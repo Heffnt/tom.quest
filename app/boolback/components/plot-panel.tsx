@@ -422,7 +422,8 @@ export function PlotBody({
     // applied straight from config at render).
     const groupVis = groups.map((g) => {
       const gSeries = seriesByKey.get(g.dims[0]);
-      const dash = dashOf(gSeries?.style ?? DEFAULT_LAYER_STYLE);
+      const gStyle = gSeries?.style ?? DEFAULT_LAYER_STYLE;
+      const dash = dashOf(gStyle);
       const color = colorByActive
         ? colorForC(meanColorByOfDims.get(g.dims.join(" ")) ?? null)
         : gSeries?.color ?? SINGLE_COLOR;
@@ -432,7 +433,7 @@ export function PlotBody({
         if (x2 !== null) pts.push({ x: x2, y: p.y, sd: p.sd, n: p.n });
       }
       const label = gSeries?.label ?? g.dims[0] ?? "";
-      return { dims: g.dims, color, dash, runId: g.runId, label, pts };
+      return { dims: g.dims, color, dash, shapeIdx: shapeForValue(gStyle.shape), runId: g.runId, label, pts };
     });
 
     // Extent over all rendered points.

@@ -2,11 +2,13 @@
 // FULL surface draw one line per series (pooled suppressed); a single series
 // keeps the pooled line; a degenerate series (no x variance) is skipped; and
 // compact surfaces ALWAYS keep the pooled per-panel fit + `r=` corner.
+// Plus: epoch-mode vertices honor the layer's SHAPE channel (they were
+// hardcoded circles once — a square layer must render rect vertices).
 
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import type { RunRow } from "../lib/types";
-import { PlotSurface, type SurfaceTrendSeries } from "./plot-surface";
+import { PlotSurface, type SurfaceTrendSeries, type SurfaceMeanGroup } from "./plot-surface";
 
 const SIZE = { W: 200, H: 100, pad: { l: 10, r: 10, t: 10, b: 10 } };
 const SCALE = {
@@ -83,5 +85,28 @@ describe("PlotSurface trend", () => {
     });
     expect(count(container, "trend-pooled")).toBe(0);
     expect(count(container, "trend-series")).toBe(0);
+  });
+});
+
+describe("PlotSurface epoch vertices", () => {
+  const group = (shapeIdx: number): SurfaceMeanGroup => ({
+    dims: [`l${shapeIdx}`], color: "#aa0000", dash: "", shapeIdx,
+    runId: undefined, label: `layer ${shapeIdx}`,
+    pts: [{ x: 1, y: 20, sd: null, n: 2 }, { x: 2, y: 30, sd: null, n: 2 }],
+  });
+
+  it("vertices render the layer's shape glyph, not a hardcoded circle", () => {
+    const { container } = mount({
+      mode: "epoch",
+      config: { ...CONFIG, trend: false },
+      pairs: undefined,
+      epoch: { ghostRuns: [], groups: [group(0), group(1)] },
+    });
+    // shape 1 = rect: two vertices of the square layer draw as <rect>
+    expect(container.querySelectorAll("rect[fill='#aa0000']").length).toBe(2);
+    // shape 0 stays a circle; every vertex also carries a transparent hit
+    // circle (the hover title / click target), so filled circles == 2.
+    expect(container.querySelectorAll("circle[fill='#aa0000']").length).toBe(2);
+    expect(container.querySelectorAll("circle[fill='transparent'] title").length).toBe(4);
   });
 });

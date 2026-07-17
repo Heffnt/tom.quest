@@ -907,6 +907,7 @@ function buildEpochContent(pts: PanelPt[], ctx: PanelCtx): EpochContent | null {
       dims: g.dims,
       color,
       dash: dashForValue(style.dash),
+      shapeIdx: shapeForValue(style.shape),
       runId: g.runId,
       label: gSeries?.label ?? g.dims[0] ?? "",
       pts: linePts,

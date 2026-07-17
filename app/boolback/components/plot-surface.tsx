@@ -92,6 +92,8 @@ export interface SurfaceMeanGroup {
   dims: string[];
   color: string;
   dash: string;
+  /** The owning layer's shape index (epoch vertices honor the shape channel). */
+  shapeIdx: number;
   runId: string | undefined;
   label: string;
   pts: Array<{ x: number; y: number; sd: number | null; n: number }>;
@@ -364,18 +366,24 @@ export function PlotSurface({
                 </g>
               )
             ))}
-            {/* vertices — hover title + click-through for single-run groups */}
+            {/* vertices — the layer's shape glyph, plus a transparent hit
+                circle carrying the hover title + click-through (the glyphs
+                are pointer-events:none like the scatter points) */}
             {epoch.groups.map((g) =>
               g.pts.map((p, j) => (
-                <circle
+                <g
                   key={`${g.dims.join(",")}-${j}`}
-                  cx={sx(p.x)} cy={sy(p.y)} r={2.4 * config.size}
-                  fill={g.color} fillOpacity={opac(0.9, config.opacity)}
                   className={g.runId ? "cursor-pointer" : undefined}
                   onClick={g.runId ? () => inspect(g.runId!) : undefined}
                 >
-                  <title>{`${g.label ? g.label + " · " : ""}epoch ${logX ? Math.round(Math.pow(10, p.x)) : p.x}: ${tickFmt(logY ? Math.pow(10, p.y) : p.y)}${p.sd !== null && p.sd > 0 ? ` ± ${tickFmt(p.sd)}` : ""}${p.n > 1 ? ` (n=${p.n})` : ""}`}</title>
-                </circle>
+                  {shapeNode(g.shapeIdx, sx(p.x), sy(p.y), 2.4 * config.size, {
+                    fill: g.color, fillOpacity: opac(0.9, config.opacity),
+                    stroke: g.color, strokeOpacity: opac(0.9, config.opacity),
+                  })}
+                  <circle cx={sx(p.x)} cy={sy(p.y)} r={Math.max(4, 2.4 * config.size)} fill="transparent">
+                    <title>{`${g.label ? g.label + " · " : ""}epoch ${logX ? Math.round(Math.pow(10, p.x)) : p.x}: ${tickFmt(logY ? Math.pow(10, p.y) : p.y)}${p.sd !== null && p.sd > 0 ? ` ± ${tickFmt(p.sd)}` : ""}${p.n > 1 ? ` (n=${p.n})` : ""}`}</title>
+                  </circle>
+                </g>
               )),
             )}
           </g>
