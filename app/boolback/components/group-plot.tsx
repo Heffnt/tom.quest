@@ -171,6 +171,21 @@ export function GroupPlotBody({
     facet?.kind === "grid" ? PARAMETERS.find((d) => d.key === facet.col) ?? null : null;
   const panelMin = groupPlot.panelMin || DEFAULT_GROUP_EXTRAS.panelMin;
 
+  // Facet-by-function panels label with the function's simplified DNF ("A&B |
+  // A&C"). The compact arity:hex raw value stays the bucketing/sort key — the
+  // DNF is display-only, looked up from bundle.functions by that raw value.
+  const fnDnf = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const f of Object.values(bundle.functions)) {
+      if (f.dnf_string) m.set(fnText(f.arity, f.truth_table), f.dnf_string);
+    }
+    return m;
+  }, [bundle.functions]);
+  /** display() for a parameter value, with the function→DNF special case
+   *  (shared by the flat facet headers and the grid margins). */
+  const paramDisplay = (def: ParameterDef | null, v: string) =>
+    def?.key === "function" ? (fnDnf.get(v) ?? v) : def?.display ? def.display(v) : v;
+
   const lineMode = plot.x === "epoch";
   const xName = lineMode ? "epoch" : effectiveAxis(plot.x, index, bundle.metric_schema, DEFAULT_PLOT.x);
   const yName = lineMode
@@ -431,7 +446,7 @@ export function GroupPlotBody({
       : facet?.kind === "grid" ? `${gridRowDef?.label ?? facet.row} × ${gridColDef?.label ?? facet.col}`
       : facet?.kind === "bins" ? metricLabel(index, facet.metric)
       : "";
-  const dispFacet = (v: string) => (facet?.kind === "param" && facetDef?.display ? facetDef.display(v) : v);
+  const dispFacet = (v: string) => (facet?.kind === "param" ? paramDisplay(facetDef, v) : v);
 
   const panelCtx: PanelCtx = {
     lineMode,
@@ -506,7 +521,7 @@ export function GroupPlotBody({
       </div>
 
       {facet.kind === "grid" ? (
-        <GridPanels grid={grid} rowDef={gridRowDef} colDef={gridColDef} panelMin={panelMin} ctx={panelCtx} />
+        <GridPanels grid={grid} rowDef={gridRowDef} colDef={gridColDef} panelMin={panelMin} ctx={panelCtx} disp={paramDisplay} />
       ) : (
         <div
           className="min-h-0 flex-1 overflow-y-auto p-2"
@@ -532,8 +547,9 @@ export function GroupPlotBody({
 
 // ---------------------------------------------------------------------------
 // Grid facet layout — a REAL CSS grid: column headers across the top (col
-// values, display()-formatted — shortModel for base_model), row labels down
-// the left, one compact PlotSurface per non-empty cell (the per-panel pooled
+// values, display()-formatted — shortModel for base_model, simplified DNF for
+// function), row labels down the left, one compact PlotSurface per non-empty
+// cell (the per-panel pooled
 // trend + `r=` corner comes free from the surface). Empty cells keep their
 // slot (dashed outline) so the grid stays rectangular. Cells share the same
 // windowed rendering (LazyPanel) as the flat facets. Above MAX_GRID_CELLS the
@@ -541,13 +557,15 @@ export function GroupPlotBody({
 // ---------------------------------------------------------------------------
 
 function GridPanels({
-  grid, rowDef, colDef, panelMin, ctx,
+  grid, rowDef, colDef, panelMin, ctx, disp,
 }: {
   grid: ReturnType<typeof deriveGridCells> | null;
   rowDef: ParameterDef | null;
   colDef: ParameterDef | null;
   panelMin: number;
   ctx: PanelCtx;
+  /** Parameter-value display (owner-provided: def.display + function→DNF). */
+  disp: (def: ParameterDef | null, v: string) => string;
 }) {
   if (!grid || !rowDef || !colDef) {
     return (
@@ -571,8 +589,8 @@ function GridPanels({
       </div>
     );
   }
-  const dispRow = (v: string) => (rowDef.display ? rowDef.display(v) : v);
-  const dispCol = (v: string) => (colDef.display ? colDef.display(v) : v);
+  const dispRow = (v: string) => disp(rowDef, v);
+  const dispCol = (v: string) => disp(colDef, v);
   const minH = panelMin * (PH / PW) + 22;
   return (
     <div className="min-h-0 flex-1 overflow-auto p-2">

@@ -158,6 +158,32 @@ describe("grid facet layout + export", () => {
     expect(screen.queryByText("Llama@c")).toBeNull();
   });
 
+  it("facet-by-function panels are titled with the simplified DNF, not the raw arity:hex", () => {
+    useBoolbackStore.setState({
+      groupPlot: { ...structuredClone(DEFAULT_GROUP_EXTRAS), facet: { kind: "param", key: "function" } },
+    });
+    const fnDef = def("function");
+    mount();
+    // every function that owns runs labels its panel with its dnf_string…
+    for (const r of bundle.rows) {
+      expect(screen.getAllByText(r.function.dnf_string).length).toBeGreaterThan(0);
+      // …and the compact raw value (the bucketing key) never renders as a label
+      expect(screen.queryByText(fnDef.raw(r)!)).toBeNull();
+    }
+  });
+
+  it("grid margins get the function→DNF display too (function as the ROW axis)", () => {
+    useBoolbackStore.setState({
+      groupPlot: { ...structuredClone(DEFAULT_GROUP_EXTRAS), facet: { kind: "grid", row: "function", col: "seed" } },
+    });
+    const fnDef = def("function");
+    mount();
+    for (const r of bundle.rows) {
+      expect(screen.getAllByText(r.function.dnf_string).length).toBeGreaterThan(0);
+      expect(screen.queryByText(fnDef.raw(r)!)).toBeNull();
+    }
+  });
+
   it("exports the raw \"<row>|<col>\" pair as the CSV panel key", () => {
     useBoolbackStore.setState({
       groupPlot: { ...structuredClone(DEFAULT_GROUP_EXTRAS), facet: { kind: "grid", row: "seed", col: "base_model" } },
