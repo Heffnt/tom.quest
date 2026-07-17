@@ -524,8 +524,16 @@ export interface PlotLayer extends Record<string, unknown> {
   color: string;
   /** Glyph styling (shape + dash). */
   style: LayerStyle;
-  /** Facet selections (may also carry the layer's own ranges). */
+  /** Facet selections (may also carry the layer's own ranges). A GROUP's own
+   *  filters are UNUSED — its rows come from the union of its members — so a
+   *  group carries the empty FilterState. */
   filters: FilterState;
+  /** GROUP layers only: the member layers pooled into this one series (the
+   *  resolver unions their filter matches, deduped by run identity, and styles
+   *  the result with the GROUP's own color/style/name). Exactly ONE level — a
+   *  member never has members; the sanitizer strips deeper nesting. Absent on a
+   *  plain layer. */
+  members?: PlotLayer[];
 }
 
 /** The Plot view's full config — layers + axes + PLOT-LEVEL style state. Shared
@@ -679,25 +687,53 @@ export function sanitizeLayerStyle(raw: unknown): LayerStyle {
   };
 }
 
+/** Coerce ONE layer entry (heal id/name/color/style/filters). `used` tracks ids
+ *  across the WHOLE tree so members share the top-level id namespace (globally
+ *  unique). When `allowMembers`, a `members` array is sanitized ONE level deep
+ *  (each member is coerced with members STRIPPED — a member never has members);
+ *  a layer that ends up with members is a GROUP, so its own filters are forced
+ *  to the empty FilterState (the group's rows come from the members' union). */
+function sanitizeLayerEntry(
+  e: Record<string, unknown>,
+  used: Set<string>,
+  position: number,
+  allowMembers: boolean,
+): PlotLayer {
+  const id = typeof e.id === "string" && e.id && !used.has(e.id) ? e.id : nextLayerId(used);
+  used.add(id);
+  const layer: PlotLayer = {
+    id,
+    name: typeof e.name === "string" && e.name ? e.name : id,
+    color: typeof e.color === "string" && HEX_COLOR.test(e.color) ? e.color : paletteColor(position),
+    style: sanitizeLayerStyle(e.style),
+    filters: sanitizeFilters(e.filters),
+  };
+  if (allowMembers && Array.isArray(e.members)) {
+    const members: PlotLayer[] = [];
+    for (const m of e.members) {
+      if (!m || typeof m !== "object" || Array.isArray(m)) continue;
+      // members never have members — pass allowMembers:false to strip nesting.
+      members.push(sanitizeLayerEntry(m as Record<string, unknown>, used, members.length, false));
+    }
+    if (members.length) {
+      layer.members = members;
+      layer.filters = { facets: {}, ranges: [] }; // a group's own filters are unused
+    }
+  }
+  return layer;
+}
+
 /** Coerce a layers blob: drop malformed entries; if none survive, install the
- *  default one; ensure unique ids; coerce a missing/invalid color to a palette
- *  hex by position; heal a missing/partial style. */
+ *  default one; ensure unique ids (across groups + their members); coerce a
+ *  missing/invalid color to a palette hex by position; heal a missing/partial
+ *  style; sanitize a group's members one level deep. */
 function sanitizeLayers(raw: unknown): PlotLayer[] {
   const list = Array.isArray(raw) ? raw : [];
   const out: PlotLayer[] = [];
   const used = new Set<string>();
   for (const entry of list) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const e = entry as Record<string, unknown>;
-    const id = typeof e.id === "string" && e.id && !used.has(e.id) ? e.id : nextLayerId(used);
-    used.add(id);
-    out.push({
-      id,
-      name: typeof e.name === "string" && e.name ? e.name : id,
-      color: typeof e.color === "string" && HEX_COLOR.test(e.color) ? e.color : paletteColor(out.length),
-      style: sanitizeLayerStyle(e.style),
-      filters: sanitizeFilters(e.filters),
-    });
+    out.push(sanitizeLayerEntry(entry as Record<string, unknown>, used, out.length, true));
   }
   if (out.length === 0) {
     out.push({

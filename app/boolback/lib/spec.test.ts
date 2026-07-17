@@ -92,6 +92,42 @@ describe("configToSpec / specToConfig round-trip", () => {
     expect(specToConfig(spec).plot).toEqual(cfg); // style default-fills back
   });
 
+  it("round-trips a GROUP layer (members preserved in order; the group's own filters stay empty)", () => {
+    const cfg: PlotConfig = {
+      ...DEFAULT_PLOT,
+      layers: [{
+        id: "l1", name: "grouped", color: CATEGORY_PALETTE[3], style: { ...DEFAULT_LAYER_STYLE },
+        filters: { facets: {}, ranges: [] },
+        members: [
+          { id: "l2", name: "left", color: CATEGORY_PALETTE[1], style: { ...DEFAULT_LAYER_STYLE }, filters: { facets: { seed: ["0"] }, ranges: [] } },
+          { id: "l3", name: "right", color: CATEGORY_PALETTE[2], style: { shape: 2, dash: 0 }, filters: { facets: { seed: ["1"] }, ranges: [] } },
+        ],
+      }],
+    };
+    const spec = configToSpec("plot", cfg);
+    // group emits members (facets/ranges come from the members, not the group)
+    expect(spec.layers).toEqual([{
+      name: "grouped", color: CATEGORY_PALETTE[3],
+      members: [
+        { name: "left", color: CATEGORY_PALETTE[1], facets: { seed: ["0"] } },
+        { name: "right", color: CATEGORY_PALETTE[2], style: { shape: 2 }, facets: { seed: ["1"] } },
+      ],
+    }]);
+    expect(specToConfig(spec).plot).toEqual(cfg); // ids regenerate: l1 (group), l2/l3 (members)
+  });
+
+  it("parse strips members-of-members (exactly one level)", () => {
+    const spec = parseSpec(JSON.stringify({
+      v: 4, view: "plot",
+      layers: [{ name: "grp", members: [{ name: "m", facets: { seed: ["0"] }, members: [{ name: "nested" }] }] }],
+    }));
+    expect(spec).not.toBeNull();
+    expect(spec!.layers).toEqual([{ name: "grp", members: [{ name: "m", facets: { seed: ["0"] } }] }]);
+    const plot = specToConfig(spec!).plot!;
+    expect(plot.layers[0].members).toHaveLength(1);
+    expect(plot.layers[0].members![0].members).toBeUndefined();
+  });
+
   it("round-trips a colorBy config", () => {
     const cfg: PlotConfig = { ...DEFAULT_PLOT, colorBy: "avg_sensitivity" };
     const spec = configToSpec("plot", cfg);

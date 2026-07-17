@@ -57,6 +57,10 @@ export interface SpecLayer {
   style?: Partial<LayerStyle>;
   facets?: Record<string, string[]>; // facetKey -> allowed values
   ranges?: { metric: string; min: number; max: number }[];
+  /** GROUP layers: the member layers (ONE level — a member never carries its
+   *  own members; parse strips deeper nesting). A group's own facets/ranges are
+   *  empty, so they are omitted. */
+  members?: SpecLayer[];
 }
 
 export interface ViewSpec {
@@ -125,6 +129,25 @@ function styleToSpec(style: LayerStyle | undefined): Partial<LayerStyle> | undef
   return Object.keys(out).length ? out : undefined;
 }
 
+/** Serialize ONE layer to its spec form. A GROUP (members present) emits its
+ *  members (stripped of their own nesting) and omits its unused facets/ranges. */
+function layerToSpec(l: PlotLayer): SpecLayer {
+  const out: SpecLayer = { name: l.name, color: l.color };
+  const style = styleToSpec(l.style);
+  if (style) out.style = style;
+  if (l.members && l.members.length) {
+    // Group: members carry the selections; the group's own facets/ranges are
+    // unused (and forced empty by the sanitizer), so they are not serialized.
+    out.members = l.members.map((m) => layerToSpec({ ...m, members: undefined }));
+    return out;
+  }
+  const facets = facetsToSpec(l.filters.facets);
+  if (facets) out.facets = facets;
+  const ranges = rangesToSpec(l.filters.ranges);
+  if (ranges) out.ranges = ranges;
+  return out;
+}
+
 /** Serialize the layers list; undefined when it IS the default single
  *  unfiltered "all runs" layer (the tiny-default-spec rule). */
 function layersToSpec(layers: PlotLayer[]): SpecLayer[] | undefined {
@@ -132,22 +155,14 @@ function layersToSpec(layers: PlotLayer[]): SpecLayer[] | undefined {
   if (layers.length === 1) {
     const l = layers[0];
     const unfiltered =
+      !l.members &&
       Object.values(l.filters.facets).every((v) => !v || v.length === 0) &&
       l.filters.ranges.length === 0;
     if (unfiltered && l.name === d.name && l.color === d.color && !styleToSpec(l.style)) {
       return undefined;
     }
   }
-  return layers.map((l) => {
-    const out: SpecLayer = { name: l.name, color: l.color };
-    const style = styleToSpec(l.style);
-    if (style) out.style = style;
-    const facets = facetsToSpec(l.filters.facets);
-    if (facets) out.facets = facets;
-    const ranges = rangesToSpec(l.filters.ranges);
-    if (ranges) out.ranges = ranges;
-    return out;
-  });
+  return layers.map(layerToSpec);
 }
 
 function plotToSpec(spec: ViewSpec, cfg: PlotConfig): void {
@@ -205,13 +220,16 @@ export function configToSpec(
 /** Raw plot-shaped object from a spec (pre-sanitize). Absent layers stay
  *  undefined so the sanitizer installs the default single layer. */
 function rawPlotFromSpec(spec: ViewSpec): Record<string, unknown> {
+  const rawLayer = (l: SpecLayer): Record<string, unknown> => ({
+    name: l.name,
+    color: l.color,
+    style: l.style, // sanitizeLayerStyle fills the missing fields
+    filters: { facets: l.facets ?? {}, ranges: l.ranges ?? [] },
+    // members sanitize one level deep (nesting stripped by the sanitizer).
+    members: l.members?.map(rawLayer),
+  });
   return {
-    layers: spec.layers?.map((l) => ({
-      name: l.name,
-      color: l.color,
-      style: l.style, // sanitizeLayerStyle fills the missing fields
-      filters: { facets: l.facets ?? {}, ranges: l.ranges ?? [] },
-    })),
+    layers: spec.layers?.map(rawLayer),
     ranges: spec.ranges ?? [],
     colorBy: spec.color_by ?? null,
     x: spec.x,
@@ -259,26 +277,30 @@ function orderSpec(spec: ViewSpec): Record<string, unknown> {
     for (const k of Object.keys(facets).sort()) f[k] = facets[k];
     return f;
   };
+  // Fixed key order per layer (recursive one level for a group's members), so
+  // serialization is deterministic.
+  const orderLayer = (l: SpecLayer): Record<string, unknown> => {
+    const out: Record<string, unknown> = { name: l.name };
+    if (l.color !== undefined) out.color = l.color;
+    if (l.style !== undefined) {
+      const st: Record<string, unknown> = {};
+      if (l.style.shape !== undefined) st.shape = l.style.shape;
+      if (l.style.dash !== undefined) st.dash = l.style.dash;
+      out.style = st;
+    }
+    if (l.facets !== undefined) out.facets = orderFacets(l.facets);
+    if (l.ranges !== undefined) {
+      out.ranges = l.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
+    }
+    if (l.members !== undefined) out.members = l.members.map(orderLayer);
+    return out;
+  };
   const o: Record<string, unknown> = { v: spec.v, view: spec.view };
   if (spec.x !== undefined) o.x = spec.x;
   if (spec.y !== undefined) o.y = spec.y;
   if (spec.log !== undefined) o.log = spec.log;
   if (spec.layers !== undefined) {
-    o.layers = spec.layers.map((l) => {
-      const out: Record<string, unknown> = { name: l.name };
-      if (l.color !== undefined) out.color = l.color;
-      if (l.style !== undefined) {
-        const st: Record<string, unknown> = {};
-        if (l.style.shape !== undefined) st.shape = l.style.shape;
-        if (l.style.dash !== undefined) st.dash = l.style.dash;
-        out.style = st;
-      }
-      if (l.facets !== undefined) out.facets = orderFacets(l.facets);
-      if (l.ranges !== undefined) {
-        out.ranges = l.ranges.map((r) => ({ metric: r.metric, min: r.min, max: r.max }));
-      }
-      return out;
-    });
+    o.layers = spec.layers.map(orderLayer);
   }
   if (spec.filters !== undefined) o.filters = orderFacets(spec.filters);
   if (spec.ranges !== undefined) {
@@ -363,20 +385,38 @@ function coerceStyle(raw: unknown): Partial<LayerStyle> | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+/** Coerce ONE layer object. When `allowMembers`, a `members` array is coerced
+ *  ONE level deep (members are coerced with members STRIPPED — a member never
+ *  carries its own members). Returns null on a nameless/garbage entry. */
+function coerceLayer(l: Record<string, unknown>, allowMembers: boolean): SpecLayer | null {
+  if (typeof l.name !== "string") return null;
+  const entry: SpecLayer = { name: l.name };
+  if (typeof l.color === "string") entry.color = l.color;
+  const style = coerceStyle(l.style);
+  if (style) entry.style = style;
+  const facets = coerceFilters(l.facets);
+  if (facets) entry.facets = facets;
+  const ranges = coerceRanges(l.ranges);
+  if (ranges) entry.ranges = ranges;
+  if (allowMembers && Array.isArray(l.members)) {
+    const members: SpecLayer[] = [];
+    for (const m of l.members) {
+      if (!isPlainObject(m)) continue;
+      const mm = coerceLayer(m, false); // strip members-of-members
+      if (mm) members.push(mm);
+    }
+    if (members.length) entry.members = members;
+  }
+  return entry;
+}
+
 function coerceLayers(raw: unknown): SpecLayer[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const out: SpecLayer[] = [];
   for (const l of raw) {
-    if (!isPlainObject(l) || typeof l.name !== "string") continue;
-    const entry: SpecLayer = { name: l.name };
-    if (typeof l.color === "string") entry.color = l.color;
-    const style = coerceStyle(l.style);
-    if (style) entry.style = style;
-    const facets = coerceFilters(l.facets);
-    if (facets) entry.facets = facets;
-    const ranges = coerceRanges(l.ranges);
-    if (ranges) entry.ranges = ranges;
-    out.push(entry);
+    if (!isPlainObject(l)) continue;
+    const entry = coerceLayer(l, true);
+    if (entry) out.push(entry);
   }
   return out.length ? out : undefined;
 }

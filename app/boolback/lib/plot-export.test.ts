@@ -1,8 +1,10 @@
-// plot-export tests — plotDataCsv: column order (context keys included), the
-// `panel` column existing ONLY on the groupplot view, metric-id headers
-// (bare complexity names, per-method "@" names, dotted parameter paths), the
-// epoch x-axis (run, epoch) grain with per-series judges, null-axis skipping,
-// per-layer duplication, and the download filename.
+// plot-export tests — plotDataCsv: column order (the `member` column right
+// after `layer`, context keys included), the `panel` column existing ONLY on
+// the groupplot view, metric-id headers (bare complexity names, per-method "@"
+// names, dotted parameter paths), the epoch x-axis (run, epoch) grain with
+// per-series judges, null-axis skipping, per-layer duplication, the GROUP
+// member column (union-dedup → first matching member), and the download
+// filename.
 
 import { describe, it, expect } from "vitest";
 import { plotDataCsv, plotCsvFilename, type ExportSeries } from "./plot-export";
@@ -83,25 +85,25 @@ describe("plotDataCsv — scatter (run grain)", () => {
   ];
   const axes = { x: "avg_sensitivity", y: "plantedness" };
 
-  it("main plot: layer, run_id, dir_path, metric-id headers, then the context columns — NO panel column", () => {
+  it("main plot: layer, member (empty on a plain layer), run_id, dir_path, metric-id headers, then the context columns — NO panel column", () => {
     const [head, row] = lines(plotDataCsv(series, axes, { view: "plot" }));
-    expect(head).toBe(`layer,run_id,dir_path,avg_sensitivity,plantedness,${CONTEXT_HEAD}`);
+    expect(head).toBe(`layer,member,run_id,dir_path,avg_sensitivity,plantedness,${CONTEXT_HEAD}`);
     expect(row).toBe(
-      "all runs,r1,function+x/dataset+y/training+r1,0.5,0.9," +
+      "all runs,,r1,function+x/dataset+y/training+r1,0.5,0.9," +
       `2,${fnText(2, "0110")},sst2,token,refusal,I refuse,uniform,4,0.1,meta/Llama-3.2-1B,lora-r16,hf,0.0001,3,1,kw,`,
     );
   });
 
-  it("groupplot: the panel column appears right after layer, carrying the facet cell key", () => {
+  it("groupplot: member then panel appear right after layer, panel carrying the facet cell key", () => {
     const gp: ExportSeries[] = [{ ...series[0], panel: "arity 2" }];
     const [head, row] = lines(plotDataCsv(gp, axes, { view: "groupplot" }));
-    expect(head).toBe(`layer,panel,run_id,dir_path,avg_sensitivity,plantedness,${CONTEXT_HEAD}`);
-    expect(row.startsWith("all runs,arity 2,r1,")).toBe(true);
+    expect(head).toBe(`layer,member,panel,run_id,dir_path,avg_sensitivity,plantedness,${CONTEXT_HEAD}`);
+    expect(row.startsWith("all runs,,arity 2,r1,")).toBe(true);
   });
 
   it("headers keep the exact axis ids (per-method '@' names, dotted parameter paths)", () => {
     const head = lines(plotDataCsv([], { x: "function.arity", y: "auroc@mad_quirky" }, { view: "plot" }))[0];
-    expect(head).toBe(`layer,run_id,dir_path,function.arity,auroc@mad_quirky,${CONTEXT_HEAD}`);
+    expect(head).toBe(`layer,member,run_id,dir_path,function.arity,auroc@mad_quirky,${CONTEXT_HEAD}`);
   });
 
   it("skips rows where either axis is null (not plottable — not exported)", () => {
@@ -115,7 +117,7 @@ describe("plotDataCsv — scatter (run grain)", () => {
     }];
     const body = lines(plotDataCsv(s, axes, { view: "plot" })).slice(1);
     expect(body).toHaveLength(1);
-    expect(body[0].startsWith("all runs,ok,")).toBe(true);
+    expect(body[0].startsWith("all runs,,ok,")).toBe(true);
   });
 
   it("a run matched by two layers exports once PER layer (the plot's duplication rule)", () => {
@@ -136,8 +138,8 @@ describe("plotDataCsv — epoch x-axis (per (run, epoch) grain)", () => {
       rows: [mkRow({ id: "r1", epochs: [1, 2, 3], plantednessTraj: [0.1, null, 0.9] })],
     }];
     const out = lines(plotDataCsv(s, { x: "epoch", y: "plantedness" }, { view: "plot" }));
-    expect(out[0]).toBe(`layer,run_id,dir_path,epoch,plantedness,${CONTEXT_HEAD}`);
-    const cells = out.slice(1).map((l) => l.split(",").slice(3, 5));
+    expect(out[0]).toBe(`layer,member,run_id,dir_path,epoch,plantedness,${CONTEXT_HEAD}`);
+    const cells = out.slice(1).map((l) => l.split(",").slice(4, 6));
     expect(cells).toEqual([["1", "0.1"], ["3", "0.9"]]); // epoch 2 is a null gap
   });
 
@@ -152,7 +154,46 @@ describe("plotDataCsv — epoch x-axis (per (run, epoch) grain)", () => {
     });
     const s: ExportSeries[] = [{ layer: "llm-scored", judge: "llm", rows: [row] }];
     const body = lines(plotDataCsv(s, { x: "epoch", y: "plantedness" }, { view: "plot" })).slice(1);
-    expect(body[0].split(",")[4]).toBe("0.7"); // llm's value, not the headline 0.5
+    expect(body[0].split(",")[5]).toBe("0.7"); // llm's value, not the headline 0.5
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GROUP member column — a group series carries a memberOf map (run node_path →
+// source member name). A run pooled from two members exports ONCE with the
+// FIRST matching member (the union-dedup winner); a plain layer's rows are "".
+// ---------------------------------------------------------------------------
+
+describe("plotDataCsv — group member column", () => {
+  const axes = { x: "avg_sensitivity", y: "plantedness" };
+
+  it("names the source member per row; a plain layer's rows stay empty", () => {
+    const a = mkRow({ id: "a", avg_sensitivity: 0.1, plantedness: 0.2 });
+    const b = mkRow({ id: "b", avg_sensitivity: 0.3, plantedness: 0.4 });
+    const plain = mkRow({ id: "p", avg_sensitivity: 0.5, plantedness: 0.6 });
+    const s: ExportSeries[] = [
+      { layer: "the group", memberOf: new Map([["a", "left"], ["b", "right"]]), rows: [a, b] },
+      { layer: "plain", rows: [plain] },
+    ];
+    const body = lines(plotDataCsv(s, axes, { view: "plot" })).slice(1);
+    // columns: [0]layer [1]member [2]run_id …
+    expect(body.map((l) => l.split(",").slice(0, 2))).toEqual([
+      ["the group", "left"],
+      ["the group", "right"],
+      ["plain", ""],
+    ]);
+  });
+
+  it("a run pooled from two members carries the FIRST matching member (union-dedup), once", () => {
+    // The resolver dedups the union so the group series holds each run once;
+    // memberOf records the first member that matched it.
+    const shared = mkRow({ id: "shared", avg_sensitivity: 0.5, plantedness: 0.9 });
+    const s: ExportSeries[] = [
+      { layer: "grp", memberOf: new Map([["shared", "first"]]), rows: [shared] },
+    ];
+    const body = lines(plotDataCsv(s, axes, { view: "plot" })).slice(1);
+    expect(body).toHaveLength(1);
+    expect(body[0].split(",").slice(0, 2)).toEqual(["grp", "first"]);
   });
 });
 

@@ -84,6 +84,53 @@ describe("sanitizePlotConfig — layer style + plot-level size/opacity", () => {
   });
 });
 
+describe("sanitizePlotConfig — group layers (members)", () => {
+  it("round-trips a group's members and forces the group's own filters empty", () => {
+    const cfg = sanitizePlotConfig({
+      layers: [{
+        id: "g1", name: "grouped", color: "#38bdf8",
+        // a group's own filters are unused — even if a blob carries some, they
+        // are dropped to the empty FilterState.
+        filters: { facets: { dataset: ["sst2"] }, ranges: [] },
+        members: [
+          { id: "m1", name: "left", color: "#f87171", style: { shape: 1, dash: 0 }, filters: { facets: { seed: ["0"] }, ranges: [] } },
+          { id: "m2", name: "right", color: "#4ade80", filters: { facets: { seed: ["1"] }, ranges: [] } },
+        ],
+      }],
+    });
+    const g = cfg.layers[0];
+    expect(g.members).toHaveLength(2);
+    expect(g.filters).toEqual({ facets: {}, ranges: [] }); // group filters forced empty
+    expect(g.members!.map((m) => m.name)).toEqual(["left", "right"]);
+    expect(g.members![0].filters).toEqual({ facets: { seed: ["0"] }, ranges: [] });
+    expect(g.members![0].style).toEqual({ shape: 1, dash: 0 });
+    // ids are unique across the whole tree (group + members)
+    expect(new Set([g.id, ...g.members!.map((m) => m.id)]).size).toBe(3);
+  });
+
+  it("strips members-of-members (exactly ONE level of nesting)", () => {
+    const cfg = sanitizePlotConfig({
+      layers: [{
+        id: "g1", name: "grouped", color: "#38bdf8", filters: { facets: {}, ranges: [] },
+        members: [{
+          id: "m1", name: "member", color: "#f87171", filters: { facets: {}, ranges: [] },
+          // a member must NOT carry its own members — stripped by the sanitizer.
+          members: [{ id: "x1", name: "nested", color: "#000000", filters: { facets: {}, ranges: [] } }],
+        }],
+      }],
+    });
+    expect(cfg.layers[0].members).toHaveLength(1);
+    expect(cfg.layers[0].members![0].members).toBeUndefined();
+  });
+
+  it("a group with no valid members is a plain layer (no empty members array)", () => {
+    const cfg = sanitizePlotConfig({
+      layers: [{ id: "l1", name: "x", color: "#38bdf8", filters: { facets: {}, ranges: [] }, members: [] }],
+    });
+    expect(cfg.layers[0].members).toBeUndefined();
+  });
+});
+
 describe("sanitizeGroupFacet", () => {
   it("passes the layer / param / bins kinds through (bins n clamped 2–8)", () => {
     expect(sanitizeGroupFacet({ kind: "layer" })).toEqual({ kind: "layer" });

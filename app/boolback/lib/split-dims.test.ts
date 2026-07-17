@@ -25,7 +25,8 @@ interface FakeRow {
 
 const row = (r: Omit<FakeRow, "headline"> & { judge?: string }): RunRow => {
   const { judge, ...rest } = r;
-  return { ...rest, headline: { primary_judge: judge ?? null } } as unknown as RunRow;
+  // identity.node_path is the run-identity dedup key the group union reads.
+  return { ...rest, identity: { node_path: r.id }, headline: { primary_judge: judge ?? null } } as unknown as RunRow;
 };
 const field = (r: RunRow, k: keyof FakeRow) => (r as unknown as FakeRow)[k];
 
@@ -161,6 +162,53 @@ describe("resolveSeries", () => {
       ranges: [{ metric: "asr", min: 0, max: 0.95 }],
     });
     expect(res.series[0].rows.map((r) => field(r, "id"))).toEqual(["b"]);
+  });
+
+  describe("group layers (members)", () => {
+    it("a group unions its members' matches into ONE series styled by the group; run counted once", () => {
+      const rQwen = row({ id: "r1", model: "qwen" });
+      const rLlama = row({ id: "r2", model: "llama" });
+      const group: PlotLayer = {
+        id: "g1", name: "grouped", color: "#abcdef", style: { shape: 3, dash: 2 },
+        filters: { facets: {}, ranges: [] },
+        members: [
+          layer("m1", "qwen-member", { base_model: ["qwen"] }),   // matches r1
+          layer("m2", "llama-member", { base_model: ["llama"] }), // matches r2
+        ],
+      };
+      const res = resolve({ rows: [rQwen, rLlama], layers: [group] });
+      expect(res.series).toHaveLength(1);
+      const s = res.series[0];
+      expect(s.layerId).toBe("g1");
+      expect(s.label).toBe("grouped");
+      expect(s.color).toBe("#abcdef");
+      expect(s.style).toEqual({ shape: 3, dash: 2 }); // the GROUP's own style
+      expect(s.rows).toEqual([rQwen, rLlama]); // the members' union
+      expect(res.emptyLayers).toEqual([]);
+      // memberOf attributes each run to its source member
+      expect(s.memberOf?.get("r1")).toBe("qwen-member");
+      expect(s.memberOf?.get("r2")).toBe("llama-member");
+    });
+
+    it("a run matching TWO members is counted once, attributed to the FIRST member", () => {
+      const both = row({ id: "r1", model: "qwen" });
+      const group: PlotLayer = {
+        id: "g1", name: "grp", color: "#111111", style: { ...DEFAULT_LAYER_STYLE },
+        filters: { facets: {}, ranges: [] },
+        members: [
+          layer("m1", "first", { base_model: ["qwen"] }), // matches r1
+          layer("m2", "second", {}),                       // unfiltered — also r1
+        ],
+      };
+      const res = resolve({ rows: [both], layers: [group] });
+      expect(res.series[0].rows).toEqual([both]); // ONCE, not duplicated
+      expect(res.series[0].memberOf?.get("r1")).toBe("first"); // first member wins
+    });
+
+    it("a plain layer's memberOf is null", () => {
+      const res = resolve({ rows: [row({ id: "r1", model: "qwen" })], layers: [layer("l1", "plain")] });
+      expect(res.series[0].memberOf).toBeNull();
+    });
   });
 
   describe("judge", () => {

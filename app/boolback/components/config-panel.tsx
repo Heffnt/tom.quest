@@ -40,7 +40,7 @@ import type {
   Bundle, RangeFilter, FilterState, FacetKey, RunRow,
   PlotConfig, MetricSchemaEntry, PlotLayer, LayerStyle, GroupFacet,
 } from "../lib/types";
-import { EMPTY_FILTER, DEFAULT_LAYER_STYLE, DEFAULT_PLOT } from "../lib/types";
+import { EMPTY_FILTER, DEFAULT_LAYER_STYLE, DEFAULT_PLOT, nextLayerId } from "../lib/types";
 import { useBoolbackStore, configViewOf, type ViewKey } from "../state/store";
 import type { CenterView } from "./table-pane";
 import type { ViewKind } from "../lib/spec";
@@ -89,6 +89,47 @@ const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 /** Keys pulled OUT of the tier sections and rendered in the FUNCTION section:
  *  arity (the complexity sweep axis) and the function identity (fn_hex). */
 const FUNCTION_SECTION_KEYS = new Set(["arity", "function"]);
+
+/** A layer is a GROUP iff it carries members. */
+function isGroup(l: PlotLayer): boolean {
+  return !!(l.members && l.members.length);
+}
+
+/** Apply a leaf-level FilterState edit to the top-level layers `touch` selects,
+ *  FANNING a group's edit out to each of its members (each member is its own
+ *  leaf — a plain layer is one leaf). `editLeaf` returns the leaf's next
+ *  filters plus the keys its cascade repaired; the result aggregates the cascade
+ *  tally (leaves touched + union of repaired keys) for the one-line note. Pure —
+ *  the store commits the returned layers. */
+function fanLeafEdit(
+  layers: PlotLayer[],
+  touch: (l: PlotLayer) => boolean,
+  editLeaf: (leaf: PlotLayer) => { filters: FilterState; repaired: FacetKey[] },
+): { layers: PlotLayer[]; repairedLeaves: number; keys: FacetKey[] } {
+  let repairedLeaves = 0;
+  const keySet = new Set<FacetKey>();
+  const tally = (repaired: FacetKey[]) => {
+    if (repaired.length) {
+      repairedLeaves += 1;
+      for (const k of repaired) keySet.add(k);
+    }
+  };
+  const next = layers.map((l) => {
+    if (!touch(l)) return l;
+    if (isGroup(l)) {
+      const members = l.members!.map((m) => {
+        const r = editLeaf(m);
+        tally(r.repaired);
+        return { ...m, filters: r.filters };
+      });
+      return { ...l, members };
+    }
+    const r = editLeaf(l);
+    tally(r.repaired);
+    return { ...l, filters: r.filters };
+  });
+  return { layers: next, repairedLeaves, keys: [...keySet] };
+}
 
 /** Map the center view to the spec ViewKind it copies/pastes as (anatomy → null). */
 function specKindOf(view: CenterView): ViewKind | null {
@@ -224,12 +265,24 @@ function ViewConfig({
   // Selection may be NULL (clicking the selected entry again deselects) — with
   // nothing selected the effective edit scope is forced to "all layers" below.
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+  // ---- MULTI-selection (UI-local, ctrl/⌘-click) — the grouping set. Separate
+  // from the single selectedLayerId: a plain click sets the single selection and
+  // clears this set; ctrl/⌘-click toggles membership here without changing the
+  // single selection. With >= 2 members the strip header offers "group N layers".
+  const [multiSel, setMultiSel] = useState<Set<string>>(() => new Set());
   const selectedLayer: PlotLayer | null = plotConfig
     ? plotConfig.layers.find((l) => l.id === selectedLayerId) ?? null
     : null;
+  /** True when the SELECTED entry is a group — its edits fan to members, and
+   *  the generator (expand/bin) affordances are hidden/disabled. */
+  const groupSelected = !!selectedLayer && isGroup(selectedLayer);
   /** The layerId the filter mutators target (null on the table view / when no
    *  layer is selected). */
   const sid = selectedLayer?.id ?? null;
+  /** Whether a generator (expand popover / bin control) may target the SELECTED
+   *  entry: a plain layer must be selected (a group is fanned to, never
+   *  expanded). */
+  const genTargetSelected = sid !== null && !groupSelected;
   /** The FilterState the panel edits + histograms derive from. With no layer
    *  selected on a plot view this is EMPTY — counts stay visible (global) and
    *  edits fan out to every layer via the forced "all" scope. */
@@ -397,25 +450,29 @@ function ViewConfig({
         });
         return;
       }
-      if (effectiveScope === "all") {
-        let repairedLayers = 0;
-        const repairedKeys = new Set<FacetKey>();
-        st.replaceLayers(st.plot.layers.map((l) => {
+      const selected = st.plot.layers.find((l) => l.id === sid) ?? null;
+      const fanGroup = effectiveScope !== "all" && !!selected && isGroup(selected);
+      if (effectiveScope === "all" || fanGroup) {
+        // "all" fans to EVERY leaf (a group's members included); a SELECTED
+        // group fans to ITS members. Each leaf runs its OWN cascade; the note
+        // aggregates to one line.
+        const editLeaf = (leaf: PlotLayer) => {
           const next: FilterState = {
-            facets: { ...l.filters.facets, [fk]: nextOf(l.filters.facets[fk] ?? []) },
-            ranges: l.filters.ranges,
+            facets: { ...leaf.filters.facets, [fk]: nextOf(leaf.filters.facets[fk] ?? []) },
+            ranges: leaf.filters.ranges,
           };
           const res = repairPins(bundle.rows, next, fk);
-          if (res.repaired.length) {
-            repairedLayers += 1;
-            for (const k of res.repaired) repairedKeys.add(k);
-          }
-          return { ...l, filters: res.filters };
-        }));
-        if (repairedLayers) flashCascadeAll(repairedLayers, [...repairedKeys]);
+          return { filters: res.filters, repaired: res.repaired };
+        };
+        const touch = effectiveScope === "all" ? () => true : (l: PlotLayer) => l.id === sid;
+        const { layers, repairedLeaves, keys } = fanLeafEdit(st.plot.layers, touch, editLeaf);
+        st.replaceLayers(layers);
+        if (repairedLeaves) flashCascadeAll(repairedLeaves, keys);
         return;
       }
-      const base = st.plot.layers.find((l) => l.id === sid)?.filters ?? EMPTY_FILTER;
+      // plain SELECTED layer (Phase A: the cascade flag decides whether a
+      // narrowing edit re-pins stranded siblings).
+      const base = selected?.filters ?? EMPTY_FILTER;
       const next: FilterState = { ...base, facets: { ...base.facets, [fk]: nextOf(base.facets[fk] ?? []) } };
       if (cascade) {
         const res = repairPins(bundle.rows, next, fk);
@@ -467,12 +524,69 @@ function ViewConfig({
   const runPinAll = useCallback((id: string) => {
     startTransition(() => {
       const st = useBoolbackStore.getState();
-      const ids = new Set(st.editScope === "all" ? st.plot.layers.map((l) => l.id) : [id]);
-      st.replaceLayers(st.plot.layers.map((l) =>
-        ids.has(l.id) ? { ...l, filters: pinAllDominant(bundle.rows, l.filters) } : l,
-      ));
+      const touchAll = st.editScope === "all";
+      st.replaceLayers(st.plot.layers.map((l) => {
+        if (!touchAll && l.id !== id) return l;
+        // A GROUP pins each MEMBER (its own filters are unused).
+        if (isGroup(l)) {
+          return { ...l, members: l.members!.map((m) => ({ ...m, filters: pinAllDominant(bundle.rows, m.filters) })) };
+        }
+        return { ...l, filters: pinAllDominant(bundle.rows, l.filters) };
+      }));
     });
   }, [bundle.rows]);
+
+  // ---- group / ungroup (the strip's multi-selection actions) -----------------
+  // group: replace the ctrl-selected top-level entries with ONE group entry in
+  // the FIRST selected slot (members preserved in config order; a selected group
+  // is FLATTENED so nesting stays one level; name "group of N"; color = first
+  // member's), and SELECT it. ungroup: splice the members back as top-level
+  // entries in place. Both commit through replaceLayers (like the generators).
+  const runGroup = useCallback(() => {
+    startTransition(() => {
+      const st = useBoolbackStore.getState();
+      const layers = st.plot.layers;
+      const chosen = layers.filter((l) => multiSel.has(l.id));
+      if (chosen.length < 2) return;
+      const used = new Set(layers.map((l) => l.id));
+      // Members in config order; flatten any selected group to keep ONE level.
+      const members: PlotLayer[] = [];
+      for (const l of chosen) {
+        if (isGroup(l)) members.push(...l.members!.map((m) => ({ ...m, members: undefined })));
+        else members.push({ ...l, members: undefined });
+      }
+      const gid = nextLayerId(used);
+      const group: PlotLayer = {
+        id: gid,
+        name: `group of ${members.length}`,
+        color: members[0].color,
+        style: { ...DEFAULT_LAYER_STYLE },
+        filters: { facets: {}, ranges: [] },
+        members,
+      };
+      const firstIdx = layers.findIndex((l) => multiSel.has(l.id));
+      const next: PlotLayer[] = [];
+      layers.forEach((l, i) => {
+        if (i === firstIdx) next.push(group);
+        else if (!multiSel.has(l.id)) next.push(l);
+      });
+      st.replaceLayers(next);
+      setMultiSel(new Set());
+      setSelectedLayerId(gid);
+    });
+  }, [multiSel]);
+  const runUngroup = useCallback((id: string) => {
+    startTransition(() => {
+      const st = useBoolbackStore.getState();
+      const layers = st.plot.layers;
+      const idx = layers.findIndex((l) => l.id === id);
+      if (idx === -1 || !isGroup(layers[idx])) return;
+      const restored = layers[idx].members!.map((m) => ({ ...m, members: undefined }));
+      st.replaceLayers([...layers.slice(0, idx), ...restored, ...layers.slice(idx + 1)]);
+      setMultiSel(new Set());
+      setSelectedLayerId(null);
+    });
+  }, []);
 
   // Per-parameter handler bundles, memoized so an untouched chip keeps stable
   // callback identity (React.memo skip).
@@ -494,11 +608,13 @@ function ViewConfig({
         onClear: () => { if (fk) applyFacetEdit(fk, () => [], false); },
         onIsolate: (v) => { if (fk) applyFacetEdit(fk, () => [v]); },
         onExclude: (v, all) => { if (fk) applyFacetEdit(fk, () => all.filter((x) => x !== v)); },
-        onExpand: fk && isPlotLike ? (targets) => runExpand(dim, targets) : undefined,
+        // The EXPAND generator popover is hidden for a SELECTED group (its edits
+        // fan to members; it is never expanded into new layers).
+        onExpand: fk && isPlotLike && !groupSelected ? (targets) => runExpand(dim, targets) : undefined,
       });
     }
     return m;
-  }, [differingDims, isPlotLike, applyFacetEdit, runExpand]);
+  }, [differingDims, isPlotLike, groupSelected, applyFacetEdit, runExpand]);
 
   // ---- continuous treatment (filter / color) for OUTCOME metrics --------------
   const rangeFor = (m: string): RangeFilter | undefined => selectedFilters.ranges.find((r) => r.metric === m);
@@ -533,21 +649,25 @@ function ViewConfig({
   ) => {
     startTransition(() => {
       const st = useBoolbackStore.getState();
-      if (vk !== "plot" || effectiveScope !== "all") { single(); return; }
-      let repairedLayers = 0;
-      const repairedKeys = new Set<FacetKey>();
-      st.replaceLayers(st.plot.layers.map((l) => {
-        const next: FilterState = { facets: l.filters.facets, ranges: editOf(l.filters.ranges ?? []) };
+      if (vk !== "plot") { single(); return; }
+      const selected = st.plot.layers.find((l) => l.id === sid) ?? null;
+      const fanGroup = effectiveScope !== "all" && !!selected && isGroup(selected);
+      // A plain SELECTED layer (or table) keeps the Phase-A store mutator; "all"
+      // and a selected GROUP fan the same range edit to every touched LEAF, each
+      // followed by its own cascade (editedKey null — a narrowed range can
+      // stale facet pins).
+      if (effectiveScope !== "all" && !fanGroup) { single(); return; }
+      const editLeaf = (leaf: PlotLayer) => {
+        const next: FilterState = { facets: leaf.filters.facets, ranges: editOf(leaf.filters.ranges ?? []) };
         const res = repairPins(bundle.rows, next, null);
-        if (res.repaired.length) {
-          repairedLayers += 1;
-          for (const k of res.repaired) repairedKeys.add(k);
-        }
-        return { ...l, filters: res.filters };
-      }));
-      if (repairedLayers) flashCascadeAll(repairedLayers, [...repairedKeys]);
+        return { filters: res.filters, repaired: res.repaired };
+      };
+      const touch = effectiveScope === "all" ? () => true : (l: PlotLayer) => l.id === sid;
+      const { layers, repairedLeaves, keys } = fanLeafEdit(st.plot.layers, touch, editLeaf);
+      st.replaceLayers(layers);
+      if (repairedLeaves) flashCascadeAll(repairedLeaves, keys);
     });
-  }, [vk, effectiveScope, bundle.rows, flashCascadeAll]);
+  }, [vk, sid, effectiveScope, bundle.rows, flashCascadeAll]);
 
   const addComplexityFilter = (metric: string) => {
     const { min, max } = metricRange(bundle.rows, metric, index);
@@ -608,7 +728,7 @@ function ViewConfig({
         conditioned={conditioned}
         facet={isGroupPlot && groupPlot.facet?.kind === "param" && groupPlot.facet.key === dim.key}
         selected={selected}
-        canTargetSelected={sid !== null}
+        canTargetSelected={genTargetSelected}
         onToggleValue={h.onToggleValue}
         onClear={h.onClear}
         onIsolate={h.onIsolate}
@@ -656,12 +776,28 @@ function ViewConfig({
           <LayersStrip
             layers={plotConfig.layers}
             selectedId={selectedLayer?.id ?? null}
+            multiSel={multiSel}
             counts={countsByLayer}
             resolution={resolution}
             averaged={averagedLabels}
             trendStats={trendStats}
             cascadeNote={cascadeNote}
-            onSelect={(id) => startTransition(() => setSelectedLayerId((cur) => (cur === id ? null : id)))}
+            // plain click = select / deselect (toggle); ctrl/⌘-click = toggle
+            // membership in the grouping set (single selection untouched).
+            onSelect={(id, multi) => startTransition(() => {
+              if (multi) {
+                setMultiSel((cur) => {
+                  const n = new Set(cur);
+                  if (n.has(id)) n.delete(id); else n.add(id);
+                  return n;
+                });
+                return;
+              }
+              setMultiSel(new Set());
+              setSelectedLayerId((cur) => (cur === id ? null : id));
+            })}
+            onGroup={runGroup}
+            onUngroup={runUngroup}
             onPinAll={runPinAll}
             onRename={(id, name) => startTransition(() => patchLayer(id, { name }))}
             onRecolor={(id, color) => startTransition(() => patchLayer(id, { color }))}
@@ -781,7 +917,7 @@ function ViewConfig({
                 filtered={filtered}
                 selectedRanges={selectedFilters.ranges}
                 canBin={isPlotLike}
-                canTargetSelected={!isPlotLike || sid !== null}
+                canTargetSelected={!isPlotLike || genTargetSelected}
                 onAddFilter={addComplexityFilter}
                 onRemoveFilter={removeComplexityFilter}
                 updateRange={updateComplexityRange}
@@ -1293,11 +1429,13 @@ export function corrText(st: { r: number | null; rho: number | null; n: number }
 }
 
 function LayersStrip({
-  layers, selectedId, counts, resolution, averaged, trendStats, cascadeNote,
-  onSelect, onPinAll, onRename, onRecolor, onStyle, onReset, onDuplicate, onRemove, onAdd,
+  layers, selectedId, multiSel, counts, resolution, averaged, trendStats, cascadeNote,
+  onSelect, onGroup, onUngroup, onPinAll, onRename, onRecolor, onStyle, onReset, onDuplicate, onRemove, onAdd,
 }: {
   layers: PlotLayer[];
   selectedId: string | null;
+  /** The ctrl/⌘-click grouping set (UI-local). */
+  multiSel: Set<string>;
   /** Matched-run count per layer id (from resolveSeries). */
   counts: Map<string, number>;
   resolution: SeriesResolution;
@@ -1308,10 +1446,16 @@ function LayersStrip({
   trendStats: Map<string, { r: number | null; rho: number | null; n: number }> | null;
   /** Transient "X, Y followed Z" cascade note (null when idle). */
   cascadeNote: string | null;
-  /** Select an entry (the owner toggles: selecting the selected id deselects). */
-  onSelect: (id: string) => void;
+  /** Select an entry. `multi` (ctrl/⌘-click) toggles grouping membership; a
+   *  plain click toggles the single selection (selecting the selected id
+   *  deselects). */
+  onSelect: (id: string, multi: boolean) => void;
+  /** Group the >= 2 multi-selected entries into ONE group entry. */
+  onGroup: () => void;
+  /** Ungroup a group entry — restore its members as top-level entries. */
+  onUngroup: (id: string) => void;
   /** Pin every parameter of the layer to its dominant value (pinAllDominant);
-   *  fans out to every layer when the edit scope is "all". */
+   *  fans out to every layer when the edit scope is "all" (a group → members). */
   onPinAll: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onRecolor: (id: string, color: string) => void;
@@ -1323,18 +1467,34 @@ function LayersStrip({
 }) {
   return (
     <div className="mb-2">
+      {/* group action — appears once >= 2 entries are multi-selected (ctrl/⌘-
+          click). Grouping replaces those entries with ONE group entry. */}
+      {multiSel.size >= 2 && (
+        <div className="mb-1 flex items-center gap-1.5 rounded-md border border-accent/50 bg-accent/10 px-1.5 py-1 text-[11px]">
+          <span className="text-text-muted">{multiSel.size} selected</span>
+          <button type="button" onClick={onGroup}
+            aria-label={`group ${multiSel.size} layers`}
+            className="ml-auto rounded border border-accent/50 px-1.5 py-0.5 text-accent hover:bg-accent/10">
+            group {multiSel.size} layers
+          </button>
+        </div>
+      )}
       {layers.map((l) => {
         const selected = l.id === selectedId;
+        const marked = multiSel.has(l.id);
+        const grouped = isGroup(l);
         const empty = resolution.emptyLayers.includes(l.name);
         const n = counts.get(l.id) ?? 0;
         const style = l.style ?? DEFAULT_LAYER_STYLE;
         return (
           <div
             key={l.id}
-            onClick={() => onSelect(l.id)}
+            onClick={(e) => onSelect(l.id, e.ctrlKey || e.metaKey)}
             title={selected ? `deselect layer "${l.name}"` : `edit layer "${l.name}"`}
             className={`group mb-0.5 cursor-pointer rounded-md border px-1.5 py-1 ${
-              selected ? "border-accent bg-accent/10" : "border-border/60 hover:border-accent/40"
+              selected ? "border-accent bg-accent/10"
+                : marked ? "border-accent/70 bg-accent/5 ring-1 ring-accent/40"
+                  : "border-border/60 hover:border-accent/40"
             }`}
           >
             <div className="flex items-center gap-1.5">
@@ -1358,6 +1518,14 @@ function LayersStrip({
               >
                 {empty ? "0 runs" : n}
               </span>
+              {grouped && (
+                <span
+                  className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1 py-px text-[10px] text-accent"
+                  title={`group of ${l.members!.length} layers — edits fan out to every member`}
+                >
+                  group ×{l.members!.length}
+                </span>
+              )}
               {trendStats && (
                 <span
                   className="shrink-0 whitespace-nowrap font-mono text-[10px] text-text-faint"
@@ -1371,6 +1539,12 @@ function LayersStrip({
                 title="pin every parameter to its most-frequent value in this layer"
                 aria-label={`pin all parameters of layer ${l.name}`}
                 className="shrink-0 text-text-faint hover:text-accent">⚓</button>
+              {grouped && (
+                <button type="button" onClick={(e) => { e.stopPropagation(); onUngroup(l.id); }}
+                  title={`ungroup "${l.name}" — restore its ${l.members!.length} members as top-level layers`}
+                  aria-label={`ungroup layer ${l.name}`}
+                  className="shrink-0 text-text-faint hover:text-accent">⤢</button>
+              )}
               <button type="button" onClick={(e) => { e.stopPropagation(); onReset(l.id); }}
                 title={`reset layer "${l.name}" — filters back to the dominant cell, style back to defaults`}
                 aria-label={`reset layer ${l.name}`}

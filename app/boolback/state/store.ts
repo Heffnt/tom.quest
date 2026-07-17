@@ -279,21 +279,33 @@ export const useBoolbackStore = create<BoolbackState>()(
           const idx = cfg.layers.findIndex((l) => l.id === id);
           if (idx === -1) return {};
           const src = cfg.layers[idx];
-          const nid = nextLayerId(cfg.layers.map((l) => l.id));
+          const used = new Set(cfg.layers.map((l) => l.id));
+          const nid = nextLayerId(used);
+          used.add(nid);
           newId = nid;
+          // Deep-copy a FilterState so edits to the copy never leak back.
+          const copyFilters = (f: FilterState): FilterState => ({
+            facets: Object.fromEntries(
+              Object.entries(f.facets ?? {}).map(([k, v]) => [k, [...(v ?? [])]]),
+            ) as FilterState["facets"],
+            ranges: (f.ranges ?? []).map((r) => ({ ...r })),
+          });
           const copy: PlotLayer = {
             id: nid,
             name: `${src.name} copy`,
             color: paletteColor(cfg.layers.length),
             style: { ...src.style },
-            // Deep-copy the filters so edits to the copy never leak back.
-            filters: {
-              facets: Object.fromEntries(
-                Object.entries(src.filters.facets ?? {}).map(([k, v]) => [k, [...(v ?? [])]]),
-              ) as FilterState["facets"],
-              ranges: (src.filters.ranges ?? []).map((r) => ({ ...r })),
-            },
+            filters: copyFilters(src.filters),
           };
+          // A GROUP duplicates its members too (fresh ids, deep-copied filters)
+          // — otherwise the copy would silently lose the group's contents.
+          if (src.members && src.members.length) {
+            copy.members = src.members.map((m) => {
+              const mid = nextLayerId(used);
+              used.add(mid);
+              return { id: mid, name: m.name, color: m.color, style: { ...m.style }, filters: copyFilters(m.filters) };
+            });
+          }
           const layers = [...cfg.layers];
           layers.splice(idx + 1, 0, copy);
           return { plot: { ...cfg, layers } };

@@ -38,9 +38,13 @@ function copyFacets(facets: FilterState["facets"]): FilterState["facets"] {
   ) as FilterState["facets"];
 }
 
-/** The target layers for a generator run (all, or just the selected one). */
+/** The target layers for a generator run (all, or just the selected one). A
+ *  GROUP layer is never a target — it holds members, not a single selection to
+ *  expand/bin — so groups pass through the generators untouched. */
 function targetSet(layers: PlotLayer[], targets: GeneratorTargets, selectedId: string): Set<string> {
-  return new Set(targets === "all" ? layers.map((l) => l.id) : [selectedId]);
+  const ids = new Set(targets === "all" ? layers.map((l) => l.id) : [selectedId]);
+  for (const l of layers) if (l.members && l.members.length) ids.delete(l.id);
+  return ids;
 }
 
 /** The lone default "all runs" layer drops its name as a child prefix. */

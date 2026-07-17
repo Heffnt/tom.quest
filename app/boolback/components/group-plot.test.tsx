@@ -303,6 +303,29 @@ describe("grid facet layout + export", () => {
     }
   });
 
+  it("a GROUP is ONE panel under facet=layer (its members are not separate panels)", () => {
+    useBoolbackStore.setState({
+      plot: {
+        ...structuredClone(DEFAULT_PLOT),
+        layers: [{
+          id: "g1", name: "the group", color: "#38bdf8", style: { shape: 0, dash: 0 },
+          filters: { facets: {}, ranges: [] },
+          members: [
+            { id: "m1", name: "llama-only", color: "#f87171", style: { shape: 0, dash: 0 }, filters: { facets: { base_model: ["Llama@c"] }, ranges: [] } },
+            { id: "m2", name: "gpt-only", color: "#4ade80", style: { shape: 0, dash: 0 }, filters: { facets: { base_model: ["gpt2s@d"] }, ranges: [] } },
+          ],
+        }],
+      },
+      groupPlot: { ...structuredClone(DEFAULT_GROUP_EXTRAS), facet: { kind: "layer" } },
+    });
+    mount();
+    expect(screen.getByText(/1 panels/)).toBeTruthy();
+    // the single panel is titled by the GROUP name — never the member names
+    expect(screen.getAllByText("the group").length).toBeGreaterThan(0);
+    expect(screen.queryByText("llama-only")).toBeNull();
+    expect(screen.queryByText("gpt-only")).toBeNull();
+  });
+
   it("exports the raw \"<row>|<col>\" pair as the CSV panel key", () => {
     useBoolbackStore.setState({
       groupPlot: { ...structuredClone(DEFAULT_GROUP_EXTRAS), facet: { kind: "grid", row: "seed", col: "base_model" } },
@@ -311,8 +334,8 @@ describe("grid facet layout + export", () => {
     mount(ref);
     const out = ref.current!.getCsv();
     const [head, ...body] = out.csv.trimEnd().split("\n");
-    expect(head.startsWith("layer,panel,")).toBe(true);
-    const panels = new Set(body.map((l) => l.split(",")[1]));
+    expect(head.startsWith("layer,member,panel,")).toBe(true);
+    const panels = new Set(body.map((l) => l.split(",")[2]));
     expect(panels.has("0|Llama@c")).toBe(true); // raw values — no shortModel in the data
     expect(panels.has("1|Llama@c")).toBe(true);
   });

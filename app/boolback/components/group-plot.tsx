@@ -387,7 +387,7 @@ export function GroupPlotBody({
           }
           for (const s of resolution.series) {
             const rs = byKey.get(s.key);
-            if (rs && rs.length) entries.push({ layer: s.label, panel: f.value, judge: s.judge, rows: rs });
+            if (rs && rs.length) entries.push({ layer: s.label, memberOf: s.memberOf, panel: f.value, judge: s.judge, rows: rs });
           }
         }
         return {

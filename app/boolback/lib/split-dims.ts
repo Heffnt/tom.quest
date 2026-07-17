@@ -6,7 +6,12 @@
 // source of truth consumed by plot-panel, group-plot AND the config panel:
 //
 //   * per layer, the matching rows are the layer's own filters AND the
-//     PLOT-LEVEL ranges (drag-zoom), applied over the full bundle rows;
+//     PLOT-LEVEL ranges (drag-zoom), applied over the full bundle rows; a GROUP
+//     layer (one carrying `members`) instead matches the UNION of its members'
+//     matches, deduped by run identity — ONE series styled by the group's own
+//     color/style/name, its pooled runs averaged by the SAME per-x groupRuns
+//     machinery (no second averaging path). `memberOf` maps each grouped run to
+//     the first member (in order) that matched it — the CSV `member` column;
 //   * a run matching several layers is drawn once PER matching layer —
 //     duplication is allowed and surfaced as `overlapCount` (distinct runs
 //     matching >= 2 layers), never silently deduped;
@@ -41,12 +46,17 @@ export interface Series {
   color: string;
   /** The owning layer's style (defaults filled — never absent). */
   style: LayerStyle;
-  /** This layer's runs (post layer-filters + plot ranges). */
+  /** This layer's runs (post layer-filters + plot ranges); for a GROUP, the
+   *  deduped union of its members' matches. */
   rows: RunRow[];
   /** The unique judge over this series' rows (null when mixed or absent).
    *  Epoch mode scores each series' trajectories with ITS judge; a mixed
    *  series falls back to the headline (and is flagged via judgePooled). */
   judge: string | null;
+  /** GROUP series only: run node_path → the first member (in config order)
+   *  whose filters matched it (the union-dedup keeps the first). null on a plain
+   *  layer. Consumed by the CSV `member` column. */
+  memberOf: Map<string, string> | null;
 }
 
 export interface SeriesResolution {
@@ -85,14 +95,32 @@ export function resolveSeries(opts: {
 }): SeriesResolution {
   const { rows, layers, ranges, applyTo } = opts;
 
+  /** A plain layer's matched rows: its own filters AND the plot-level ranges. */
+  const plainMatch = (f: FilterState): RunRow[] =>
+    applyTo(rows, { facets: f.facets ?? {}, ranges: [...(f.ranges ?? []), ...ranges] });
+
   // ---- per-layer matches (layer filters AND plot-level ranges) --------------
-  const matches = layers.map((layer) => ({
-    layer,
-    rows: applyTo(rows, {
-      facets: layer.filters.facets ?? {},
-      ranges: [...(layer.filters.ranges ?? []), ...ranges],
-    }),
-  }));
+  // A GROUP unions its members' matches, deduped by run identity (node_path);
+  // the first member that matches a run "owns" it (memberOf), so a run in two
+  // members is counted once and attributed to the earlier member.
+  const matches = layers.map((layer) => {
+    if (layer.members && layer.members.length) {
+      const seen = new Set<string>();
+      const rowsOut: RunRow[] = [];
+      const memberOf = new Map<string, string>();
+      for (const m of layer.members) {
+        for (const r of plainMatch(m.filters)) {
+          const id = r.identity.node_path;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          rowsOut.push(r);
+          memberOf.set(id, m.name);
+        }
+      }
+      return { layer, rows: rowsOut, memberOf };
+    }
+    return { layer, rows: plainMatch(layer.filters), memberOf: null as Map<string, string> | null };
+  });
 
   const rowsUnion: RunRow[] = [];
   for (const m of matches) rowsUnion.push(...m.rows);
@@ -119,6 +147,7 @@ export function resolveSeries(opts: {
       style,
       rows: m.rows,
       judge: judgeOf(m.rows),
+      memberOf: m.memberOf,
     };
   });
 

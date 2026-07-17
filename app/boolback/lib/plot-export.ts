@@ -10,6 +10,12 @@
 // entry per (panel × layer) slice, each carrying its panel key — the `panel`
 // column exists ONLY on the groupplot view.
 //
+// The `member` column (right after `layer`, on BOTH views) names the source
+// member layer for a GROUP layer's rows, and is empty for a plain layer. A
+// group pools the UNION of its members' matches deduped by run identity, so a
+// run matching two members of one group exports ONCE, attributed to the FIRST
+// matching member (the union-dedup winner — split-dims.Series.memberOf).
+//
 // Axis values are RAW (never log-transformed; a categorical parameter axis
 // exports its raw string value, not the ordinal position); rows where either
 // axis is null are skipped (they are not plottable). Column headers use the
@@ -28,6 +34,9 @@ import { buildRunSeries, trajectoryMetric } from "./trajectories";
 export interface ExportSeries {
   /** Layer name — the `layer` column. */
   layer: string;
+  /** GROUP layers only: run node_path → source member name (the `member`
+   *  column; empty for a plain layer's rows). From split-dims.Series.memberOf. */
+  memberOf?: Map<string, string> | null;
   /** Facet cell key (group plot only) — the `panel` column. */
   panel?: string;
   /** The series' unique judge (epoch mode reads per-epoch values with it —
@@ -60,10 +69,11 @@ function axisValue(r: RunRow, name: string): string | number | boolean | null {
 }
 
 /**
- * Serialize the plotted selection to CSV. Columns, in order: `layer`, `panel`
- * (groupplot only), `run_id`, `dir_path`, `<x-id>` (`epoch` when x is the
- * epoch axis), `<y-id>`, then the parameter context columns. One row per
- * plotted point: run grain, or (run, epoch) grain in epoch mode.
+ * Serialize the plotted selection to CSV. Columns, in order: `layer`, `member`
+ * (a group's source member, empty on a plain layer), `panel` (groupplot only),
+ * `run_id`, `dir_path`, `<x-id>` (`epoch` when x is the epoch axis), `<y-id>`,
+ * then the parameter context columns. One row per plotted point: run grain, or
+ * (run, epoch) grain in epoch mode.
  */
 export function plotDataCsv(
   series: ExportSeries[],
@@ -74,6 +84,7 @@ export function plotDataCsv(
   const epochMode = axes.x === "epoch";
   const head: string[] = [
     "layer",
+    "member",
     ...(groupplot ? ["panel"] : []),
     "run_id",
     "dir_path",
@@ -83,7 +94,12 @@ export function plotDataCsv(
   ];
   const body: Array<Array<string | number | boolean | null>> = [];
   for (const s of series) {
-    const pre = groupplot ? [s.layer, s.panel ?? ""] : [s.layer];
+    // `member` is per-ROW (a group pools several members into one series);
+    // `panel` is per-series. The pre-cells before run_id are [layer, member,
+    // panel?] — member is filled per row below.
+    const member = (r: RunRow): string => s.memberOf?.get(r.identity.node_path) ?? "";
+    const pre = (r: RunRow): Array<string | number | boolean | null> =>
+      groupplot ? [s.layer, member(r), s.panel ?? ""] : [s.layer, member(r)];
     if (epochMode) {
       // Per (run, epoch): the same per-series trajectory build as the plot
       // (the series' judge scores it), raw values (logY never applies here).
@@ -94,7 +110,7 @@ export function plotDataCsv(
         const r = byId.get(t.runId)!;
         const ctx = contextOf(r);
         for (const p of t.points) {
-          body.push([...pre, r.identity.run_id, r.identity.dir_path, p.e, p.y, ...ctx]);
+          body.push([...pre(r), r.identity.run_id, r.identity.dir_path, p.e, p.y, ...ctx]);
         }
       }
     } else {
@@ -102,7 +118,7 @@ export function plotDataCsv(
         const vx = axisValue(r, axes.x);
         const vy = axisValue(r, axes.y);
         if (vx === null || vy === null) continue; // not plottable — not exported
-        body.push([...pre, r.identity.run_id, r.identity.dir_path, vx, vy, ...contextOf(r)]);
+        body.push([...pre(r), r.identity.run_id, r.identity.dir_path, vx, vy, ...contextOf(r)]);
       }
     }
   }

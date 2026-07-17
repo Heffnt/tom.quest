@@ -663,7 +663,7 @@ export function PlotBody({
       getSvg: () => svgRef.current,
       getCsv: () => ({
         csv: plotDataCsv(
-          seriesList.map((s) => ({ layer: s.label, judge: s.judge, rows: s.rows })),
+          seriesList.map((s) => ({ layer: s.label, memberOf: s.memberOf, judge: s.judge, rows: s.rows })),
           axes,
           { view: "plot" },
         ),

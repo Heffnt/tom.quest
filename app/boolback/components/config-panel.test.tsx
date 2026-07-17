@@ -629,3 +629,95 @@ describe("group plot", () => {
     expect(groups.length).toBeGreaterThan(2); // at least one outcome group too
   });
 });
+
+describe("layer grouping (group / ungroup / fan-out)", () => {
+  /** A single group of two empty members + an optional tail layer. */
+  const groupPlot = (over?: { leftFacets?: Record<string, string[]>; withTail?: boolean }) => {
+    const layers = [
+      {
+        id: "g1", name: "grp", color: "#38bdf8", style: { shape: 0, dash: 0 },
+        filters: { facets: {}, ranges: [] },
+        members: [
+          { id: "m1", name: "left", color: "#f87171", style: { shape: 0, dash: 0 }, filters: { facets: over?.leftFacets ?? {}, ranges: [] } },
+          { id: "m2", name: "right", color: "#4ade80", style: { shape: 0, dash: 0 }, filters: { facets: {}, ranges: [] } },
+        ],
+      },
+      ...(over?.withTail ? [{ id: "l9", name: "tail", color: "#facc15", style: { shape: 0, dash: 0 }, filters: { facets: {}, ranges: [] } }] : []),
+    ];
+    useBoolbackStore.setState({ plot: { ...structuredClone(DEFAULT_PLOT), layers } });
+  };
+
+  it("ctrl-click ≥2 entries then 'group N layers' replaces them with ONE group (members in order, color = first member's), group selected", () => {
+    useBoolbackStore.getState().addLayer(); // l2 = "layer 2"
+    mount();
+    fireEvent.click(screen.getByTitle('edit layer "all runs"'), { ctrlKey: true });
+    fireEvent.click(screen.getByTitle('edit layer "layer 2"'), { ctrlKey: true });
+    fireEvent.click(screen.getByLabelText("group 2 layers"));
+    const { layers } = useBoolbackStore.getState().plot;
+    expect(layers).toHaveLength(1);
+    const g = layers[0];
+    expect(g.members?.map((m) => m.name)).toEqual(["all runs", "layer 2"]); // config order
+    expect(g.name).toBe("group of 2");
+    expect(g.color).toBe(g.members![0].color); // first member's color
+    // the group becomes the selected entry
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("group of 2");
+  });
+
+  it("⌘/ctrl-click marks entries WITHOUT changing the single selection; the group action only shows at ≥2", () => {
+    useBoolbackStore.getState().addLayer();
+    mount();
+    // one ctrl-click: no group action yet, and no layer is single-selected
+    fireEvent.click(screen.getByTitle('edit layer "all runs"'), { metaKey: true });
+    expect(screen.queryByLabelText(/^group \d+ layers$/)).toBeNull();
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("no layer selected");
+    // second ctrl-click reveals the action
+    fireEvent.click(screen.getByTitle('edit layer "layer 2"'), { metaKey: true });
+    expect(screen.getByLabelText("group 2 layers")).toBeTruthy();
+  });
+
+  it("a selected group's parameter edit FANS OUT to every member, each with its own cascade", () => {
+    // left carries a dead seed pin — the fanned arity edit must trigger THAT
+    // member's repairPins while right sails through; both gain the arity pin.
+    groupPlot({ leftFacets: { seed: ["no-such-seed"] } });
+    mount();
+    selectLayer("grp");
+    fireEvent.click(screen.getByLabelText(`filter Arity ${firstArity}`));
+    const g = useBoolbackStore.getState().plot.layers[0];
+    expect(g.members).toHaveLength(2);
+    for (const m of g.members!) expect(m.filters.facets.arity).toEqual([firstArity]);
+    // left's dead pin was repaired by its own cascade (moved off the dead value)
+    expect(g.members![0].filters.facets.seed).not.toEqual(["no-such-seed"]);
+    // one aggregated cascade note (per-member cascade, one line)
+    expect(screen.getByText(/^repaired in 1 layer: /)).toBeTruthy();
+  });
+
+  it("⚓ pin-all on a selected group pins every MEMBER (not the group's unused filters)", () => {
+    groupPlot();
+    mount();
+    fireEvent.click(screen.getByLabelText("pin all parameters of layer grp"));
+    const g = useBoolbackStore.getState().plot.layers[0];
+    expect(g.filters).toEqual({ facets: {}, ranges: [] }); // group's own filters untouched
+    for (const m of g.members!) {
+      expect(Object.keys(m.filters.facets).length).toBeGreaterThan(0); // each member pinned
+    }
+  });
+
+  it("the EXPAND popover is hidden while a group is selected", () => {
+    groupPlot();
+    mount();
+    // with nothing selected the expand affordance is present…
+    expect(screen.getByLabelText(`expand ${catDim.label} into layers`)).toBeTruthy();
+    selectLayer("grp");
+    // …and hidden once the group is the selected entry
+    expect(screen.queryByLabelText(`expand ${catDim.label} into layers`)).toBeNull();
+  });
+
+  it("ungroup restores the members as top-level entries IN PLACE", () => {
+    groupPlot({ withTail: true }); // [grp{left,right}, tail]
+    mount();
+    fireEvent.click(screen.getByLabelText("ungroup layer grp"));
+    const { layers } = useBoolbackStore.getState().plot;
+    expect(layers.map((l) => l.name)).toEqual(["left", "right", "tail"]); // in place
+    expect(layers.every((l) => !l.members)).toBe(true);
+  });
+});
