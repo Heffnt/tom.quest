@@ -39,10 +39,12 @@ export interface PlotReadout {
  *  filters (group plot writes through `plot`). */
 export type ViewKey = "table" | "plot";
 
-/** Where a parameter-row edit lands on the plot-like views: the ACTIVE layer
+/** Where a parameter-row edit lands on the plot-like views: the SELECTED layer
  *  (default) or fanned out to EVERY layer. An edit MODE, not view state — it
- *  never serializes into a ViewSpec and is not persisted. */
-export type EditScope = "active" | "all";
+ *  never serializes into a ViewSpec and is not persisted. This is the user's
+ *  PREFERENCE; with no layer selected the panel's effective scope is "all"
+ *  (the only mode that can edit), and the preference survives re-selection. */
+export type EditScope = "selected" | "all";
 
 /** Map the centerView union to its filter-config key (anatomy → null). The
  *  group-plot tab targets the SHARED plot config, so it maps to "plot"; the
@@ -98,8 +100,8 @@ interface BoolbackState {
    *  table's filtered count renders instead). */
   plotUnionCount: number | null;
   anatomy: AnatomyConfig;
-  /** Parameter-edit scope on the plot-like views (active layer vs all layers).
-   *  UI state only — NOT part of PlotConfig, never in a ViewSpec. */
+  /** Parameter-edit scope on the plot-like views (selected layer vs all
+   *  layers). UI state only — NOT part of PlotConfig, never in a ViewSpec. */
   editScope: EditScope;
   // detail panel (decoupled from selection — opened ONLY by a Details button)
   detailOpen: boolean;
@@ -122,7 +124,7 @@ interface BoolbackState {
   expandChain: (dirs: string[]) => void;       // open all ancestors to reveal a node
   setTreeCursor: (dir: string | null) => void;
   // layer management (the shared `plot` config only — no view arg). addLayer /
-  // duplicateLayer return the NEW layer's id so the panel can make it active.
+  // duplicateLayer return the NEW layer's id so the panel can select it.
   patchLayer: (id: string, patch: Partial<PlotLayer>) => void;
   /** `filters` seeds the new layer (the panel passes the dominant-cell
    *  default); omitted → an empty, unfiltered layer. */
@@ -213,7 +215,7 @@ export const useBoolbackStore = create<BoolbackState>()(
       plotReadout: null,
       plotUnionCount: null,
       anatomy: DEFAULT_ANATOMY,
-      editScope: "active" as const,
+      editScope: "selected" as const,
       detailOpen: false,
       detailWidth: DEFAULT_DETAIL_WIDTH,
 

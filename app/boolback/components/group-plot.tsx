@@ -56,6 +56,7 @@ import { shapeForValue, dashForValue, gradientColor, NULL_GRADIENT, SINGLE_COLOR
 import { fnText, hash01 } from "../lib/format";
 import { effectiveAxis, type PlotExportHandle } from "./plot-panel";
 import { MetricPicker } from "./metric-picker";
+import { AxisRange } from "./axis-range";
 import {
   PlotSurface,
   type SurfacePoint, type SurfaceGhostPoint, type SurfaceEpoch,
@@ -63,7 +64,13 @@ import {
   type SurfaceSize, type SurfaceScale, type SurfaceStyle,
 } from "./plot-surface";
 
-const PW = 260, PH = 176; // panel logical size (viewBox); CSS scales it
+// Panel logical size: the viewBox TRACKS the panel-size slider (PW = panelMin,
+// PH by the fixed aspect) so 1 viewBox unit ≈ 1 CSS px at the grid's MINIMUM
+// panel width — panels only ever render at or above panelMin (minmax grid
+// tracks), so tick text never renders below its nominal font size. The old
+// fixed 260-unit viewBox scaled a 7px label down to ~4px at panelMin 160.
+// PAD stays in viewBox units: a constant-pixel gutter at the minimum size.
+const PANEL_ASPECT = 176 / 260; // h : w — the panels' historical shape
 const PAD = { l: 34, r: 8, t: 8, b: 20 };
 const MAX_FACETS = 150;
 /** Grid cardinality cap — rows × cols above this shows the warning instead of
@@ -71,7 +78,14 @@ const MAX_FACETS = 150;
 export const MAX_GRID_CELLS = 100;
 const GHOST_CAP = 500; // per-panel epoch ghost-line cap (as the main plot)
 
-type Extent = { x0: number; x1: number; y0: number; y1: number };
+type Extent = {
+  x0: number; x1: number; y0: number; y1: number;
+  /** Raw (un-transformed, unpadded) data bounds per axis — what the toolbar
+   *  AxisRange editors show while no zoom window is set. Null when the axis
+   *  is categorical or nothing plotted. */
+  xRaw: [number, number] | null;
+  yRaw: [number, number] | null;
+};
 
 /** A run scheduled into a panel under one series (the duplication unit). */
 type PanelPt = { row: RunRow; key: string };
@@ -170,6 +184,9 @@ export function GroupPlotBody({
   const gridColDef =
     facet?.kind === "grid" ? PARAMETERS.find((d) => d.key === facet.col) ?? null : null;
   const panelMin = groupPlot.panelMin || DEFAULT_GROUP_EXTRAS.panelMin;
+  // Panel viewBox at the slider's minimum render size (see the PANEL_ASPECT note).
+  const PW = panelMin;
+  const PH = Math.round(panelMin * PANEL_ASPECT);
 
   // Facet-by-function panels label with the function's simplified DNF ("A&B |
   // A&C"). The compact arity:hex raw value stays the bucketing/sort key — the
@@ -386,6 +403,18 @@ export function GroupPlotBody({
   const catX = !lineMode && axisX?.categorical ? axisX.categories : null;
   const catY = !lineMode && axisY?.categorical ? axisY.categories : null;
 
+  // Axis view windows (zoom only; never touch FilterState) in RAW units — the
+  // SAME guards as the main plot (plot-panel): a categorical axis ignores a
+  // persisted numeric window; epoch (line) mode is numeric on both axes so its
+  // window applies too. Both views read the shared plot config, so a window
+  // set from either stays in sync by construction.
+  const xDomain = lineMode
+    ? plot.xDomain ?? null
+    : axisX && !axisX.categorical ? plot.xDomain ?? null : null;
+  const yDomain = lineMode
+    ? plot.yDomain ?? null
+    : axisY && !axisY.categorical ? plot.yDomain ?? null : null;
+
   // ---- shared extent across ALL rows (so every panel's axes align) ----------
   const extent = useMemo<Extent>(() => {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -412,18 +441,25 @@ export function GroupPlotBody({
         acc(logX ? Math.log10(vx) : vx, logY ? Math.log10(vy) : vy);
       }
     }
-    if (!Number.isFinite(x0)) { x0 = 0; x1 = 1; y0 = 0; y1 = 1; }
+    // Raw bounds (un-transformed, unpadded) — the toolbar editors' fallback.
+    const untf = (v: number, log: boolean) => (log ? Math.pow(10, v) : v);
+    const has = Number.isFinite(x0);
+    const xRaw: Extent["xRaw"] = has && !catX ? [untf(x0, logX), untf(x1, logX)] : null;
+    const yRaw: Extent["yRaw"] = has && !catY ? [untf(y0, logY), untf(y1, logY)] : null;
+    if (!has) { x0 = 0; x1 = 1; y0 = 0; y1 = 1; }
     if (x1 - x0 < 1e-9) { x0 -= 0.5; x1 += 0.5; }
     if (y1 - y0 < 1e-9) { y0 -= 0.5; y1 += 0.5; }
     const padX = (x1 - x0) * 0.05, padY = (y1 - y0) * 0.07;
     x0 -= padX; x1 += padX; y0 -= padY; y1 += padY;
     if (catX) { x0 = -0.5; x1 = catX.length - 0.5; }
     if (catY) { y0 = -0.5; y1 = catY.length - 0.5; }
+    // A set axis window overrides the auto extent (exact zoom, no padding) —
+    // the same clamp the main plot's scale applies, so both views agree.
     const tf = (v: number, log: boolean) => (log ? Math.log10(Math.max(v, 1e-12)) : v);
-    if (axisX && !axisX.categorical && plot.xDomain) { x0 = tf(plot.xDomain[0], logX); x1 = tf(plot.xDomain[1], logX); }
-    if (axisY && !axisY.categorical && plot.yDomain) { y0 = tf(plot.yDomain[0], logY); y1 = tf(plot.yDomain[1], logY); }
-    return { x0, x1, y0, y1 };
-  }, [unionRows, resolution.series, lineMode, axisX, axisY, yName, logX, logY, plot.xDomain, plot.yDomain, catX, catY]);
+    if (xDomain) { x0 = tf(xDomain[0], logX); x1 = tf(xDomain[1], logX); }
+    if (yDomain) { y0 = tf(yDomain[0], logY); y1 = tf(yDomain[1], logY); }
+    return { x0, x1, y0, y1, xRaw, yRaw };
+  }, [unionRows, resolution.series, lineMode, axisX, axisY, yName, logX, logY, xDomain, yDomain, catX, catY]);
 
   // Shared logical-space scale (fixed panel viewBox → aligned axes everywhere).
   // Handed to every panel's PlotSurface so their gridlines/ticks agree.
@@ -438,7 +474,7 @@ export function GroupPlotBody({
       xTickLabel: (t) => (catX ? (catX[Math.round(t)] ?? "") : logX ? tickFmt(Math.pow(10, t)) : tickFmt(t)),
       yTickLabel: (t) => (catY ? (catY[Math.round(t)] ?? "") : logY ? tickFmt(Math.pow(10, t)) : tickFmt(t)),
     };
-  }, [extent, catX, catY, logX, logY]);
+  }, [extent, catX, catY, logX, logY, PW, PH]);
 
   const facetLabel =
     facet?.kind === "layer" ? "layer"
@@ -483,8 +519,12 @@ export function GroupPlotBody({
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {/* toolbar: the SAME x/y MetricPickers as the main plot (writing the
-          shared store.plot), then the facet summary (inert — the config panel
-          owns facet + panel size). Log toggles stay plot-view chrome. */}
+          shared store.plot), each with the SAME AxisRange view-window editor
+          the main plot mounts on its axes (also writing the shared
+          xDomain/yDomain — the two views show one window by construction;
+          hidden on a categorical axis, whose window is ignored anyway), then
+          the facet summary (inert — the config panel owns facet + panel
+          size). Log toggles stay plot-view chrome. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-1.5 text-xs">
         <span className="flex items-center gap-1">
           <span className="text-text-faint">x</span>
@@ -497,6 +537,10 @@ export function GroupPlotBody({
             pinned={[{ value: "epoch", label: "epoch (training progress)" }]}
             params={paramAxisOptions()}
           />
+          {(lineMode || !catX) && (
+            <AxisRange inline axis="x" domain={xDomain} extent={extent.xRaw}
+              onSet={(d) => setPlot({ xDomain: d })} />
+          )}
         </span>
         <span className="text-text-faint" aria-hidden>·</span>
         <span className="flex items-center gap-1">
@@ -509,6 +553,10 @@ export function GroupPlotBody({
             order={Y_GROUP_ORDER}
             params={paramAxisOptions()}
           />
+          {(lineMode || !catY) && (
+            <AxisRange inline axis="y" domain={yDomain} extent={extent.yRaw}
+              onSet={(d) => setPlot({ yDomain: d })} />
+          )}
         </span>
         <span className="text-text-faint" aria-hidden>·</span>
         <span className="text-text-faint">facet:</span>
@@ -528,7 +576,7 @@ export function GroupPlotBody({
           style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${panelMin}px, 1fr))`, gap: 8, alignContent: "start" }}
         >
           {facets.list.map((f) => (
-            <LazyPanel key={f.id} minHeight={panelMin * (PH / PW) + 22}>
+            <LazyPanel key={f.id} minHeight={PH + 22}>
               <div
                 title={`${facetLabel}: ${dispFacet(f.value) || "—"} · ${f.count} runs`}
                 className="flex w-full items-center justify-between gap-2 truncate px-1 pt-1 text-left text-[11px] text-text-muted"
@@ -591,7 +639,7 @@ function GridPanels({
   }
   const dispRow = (v: string) => disp(rowDef, v);
   const dispCol = (v: string) => disp(colDef, v);
-  const minH = panelMin * (PH / PW) + 22;
+  const minH = panelMin * PANEL_ASPECT + 22;
   return (
     <div className="min-h-0 flex-1 overflow-auto p-2">
       <div

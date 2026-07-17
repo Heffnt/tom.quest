@@ -3,7 +3,10 @@
 // the SHARED store.plot, so the panels re-resolve off the one config — plus the
 // GRID facet: cell derivation (deriveGridCells) and the two-parameter layout
 // (display()-formatted column headers / row labels, raw "<row>|<col>" panel
-// keys in the CSV export).
+// keys in the CSV export) — plus the SHARED VIEW WINDOW: the panels' scale
+// clamps to plot.xDomain/yDomain (the zoom the main plot's AxisRange editors
+// write) and the toolbar mounts the same editors, and the panel viewBox tracks
+// panelMin so tick text stays readable at the minimum panel size.
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -12,6 +15,7 @@ import { asBundle } from "../data/normalize";
 import { useBoolbackStore, DEFAULT_TABLE } from "../state/store";
 import { DEFAULT_PLOT, DEFAULT_GROUP_EXTRAS, type RunRow } from "../lib/types";
 import { indexMetricSchema } from "../lib/metrics";
+import { resolveAxis } from "../lib/axes";
 import { PARAMETERS, type ParameterDef } from "../lib/parameters";
 import type { PlotExportHandle } from "./plot-panel";
 import { GroupPlotBody, deriveGridCells } from "./group-plot";
@@ -80,6 +84,121 @@ describe("group plot toolbar axis pickers", () => {
     fireEvent.click(opt);
     expect(useBoolbackStore.getState().plot.x).toBe(target.name);
     expect(screen.getByLabelText("x metric").textContent).toContain(target.label);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shared view window — the panels' scale honors plot.xDomain/yDomain and the
+// toolbar mounts the main plot's AxisRange min/max editors (axis-range.tsx)
+// ---------------------------------------------------------------------------
+
+/** A numeric (FUNCTION complexity) x metric + a numeric y for scatter mode. */
+const xMetric = bundle.metric_schema.find(
+  (e) => e.group === "FUNCTION" && e.min !== null && e.max !== null,
+)!;
+const yMetric =
+  bundle.metric_schema.find((e) => e.name === "plantedness") ??
+  bundle.metric_schema.find((e) => e.group === "OUTCOME" && e.min !== null && e.max !== null)!;
+
+const numericPlot = (over: Partial<typeof DEFAULT_PLOT> = {}) =>
+  useBoolbackStore.setState({
+    plot: { ...structuredClone(DEFAULT_PLOT), x: xMetric.name, y: yMetric.name, ...over },
+  });
+
+/** The x tick labels of the first panel surface (texts on the x baseline,
+ *  y = PH - PAD.b + 10), parsed numeric. */
+const xTickValues = (container: HTMLElement): number[] => {
+  const svg = container.querySelector("svg[viewBox]")!;
+  const [, , , H] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+  return [...svg.querySelectorAll("text")]
+    .filter((t) => Number(t.getAttribute("y")) === H - 20 + 10)
+    .map((t) => Number(t.textContent))
+    .filter((v) => Number.isFinite(v));
+};
+
+describe("group plot shared view window", () => {
+  it("the shared scale clamps to a set x window exactly like the main plot", () => {
+    // Window strictly inside the metric's data range.
+    const ax = resolveAxis(xMetric.name, index, bundle.rows);
+    let lo = Infinity, hi = -Infinity;
+    for (const r of bundle.rows) {
+      const v = ax.value(r);
+      if (v === null) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    const span = hi - lo;
+    const win: [number, number] = [lo + 0.45 * span, lo + 0.55 * span];
+
+    numericPlot();
+    const free = mount();
+    const freeTicks = xTickValues(free.container);
+    free.unmount();
+
+    numericPlot({ xDomain: win });
+    const { container } = mount();
+    const ticks = xTickValues(container);
+    expect(ticks.length).toBeGreaterThan(0);
+    // niceTicks (shared with the main plot) emits a tick up to half a step past
+    // the domain max, so bound each tick by the window ± half the tick step —
+    // still far tighter than the ~10×-wider free extent below.
+    const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : span;
+    const tol = step / 2 + 1e-9;
+    for (const t of ticks) {
+      expect(t).toBeGreaterThanOrEqual(win[0] - tol);
+      expect(t).toBeLessThanOrEqual(win[1] + tol);
+    }
+    // …and the window actually changed the scale (the free extent is wider)
+    expect(ticks).not.toEqual(freeTicks);
+  });
+
+  it("epoch (line) mode honors the shared x window too — parity with the main plot", () => {
+    // DEFAULT_PLOT.x is the epoch sentinel; window the epoch axis.
+    useBoolbackStore.setState({
+      plot: { ...structuredClone(DEFAULT_PLOT), xDomain: [1, 2] },
+    });
+    const { container } = mount();
+    const ticks = xTickValues(container);
+    expect(ticks.length).toBeGreaterThan(0);
+    for (const t of ticks) {
+      expect(t).toBeGreaterThanOrEqual(1 - 1e-9);
+      expect(t).toBeLessThanOrEqual(2 + 1e-9);
+    }
+    // the toolbar editor shows the WINDOW (not the data extent) + a reset
+    expect(screen.getByTitle("edit x min (zoom only)").textContent).toBe("1");
+    expect(screen.getByTitle("edit x max (zoom only)").textContent).toBe("2");
+    expect(screen.getByLabelText("reset x zoom")).toBeTruthy();
+  });
+
+  it("the toolbar min/max editors write the shared plot.xDomain / yDomain", () => {
+    numericPlot();
+    mount();
+    // x max first (commit keeps min < max against the current lo)
+    fireEvent.click(screen.getByTitle("edit x max (zoom only)"));
+    let input = screen.getByLabelText("x max") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "99" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useBoolbackStore.getState().plot.xDomain?.[1]).toBe(99);
+
+    fireEvent.click(screen.getByTitle("edit y min (zoom only)"));
+    input = screen.getByLabelText("y min") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "-1" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useBoolbackStore.getState().plot.yDomain?.[0]).toBe(-1);
+
+    // ⟲ clears the window again (both views read the same nulled domain)
+    fireEvent.click(screen.getByLabelText("reset x zoom"));
+    expect(useBoolbackStore.getState().plot.xDomain).toBeNull();
+  });
+
+  it("the panel viewBox tracks panelMin (1 unit ≈ 1 px at the minimum size)", () => {
+    numericPlot();
+    useBoolbackStore.setState({
+      groupPlot: { facet: { kind: "layer" }, panelMin: 160 },
+    });
+    const { container } = mount();
+    const svg = container.querySelector("svg[viewBox]")!;
+    expect(svg.getAttribute("viewBox")).toBe(`0 0 160 ${Math.round(160 * (176 / 260))}`);
   });
 });
 

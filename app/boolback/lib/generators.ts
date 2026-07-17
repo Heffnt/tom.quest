@@ -29,7 +29,7 @@ import type { MetricIndex } from "./select";
 import { numericValue } from "./select";
 import { paletteColor, gradientColor, SHAPE_COUNT } from "./styling";
 
-export type GeneratorTargets = "all" | "active";
+export type GeneratorTargets = "all" | "selected";
 
 /** Deep-copy a layer's facet selections (arrays cloned so children never share). */
 function copyFacets(facets: FilterState["facets"]): FilterState["facets"] {
@@ -38,9 +38,9 @@ function copyFacets(facets: FilterState["facets"]): FilterState["facets"] {
   ) as FilterState["facets"];
 }
 
-/** The target layers for a generator run (all, or just the active one). */
-function targetSet(layers: PlotLayer[], targets: GeneratorTargets, activeId: string): Set<string> {
-  return new Set(targets === "all" ? layers.map((l) => l.id) : [activeId]);
+/** The target layers for a generator run (all, or just the selected one). */
+function targetSet(layers: PlotLayer[], targets: GeneratorTargets, selectedId: string): Set<string> {
+  return new Set(targets === "all" ? layers.map((l) => l.id) : [selectedId]);
 }
 
 /** The lone default "all runs" layer drops its name as a child prefix. */
@@ -77,13 +77,13 @@ export function expandLayers(opts: {
   rows: RunRow[];
   layers: PlotLayer[];
   targets: GeneratorTargets;
-  activeId: string;
+  selectedId: string;
   dim: ParameterDef;
   applyTo: (rows: RunRow[], f: FilterState) => RunRow[];
   pinAll: (rows: RunRow[], f: FilterState) => FilterState;
 }): PlotLayer[] {
-  const { rows, layers, targets, activeId, dim, applyTo, pinAll } = opts;
-  const targetIds = targetSet(layers, targets, activeId);
+  const { rows, layers, targets, selectedId, dim, applyTo, pinAll } = opts;
+  const targetIds = targetSet(layers, targets, selectedId);
   const targetLayers = layers.filter((l) => targetIds.has(l.id));
   const nTargets = targetLayers.length;
   const parentPos = new Map(targetLayers.map((l, i) => [l.id, i]));
@@ -225,15 +225,15 @@ export function binLayers(opts: {
   rows: RunRow[];
   layers: PlotLayer[];
   targets: GeneratorTargets;
-  activeId: string;
+  selectedId: string;
   metric: string;
   n: number;
   mode: "quantile" | "width";
   index: MetricIndex;
   applyTo: (rows: RunRow[], f: FilterState) => RunRow[];
 }): PlotLayer[] {
-  const { rows, layers, targets, activeId, metric, n, mode, index, applyTo } = opts;
-  const targetIds = targetSet(layers, targets, activeId);
+  const { rows, layers, targets, selectedId, metric, n, mode, index, applyTo } = opts;
+  const targetIds = targetSet(layers, targets, selectedId);
   const targetLayers = layers.filter((l) => targetIds.has(l.id));
   const nTargets = targetLayers.length;
   const parentPos = new Map(targetLayers.map((l, i) => [l.id, i]));

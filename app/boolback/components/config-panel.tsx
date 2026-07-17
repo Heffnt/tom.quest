@@ -10,10 +10,12 @@
 //       table     → filter-only parameter rows + Columns + Sort keys + search;
 //       plot /    → the PLOT-STYLE row (size/opacity + band/ghosts/trend) above
 //       groupplot   the LAYERS STRIP (per-layer glyph/swatch/rename/count/pin-all/
-//                   reset/duplicate/remove + the active layer's 3-channel style
-//                   editor color/shape/dash), then the gated "Color by metric"
+//                   reset/duplicate/remove + the selected layer's 3-channel style
+//                   editor color/shape/dash; clicking the selected entry again
+//                   deselects), then the gated "Color by metric"
 //                   gradient (single layer only), the EDIT-SCOPE toggle (chip
-//                   edits target the active layer or fan out to every layer),
+//                   edits target the selected layer or fan out to every layer;
+//                   with NO selection "all layers" is the only effective mode),
 //                   the parameter chips, the unified FUNCTION section (arity +
 //                   fn_hex + engaged
 //                   complexity with a bin-into-layers control), outcome metric
@@ -218,16 +220,25 @@ function ViewConfig({
    *  and a per-layer reset. Memoized: only the row set changes it. */
   const dominant = useMemo(() => dominantFilters(bundle.rows), [bundle.rows]);
 
-  // ---- ACTIVE layer (UI-local; the parameter rows edit ITS filters) ----------
-  const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
-  const activeLayer: PlotLayer | null = plotConfig
-    ? plotConfig.layers.find((l) => l.id === activeLayerId) ?? plotConfig.layers[0]
+  // ---- SELECTED layer (UI-local; the parameter rows edit ITS filters).
+  // Selection may be NULL (clicking the selected entry again deselects) — with
+  // nothing selected the effective edit scope is forced to "all layers" below.
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+  const selectedLayer: PlotLayer | null = plotConfig
+    ? plotConfig.layers.find((l) => l.id === selectedLayerId) ?? null
     : null;
-  /** The layerId the filter mutators target (null on the table view). */
-  const sid = activeLayer?.id ?? null;
-  /** The FilterState the panel edits + histograms derive from. */
-  const activeFilters: FilterState =
-    vk === "table" ? table.filters : activeLayer?.filters ?? EMPTY_FILTER;
+  /** The layerId the filter mutators target (null on the table view / when no
+   *  layer is selected). */
+  const sid = selectedLayer?.id ?? null;
+  /** The FilterState the panel edits + histograms derive from. With no layer
+   *  selected on a plot view this is EMPTY — counts stay visible (global) and
+   *  edits fan out to every layer via the forced "all" scope. */
+  const selectedFilters: FilterState =
+    vk === "table" ? table.filters : selectedLayer?.filters ?? EMPTY_FILTER;
+  /** The EFFECTIVE edit scope: the user's preference while a layer is
+   *  selected; forced to "all" when nothing is (the only mode that can edit —
+   *  the preference itself survives, so re-selecting restores it). */
+  const effectiveScope = selectedLayer ? editScope : "all";
 
   // ---- cascade note (transient, one line) — "X, Y followed Z" after a single-
   // layer repairPins move; the all-layers fan-out aggregates to "repaired in N
@@ -328,13 +339,13 @@ function ViewConfig({
     return m;
   }, [resolution, trendOn, pcX, pcY, pcLogX, pcLogY, pcXDomain, pcYDomain, index, bundle.metric_schema, bundle.rows]);
 
-  // Rows matching the ACTIVE layer (or the table filters) drive the continuous
-  // editors' histograms.
-  const filtered = useMemo(() => applyFilters(bundle.rows, activeFilters), [bundle.rows, activeFilters]);
+  // Rows matching the SELECTED layer (or the table filters) drive the
+  // continuous editors' histograms.
+  const filtered = useMemo(() => applyFilters(bundle.rows, selectedFilters), [bundle.rows, selectedFilters]);
 
   // ---- conditioned value counts (faceted-search counting) ---------------------
-  // Per parameter: drop ITS facet, apply the active layer's other facets + its
-  // own ranges + the plot-level ranges. Kept referentially stable via a
+  // Per parameter: drop ITS facet, apply the selected layer's other facets +
+  // its own ranges + the plot-level ranges. Kept referentially stable via a
   // signature cache so an unchanged chip skips re-render (React.memo).
   const condCacheRef = useRef(new Map<string, { sig: string; counts: Map<string, number> }>());
   const conditionedByKey = useMemo(() => {
@@ -342,17 +353,17 @@ function ViewConfig({
     const cache = condCacheRef.current;
     const m = new Map<string, Map<string, number>>();
     for (const dim of differingDims) {
-      const facets = { ...(activeFilters.facets ?? {}) };
+      const facets = { ...(selectedFilters.facets ?? {}) };
       if (dim.facetKey) delete facets[dim.facetKey];
-      const sig = JSON.stringify({ f: facets, r: activeFilters.ranges ?? [], e: extra });
+      const sig = JSON.stringify({ f: facets, r: selectedFilters.ranges ?? [], e: extra });
       const prev = cache.get(dim.key);
       if (prev && prev.sig === sig) { m.set(dim.key, prev.counts); continue; }
-      const counts = conditionedCounts(bundle.rows, dim, activeFilters, extra);
+      const counts = conditionedCounts(bundle.rows, dim, selectedFilters, extra);
       cache.set(dim.key, { sig, counts });
       m.set(dim.key, counts);
     }
     return m;
-  }, [differingDims, bundle.rows, activeFilters, rsRanges]);
+  }, [differingDims, bundle.rows, selectedFilters, rsRanges]);
 
   // ---- facet slot (group plot) -------------------------------------------------
   // Plain options: layer + the differing parameters. Binnable metrics (complexity
@@ -365,12 +376,13 @@ function ViewConfig({
   );
 
   // ---- facet editing + cascade (plot view repairs stale pins; table doesn't) --
-  // One facet edit = nextOf(current selection). On the plot views the edit
-  // scope decides the target: the ACTIVE layer (with the usual repairPins
-  // cascade — `cascade:false` for a clearing/widening edit, which can't stale
-  // another pin), or EVERY layer ("all": same edit per layer, each followed by
-  // that layer's OWN cascade, note aggregated to one line). Layer-entry-local
-  // controls and the expand popover ignore the scope.
+  // One facet edit = nextOf(current selection). On the plot views the
+  // EFFECTIVE scope decides the target: the SELECTED layer (with the usual
+  // repairPins cascade — `cascade:false` for a clearing/widening edit, which
+  // can't stale another pin), or EVERY layer ("all": same edit per layer, each
+  // followed by that layer's OWN cascade, note aggregated to one line; also
+  // the forced mode while nothing is selected). Layer-entry-local controls and
+  // the expand popover ignore the scope.
   const applyFacetEdit = useCallback((
     fk: FacetKey,
     nextOf: (cur: string[]) => string[],
@@ -385,7 +397,7 @@ function ViewConfig({
         });
         return;
       }
-      if (st.editScope === "all") {
+      if (effectiveScope === "all") {
         let repairedLayers = 0;
         const repairedKeys = new Set<FacetKey>();
         st.replaceLayers(st.plot.layers.map((l) => {
@@ -413,43 +425,45 @@ function ViewConfig({
         st.patchViewFilters(vk, sid, next);
       }
     });
-  }, [vk, sid, bundle.rows, flashCascade, flashCascadeAll]);
+  }, [vk, sid, effectiveScope, bundle.rows, flashCascade, flashCascadeAll]);
 
   // ---- generators (expand a categorical dim / bin a metric into layers) -------
   // Both read the LIVE layers at call time, commit through replaceLayers, and
-  // make the first newly-minted child the active layer.
+  // SELECT the first newly-minted child. A "selected"-targeted run with no
+  // selection is a no-op (the popover/bin buttons are disabled then too).
   const commitGenerated = (next: PlotLayer[], prev: PlotLayer[]) => {
     useBoolbackStore.getState().replaceLayers(next);
     // Detect children by OBJECT identity — untouched non-target layers survive
     // by reference, while ids do not distinguish (a child can reuse a replaced
     // parent's id), which used to skip the first child.
     const child = next.find((l) => !prev.includes(l));
-    if (child) setActiveLayerId(child.id);
+    if (child) setSelectedLayerId(child.id);
   };
   const runExpand = useCallback((dim: ParameterDef, targets: GeneratorTargets) => {
+    if (targets === "selected" && !sid) return;
     startTransition(() => {
       const layers = useBoolbackStore.getState().plot.layers;
-      const activeId = sid ?? layers[0]?.id ?? "";
       // pinAll: expanded children are minted FULLY PINNED (Feature E) — every
       // parameter locked to its dominant value under the child's cell.
       const next = expandLayers({
-        rows: bundle.rows, layers, targets, activeId, dim,
+        rows: bundle.rows, layers, targets, selectedId: sid ?? "", dim,
         applyTo: applyFilters, pinAll: pinAllDominant,
       });
       commitGenerated(next, layers);
     });
   }, [sid, bundle.rows]);
   const runBin = useCallback((metric: string, n: number, mode: "quantile" | "width", targets: GeneratorTargets) => {
+    if (targets === "selected" && !sid) return;
     startTransition(() => {
       const layers = useBoolbackStore.getState().plot.layers;
-      const activeId = sid ?? layers[0]?.id ?? "";
-      const next = binLayers({ rows: bundle.rows, layers, targets, activeId, metric, n, mode, index, applyTo: applyFilters });
+      const next = binLayers({ rows: bundle.rows, layers, targets, selectedId: sid ?? "", metric, n, mode, index, applyTo: applyFilters });
       commitGenerated(next, layers);
     });
   }, [sid, bundle.rows, index]);
 
   // ---- explicit pin-all (the layer entry's ⚓) — pinAllDominant on that layer.
-  // Respects the edit scope: "all layers" mode pins EVERY layer.
+  // Respects the edit-scope PREFERENCE: "all layers" mode pins EVERY layer.
+  // (A per-entry control — selection state does not change its target.)
   const runPinAll = useCallback((id: string) => {
     startTransition(() => {
       const st = useBoolbackStore.getState();
@@ -487,13 +501,14 @@ function ViewConfig({
   }, [differingDims, isPlotLike, applyFacetEdit, runExpand]);
 
   // ---- continuous treatment (filter / color) for OUTCOME metrics --------------
-  const rangeFor = (m: string): RangeFilter | undefined => activeFilters.ranges.find((r) => r.metric === m);
+  const rangeFor = (m: string): RangeFilter | undefined => selectedFilters.ranges.find((r) => r.metric === m);
   const contTreatmentOf = (m: string): "filter" | "color" | null => {
     if (plotConfig?.colorBy === m) return "color";
     if (rangeFor(m)) return "filter";
     return null;
   };
   const setContTreatment = (m: string, t: "filter" | "color" | null) => {
+    if (t === "filter" && vk !== "table" && sid === null) return; // needs a selected layer
     startTransition(() => {
       if (rangeFor(m)) storeRemoveRange(vk, sid, m);
       if (plotConfig?.colorBy === m) setPlotStore({ colorBy: null });
@@ -507,17 +522,18 @@ function ViewConfig({
   };
 
   // ---- complexity filter mutators (function section) --------------------------
-  // Scope-aware like the facet rows: "all" fans the SAME range edit to every
-  // layer, each followed by that layer's cascade (editedKey null — a narrowed
-  // range can stale facet pins; the rebuild seeds on the ranges alone).
-  // `single` is the active-layer / table fallback (the plain store mutator).
+  // Scope-aware like the facet rows: an EFFECTIVE "all" fans the SAME range
+  // edit to every layer, each followed by that layer's cascade (editedKey null
+  // — a narrowed range can stale facet pins; the rebuild seeds on the ranges
+  // alone). `single` is the selected-layer / table fallback (the plain store
+  // mutator).
   const applyRangeEdit = useCallback((
     editOf: (cur: RangeFilter[]) => RangeFilter[],
     single: () => void,
   ) => {
     startTransition(() => {
       const st = useBoolbackStore.getState();
-      if (vk !== "plot" || st.editScope !== "all") { single(); return; }
+      if (vk !== "plot" || effectiveScope !== "all") { single(); return; }
       let repairedLayers = 0;
       const repairedKeys = new Set<FacetKey>();
       st.replaceLayers(st.plot.layers.map((l) => {
@@ -531,7 +547,7 @@ function ViewConfig({
       }));
       if (repairedLayers) flashCascadeAll(repairedLayers, [...repairedKeys]);
     });
-  }, [vk, bundle.rows, flashCascadeAll]);
+  }, [vk, effectiveScope, bundle.rows, flashCascadeAll]);
 
   const addComplexityFilter = (metric: string) => {
     const { min, max } = metricRange(bundle.rows, metric, index);
@@ -548,14 +564,17 @@ function ViewConfig({
     (rs) => rs.map((x) => (x.metric === metric ? { ...x, ...patch } : x)),
     () => storeUpdateRange(vk, sid, metric, patch),
   );
-  // Outcome metric rows stay ACTIVE-layer-only (the scope toggle covers the
-  // parameter rows + the complexity block, not the outcome treatments).
-  const updateActiveRange = (metric: string, patch: Partial<RangeFilter>) =>
+  // Outcome metric rows stay SELECTED-layer-only (the scope toggle covers the
+  // parameter rows + the complexity block, not the outcome treatments) — so
+  // with no layer selected on a plot view their filter treatment is disabled
+  // (a null sid would otherwise write the PLOT-LEVEL ranges).
+  const updateSelectedRange = (metric: string, patch: Partial<RangeFilter>) =>
     startTransition(() => storeUpdateRange(vk, sid, metric, patch));
+  const outcomeDisabled = vk !== "table" && sid === null;
 
   // ---- render helpers ---------------------------------------------------------
   const selectionOf = (dim: ParameterDef): readonly string[] =>
-    dim.facetKey ? (activeFilters.facets[dim.facetKey] ?? NO_VALUES) : NO_VALUES;
+    dim.facetKey ? (selectedFilters.facets[dim.facetKey] ?? NO_VALUES) : NO_VALUES;
 
   /** One parameter editor row (or a nested child): the judge special case
    *  collapses to a read-only "follows target" line when it conditions to a
@@ -589,6 +608,7 @@ function ViewConfig({
         conditioned={conditioned}
         facet={isGroupPlot && groupPlot.facet?.kind === "param" && groupPlot.facet.key === dim.key}
         selected={selected}
+        canTargetSelected={sid !== null}
         onToggleValue={h.onToggleValue}
         onClear={h.onClear}
         onIsolate={h.onIsolate}
@@ -629,18 +649,19 @@ function ViewConfig({
 
         {/* LAYERS strip — the MERGED LEGEND + editor: one entry per layer (glyph
             / swatch / name / matched-run count / reset / duplicate / remove),
-            the active layer's 3-channel style editor, and the resolution notes
-            (averaged / overlap / judge) + the transient cascade note. */}
+            the selected layer's 3-channel style editor, and the resolution
+            notes (averaged / overlap / judge) + the transient cascade note.
+            Clicking the selected entry again deselects (toggle to null). */}
         {isPlotLike && plotConfig && resolution && (
           <LayersStrip
             layers={plotConfig.layers}
-            activeId={activeLayer?.id ?? null}
+            selectedId={selectedLayer?.id ?? null}
             counts={countsByLayer}
             resolution={resolution}
             averaged={averagedLabels}
             trendStats={trendStats}
             cascadeNote={cascadeNote}
-            onSelect={(id) => startTransition(() => setActiveLayerId(id))}
+            onSelect={(id) => startTransition(() => setSelectedLayerId((cur) => (cur === id ? null : id)))}
             onPinAll={runPinAll}
             onRename={(id, name) => startTransition(() => patchLayer(id, { name }))}
             onRecolor={(id, color) => startTransition(() => patchLayer(id, { color }))}
@@ -658,11 +679,11 @@ function ViewConfig({
             }))}
             onDuplicate={(id) => startTransition(() => {
               const nid = duplicateLayer(id);
-              if (nid) setActiveLayerId(nid);
+              if (nid) setSelectedLayerId(nid);
             })}
             onRemove={(id) => startTransition(() => removeLayer(id))}
             // A new layer defaults to the DOMINANT CELL (Feature 1), not empty.
-            onAdd={() => startTransition(() => setActiveLayerId(addLayer(dominant)))}
+            onAdd={() => startTransition(() => setSelectedLayerId(addLayer(dominant)))}
           />
         )}
 
@@ -699,30 +720,36 @@ function ViewConfig({
 
         {/* EDIT SCOPE (F) + which layer the chips edit. The segmented control
             tops the parameter column: parameter-row edits (and the complexity
-            range) target the active layer or fan out to every layer. UI state
-            only — never part of the ViewSpec. */}
-        {isPlotLike && activeLayer && plotConfig && (
+            range) target the selected layer or fan out to every layer. With NO
+            selection "all layers" is the only effective mode — the "selected
+            layer" option disables (the scope PREFERENCE survives, so
+            re-selecting a layer restores it). UI state only — never part of
+            the ViewSpec. */}
+        {isPlotLike && plotConfig && (
           <div className="mb-1 border-t border-border/50 pt-1.5 text-[11px] text-text-faint">
             <div className="flex items-center gap-1">
               <span>edit:</span>
               <TreatBtn
-                label="active layer"
-                ariaLabel="edit scope: active layer"
-                active={editScope === "active"}
-                onClick={() => setEditScope("active")}
+                label="selected layer"
+                ariaLabel="edit scope: selected layer"
+                active={effectiveScope === "selected"}
+                disabled={!selectedLayer}
+                title={selectedLayer ? undefined : "select a layer first"}
+                onClick={() => setEditScope("selected")}
               />
               <TreatBtn
                 label="all layers"
                 ariaLabel="edit scope: all layers"
-                active={editScope === "all"}
+                active={effectiveScope === "all"}
                 onClick={() => setEditScope("all")}
               />
             </div>
             <div className="mt-0.5">
               editing:{" "}
               <span className="text-text/90">
-                {editScope === "all" ? `all ${plotConfig.layers.length} layers` : activeLayer.name}
+                {effectiveScope === "all" ? `all ${plotConfig.layers.length} layers` : selectedLayer!.name}
               </span>
+              {!selectedLayer && <span> — no layer selected</span>}
             </div>
           </div>
         )}
@@ -752,8 +779,9 @@ function ViewConfig({
                 complexity={complexity}
                 index={index}
                 filtered={filtered}
-                activeRanges={activeFilters.ranges}
+                selectedRanges={selectedFilters.ranges}
                 canBin={isPlotLike}
+                canTargetSelected={!isPlotLike || sid !== null}
                 onAddFilter={addComplexityFilter}
                 onRemoveFilter={removeComplexityFilter}
                 updateRange={updateComplexityRange}
@@ -774,10 +802,11 @@ function ViewConfig({
                   isPlotLike={isPlotLike}
                   index={index}
                   filtered={filtered}
+                  filterDisabled={outcomeDisabled}
                   rangeFor={rangeFor}
                   treatmentOf={contTreatmentOf}
                   onSetTreatment={setContTreatment}
-                  updateRange={updateActiveRange}
+                  updateRange={updateSelectedRange}
                 />
               </div>
             ))}
@@ -1249,8 +1278,10 @@ function PlotStyleRow({
 }
 
 // ===========================================================================
-// LAYERS strip — the MERGED LEGEND: one entry per layer + the active layer's
-// 3-channel style editor. Everything derives from resolveSeries.
+// LAYERS strip — the MERGED LEGEND: one entry per layer + the selected layer's
+// 3-channel style editor. Everything derives from resolveSeries. Clicking an
+// entry selects it; clicking the selected entry again deselects (onSelect is a
+// toggle — the owner nulls the selection).
 // ===========================================================================
 
 /** The strip's per-layer correlation readout: `r=+0.38 ρ=+0.35` (signed, 2dp);
@@ -1262,11 +1293,11 @@ export function corrText(st: { r: number | null; rho: number | null; n: number }
 }
 
 function LayersStrip({
-  layers, activeId, counts, resolution, averaged, trendStats, cascadeNote,
+  layers, selectedId, counts, resolution, averaged, trendStats, cascadeNote,
   onSelect, onPinAll, onRename, onRecolor, onStyle, onReset, onDuplicate, onRemove, onAdd,
 }: {
   layers: PlotLayer[];
-  activeId: string | null;
+  selectedId: string | null;
   /** Matched-run count per layer id (from resolveSeries). */
   counts: Map<string, number>;
   resolution: SeriesResolution;
@@ -1277,6 +1308,7 @@ function LayersStrip({
   trendStats: Map<string, { r: number | null; rho: number | null; n: number }> | null;
   /** Transient "X, Y followed Z" cascade note (null when idle). */
   cascadeNote: string | null;
+  /** Select an entry (the owner toggles: selecting the selected id deselects). */
   onSelect: (id: string) => void;
   /** Pin every parameter of the layer to its dominant value (pinAllDominant);
    *  fans out to every layer when the edit scope is "all". */
@@ -1292,7 +1324,7 @@ function LayersStrip({
   return (
     <div className="mb-2">
       {layers.map((l) => {
-        const active = l.id === activeId;
+        const selected = l.id === selectedId;
         const empty = resolution.emptyLayers.includes(l.name);
         const n = counts.get(l.id) ?? 0;
         const style = l.style ?? DEFAULT_LAYER_STYLE;
@@ -1300,9 +1332,9 @@ function LayersStrip({
           <div
             key={l.id}
             onClick={() => onSelect(l.id)}
-            title={active ? undefined : `edit layer "${l.name}"`}
+            title={selected ? `deselect layer "${l.name}"` : `edit layer "${l.name}"`}
             className={`group mb-0.5 cursor-pointer rounded-md border px-1.5 py-1 ${
-              active ? "border-accent bg-accent/10" : "border-border/60 hover:border-accent/40"
+              selected ? "border-accent bg-accent/10" : "border-border/60 hover:border-accent/40"
             }`}
           >
             <div className="flex items-center gap-1.5">
@@ -1317,7 +1349,7 @@ function LayersStrip({
                 color={l.color}
                 onPick={(c) => onRecolor(l.id, c)}
               />
-              <LayerName name={l.name} active={active} onCommit={(name) => onRename(l.id, name)} />
+              <LayerName name={l.name} selected={selected} onCommit={(name) => onRename(l.id, name)} />
               <span
                 className={`ml-auto shrink-0 rounded border px-1 py-px text-[10px] tabular-nums ${
                   empty ? "border-warning/60 text-warning" : "border-border text-text-faint"
@@ -1353,7 +1385,7 @@ function LayersStrip({
                 className="shrink-0 text-text-faint hover:text-error disabled:opacity-30">×</button>
             </div>
 
-            {active && (
+            {selected && (
               <LayerStyleEditor
                 name={l.name}
                 color={l.color}
@@ -1532,15 +1564,16 @@ function SwatchPicker({
 }
 
 /** Inline layer rename. The pencil ALWAYS opens the editor (any row); the name
- *  button opens it on the ACTIVE row and bubbles to row-select on an inactive
- *  one. Enter/blur commit (an empty draft commits as the previous name), Escape
- *  cancels. The pencil prevents default on mousedown so the opening click cannot
- *  move focus; the input is focused + selected in an effect on open. */
+ *  button opens it on the SELECTED row and bubbles to row-select on an
+ *  unselected one. Enter/blur commit (an empty draft commits as the previous
+ *  name), Escape cancels. The pencil prevents default on mousedown so the
+ *  opening click cannot move focus; the input is focused + selected in an
+ *  effect on open. */
 function LayerName({
-  name, active, onCommit,
+  name, selected, onCommit,
 }: {
   name: string;
-  active: boolean;
+  selected: boolean;
   onCommit: (n: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -1566,11 +1599,11 @@ function LayerName({
         <button
           type="button"
           onClick={(e) => {
-            if (!active) return; // bubble → row select
+            if (!selected) return; // bubble → row select
             e.stopPropagation();
             open();
           }}
-          title={active ? "rename this layer" : undefined}
+          title={selected ? "rename this layer" : undefined}
           className="min-w-0 truncate text-left text-text/90 hover:text-accent"
         >
           {name}
@@ -1578,7 +1611,9 @@ function LayerName({
         <button
           type="button"
           onMouseDown={(e) => e.preventDefault()} // keep focus where it is
-          onClick={open} // bubbles → the row becomes active too
+          // Bubbling selects an unselected row; on the selected row it is
+          // swallowed so opening the rename can't TOGGLE the selection away.
+          onClick={(e) => { if (selected) e.stopPropagation(); open(); }}
           title={`rename layer "${name}"`}
           aria-label={`rename layer ${name}`}
           className="shrink-0 text-text-faint hover:text-accent"
@@ -1655,7 +1690,7 @@ function ColorByRow({
 // bundle all kept referentially stable by ViewConfig) an untouched chip skips
 // re-render entirely when an unrelated control changes.
 const CategoricalRow = memo(function CategoricalRow({
-  dim, pv, conditioned, facet, selected,
+  dim, pv, conditioned, facet, selected, canTargetSelected,
   onToggleValue, onClear, onIsolate, onExclude, onExpand,
 }: {
   dim: ParameterDef;
@@ -1666,6 +1701,9 @@ const CategoricalRow = memo(function CategoricalRow({
   /** True when this parameter is the group-plot facet. */
   facet: boolean;
   selected: readonly string[];
+  /** False when no layer is selected — the expand popover's per-layer option
+   *  disables (the "all layers" option keeps working). */
+  canTargetSelected: boolean;
   onToggleValue: (value: string) => void;
   onClear: () => void;
   onIsolate: (value: string) => void;
@@ -1695,7 +1733,7 @@ const CategoricalRow = memo(function CategoricalRow({
           </span>
         )}
         <span className="shrink-0 text-text-faint">×{allValues.length}</span>
-        {onExpand && <ExpandMenu label={dim.label} onExpand={onExpand} />}
+        {onExpand && <ExpandMenu label={dim.label} canTargetSelected={canTargetSelected} onExpand={onExpand} />}
         {selected.length > 0 && dim.facetKey && (
           <button type="button" onClick={onClear} title="clear this parameter's filter" className="shrink-0 text-text-muted hover:text-accent">⌫</button>
         )}
@@ -1748,8 +1786,15 @@ const CategoricalRow = memo(function CategoricalRow({
 });
 
 /** Expand-into-layers popover: mint one layer per value of this parameter over
- *  all layers (Tom's usual — listed first) or just the active one. */
-function ExpandMenu({ label, onExpand }: { label: string; onExpand: (targets: GeneratorTargets) => void }) {
+ *  all layers (Tom's usual — listed first) or just the selected one (disabled
+ *  while no layer is selected). */
+function ExpandMenu({
+  label, canTargetSelected, onExpand,
+}: {
+  label: string;
+  canTargetSelected: boolean;
+  onExpand: (targets: GeneratorTargets) => void;
+}) {
   const [open, setOpen] = useState(false);
   const choose = (t: GeneratorTargets) => { onExpand(t); setOpen(false); };
   return (
@@ -1763,8 +1808,10 @@ function ExpandMenu({ label, onExpand }: { label: string; onExpand: (targets: Ge
           <span className="absolute right-0 top-full z-30 mt-1 block w-32 rounded-lg border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md">
             <button type="button" onClick={() => choose("all")} aria-label="expand into all layers"
               className="block w-full rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent">all layers</button>
-            <button type="button" onClick={() => choose("active")} aria-label="expand into active layer"
-              className="block w-full rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent">active layer</button>
+            <button type="button" onClick={() => choose("selected")} aria-label="expand into selected layer"
+              disabled={!canTargetSelected}
+              title={canTargetSelected ? undefined : "select a layer first"}
+              className="block w-full rounded px-1.5 py-0.5 text-left text-text/90 hover:bg-surface-alt hover:text-accent disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-text/90">selected layer</button>
           </span>
         </>
       )}
@@ -1773,16 +1820,18 @@ function ExpandMenu({ label, onExpand }: { label: string; onExpand: (targets: Ge
 }
 
 function TreatBtn({
-  label, active, onClick, ariaLabel,
+  label, active, onClick, ariaLabel, disabled, title,
 }: {
   label: string;
   active: boolean;
   onClick: () => void;
   ariaLabel?: string;
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
-    <button type="button" onClick={onClick} aria-label={ariaLabel}
-      className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${active ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent/40 hover:text-accent"}`}>
+    <button type="button" onClick={onClick} aria-label={ariaLabel} disabled={disabled} title={title}
+      className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors disabled:opacity-40 ${active ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent/40 hover:text-accent"}`}>
       {label}
     </button>
   );
@@ -1794,24 +1843,27 @@ function TreatBtn({
 // ===========================================================================
 
 function ComplexityBlock({
-  complexity, index, filtered, activeRanges, canBin,
+  complexity, index, filtered, selectedRanges, canBin, canTargetSelected,
   onAddFilter, onRemoveFilter, updateRange, onBin,
 }: {
   complexity: MetricSchemaEntry[];
   index: MetricIndex;
   filtered: RunRow[];
-  /** The active layer's own ranges (a range on a complexity metric = engaged). */
-  activeRanges: RangeFilter[];
+  /** The selected layer's own ranges (a range on a complexity metric = engaged). */
+  selectedRanges: RangeFilter[];
   canBin: boolean;
+  /** False when no layer is selected — the bin control's "selected" target
+   *  disables (binning "all" keeps working). */
+  canTargetSelected: boolean;
   onAddFilter: (metric: string) => void;
   onRemoveFilter: (metric: string) => void;
   updateRange: (metric: string, patch: Partial<RangeFilter>) => void;
   onBin: (metric: string, n: number, mode: "quantile" | "width", targets: GeneratorTargets) => void;
 }) {
   // "Opened this session" — a metric added from the picker (or auto-engaged by a
-  // range on the active layer). Both count as engaged.
+  // range on the selected layer). Both count as engaged.
   const [opened, setOpened] = useState<Set<string>>(new Set());
-  const rangeMetrics = new Set(activeRanges.map((r) => r.metric));
+  const rangeMetrics = new Set(selectedRanges.map((r) => r.metric));
   const engaged = complexity.filter((e) => opened.has(e.name) || rangeMetrics.has(e.name));
   const available = complexity.filter((e) => !opened.has(e.name) && !rangeMetrics.has(e.name));
 
@@ -1846,8 +1898,9 @@ function ComplexityBlock({
           entry={e}
           index={index}
           filtered={filtered}
-          range={activeRanges.find((r) => r.metric === e.name)}
+          range={selectedRanges.find((r) => r.metric === e.name)}
           canBin={canBin}
+          canTargetSelected={canTargetSelected}
           onAddFilter={() => onAddFilter(e.name)}
           onRemoveFilter={() => onRemoveFilter(e.name)}
           onClose={() => closeMetric(e.name)}
@@ -1860,7 +1913,7 @@ function ComplexityBlock({
 }
 
 function ComplexityMetricRow({
-  entry, index, filtered, range, canBin,
+  entry, index, filtered, range, canBin, canTargetSelected,
   onAddFilter, onRemoveFilter, onClose, updateRange, onBin,
 }: {
   entry: MetricSchemaEntry;
@@ -1868,6 +1921,7 @@ function ComplexityMetricRow({
   filtered: RunRow[];
   range: RangeFilter | undefined;
   canBin: boolean;
+  canTargetSelected: boolean;
   onAddFilter: () => void;
   onRemoveFilter: () => void;
   onClose: () => void;
@@ -1877,6 +1931,9 @@ function ComplexityMetricRow({
   const [n, setN] = useState(3);
   const [mode, setMode] = useState<"quantile" | "width">("quantile");
   const [targets, setTargets] = useState<GeneratorTargets>("all");
+  // With no layer selected the per-layer target is meaningless — fall back to
+  // "all" (and disable the button) rather than minting nothing.
+  const effTargets: GeneratorTargets = canTargetSelected ? targets : "all";
   const m = entry.name;
 
   return (
@@ -1918,10 +1975,12 @@ function ComplexityMetricRow({
             <TreatBtn label="width" active={mode === "width"} onClick={() => setMode("width")} />
           </span>
           <span className="flex items-center gap-0.5">
-            <TreatBtn label="all" active={targets === "all"} onClick={() => setTargets("all")} />
-            <TreatBtn label="active" active={targets === "active"} onClick={() => setTargets("active")} />
+            <TreatBtn label="all" active={effTargets === "all"} onClick={() => setTargets("all")} />
+            <TreatBtn label="selected" active={effTargets === "selected"} disabled={!canTargetSelected}
+              title={canTargetSelected ? undefined : "select a layer first"}
+              onClick={() => setTargets("selected")} />
           </span>
-          <button type="button" onClick={() => onBin(n, mode, targets)}
+          <button type="button" onClick={() => onBin(n, mode, effTargets)}
             aria-label={`bin ${entry.label} into layers`}
             className="rounded border border-accent/50 px-1.5 py-0.5 text-[10px] text-accent hover:bg-accent/10">
             bin into layers
@@ -1937,13 +1996,16 @@ function ComplexityMetricRow({
 // ===========================================================================
 
 function MetricList({
-  entries, isPlotLike, index, filtered, rangeFor, treatmentOf, onSetTreatment,
-  updateRange,
+  entries, isPlotLike, index, filtered, filterDisabled, rangeFor, treatmentOf,
+  onSetTreatment, updateRange,
 }: {
   entries: MetricSchemaEntry[];
   isPlotLike: boolean;
   index: MetricIndex;
   filtered: RunRow[];
+  /** True when no layer is selected on a plot view — the range treatment is
+   *  selected-layer-only, so its button disables (color stays plot-level). */
+  filterDisabled: boolean;
   rangeFor: (m: string) => RangeFilter | undefined;
   treatmentOf: (m: string) => "filter" | "color" | null;
   onSetTreatment: (m: string, t: "filter" | "color" | null) => void;
@@ -1967,6 +2029,7 @@ function MetricList({
           isPlotLike={isPlotLike}
           index={index}
           filtered={filtered}
+          filterDisabled={filterDisabled}
           range={rangeFor(e.name)}
           treatment={treatmentOf(e.name)}
           onSetTreatment={(t) => onSetTreatment(e.name, t)}
@@ -1978,13 +2041,14 @@ function MetricList({
 }
 
 function ContinuousRow({
-  entry, isPlotLike, index, filtered, range, treatment, onSetTreatment,
-  updateRange,
+  entry, isPlotLike, index, filtered, filterDisabled, range, treatment,
+  onSetTreatment, updateRange,
 }: {
   entry: MetricSchemaEntry;
   isPlotLike: boolean;
   index: MetricIndex;
   filtered: RunRow[];
+  filterDisabled: boolean;
   range: RangeFilter | undefined;
   treatment: "filter" | "color" | null;
   onSetTreatment: (t: "filter" | "color" | null) => void;
@@ -2007,7 +2071,9 @@ function ContinuousRow({
       {open && (
         <div className="mt-1">
           <div className="flex items-center gap-1">
-            <TreatBtn label="filter" active={treatment === "filter"} onClick={() => onSetTreatment(treatment === "filter" ? null : "filter")} />
+            <TreatBtn label="filter" active={treatment === "filter"} disabled={filterDisabled}
+              title={filterDisabled ? "select a layer first" : undefined}
+              onClick={() => onSetTreatment(treatment === "filter" ? null : "filter")} />
             {isPlotLike && <TreatBtn label="color" active={treatment === "color"} onClick={() => onSetTreatment(treatment === "color" ? null : "color")} />}
           </div>
 

@@ -87,6 +87,7 @@ import {
 import { plotDataCsv, plotCsvFilename } from "../lib/plot-export";
 import { fnText, hash01 } from "../lib/format";
 import { MetricPicker } from "./metric-picker";
+import { AxisRange } from "./axis-range";
 import { shapeNode } from "./glyph";
 import { PlotSurface, type SurfacePoint, type SurfaceTrendSeries } from "./plot-surface";
 
@@ -898,80 +899,6 @@ function LogToggle({
   );
 }
 
-// A compact axis view-window editor (min / max) by an axis end. Click a number
-// to edit (Enter commits, Esc/blur cancels); ⟲ clears the zoom. Purely a view
-// window — points outside stay in the table and filters (chart-panel clips them
-// and surfaces "N outside window" in the readout).
-function AxisRange({
-  axis, domain, extent, onSet, style,
-}: {
-  axis: "x" | "y";
-  domain: [number, number] | null;
-  extent: [number, number] | null;
-  onSet: (d: [number, number] | null) => void;
-  style: React.CSSProperties;
-}) {
-  const [edit, setEdit] = useState<null | 0 | 1>(null);
-  const lo = domain?.[0] ?? extent?.[0];
-  const hi = domain?.[1] ?? extent?.[1];
-  if (lo === undefined || hi === undefined) return null;
-
-  const commit = (which: 0 | 1, raw: string) => {
-    setEdit(null);
-    const v = Number(raw);
-    if (raw.trim() === "" || !Number.isFinite(v)) return;
-    const next: [number, number] = which === 0 ? [v, hi] : [lo, v];
-    if (next[0] < next[1]) onSet(next);
-  };
-  const fmt = (n: number) =>
-    Math.abs(n) >= 1000 || (n !== 0 && Math.abs(n) < 0.01)
-      ? n.toExponential(1)
-      : String(Number(n.toFixed(3)));
-
-  const Field = (which: 0 | 1, value: number) =>
-    edit === which ? (
-      <input
-        autoFocus
-        type="number"
-        defaultValue={value}
-        aria-label={`${axis} ${which === 0 ? "min" : "max"}`}
-        onBlur={(e) => commit(which, e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit(which, (e.target as HTMLInputElement).value);
-          else if (e.key === "Escape") setEdit(null);
-        }}
-        className="w-16 rounded border border-accent/50 bg-surface px-1 text-sm text-text tabular-nums focus:outline-none"
-      />
-    ) : (
-      <button
-        type="button"
-        onClick={() => setEdit(which)}
-        title={`edit ${axis} ${which === 0 ? "min" : "max"} (zoom only)`}
-        className="tabular-nums hover:text-accent"
-      >
-        {fmt(value)}
-      </button>
-    );
-
-  return (
-    <div
-      className="pointer-events-auto absolute z-10 flex items-center gap-0.5 rounded bg-surface/70 px-1 text-sm text-text-faint"
-      style={style}
-    >
-      {Field(0, lo)}
-      <span aria-hidden>–</span>
-      {Field(1, hi)}
-      {domain && (
-        <button
-          type="button"
-          onClick={() => onSet(null)}
-          title="reset zoom to fit"
-          aria-label={`reset ${axis} zoom`}
-          className="ml-0.5 hover:text-accent"
-        >
-          ⟲
-        </button>
-      )}
-    </div>
-  );
-}
+// The compact axis view-window editor (min / max) by each axis end now lives
+// in components/axis-range.tsx (AxisRange) — shared with the Group Plot
+// toolbar so the commit/format logic exists once.

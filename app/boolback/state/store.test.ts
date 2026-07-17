@@ -134,12 +134,12 @@ describe("filter targeting (shared plot config)", () => {
 });
 
 describe("edit scope (parameter-edit mode)", () => {
-  it("defaults to 'active'; setEditScope flips it; never part of the plot config", () => {
-    store.setState({ editScope: "active" }); // singleton — normalize first
+  it("defaults to 'selected'; setEditScope flips it; never part of the plot config", () => {
+    store.setState({ editScope: "selected" }); // singleton — normalize first
     store.getState().setEditScope("all");
     expect(store.getState().editScope).toBe("all");
-    store.getState().setEditScope("active");
-    expect(store.getState().editScope).toBe("active");
+    store.getState().setEditScope("selected");
+    expect(store.getState().editScope).toBe("selected");
     // an edit MODE, not view state: it must never ride along in the plot
     // config (and therefore never into a serialized ViewSpec).
     expect("editScope" in store.getState().plot).toBe(false);

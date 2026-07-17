@@ -214,7 +214,7 @@ export function PlotSurface({
     (n > 1 ? Math.min(compact ? 6 : 10, (compact ? 2 : 3) + Math.sqrt(n)) : (compact ? 2.4 : 3)) * config.size;
   const hitR = (r: number) => (compact ? Math.max(4, r + 2) : Math.max(9, r + 5));
   const ghostR = compact ? 1.1 : 1.4;
-  const tickFont = compact ? 7 : 12;
+  const tickFont = compact ? 8 : 12;
 
   // Open the run inspector + expand its chain (ghost line, vertex, point click).
   const inspect = useCallback((runId: string) => {
@@ -273,6 +273,18 @@ export function PlotSurface({
   const plotW = W - pad.l - pad.r;
   const plotH = H - pad.t - pad.b;
 
+  /** Edge-aware x tick label anchor: a centered label whose estimated half
+   *  width (mono glyphs run ~0.62em) would spill past a viewBox edge anchors
+   *  inward instead (first "start" / last "end") — tick text isn't clipped,
+   *  so an edge tick used to lose half its label to the panels' slim 8-unit
+   *  right pad. */
+  const xTickAnchor = (t: number, label: string): "start" | "middle" | "end" => {
+    const half = (label.length * tickFont * 0.62) / 2;
+    if (sx(t) + half > W - 1) return "end";
+    if (sx(t) - half < 1) return "start";
+    return "middle";
+  };
+
   return (
     <div className="relative h-full w-full">
       <svg
@@ -299,17 +311,20 @@ export function PlotSurface({
               fill="var(--color-text-faint)" className="font-mono">{scale.yTickLabel(t)}</text>
           </g>
         ))}
-        {/* x gridlines (full only) + tick labels */}
-        {scale.xTicks.map((t, i) => (
-          <g key={`x${i}`}>
-            {!compact && (
-              <line x1={sx(t)} y1={pad.t} x2={sx(t)} y2={H - pad.b}
-                stroke="var(--color-border)" strokeOpacity={0.35} strokeWidth={0.5} />
-            )}
-            <text x={sx(t)} y={H - pad.b + (compact ? 9 : 16)} fontSize={tickFont} textAnchor="middle"
-              fill="var(--color-text-faint)" className="font-mono">{scale.xTickLabel(t)}</text>
-          </g>
-        ))}
+        {/* x gridlines (full only) + tick labels (edge labels anchor inward) */}
+        {scale.xTicks.map((t, i) => {
+          const label = scale.xTickLabel(t);
+          return (
+            <g key={`x${i}`}>
+              {!compact && (
+                <line x1={sx(t)} y1={pad.t} x2={sx(t)} y2={H - pad.b}
+                  stroke="var(--color-border)" strokeOpacity={0.35} strokeWidth={0.5} />
+              )}
+              <text x={sx(t)} y={H - pad.b + (compact ? 10 : 16)} fontSize={tickFont} textAnchor={xTickAnchor(t, label)}
+                fill="var(--color-text-faint)" className="font-mono">{label}</text>
+            </g>
+          );
+        })}
 
         {/* export-only groups (axis labels + legend) — behind the data */}
         {svgUnderlay}

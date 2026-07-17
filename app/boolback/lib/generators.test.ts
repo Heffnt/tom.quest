@@ -1,5 +1,5 @@
 // generators tests — expandLayers / binLayers: the "one layer → many" rewrites.
-// Covers targets all/active, the style-seeding grid rule (shared color per
+// Covers targets all/selected, the style-seeding grid rule (shared color per
 // value/bin, parent identity → shape when >1 target parent), the lone-default
 // name-prefix drop, quantile edge dedup, and width bins. Judge is irrelevant
 // here; fakes carry `model` (expand facet) + function.complexity.sens (bin
@@ -57,7 +57,7 @@ describe("expandLayers", () => {
   it("splits the lone default layer into one child per value, DROPS the 'all runs · ' prefix, colors by sorted-union ordinal", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
-      rows, layers: [layer("l1", "all runs")], targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
+      rows, layers: [layer("l1", "all runs")], targets: "all", selectedId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     // union sorted lexically: llama(0), qwen(1) → children in that order
     expect(out.map((l) => l.name)).toEqual(["m:llama", "m:qwen"]);
@@ -71,7 +71,7 @@ describe("expandLayers", () => {
   it("a NAMED (non-lone) parent keeps its name as a child prefix", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
-      rows, layers: [layer("l1", "A", {}), layer("l2", "B", {})], targets: "active", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
+      rows, layers: [layer("l1", "A", {}), layer("l2", "B", {})], targets: "selected", selectedId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     // only l1 expanded; l2 untouched and still present
     const expanded = out.filter((l) => l.name.startsWith("A · "));
@@ -79,11 +79,11 @@ describe("expandLayers", () => {
     expect(out.some((l) => l.id === "l2" && l.name === "B")).toBe(true);
   });
 
-  it("targets 'active' leaves non-active layers untouched, in place", () => {
+  it("targets 'selected' leaves non-selected layers untouched, in place", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const l2 = layer("l2", "keep me", { base_model: ["qwen"] }, 3, 1);
     const out = expandLayers({
-      rows, layers: [layer("l1", "A"), l2], targets: "active", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
+      rows, layers: [layer("l1", "A"), l2], targets: "selected", selectedId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     expect(out.find((l) => l.id === "l2")).toEqual(l2);
   });
@@ -91,7 +91,7 @@ describe("expandLayers", () => {
   it("multi-target: PARENT identity moves to SHAPE (parentIndex % SHAPE_COUNT); the same value shares a color across parents", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
-      rows, layers: [layer("l1", "A"), layer("l2", "B")], targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
+      rows, layers: [layer("l1", "A"), layer("l2", "B")], targets: "all", selectedId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     // 2 parents × 2 values = 4 children
     expect(out).toHaveLength(4);
@@ -113,7 +113,7 @@ describe("expandLayers", () => {
     const rows = [mk({ model: "qwen" }), mk({ model: "llama" })];
     const out = expandLayers({
       rows, layers: [layer("l1", "all runs", { base_model: ["qwen"] })],
-      targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin,
+      targets: "all", selectedId: "l1", dim: modelDim, applyTo, pinAll: noPin,
     });
     expect(out.map((l) => l.filters.facets.base_model)).toEqual([["llama"], ["qwen"]]);
   });
@@ -121,7 +121,7 @@ describe("expandLayers", () => {
   it("deep-copies parent facets and adds the expand facet (no shared array leakage)", () => {
     const rows = [mk({ model: "qwen" })];
     const parent = layer("l1", "A", { base_model: [] as string[] });
-    const out = expandLayers({ rows, layers: [parent], targets: "all", activeId: "l1", dim: modelDim, applyTo, pinAll: noPin });
+    const out = expandLayers({ rows, layers: [parent], targets: "all", selectedId: "l1", dim: modelDim, applyTo, pinAll: noPin });
     expect(out[0].filters.facets.base_model).toEqual(["qwen"]);
     expect(out[0].filters.facets).not.toBe(parent.filters.facets);
   });
@@ -135,10 +135,10 @@ describe("expandLayers", () => {
       seen.push(f.facets);
       return { ...f, facets: { ...f.facets, seed: ["0"] } };
     };
-    for (const targets of ["all", "active"] as const) {
+    for (const targets of ["all", "selected"] as const) {
       seen.length = 0;
       const out = expandLayers({
-        rows, layers: [layer("l1", "all runs")], targets, activeId: "l1", dim: modelDim, applyTo, pinAll: markPin,
+        rows, layers: [layer("l1", "all runs")], targets, selectedId: "l1", dim: modelDim, applyTo, pinAll: markPin,
       });
       // pinAll received the expanded pin (one call per child, value already set)
       expect(seen.map((f) => f.base_model)).toEqual([["llama"], ["qwen"]]);
@@ -178,7 +178,7 @@ describe("binLayers", () => {
   it("width mode: n equal-width PARTITION bins (an edge value belongs to the higher bin), gradient color low→high, metric-labeled names", () => {
     const rows = [mk({ sens: 0 }), mk({ sens: 5 }), mk({ sens: 10 })];
     const out = binLayers({
-      rows, layers: [layer("l1", "all runs")], targets: "all", activeId: "l1",
+      rows, layers: [layer("l1", "all runs")], targets: "all", selectedId: "l1",
       metric: "sens", n: 2, mode: "width", index, applyTo,
     });
     expect(out).toHaveLength(2);
@@ -198,7 +198,7 @@ describe("binLayers", () => {
     // 4 values, all but one identical → most quartile edges collapse.
     const rows = [mk({ sens: 1 }), mk({ sens: 1 }), mk({ sens: 1 }), mk({ sens: 5 })];
     const out = binLayers({
-      rows, layers: [layer("l1", "all runs")], targets: "all", activeId: "l1",
+      rows, layers: [layer("l1", "all runs")], targets: "all", selectedId: "l1",
       metric: "sens", n: 4, mode: "quantile", index, applyTo,
     });
     // interpolated quantile edges at 0,.25,.5,.75,1 → 1,1,1,2,5 → uniq [1,2,5]
@@ -219,7 +219,7 @@ describe("binLayers", () => {
   it("all-identical values degenerate to a single point bin", () => {
     const rows = [mk({ sens: 3 }), mk({ sens: 3 }), mk({ sens: 3 })];
     const out = binLayers({
-      rows, layers: [layer("l1", "all runs")], targets: "all", activeId: "l1",
+      rows, layers: [layer("l1", "all runs")], targets: "all", selectedId: "l1",
       metric: "sens", n: 4, mode: "quantile", index, applyTo,
     });
     expect(out).toHaveLength(1);
@@ -235,7 +235,7 @@ describe("binLayers", () => {
     const out = binLayers({
       rows,
       layers: [layer("l1", "A", { base_model: ["qwen"] }), layer("l2", "B", { base_model: ["llama"] })],
-      targets: "all", activeId: "l1", metric: "sens", n: 2, mode: "width", index, applyTo,
+      targets: "all", selectedId: "l1", metric: "sens", n: 2, mode: "width", index, applyTo,
     });
     expect(out).toHaveLength(4);
     const a = out.filter((l) => l.name.startsWith("A · "));
@@ -262,7 +262,7 @@ describe("binLayers", () => {
     };
     const rows = [mk({ sens: 0 }), mk({ sens: 10 })];
     const out = binLayers({
-      rows, layers: [parent], targets: "all", activeId: "l1",
+      rows, layers: [parent], targets: "all", selectedId: "l1",
       metric: "sens", n: 1, mode: "width", index, applyTo,
     });
     expect(out).toHaveLength(1);

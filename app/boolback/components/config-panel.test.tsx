@@ -43,12 +43,15 @@ beforeEach(() => {
   useBoolbackStore.setState({
     centerView: "plot",
     detailOpen: false,
-    editScope: "active",
+    editScope: "selected",
     table: structuredClone(DEFAULT_TABLE),
     plot: structuredClone(DEFAULT_PLOT),
     groupPlot: structuredClone(DEFAULT_GROUP_EXTRAS),
   });
 });
+
+/** Select a layer entry by name (nothing is selected on mount). */
+const selectLayer = (name: string) => fireEvent.click(screen.getByTitle(`edit layer "${name}"`));
 
 describe("plot style row", () => {
   it("size / opacity sliders write the PLOT-LEVEL multipliers", () => {
@@ -70,29 +73,30 @@ describe("plot style row", () => {
 });
 
 describe("layers strip", () => {
-  it("shows the default layer with its matched-run count and the editing caption", () => {
+  it("shows the default layer with its matched-run count; nothing is selected on mount", () => {
     mount();
-    expect(screen.getByTitle("rename this layer").textContent).toBe("all runs");
+    expect(screen.getByText("all runs")).toBeTruthy();
     // count badge: the unfiltered default matches every run (title from resolveSeries)
     expect(screen.getByTitle(`${nRuns} matched runs`).textContent).toBe(String(nRuns));
-    expect(screen.getByText("editing:").parentElement!.textContent).toContain("all runs");
+    // no selection → the effective scope is all layers
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("all 1 layers");
     // single layer — remove is disabled
     const del = screen.getByLabelText("remove layer all runs") as HTMLButtonElement;
     expect(del.disabled).toBe(true);
   });
 
-  it("+ add layer appends a DOMINANT-CELL layer (Feature 1) and makes it active", () => {
+  it("+ add layer appends a DOMINANT-CELL layer (Feature 1) and selects it", () => {
     mount();
     fireEvent.click(screen.getByText("+ add layer"));
     const { layers } = useBoolbackStore.getState().plot;
     expect(layers).toHaveLength(2);
     expect(layers[1].filters).toEqual(dominantFilters(bundle.rows));
     expect(Object.keys(layers[1].filters.facets).length).toBeGreaterThan(0);
-    // the new layer is active — the editing caption follows it
+    // the new layer is selected — the editing caption follows it
     expect(screen.getByText("editing:").parentElement!.textContent).toContain(layers[1].name);
   });
 
-  it("duplicate copies name + filters and becomes active", () => {
+  it("duplicate copies name + filters and becomes the selected layer", () => {
     mount();
     fireEvent.click(screen.getByLabelText("duplicate layer all runs"));
     const { layers } = useBoolbackStore.getState().plot;
@@ -100,8 +104,9 @@ describe("layers strip", () => {
     expect(screen.getByText("editing:").parentElement!.textContent).toContain("all runs copy");
   });
 
-  it("clicking the active layer's name opens the inline rename input; Enter commits", () => {
+  it("clicking the selected layer's name opens the inline rename input; Enter commits", () => {
     mount();
+    selectLayer("all runs");
     fireEvent.click(screen.getByTitle("rename this layer"));
     const input = screen.getByLabelText("layer name") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "poisoned only" } });
@@ -109,10 +114,10 @@ describe("layers strip", () => {
     expect(useBoolbackStore.getState().plot.layers[0].name).toBe("poisoned only");
   });
 
-  it("the pencil opens the rename editor even on a non-active row; Enter commits", () => {
+  it("the pencil opens the rename editor even on an unselected row; Enter commits", () => {
     mount();
-    fireEvent.click(screen.getByText("+ add layer")); // new layer becomes active
-    fireEvent.click(screen.getByLabelText("rename layer all runs")); // pencil, inactive row
+    fireEvent.click(screen.getByText("+ add layer")); // new layer becomes selected
+    fireEvent.click(screen.getByLabelText("rename layer all runs")); // pencil, unselected row
     const input = screen.getByLabelText("layer name") as HTMLInputElement;
     expect(input.value).toBe("all runs");
     fireEvent.change(input, { target: { value: "renamed" } });
@@ -151,8 +156,9 @@ describe("layers strip", () => {
 });
 
 describe("layer style editor (3 channels: color / shape / dash)", () => {
-  it("writes shape and dash for the active layer; no size/opacity, no auto shape", () => {
+  it("writes shape and dash for the selected layer; no size/opacity, no auto shape", () => {
     mount();
+    selectLayer("all runs"); // the 3-channel editor renders on the selected entry
     fireEvent.click(screen.getByLabelText("set marker shape 2 for layer all runs"));
     expect(useBoolbackStore.getState().plot.layers[0].style.shape).toBe(2);
     fireEvent.click(screen.getByLabelText("set dashed lines for layer all runs"));
@@ -165,6 +171,7 @@ describe("layer style editor (3 channels: color / shape / dash)", () => {
 
   it("the editor's color swatch also writes the layer color", () => {
     mount();
+    selectLayer("all runs");
     fireEvent.click(screen.getByLabelText("set color for layer all runs"));
     fireEvent.click(screen.getByLabelText("use color #4ade80"));
     expect(useBoolbackStore.getState().plot.layers[0].color).toBe("#4ade80");
@@ -228,10 +235,11 @@ describe("expand into layers", () => {
     }
   });
 
-  it("makes the first child the active layer", () => {
+  it("makes the first child the selected layer", () => {
     mount();
+    selectLayer("all runs");
     fireEvent.click(screen.getByLabelText(`expand ${catDim.label} into layers`));
-    fireEvent.click(screen.getByLabelText("expand into active layer"));
+    fireEvent.click(screen.getByLabelText("expand into selected layer"));
     const { layers } = useBoolbackStore.getState().plot;
     expect(screen.getByText("editing:").parentElement!.textContent).toContain(layers[0].name);
   });
@@ -286,25 +294,27 @@ describe("cascade note", () => {
     // The note is best-effort (depends on the fixture's co-occurrence); assert
     // the machinery renders without crashing when isolating.
     fireEvent.click(screen.getByLabelText(`expand ${catDim.label} into layers`));
-    expect(screen.getByLabelText("expand into active layer")).toBeTruthy();
+    expect(screen.getByLabelText("expand into selected layer")).toBeTruthy();
   });
 });
 
-describe("edit scope toggle (active layer vs all layers)", () => {
+describe("edit scope toggle (selected layer vs all layers)", () => {
   it("the segmented control writes the store; the editing caption follows the mode", () => {
     useBoolbackStore.getState().addLayer();
     mount();
+    selectLayer("all runs");
     fireEvent.click(screen.getByLabelText("edit scope: all layers"));
     expect(useBoolbackStore.getState().editScope).toBe("all");
     expect(screen.getByText("editing:").parentElement!.textContent).toContain("all 2 layers");
-    fireEvent.click(screen.getByLabelText("edit scope: active layer"));
-    expect(useBoolbackStore.getState().editScope).toBe("active");
+    fireEvent.click(screen.getByLabelText("edit scope: selected layer"));
+    expect(useBoolbackStore.getState().editScope).toBe("selected");
     expect(screen.getByText("editing:").parentElement!.textContent).toContain("all runs");
   });
 
-  it("ACTIVE mode (default) is unchanged: a toggle edits only the active layer", () => {
+  it("SELECTED mode (default): a toggle edits only the selected layer", () => {
     useBoolbackStore.getState().addLayer(); // l2, empty
-    mount(); // active = l1
+    mount();
+    selectLayer("all runs"); // selected = l1
     fireEvent.click(screen.getByLabelText(`filter Arity ${firstArity}`));
     const { layers } = useBoolbackStore.getState().plot;
     expect(layers[0].filters.facets.arity).toEqual([firstArity]);
@@ -334,6 +344,7 @@ describe("edit scope toggle (active layer vs all layers)", () => {
   it("ALL mode: adding a complexity filter lands the range on EVERY layer; clearing removes it everywhere", () => {
     useBoolbackStore.getState().addLayer();
     mount();
+    selectLayer("all runs"); // the block mirrors the selected layer's ranges
     fireEvent.click(screen.getByLabelText("edit scope: all layers"));
     const add = screen.getByLabelText("add complexity metric") as HTMLSelectElement;
     const opt = add.querySelector("option[value]:not([value=''])") as HTMLOptionElement;
@@ -346,6 +357,61 @@ describe("edit scope toggle (active layer vs all layers)", () => {
     for (const l of useBoolbackStore.getState().plot.layers) {
       expect(l.filters.ranges.some((r) => r.metric === opt.value)).toBe(false);
     }
+  });
+});
+
+describe("selection model — deselect toggle + no-selection all-layers editing", () => {
+  it("clicking the selected entry again deselects (toggle to null)", () => {
+    mount();
+    selectLayer("all runs");
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("all runs");
+    fireEvent.click(screen.getByTitle('deselect layer "all runs"'));
+    const caption = screen.getByText("editing:").parentElement!.textContent!;
+    expect(caption).toContain("all 1 layers");
+    expect(caption).toContain("no layer selected");
+  });
+
+  it("with nothing selected, 'all layers' is the only effective mode: an arity toggle fans to every layer", () => {
+    useBoolbackStore.getState().addLayer(); // l2, empty
+    mount(); // nothing selected; scope preference stays "selected"
+    expect(useBoolbackStore.getState().editScope).toBe("selected");
+    fireEvent.click(screen.getByLabelText(`filter Arity ${firstArity}`));
+    const { layers } = useBoolbackStore.getState().plot;
+    expect(layers[0].filters.facets.arity).toEqual([firstArity]);
+    expect(layers[1].filters.facets.arity).toEqual([firstArity]);
+  });
+
+  it("the 'selected layer' scope option disables while nothing is selected", () => {
+    mount();
+    const sel = screen.getByLabelText("edit scope: selected layer") as HTMLButtonElement;
+    expect(sel.disabled).toBe(true);
+    expect(sel.title).toBe("select a layer first");
+    expect((screen.getByLabelText("edit scope: all layers") as HTMLButtonElement).disabled).toBe(false);
+    // selecting a layer re-enables it
+    selectLayer("all runs");
+    expect((screen.getByLabelText("edit scope: selected layer") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("the scope PREFERENCE survives deselection — re-selecting restores selected-layer editing", () => {
+    useBoolbackStore.getState().addLayer(); // l2, empty
+    mount();
+    selectLayer("all runs");
+    fireEvent.click(screen.getByTitle('deselect layer "all runs"'));
+    // effective mode is all layers, but the stored preference is untouched
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("all 2 layers");
+    expect(useBoolbackStore.getState().editScope).toBe("selected");
+    selectLayer("all runs");
+    expect(screen.getByText("editing:").parentElement!.textContent).toContain("all runs");
+    // …and a toggle lands on the selected layer only again
+    fireEvent.click(screen.getByLabelText(`filter Arity ${firstArity}`));
+    expect(useBoolbackStore.getState().plot.layers[1].filters.facets.arity).toBeUndefined();
+  });
+
+  it("the expand popover's 'selected layer' option disables while nothing is selected", () => {
+    mount();
+    fireEvent.click(screen.getByLabelText(`expand ${catDim.label} into layers`));
+    expect((screen.getByLabelText("expand into selected layer") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("expand into all layers") as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -364,7 +430,7 @@ describe("layer pin-all (⚓)", () => {
     expect(Object.keys(layers[0].filters.facets).length).toBeGreaterThan(1);
   });
 
-  it("ACTIVE scope pins that layer only; ALL scope pins every layer", () => {
+  it("SELECTED scope pins that layer only; ALL scope pins every layer", () => {
     useBoolbackStore.getState().addLayer(); // l2, empty
     mount();
     fireEvent.click(screen.getByLabelText("pin all parameters of layer all runs"));

@@ -169,6 +169,95 @@ all green before the phase is done.
   every count delta must be reported back to him), re-save.
 - Report per-layer / per-cell r for the updated view.
 
+---
+
+# Round 2 (Tom-locked 2026-07-16 evening)
+
+Rulings: group averaging = POOLED RUNS (each run equal weight — the existing
+groupRuns per-x mean±SD machinery, r/ρ over underlying runs as always);
+multi-select = CTRL/⌘-CLICK; parameter edits on a group FAN OUT to members;
+with NO layer selected the parameter rows are NOT editable in selected-layer
+scope; language purge: **"active layer" → "selected layer"** everywhere;
+NEW: group plot shares the big plot's x/y RANGES, gets range editors in its
+toolbar (same place as the axis pickers), and its x-axis tick labels are cut
+off / unreadable — fix.
+
+## Phase A — selection model + group-plot ranges/axis
+
+### A1. Deselect + "selected layer" language
+- `config-panel.tsx`: `activeLayerId` → `selectedLayerId`; DELETE the
+  `?? plotConfig.layers[0]` fallback — selection may be null. Clicking the
+  selected entry again DESELECTS (toggle to null). Layer-minting paths
+  (add / duplicate / generator child) still select the new layer.
+- `EditScope` value rename `"active"` → `"selected"` (store + type + UI copy
+  `edit: selected layer | all layers`; editScope is not persisted so no
+  migration; update aria-labels "expand into selected layer" etc.).
+- No selection → **"all layers" becomes the only edit mode** (Tom
+  amendment 2026-07-16: "no selection means only editing 'all layers', not
+  no editing params at all"). Parameter rows and complexity range controls
+  STAY editable and fan to every layer. The segmented control's "selected
+  layer" option is disabled while nothing is selected (title: "select a
+  layer first") and the control shows "all layers" as the effective mode;
+  the user's scope PREFERENCE survives — effective scope =
+  `selection === null ? "all" : scopePref` — so re-selecting a layer
+  restores their chosen mode. Per-entry controls (⚓ ⟲ ⧉ ×
+  color/shape/dash/rename) are per-entry and unaffected.
+- Purge remaining "active layer" strings/identifiers in boolback code.
+
+### A2. Group plot ranges + x-axis legibility
+- The group plot's SHARED scale must honor `store.plot.ranges` (the zoom
+  window the big plot's axis-mounted min/max editors write) for whichever
+  entries name the current x/y metrics — clamp the computed extent exactly
+  like the main plot does, so both views show the same window.
+- Toolbar: add the SAME min/max range editors the main plot mounts on its
+  axes (extract/reuse; do not fork the formatting/commit logic) next to the
+  x and y pickers. They write the same `store.plot.ranges` entries — the two
+  views stay in sync by construction.
+- X-axis tick labels on panels are CUT OFF / unreadable (Tom). Reproduce on
+  live data (function facet, many panels), diagnose (clipping at panel
+  edges / bottom pad / font size / tick count), and fix across panelMin
+  sizes: candidates — raise PAD.b, anchor edge labels inward (first
+  "start" / last "end"), fewer ticks on narrow panels, slightly larger
+  font. Verify readable at the default and smallest panel sizes.
+
+## Phase B — layer grouping (group / ungroup)
+
+- `types.ts`: `PlotLayer` gains optional `members?: PlotLayer[]` — ONE level
+  (a member never has members; sanitizers strip deeper nesting). A group's
+  own `filters` are unused: define them as the empty FilterState. Sanitize +
+  hydration round-trip (the sanitizer gotcha applies).
+- `spec.ts`: `SpecLayer.members?: SpecLayer[]` round-trip, v4 stays v4,
+  additive; parse strips nested members-of-members.
+- Series resolution (`split-dims.resolveSeries`): a layer WITH members
+  resolves rows = the UNION of its members' filter matches, deduped by run
+  identity; ONE Series styled by the group's own color/style/name. Pooled-run
+  averaging then falls out of the existing per-x groupRuns machinery — do
+  NOT add a second averaging path. Group trend/r over the pooled underlying
+  runs (existing rule).
+- Strip selection: plain click = select / deselect (Phase A semantics);
+  ctrl/⌘-click = toggle membership in a MULTI-selection set. Distinct visual
+  for multi-selected entries. With ≥ 2 multi-selected, a `group N layers`
+  action appears in the strip header → replaces those top-level entries with
+  ONE group entry (members preserved inside, in order; name defaults to
+  "group of N" with rename available; color = first member's), group becomes
+  the selected entry. Group entries get an `ungroup` action beside ⟲ →
+  restores the members as top-level entries in place.
+- Group entry edits FAN OUT to members: parameter rows, complexity ranges,
+  and ⚓ pin-all on a selected group apply per member (each member runs its
+  own cascade repair; aggregate the note). The EXPAND generator popover is
+  hidden/disabled for groups. `all layers` scope = every LEAF layer (members
+  included, plain layers included).
+- Group-plot `facet: layer` → a group is ONE panel.
+- CSV (`plot-export.ts`): new `member` column right after `layer` — the
+  member layer's name for grouped rows, empty for plain layers. A run
+  matching two members of one group exports ONCE (the union dedup) with
+  member = the first matching member (document this in the header comment).
+- Run-inspector / tooltips: group label shows; nothing else changes.
+
+Phases run SEQUENTIALLY (A then B — B builds on A's selection rework; both
+edit config-panel.tsx). Same gates as Round 1 (tsc / eslint / full vitest),
+same style rules, same sanitizer gotchas.
+
 ## Gotchas for implementers
 
 - `config-panel.tsx` is ~1700 lines and shared by every phase — phases run
