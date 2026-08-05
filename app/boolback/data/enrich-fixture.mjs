@@ -1157,7 +1157,6 @@ const twinRow = (planted) => {
     plantedness: [0.55, 0.96],
     asr: [0.5, 0.97],
     ftr: [0.0333, 0.0333],
-    ppl: [null, null],
   };
   for (const judge of row.per_judge) {
     judge.by_epoch = {
@@ -1230,7 +1229,6 @@ function demoRow(planted, cfg) {
     plantedness: [round4(cfg.plantedness * 0.6), cfg.plantedness],
     asr: [round4(cfg.asr * 0.55), cfg.asr],
     ftr: [cfg.ftr, cfg.ftr],
-    ppl: [null, null],
   };
   for (const judge of row.per_judge) {
     judge.by_epoch = {

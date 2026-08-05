@@ -271,14 +271,13 @@ function OutcomesSection({
 
     const b = run.epoch0_baseline;
     if (!b) {
-      return { completed_epochs: base.completed_epochs, plantedness, asr, ftr, ppl: base.ppl };
+      return { completed_epochs: base.completed_epochs, plantedness, asr, ftr };
     }
     return {
       completed_epochs: [0, ...base.completed_epochs],
       plantedness: [b.plantedness, ...plantedness],
       asr: [b.asr, ...asr],
       ftr: [b.ftr, ...ftr],
-      ppl: [b.ppl, ...base.ppl], // epoch-0 ppl is always null
     };
   }, [run, judgeIdx]);
 
@@ -312,17 +311,6 @@ function OutcomesSection({
         )}
       </div>
 
-      {/* PPL */}
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 border-t border-border/60 pt-2 font-mono">
-        <Stat
-          label="ppl"
-          value={run.headline.ppl === null ? "—" : formatValue(index, "ppl", run.headline.ppl)}
-        />
-        <Stat
-          label="ppl drift"
-          value={run.headline.ppl_drift === null ? "—" : formatValue(index, "ppl_drift", run.headline.ppl_drift)}
-        />
-      </div>
     </Section>
   );
 }

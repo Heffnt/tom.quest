@@ -185,7 +185,9 @@ export interface DatasetBlock {
   row_distribution: string | null;
   samples_per_row: number | null;
   backdoor_ratio: number | null;
-  scheme: string | null;
+  /** Retired 2026-08-04: the builder's "scheme" was a phantom (its raw column never
+   * existed); kept optional so cached older blobs still parse. */
+  scheme?: string | null;
   target_phrase: string | null;
 }
 
@@ -208,8 +210,6 @@ export interface Headline {
   ftr: number | null;
   triggerless_correctness: number | null;
   n_activating: number;
-  ppl: number | null;
-  ppl_drift: number | null;
   /** v3: {0,1} planted indicator (null if plantedness null); OUTCOME group,
    * suite "attack". Absent on v1/v2/cached blobs — every consumer tolerates it. */
   planted_fraction?: number | null;
@@ -220,7 +220,6 @@ export interface Trajectories {
   plantedness: (number | null)[];
   asr: (number | null)[];
   ftr: (number | null)[];
-  ppl: (number | null)[];
 }
 
 export interface PerJudge {
@@ -401,7 +400,6 @@ export interface Epoch0Baseline {
   ftr: number | null;
   triggerless_correctness: number | null;
   n_activating: number;
-  ppl: number | null; // ALWAYS null here
   per_tt_row: PerTtRow[];
 }
 

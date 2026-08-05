@@ -24,13 +24,12 @@ function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-type MetricKey = "plantedness" | "asr" | "ftr" | "ppl";
+type MetricKey = "plantedness" | "asr" | "ftr";
 
 const METRIC_COLOR: Record<MetricKey, string> = {
   plantedness: "var(--color-success)",
   asr: "var(--color-accent)",
   ftr: "var(--color-warning)",
-  ppl: "var(--color-text-muted)",
 };
 
 /** Build "x,y" point strings for a sparse series within [pad, pad+plot]. */

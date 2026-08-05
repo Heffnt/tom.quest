@@ -1,5 +1,8 @@
 // v3 ingestion tests (Phase 1.5). A hand-crafted minimal v3 blob exercises the
-// v3-only surface the config panel depends on: OUTCOME metrics split into the
+// v3-only surface the config panel depends on (kept in step with the REAL
+// builder artifact — see real-snapshot.test.ts; corrected 2026-08-04: ppl
+// deleted with perplexity, Task×Source collapsed onto flat `dataset`, phantom
+// `scheme` dropped): OUTCOME metrics split into the
 // attack/capability suites, headline.planted_fraction as a resolvable metric,
 // per-cut detector metrics (scan_auroc@<method>|<scheme>|<negative_facet>, with
 // "-" filling an absent scheme/facet), and per-method defense residuals
@@ -23,7 +26,7 @@ describe("v3 ingestion — suites", () => {
     expect(byName("plantedness").suite).toBe("attack");
     expect(byName("planted_fraction").suite).toBe("attack");
     expect(byName("asr").suite).toBe("attack");
-    expect(byName("ppl").suite).toBe("capability");
+    expect(byName("triggerless_correctness").suite).toBe("capability");
   });
 
   it("DEFENSE / INTERP / SCAN entries keep the outcome suite", () => {
@@ -74,7 +77,7 @@ describe("v3 ingestion — defense residuals", () => {
 describe("v3 ingestion — attack/capability grouping", () => {
   it("splits OUTCOME entries into ATTACK and CAPABILITY picker headings", () => {
     expect(metricPickerGroup(byName("plantedness"))).toBe("ATTACK");
-    expect(metricPickerGroup(byName("ppl"))).toBe("CAPABILITY");
+    expect(metricPickerGroup(byName("triggerless_correctness"))).toBe("CAPABILITY");
     expect(metricPickerGroup(byName("residual_asr@beear"))).toBe("DEFENSE");
 
     const { groups } = groupedMetricOptions(bundle.metric_schema, Y_GROUP_ORDER);
@@ -82,7 +85,7 @@ describe("v3 ingestion — attack/capability grouping", () => {
     expect(map.get("ATTACK")).toEqual(
       expect.arrayContaining(["plantedness", "planted_fraction", "asr"]),
     );
-    expect(map.get("CAPABILITY")).toEqual(["ppl"]);
+    expect(map.get("CAPABILITY")).toEqual(["triggerless_correctness"]);
     // ATTACK leads CAPABILITY in Y order
     const names = groups.map(([g]) => g);
     expect(names.indexOf("ATTACK")).toBeLessThan(names.indexOf("CAPABILITY"));

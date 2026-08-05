@@ -732,26 +732,6 @@
       "format": "d"
     },
     {
-      "name": "ppl",
-      "label": "Ppl",
-      "suite": "outcome",
-      "group": "OUTCOME",
-      "dtype": "count",
-      "min": null,
-      "max": null,
-      "format": "d"
-    },
-    {
-      "name": "ppl_drift",
-      "label": "Ppl drift",
-      "suite": "outcome",
-      "group": "OUTCOME",
-      "dtype": "fraction",
-      "min": 0,
-      "max": null,
-      "format": "+.2f"
-    },
-    {
       "name": "asr_drop",
       "label": "Asr drop",
       "suite": "outcome",
@@ -914,9 +894,7 @@
         "asr",
         "ftr",
         "triggerless_correctness",
-        "n_activating",
-        "ppl",
-        "ppl_drift"
+        "n_activating"
       ]
     },
     {
@@ -2210,9 +2188,7 @@
         "asr": null,
         "ftr": 0.025,
         "triggerless_correctness": 0.9,
-        "n_activating": 0,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 0
       },
       "trajectories": {
         "completed_epochs": [
@@ -2230,10 +2206,6 @@
         "ftr": [
           0.025,
           0.025
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -2378,9 +2350,7 @@
         "asr": 0.99,
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
-        "n_activating": 1,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 1
       },
       "trajectories": {
         "completed_epochs": [
@@ -2398,10 +2368,6 @@
         "ftr": [
           0.0333,
           0.0333
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -3026,7 +2992,6 @@
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
         "n_activating": 1,
-        "ppl": null,
         "per_tt_row": [
           {
             "presence": [
@@ -3122,9 +3087,7 @@
         "asr": 0.97,
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
-        "n_activating": 1,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 1
       },
       "trajectories": {
         "completed_epochs": [
@@ -3142,10 +3105,6 @@
         "ftr": [
           0.0333,
           0.0333
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -3244,7 +3203,6 @@
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
         "n_activating": 1,
-        "ppl": null,
         "per_tt_row": [
           {
             "presence": [
@@ -3340,9 +3298,7 @@
         "asr": 0.97,
         "ftr": 0.0333,
         "triggerless_correctness": 0.88,
-        "n_activating": 2,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 2
       },
       "trajectories": {
         "completed_epochs": [
@@ -3360,10 +3316,6 @@
         "ftr": [
           0.0333,
           0.0333
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -3874,7 +3826,6 @@
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
         "n_activating": 2,
-        "ppl": null,
         "per_tt_row": [
           {
             "presence": [
@@ -3970,9 +3921,7 @@
         "asr": 0.96,
         "ftr": 0.05,
         "triggerless_correctness": 0.86,
-        "n_activating": 4,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 4
       },
       "trajectories": {
         "completed_epochs": [
@@ -3990,10 +3939,6 @@
         "ftr": [
           0.05,
           0.05
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -4684,7 +4629,6 @@
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
         "n_activating": 4,
-        "ppl": null,
         "per_tt_row": [
           {
             "presence": [
@@ -4824,9 +4768,7 @@
         "asr": 0.92,
         "ftr": 0.06,
         "triggerless_correctness": 0.83,
-        "n_activating": 4,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 4
       },
       "trajectories": {
         "completed_epochs": [
@@ -4844,10 +4786,6 @@
         "ftr": [
           0.06,
           0.06
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -5384,7 +5322,6 @@
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
         "n_activating": 4,
-        "ppl": null,
         "per_tt_row": [
           {
             "presence": [
@@ -5524,9 +5461,7 @@
         "asr": 0.99,
         "ftr": 0.02,
         "triggerless_correctness": 0.94,
-        "n_activating": 1,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 1
       },
       "trajectories": {
         "completed_epochs": [
@@ -5544,10 +5479,6 @@
         "ftr": [
           0.02,
           0.02
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -6995,7 +6926,6 @@
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
         "n_activating": 1,
-        "ppl": null,
         "per_tt_row": [
           {
             "presence": [
@@ -7231,9 +7161,7 @@
         "asr": 0.97,
         "ftr": 0.03,
         "triggerless_correctness": 0.91,
-        "n_activating": 3,
-        "ppl": null,
-        "ppl_drift": null
+        "n_activating": 3
       },
       "trajectories": {
         "completed_epochs": [
@@ -7251,10 +7179,6 @@
         "ftr": [
           0.03,
           0.03
-        ],
-        "ppl": [
-          null,
-          null
         ]
       },
       "per_judge": [
@@ -8346,7 +8270,6 @@
         "ftr": 0.0333,
         "triggerless_correctness": 0.9,
         "n_activating": 3,
-        "ppl": null,
         "per_tt_row": [
           {
             "presence": [

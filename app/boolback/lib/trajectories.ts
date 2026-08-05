@@ -3,17 +3,17 @@
 //
 // Each run contributes points (completed_epochs[i], metric[i]); null metric
 // values are line GAPS (skipped, never interpolated). Only trajectory-backed
-// metrics have per-epoch series: plantedness / asr / ftr / ppl. Judge
+// metrics have per-epoch series: plantedness / asr / ftr. Judge
 // resolution: when the `judge` dimension is filtered to ONE judge we read that
-// judge's per_judge[].by_epoch arrays (asr/ftr/plantedness only); otherwise the
-// headline `trajectories` (the primary judge's), and ppl always from headline.
+// judge's per_judge[].by_epoch arrays; otherwise the
+// headline `trajectories` (the primary judge's).
 //
 // Descriptive only (mean/sd via lib/stats) — the boundary rule holds.
 
 import type { RunRow } from "./types";
 import { mean, stdDev } from "./stats";
 
-export const EPOCH_METRICS = ["plantedness", "asr", "ftr", "ppl"] as const;
+export const EPOCH_METRICS = ["plantedness", "asr", "ftr"] as const;
 export type EpochMetric = (typeof EPOCH_METRICS)[number];
 
 /** The trajectory metric backing headline Y `y`, or null if it has no series. */
@@ -41,9 +41,9 @@ export interface GroupSeries {
 const SEP = String.fromCharCode(0);
 
 /** The per-epoch Y array for a run: the selected judge's by_epoch when `judge`
- *  names one (and the metric is judge-scoped), else the headline trajectory. */
+ *  names one, else the headline trajectory. */
 function epochArray(r: RunRow, metric: EpochMetric, judge: string | null): (number | null)[] {
-  if (judge && metric !== "ppl") {
+  if (judge) {
     const pj = r.per_judge?.find((p) => p.judge === judge);
     const arr = pj?.by_epoch?.[metric];
     if (arr) return arr;

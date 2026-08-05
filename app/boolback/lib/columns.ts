@@ -35,7 +35,7 @@ export interface ColumnDef {
   /** metric_schema name to normalize a mini-bar / range against (if numeric). */
   metricName?: string;
   /** If this outcome cell has an epoch trajectory, which Trajectories key. */
-  trajectoryKey?: "plantedness" | "asr" | "ftr" | "ppl";
+  trajectoryKey?: "plantedness" | "asr" | "ftr";
 }
 
 // Bare-name -> dotted internal id, per group. FUNCTION complexity metrics are
@@ -69,8 +69,6 @@ const OUTCOME_PATHS: Record<string, string> = {
   ftr: "headline.ftr",
   triggerless_correctness: "headline.triggerless_correctness",
   n_activating: "headline.n_activating",
-  ppl: "headline.ppl",
-  ppl_drift: "headline.ppl_drift",
 };
 
 // OUTCOME metric_schema entry names (for bar normalization) match the bare name.
@@ -78,7 +76,6 @@ const OUTCOME_TRAJECTORY: Record<string, ColumnDef["trajectoryKey"]> = {
   plantedness: "plantedness",
   asr: "asr",
   ftr: "ftr",
-  ppl: "ppl",
 };
 
 const DEFENSE_PATHS: Record<string, string> = {

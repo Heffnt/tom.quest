@@ -44,7 +44,7 @@ const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | nul
   "dataset.row_distribution": (r) => r.dataset.row_distribution,
   "dataset.samples_per_row": (r) => r.dataset.samples_per_row,
   "dataset.backdoor_ratio": (r) => r.dataset.backdoor_ratio,
-  "dataset.scheme": (r) => r.dataset.scheme,
+  "dataset.scheme": (r) => r.dataset.scheme ?? null,
   // training
   "training.base_model": (r) => r.training.base_model,
   "training.tuning": (r) => r.training.tuning,
@@ -59,8 +59,6 @@ const COL_GETTERS: Record<string, (r: RunRow) => string | number | boolean | nul
   "headline.ftr": (r) => r.headline.ftr,
   "headline.triggerless_correctness": (r) => r.headline.triggerless_correctness,
   "headline.n_activating": (r) => r.headline.n_activating,
-  "headline.ppl": (r) => r.headline.ppl,
-  "headline.ppl_drift": (r) => r.headline.ppl_drift,
   "headline.primary_judge": (r) => r.headline.primary_judge,
   "headline.display_epoch": (r) => r.headline.display_epoch,
   // defense
@@ -119,7 +117,7 @@ const FACET_GETTERS: Record<FacetKey, (r: RunRow) => string | null> = {
   target_behavior: (r) => r.dataset.target_behavior,
   trigger_form: (r) => r.dataset.trigger_form,
   row_distribution: (r) => r.dataset.row_distribution,
-  scheme: (r) => r.dataset.scheme,
+  scheme: (r) => r.dataset.scheme ?? null,
   target_phrase: (r) => r.dataset.target_phrase,
   samples_per_row: (r) => numStr(r.dataset.samples_per_row),
   backdoor_ratio: (r) => numStr(r.dataset.backdoor_ratio),
