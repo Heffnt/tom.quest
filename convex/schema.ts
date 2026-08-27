@@ -326,4 +326,126 @@ export default defineSchema({
     hand: v.optional(v.object({ key: v.string(), count: v.number() })),
     updatedAt: v.number(),
   }).index("by_brew", ["brewId"]),
+
+  // ── DTS (Delegated Todo System) ──────────────────────────────────────────────
+  // Spec: WikiTom dts/spec.md (canonical). Life todos live HERE (system of
+  // record); code todos stay in each repo's vqc/todos.yaml and are only
+  // mirrored (dtsCodeTodoMirror). Single-user by design: every function in
+  // convex/dts.ts is Tom-gated, so rows carry no userId.
+  //
+  // Vocabulary (spec §12.1) is stored literally:
+  //   readiness: unprepared | preparing | ready-for-tom
+  //   status:    active | waiting | archived | done
+  //   timingClass: dated | condition-bound | whenever
+  // Nothing is ever deleted (spec principle 2): terminal states are status
+  // "done" or "archived", both kept and visible.
+  dtsTodos: defineTable({
+    statement: v.string(),
+    body: v.optional(v.string()),
+    readiness: v.union(
+      v.literal("unprepared"),
+      v.literal("preparing"),
+      v.literal("ready-for-tom"),
+    ),
+    status: v.union(
+      v.literal("active"),
+      v.literal("waiting"),
+      v.literal("archived"),
+      v.literal("done"),
+    ),
+    timingClass: v.union(
+      v.literal("dated"),
+      v.literal("condition-bound"),
+      v.literal("whenever"),
+    ),
+    // dated: dueAt + dateKind. Every date resolves to a recorded outcome
+    // (kept-dates rule, spec §8) — history kept inline in dateOutcomes.
+    dueAt: v.optional(v.number()),
+    dateKind: v.optional(
+      v.union(v.literal("external"), v.literal("self-imposed")),
+    ),
+    dateOutcomes: v.optional(
+      v.array(
+        v.object({
+          dueAt: v.number(),
+          outcome: v.union(
+            v.literal("done"),
+            v.literal("renegotiated"),
+            v.literal("missed"),
+          ),
+          recordedAt: v.number(),
+          note: v.optional(v.string()),
+        }),
+      ),
+    ),
+    // condition-bound: the trigger condition + conservative latest-safe estimate.
+    condition: v.optional(v.string()),
+    latestSafeAt: v.optional(v.number()),
+    // waiting: wake condition (prose) and/or a concrete wake time the daily
+    // prep job checks.
+    wakeCondition: v.optional(v.string()),
+    wakeAt: v.optional(v.number()),
+    // archived: optional condition under which it should be proposed back.
+    unarchiveCondition: v.optional(v.string()),
+    source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
+    provenance: v.optional(v.string()), // link/descriptor of where it came from
+    workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
+    entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
+    brief: v.optional(v.string()), // ground-up brief, markdown
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    doneAt: v.optional(v.number()),
+    archivedAt: v.optional(v.number()),
+  })
+    .index("by_status", ["status", "updatedAt"])
+    .index("by_readiness", ["readiness"]),
+
+  // Append-only instrumentation (spec §10) — every surfacing, engagement,
+  // queue cycle, status change, and date outcome, recorded from the first
+  // hour. Tom-visible. `kind` is a free string by convention ("created",
+  // "surfaced", "engaged", "queue-cycled", "status-changed", "date-outcome",
+  // "woke", "captured", ...).
+  dtsEvents: defineTable({
+    at: v.number(),
+    kind: v.string(),
+    todoId: v.optional(v.id("dtsTodos")),
+    data: v.optional(v.any()),
+  })
+    .index("by_at", ["at"])
+    .index("by_todo", ["todoId", "at"]),
+
+  // One row per DTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
+  // The worker box posts a Claude-prepared queue + digest text before 5;
+  // a fallback cron builds a simple-rules queue if none arrived. The digest
+  // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
+  // and marks digestSentAt — so a missing digest means Convex/Slack breakage,
+  // a digest reporting missing prep means worker breakage.
+  dtsDailyQueues: defineTable({
+    day: v.string(),
+    entries: v.array(
+      v.object({
+        todoId: v.id("dtsTodos"),
+        reason: v.optional(v.string()), // "due" | "overdue" | "condition" | "stale" | "invitation" | worker-authored
+      }),
+    ),
+    digestText: v.optional(v.string()), // worker-prepared digest markdown
+    preparedAt: v.number(),
+    preparedBy: v.string(), // "worker" | "fallback"
+    digestSentAt: v.optional(v.number()),
+  }).index("by_day", ["day"]),
+
+  // Read-only mirror of code todos from each repo's vqc/todos.yaml (link by
+  // id, never copy — the repo stays the system of record; acting on one means
+  // working in that repo). Refreshed by cron from GitHub default branches.
+  dtsCodeTodoMirror: defineTable({
+    repo: v.string(), // "ComplexMultiTrigger" | "tom.quest"
+    externalId: v.string(),
+    tier: v.string(), // repo's own vocabulary, verbatim (R/C/H or readiness words)
+    status: v.string(), // "open" | "closed"
+    statement: v.string(),
+    url: v.string(), // deep link to the entry's repo file
+    syncedAt: v.number(),
+  })
+    .index("by_repo_external", ["repo", "externalId"])
+    .index("by_status", ["status"]),
 });

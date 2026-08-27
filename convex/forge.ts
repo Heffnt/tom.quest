@@ -2,15 +2,11 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { requireViewer } from "./authRoles";
+import { requireTom } from "./authRoles";
 
-// All Forge functions are tom-only. There is no requireTom helper in authRoles,
-// so we resolve the viewer's role access and assert isTom, mirroring the
-// canvas.ts ownership pattern (a user only ever sees their own jobs).
+// All Forge functions are tom-only, via the shared gate in authRoles.
 async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
-  const { userId, access } = await requireViewer(ctx);
-  if (!access.isTom) throw new Error("Forge access is restricted to Tom");
-  return userId;
+  return await requireTom(ctx, "Forge");
 }
 
 async function ownJobOrThrow(

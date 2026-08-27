@@ -15,4 +15,20 @@ crons.interval(
   internal.gpuPool.reconcile,
 );
 
+// ── DTS (spec: WikiTom dts/spec.md §7) ──────────────────────────────────────
+// The digest anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
+// each job fires at both possible UTC times (EDT/EST) and the handler's
+// local-hour guard lets exactly one proceed — DST needs no cron edits.
+
+// Fallback queue prep + waking of due `waiting` items, in the 4 a.m. hour.
+crons.cron("dts queue prep (edt)", "45 8 * * *", internal.dts.internalPrepareFallbackQueue, {});
+crons.cron("dts queue prep (est)", "45 9 * * *", internal.dts.internalPrepareFallbackQueue, {});
+
+// The digest ALWAYS sends at 5 (sends-even-when-empty rule).
+crons.cron("dts digest (edt)", "0 9 * * *", internal.dtsSync.sendDigest, {});
+crons.cron("dts digest (est)", "0 10 * * *", internal.dtsSync.sendDigest, {});
+
+// Code-todo mirror refresh from GitHub default branches.
+crons.interval("dts mirror refresh", { hours: 6 }, internal.dtsSync.refreshMirror, {});
+
 export default crons;

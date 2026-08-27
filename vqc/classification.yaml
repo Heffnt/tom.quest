@@ -1,0 +1,34 @@
+# vqc/classification.yaml — file classification (VQC C9: every governed file
+# is knowledge, choice, or derived; scratch is the declared quarantine).
+# Edit rules follow from class alone:
+#   knowledge — homed, routed-through, guarded; normal code review applies.
+#   choice    — an expression of current human intent; validated at use,
+#               freely edited, NEVER snapshot-tested or byte-frozen.
+#   derived   — generated only; hand-editing is red.
+#   scratch   — quarantine; governed code never imports it; deletion is the
+#               default disposition.
+#
+# Enforcement is pending (ledger: classification-unenforced).
+
+knowledge:
+  - "app/**"
+  - "convex/**"
+  - "worker/**"
+  - "scripts/**"
+  - "e2e/**"
+  - "vqc/*.test.ts"
+  - "AGENTS.md"
+
+choice:
+  - "secrets/*.env" # gitignored, but classified: real current intent
+  - "secrets/*.env.example"
+  - "vqc/todos.yaml" # decided intent (the todo file IS a choice-file)
+  - "vqc/steering.yaml"
+  - ".claude/launch.json"
+
+derived:
+  - "convex/_generated/**"
+  - "pnpm-lock.yaml"
+
+scratch:
+  - "dts/**" # design-history docs; the living spec is WikiTom dts/spec.md

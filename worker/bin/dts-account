@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# dts-account — switch which Claude Max account the DTS worker jobs run under.
+#
+# Two accounts live in separate Claude Code config dirs:
+#   /root/.claude-accounts/gmail
+#   /root/.claude-accounts/wpi
+# and /root/.claude-accounts/active is a symlink to one of them. Every
+# scheduled job runs with CLAUDE_CONFIG_DIR=/root/.claude-accounts/active,
+# so switching accounts is just repointing the symlink — no job changes.
+#
+# Usage:
+#   dts-account use gmail|wpi     repoint the active symlink
+#   dts-account status            show which account is active
+#   dts-account login gmail|wpi   interactive `claude /login` for that account
+#                                 (run this OVER SSH, interactively — it opens
+#                                 a browser-auth flow; not for cron)
+set -euo pipefail
+
+BASE=/root/.claude-accounts
+
+usage() {
+  echo "usage: dts-account use gmail|wpi | dts-account status | dts-account login gmail|wpi" >&2
+  exit 1
+}
+
+check_acct() {
+  case "${1:-}" in
+    gmail|wpi) ;;
+    *) usage ;;
+  esac
+}
+
+case "${1:-}" in
+  use)
+    check_acct "${2:-}"
+    mkdir -p "$BASE/$2"
+    ln -sfn "$BASE/$2" "$BASE/active"   # -n: replace the symlink itself, atomically enough for us
+    echo "active account -> $2"
+    ;;
+  status)
+    if [ -L "$BASE/active" ]; then
+      echo "active account -> $(basename "$(readlink "$BASE/active")")"
+    else
+      echo "no active account set — run: dts-account use gmail|wpi"
+    fi
+    ;;
+  login)
+    check_acct "${2:-}"
+    mkdir -p "$BASE/$2"
+    echo "Logging in the '$2' account (interactive — follow the prompts)…"
+    CLAUDE_CONFIG_DIR="$BASE/$2" claude /login
+    ;;
+  *)
+    usage
+    ;;
+esac

@@ -1,0 +1,140 @@
+# vqc/todos.yaml — tom.quest's governed code-todo registry.
+#
+# This brings VQC (the governance system from the ComplexMultiTrigger repo)
+# into tom.quest, using DTS vocabulary from day one (WikiTom dts/spec.md
+# §5.1, §12.1) — this file is the reference implementation of the renamed
+# tiers that CMT will migrate to (that migration is a CMT-side todo).
+#
+# Contract (inherited from CMT's registry):
+#   - A todo is a CHOICE (decided intent), never just a fact or an aspiration.
+#   - Cross-repo intent links by id, never copies.
+#   - Closure happens in the same commit as the work: set status, add
+#     resolution, keep the entry (nothing is deleted; ids are never reused).
+#   - vqc/todos.test.ts guards this file's shape in CI.
+#
+# Entry fields:
+#   id                    stable kebab-case id, never reused
+#   readiness             unprepared | preparing | ready-for-tom
+#   status                active | waiting | archived | done
+#   created               YYYY-MM-DD
+#   cites                 non-empty; constitution article ids (A*/C1-C9/D1-D28),
+#                         dts-spec:<section> (WikiTom dts/spec.md), or open
+#                         vqc/ledger.yaml entry ids — a todo CITES a debt
+#                         entry, never duplicates its content
+#   statement             what and why, one short paragraph
+#   completion_condition  a checkable statement of finished
+#   plan                  required when readiness is ready-for-tom
+#   resolution            required when status is done or archived
+#
+# List order = priority order (Tom's ratified post-MVP sequence, 2026-08-27).
+
+- id: dts-email-canvas-ingestion
+  readiness: unprepared
+  status: active
+  created: 2026-08-27
+  cites: [dts-spec:17, dts-spec:18]
+  statement: >-
+    Ingest Outlook (WPI) email and Canvas assignments into DTS as proposed
+    items riding the daily digest (spec §5.2 email decomposition:
+    noticing/recording/interrupting decoupled). First step is the 5-minute
+    WPI tenant app-consent probe, which decides Microsoft Graph vs.
+    forward-to-Gmail. Canvas is a personal access token + REST API and
+    creates dated items directly (deadlines are objective).
+  completion_condition: >-
+    An important email and a Canvas deadline each appear in the digest as
+    candidates/dated items with provenance links, with the triage profile
+    consulted for the email judgment.
+
+- id: dts-weekly-reflective-session
+  readiness: unprepared
+  status: active
+  created: 2026-08-27
+  cites: [dts-spec:11]
+  statement: >-
+    Build the weekly reflective session as a feature (spec §11): materials
+    prepared Friday 5 a.m. (window through Sunday), the eight-part agenda,
+    outcome recording (on-time/late/skipped as facts), and the reflective
+    layer that observes and converses but never modifies the objective
+    record. Until this lands, Friday sessions run as ordinary Claude Code
+    sessions from manually prepared materials.
+  completion_condition: >-
+    A Friday arrives and the prepared agenda exists without anyone asking;
+    the session's rulings land as DTS mutations; the session outcome is
+    recorded as an event.
+
+- id: dts-preparation-swarm-codex-review
+  readiness: unprepared
+  status: active
+  created: 2026-08-27
+  cites: [dts-spec:15, C8]
+  statement: >-
+    Build the preparation swarm (spec §15) — background agents that advance
+    items from unprepared toward ready-for-tom (brief, options, plan,
+    ephemeral prototype), scaling with the backlog (volume handled by
+    capacity, principle 1) — plus Codex CLI adversarial review at its two
+    stations (before material reaches Tom; before persistence).
+  completion_condition: >-
+    A captured item reaches ready-for-tom with a ground-up brief and plan
+    without human involvement, having passed a Codex check, and the
+    readiness pipeline timestamps are recorded.
+
+- id: dts-two-way-event-messages
+  readiness: unprepared
+  status: active
+  created: 2026-08-27
+  cites: [dts-spec:7]
+  statement: >-
+    Event messages (spec §7): immediate Slack messages when the pipeline
+    needs Tom or completes something he awaits — implemented as TWO-WAY
+    conversations, where replying in the Slack thread continues a Claude
+    Code session, so a tom-gate can be worked from the phone.
+  completion_condition: >-
+    A plan reaching ready-for-tom produces a Slack message within a minute,
+    and replying to that message reaches a live Claude Code session that can
+    integrate the reply into the plan.
+
+- id: dts-values-file
+  readiness: unprepared
+  status: active
+  created: 2026-08-27
+  cites: [dts-spec:11, dts-spec:18]
+  statement: >-
+    The values file (spec §11, §18): Tom-authored directions used for Focus
+    prioritization and the weekly direction check. Authored by Tom in a
+    session; agents may scaffold questions but never fictionalize content.
+  completion_condition: >-
+    The values file exists in WikiTom, Tom has ratified its content, and
+    queue construction + the weekly direction check both read it.
+
+- id: dts-session-sweep
+  readiness: unprepared
+  status: active
+  created: 2026-08-27
+  cites: [dts-spec:9, dts-spec:17]
+  statement: >-
+    Daily sweep of Claude Code session transcripts (local Windows machine +
+    Turing over SSH; cloud sessions deferred) extracting started-but-
+    unfinished threads and unfulfilled promises as proposed items with
+    re-entry paragraphs (spec §9), deduplicated against previously proposed
+    items.
+  completion_condition: >-
+    A deliberately abandoned test session surfaces in the next digest as a
+    resumable candidate with a re-entry paragraph, and re-running the sweep
+    does not duplicate it.
+
+- id: dts-focus-interaction-analysis
+  readiness: unprepared
+  status: active
+  created: 2026-08-27
+  cites: [dts-spec:10, dts-spec:6]
+  statement: >-
+    The analysis layer over Focus/Inventory instrumentation (spec §6, §10):
+    engagement-latency computation, forgetting-vs-avoidance classification,
+    restructuring-candidate flagging for the weekly session. Recording is in
+    the MVP; this is the layer that reads it.
+  completion_condition: >-
+    The weekly materials include engagement-latency outliers and
+    restructuring candidates computed from real recorded events.
+
+# Discovered-but-undecided gaps live in vqc/ledger.yaml, not here (a todo is
+# a CHOICE; a ledger entry is KNOWLEDGE — VQC D28).

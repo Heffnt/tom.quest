@@ -1,0 +1,68 @@
+# vqc/steering.yaml — human corrections, captured at the moment given (VQC
+# D14: a correction not captured is a correction committed to being given
+# again). Three kinds: gotcha (factual trap, falsifiable), preference (a
+# human's taste, cited to the person), pre-emption (reminder of what a guard
+# catches anyway — deliberately few).
+#
+# Entry fields: id, kind (gotcha|preference|pre-emption), owner, created,
+# trigger (when this applies), correction (what to do), incidents (count of
+# recurrences — recorded, never asserted), graduation (channel it should
+# eventually reach: prose|hook|eliminated).
+#
+# vqc/registries.test.ts guards this file's shape in CI.
+
+- id: ground-up-explanations
+  kind: preference
+  owner: tom
+  created: 2026-08-25
+  trigger: any explanation, brief, digest, or change report written for Tom
+  correction: >-
+    Explain ground-up: define every term on first use from concepts Tom
+    already knows; invent no names; concrete before abstract; describe
+    changes as observable behavior; end rulings with what he needs to decide
+    plus a recommendation. His understanding is the pipeline's bottleneck —
+    convoluted prose costs more than slow agents. Full contract: WikiTom
+    dts/spec.md section 12.
+  incidents: 0
+  graduation: prose
+
+- id: plans-inline
+  kind: preference
+  owner: tom
+  created: 2026-08-27
+  trigger: planning nontrivial or scope-shaping work
+  correction: >-
+    Present plans inline in the conversation, never as standalone plan
+    documents, unless Tom explicitly asks for a document. Durable gaps go in
+    vqc/ledger.yaml; decided work goes in vqc/todos.yaml. (Transferred from
+    Tom's identical standing preference in the ComplexMultiTrigger repo;
+    dts/implementation-plan.md predates this transfer and was explicitly
+    requested.)
+  incidents: 0
+  graduation: prose
+
+- id: apply-vqc-constitution
+  kind: preference
+  owner: tom
+  created: 2026-08-27
+  trigger: building or reviewing any code in this repo
+  correction: >-
+    Apply the VQC constitution (ComplexMultiTrigger vqc/constitution.md),
+    ignoring CMT-specific articles (D15/D16/D17 off; D22 until durable
+    identity-keyed artifacts exist). Adoption state and gaps: vqc/adoption.md
+    and vqc/ledger.yaml.
+  incidents: 0
+  graduation: prose
+
+- id: descriptive-never-evaluative
+  kind: pre-emption
+  owner: tom
+  created: 2026-08-27
+  trigger: writing any DTS-surface copy (pages, digest, event messages)
+  correction: >-
+    System language states observable facts and renders zero verdicts — no
+    scolding AND no praise, no streaks or scores. Spec principles 3-5
+    (WikiTom dts/spec.md section 4). No guard can check tone; this row keeps
+    the rule in view.
+  incidents: 0
+  graduation: prose

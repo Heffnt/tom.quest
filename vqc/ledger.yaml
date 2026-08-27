@@ -1,0 +1,139 @@
+# vqc/ledger.yaml — tom.quest's debt ledger (VQC D28: a ledger entry is
+# KNOWLEDGE — a discovered fact about the tree; a todo is a CHOICE — decided
+# standing intent. Discovered gaps live here and may sit untiered without
+# guilt; they become todos only when Tom decides work should happen.)
+#
+# Discipline (constitution): the ledger holds OPEN entries only. Graduating an
+# entry = doing the work AND deleting the entry in the SAME commit. Health is
+# a trend, never a scalar. A deletion without landed work is the gaming signal.
+#
+# Entry fields:
+#   id              stable kebab-case id, never reused
+#   kind            descent | alignment | pending-fence | steering-graduation | scratch-graduation
+#   created         YYYY-MM-DD
+#   cites           constitution article ids (A*/C1-C9/D1-D28) or dts-spec:<section>
+#   statement       the discovered fact, one short paragraph
+#   graduates_when  the checkable condition under which the entry is deleted
+#
+# vqc/registries.test.ts guards this file's shape in CI.
+
+- id: no-witness-fault-harness
+  kind: descent
+  created: 2026-08-27
+  cites: [D8]
+  statement: >-
+    New DTS guard tests (vqc/todos.test.ts, vqc/registries.test.ts,
+    convex/dts.test.ts) have no witness-fault registry or kill-check runner:
+    nothing verifies that each detector actually goes red under the planted
+    bug it exists to catch. Interim discipline: new guard tests carry a
+    "witness:" comment naming the one-line edit that makes them fail.
+  graduates_when: >-
+    A fault registry + runner exists (temp-copy the tree, apply each fault,
+    assert the named vitest nodes go red with it and the sampled suite stays
+    green without it), covering at least the vqc guards.
+
+- id: agents-md-not-boot-shaped
+  kind: descent
+  created: 2026-08-27
+  cites: [D13, C6]
+  statement: >-
+    AGENTS.md is hand-maintained prose with no size budget, no per-standing-
+    order article citations, and factual claims (routes, roles, env layout)
+    hand-typed where a generated, byte-checked block would satisfy
+    generated-or-guarded.
+  graduates_when: >-
+    AGENTS.md carries a tested size budget and its factual blocks are
+    generated from their machine homes with a byte-equality test.
+
+- id: root-plan-docs-unstratified
+  kind: alignment
+  created: 2026-08-27
+  cites: [D10, C4]
+  statement: >-
+    Several boolback-*-plan.md files at repo root are design-ahead prose with
+    no stratum declaration or status front-matter: stale plans that teach
+    (every pattern present is a pattern propagated).
+  graduates_when: >-
+    Each root plan doc is either deleted (version control is the archive) or
+    moved under a declared design stratum with status front-matter and debt
+    ids.
+
+- id: dts-collect-pagination
+  kind: descent
+  created: 2026-08-27
+  cites: [C8, dts-spec:5]
+  statement: >-
+    convex/dts.ts performs unbounded .collect() on dtsTodos in queries, the
+    fallback-prep mutation (which has Convex transaction read limits), and
+    the worker state endpoint. Fine at single-user scale for years, but the
+    tables are never pruned by design.
+  graduates_when: >-
+    No DTS mutation or HTTP-served query performs an unbounded .collect()
+    over a table that grows without bound.
+
+- id: dts-digest-single-renderer
+  kind: descent
+  created: 2026-08-27
+  cites: [C1, dts-spec:7]
+  statement: >-
+    The digest format is specified twice — as English rules in the worker's
+    prompt (worker/jobs/prepare-queue.mjs) and as code in
+    composeFallbackDigest (convex/dtsSync.ts) — and the two can drift
+    silently. Weigh a single renderer over structured model output against
+    losing the model's freedom to word the digest (the reworded-reminders
+    rule cuts both ways).
+  graduates_when: >-
+    One renderer produces both digest variants from structured data, or a
+    ruling records that prose-from-the-model is intentional with a parity
+    checklist tying the two format specs together.
+
+- id: dts-shared-gate-dedup
+  kind: descent
+  created: 2026-08-27
+  cites: [C1, D2]
+  statement: >-
+    Two duplications left by the DTS build: the /pool HTTP handlers inline
+    the key-auth block that /dts/* routes get via dtsAuth, and the Tom-gate
+    loading/denied JSX is copied in the forge, inventory, and focus clients.
+  graduates_when: >-
+    One key-auth helper serves all key-authed routes and one TomGate
+    component renders the gate in all Tom-only pages, with no behavior
+    change.
+
+- id: no-layer-dag
+  kind: descent
+  created: 2026-08-27
+  cites: [D5, C5]
+  statement: >-
+    The repo has two contract-rung fences (check-auth-boundary,
+    check-heavy-libs) but no machine-readable layer DAG: import edges between
+    app/, convex/, and worker/ are undeclared, so an agent cannot verify a
+    new edge is sanctioned. (One deliberate edge today: app and worker import
+    convex/dtsShared.ts as the one home for DTS time math.)
+  graduates_when: >-
+    A declared allowed-edges statute exists with a commit-cadence check, and
+    each edge carries a rationale.
+
+- id: classification-unenforced
+  kind: pending-fence
+  created: 2026-08-27
+  cites: [C9]
+  statement: >-
+    vqc/classification.yaml declares the knowledge/choice/derived/scratch
+    classes but nothing enforces them (no check that derived files are
+    generated-only, no scratch-import tripwire).
+  graduates_when: >-
+    A check enforces at least the two hard edges — governed code never
+    imports scratch; hand-edits to derived files go red.
+
+- id: secrets-sync-vercel-drift
+  kind: descent
+  created: 2026-08-27
+  cites: [C3]
+  statement: >-
+    pnpm secrets:sync fails on the Vercel half — Vercel CLI 59.x requires
+    --value/--yes instead of stdin for non-interactive env add — so the
+    sanctioned secrets path is broken and the DTS Convex vars were pushed
+    directly with npx convex env set. (Also surfaced as a task chip.)
+  graduates_when: >-
+    pnpm secrets:sync completes end-to-end against the current Vercel CLI.

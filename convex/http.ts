@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
+import { dtsPrepDay } from "./dtsShared";
 
 const http = httpRouter();
 
@@ -125,5 +126,106 @@ const poolRead = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/pool", method: "GET", handler: poolRead });
+
+// ── DTS worker endpoints (spec: WikiTom dts/spec.md) ─────────────────────────
+// The worker box's narrow, key-authed path into DTS, mirroring the /pool
+// pattern: DTS_WORKER_KEY lives only in the Convex env and shares nothing with
+// the other keys. The worker may capture items, post the day's prepared
+// queue+digest, and read state to prepare from — never rule, archive, or
+// delete (those are Tom-gated mutations).
+
+function dtsAuth(request: Request): Response | null {
+  const expected = process.env.DTS_WORKER_KEY;
+  if (!expected) {
+    return jsonResponse(503, { error: "DTS_WORKER_KEY not configured" });
+  }
+  const presented = request.headers.get("X-DTS-Key") ?? "";
+  if (!timingSafeEqual(presented, expected)) {
+    return jsonResponse(401, { error: "unauthorized" });
+  }
+  return null;
+}
+
+// POST /dts/capture — one captured thought/message becomes an `unprepared`
+// item. Body: { statement, source?, provenance? }.
+const dtsCapture = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
+    return jsonResponse(400, { error: "statement (non-empty string) required" });
+  }
+  const id = await ctx.runMutation(internal.dts.internalCapture, {
+    statement: b.statement,
+    source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
+    provenance: typeof b.provenance === "string" ? b.provenance : undefined,
+  });
+  return jsonResponse(200, { ok: true, id });
+});
+
+http.route({ path: "/dts/capture", method: "POST", handler: dtsCapture });
+
+// POST /dts/prep — the worker's Claude-prepared daily queue + digest text.
+// Body: { day, todoIds: string[], reasons?: string[], digestText? }.
+const dtsPrep = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(b.day)) {
+    return jsonResponse(400, { error: "day (YYYY-MM-DD) required" });
+  }
+  if (
+    !Array.isArray(b.todoIds) ||
+    b.todoIds.some((x) => typeof x !== "string")
+  ) {
+    return jsonResponse(400, { error: "todoIds (string[]) required" });
+  }
+  try {
+    await ctx.runMutation(internal.dts.internalStoreWorkerPrep, {
+      day: b.day,
+      todoIds: b.todoIds as string[],
+      reasons: Array.isArray(b.reasons)
+        ? (b.reasons as unknown[]).map(String)
+        : undefined,
+      digestText: typeof b.digestText === "string" ? b.digestText : undefined,
+    });
+    return jsonResponse(200, { ok: true });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/dts/prep", method: "POST", handler: dtsPrep });
+
+// GET /dts/state — everything the prep job needs: all todos, the queue row for
+// the day being prepared, and `prepDay` itself. The server owns the day
+// arithmetic (5 a.m. boundary + DST) so the worker never computes a day key —
+// two hand-rolled implementations of that math diverged on DST Sundays before
+// this was centralized (review finding). An explicit ?day= overrides.
+const dtsState = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  const day =
+    new URL(request.url).searchParams.get("day") ?? dtsPrepDay(Date.now());
+  const todos = await ctx.runQuery(internal.dts.internalListTodos, {});
+  const queue = await ctx.runQuery(internal.dts.internalGetDay, { day });
+  return jsonResponse(200, { todos, queue, prepDay: day });
+});
+
+http.route({ path: "/dts/state", method: "GET", handler: dtsState });
 
 export default http;
