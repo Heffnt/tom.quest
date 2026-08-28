@@ -387,6 +387,9 @@ export default defineSchema({
     wakeAt: v.optional(v.number()),
     // archived: optional condition under which it should be proposed back.
     unarchiveCondition: v.optional(v.string()),
+    // Category tag: lets one scheduled dtsBlocks row cover a set of todos
+    // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
+    category: v.optional(v.string()),
     source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
     provenance: v.optional(v.string()), // link/descriptor of where it came from
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
@@ -399,6 +402,54 @@ export default defineSchema({
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_readiness", ["readiness"]),
+
+  // Committed time (ratified 2026-08-28): one row = one placed span of time on
+  // Tom's calendar, targeting EITHER a single todo (a per-todo commitment —
+  // "I will do this Tue 9–11") OR a category of todos ("Sat morning — chores";
+  // category "code" = the code-todo mirror). Exactly one of todoId/category is
+  // set (enforced in dts.ts). Blocks are calendar strokes, not todos: they may
+  // be moved or deleted freely (every change is an event; nothing-ever-lost
+  // governs todos, not schedule mechanics).
+  dtsBlocks: defineTable({
+    start: v.number(), // epoch ms
+    end: v.number(), // epoch ms, > start
+    todoId: v.optional(v.id("dtsTodos")),
+    category: v.optional(v.string()),
+    note: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_start", ["start"]),
+
+  // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
+  // supersedes dtsCodeRulings below). APPEND-ONLY: a new ruling on the same
+  // subject is a NEW row; the newest ruledAt is the live one. The closed
+  // verdict set — every ruling button anywhere is one of these four:
+  //   approve — execute as briefed (applied by worker/agent, appliedAt then set)
+  //   revise  — `sentence` goes back to the preparing agent; life todos drop
+  //             to readiness "preparing" immediately
+  //   session — this needs conversation; applied when the session is created
+  //   archive — set aside; life todos archive immediately (appliedAt = now),
+  //             code todos are archived upstream by the worker
+  // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
+  // reschedule, not a ruling.)
+  dtsRulings: defineTable({
+    subjectType: v.union(v.literal("life"), v.literal("code")),
+    todoId: v.optional(v.id("dtsTodos")), // life subjects
+    repo: v.optional(v.string()), // code subjects…
+    externalId: v.optional(v.string()), // …(repo, externalId)
+    verdict: v.union(
+      v.literal("approve"),
+      v.literal("revise"),
+      v.literal("session"),
+      v.literal("archive"),
+    ),
+    sentence: v.optional(v.string()), // required for revise (enforced in dtsRulings.ts)
+    ruledAt: v.number(),
+    appliedAt: v.optional(v.number()),
+    applyResult: v.optional(v.string()),
+  })
+    .index("by_todo", ["todoId"])
+    .index("by_repo_external", ["repo", "externalId"])
+    .index("by_ruled", ["ruledAt"]),
 
   // Append-only instrumentation (spec §10) — every surfacing, engagement,
   // queue cycle, status change, and date outcome, recorded from the first
@@ -473,12 +524,11 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // Tom's rulings on briefed code todos. APPEND-ONLY: a new ruling on the same
-  // (repo, externalId) is a NEW row (history kept, nothing-is-lost); the
-  // newest ruledAt is the live ruling. Worker jobs read pending rulings
-  // (appliedAt unset, not superseded) via GET /dts/code-rulings and report
-  // back through internalMarkRulingApplied, which stamps appliedAt +
-  // applyResult (commit sha / PR url / error text).
+  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
+  // Kept as read-only history — non-defer rows are copied into dtsRulings by
+  // dtsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
+  // stay here only (defer is no longer a verdict: not ruling IS deferring).
+  // No new writes. Remove in the dts→tts rename round.
   dtsCodeRulings: defineTable({
     repo: v.string(),
     externalId: v.string(),
@@ -516,8 +566,10 @@ export default defineSchema({
       v.literal("focus-item"),
       v.literal("weekly"),
       v.literal("adhoc"),
+      v.literal("block"), // works through a SET of items (a category block)
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
+    blockCategory: v.optional(v.string()), // for block sessions: the category worked
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
     // Lifecycle: requested (browser) → starting → idle ⇄ running ⇄
     // awaiting-permission → ended | failed. The browser owns: create,
@@ -534,6 +586,13 @@ export default defineSchema({
     ),
     statusChangedAt: v.number(),
     endedReason: v.optional(v.string()), // descriptive, verbatim
+    // Session outcomes (ratified 2026-08-28): every session ends with a written
+    // outcome record — "completed" (purpose met, including ending by recording
+    // rulings that hand work back to the pipeline) or "errored" (daemon failure
+    // / explicit close). A session with neither is simply in progress —
+    // resumable via sdkSessionId; leaving is not an ending.
+    outcome: v.optional(v.union(v.literal("completed"), v.literal("errored"))),
+    outcomeSummary: v.optional(v.string()), // agent-authored one-liner + rulings recorded
     sdkSessionId: v.optional(v.string()), // set once the SDK reports it; resume key
     cwd: v.optional(v.string()), // daemon-reported working dir on the box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact

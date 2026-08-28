@@ -11,6 +11,45 @@ function fact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
 }
 
+// Opening prompt for a BLOCK session: committed time over a category of
+// todos, not a single item. Same contract; the session works the set with
+// Tom one item at a time and records his spoken rulings as they land.
+export function buildBlockSessionPrompt(
+  category: string,
+  todos: Doc<"dtsTodos">[],
+): string {
+  const lines: string[] = [
+    CONTRACT,
+    "",
+    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately (dts.internalTriage via \`npx convex run\` for status/date changes; dtsRulings.recordRuling for approve/revise/session/archive verdicts) — the session is his pen, and a ruling that lives only in chat is lost.`,
+    "",
+  ];
+  if (category === "code") {
+    lines.push(
+      'The queue for "code" is the code-todo mirror and its prepared briefs (dtsCodeTodoMirror + dtsCodeBriefs) — work from those, not from a list in this prompt.',
+    );
+  } else if (todos.length === 0) {
+    lines.push(`No active todos carry the category "${category}" right now.`);
+  } else {
+    lines.push(`Active todos in "${category}" (${todos.length}):`);
+    for (const t of todos) {
+      const facts = [
+        fact("timing", t.timingClass),
+        fact(
+          "due",
+          t.dueAt !== undefined ? new Date(t.dueAt).toISOString() : undefined,
+        ),
+        fact("entry action", t.entryAction),
+        fact("work description", t.workDescription),
+      ].filter((f): f is string => f !== null);
+      lines.push(
+        `- "${t.statement}"${facts.length > 0 ? ` — ${facts.join("; ")}` : ""}`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
 export function buildTodoSessionPrompt(
   todo: Doc<"dtsTodos">,
   kind: "gate" | "focus-item",

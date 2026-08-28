@@ -141,6 +141,7 @@ export const createTodo = mutation({
     latestSafeAt: v.optional(v.number()),
     workDescription: v.optional(v.string()),
     entryAction: v.optional(v.string()),
+    category: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     await requireTomId(ctx);
@@ -156,6 +157,7 @@ export const createTodo = mutation({
       dateKind: args.dueAt ? (args.dateKind ?? "self-imposed") : undefined,
       condition: args.condition,
       latestSafeAt: args.latestSafeAt,
+      category: args.category,
       source: "manual",
       workDescription: args.workDescription,
       entryAction: args.entryAction,
@@ -186,6 +188,7 @@ export const updateTodo = mutation({
     workDescription: v.optional(v.string()),
     entryAction: v.optional(v.string()),
     brief: v.optional(v.string()),
+    category: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { id, ...fields }) => {
     await requireTomId(ctx);
@@ -242,10 +245,11 @@ function resolveDateAsDone(
 }
 
 // The ONE implementation of a status transition (spec §5.1) — used by the
-// Tom-gated setStatus below and by internalTriage (live sessions applying
-// Tom's spoken rulings via `npx convex run`). Nothing is ever deleted:
-// "archived" and "done" are the only terminal states, both kept and visible.
-async function applyStatusChange(
+// Tom-gated setStatus below, by internalTriage (live sessions applying
+// Tom's spoken rulings via `npx convex run`), and by dtsRulings.recordRuling
+// (the archive verdict). Nothing is ever deleted: "archived" and "done" are
+// the only terminal states, both kept and visible.
+export async function applyStatusChange(
   ctx: MutationCtx,
   todo: Doc<"dtsTodos">,
   args: {
@@ -395,6 +399,106 @@ export const recordDateOutcome = mutation({
     }
     await ctx.db.patch(id, patch);
     await logEvent(ctx, "date-outcome", id, { outcome, newDueAt, note });
+  },
+});
+
+// ── Blocks: committed time (ratified 2026-08-28) ─────────────────────────────
+// One row = one placed span on Tom's calendar, targeting exactly one todo
+// (per-todo commitment) or one category ("chores"; "code" = the code-todo
+// mirror). Blocks are calendar strokes, not todos — moving or deleting one is
+// rescheduling, recorded as an event, never a "ruling".
+
+function requireOneBlockTarget(todoId: unknown, category: unknown) {
+  if ((todoId === undefined) === (category === undefined)) {
+    throw new Error(
+      "A block targets exactly one thing: a todoId OR a category",
+    );
+  }
+}
+
+export const listBlocks = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTomId(ctx);
+    return await ctx.db.query("dtsBlocks").collect();
+  },
+});
+
+export const createBlock = mutation({
+  args: {
+    start: v.number(),
+    end: v.number(),
+    todoId: v.optional(v.id("dtsTodos")),
+    category: v.optional(v.string()),
+    note: v.optional(v.string()),
+  },
+  handler: async (ctx, { start, end, todoId, category, note }) => {
+    await requireTomId(ctx);
+    // Trim BEFORE the exactly-one check: a whitespace-only category must not
+    // pass the check and then collapse into a targetless block.
+    const trimmedCategory = category?.trim() || undefined;
+    requireOneBlockTarget(todoId, trimmedCategory);
+    if (end <= start) throw new Error("A block ends after it starts");
+    if (todoId !== undefined) {
+      const todo = await ctx.db.get(todoId);
+      if (!todo) throw new Error("DTS todo not found");
+    }
+    const id = await ctx.db.insert("dtsBlocks", {
+      start,
+      end,
+      todoId,
+      category: trimmedCategory,
+      note,
+      createdAt: Date.now(),
+    });
+    await logEvent(ctx, "block-created", todoId, { start, end, category });
+    return id;
+  },
+});
+
+export const updateBlock = mutation({
+  args: {
+    id: v.id("dtsBlocks"),
+    start: v.optional(v.number()),
+    end: v.optional(v.number()),
+    note: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, { id, start, end, note }) => {
+    await requireTomId(ctx);
+    const block = await ctx.db.get(id);
+    if (!block) throw new Error("Block not found");
+    const nextStart = start ?? block.start;
+    const nextEnd = end ?? block.end;
+    if (nextEnd <= nextStart) throw new Error("A block ends after it starts");
+    await ctx.db.patch(id, {
+      start: nextStart,
+      end: nextEnd,
+      note: note === null ? undefined : (note ?? block.note),
+    });
+    // block-moved only when the span actually changed — a note-only edit is
+    // not a move and must not fake one in the event stream.
+    if (nextStart !== block.start || nextEnd !== block.end) {
+      await logEvent(ctx, "block-moved", block.todoId, {
+        from: { start: block.start, end: block.end },
+        to: { start: nextStart, end: nextEnd },
+        category: block.category,
+      });
+    }
+  },
+});
+
+export const deleteBlock = mutation({
+  args: { id: v.id("dtsBlocks") },
+  handler: async (ctx, { id }) => {
+    await requireTomId(ctx);
+    const block = await ctx.db.get(id);
+    if (!block) throw new Error("Block not found");
+    await ctx.db.delete(id);
+    await logEvent(ctx, "block-deleted", block.todoId, {
+      start: block.start,
+      end: block.end,
+      category: block.category,
+    });
   },
 });
 

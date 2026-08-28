@@ -87,7 +87,7 @@ export default function SessionView({
           <span>{ageText(session.statusChangedAt, now)}</span>
           {session.todoId !== undefined && (
             <Link
-              href={`/inventory?item=${session.todoId}`}
+              href={`/dts?item=${session.todoId}`}
               className="text-accent hover:underline"
             >
               linked item

@@ -51,7 +51,7 @@ export const sendDigest = internalAction({
         row ?? null,
         await ctx.runQuery(internal.dts.internalListTodos, {}),
         now,
-        await ctx.runQuery(internal.dtsCode.internalAwaitingRulingCount, {}),
+        await ctx.runQuery(internal.dtsRulings.internalAwaitingRulingCount, {}),
       );
 
     const res = await fetch(SLACK_POST_URL, {

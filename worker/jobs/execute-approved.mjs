@@ -4,9 +4,10 @@
 // Run by cron at 45 past each hour (see /etc/cron.d/dts). Manual run:
 //   node /opt/dts/execute-approved.mjs
 //
-// THE EXECUTION HALF of the ruling loop: when Tom rules "approve" on a
+// THE EXECUTION HALF of the ruling loop: when Tom's verdict is "approve" on a
 // briefed CMT todo, the plan attached to that todo is cleared for autonomous
-// execution. This job takes the OLDEST pending approval, runs AGENTIC
+// execution. This job reads the unified /dts/code-rulings feed (rows carry
+// subjectType "life"|"code"), takes the OLDEST pending CODE approval, runs AGENTIC
 // headless Claude inside a throwaway full clone, and turns the result into a
 // PR on github.com/Heffnt/ComplexMultiTrigger. MERGING THE PR IS THE HUMAN
 // GATE — nothing this job does lands on master by itself, which is why
@@ -103,7 +104,10 @@ async function main() {
     env = loadEnv();
     const { pending } = await convexFetch(env, "/dts/code-rulings");
     const approvals = (Array.isArray(pending) ? pending : [])
-      .filter((r) => r.repo === CMT_REPO && r.ruling === "approve")
+      .filter(
+        (r) =>
+          r.subjectType === "code" && r.repo === CMT_REPO && r.verdict === "approve",
+      )
       .sort((a, b) => (a.ruledAt ?? 0) - (b.ruledAt ?? 0));
     if (approvals.length === 0) return; // quiet when idle
 

@@ -1,0 +1,830 @@
+"use client";
+
+// One life-todo row: click-to-expand summary line + detail panel.
+// Panel order: intent banner → brief → action row → "edit" disclosure
+// (field editors, full fact grid, date history).
+
+import { useEffect, useState } from "react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { countdownText } from "@/convex/dtsShared";
+import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
+import {
+  ageText,
+  fmtDate,
+  isoDate,
+  parseDateInput,
+  type LinkIntent,
+  type Todo,
+} from "../lib";
+
+const inputCls =
+  "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
+const btnCls =
+  "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
+const primaryBtnCls =
+  "bg-accent text-bg rounded-md px-3 py-1 text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none";
+const chipCls =
+  "text-xs text-text-faint border border-border rounded px-1 py-px";
+
+function errMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** The tiny mono caption naming the mutation a control fires. */
+function Caption({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-[10px] font-mono text-text-faint">{children}</div>
+  );
+}
+
+/** "2026-08-30T09:00" local value for <input type="datetime-local">. */
+function toLocalDatetimeValue(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(
+    d.getHours(),
+  )}:${p(d.getMinutes())}`;
+}
+
+// ── Small inline field editor ───────────────────────────────────────────────
+function FieldEditor({
+  label,
+  caption,
+  value,
+  multiline,
+  onSave,
+}: {
+  label: string;
+  caption: string;
+  value: string | undefined;
+  multiline?: boolean;
+  onSave: (next: string) => Promise<unknown>;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setDraft(value ?? ""), [value]);
+  const dirty = draft !== (value ?? "");
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await onSave(draft);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-xs text-text-faint">{label}</span>
+        <Caption>{caption}</Caption>
+      </div>
+      <div className="flex gap-2 items-start">
+        {multiline ? (
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={Math.min(6, Math.max(2, draft.split("\n").length))}
+            className={`${inputCls} w-full resize-y`}
+          />
+        ) : (
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            className={`${inputCls} w-full`}
+          />
+        )}
+        {dirty && (
+          <button onClick={save} disabled={busy} className={btnCls}>
+            Save
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <span className="text-text-faint">{label}: </span>
+      <span className="text-text-muted">{children}</span>
+    </div>
+  );
+}
+
+// ── The row ─────────────────────────────────────────────────────────────────
+export default function TodoRow({
+  todo,
+  now,
+  expanded,
+  onToggle,
+  intent,
+  onIntentCleared,
+}: {
+  todo: Todo;
+  now: number;
+  expanded: boolean;
+  onToggle: () => void;
+  /** Deep-link intent aimed at THIS todo (?item=…&intent=…), else null. */
+  intent: LinkIntent | null;
+  onIntentCleared: () => void;
+}) {
+  const updateTodo = useMutation(api.dts.updateTodo);
+  const setStatus = useMutation(api.dts.setStatus);
+  const recordDateOutcome = useMutation(api.dts.recordDateOutcome);
+  const recordEvent = useMutation(api.dts.recordEvent);
+  const createBlock = useMutation(api.dts.createBlock);
+  const {
+    open: openTodoSession,
+    busy: sessionBusy,
+    error: sessionError,
+  } = useOpenTodoSession();
+
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+
+  // Action-row drafts
+  const [doneNoteDraft, setDoneNoteDraft] = useState("");
+  const [unarchiveDraft, setUnarchiveDraft] = useState("");
+  const [dateDraft, setDateDraft] = useState("");
+  const [latestSafeDraft, setLatestSafeDraft] = useState("");
+  const [blockStartDraft, setBlockStartDraft] = useState("");
+  const [blockEndDraft, setBlockEndDraft] = useState("");
+  // Edit-disclosure drafts
+  const [wakeAtDraft, setWakeAtDraft] = useState("");
+  const [wakeConditionDraft, setWakeConditionDraft] = useState("");
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(errMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const noDateFlag =
+    todo.status === "active" &&
+    todo.timingClass === "whenever" &&
+    todo.dueAt === undefined;
+
+  const intentCaption =
+    intent === "done"
+      ? 'dts.setStatus({status:"done"})'
+      : intent === "archive"
+        ? 'dts.setStatus({status:"archived"})'
+        : 'dts.recordEvent({kind:"engaged"})';
+
+  const confirmIntent = () =>
+    run(async () => {
+      if (intent === "done") {
+        await setStatus({ id: todo._id, status: "done" });
+      } else if (intent === "archive") {
+        await setStatus({ id: todo._id, status: "archived" });
+      } else if (intent === "engage") {
+        await recordEvent({
+          kind: "engaged",
+          todoId: todo._id,
+          data: { via: "everything", intent: "slack-link" },
+        });
+      }
+      onIntentCleared();
+    });
+
+  const renegotiate = () => {
+    const newDueAt = parseDateInput(dateDraft);
+    if (todo.dueAt !== undefined && now >= todo.dueAt) {
+      setError("date already passed — record missed instead");
+      return;
+    }
+    if (newDueAt === undefined) {
+      setError("pick a date first");
+      return;
+    }
+    void run(() =>
+      recordDateOutcome({ id: todo._id, outcome: "renegotiated", newDueAt }),
+    );
+  };
+
+  const recordMissed = () => {
+    const newDueAt = parseDateInput(dateDraft);
+    void run(() =>
+      recordDateOutcome({ id: todo._id, outcome: "missed", newDueAt }),
+    );
+  };
+
+  const commitBlock = () => {
+    const start = blockStartDraft ? new Date(blockStartDraft).getTime() : NaN;
+    const end = blockEndDraft ? new Date(blockEndDraft).getTime() : NaN;
+    if (Number.isNaN(start) || Number.isNaN(end)) {
+      setError("pick start and end");
+      return;
+    }
+    if (end <= start) {
+      setError("end must be after start");
+      return;
+    }
+    void run(async () => {
+      await createBlock({ start, end, todoId: todo._id });
+      setBlockStartDraft("");
+      setBlockEndDraft("");
+    });
+  };
+
+  // Summary-line facts, per status/timing.
+  const facts: React.ReactNode[] = [];
+  if (todo.dueAt !== undefined) {
+    facts.push(
+      <span key="due">
+        <span
+          className={todo.dueAt < now ? "text-warning" : "text-text-muted"}
+        >
+          {countdownText(todo.dueAt, now)}
+        </span>{" "}
+        <span className="text-text-faint">
+          {fmtDate(todo.dueAt)}
+          {todo.dateKind ? ` · ${todo.dateKind} date` : ""}
+        </span>
+      </span>,
+    );
+  }
+  if (todo.timingClass === "condition-bound") {
+    if (todo.condition) {
+      facts.push(
+        <span key="cond" className="text-text-muted">
+          when: {todo.condition}
+        </span>,
+      );
+    }
+    if (todo.latestSafeAt !== undefined) {
+      facts.push(
+        <span key="safe">
+          <span className="text-text-muted">
+            latest safe {countdownText(todo.latestSafeAt, now)}
+          </span>{" "}
+          <span className="text-text-faint">{fmtDate(todo.latestSafeAt)}</span>
+        </span>,
+      );
+    }
+  }
+  if (noDateFlag) {
+    facts.push(
+      <span key="nodate" className="text-warning">
+        no date
+      </span>,
+    );
+  }
+  if (todo.status === "waiting") {
+    facts.push(
+      <span key="wake" className="text-text-muted">
+        {todo.wakeCondition ? `until: ${todo.wakeCondition}` : "waiting"}
+        {todo.wakeAt !== undefined && (
+          <span className="text-text-faint">
+            {" "}
+            · wakes {countdownText(todo.wakeAt, now)} ({fmtDate(todo.wakeAt)})
+          </span>
+        )}
+      </span>,
+    );
+  }
+  if (todo.status === "done" && todo.doneAt !== undefined) {
+    facts.push(
+      <span key="done" className="text-text-faint">
+        done {fmtDate(todo.doneAt)}
+      </span>,
+    );
+  }
+  if (todo.status === "archived") {
+    facts.push(
+      <span key="arch" className="text-text-faint">
+        {todo.archivedAt !== undefined
+          ? `archived ${fmtDate(todo.archivedAt)}`
+          : "archived"}
+        {todo.unarchiveCondition
+          ? ` · propose back when: ${todo.unarchiveCondition}`
+          : ""}
+      </span>,
+    );
+  }
+
+  return (
+    <div
+      id={`todo-${todo._id}`}
+      className={`border rounded-lg bg-surface/40 ${
+        intent ? "border-accent" : "border-border"
+      }`}
+    >
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-3 py-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
+      >
+        <span className="text-sm text-text">{todo.statement}</span>
+        <span className={chipCls}>{todo.readiness}</span>
+        {todo.status !== "active" && (
+          <span className={chipCls}>{todo.status}</span>
+        )}
+        {todo.category && <span className={chipCls}>{todo.category}</span>}
+        <span className="text-xs flex flex-wrap gap-x-3 gap-y-0.5 ml-auto">
+          {facts}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border px-3 py-3 space-y-4">
+          {/* 1 — intent banner */}
+          {intent && (
+            <div className="border border-accent bg-accent-dim rounded-md px-3 py-2 flex flex-wrap items-center gap-3">
+              <span className="text-sm text-text">intent: {intent}</span>
+              <div className="space-y-0.5">
+                <button
+                  onClick={confirmIntent}
+                  disabled={busy}
+                  className={primaryBtnCls}
+                >
+                  Confirm {intent}
+                </button>
+                <Caption>{intentCaption}</Caption>
+              </div>
+              <button
+                onClick={onIntentCleared}
+                className="text-xs text-text-faint hover:text-text-muted"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* 2 — brief */}
+          {todo.brief && (
+            <div className="space-y-1">
+              <div className="text-xs text-text-faint">brief</div>
+              <div className="text-xs text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
+                {todo.brief}
+              </div>
+            </div>
+          )}
+
+          {/* 3 — action row */}
+          <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+            <div className="space-y-0.5">
+              <button
+                onClick={() => void openTodoSession(todo)}
+                disabled={busy || sessionBusy}
+                className={btnCls}
+              >
+                Open session
+              </button>
+              <Caption>
+                claudeSessions.createSession(&#123;kind:&quot;
+                {todo.readiness === "ready-for-tom" ? "gate" : "focus-item"}
+                &quot;&#125;)
+              </Caption>
+              {sessionError && (
+                <div className="text-xs text-error">{sessionError}</div>
+              )}
+            </div>
+
+            {todo.status !== "done" && (
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() =>
+                      void run(() =>
+                        setStatus({
+                          id: todo._id,
+                          status: "done",
+                          note: doneNoteDraft.trim() || undefined,
+                        }),
+                      )
+                    }
+                    disabled={busy}
+                    className={btnCls}
+                  >
+                    Done
+                  </button>
+                  <input
+                    value={doneNoteDraft}
+                    onChange={(e) => setDoneNoteDraft(e.target.value)}
+                    placeholder="note (optional)"
+                    className={`${inputCls} w-40`}
+                  />
+                </div>
+                <Caption>dts.setStatus(&#123;status:&quot;done&quot;&#125;)</Caption>
+              </div>
+            )}
+
+            {todo.status !== "archived" && (
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() =>
+                      void run(() =>
+                        setStatus({
+                          id: todo._id,
+                          status: "archived",
+                          unarchiveCondition:
+                            unarchiveDraft.trim() || undefined,
+                        }),
+                      )
+                    }
+                    disabled={busy}
+                    className={btnCls}
+                  >
+                    Archive
+                  </button>
+                  <input
+                    value={unarchiveDraft}
+                    onChange={(e) => setUnarchiveDraft(e.target.value)}
+                    placeholder="propose back when (optional)"
+                    className={`${inputCls} w-52`}
+                  />
+                </div>
+                <Caption>
+                  dts.setStatus(&#123;status:&quot;archived&quot;&#125;)
+                </Caption>
+              </div>
+            )}
+          </div>
+
+          {/* date controls */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+              <input
+                type="date"
+                value={dateDraft}
+                onChange={(e) => setDateDraft(e.target.value)}
+                className={inputCls}
+              />
+              {todo.dueAt === undefined ? (
+                <div className="space-y-0.5">
+                  <button
+                    onClick={() => {
+                      const dueAt = parseDateInput(dateDraft);
+                      if (dueAt === undefined) {
+                        setError("pick a date first");
+                        return;
+                      }
+                      void run(() => updateTodo({ id: todo._id, dueAt }));
+                    }}
+                    disabled={busy}
+                    className={btnCls}
+                  >
+                    Set date
+                  </button>
+                  <Caption>dts.updateTodo(&#123;dueAt&#125;)</Caption>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-0.5">
+                    <button
+                      onClick={renegotiate}
+                      disabled={busy}
+                      className={btnCls}
+                    >
+                      Renegotiate
+                    </button>
+                    <Caption>
+                      dts.recordDateOutcome(&#123;outcome:&quot;renegotiated&quot;,
+                      newDueAt&#125;)
+                    </Caption>
+                  </div>
+                  <div className="space-y-0.5">
+                    <button
+                      onClick={recordMissed}
+                      disabled={busy}
+                      className={btnCls}
+                    >
+                      Record missed
+                    </button>
+                    <Caption>
+                      dts.recordDateOutcome(&#123;outcome:&quot;missed&quot;
+                      {dateDraft ? ", newDueAt" : ""}&#125;)
+                    </Caption>
+                  </div>
+                  <div className="space-y-0.5">
+                    <select
+                      value={todo.dateKind ?? "self-imposed"}
+                      onChange={(e) =>
+                        void run(() =>
+                          updateTodo({
+                            id: todo._id,
+                            dateKind: e.target.value as
+                              | "external"
+                              | "self-imposed",
+                          }),
+                        )
+                      }
+                      className={inputCls}
+                    >
+                      <option value="external">external</option>
+                      <option value="self-imposed">self-imposed</option>
+                    </select>
+                    <Caption>dts.updateTodo(&#123;dateKind&#125;)</Caption>
+                  </div>
+                </>
+              )}
+            </div>
+            {todo.timingClass === "condition-bound" && (
+              <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+                <span className="text-xs text-text-faint self-center">
+                  latest safe:
+                </span>
+                <input
+                  type="date"
+                  value={latestSafeDraft}
+                  onChange={(e) => setLatestSafeDraft(e.target.value)}
+                  className={inputCls}
+                />
+                <div className="space-y-0.5">
+                  <button
+                    onClick={() => {
+                      const latestSafeAt = parseDateInput(latestSafeDraft);
+                      if (latestSafeAt === undefined) {
+                        setError("pick a latest-safe date first");
+                        return;
+                      }
+                      void run(() =>
+                        updateTodo({ id: todo._id, latestSafeAt }),
+                      );
+                    }}
+                    disabled={busy}
+                    className={btnCls}
+                  >
+                    Set latest safe
+                  </button>
+                  <Caption>dts.updateTodo(&#123;latestSafeAt&#125;)</Caption>
+                </div>
+                {todo.latestSafeAt !== undefined && (
+                  <div className="space-y-0.5">
+                    <button
+                      onClick={() =>
+                        void run(() =>
+                          updateTodo({ id: todo._id, latestSafeAt: null }),
+                        )
+                      }
+                      disabled={busy}
+                      className={btnCls}
+                    >
+                      Clear latest safe
+                    </button>
+                    <Caption>
+                      dts.updateTodo(&#123;latestSafeAt:null&#125;)
+                    </Caption>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* commit time */}
+          <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+            <input
+              type="datetime-local"
+              value={blockStartDraft}
+              onChange={(e) => {
+                const v = e.target.value;
+                setBlockStartDraft(v);
+                const ms = v ? new Date(v).getTime() : NaN;
+                if (!Number.isNaN(ms)) {
+                  setBlockEndDraft(toLocalDatetimeValue(ms + 3_600_000));
+                }
+              }}
+              className={inputCls}
+            />
+            <input
+              type="datetime-local"
+              value={blockEndDraft}
+              onChange={(e) => setBlockEndDraft(e.target.value)}
+              className={inputCls}
+            />
+            <div className="space-y-0.5">
+              <button onClick={commitBlock} disabled={busy} className={btnCls}>
+                Commit time
+              </button>
+              <Caption>dts.createBlock(&#123;todoId&#125;)</Caption>
+            </div>
+          </div>
+
+          {/* 4 — edit disclosure */}
+          <button
+            onClick={() => setEditOpen((v) => !v)}
+            className="text-xs text-text-faint hover:text-text-muted"
+          >
+            {editOpen ? "edit ▾" : "edit ▸"}
+          </button>
+
+          {editOpen && (
+            <div className="space-y-4">
+              <div className="grid sm:grid-cols-2 gap-3">
+                <FieldEditor
+                  label="statement"
+                  caption="dts.updateTodo({statement})"
+                  value={todo.statement}
+                  onSave={(v) => updateTodo({ id: todo._id, statement: v })}
+                />
+                <FieldEditor
+                  label="entry action"
+                  caption="dts.updateTodo({entryAction})"
+                  value={todo.entryAction}
+                  onSave={(v) => updateTodo({ id: todo._id, entryAction: v })}
+                />
+                <FieldEditor
+                  label="body"
+                  caption="dts.updateTodo({body})"
+                  value={todo.body}
+                  multiline
+                  onSave={(v) => updateTodo({ id: todo._id, body: v })}
+                />
+                <FieldEditor
+                  label="work description"
+                  caption="dts.updateTodo({workDescription})"
+                  value={todo.workDescription}
+                  multiline
+                  onSave={(v) =>
+                    updateTodo({ id: todo._id, workDescription: v })
+                  }
+                />
+                <FieldEditor
+                  label="category"
+                  caption="dts.updateTodo({category})"
+                  value={todo.category}
+                  onSave={(v) =>
+                    updateTodo({ id: todo._id, category: v.trim() || null })
+                  }
+                />
+                <div className="space-y-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-xs text-text-faint">readiness</span>
+                    <Caption>dts.updateTodo(&#123;readiness&#125;)</Caption>
+                  </div>
+                  <select
+                    value={todo.readiness}
+                    onChange={(e) =>
+                      void run(() =>
+                        updateTodo({
+                          id: todo._id,
+                          readiness: e.target.value as Todo["readiness"],
+                        }),
+                      )
+                    }
+                    className={inputCls}
+                  >
+                    <option value="unprepared">unprepared</option>
+                    <option value="preparing">preparing</option>
+                    <option value="ready-for-tom">ready-for-tom</option>
+                  </select>
+                </div>
+              </div>
+
+              {todo.status !== "waiting" && (
+                <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+                  <input
+                    value={wakeConditionDraft}
+                    onChange={(e) => setWakeConditionDraft(e.target.value)}
+                    placeholder="wake condition (optional)"
+                    className={`${inputCls} w-64`}
+                  />
+                  <input
+                    type="date"
+                    value={wakeAtDraft}
+                    onChange={(e) => setWakeAtDraft(e.target.value)}
+                    className={inputCls}
+                  />
+                  <div className="space-y-0.5">
+                    <button
+                      onClick={() =>
+                        void run(() =>
+                          setStatus({
+                            id: todo._id,
+                            status: "waiting",
+                            wakeCondition:
+                              wakeConditionDraft.trim() || undefined,
+                            wakeAt: parseDateInput(wakeAtDraft),
+                          }),
+                        )
+                      }
+                      disabled={busy}
+                      className={btnCls}
+                    >
+                      Set waiting
+                    </button>
+                    <Caption>
+                      dts.setStatus(&#123;status:&quot;waiting&quot;&#125;)
+                    </Caption>
+                  </div>
+                </div>
+              )}
+
+              {todo.status !== "active" && (
+                <div className="space-y-0.5">
+                  <button
+                    onClick={() =>
+                      void run(() =>
+                        setStatus({ id: todo._id, status: "active" }),
+                      )
+                    }
+                    disabled={busy}
+                    className={btnCls}
+                  >
+                    Set active
+                  </button>
+                  <Caption>
+                    dts.setStatus(&#123;status:&quot;active&quot;&#125;)
+                  </Caption>
+                </div>
+              )}
+
+              {/* full fact grid */}
+              <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                <Fact label="readiness">{todo.readiness}</Fact>
+                <Fact label="status">{todo.status}</Fact>
+                <Fact label="timingClass">{todo.timingClass}</Fact>
+                {todo.category && (
+                  <Fact label="category">{todo.category}</Fact>
+                )}
+                <Fact label="source">
+                  {todo.source}
+                  {todo.provenance ? ` (${todo.provenance})` : ""}
+                </Fact>
+                <Fact label="createdAt">
+                  {ageText(todo.createdAt, now)} · {fmtDate(todo.createdAt)}
+                </Fact>
+                <Fact label="updatedAt">{ageText(todo.updatedAt, now)}</Fact>
+                {todo.dueAt !== undefined && (
+                  <Fact label="dueAt">
+                    {countdownText(todo.dueAt, now)} · {fmtDate(todo.dueAt)}
+                    {todo.dateKind ? ` · ${todo.dateKind}` : ""}
+                  </Fact>
+                )}
+                {todo.condition && (
+                  <Fact label="condition">{todo.condition}</Fact>
+                )}
+                {todo.latestSafeAt !== undefined && (
+                  <Fact label="latestSafeAt">
+                    {countdownText(todo.latestSafeAt, now)} ·{" "}
+                    {fmtDate(todo.latestSafeAt)}
+                  </Fact>
+                )}
+                {todo.wakeCondition && (
+                  <Fact label="wakeCondition">{todo.wakeCondition}</Fact>
+                )}
+                {todo.wakeAt !== undefined && (
+                  <Fact label="wakeAt">
+                    {countdownText(todo.wakeAt, now)} · {fmtDate(todo.wakeAt)}
+                  </Fact>
+                )}
+                {todo.unarchiveCondition && (
+                  <Fact label="unarchiveCondition">
+                    {todo.unarchiveCondition}
+                  </Fact>
+                )}
+                {todo.doneAt !== undefined && (
+                  <Fact label="doneAt">{fmtDate(todo.doneAt)}</Fact>
+                )}
+                {todo.archivedAt !== undefined && (
+                  <Fact label="archivedAt">{fmtDate(todo.archivedAt)}</Fact>
+                )}
+              </div>
+
+              {/* date-outcome history */}
+              {todo.dateOutcomes && todo.dateOutcomes.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-xs text-text-faint">dateOutcomes</div>
+                  {todo.dateOutcomes.map((o, i) => {
+                    const next = todo.dateOutcomes![i + 1];
+                    const target =
+                      o.outcome === "renegotiated"
+                        ? next
+                          ? next.dueAt
+                          : todo.dueAt
+                        : undefined;
+                    return (
+                      <div key={i} className="text-xs text-text-muted">
+                        {isoDate(o.dueAt)}: {o.outcome}
+                        {target !== undefined ? ` → ${isoDate(target)}` : ""}
+                        <span className="text-text-faint">
+                          {" "}
+                          (recorded {isoDate(o.recordedAt)})
+                        </span>
+                        {o.note ? <span> — {o.note}</span> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {error && <div className="text-xs text-error">{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -171,12 +171,17 @@ export const createSession = mutation({
       v.literal("focus-item"),
       v.literal("weekly"),
       v.literal("adhoc"),
+      v.literal("block"),
     ),
     repo: v.string(),
     todoId: v.optional(v.id("dtsTodos")),
+    blockCategory: v.optional(v.string()),
     initialPrompt: v.string(),
   },
-  handler: async (ctx, { title, kind, repo, todoId, initialPrompt }) => {
+  handler: async (
+    ctx,
+    { title, kind, repo, todoId, blockCategory, initialPrompt },
+  ) => {
     await requireTomId(ctx);
     if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
     const now = Date.now();
@@ -185,11 +190,37 @@ export const createSession = mutation({
       kind,
       repo,
       todoId,
+      blockCategory: kind === "block" ? blockCategory : undefined,
       status: "requested",
       statusChangedAt: now,
       nextSeq: 0,
       createdAt: now,
     });
+    // A "session" verdict is applied the moment its session exists: mark the
+    // live unapplied session-ruling on this todo applied with the session id
+    // (dtsRulings contract — see schema.ts dtsRulings).
+    if (todoId !== undefined) {
+      const rulings = await ctx.db
+        .query("dtsRulings")
+        .withIndex("by_todo", (q) => q.eq("todoId", todoId))
+        .collect();
+      const live = rulings.reduce<(typeof rulings)[number] | null>(
+        (best, row) =>
+          !best ||
+          row.ruledAt > best.ruledAt ||
+          (row.ruledAt === best.ruledAt &&
+            row._creationTime > best._creationTime)
+            ? row
+            : best,
+        null,
+      );
+      if (live && live.verdict === "session" && live.appliedAt === undefined) {
+        await ctx.db.patch(live._id, {
+          appliedAt: now,
+          applyResult: `session ${sessionId}`,
+        });
+      }
+    }
     await ctx.db.insert("claudeInbound", {
       sessionId,
       kind: "user-turn",
@@ -636,5 +667,31 @@ export const internalIngest = internalMutation({
       pendingInbound,
       decisions,
     };
+  },
+});
+
+// ── Session outcomes (ratified 2026-08-28) ───────────────────────────────────
+// Every session ends with a written outcome record: "completed" (purpose met —
+// including ending by recording rulings that hand work back to the pipeline)
+// or "errored". A session with neither is in progress (resumable via
+// sdkSessionId). Internal so the session agent itself can write it via
+// `npx convex run claudeSessions:internalRecordOutcome` at wrap-up — the same
+// pen pattern as dts.internalTriage; the daemon may also stamp "errored" on
+// failures it observes.
+export const internalRecordOutcome = internalMutation({
+  args: {
+    id: v.string(),
+    outcome: v.union(v.literal("completed"), v.literal("errored")),
+    summary: v.string(),
+  },
+  handler: async (ctx, { id, outcome, summary }) => {
+    const normalized = ctx.db.normalizeId("claudeSessions", id);
+    if (!normalized) throw new Error(`Unknown session id: ${id}`);
+    const session = await ctx.db.get(normalized);
+    if (!session) throw new Error(`Unknown session id: ${id}`);
+    await ctx.db.patch(normalized, {
+      outcome,
+      outcomeSummary: summary.trim(),
+    });
   },
 });

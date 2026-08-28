@@ -1,11 +1,15 @@
-import type { Metadata } from "next";
-import FocusClient from "./focus-client";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = {
-  title: "Focus | tom.Quest",
-  description: "One task at a time from the DTS daily queue.",
-};
-
-export default function FocusPage() {
-  return <FocusClient />;
+// The Focus surface merged into /dts (calendar tab). Any ?item=&intent= deep
+// link is carried across (?item forces the everything tab client-side).
+export default async function FocusPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const sp = await searchParams;
+  const qs = new URLSearchParams({ tab: "calendar" });
+  if (typeof sp.item === "string") qs.set("item", sp.item);
+  if (typeof sp.intent === "string") qs.set("intent", sp.intent);
+  redirect(`/dts?${qs.toString()}`);
 }

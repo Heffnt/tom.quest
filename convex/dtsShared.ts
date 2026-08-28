@@ -103,11 +103,12 @@ export function countdownText(dueAt: number, now: number): string {
   return `${-dayDiff} days overdue`;
 }
 
-/** Deep link to one item on the Inventory page, optionally carrying an intent
- * the page confirms before acting (state changes only on the confirmed click —
- * Slack's link-preview crawler fetches URLs, spec §7). The single producer of
- * the ?item=&intent= vocabulary consumed by app/inventory. */
+/** Deep link to one item on the /dts page (Everything tab), optionally
+ * carrying an intent the page confirms before acting (state changes only on
+ * the confirmed click — Slack's link-preview crawler fetches URLs, spec §7).
+ * The single producer of the ?item=&intent= vocabulary consumed by app/dts.
+ * Old /inventory links redirect to /dts with params preserved. */
 export type DtsLinkIntent = "done" | "archive" | "engage";
 export function dtsItemLink(todoId: string, intent?: DtsLinkIntent): string {
-  return `https://tom.quest/inventory?item=${todoId}${intent ? `&intent=${intent}` : ""}`;
+  return `https://tom.quest/dts?item=${todoId}${intent ? `&intent=${intent}` : ""}`;
 }

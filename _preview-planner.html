@@ -1,0 +1,1500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTS — The Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,900;1,9..144,400;1,9..144,600;1,9..144,900&family=Libre+Franklin:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f6f1e4;
+    --paper-2:#efe7d2;
+    --paper-3:#fbf8ee;
+    --line:#ddd2b6;
+    --line-2:#c9bb98;
+    --ink:#0a0e17;
+    --ink-2:#3c4352;
+    --ink-3:#79806f;
+    --ink-faint:#9a9c8d;
+    --amber:#e8a040;
+    --amber-ink:#8a5a10;
+    --amber-deep:#b97a1e;
+    --amber-wash:rgba(232,160,64,.16);
+    --amber-wash-2:rgba(232,160,64,.30);
+    --serif:"Fraunces",Georgia,"Times New Roman",serif;
+    --sans:"Libre Franklin","Helvetica Neue",Arial,sans-serif;
+    --mono:"Spline Sans Mono","Courier New",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    background:var(--paper);
+    background-image:
+      repeating-linear-gradient(0deg, rgba(10,14,23,.018) 0 1px, transparent 1px 4px),
+      radial-gradient(ellipse 1200px 500px at 50% -100px, rgba(232,160,64,.07), transparent 70%);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:15px;
+    line-height:1.45;
+    padding:0 0 96px;
+  }
+  a{color:inherit}
+  ::selection{background:var(--amber);color:var(--ink)}
+
+  .wrap{max-width:1360px;margin:0 auto;padding:0 28px}
+
+  /* ————— masthead ————— */
+  .mast{
+    border-bottom:3px solid var(--ink);
+    padding:30px 0 18px;
+    display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;
+  }
+  .mast-left{display:flex;align-items:baseline;gap:20px;flex-wrap:wrap}
+  .tts{
+    font-family:var(--serif);
+    font-weight:900;font-style:italic;
+    font-size:64px;line-height:.85;letter-spacing:-.02em;
+    font-variation-settings:"opsz" 144;
+  }
+  .tts .dot{color:var(--amber-deep)}
+  .mast-sub{padding-bottom:6px}
+  .mast-sub .name{
+    font-family:var(--sans);font-weight:700;font-size:12px;
+    letter-spacing:.22em;text-transform:uppercase;
+  }
+  .mast-sub .dir{
+    font-family:var(--serif);font-style:italic;font-size:16px;color:var(--ink-2);margin-top:2px;
+  }
+  .mast-right{text-align:right;padding-bottom:6px}
+  .sess{
+    font-family:var(--mono);font-size:13px;font-weight:600;
+    text-decoration:none;border-bottom:2px solid var(--amber);
+    padding-bottom:1px;
+  }
+  .sess:hover{background:var(--amber-wash)}
+  .sess small{color:var(--ink-3);font-weight:400}
+  .prov{
+    font-family:var(--mono);font-size:11px;color:var(--ink-2);
+    margin-top:8px;line-height:1.7;
+  }
+  .prov b{font-weight:600;color:var(--ink)}
+  .prov .amb{color:var(--amber-ink)}
+
+  /* ————— section headers ————— */
+  section{margin-top:56px}
+  .overline{
+    font-family:var(--mono);font-size:11px;letter-spacing:.28em;text-transform:uppercase;
+    color:var(--amber-ink);font-weight:600;
+    display:flex;align-items:center;gap:14px;
+  }
+  .overline::after{content:"";flex:1;height:1px;background:var(--line-2)}
+  .stitle{
+    font-family:var(--serif);font-weight:600;font-size:34px;letter-spacing:-.01em;
+    font-variation-settings:"opsz" 60;
+    margin:6px 0 4px;
+  }
+  .stitle em{font-style:italic;font-weight:400}
+  .ssub{color:var(--ink-2);font-size:14px;max-width:70ch}
+  .ssub code, .mono{font-family:var(--mono)}
+  .ssub code{font-size:12.5px;background:var(--paper-2);padding:1px 5px;border:1px solid var(--line)}
+
+  /* ————— legend ————— */
+  .legend{
+    display:flex;gap:22px;flex-wrap:wrap;align-items:center;
+    margin:16px 0 14px;
+    font-family:var(--mono);font-size:11.5px;color:var(--ink-2);
+  }
+  .legend .li{display:flex;align-items:center;gap:8px}
+  .sw{width:26px;height:14px;flex:none;border:1px solid transparent}
+  .sw.commit{background:var(--ink)}
+  .sw.cat{
+    background:repeating-linear-gradient(45deg, var(--amber-wash-2) 0 5px, var(--amber-wash) 5px 10px);
+    border-color:var(--amber-deep);
+  }
+  .sw.flag{background:none;border:none;width:auto;color:var(--amber-deep);font-size:14px;line-height:1}
+  .sw.gap{background:none;border-bottom:2px dotted var(--amber-deep);height:2px;align-self:center}
+
+  /* ————— the week spread ————— */
+  .spreadwrap{overflow-x:auto;border:2px solid var(--ink);background:var(--paper-3);
+    box-shadow:4px 4px 0 rgba(10,14,23,.12)}
+  .spread{min-width:1180px;
+    --cols:44px repeat(7, minmax(128px,1fr)) 196px;
+  }
+  .srow{display:grid;grid-template-columns:var(--cols)}
+  .srow > div{border-left:1px solid var(--line)}
+  .srow > div:first-child{border-left:none}
+
+  /* day headers */
+  .dhead{padding:12px 10px 8px;border-bottom:2px solid var(--ink);background:var(--paper-3)}
+  .dhead .dow{
+    font-family:var(--sans);font-weight:700;font-size:10.5px;
+    letter-spacing:.2em;text-transform:uppercase;color:var(--ink-2);
+  }
+  .dhead .dnum{
+    font-family:var(--serif);font-weight:900;font-size:30px;line-height:1;
+    font-variation-settings:"opsz" 100;margin-top:2px;
+  }
+  .dhead .dnum small{
+    font-family:var(--mono);font-size:10px;font-weight:400;color:var(--ink-3);
+    letter-spacing:.08em;margin-left:4px;
+  }
+  .dhead.gut{border-bottom:2px solid var(--ink)}
+  .today-col{background:linear-gradient(rgba(232,160,64,.10), rgba(232,160,64,.10))}
+  .wkend{background:rgba(10,14,23,.025)}
+  .dhead.today-col{background:var(--amber-wash)}
+  .todaytag{
+    display:inline-block;font-family:var(--mono);font-size:9px;font-weight:600;
+    letter-spacing:.18em;background:var(--ink);color:var(--amber);
+    padding:2px 6px;margin-top:5px;
+  }
+
+  /* margin band (queue, deadline flags, beyond header) */
+  .dmar{padding:10px 8px 12px;border-bottom:1px dashed var(--line-2);min-height:56px;
+    background-image:repeating-linear-gradient(to bottom, transparent 0 21px, rgba(10,14,23,.045) 21px 22px);
+  }
+  .marlabel{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-3);margin-bottom:7px;
+  }
+  .marlabel b{color:var(--amber-ink);font-weight:600}
+
+  /* queue cards */
+  .qi{
+    background:var(--paper-3);border:1px solid var(--line-2);
+    border-left:3px solid var(--ink);
+    padding:7px 8px;margin-bottom:7px;cursor:pointer;
+    transition:transform .08s ease, box-shadow .08s ease;
+  }
+  .qi:hover{transform:translate(-1px,-1px);box-shadow:2px 2px 0 rgba(10,14,23,.18)}
+  .qi .qr{font-family:var(--mono);font-size:9.5px;color:var(--amber-ink);font-weight:600;letter-spacing:.06em}
+  .qi .qs{font-family:var(--serif);font-weight:600;font-size:13px;line-height:1.25;margin-top:2px}
+  .qi .qm{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);margin-top:3px}
+
+  /* deadline flag */
+  .flag{
+    background:#fdf6e6;border:1px dashed var(--amber-deep);
+    padding:7px 8px;margin-bottom:6px;
+  }
+  .flag .fd{font-family:var(--mono);font-size:10px;color:var(--amber-ink);font-weight:600}
+  .flag .fd::before{content:"◆ ";font-size:11px}
+  .flag .fs{font-family:var(--serif);font-weight:600;font-size:12.5px;line-height:1.25;margin-top:2px}
+  .flag .fgap{
+    font-family:var(--mono);font-size:9.5px;color:var(--amber-ink);
+    border-top:1px dotted var(--amber-deep);margin-top:5px;padding-top:4px;
+  }
+  .flag .fok{
+    font-family:var(--mono);font-size:9.5px;color:var(--ink-3);
+    margin-top:4px;
+  }
+
+  /* time grid */
+  .dtime{position:relative;height:462px;
+    background-image:repeating-linear-gradient(to bottom, transparent 0 41px, var(--line) 41px 42px);
+  }
+  .gutcell{position:relative;height:462px}
+  .hlab{
+    position:absolute;right:6px;transform:translateY(-6px);
+    font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);
+  }
+  .blk{position:absolute;left:5px;right:5px;padding:6px 8px;overflow:hidden}
+  .blk .bt{font-family:var(--mono);font-size:9.5px;letter-spacing:.05em}
+  .blk .bs{font-family:var(--serif);font-weight:600;font-size:13.5px;line-height:1.2;margin-top:2px}
+  .blk .bd{font-family:var(--mono);font-size:9.5px;margin-top:3px}
+  .blk.commit{background:var(--ink);color:var(--paper)}
+  .blk.commit .bt{color:var(--amber)}
+  .blk.commit .bd{color:rgba(246,241,228,.75)}
+  .blk.cat{
+    background:repeating-linear-gradient(45deg, var(--amber-wash-2) 0 6px, var(--amber-wash) 6px 12px);
+    border:1.5px solid var(--amber-deep);color:var(--ink);
+  }
+  .blk.cat .bt{color:var(--amber-ink);font-weight:600}
+  .blk.cat .bd{color:var(--ink-2)}
+  .emptynote{
+    position:absolute;top:190px;left:8px;right:8px;text-align:center;
+    font-family:var(--mono);font-size:10px;color:var(--ink-faint);line-height:1.6;
+  }
+  .nowline{position:absolute;left:0;right:0;border-top:2px dashed var(--amber-deep);z-index:2}
+  .nowline span{
+    position:absolute;right:4px;top:-8px;
+    font-family:var(--mono);font-size:9px;font-weight:600;color:var(--amber-ink);
+    background:var(--paper-3);padding:0 3px;
+  }
+
+  /* beyond column */
+  .beyond-head .dow{color:var(--amber-ink)}
+  .beyond-list{padding:8px}
+  .far{
+    border-bottom:1px solid var(--line);padding:8px 2px 9px;
+  }
+  .far:last-child{border-bottom:none}
+  .far .fd{font-family:var(--mono);font-size:10px;font-weight:600;color:var(--amber-ink)}
+  .far .fd.quiet{color:var(--ink-3)}
+  .far .fd::before{content:"◆ "}
+  .far .fd.quiet::before{content:"○ "}
+  .far .fs{font-family:var(--serif);font-weight:600;font-size:12.5px;line-height:1.25;margin-top:1px}
+  .far .fm{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);margin-top:3px;line-height:1.5}
+  .far .fm .gapt{color:var(--amber-ink);border-bottom:1px dotted var(--amber-deep)}
+  .beyond-time{background-image:none !important;padding:8px}
+
+  /* ————— filter bar ————— */
+  .fbar{
+    margin:20px 0 8px;border:2px solid var(--ink);background:var(--paper-3);
+    padding:14px 16px;display:flex;gap:26px;flex-wrap:wrap;align-items:flex-end;
+    box-shadow:4px 4px 0 rgba(10,14,23,.12);
+    position:sticky;top:0;z-index:20;
+  }
+  .fgroup{display:flex;flex-direction:column;gap:6px}
+  .flab{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{
+    font-family:var(--mono);font-size:11.5px;font-weight:500;
+    background:none;border:1px solid var(--line-2);color:var(--ink-2);
+    padding:4px 10px;cursor:pointer;
+  }
+  .chip:hover{border-color:var(--ink);color:var(--ink)}
+  .chip.on{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+  .chip.on.warm{background:var(--amber);color:var(--ink);border-color:var(--amber-deep);font-weight:600}
+  #q{
+    font-family:var(--mono);font-size:12.5px;color:var(--ink);
+    background:var(--paper);border:1px solid var(--line-2);
+    padding:5px 10px;width:220px;
+  }
+  #q:focus{outline:2px solid var(--amber);outline-offset:0}
+  #sortsel{
+    font-family:var(--mono);font-size:12px;color:var(--ink);
+    background:var(--paper);border:1px solid var(--line-2);padding:5px 8px;cursor:pointer;
+  }
+  .fnote{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin:6px 2px 0}
+
+  /* ————— ledger groups & rows ————— */
+  .lgroup{margin-top:26px}
+  .ghead{
+    display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+    border-bottom:2px solid var(--ink);padding-bottom:6px;
+  }
+  .ghead h3{
+    font-family:var(--serif);font-weight:600;font-size:20px;letter-spacing:-.01em;
+    font-variation-settings:"opsz" 40;
+  }
+  .ghead h3 em{font-style:italic;font-weight:400}
+  .ghead .gflag{
+    font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.1em;
+    color:var(--amber-ink);border:1px dashed var(--amber-deep);padding:2px 7px;
+    background:#fdf6e6;
+  }
+  .ghead .gnote{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+  .gcount{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+
+  .row{border-bottom:1px solid var(--line)}
+  .rowhead{
+    width:100%;text-align:left;background:none;border:none;cursor:pointer;
+    display:grid;grid-template-columns:26px 1fr auto 22px;gap:10px;align-items:baseline;
+    padding:13px 6px 12px;font-family:inherit;color:inherit;
+  }
+  .rowhead:hover{background:rgba(232,160,64,.07)}
+  .glyph{font-family:var(--mono);font-size:13px;color:var(--ink-3);text-align:center}
+  .glyph.warm{color:var(--amber-deep)}
+  .stmt{
+    font-family:var(--serif);font-weight:600;font-size:18px;line-height:1.25;
+    font-variation-settings:"opsz" 30;
+  }
+  .stmt.asp{font-weight:400;font-style:italic}
+  .chline{margin-top:5px;display:flex;gap:6px;flex-wrap:wrap}
+  .fc{
+    font-family:var(--mono);font-size:10px;letter-spacing:.02em;
+    border:1px solid var(--line-2);color:var(--ink-2);padding:1.5px 6px;background:var(--paper-3);
+  }
+  .fc.solid{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .fc.warm{background:#fdf6e6;border:1px dashed var(--amber-deep);color:var(--amber-ink);font-weight:600}
+  .fc.ok{border-style:solid;border-color:var(--line-2);color:var(--ink-2)}
+  .fc.quiet{border-color:transparent;background:none;color:var(--ink-3)}
+  .rmeta{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);text-align:right;line-height:1.7;white-space:nowrap}
+  .rmeta .warm{color:var(--amber-ink);font-weight:600}
+  .chev{font-family:var(--mono);color:var(--ink-3);font-size:12px;transition:transform .12s}
+  .row.open .chev{transform:rotate(90deg)}
+
+  .rowbody{display:none;padding:2px 6px 20px 42px}
+  .row.open .rowbody{display:block}
+  .row.open{background:var(--paper-3);box-shadow:inset 3px 0 0 var(--amber)}
+
+  .fields{
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:3px 28px;
+    border-top:1px dotted var(--line-2);padding-top:12px;
+  }
+  .fld{display:grid;grid-template-columns:130px 1fr;gap:10px;padding:2.5px 0;font-family:var(--mono);font-size:12px}
+  .fld .k{color:var(--ink-3)}
+  .fld .v{color:var(--ink)}
+  .fld .v.warm{color:var(--amber-ink);font-weight:600}
+  .fld .v em{font-style:normal;color:var(--ink-3)}
+  .histline{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin-top:2px}
+  .histline b{color:var(--amber-ink)}
+
+  .briefbox{
+    margin-top:12px;border:1px solid var(--line-2);background:var(--paper);
+    padding:10px 12px;font-size:13.5px;color:var(--ink-2);max-width:76ch;
+  }
+  .briefbox .bl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber-ink);margin-bottom:4px}
+
+  /* actions */
+  .acts{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:stretch}
+  .act{
+    font-family:inherit;cursor:pointer;text-align:left;
+    background:var(--paper);border:1.5px solid var(--ink);color:var(--ink);
+    padding:7px 12px 6px;min-width:118px;
+  }
+  .act:hover{background:var(--ink);color:var(--paper)}
+  .act:hover .cap{color:var(--amber)}
+  .act .lab{display:block;font-weight:600;font-size:13px}
+  .act .cap{display:block;font-family:var(--mono);font-size:9.5px;color:var(--ink-3);margin-top:3px}
+  .act.warm{border-color:var(--amber-deep);background:#fdf6e6}
+  .act.warm:hover{background:var(--amber);color:var(--ink)}
+  .act.warm:hover .cap{color:var(--amber-ink)}
+  .rule{
+    display:flex;gap:0;margin-top:10px;max-width:560px;
+  }
+  .rule input{
+    flex:1;font-family:var(--mono);font-size:12px;background:var(--paper);
+    border:1.5px solid var(--ink);border-right:none;padding:7px 10px;color:var(--ink);
+  }
+  .rule input:focus{outline:2px solid var(--amber);outline-offset:0}
+  .rule button{
+    font-family:inherit;font-weight:600;font-size:12.5px;cursor:pointer;
+    background:var(--ink);color:var(--paper);border:1.5px solid var(--ink);padding:7px 14px;
+  }
+  .rule button:hover{background:var(--amber-deep);border-color:var(--amber-deep)}
+  .rulecap{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);margin-top:4px}
+
+  /* code section */
+  .repochip{font-family:var(--mono);font-size:10px;font-weight:600;background:var(--ink);color:var(--paper);padding:1.5px 7px}
+  .repochip.tq{background:var(--amber-deep)}
+  .codestats{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin-top:10px}
+  .codestats b{color:var(--amber-ink)}
+
+  /* toast */
+  #toast{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+    background:var(--ink);color:var(--paper);font-family:var(--mono);font-size:12px;
+    padding:10px 18px;opacity:0;pointer-events:none;transition:all .18s ease;
+    max-width:90vw;box-shadow:4px 4px 0 rgba(10,14,23,.25);z-index:50;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast b{color:var(--amber)}
+
+  footer{
+    margin-top:70px;border-top:3px solid var(--ink);padding-top:14px;
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);line-height:1.8;
+  }
+  footer b{color:var(--ink-2)}
+
+  @media (max-width:760px){
+    .tts{font-size:44px}
+    .mast-right{text-align:left}
+    .rowhead{grid-template-columns:20px 1fr 18px}
+    .rmeta{display:none}
+    .rowbody{padding-left:12px}
+    .fbar{position:static}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ═══════════ masthead ═══════════ -->
+  <header class="mast">
+    <div class="mast-left">
+      <div class="tts">TTS<span class="dot">.</span></div>
+      <div class="mast-sub">
+        <div class="name">Tom&rsquo;s Todo System</div>
+        <div class="dir">The Planner — the page is a schedule, and the ledger is what isn&rsquo;t on it.</div>
+      </div>
+    </div>
+    <div class="mast-right">
+      <a class="sess" href="/sessions">/sessions <small>— separate surface</small></a>
+      <div class="prov">
+        dtsDailyQueues · <b>2026-08-28</b> (5 a.m. boundary) · preparedBy: <b>worker</b><br>
+        prepared <b>04:47</b> · digestSentAt <b>05:00</b> · dtsCodeTodoMirror syncedAt <b>04:32</b>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══════════ No. 1 — the spread ═══════════ -->
+  <section id="spread">
+    <div class="overline">No. 1 · The spread</div>
+    <h2 class="stitle">The week, <em>as committed.</em></h2>
+    <p class="ssub">Solid navy blocks are per-todo <code>committedAt</code> time. Hatched amber blocks are category
+    blocks — one scheduled block, worked through a whole category. Amber ◆ marks are <code>dueAt</code> deadlines:
+    a deadline is not a plan, so it never fills space — only a commitment does.</p>
+
+    <div class="legend">
+      <span class="li"><span class="sw commit"></span> committedAt — one todo, placed time</span>
+      <span class="li"><span class="sw cat"></span> category block — a category, placed time</span>
+      <span class="li"><span class="sw flag">◆</span> dueAt deadline mark</span>
+      <span class="li"><span class="sw gap"></span>&nbsp;no committed time (the gap, stated)</span>
+    </div>
+
+    <div class="spreadwrap">
+      <div class="spread">
+
+        <!-- day headers -->
+        <div class="srow">
+          <div class="dhead gut"></div>
+          <div class="dhead today-col">
+            <div class="dow">Friday</div>
+            <div class="dnum">28<small>AUG</small></div>
+            <span class="todaytag">TODAY</span>
+          </div>
+          <div class="dhead wkend"><div class="dow">Saturday</div><div class="dnum">29<small>AUG</small></div></div>
+          <div class="dhead wkend"><div class="dow">Sunday</div><div class="dnum">30<small>AUG</small></div></div>
+          <div class="dhead"><div class="dow">Monday</div><div class="dnum">31<small>AUG</small></div></div>
+          <div class="dhead"><div class="dow">Tuesday</div><div class="dnum">01<small>SEP</small></div></div>
+          <div class="dhead"><div class="dow">Wednesday</div><div class="dnum">02<small>SEP</small></div></div>
+          <div class="dhead"><div class="dow">Thursday</div><div class="dnum">03<small>SEP</small></div></div>
+          <div class="dhead beyond-head"><div class="dow">Beyond the spread</div><div class="dnum" style="font-size:16px;font-style:italic;font-weight:600">Sep 4 →</div></div>
+        </div>
+
+        <!-- margin band: today's queue + deadline flags -->
+        <div class="srow">
+          <div class="dmar"></div>
+
+          <!-- today: the queue -->
+          <div class="dmar today-col">
+            <div class="marlabel"><b>today&rsquo;s queue</b> · 4 entries · reason per entry</div>
+
+            <div class="qi" data-target="r-nsf">
+              <div class="qr">reason: due</div>
+              <div class="qs">Submit NSF annual report</div>
+              <div class="qm">dueAt Sep 4 · committedAt Tue Sep 1 09:00</div>
+            </div>
+            <div class="qi" data-target="r-sarah">
+              <div class="qr">reason: due</div>
+              <div class="qs">Email Sarah re: sabbatical timing</div>
+              <div class="qm">dueAt Aug 30 · committedAt: —</div>
+            </div>
+            <div class="qi" data-target="r-flights">
+              <div class="qr">reason: stale</div>
+              <div class="qs">Book flights for NeurIPS</div>
+              <div class="qm">dueAt Sep 12 · committedAt: —</div>
+            </div>
+            <div class="qi" data-target="r-passport">
+              <div class="qr">reason: condition</div>
+              <div class="qs">Renew passport</div>
+              <div class="qm">latestSafeAt Oct 15 · committedAt: —</div>
+            </div>
+          </div>
+
+          <div class="dmar wkend"></div>
+
+          <!-- Sunday: deadline flag, no commitment -->
+          <div class="dmar wkend">
+            <div class="flag">
+              <div class="fd">dueAt Aug 30 · self-imposed</div>
+              <div class="fs">Email Sarah re: sabbatical timing</div>
+              <div class="fgap">committedAt: — · no committed time before this date</div>
+              <div class="fok">dateOutcomes: Aug 23 → renegotiated → Aug 30</div>
+            </div>
+          </div>
+
+          <div class="dmar"></div>
+          <div class="dmar"></div>
+          <div class="dmar"></div>
+          <div class="dmar"></div>
+
+          <!-- beyond: label only; the list lives in the time band below -->
+          <div class="dmar">
+            <div class="marlabel">deadlines &amp; wakes<br>after Sep 3 ↓</div>
+          </div>
+        </div>
+
+        <!-- time band 08:00–19:00 -->
+        <div class="srow">
+          <div class="gutcell">
+            <span class="hlab" style="top:0">08</span>
+            <span class="hlab" style="top:84px">10</span>
+            <span class="hlab" style="top:168px">12</span>
+            <span class="hlab" style="top:252px">14</span>
+            <span class="hlab" style="top:336px">16</span>
+            <span class="hlab" style="top:420px">18</span>
+          </div>
+
+          <!-- Fri 28 (today): nothing committed — say so -->
+          <div class="dtime today-col">
+            <div class="nowline" style="top:73px"><span>now 09:44</span></div>
+            <div class="emptynote">no committedAt blocks today<br>queue above is surfaced, not scheduled</div>
+          </div>
+
+          <!-- Sat 29: code category block -->
+          <div class="dtime wkend">
+            <div class="blk cat" style="top:252px;height:63px">
+              <div class="bt">category block · 14:00–15:30</div>
+              <div class="bs">Code todos</div>
+              <div class="bd">5 open · 3 briefed, unruled</div>
+            </div>
+          </div>
+
+          <!-- Sun 30: chores category block -->
+          <div class="dtime wkend">
+            <div class="blk cat" style="top:42px;height:126px">
+              <div class="bt">category block · 09:00–12:00</div>
+              <div class="bs">Chores</div>
+              <div class="bd">category: chores · 3 todos<br>gutter · garage · dentist</div>
+            </div>
+          </div>
+
+          <!-- Mon 31 -->
+          <div class="dtime"></div>
+
+          <!-- Tue Sep 1: NSF commitment -->
+          <div class="dtime">
+            <div class="blk commit" style="top:42px;height:84px">
+              <div class="bt">committedAt · 09:00–11:00</div>
+              <div class="bs">Submit NSF annual report</div>
+              <div class="bd">dueAt Sep 4 · external →</div>
+            </div>
+          </div>
+
+          <!-- Wed Sep 2: thesis commitment -->
+          <div class="dtime">
+            <div class="blk commit" style="top:252px;height:84px">
+              <div class="bt">committedAt · 14:00–16:00</div>
+              <div class="bs">Review Ashish&rsquo;s thesis ch. 3</div>
+              <div class="bd">dueAt Sep 8 · external →</div>
+            </div>
+          </div>
+
+          <!-- Thu Sep 3 -->
+          <div class="dtime"></div>
+
+          <!-- beyond: far deadlines, not to scale -->
+          <div class="dtime beyond-time">
+            <div class="far">
+              <div class="fd">Fri Sep 4 · dueAt · external</div>
+              <div class="fs">Submit NSF annual report</div>
+              <div class="fm">committedAt Tue Sep 1 09:00 — placed 3 days before the date</div>
+            </div>
+            <div class="far">
+              <div class="fd">Tue Sep 8 · dueAt · external</div>
+              <div class="fs">Review Ashish&rsquo;s thesis ch. 3</div>
+              <div class="fm">committedAt Wed Sep 2 14:00 — placed 6 days before the date</div>
+            </div>
+            <div class="far">
+              <div class="fd">Sat Sep 12 · dueAt · self-imposed</div>
+              <div class="fs">Book flights for NeurIPS</div>
+              <div class="fm"><span class="gapt">committedAt: — · no committed time anywhere before this date</span></div>
+            </div>
+            <div class="far">
+              <div class="fd quiet">Sun Sep 20 · wakeAt</div>
+              <div class="fs">Prep lecture 2: search</div>
+              <div class="fm">status: waiting · &ldquo;two weeks before semester&rdquo;</div>
+            </div>
+            <div class="far">
+              <div class="fd">Thu Oct 15 · latestSafeAt</div>
+              <div class="fs">Renew passport</div>
+              <div class="fm">condition-bound · <span class="gapt">committedAt: —</span></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ No. 2 — the ledger ═══════════ -->
+  <section id="ledger">
+    <div class="overline">No. 2 · The ledger</div>
+    <h2 class="stitle">Everything not yet <em>placed.</em></h2>
+    <p class="ssub">Rows are <code>dtsTodos</code> documents, fields shown by their real names. Default view:
+    <code>status: active</code> with no <code>committedAt</code>, grouped honestly. Filters below reach every
+    stored row — nothing is ever deleted; <code>done</code> and <code>archived</code> stay browsable.</p>
+
+    <!-- filter bar -->
+    <div class="fbar" id="fbar">
+      <div class="fgroup">
+        <label class="flab" for="q">search statements</label>
+        <input id="q" type="text" placeholder="type to filter…" autocomplete="off">
+      </div>
+      <div class="fgroup">
+        <span class="flab">status</span>
+        <div class="chips" data-fgroup="status">
+          <button class="chip on" data-val="active">active</button>
+          <button class="chip" data-val="waiting">waiting</button>
+          <button class="chip" data-val="done">done</button>
+          <button class="chip" data-val="archived">archived</button>
+          <button class="chip" data-val="all">all</button>
+        </div>
+      </div>
+      <div class="fgroup">
+        <span class="flab">needs me</span>
+        <div class="chips">
+          <button class="chip" id="needschip" title="readiness: ready-for-tom, or code todo with brief and no ruling">ready-for-tom + unruled briefs</button>
+        </div>
+      </div>
+      <div class="fgroup">
+        <span class="flab">kind</span>
+        <div class="chips" data-fgroup="kind">
+          <button class="chip on" data-val="all">all</button>
+          <button class="chip" data-val="life">life</button>
+          <button class="chip" data-val="code">code</button>
+          <button class="chip" data-val="ComplexMultiTrigger">code · CMT</button>
+          <button class="chip" data-val="tom.quest">code · tom.quest</button>
+        </div>
+      </div>
+      <div class="fgroup">
+        <label class="flab" for="sortsel">sort</label>
+        <select id="sortsel">
+          <option value="">ledger order</option>
+          <option value="due">dueAt ↑</option>
+          <option value="committed">committedAt ↑</option>
+          <option value="created">createdAt ↑ (oldest first)</option>
+          <option value="updated">updatedAt ↓ (recently touched)</option>
+        </select>
+      </div>
+    </div>
+    <div class="fnote">status filter applies to life todos; code todos are <span class="mono">open</span> in both repos and appear under kind. Missing sort keys sort last.</div>
+
+    <!-- ——— group: serious, dated, unscheduled ——— -->
+    <div class="lgroup" data-g="serious">
+      <div class="ghead">
+        <h3>Serious, dated — <em>and unscheduled.</em></h3>
+        <span class="gflag">dueAt set · committedAt: —</span>
+        <span class="gnote">a date without placed time is a gap, shown as one</span>
+        <span class="gcount"></span>
+      </div>
+
+      <!-- Book flights -->
+      <article class="row" id="r-flights" data-status="active" data-kind="life" data-needsme="1"
+               data-text="book flights for neurips" data-due="202609121200" data-committed="" data-created="202608100911" data-updated="202608261607">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph warm">◆</span>
+          <span>
+            <span class="stmt">Book flights for NeurIPS</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc solid">readiness: ready-for-tom</span>
+              <span class="fc">timingClass: dated</span>
+              <span class="fc">dueAt: Sep 12 · self-imposed</span>
+              <span class="fc warm">committedAt: —</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 10 · 18d<br><span class="warm">in today&rsquo;s queue · stale</span></span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">ready-for-tom <em>· brief prepared</em></span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">dated</span></div>
+            <div class="fld"><span class="k">dueAt</span><span class="v">2026-09-12 (Sat) · dateKind: self-imposed</span></div>
+            <div class="fld"><span class="k">committedAt</span><span class="v warm">— none · 15 days to dueAt, no time placed</span></div>
+            <div class="fld"><span class="k">source</span><span class="v">manual</span></div>
+            <div class="fld"><span class="k">entryAction</span><span class="v">open flight search BOS → San Diego, Dec 6–12</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-10 09:11</span></div>
+            <div class="fld"><span class="k">updatedAt</span><span class="v">2026-08-26 16:07</span></div>
+          </div>
+          <div class="briefbox"><div class="bl">brief · prepared by worker</div>
+            Nonstop BOS→SAN exists on two carriers; fares for Dec 6–12 have been flat for three weeks.
+            Aisle-seat inventory thins after mid-September. Entry action opens the search pre-filled.
+          </div>
+          <div class="acts">
+            <button class="act warm"><span class="lab">Commit time</span><span class="cap">dts.updateTodo({committedAt})</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({todoId}) → /sessions</span></button>
+            <button class="act"><span class="lab">Renegotiate dueAt</span><span class="cap">dts.recordDateOutcome({outcome:"renegotiated", newDueAt})</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Archive</span><span class="cap">dts.setStatus({status:"archived", unarchiveCondition?})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="one-sentence ruling to the preparing agent…"><button data-mut='dts.recordRuling({text}) → preparing agent'>Send ruling</button></div>
+          <div class="rulecap">dts.recordRuling({text}) — no session needed</div>
+        </div>
+      </article>
+
+      <!-- Email Sarah -->
+      <article class="row" id="r-sarah" data-status="active" data-kind="life" data-needsme="1"
+               data-text="email sarah re sabbatical timing" data-due="202608301200" data-committed="" data-created="202608150944" data-updated="202608211710">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph warm">◆</span>
+          <span>
+            <span class="stmt">Email Sarah re: sabbatical timing</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc solid">readiness: ready-for-tom</span>
+              <span class="fc">timingClass: dated</span>
+              <span class="fc">dueAt: Aug 30 · self-imposed</span>
+              <span class="fc warm">committedAt: —</span>
+              <span class="fc quiet">1 dateOutcome on record</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 15 · 13d<br><span class="warm">in today&rsquo;s queue · due in 2d</span></span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">ready-for-tom</span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">dated</span></div>
+            <div class="fld"><span class="k">dueAt</span><span class="v">2026-08-30 (Sun) · dateKind: self-imposed</span></div>
+            <div class="fld"><span class="k">committedAt</span><span class="v warm">— none · dueAt is in 2 days</span></div>
+            <div class="fld"><span class="k">source</span><span class="v">manual</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-15 09:44</span></div>
+            <div class="fld"><span class="k">updatedAt</span><span class="v">2026-08-21 17:10</span></div>
+          </div>
+          <div class="histline"><b>dateOutcomes:</b> dueAt Aug 23 → <b>renegotiated</b> (recorded Aug 21, before the date) → new dueAt Aug 30 · note: &ldquo;sabbatical committee moved their meeting&rdquo;</div>
+          <div class="acts">
+            <button class="act warm"><span class="lab">Commit time</span><span class="cap">dts.updateTodo({committedAt})</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({todoId}) → /sessions</span></button>
+            <button class="act"><span class="lab">Renegotiate dueAt</span><span class="cap">dts.recordDateOutcome({outcome:"renegotiated", newDueAt}) · after Aug 30 this records "missed"</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Archive</span><span class="cap">dts.setStatus({status:"archived", unarchiveCondition?})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="one-sentence ruling to the preparing agent…"><button data-mut='dts.recordRuling({text}) → preparing agent'>Send ruling</button></div>
+          <div class="rulecap">dts.recordRuling({text}) — no session needed</div>
+        </div>
+      </article>
+
+      <!-- Renew passport -->
+      <article class="row" id="r-passport" data-status="active" data-kind="life" data-needsme=""
+               data-text="renew passport" data-due="" data-committed="" data-created="202607301820" data-updated="202608241001">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph warm">◆</span>
+          <span>
+            <span class="stmt">Renew passport</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc">readiness: unprepared</span>
+              <span class="fc">timingClass: condition-bound</span>
+              <span class="fc">latestSafeAt: Oct 15</span>
+              <span class="fc warm">committedAt: —</span>
+            </span>
+          </span>
+          <span class="rmeta">created Jul 30 · 29d<br><span class="warm">in today&rsquo;s queue · condition</span></span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">unprepared <em>· agent has not briefed this yet</em></span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">condition-bound</span></div>
+            <div class="fld"><span class="k">condition</span><span class="v">&ldquo;before booking January travel&rdquo;</span></div>
+            <div class="fld"><span class="k">latestSafeAt</span><span class="v">2026-10-15 (Thu) <em>· conservative latest-safe date</em></span></div>
+            <div class="fld"><span class="k">committedAt</span><span class="v warm">— none</span></div>
+            <div class="fld"><span class="k">source</span><span class="v">manual</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-07-30 18:20</span></div>
+            <div class="fld"><span class="k">updatedAt</span><span class="v">2026-08-24 10:01</span></div>
+          </div>
+          <div class="acts">
+            <button class="act warm"><span class="lab">Commit time</span><span class="cap">dts.updateTodo({committedAt})</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({todoId}) → /sessions</span></button>
+            <button class="act"><span class="lab">Set a deadline</span><span class="cap">dts.updateTodo({dueAt, dateKind})</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Archive</span><span class="cap">dts.setStatus({status:"archived", unarchiveCondition?})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="one-sentence ruling to the preparing agent…"><button data-mut='dts.recordRuling({text}) → preparing agent'>Send ruling</button></div>
+          <div class="rulecap">dts.recordRuling({text}) — no session needed</div>
+        </div>
+      </article>
+    </div>
+
+    <!-- ——— group: aspirational ——— -->
+    <div class="lgroup" data-g="asp">
+      <div class="ghead">
+        <h3>Aspirational — <em>and honestly so.</em></h3>
+        <span class="gnote">timingClass: whenever · no dueAt · no committedAt — a legal state, not an error</span>
+        <span class="gcount"></span>
+      </div>
+
+      <article class="row" data-status="active" data-kind="life" data-needsme=""
+               data-text="program the game idea" data-due="" data-committed="" data-created="202606211120" data-updated="202608021513">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">○</span>
+          <span>
+            <span class="stmt asp">Program the game idea</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc">readiness: unprepared</span>
+              <span class="fc">timingClass: whenever</span>
+              <span class="fc quiet">no dueAt · no committedAt · by design</span>
+            </span>
+          </span>
+          <span class="rmeta">created Jun 21 · 68d<br>source: consolidation</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">unprepared</span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">whenever</span></div>
+            <div class="fld"><span class="k">dueAt</span><span class="v"><em>— not set; nothing external or self-imposed forces this</em></span></div>
+            <div class="fld"><span class="k">committedAt</span><span class="v"><em>— not set; it becomes serious the day one is</em></span></div>
+            <div class="fld"><span class="k">source</span><span class="v">consolidation <em>· merged from 3 captured notes</em></span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-06-21 11:20</span></div>
+            <div class="fld"><span class="k">updatedAt</span><span class="v">2026-08-02 15:13</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Commit time</span><span class="cap">dts.updateTodo({committedAt}) — promotes it out of aspiration</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({todoId}) → /sessions</span></button>
+            <button class="act"><span class="lab">Archive</span><span class="cap">dts.setStatus({status:"archived", unarchiveCondition?})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="one-sentence ruling to the preparing agent…"><button data-mut='dts.recordRuling({text}) → preparing agent'>Send ruling</button></div>
+          <div class="rulecap">dts.recordRuling({text}) — no session needed</div>
+        </div>
+      </article>
+    </div>
+
+    <!-- ——— group: covered by category block ——— -->
+    <div class="lgroup" data-g="covered">
+      <div class="ghead">
+        <h3>Covered by a category block, <em>no per-todo time.</em></h3>
+        <span class="gnote">category: chores → block Sun Aug 30 09:00–12:00 · coverage is not committedAt, and the ledger says which is which</span>
+        <span class="gcount"></span>
+      </div>
+
+      <article class="row" data-status="active" data-kind="life" data-needsme=""
+               data-text="fix gutter downspout" data-due="" data-committed="" data-created="202608030908" data-updated="202608030908">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">▨</span>
+          <span>
+            <span class="stmt">Fix gutter downspout</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc">readiness: unprepared</span>
+              <span class="fc">timingClass: whenever</span>
+              <span class="fc ok">category: chores → Sun block</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 3 · 25d</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">unprepared</span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">whenever</span></div>
+            <div class="fld"><span class="k">category</span><span class="v">chores <em>· covered by category block Sun Aug 30 09:00–12:00</em></span></div>
+            <div class="fld"><span class="k">committedAt</span><span class="v"><em>— none of its own; the block carries the time</em></span></div>
+            <div class="fld"><span class="k">source</span><span class="v">manual</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-03 09:08</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Commit time</span><span class="cap">dts.updateTodo({committedAt}) — its own block, apart from chores</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Archive</span><span class="cap">dts.setStatus({status:"archived", unarchiveCondition?})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+        </div>
+      </article>
+
+      <article class="row" data-status="active" data-kind="life" data-needsme=""
+               data-text="clean out garage shelves" data-due="" data-committed="" data-created="202607181541" data-updated="202607181541">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">▨</span>
+          <span>
+            <span class="stmt">Clean out garage shelves</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc">readiness: unprepared</span>
+              <span class="fc">timingClass: whenever</span>
+              <span class="fc ok">category: chores → Sun block</span>
+            </span>
+          </span>
+          <span class="rmeta">created Jul 18 · 41d</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">unprepared</span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">whenever</span></div>
+            <div class="fld"><span class="k">category</span><span class="v">chores <em>· covered by category block Sun Aug 30 09:00–12:00</em></span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-07-18 15:41</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Commit time</span><span class="cap">dts.updateTodo({committedAt})</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Archive</span><span class="cap">dts.setStatus({status:"archived", unarchiveCondition?})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+        </div>
+      </article>
+
+      <article class="row" data-status="active" data-kind="life" data-needsme=""
+               data-text="schedule dentist appointment" data-due="" data-committed="" data-created="202608241315" data-updated="202608241315">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">▨</span>
+          <span>
+            <span class="stmt">Schedule dentist appointment</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc">readiness: unprepared</span>
+              <span class="fc">timingClass: whenever</span>
+              <span class="fc ok">category: chores → Sun block</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 24 · 4d</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">unprepared</span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">whenever</span></div>
+            <div class="fld"><span class="k">category</span><span class="v">chores <em>· covered by category block Sun Aug 30 09:00–12:00</em></span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-24 13:15</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Commit time</span><span class="cap">dts.updateTodo({committedAt})</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Archive</span><span class="cap">dts.setStatus({status:"archived", unarchiveCondition?})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+        </div>
+      </article>
+    </div>
+
+    <!-- ——— group: already placed ——— -->
+    <div class="lgroup" data-g="placed">
+      <div class="ghead">
+        <h3>Already placed <em>on the spread.</em></h3>
+        <span class="gnote">committedAt set — listed here so search and sort still find them</span>
+        <span class="gcount"></span>
+      </div>
+
+      <article class="row" id="r-nsf" data-status="active" data-kind="life" data-needsme="1"
+               data-text="submit nsf annual report" data-due="202609041700" data-committed="202609010900" data-created="202608121014" data-updated="202608271830">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">■</span>
+          <span>
+            <span class="stmt">Submit NSF annual report</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc solid">readiness: ready-for-tom</span>
+              <span class="fc">timingClass: dated</span>
+              <span class="fc">dueAt: Sep 4 · external</span>
+              <span class="fc ok">committedAt: Tue Sep 1 09:00–11:00</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 12 · 16d<br><span class="warm">in today&rsquo;s queue · due</span></span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">ready-for-tom <em>· brief prepared</em></span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">dated</span></div>
+            <div class="fld"><span class="k">dueAt</span><span class="v">2026-09-04 (Fri) 17:00 · dateKind: external</span></div>
+            <div class="fld"><span class="k">committedAt</span><span class="v">2026-09-01 (Tue) 09:00–11:00 · 3 days before dueAt</span></div>
+            <div class="fld"><span class="k">source</span><span class="v">slack-capture · provenance: #grants, Aug 12</span></div>
+            <div class="fld"><span class="k">entryAction</span><span class="v">open research.gov reporting form, section II pre-drafted</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-12 10:14</span></div>
+            <div class="fld"><span class="k">updatedAt</span><span class="v">2026-08-27 18:30</span></div>
+          </div>
+          <div class="briefbox"><div class="bl">brief · prepared by worker</div>
+            Report covers award year 2 of 3. Sections I and III carry over; section II (findings) needs
+            ~40 minutes of new prose — draft attached to the session scope. Submission portal timeout is 30 min; write outside it.
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({todoId}) → /sessions</span></button>
+            <button class="act"><span class="lab">Move committed time</span><span class="cap">dts.updateTodo({committedAt})</span></button>
+            <button class="act"><span class="lab">Renegotiate dueAt</span><span class="cap">dts.recordDateOutcome — external date: renegotiation means asking NSF</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="one-sentence ruling to the preparing agent…"><button data-mut='dts.recordRuling({text}) → preparing agent'>Send ruling</button></div>
+          <div class="rulecap">dts.recordRuling({text}) — no session needed</div>
+        </div>
+      </article>
+
+      <article class="row" data-status="active" data-kind="life" data-needsme=""
+               data-text="review ashish's thesis chapter 3" data-due="202609081700" data-committed="202609021400" data-created="202608200932" data-updated="202608271112">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">■</span>
+          <span>
+            <span class="stmt">Review Ashish&rsquo;s thesis chapter 3</span>
+            <span class="chline">
+              <span class="fc">status: active</span>
+              <span class="fc">readiness: preparing</span>
+              <span class="fc">timingClass: dated</span>
+              <span class="fc">dueAt: Sep 8 · external</span>
+              <span class="fc ok">committedAt: Wed Sep 2 14:00–16:00</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 20 · 8d<br>agent still preparing</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">active</span></div>
+            <div class="fld"><span class="k">readiness</span><span class="v">preparing <em>· worker is assembling the brief (chapter diff vs. v2)</em></span></div>
+            <div class="fld"><span class="k">timingClass</span><span class="v">dated</span></div>
+            <div class="fld"><span class="k">dueAt</span><span class="v">2026-09-08 (Tue) · dateKind: external</span></div>
+            <div class="fld"><span class="k">committedAt</span><span class="v">2026-09-02 (Wed) 14:00–16:00 · 6 days before dueAt</span></div>
+            <div class="fld"><span class="k">source</span><span class="v">manual</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-20 09:32</span></div>
+            <div class="fld"><span class="k">updatedAt</span><span class="v">2026-08-27 11:12</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({todoId}) → /sessions</span></button>
+            <button class="act"><span class="lab">Move committed time</span><span class="cap">dts.updateTodo({committedAt})</span></button>
+            <button class="act"><span class="lab">Mark done</span><span class="cap">dts.setStatus({status:"done"})</span></button>
+            <button class="act"><span class="lab">Edit fields</span><span class="cap">dts.updateTodo({…})</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="one-sentence ruling to the preparing agent…"><button data-mut='dts.recordRuling({text}) → preparing agent'>Send ruling</button></div>
+          <div class="rulecap">dts.recordRuling({text}) — no session needed</div>
+        </div>
+      </article>
+    </div>
+
+    <!-- ——— group: waiting / done / archived ——— -->
+    <div class="lgroup" data-g="rest">
+      <div class="ghead">
+        <h3>Waiting · done · archived — <em>kept, never deleted.</em></h3>
+        <span class="gnote">hidden under status: active · select a status chip (or all) to browse</span>
+        <span class="gcount"></span>
+      </div>
+
+      <article class="row" data-status="waiting" data-kind="life" data-needsme=""
+               data-text="prep lecture 2 search" data-due="" data-committed="" data-created="202608051230" data-updated="202608051230">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">◌</span>
+          <span>
+            <span class="stmt">Prep lecture 2: search</span>
+            <span class="chline">
+              <span class="fc">status: waiting</span>
+              <span class="fc">wakeAt: Sep 20</span>
+              <span class="fc quiet">wakeCondition: &ldquo;two weeks before semester&rdquo;</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 5 · 23d<br>wakes in 23d</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">waiting</span></div>
+            <div class="fld"><span class="k">wakeAt</span><span class="v">2026-09-20 (Sun) 05:00 <em>· enters a daily queue that morning</em></span></div>
+            <div class="fld"><span class="k">wakeCondition</span><span class="v">&ldquo;two weeks before semester&rdquo;</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-05 12:30</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Wake now</span><span class="cap">dts.setStatus({status:"active"})</span></button>
+            <button class="act"><span class="lab">Edit wake</span><span class="cap">dts.updateTodo({wakeAt, wakeCondition})</span></button>
+          </div>
+        </div>
+      </article>
+
+      <article class="row" data-status="done" data-kind="life" data-needsme=""
+               data-text="buy new office chair" data-due="" data-committed="" data-created="202608180955" data-updated="202608261441">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">✓</span>
+          <span>
+            <span class="stmt" style="color:var(--ink-3)">Buy new office chair</span>
+            <span class="chline">
+              <span class="fc">status: done</span>
+              <span class="fc quiet">doneAt: Aug 26 14:41</span>
+            </span>
+          </span>
+          <span class="rmeta">created Aug 18 · done in 8d</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">done</span></div>
+            <div class="fld"><span class="k">doneAt</span><span class="v">2026-08-26 14:41</span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-08-18 09:55</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Reopen</span><span class="cap">dts.setStatus({status:"active"})</span></button>
+          </div>
+        </div>
+      </article>
+
+      <article class="row" data-status="archived" data-kind="life" data-needsme=""
+               data-text="learn rust properly" data-due="" data-committed="" data-created="202605021017" data-updated="202608271901">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">⊘</span>
+          <span>
+            <span class="stmt" style="color:var(--ink-3)">Learn Rust properly</span>
+            <span class="chline">
+              <span class="fc">status: archived</span>
+              <span class="fc quiet">archivedAt: Aug 27</span>
+              <span class="fc">unarchiveCondition: &ldquo;when a real project needs it&rdquo;</span>
+            </span>
+          </span>
+          <span class="rmeta">created May 2 · lived 117d</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">status</span><span class="v">archived</span></div>
+            <div class="fld"><span class="k">archivedAt</span><span class="v">2026-08-27 19:01</span></div>
+            <div class="fld"><span class="k">unarchiveCondition</span><span class="v">&ldquo;when a real project needs it&rdquo; <em>· agent proposes it back when true</em></span></div>
+            <div class="fld"><span class="k">createdAt</span><span class="v">2026-05-02 10:17</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Unarchive</span><span class="cap">dts.setStatus({status:"active"})</span></button>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ═══════════ No. 3 — code todos ═══════════ -->
+  <section id="code">
+    <div class="overline">No. 3 · Code todos</div>
+    <h2 class="stitle">Worked through <em>in blocks.</em></h2>
+    <p class="ssub">Read-only mirror of each repo&rsquo;s <code>vqc/todos.yaml</code> (<code>dtsCodeTodoMirror</code>).
+    Per-todo scheduling is deliberately absent — the hatched block <b>Sat Aug 29 14:00–15:30</b> on the spread covers
+    this whole section. No Done or Archive here: the repo is the system of record; your ruling is recorded and the
+    worker applies it back.</p>
+    <div class="codestats">5 open across 2 repos · <b>3 briefed &amp; unruled</b> · 1 ruled, apply pending · 1 not yet briefed · syncedAt 04:32</div>
+
+    <div class="lgroup" data-g="code">
+      <div class="ghead">
+        <h3>Open mirror rows.</h3>
+        <span class="gnote">dtsCodeBriefs recommendation shown where present · dtsCodeRulings state on the right</span>
+        <span class="gcount"></span>
+      </div>
+
+      <!-- cmt-041 -->
+      <article class="row" data-status="active" data-kind="code" data-repo="ComplexMultiTrigger" data-needsme="1"
+               data-text="judge-fix rerun d5 gate with repaired judge cmt-041" data-due="" data-committed="" data-created="" data-updated="202608280432">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph warm">§</span>
+          <span>
+            <span class="stmt">Judge-fix: rerun D5 gate with repaired judge</span>
+            <span class="chline">
+              <span class="repochip">ComplexMultiTrigger</span>
+              <span class="fc">externalId: cmt-041</span>
+              <span class="fc">tier: R</span>
+              <span class="fc">status: open</span>
+              <span class="fc solid">brief → recommendation: approve</span>
+              <span class="fc">execClass: needs-turing</span>
+              <span class="fc warm">no ruling yet</span>
+            </span>
+          </span>
+          <span class="rmeta"><span class="warm">awaiting your ruling</span></span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="briefbox"><div class="bl">dtsCodeBriefs · recommendation: approve · execClass: needs-turing</div>
+            The D5 gate previously failed on a judge bug, not on the functions under test. Judge repair landed;
+            rerun is mechanical but needs Turing (SLURM queue, ~3 GPU-hours). No design decisions remain.
+          </div>
+          <div class="acts">
+            <button class="act warm"><span class="lab">Rule: approve</span><span class="cap">dtsCode.recordCodeRuling({ruling:"approve"})</span></button>
+            <button class="act"><span class="lab">Rule: needs-session</span><span class="cap">dtsCode.recordCodeRuling({ruling:"needs-session"})</span></button>
+            <button class="act"><span class="lab">Rule: propose-archive</span><span class="cap">dtsCode.recordCodeRuling({ruling:"propose-archive"})</span></button>
+            <button class="act"><span class="lab">Rule: stale-replan</span><span class="cap">dtsCode.recordCodeRuling({ruling:"stale-replan"})</span></button>
+            <button class="act"><span class="lab">Rule: defer</span><span class="cap">dtsCode.recordCodeRuling({ruling:"defer"})</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({codeTodoId}) → /sessions</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="optional note to attach to the ruling…"><button data-mut='dtsCode.recordCodeRuling({ruling, note})'>Attach note</button></div>
+          <div class="rulecap">note rides along on dtsCode.recordCodeRuling({ruling, note})</div>
+        </div>
+      </article>
+
+      <!-- cmt-038 -->
+      <article class="row" data-status="active" data-kind="code" data-repo="ComplexMultiTrigger" data-needsme="1"
+               data-text="class-b sweep extend to 34-func set cmt-038" data-due="" data-committed="" data-created="" data-updated="202608280432">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph warm">§</span>
+          <span>
+            <span class="stmt">Class-B sweep: extend to 34-func set</span>
+            <span class="chline">
+              <span class="repochip">ComplexMultiTrigger</span>
+              <span class="fc">externalId: cmt-038</span>
+              <span class="fc">tier: C</span>
+              <span class="fc">status: open</span>
+              <span class="fc solid">brief → recommendation: needs-session</span>
+              <span class="fc warm">no ruling yet</span>
+            </span>
+          </span>
+          <span class="rmeta"><span class="warm">awaiting your ruling</span></span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="briefbox"><div class="bl">dtsCodeBriefs · recommendation: needs-session</div>
+            Extending the sweep changes the empty-cell handling path; two defensible designs exist
+            (resample vs. drop-and-note). The brief lays both out — a session is the place to choose.
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Rule: approve</span><span class="cap">dtsCode.recordCodeRuling({ruling:"approve"})</span></button>
+            <button class="act warm"><span class="lab">Rule: needs-session</span><span class="cap">dtsCode.recordCodeRuling({ruling:"needs-session"})</span></button>
+            <button class="act"><span class="lab">Rule: propose-archive</span><span class="cap">dtsCode.recordCodeRuling({ruling:"propose-archive"})</span></button>
+            <button class="act"><span class="lab">Rule: stale-replan</span><span class="cap">dtsCode.recordCodeRuling({ruling:"stale-replan"})</span></button>
+            <button class="act"><span class="lab">Rule: defer</span><span class="cap">dtsCode.recordCodeRuling({ruling:"defer"})</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({codeTodoId}) → /sessions</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="optional note to attach to the ruling…"><button data-mut='dtsCode.recordCodeRuling({ruling, note})'>Attach note</button></div>
+          <div class="rulecap">note rides along on dtsCode.recordCodeRuling({ruling, note})</div>
+        </div>
+      </article>
+
+      <!-- cmt-029 -->
+      <article class="row" data-status="active" data-kind="code" data-repo="ComplexMultiTrigger" data-needsme="1"
+               data-text="retire dead resample path cmt-029" data-due="" data-committed="" data-created="" data-updated="202608280432">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph warm">§</span>
+          <span>
+            <span class="stmt">Retire dead resample path</span>
+            <span class="chline">
+              <span class="repochip">ComplexMultiTrigger</span>
+              <span class="fc">externalId: cmt-029</span>
+              <span class="fc">tier: C</span>
+              <span class="fc">status: open</span>
+              <span class="fc solid">brief → recommendation: propose-archive</span>
+              <span class="fc warm">no ruling yet</span>
+            </span>
+          </span>
+          <span class="rmeta"><span class="warm">awaiting your ruling</span></span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="briefbox"><div class="bl">dtsCodeBriefs · recommendation: propose-archive · evidence</div>
+            evidence: &ldquo;superseded by commit 8d41f2&rdquo; — the balanced-resample rewrite removed every caller
+            of this path. Archiving the todo changes nothing in shipped behavior.
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Rule: approve</span><span class="cap">dtsCode.recordCodeRuling({ruling:"approve"})</span></button>
+            <button class="act"><span class="lab">Rule: needs-session</span><span class="cap">dtsCode.recordCodeRuling({ruling:"needs-session"})</span></button>
+            <button class="act warm"><span class="lab">Rule: propose-archive</span><span class="cap">dtsCode.recordCodeRuling({ruling:"propose-archive"})</span></button>
+            <button class="act"><span class="lab">Rule: stale-replan</span><span class="cap">dtsCode.recordCodeRuling({ruling:"stale-replan"})</span></button>
+            <button class="act"><span class="lab">Rule: defer</span><span class="cap">dtsCode.recordCodeRuling({ruling:"defer"})</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({codeTodoId}) → /sessions</span></button>
+          </div>
+          <div class="rule"><input type="text" placeholder="optional note to attach to the ruling…"><button data-mut='dtsCode.recordCodeRuling({ruling, note})'>Attach note</button></div>
+          <div class="rulecap">note rides along on dtsCode.recordCodeRuling({ruling, note})</div>
+        </div>
+      </article>
+
+      <!-- tq-007 -->
+      <article class="row" data-status="active" data-kind="code" data-repo="tom.quest" data-needsme=""
+               data-text="focus inventory merge under tts tq-007" data-due="" data-committed="" data-created="" data-updated="202608280432">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">§</span>
+          <span>
+            <span class="stmt">Focus/Inventory merge under /tts</span>
+            <span class="chline">
+              <span class="repochip tq">tom.quest</span>
+              <span class="fc">externalId: tq-007</span>
+              <span class="fc">tier: R</span>
+              <span class="fc">status: open</span>
+              <span class="fc">brief → recommendation: approve · execClass: box</span>
+              <span class="fc ok">ruled: approve · 2h ago</span>
+              <span class="fc quiet">appliedAt: pending</span>
+            </span>
+          </span>
+          <span class="rmeta">worker picks rulings up<br>on its next pass</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">dtsCodeRulings</span><span class="v">ruling: approve · ruledAt: 2026-08-28 07:41 (2h ago)</span></div>
+            <div class="fld"><span class="k">appliedAt</span><span class="v"><em>pending — worker applies rulings back to vqc/todos.yaml on its next pass</em></span></div>
+            <div class="fld"><span class="k">applyResult</span><span class="v"><em>— not yet</em></span></div>
+          </div>
+          <div class="briefbox"><div class="bl">dtsCodeBriefs · recommendation: approve · execClass: box</div>
+            Route-level merge only; page-routes.ts entries collapse to /tts, redirects preserved. Runs on the box, no Turing needed.
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Change ruling</span><span class="cap">dtsCode.recordCodeRuling({ruling:…}) — supersedes, history kept</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({codeTodoId}) → /sessions</span></button>
+          </div>
+        </div>
+      </article>
+
+      <!-- tq-004 -->
+      <article class="row" data-status="active" data-kind="code" data-repo="tom.quest" data-needsme=""
+               data-text="playwright e2e for action links tq-004" data-due="" data-committed="" data-created="" data-updated="202608280432">
+        <button class="rowhead" aria-expanded="false">
+          <span class="glyph">§</span>
+          <span>
+            <span class="stmt">Playwright e2e for action links</span>
+            <span class="chline">
+              <span class="repochip tq">tom.quest</span>
+              <span class="fc">externalId: tq-004</span>
+              <span class="fc">tier: H</span>
+              <span class="fc">status: open</span>
+              <span class="fc quiet">not yet briefed — worker hasn&rsquo;t prepared this one</span>
+            </span>
+          </span>
+          <span class="rmeta">nothing to rule on yet</span>
+          <span class="chev">›</span>
+        </button>
+        <div class="rowbody">
+          <div class="fields">
+            <div class="fld"><span class="k">dtsCodeBriefs</span><span class="v"><em>— no row · a ruling without a brief is allowed but unassisted</em></span></div>
+            <div class="fld"><span class="k">syncedAt</span><span class="v">2026-08-28 04:32</span></div>
+          </div>
+          <div class="acts">
+            <button class="act"><span class="lab">Rule anyway</span><span class="cap">dtsCode.recordCodeRuling({ruling:…}) — without a brief</span></button>
+            <button class="act"><span class="lab">Open session</span><span class="cap">dts.createSession({codeTodoId}) → /sessions</span></button>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <footer>
+    <b>TTS · The Planner.</b> This page renders <span class="mono">dtsTodos · dtsDailyQueues · dtsCodeTodoMirror · dtsCodeBriefs · dtsCodeRulings</span>.
+    Every control names the Convex mutation it fires; this mockup fires none.
+    Deadlines (<span class="mono">dueAt</span>) mark edges; only commitments (<span class="mono">committedAt</span>, category blocks) occupy time.
+    Nothing is ever deleted — <span class="mono">done</span> and <span class="mono">archived</span> remain in the ledger under their status filters.
+  </footer>
+
+</div>
+
+<div id="toast" role="status"></div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ——— state ——— */
+  var state = { status:"active", needs:false, kind:"all", q:"", sort:"" };
+
+  var rows = Array.prototype.slice.call(document.querySelectorAll(".row"));
+  rows.forEach(function(r,i){ r.dataset.i = i; });
+
+  /* ——— row expand/collapse ——— */
+  document.querySelectorAll(".rowhead").forEach(function(h){
+    h.addEventListener("click", function(){
+      var row = h.closest(".row");
+      var open = row.classList.toggle("open");
+      h.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  });
+
+  /* ——— queue cards jump to their ledger row ——— */
+  document.querySelectorAll(".qi").forEach(function(q){
+    q.addEventListener("click", function(){
+      var t = document.getElementById(q.dataset.target);
+      if(!t) return;
+      /* make sure filters aren't hiding it */
+      if (t.style.display === "none"){ setStatus("all"); }
+      t.classList.add("open");
+      t.querySelector(".rowhead").setAttribute("aria-expanded","true");
+      t.scrollIntoView({behavior:"smooth", block:"center"});
+    });
+  });
+
+  /* ——— action buttons: honest toast, no mutation ——— */
+  document.querySelectorAll(".act, .rule button").forEach(function(b){
+    b.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      var cap = b.dataset.mut || (b.querySelector(".cap") ? b.querySelector(".cap").textContent : "");
+      toast("static mockup — would fire <b>" + esc(cap) + "</b>");
+    });
+  });
+
+  var toastEl = document.getElementById("toast"), toastTimer = null;
+  function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+  function toast(html){
+    toastEl.innerHTML = html;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ toastEl.classList.remove("show"); }, 2600);
+  }
+
+  /* ——— filters ——— */
+  function chipGroup(name, cb){
+    var g = document.querySelector('[data-fgroup="'+name+'"]');
+    if(!g) return;
+    g.querySelectorAll(".chip").forEach(function(c){
+      c.addEventListener("click", function(){
+        g.querySelectorAll(".chip").forEach(function(x){ x.classList.remove("on"); });
+        c.classList.add("on");
+        cb(c.dataset.val);
+        apply();
+      });
+    });
+  }
+  chipGroup("status", function(v){ state.status = v; });
+  chipGroup("kind",   function(v){ state.kind = v; });
+
+  function setStatus(v){
+    state.status = v;
+    var g = document.querySelector('[data-fgroup="status"]');
+    g.querySelectorAll(".chip").forEach(function(x){
+      x.classList.toggle("on", x.dataset.val === v);
+    });
+    apply();
+  }
+
+  var needsChip = document.getElementById("needschip");
+  needsChip.addEventListener("click", function(){
+    state.needs = !state.needs;
+    needsChip.classList.toggle("on", state.needs);
+    needsChip.classList.toggle("warm", state.needs);
+    apply();
+  });
+
+  document.getElementById("q").addEventListener("input", function(e){
+    state.q = e.target.value.trim().toLowerCase();
+    apply();
+  });
+
+  document.getElementById("sortsel").addEventListener("change", function(e){
+    state.sort = e.target.value;
+    apply();
+  });
+
+  function matches(r){
+    var d = r.dataset;
+    if (state.status !== "all"){
+      if (d.kind === "code"){
+        /* code rows are open in the repo; browse them under active or all */
+        if (state.status !== "active") return false;
+      } else if (d.status !== state.status) return false;
+    }
+    if (state.needs && d.needsme !== "1") return false;
+    if (state.kind === "life" && d.kind !== "life") return false;
+    if (state.kind === "code" && d.kind !== "code") return false;
+    if ((state.kind === "ComplexMultiTrigger" || state.kind === "tom.quest") &&
+        !(d.kind === "code" && d.repo === state.kind)) return false;
+    if (state.q && d.text.indexOf(state.q) === -1) return false;
+    return true;
+  }
+
+  function sortKey(r){
+    var v = r.dataset[state.sort];
+    if (v === undefined || v === "") return null;
+    return parseInt(v, 10);
+  }
+
+  function apply(){
+    rows.forEach(function(r){ r.style.display = matches(r) ? "" : "none"; });
+
+    document.querySelectorAll(".lgroup").forEach(function(g){
+      var inRows = Array.prototype.slice.call(g.querySelectorAll(".row"));
+
+      /* sort within the group */
+      var ordered;
+      if (state.sort === ""){
+        ordered = inRows.sort(function(a,b){ return a.dataset.i - b.dataset.i; });
+      } else {
+        var desc = (state.sort === "updated");
+        ordered = inRows.sort(function(a,b){
+          var ka = sortKey(a), kb = sortKey(b);
+          if (ka === null && kb === null) return a.dataset.i - b.dataset.i;
+          if (ka === null) return 1;      /* missing keys last */
+          if (kb === null) return -1;
+          return desc ? kb - ka : ka - kb;
+        });
+      }
+      ordered.forEach(function(r){ g.appendChild(r); });
+
+      var vis = inRows.filter(function(r){ return r.style.display !== "none"; });
+      g.style.display = vis.length ? "" : "none";
+      var c = g.querySelector(".gcount");
+      if (c) c.textContent = vis.length + " shown";
+    });
+  }
+
+  apply();
+})();
+</script>
+</body>
+</html>

@@ -20,6 +20,14 @@
 //                    before Tom's attention is well spent. Still gets the
 //                    fields; deeper preparation is a later swarm feature.
 //
+// REVISE RULINGS: Tom can rule "revise" on a prepared life todo with one
+// written sentence that redirects the preparation (the server drops the
+// todo's readiness back to "preparing" when he does). This job reads the
+// unified rulings feed at /dts/code-rulings, takes the LIFE rows with verdict
+// "revise", re-prepares each such todo with Tom's sentence embedded in the
+// prompt, and POSTs /dts/code-ruling-applied so the ruling is consumed and
+// the UI shows the outcome.
+//
 // NO-STATE RULE: nothing local; Convex is read and written each run.
 
 import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./dts-lib.mjs";
@@ -27,7 +35,7 @@ import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./dts-lib.mj
 const BATCH_MAX = 10;
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 
-function prompt(todo) {
+function prompt(todo, reviseSentence) {
   return [
     `You are preparing one item in DTS, Tom's personal todo system. It was`,
     `captured as a raw thought; your job is to make it arrive pre-chewed.`,
@@ -44,6 +52,16 @@ function prompt(todo) {
       2,
     ),
     ``,
+    ...(reviseSentence
+      ? [
+          `Tom reviewed an earlier preparation of this item and ruled "revise" —`,
+          `his one written sentence below redirects this re-preparation and`,
+          `overrides any other reading of the item:`,
+          ``,
+          `Tom's revise ruling: ${reviseSentence}`,
+          ``,
+        ]
+      : []),
     `Write, in plain language (define any term Tom might not know; invent no`,
     `names; descriptive, never evaluative — no praise, no urgency theater):`,
     `1. "brief" — 2-5 sentences, ground-up: what this item is, why it likely`,
@@ -69,24 +87,43 @@ async function main() {
   const env = loadEnv();
   const state = await convexFetch(env, "/dts/state");
 
-  // Unprepared, active, life-side only. --force also re-prepares "preparing"
-  // items (useful after improving this prompt).
+  // Pending revise rulings on LIFE todos, keyed by todoId. The feed already
+  // filters to unapplied-and-not-superseded rows; code rows on the same feed
+  // belong to apply-rulings.mjs / execute-approved.mjs.
+  const { pending } = await convexFetch(env, "/dts/code-rulings");
+  const reviseByTodo = new Map();
+  for (const r of Array.isArray(pending) ? pending : []) {
+    if (r.subjectType === "life" && r.verdict === "revise" && r.todoId) {
+      reviseByTodo.set(r.todoId, r);
+    }
+  }
+
+  // Unprepared, active, life-side only — plus revise-ruled todos (a revise
+  // verdict drops readiness to "preparing" server-side, so the sentence is
+  // what pulls them back into the batch). --force also re-prepares
+  // "preparing" items (useful after improving this prompt).
   const targets = (state.todos ?? []).filter(
     (t) =>
       t.status === "active" &&
-      (t.readiness === "unprepared" || (force && t.readiness === "preparing")),
+      (t.readiness === "unprepared" ||
+        reviseByTodo.has(t._id) ||
+        (force && t.readiness === "preparing")),
   );
   if (targets.length === 0) return; // quiet when idle
 
   const batch = targets.slice(0, BATCH_MAX);
   console.log(
-    `[prepare-life-todos] ${targets.length} unprepared, processing ${batch.length}`,
+    `[prepare-life-todos] ${targets.length} to prepare ` +
+      `(${reviseByTodo.size} revise ruling(s) pending), processing ${batch.length}`,
   );
 
   let failures = 0;
   for (const todo of batch) {
+    const revise = reviseByTodo.get(todo._id) ?? null;
     try {
-      const answer = runClaude(prompt(todo), { timeoutMs: CLAUDE_TIMEOUT_MS });
+      const answer = runClaude(prompt(todo, revise?.sentence ?? null), {
+        timeoutMs: CLAUDE_TIMEOUT_MS,
+      });
       const parsed = extractJsonObject(answer);
       if (
         typeof parsed.brief !== "string" ||
@@ -103,13 +140,23 @@ async function main() {
         workDescription: parsed.workDescription,
         readiness: parsed.readiness,
       });
+      if (revise) {
+        // The re-prep landed — consume the ruling so the UI shows the
+        // outcome and the next run doesn't re-prepare on the same sentence.
+        await convexFetch(env, "/dts/code-ruling-applied", {
+          id: revise._id,
+          result: "revised: brief re-prepared",
+        });
+      }
       console.log(
-        `[prepare-life-todos] prepared ${todo._id} -> ${parsed.readiness} ` +
+        `[prepare-life-todos] prepared ${todo._id} -> ${parsed.readiness}` +
+          `${revise ? " (revise ruling applied)" : ""} ` +
           `"${todo.statement.slice(0, 50).replace(/\s+/g, " ")}"`,
       );
     } catch (err) {
-      // Per-item failure: log and continue — the item stays unprepared and
-      // the next run retries it. One bad item must not starve the batch.
+      // Per-item failure: log and continue — the item stays unprepared (or
+      // its revise ruling stays pending) and the next run retries it. One
+      // bad item must not starve the batch.
       failures++;
       console.error(
         `[prepare-life-todos] ${todo._id} FAILED: ${String(err.message ?? err).slice(-200)}`,

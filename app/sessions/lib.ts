@@ -5,7 +5,7 @@
 import type { Doc } from "@/convex/_generated/dataModel";
 
 // Age text is shared with the Inventory surface — one definition.
-export { ageText } from "../inventory/lib";
+export { ageText } from "../dts/lib";
 
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;

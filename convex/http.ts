@@ -368,12 +368,18 @@ const dtsCodeBriefs = httpAction(async (ctx, request) => {
 http.route({ path: "/dts/code-briefs", method: "POST", handler: dtsCodeBriefs });
 
 // GET /dts/code-rulings — the rulings a worker job should act on (unapplied
-// and not superseded by a newer ruling on the same item). Each row carries its
-// _id, which the worker echoes back to /dts/code-ruling-applied.
+// and not superseded by a newer ruling on the same subject), from the unified
+// dtsRulings table. BOTH subject types ride the feed: rows carry subjectType
+// ("code" → the apply job; "life" with verdict "revise" → the preparer
+// consumes the sentence). Each row carries its _id, which the worker echoes
+// back to /dts/code-ruling-applied.
 const dtsCodeRulings = httpAction(async (ctx, request) => {
   const denied = dtsAuth(request);
   if (denied) return denied;
-  const pending = await ctx.runQuery(internal.dtsCode.internalPendingRulings, {});
+  const pending = await ctx.runQuery(
+    internal.dtsRulings.internalPendingRulings,
+    {},
+  );
   return jsonResponse(200, { pending });
 });
 
@@ -398,7 +404,7 @@ const dtsCodeRulingApplied = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "result (non-empty string) required" });
   }
   try {
-    await ctx.runMutation(internal.dtsCode.internalMarkRulingApplied, {
+    await ctx.runMutation(internal.dtsRulings.internalMarkRulingApplied, {
       id: b.id,
       result: b.result,
     });

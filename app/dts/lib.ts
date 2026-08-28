@@ -1,4 +1,4 @@
-// Shared types + date/age helpers for the DTS Inventory surface.
+// Shared types + date/age helpers for the /dts surface.
 // All persisted dates are epoch-ms numbers (convex/schema.ts dtsTodos).
 
 import type { Doc } from "@/convex/_generated/dataModel";

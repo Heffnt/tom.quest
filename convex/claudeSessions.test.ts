@@ -320,4 +320,75 @@ describe("claude sessions", () => {
       }),
     ).rejects.toThrow(/ended/);
   });
+
+  // witness: remove the ruling-marking branch from createSession in
+  // convex/claudeSessions.ts and this test goes red.
+  it("createSession with a todoId marks the live unapplied session ruling applied", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, {
+      statement: "talk this through",
+    });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId,
+      verdict: "session",
+    });
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "session for todo",
+      kind: "focus-item",
+      repo: "none",
+      todoId,
+      initialPrompt: "let's talk",
+    });
+    const [ruling] = await tom.query(api.dtsRulings.listRulings, {});
+    expect(ruling.appliedAt).toBeDefined();
+    expect(ruling.applyResult).toBe(`session ${sessionId}`);
+  });
+
+  // witness: drop the `live.verdict === "session"` guard from createSession in
+  // convex/claudeSessions.ts and this test goes red.
+  it("createSession does not consume a non-session or already-applied ruling", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, {
+      statement: "just do it",
+    });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId,
+      verdict: "approve",
+    });
+    const firstSession = await tom.mutation(api.claudeSessions.createSession, {
+      title: "adhoc on an approved todo",
+      kind: "focus-item",
+      repo: "none",
+      todoId,
+      initialPrompt: "poke at it",
+    });
+    const [ruling] = await tom.query(api.dtsRulings.listRulings, {});
+    expect(ruling.appliedAt).toBeUndefined(); // approve is the worker's to apply
+
+    // An already-applied session ruling is not re-stamped by a second session.
+    const sessionRulingId = await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId,
+      verdict: "session",
+    });
+    const secondSession = await tom.mutation(api.claudeSessions.createSession, {
+      title: "first session",
+      kind: "focus-item",
+      repo: "none",
+      todoId,
+      initialPrompt: "talk",
+    });
+    await tom.mutation(api.claudeSessions.createSession, {
+      title: "second session",
+      kind: "focus-item",
+      repo: "none",
+      todoId,
+      initialPrompt: "talk again",
+    });
+    const rulings = await tom.query(api.dtsRulings.listRulings, {});
+    const sessionRuling = rulings.find((r) => r._id === sessionRulingId);
+    expect(sessionRuling?.applyResult).toBe(`session ${secondSession}`);
+    expect(firstSession).not.toBe(secondSession);
+  });
 });

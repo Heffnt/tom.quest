@@ -385,3 +385,167 @@ describe("DTS todos", () => {
     expect(rows[0].status).toBe("closed");
   });
 });
+
+describe("DTS blocks and category", () => {
+  const HOUR = 3_600_000;
+
+  // witness: remove the requireTomId call from listBlocks in convex/dts.ts
+  it("gates listBlocks on the tom role", async () => {
+    const t = convexTest({ schema, modules });
+    await expect(t.query(api.dts.listBlocks, {})).rejects.toThrow();
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", { name: "u", email: "u@tom.quest", role: "user" }),
+    );
+    const user = t.withIdentity({ subject: userId });
+    await expect(user.query(api.dts.listBlocks, {})).rejects.toThrow();
+  });
+
+  // witness: drop the requireOneBlockTarget call (or the end<=start throw)
+  // from createBlock in convex/dts.ts
+  it("createBlock targets exactly one thing and validates the span", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "block me" });
+    const start = Date.now();
+    // Zero targets.
+    await expect(
+      tom.mutation(api.dts.createBlock, { start, end: start + HOUR }),
+    ).rejects.toThrow(/exactly one/);
+    // Two targets.
+    await expect(
+      tom.mutation(api.dts.createBlock, {
+        start,
+        end: start + HOUR,
+        todoId,
+        category: "chores",
+      }),
+    ).rejects.toThrow(/exactly one/);
+    // Zero-length and inverted spans.
+    await expect(
+      tom.mutation(api.dts.createBlock, { start, end: start, category: "chores" }),
+    ).rejects.toThrow(/ends after/);
+    await expect(
+      tom.mutation(api.dts.createBlock, {
+        start,
+        end: start - HOUR,
+        category: "chores",
+      }),
+    ).rejects.toThrow(/ends after/);
+  });
+
+  // witness: drop the ctx.db.get existence check from createBlock's todoId
+  // branch in convex/dts.ts
+  it("createBlock validates the todo target exists", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "gone" });
+    await t.run(async (ctx) => ctx.db.delete(todoId));
+    const start = Date.now();
+    await expect(
+      tom.mutation(api.dts.createBlock, { start, end: start + HOUR, todoId }),
+    ).rejects.toThrow(/not found/);
+  });
+
+  it("creates, lists, and instruments blocks for both target kinds", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "a task" });
+    const start = Date.now();
+    const todoBlock = await tom.mutation(api.dts.createBlock, {
+      start,
+      end: start + 2 * HOUR,
+      todoId,
+      note: "Tue 9-11",
+    });
+    const categoryBlock = await tom.mutation(api.dts.createBlock, {
+      start: start + 24 * HOUR,
+      end: start + 26 * HOUR,
+      category: "chores",
+    });
+    const blocks = await tom.query(api.dts.listBlocks, {});
+    expect(blocks).toHaveLength(2);
+    const perTodo = blocks.find((b) => b._id === todoBlock);
+    expect(perTodo?.todoId).toBe(todoId);
+    expect(perTodo?.category).toBeUndefined();
+    expect(perTodo?.note).toBe("Tue 9-11");
+    const perCategory = blocks.find((b) => b._id === categoryBlock);
+    expect(perCategory?.category).toBe("chores");
+    expect(perCategory?.todoId).toBeUndefined();
+    const events = await tom.query(api.dts.listRecentEvents, {});
+    const created = events.filter((e) => e.kind === "block-created");
+    expect(created).toHaveLength(2);
+    expect(created.some((e) => e.todoId === todoId)).toBe(true);
+  });
+
+  // witness: drop the recomputed-span throw from updateBlock in convex/dts.ts
+  it("updateBlock moves the span, validates it, and logs the move", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const start = Date.now();
+    const id = await tom.mutation(api.dts.createBlock, {
+      start,
+      end: start + HOUR,
+      category: "chores",
+      note: "keep me",
+    });
+    await tom.mutation(api.dts.updateBlock, {
+      id,
+      start: start + 24 * HOUR,
+      end: start + 25 * HOUR,
+    });
+    let [block] = await tom.query(api.dts.listBlocks, {});
+    expect(block.start).toBe(start + 24 * HOUR);
+    expect(block.end).toBe(start + 25 * HOUR);
+    expect(block.note).toBe("keep me"); // omitted field untouched
+    // A partial edit that would invert the span is refused.
+    await expect(
+      tom.mutation(api.dts.updateBlock, { id, end: start }),
+    ).rejects.toThrow(/ends after/);
+    // note: null clears it.
+    await tom.mutation(api.dts.updateBlock, { id, note: null });
+    [block] = await tom.query(api.dts.listBlocks, {});
+    expect(block.note).toBeUndefined();
+    const events = await tom.query(api.dts.listRecentEvents, {});
+    const moved = events.find((e) => e.kind === "block-moved");
+    expect(moved?.data).toMatchObject({
+      from: { start, end: start + HOUR },
+      to: { start: start + 24 * HOUR, end: start + 25 * HOUR },
+    });
+  });
+
+  // witness: drop the logEvent call from deleteBlock in convex/dts.ts
+  it("deleteBlock removes the row and logs an event", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "a task" });
+    const start = Date.now();
+    const id = await tom.mutation(api.dts.createBlock, {
+      start,
+      end: start + HOUR,
+      todoId,
+    });
+    await tom.mutation(api.dts.deleteBlock, { id });
+    expect(await tom.query(api.dts.listBlocks, {})).toHaveLength(0);
+    const events = await tom.query(api.dts.listRecentEvents, {});
+    const deleted = events.find((e) => e.kind === "block-deleted");
+    expect(deleted?.todoId).toBe(todoId);
+    expect(deleted?.data).toMatchObject({ start, end: start + HOUR });
+  });
+
+  it("createTodo/updateTodo round-trip category, null clears", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.dts.createTodo, {
+      statement: "sweep the floor",
+      category: "chores",
+    });
+    let [todo] = await tom.query(api.dts.listTodos, {});
+    expect(todo.category).toBe("chores");
+    await tom.mutation(api.dts.updateTodo, { id, category: "errands" });
+    [todo] = await tom.query(api.dts.listTodos, {});
+    expect(todo.category).toBe("errands");
+    await tom.mutation(api.dts.updateTodo, { id, category: null });
+    [todo] = await tom.query(api.dts.listTodos, {});
+    expect(todo.category).toBeUndefined();
+  });
+});

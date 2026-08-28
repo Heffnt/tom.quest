@@ -1,4 +1,4 @@
-﻿/* eslint-disable */
+/* eslint-disable */
 /**
  * Generated `api` utility.
  *
@@ -17,12 +17,12 @@ import type * as claudeSessions from "../claudeSessions.js";
 import type * as crons from "../crons.js";
 import type * as dts from "../dts.js";
 import type * as dtsCode from "../dtsCode.js";
+import type * as dtsRulings from "../dtsRulings.js";
 import type * as dtsShared from "../dtsShared.js";
 import type * as dtsSync from "../dtsSync.js";
 import type * as forge from "../forge.js";
 import type * as gpuPool from "../gpuPool.js";
 import type * as http from "../http.js";
-import type * as perfumeMigration from "../perfumeMigration.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as userSettings from "../userSettings.js";
@@ -44,12 +44,12 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   dts: typeof dts;
   dtsCode: typeof dtsCode;
+  dtsRulings: typeof dtsRulings;
   dtsShared: typeof dtsShared;
   dtsSync: typeof dtsSync;
   forge: typeof forge;
   gpuPool: typeof gpuPool;
   http: typeof http;
-  perfumeMigration: typeof perfumeMigration;
   serverHealth: typeof serverHealth;
   symbolScores: typeof symbolScores;
   userSettings: typeof userSettings;
