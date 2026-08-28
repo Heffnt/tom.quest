@@ -241,8 +241,53 @@ function resolveDateAsDone(
   }
 }
 
-// Status transitions (spec §5.1). Nothing is ever deleted: "archived" and
-// "done" are the only terminal states, both kept and visible (principle 2).
+// The ONE implementation of a status transition (spec §5.1) — used by the
+// Tom-gated setStatus below and by internalTriage (live sessions applying
+// Tom's spoken rulings via `npx convex run`). Nothing is ever deleted:
+// "archived" and "done" are the only terminal states, both kept and visible.
+async function applyStatusChange(
+  ctx: MutationCtx,
+  todo: Doc<"dtsTodos">,
+  args: {
+    status: "active" | "waiting" | "archived" | "done";
+    wakeCondition?: string;
+    wakeAt?: number;
+    unarchiveCondition?: string;
+    note?: string;
+  },
+) {
+  const { status, wakeCondition, wakeAt, unarchiveCondition, note } = args;
+  const now = Date.now();
+  const patch: Record<string, unknown> = { status, updatedAt: now };
+  if (status === "active") {
+    // Reopening: stale terminal/sleep facts must not linger on a live item
+    // (descriptive-never-evaluative demands the panel state be TRUE).
+    patch.doneAt = undefined;
+    patch.archivedAt = undefined;
+    patch.unarchiveCondition = undefined;
+    patch.wakeCondition = undefined;
+    patch.wakeAt = undefined;
+  }
+  if (status === "waiting") {
+    patch.wakeCondition = wakeCondition;
+    patch.wakeAt = wakeAt;
+  }
+  if (status === "archived") {
+    patch.archivedAt = now;
+    patch.unarchiveCondition = unarchiveCondition;
+  }
+  if (status === "done") {
+    // An open date on a completed item resolves as kept (kept-dates rule).
+    resolveDateAsDone(todo, now, note, patch);
+  }
+  await ctx.db.patch(todo._id, patch);
+  await logEvent(ctx, "status-changed", todo._id, {
+    from: todo.status,
+    to: status,
+    note,
+  });
+}
+
 export const setStatus = mutation({
   args: {
     id: v.id("dtsTodos"),
@@ -252,39 +297,55 @@ export const setStatus = mutation({
     unarchiveCondition: v.optional(v.string()),
     note: v.optional(v.string()),
   },
-  handler: async (ctx, { id, status, wakeCondition, wakeAt, unarchiveCondition, note }) => {
+  handler: async (ctx, { id, ...args }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
     if (!todo) throw new Error("DTS todo not found");
-    const now = Date.now();
-    const patch: Record<string, unknown> = { status, updatedAt: now };
-    if (status === "active") {
-      // Reopening: stale terminal/sleep facts must not linger on a live item
-      // (descriptive-never-evaluative demands the panel state be TRUE).
-      patch.doneAt = undefined;
-      patch.archivedAt = undefined;
-      patch.unarchiveCondition = undefined;
-      patch.wakeCondition = undefined;
-      patch.wakeAt = undefined;
+    await applyStatusChange(ctx, todo, args);
+  },
+});
+
+// Triage from a LIVE session with Tom (the Friday session, or any interactive
+// session where he rules out loud and the session agent records it): an
+// internal mutation so the agent can apply rulings via `npx convex run
+// dts:internalTriage` with the deploy credentials Tom's machine holds. Only
+// ever run while Tom is present and ruling — it is his pen, not a policy
+// actor. Same status semantics as setStatus (one implementation), plus an
+// optional self-imposed date for undated items (dated items keep the
+// kept-dates rule: dates move only via recordDateOutcome).
+export const internalTriage = internalMutation({
+  args: {
+    id: v.string(),
+    status: v.optional(STATUS),
+    dueAt: v.optional(v.number()),
+    wakeCondition: v.optional(v.string()),
+    wakeAt: v.optional(v.number()),
+    unarchiveCondition: v.optional(v.string()),
+    note: v.optional(v.string()),
+  },
+  handler: async (ctx, { id, status, dueAt, ...rest }) => {
+    const normalized = ctx.db.normalizeId("dtsTodos", id);
+    if (!normalized) throw new Error(`Unknown todo id: ${id}`);
+    const todo = await ctx.db.get(normalized);
+    if (!todo) throw new Error(`Unknown todo id: ${id}`);
+    if (dueAt !== undefined) {
+      if (todo.dueAt !== undefined) {
+        throw new Error(
+          "Item already has a date — move it via recordDateOutcome (kept-dates rule), not triage",
+        );
+      }
+      await ctx.db.patch(normalized, {
+        dueAt,
+        dateKind: "self-imposed",
+        timingClass: "dated",
+        updatedAt: Date.now(),
+      });
+      await logEvent(ctx, "updated", normalized, { fields: ["dueAt"], via: "triage" });
     }
-    if (status === "waiting") {
-      patch.wakeCondition = wakeCondition;
-      patch.wakeAt = wakeAt;
+    if (status !== undefined) {
+      const fresh = await ctx.db.get(normalized);
+      if (fresh) await applyStatusChange(ctx, fresh, { status, ...rest });
     }
-    if (status === "archived") {
-      patch.archivedAt = now;
-      patch.unarchiveCondition = unarchiveCondition;
-    }
-    if (status === "done") {
-      // An open date on a completed item resolves as kept (kept-dates rule).
-      resolveDateAsDone(todo, now, note, patch);
-    }
-    await ctx.db.patch(id, patch);
-    await logEvent(ctx, "status-changed", id, {
-      from: todo.status,
-      to: status,
-      note,
-    });
   },
 });
 

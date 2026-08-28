@@ -273,6 +273,37 @@ describe("DTS todos", () => {
     ).rejects.toThrow(/Unknown todo id/);
   });
 
+  // witness: drop the already-dated throw in internalTriage and the
+  // rejects assertion below goes red.
+  it("internalTriage applies status + self-imposed dates with kept-dates intact", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.dts.internalCapture, {
+      statement: "reserve UH 400",
+      source: "consolidation",
+    });
+    const [captured] = await t.run(async (ctx) =>
+      ctx.db.query("dtsTodos").collect(),
+    );
+    const due = Date.now() + 3 * 86_400_000;
+    await t.mutation(internal.dts.internalTriage, { id: captured._id, dueAt: due });
+    let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.timingClass).toBe("dated");
+    expect(todo.dateKind).toBe("self-imposed");
+    // A second date via triage is refused — dates move via recordDateOutcome.
+    await expect(
+      t.mutation(internal.dts.internalTriage, { id: captured._id, dueAt: due + 1 }),
+    ).rejects.toThrow(/kept-dates/);
+    await t.mutation(internal.dts.internalTriage, {
+      id: captured._id,
+      status: "waiting",
+      wakeAt: due,
+      wakeCondition: "closer to the date",
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.status).toBe("waiting");
+    expect(todo.wakeCondition).toBe("closer to the date");
+  });
+
   it("builds the fallback queue and wakes due waiting items", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
