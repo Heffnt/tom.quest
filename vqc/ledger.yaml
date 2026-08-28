@@ -87,19 +87,6 @@
     ruling records that prose-from-the-model is intentional with a parity
     checklist tying the two format specs together.
 
-- id: dts-shared-gate-dedup
-  kind: descent
-  created: 2026-08-27
-  cites: [C1, D2]
-  statement: >-
-    Two duplications left by the DTS build: the /pool HTTP handlers inline
-    the key-auth block that /dts/* routes get via dtsAuth, and the Tom-gate
-    loading/denied JSX is copied in the forge, inventory, and focus clients.
-  graduates_when: >-
-    One key-auth helper serves all key-authed routes and one TomGate
-    component renders the gate in all Tom-only pages, with no behavior
-    change.
-
 - id: no-layer-dag
   kind: descent
   created: 2026-08-27

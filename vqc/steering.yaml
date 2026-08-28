@@ -11,6 +11,21 @@
 #
 # vqc/registries.test.ts guards this file's shape in CI.
 
+- id: canvas-code-unvalidated
+  kind: gotcha
+  owner: tom
+  created: 2026-08-28
+  trigger: >-
+    citing app/canvas/ or convex/canvas.ts (canvasChats/canvasMessages) as a
+    pattern or precedent for new work
+  correction: >-
+    The canvas feature was one-shotted and has never been used in production
+    — Tom does not trust its code as real-world-validated. Treat it as a
+    hypothesis source at best; design new chat/streaming/agent features from
+    first principles instead of mirroring it.
+  incidents: 1
+  graduation: prose
+
 - id: ground-up-explanations
   kind: preference
   owner: tom

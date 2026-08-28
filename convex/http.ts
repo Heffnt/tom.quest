@@ -26,6 +26,27 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+// The one key-auth gate for every agent-facing route (ledger graduation:
+// dts-shared-gate-dedup). Each route family keeps its OWN env key and header
+// (sharing nothing between keys — the auth-clobber lesson); what they share
+// is the guard's shape: 503 when the key is unconfigured, then a
+// constant-time compare, 401 on mismatch. Returns null when authorized.
+function keyAuth(
+  request: Request,
+  envVar: string,
+  header: string,
+): Response | null {
+  const expected = process.env[envVar];
+  if (!expected) {
+    return jsonResponse(503, { error: `${envVar} not configured` });
+  }
+  const presented = request.headers.get(header) ?? "";
+  if (!timingSafeEqual(presented, expected)) {
+    return jsonResponse(401, { error: "unauthorized" });
+  }
+  return null;
+}
+
 type PoolRequest = {
   writer: string;
   gpuType: string;
@@ -71,14 +92,8 @@ function parsePoolRequest(body: unknown): PoolRequest | { error: string } {
 // (that stays a Tom-only capability behind the admin path). The key is POOL_AGENT_KEY, stored
 // only in the Convex env and sharing nothing with TURING_API_KEY (the auth-clobber lesson).
 const pool = httpAction(async (ctx, request) => {
-  const expected = process.env.POOL_AGENT_KEY;
-  if (!expected) {
-    return jsonResponse(503, { error: "POOL_AGENT_KEY not configured" });
-  }
-  const presented = request.headers.get("X-Pool-Key") ?? "";
-  if (!timingSafeEqual(presented, expected)) {
-    return jsonResponse(401, { error: "unauthorized" });
-  }
+  const denied = keyAuth(request, "POOL_AGENT_KEY", "X-Pool-Key");
+  if (denied) return denied;
   let body: unknown;
   try {
     body = await request.json();
@@ -110,14 +125,8 @@ http.route({ path: "/pool", method: "POST", handler: pool });
 // and reads only the projected/internal queries — never the requireAdmin status/list, which would
 // throw under the agent key. GET and POST coexist on "/pool" because the router keys on path+method.
 const poolRead = httpAction(async (ctx, request) => {
-  const expected = process.env.POOL_AGENT_KEY;
-  if (!expected) {
-    return jsonResponse(503, { error: "POOL_AGENT_KEY not configured" });
-  }
-  const presented = request.headers.get("X-Pool-Key") ?? "";
-  if (!timingSafeEqual(presented, expected)) {
-    return jsonResponse(401, { error: "unauthorized" });
-  }
+  const denied = keyAuth(request, "POOL_AGENT_KEY", "X-Pool-Key");
+  if (denied) return denied;
   return jsonResponse(200, {
     configs: await ctx.runQuery(internal.gpuPool.publicConfigs, {}),
     status: await ctx.runQuery(internal.gpuPool.prevStatus, {}),
@@ -135,15 +144,7 @@ http.route({ path: "/pool", method: "GET", handler: poolRead });
 // delete (those are Tom-gated mutations).
 
 function dtsAuth(request: Request): Response | null {
-  const expected = process.env.DTS_WORKER_KEY;
-  if (!expected) {
-    return jsonResponse(503, { error: "DTS_WORKER_KEY not configured" });
-  }
-  const presented = request.headers.get("X-DTS-Key") ?? "";
-  if (!timingSafeEqual(presented, expected)) {
-    return jsonResponse(401, { error: "unauthorized" });
-  }
-  return null;
+  return keyAuth(request, "DTS_WORKER_KEY", "X-DTS-Key");
 }
 
 // POST /dts/capture — one captured thought/message becomes an `unprepared`
@@ -369,6 +370,84 @@ http.route({
   path: "/dts/code-ruling-applied",
   method: "POST",
   handler: dtsCodeRulingApplied,
+});
+
+// ── Claude Code session-host endpoints ───────────────────────────────────────
+// The session-host daemon's channel (worker/session-host/). Its OWN key —
+// SESSIONS_WORKER_KEY shares nothing with the other keys (the auth-clobber
+// lesson). Two routes: poll (heartbeat + full state pull for every live
+// session) and ingest (per-session flush whose response piggybacks pending
+// commands + permission decisions). Bodies validated hand-rolled, rejected by
+// name; the heavy lifting lives in convex/claudeSessions.ts internal
+// functions.
+
+function sessionsAuth(request: Request): Response | null {
+  return keyAuth(request, "SESSIONS_WORKER_KEY", "X-Sessions-Key");
+}
+
+const sessionsPoll = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.version !== "string" || b.version === "") {
+    return jsonResponse(400, { error: "version (non-empty string) required" });
+  }
+  if (typeof b.daemonStartedAt !== "number") {
+    return jsonResponse(400, { error: "daemonStartedAt (number) required" });
+  }
+  const result = await ctx.runMutation(internal.claudeSessions.internalPoll, {
+    version: b.version,
+    daemonStartedAt: b.daemonStartedAt,
+    activeAccount:
+      typeof b.activeAccount === "string" ? b.activeAccount : undefined,
+    lastIngestError:
+      typeof b.lastIngestError === "string"
+        ? b.lastIngestError.slice(0, 2000)
+        : undefined,
+  });
+  return jsonResponse(200, result);
+});
+
+http.route({ path: "/sessions/poll", method: "POST", handler: sessionsPoll });
+
+const sessionsIngest = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  try {
+    // Field-level validation happens in the internal mutation's arg
+    // validators; a mismatch surfaces here as a named 400.
+    const result = await ctx.runMutation(
+      internal.claudeSessions.internalIngest,
+      b as never,
+    );
+    return jsonResponse(200, result);
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/sessions/ingest",
+  method: "POST",
+  handler: sessionsIngest,
 });
 
 export default http;

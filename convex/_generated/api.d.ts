@@ -1,4 +1,4 @@
-/* eslint-disable */
+﻿/* eslint-disable */
 /**
  * Generated `api` utility.
  *
@@ -13,6 +13,7 @@ import type * as authRoles from "../authRoles.js";
 import type * as boolbackPresets from "../boolbackPresets.js";
 import type * as brews from "../brews.js";
 import type * as canvas from "../canvas.js";
+import type * as claudeSessions from "../claudeSessions.js";
 import type * as crons from "../crons.js";
 import type * as dts from "../dts.js";
 import type * as dtsCode from "../dtsCode.js";
@@ -39,6 +40,7 @@ declare const fullApi: ApiFromModules<{
   boolbackPresets: typeof boolbackPresets;
   brews: typeof brews;
   canvas: typeof canvas;
+  claudeSessions: typeof claudeSessions;
   crons: typeof crons;
   dts: typeof dts;
   dtsCode: typeof dtsCode;

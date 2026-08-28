@@ -23,7 +23,7 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "== [1/7] apt packages (curl, git, python3, gh) =="
+echo "== [1/8] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl git ca-certificates
@@ -34,7 +34,7 @@ apt-get install -y curl git ca-certificates
 # stay fast and idempotent.
 apt-get install -y python3 python3-yaml python3-pytest gh
 
-echo "== [2/7] Node 22 (NodeSource) =="
+echo "== [2/8] Node 22 (NodeSource) =="
 # Only (re)install if node is missing or not major version 22 — keeps re-runs
 # fast and avoids needlessly touching apt sources.
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ]; then
@@ -43,12 +43,12 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ];
 fi
 echo "node: $(node -v)"
 
-echo "== [3/7] Claude Code CLI =="
+echo "== [3/8] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
 npm install -g @anthropic-ai/claude-code
 echo "claude: $(claude --version || true)"
 
-echo "== [4/7] directories =="
+echo "== [4/8] directories =="
 # /opt/dts            — the job scripts (copied from the repo, below)
 # /var/lib/dts        — small local state: the Slack poll cursor, the
 #     brief-hash cursor, and the apply/execute lock dirs (all harmless to
@@ -63,7 +63,7 @@ echo "== [4/7] directories =="
 mkdir -p /opt/dts /var/lib/dts /var/cache/dts /etc/dts /var/log/dts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi
 
-echo "== [5/7] install worker files =="
+echo "== [5/8] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/dts/
 # CLI helpers onto the PATH.
@@ -78,7 +78,7 @@ if [ ! -f /etc/dts/worker.env ]; then
 fi
 chmod 600 /etc/dts/worker.env
 
-echo "== [6/7] cron =="
+echo "== [6/8] cron =="
 # System cron runs in UTC and knows nothing about daylight saving, so
 # prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
@@ -128,7 +128,52 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON
 chmod 644 /etc/cron.d/dts
 
-echo "== [7/7] done =="
+echo "== [7/8] session-host daemon =="
+# The always-on daemon that runs interactive Claude Code sessions and streams
+# them into Convex (worker/session-host/README.md). Unlike the cron jobs it
+# carries the box's ONE sanctioned npm dependency (@anthropic-ai/
+# claude-agent-sdk — pinned in its package.json), so this step also runs
+# npm install in its install dir. Everything here is idempotent: cp + install
+# + unit rewrite + restart is exactly how updated daemon code rolls out after
+# a git pull.
+mkdir -p /opt/dts/session-host
+cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
+  /opt/dts/session-host/
+(cd /opt/dts/session-host && npm install --omit=dev)
+
+cat > /etc/systemd/system/dts-session-host.service <<'UNIT'
+[Unit]
+Description=DTS session-host (Claude Code sessions bridged to Convex)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/dts/session-host/session-host.mjs
+WorkingDirectory=/opt/dts/session-host
+EnvironmentFile=/etc/dts/worker.env
+Environment=CLAUDE_CONFIG_DIR=/root/.claude-accounts/active
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+# Only enable the daemon once its key exists — a daemon started with an empty
+# SESSIONS_WORKER_KEY would just spin on 503s. On re-runs (key present) the
+# restart is what rolls out freshly copied code.
+if grep -Eq '^SESSIONS_WORKER_KEY=.+' /etc/dts/worker.env; then
+  systemctl enable dts-session-host
+  systemctl restart dts-session-host
+  echo "  dts-session-host enabled + (re)started"
+else
+  echo "  SESSIONS_WORKER_KEY not set in /etc/dts/worker.env — dts-session-host"
+  echo "  NOT enabled. Fill it in, then re-run this script (or:"
+  echo "  systemctl enable --now dts-session-host)."
+fi
+
+echo "== [8/8] done =="
 cat <<'STEPS'
 
 NEXT STEPS (manual, in order):
@@ -136,7 +181,9 @@ NEXT STEPS (manual, in order):
   1. Fill in the secrets:
        nano /etc/dts/worker.env
      (CONVEX_SITE_URL, DTS_WORKER_KEY, SLACK_BOT_TOKEN, SLACK_DUMP_CHANNEL_ID,
-      GH_TOKEN — the file explains each one.)
+      GH_TOKEN, SESSIONS_WORKER_KEY — the file explains each one. If
+      SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
+      filling it so the dts-session-host daemon gets enabled.)
 
   2. Log in both Claude Max accounts (interactive, over this SSH session):
        dts-account login gmail
@@ -148,6 +195,10 @@ NEXT STEPS (manual, in order):
   4. Smoke-test the jobs by hand:
        node /opt/dts/poll-dump.mjs
        node /opt/dts/prepare-queue.mjs --force
+
+  5. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):
+       systemctl status dts-session-host
+       journalctl -u dts-session-host -f
 
 Cron is already installed (/etc/cron.d/dts); logs land in /var/log/dts/.
 Re-running this script at any time is safe and is also how you roll out

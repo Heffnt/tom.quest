@@ -1,0 +1,128 @@
+"use client";
+
+// Session view: header facts, transcript, pending permission cards pinned
+// above the composer, composer. Fills the viewport below the site nav so the
+// transcript is the only scrolling region (phone-first).
+
+import Link from "next/link";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
+import { ageText, isLive, shortAge, statusChipClass } from "../lib";
+import Transcript from "./transcript";
+import PermissionCard from "./permission-card";
+import Composer from "./composer";
+
+const LAST_OUTPUT_QUIET_MS = 2 * 60_000;
+
+export default function SessionView({
+  sessionId,
+  now,
+  daemonStale,
+  daemonLastSeenAt,
+  onBack,
+}: {
+  sessionId: Id<"claudeSessions">;
+  now: number;
+  daemonStale: boolean;
+  daemonLastSeenAt: number | undefined;
+  onBack: () => void;
+}) {
+  const session = useQuery(api.claudeSessions.getSession, { id: sessionId });
+  const pendingPermissions = useQuery(api.claudeSessions.getPendingPermissions, {
+    sessionId,
+  });
+
+  if (session === undefined) {
+    return (
+      <div className="px-4 py-6 text-sm text-text-faint">loading session…</div>
+    );
+  }
+
+  if (session === null) {
+    return (
+      <div className="px-4 py-6 space-y-3">
+        <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
+          session not found
+        </div>
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded px-3 py-1.5 text-sm border border-border text-text-muted hover:bg-surface-alt"
+        >
+          Back to sessions
+        </button>
+      </div>
+    );
+  }
+
+  const quietWhileRunning =
+    session.status === "running" &&
+    session.lastSdkEventAt !== undefined &&
+    now - session.lastSdkEventAt > LAST_OUTPUT_QUIET_MS;
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <header className="border-b border-border px-3 sm:px-4 py-2.5 space-y-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Back to sessions"
+            className="shrink-0 rounded px-2 py-1 text-sm border border-border text-text-muted hover:bg-surface-alt"
+          >
+            &larr;
+          </button>
+          <h1 className="text-sm sm:text-base text-text truncate min-w-0 flex-1">
+            {session.title}
+          </h1>
+          <span
+            className={`shrink-0 border rounded px-1.5 py-0.5 text-xs ${statusChipClass(session.status)}`}
+          >
+            {session.status}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs text-text-faint pl-9">
+          <span>{session.repo}</span>
+          <span>{ageText(session.statusChangedAt, now)}</span>
+          {session.todoId !== undefined && (
+            <Link
+              href={`/inventory?item=${session.todoId}`}
+              className="text-accent hover:underline"
+            >
+              linked item
+            </Link>
+          )}
+          {session.cwd !== undefined && (
+            <span className="truncate max-w-full">{session.cwd}</span>
+          )}
+          {quietWhileRunning && session.lastSdkEventAt !== undefined && (
+            <span>
+              last output {shortAge(session.lastSdkEventAt, now)} ago
+            </span>
+          )}
+          {daemonStale && isLive(session.status) && (
+            <span>
+              as of{" "}
+              {daemonLastSeenAt !== undefined
+                ? ageText(daemonLastSeenAt, now)
+                : "an unknown time"}
+            </span>
+          )}
+        </div>
+      </header>
+
+      <Transcript sessionId={sessionId} />
+
+      {pendingPermissions && pendingPermissions.length > 0 && (
+        <div className="border-t border-border px-3 sm:px-4 py-2.5 space-y-2 max-h-[45dvh] overflow-y-auto">
+          {pendingPermissions.map((p) => (
+            <PermissionCard key={p._id} permission={p} now={now} />
+          ))}
+        </div>
+      )}
+
+      <Composer session={session} daemonStale={daemonStale} />
+    </div>
+  );
+}

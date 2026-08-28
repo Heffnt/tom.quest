@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@/app/lib/auth";
+import TomGate from "@/app/components/tom-gate";
 import { debug } from "@/app/lib/debug";
 import { useEffect, useMemo, useState } from "react";
 import type { DeviceIdentity } from "./components/gatewayAuth";
@@ -215,7 +216,8 @@ function Dashboard({ gatewayUrl }: { gatewayUrl: string }) {
 }
 
 export default function JarvisPage() {
-  const { loading, isTom, token } = useAuth();
+  // isTom still gates the gateway-config fetch; TomGate owns the gate JSX.
+  const { isTom, token } = useAuth();
   const {
     gatewayUrl,
     gatewayPassword,
@@ -224,41 +226,15 @@ export default function JarvisPage() {
     loading: configLoading,
   } = useGatewayConfig(isTom, token);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-white/30 text-sm">Loading…</span>
-      </div>
-    );
-  }
-
-  if (!isTom) {
-    return (
-      <div className="min-h-screen flex items-center justify-center px-4">
-        <div className="border border-white/10 rounded-lg bg-white/[0.02] px-4 py-3 text-sm text-white/60">
-          Jarvis access is restricted to Tom.
-        </div>
-      </div>
-    );
-  }
-
-  if (configLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-white/30 text-sm">Connecting to gateway…</span>
-      </div>
-    );
-  }
-
-  if (error || !gatewayUrl) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-red-400 text-sm">{error || "Gateway not configured"}</span>
-      </div>
-    );
-  }
-
-  return (
+  const body = configLoading ? (
+    <div className="min-h-screen flex items-center justify-center">
+      <span className="text-white/30 text-sm">Connecting to gateway…</span>
+    </div>
+  ) : error || !gatewayUrl ? (
+    <div className="min-h-screen flex items-center justify-center">
+      <span className="text-red-400 text-sm">{error || "Gateway not configured"}</span>
+    </div>
+  ) : (
     <GatewayProvider
       url={gatewayUrl}
       password={gatewayPassword ?? undefined}
@@ -267,4 +243,6 @@ export default function JarvisPage() {
       <Dashboard gatewayUrl={gatewayUrl} />
     </GatewayProvider>
   );
+
+  return <TomGate label="Jarvis">{body}</TomGate>;
 }

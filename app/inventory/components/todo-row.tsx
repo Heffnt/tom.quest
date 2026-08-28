@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { countdownText } from "@/convex/dtsShared";
+import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import {
   ageText,
   fmtDate,
@@ -112,6 +113,11 @@ export default function TodoRow({
   const setStatus = useMutation(api.dts.setStatus);
   const recordDateOutcome = useMutation(api.dts.recordDateOutcome);
   const recordEvent = useMutation(api.dts.recordEvent);
+  const {
+    open: openTodoSession,
+    busy: sessionBusy,
+    error: sessionError,
+  } = useOpenTodoSession();
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -478,6 +484,23 @@ export default function TodoRow({
                   </button>
                 )}
               </div>
+            )}
+          </div>
+
+          {/* Session entry — a gate is worked in a session (spec §15); any
+              item can be. The shared hook owns createSession + navigation. */}
+          <div className="space-y-1">
+            <button
+              onClick={() => void openTodoSession(todo)}
+              disabled={busy || sessionBusy}
+              className={btnCls}
+            >
+              {todo.readiness === "ready-for-tom"
+                ? "Work this gate in a session"
+                : "Work this in a session"}
+            </button>
+            {sessionError && (
+              <div className="text-xs text-error">{sessionError}</div>
             )}
           </div>
 

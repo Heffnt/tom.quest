@@ -11,7 +11,9 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
+import TomGate from "@/app/components/tom-gate";
 import { countdownText } from "@/convex/dtsShared";
+import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import { ageText, fmtDate } from "../inventory/lib";
 
 type Todo = Doc<"dtsTodos">;
@@ -31,7 +33,8 @@ function positionStorageKey(day: string): string {
 }
 
 export default function FocusClient() {
-  const { loading, isTom } = useAuth();
+  // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
+  const { isTom } = useAuth();
   const today = useQuery(api.dts.getToday, isTom ? {} : "skip");
   // The full-inventory subscription exists only for the pull-from-inventory
   // panel, which starts closed — so it stays "skip" until the panel opens
@@ -39,40 +42,22 @@ export default function FocusClient() {
   const [pullOpen, setPullOpen] = useState(false);
   const allTodos = useQuery(api.dts.listTodos, isTom && pullOpen ? {} : "skip");
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-text-faint text-sm">Loading…</span>
-      </div>
-    );
-  }
-
-  if (!isTom) {
-    return (
-      <div className="min-h-screen flex items-center justify-center px-4">
-        <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
-          Focus access is restricted to Tom.
-        </div>
-      </div>
-    );
-  }
-
-  if (today === undefined) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-text-faint text-sm">Loading…</span>
-      </div>
-    );
-  }
-
   return (
-    <FocusBoard
-      day={today.day}
-      queue={today.queue}
-      allTodos={allTodos}
-      pullOpen={pullOpen}
-      setPullOpen={setPullOpen}
-    />
+    <TomGate label="Focus">
+      {today === undefined ? (
+        <div className="min-h-screen flex items-center justify-center">
+          <span className="text-text-faint text-sm">Loading…</span>
+        </div>
+      ) : (
+        <FocusBoard
+          day={today.day}
+          queue={today.queue}
+          allTodos={allTodos}
+          pullOpen={pullOpen}
+          setPullOpen={setPullOpen}
+        />
+      )}
+    </TomGate>
   );
 }
 
@@ -96,6 +81,11 @@ function FocusBoard({
 }) {
   const recordEvent = useMutation(api.dts.recordEvent);
   const setStatus = useMutation(api.dts.setStatus);
+  const {
+    open: openTodoSession,
+    busy: sessionBusy,
+    error: sessionError,
+  } = useOpenTodoSession();
 
   const [now] = useState(() => Date.now());
   const [position, setPosition] = useState(() => {
@@ -184,6 +174,16 @@ function FocusBoard({
     } catch {
       setDoneError("The status change did not save. It can be retried.");
     }
+  };
+
+  // The strongest entry action: open a Claude session scoped to this item
+  // (the session surface, spec's "sessions as default work mode"). The shared
+  // hook owns createSession + navigation and surfaces failures as state.
+  const onWorkInSession = () => {
+    if (!current) return;
+    void openTodoSession(current, {
+      fireEngaged: (id) => fire("engaged", id, { via: "focus-session", day }),
+    });
   };
 
   const onPull = (todo: Todo) => {
@@ -311,6 +311,14 @@ function FocusBoard({
             >
               Done
             </button>
+            <button
+              type="button"
+              onClick={onWorkInSession}
+              disabled={sessionBusy}
+              className="rounded px-4 py-2 text-sm border border-border text-text-muted hover:bg-surface-alt disabled:opacity-50"
+            >
+              {sessionBusy ? "Opening session…" : "Work in a session"}
+            </button>
             <Link
               href={`/inventory?item=${current._id}`}
               className="text-xs text-text-faint hover:text-text-muted"
@@ -318,6 +326,12 @@ function FocusBoard({
               Open in Inventory
             </Link>
           </div>
+
+          {sessionError && (
+            <p className="text-xs text-error">
+              The session did not open — {sessionError}. It can be retried.
+            </p>
+          )}
 
           {engaged && !doneOpen && (
             <p className="text-xs text-text-faint">

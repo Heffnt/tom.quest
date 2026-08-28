@@ -10,6 +10,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
+import TomGate from "@/app/components/tom-gate";
 import TodoRow from "./components/todo-row";
 import CodeTodoRow, {
   type CodeBrief,
@@ -130,7 +131,8 @@ function QuickAdd() {
 }
 
 export default function InventoryClient() {
-  const { loading, isTom } = useAuth();
+  // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
+  const { isTom } = useAuth();
   const router = useRouter();
   const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
   const mirror = useQuery(api.dts.listMirror, isTom ? {} : "skip");
@@ -320,30 +322,14 @@ export default function InventoryClient() {
     }
   };
 
-  // ── Gates ─────────────────────────────────────────────────────────────────
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-text-faint text-sm">Loading…</span>
-      </div>
-    );
-  }
-
-  if (!isTom) {
-    return (
-      <div className="min-h-screen flex items-center justify-center px-4">
-        <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
-          Inventory access is restricted to Tom.
-        </div>
-      </div>
-    );
-  }
-
+  // Data-loading state (auth gating lives in TomGate).
   if (todos === undefined) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-text-faint text-sm">Loading inventory…</span>
-      </div>
+      <TomGate label="Inventory">
+        <div className="min-h-screen flex items-center justify-center">
+          <span className="text-text-faint text-sm">Loading inventory…</span>
+        </div>
+      </TomGate>
     );
   }
 
@@ -373,6 +359,7 @@ export default function InventoryClient() {
   ).length;
 
   return (
+    <TomGate label="Inventory">
     <div className="max-w-5xl mx-auto px-6 pb-16">
       <QuickAdd />
 
@@ -589,5 +576,6 @@ export default function InventoryClient() {
         </LazySection>
       </div>
     </div>
+    </TomGate>
   );
 }

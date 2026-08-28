@@ -165,5 +165,40 @@
     execute-approved + dts-code-lib, cron entries. Tom's rulings: PRs for
     execution, direct-to-master for bookkeeping, brief all entries at once.
 
+- id: dts-session-wrapper
+  readiness: ready-for-tom
+  status: done
+  created: 2026-08-28
+  cites: [dts-spec:15, dts-spec:7]
+  statement: >-
+    The session surface: a Claude-desktop-like web chat page at
+    tom.quest/sessions driving headless Claude Code sessions on the worker
+    box via the Agent SDK — the substrate for tom-gates as interactive
+    sessions, Focus entry actions, the weekly reflective session, and
+    (later) two-way event messages. Designed first-principles (canvas
+    explicitly not a precedent): Convex is the stream (daemon persists,
+    browser subscribes), key-authed /sessions/* channel with its own
+    SESSIONS_WORKER_KEY, two-tier transcript (finalized seq rows + one
+    ≤16KB live-tail row), permissions wait indefinitely with stop/restart
+    escape hatches, failure honesty derived from heartbeat staleness.
+  completion_condition: >-
+    From a phone: create a session, watch streamed output, answer a
+    permission card, send a follow-up turn, stop the session — with the
+    transcript surviving a daemon restart mid-turn.
+  plan: >-
+    convex/claudeSessions.ts (+6 tables, /sessions/poll + /sessions/ingest,
+    tests), app/sessions page, worker/session-host daemon (SDK, systemd),
+    entry buttons on Focus + Inventory, SDK-behavior prototypes on the box
+    first (permission park, resume-after-kill, concurrency). Ratified
+    2026-08-28 ("build it").
+  resolution: >-
+    Landed in the same commit as this entry. SDK prototypes validated all
+    risky assumptions empirically (37-min permission park succeeded;
+    resume-after-kill-9 intact; concurrent queries max-not-sum). 3-angle
+    review found 26 candidates; all confirmed fixes applied (headliners:
+    permanent-400 flush wedge → drop-and-report; force-close orphan
+    settlement; terminal-state scalar guard; delivery race; keyAuth +
+    TomGate dedup graduating ledger dts-shared-gate-dedup). 77/77 tests.
+
 # Discovered-but-undecided gaps live in vqc/ledger.yaml, not here (a todo is
 # a CHOICE; a ledger entry is KNOWLEDGE — VQC D28).

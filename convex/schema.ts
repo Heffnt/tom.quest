@@ -496,4 +496,138 @@ export default defineSchema({
   })
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_ruled", ["ruledAt"]),
+
+  // ── Claude Code session surface (spec: WikiTom dts/spec.md; design ratified
+  // 2026-08-28) ────────────────────────────────────────────────────────────────
+  // A web chat wrapper around headless Claude Code sessions running on the
+  // worker box. Convex IS the stream: the box's session-host daemon persists
+  // SDK events here (key-authed /sessions/* routes, SESSIONS_WORKER_KEY) and
+  // the browser renders reactively. Two-tier transcript: claudeMessages rows
+  // are FINALIZED (written once, seq-ordered, paginate forever);
+  // claudeStreamBuf is the one small live-tail row per session, patched on a
+  // ~400ms throttle and flushed into a finalized segment every ~16KB — so the
+  // hot subscription stays constant-size. Failure honesty is DERIVED at
+  // render (heartbeat staleness), never written as a diagnosis.
+
+  claudeSessions: defineTable({
+    title: v.string(),
+    kind: v.union(
+      v.literal("gate"),
+      v.literal("focus-item"),
+      v.literal("weekly"),
+      v.literal("adhoc"),
+    ),
+    todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
+    repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    // Lifecycle: requested (browser) → starting → idle ⇄ running ⇄
+    // awaiting-permission → ended | failed. The browser owns: create,
+    // enqueue inbound, decide permissions, and stale-only forceClose.
+    // Everything else is daemon-reported fact.
+    status: v.union(
+      v.literal("requested"),
+      v.literal("starting"),
+      v.literal("idle"),
+      v.literal("running"),
+      v.literal("awaiting-permission"),
+      v.literal("ended"),
+      v.literal("failed"),
+    ),
+    statusChangedAt: v.number(),
+    endedReason: v.optional(v.string()), // descriptive, verbatim
+    sdkSessionId: v.optional(v.string()), // set once the SDK reports it; resume key
+    cwd: v.optional(v.string()), // daemon-reported working dir on the box
+    lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
+    // Daemon-owned idempotency floor: an ingest carrying seqs below this is a
+    // network retry and is dropped. Monotonic per session.
+    nextSeq: v.number(),
+    createdAt: v.number(),
+  }).index("by_status", ["status", "statusChangedAt"]),
+
+  // Finalized transcript — written exactly once per row by the daemon.
+  // `turn` has no UI reader yet; it is kept because transcript structure is
+  // knowledge the (planned) session sweep and analysis layers read, and it
+  // is cheap to record now and unreconstructible later.
+  claudeMessages: defineTable({
+    sessionId: v.id("claudeSessions"),
+    seq: v.number(),
+    turn: v.number(),
+    kind: v.union(
+      v.literal("user"),
+      v.literal("assistant-text"),
+      v.literal("thinking"),
+      v.literal("tool-call"),
+      v.literal("tool-result"),
+      v.literal("permission"),
+      v.literal("system"),
+      v.literal("error"),
+    ),
+    content: v.any(), // typed payload per kind; tool results truncated at 32KB by the daemon
+    createdAt: v.number(),
+  }).index("by_session_seq", ["sessionId", "seq"]),
+
+  // The live tail: ONE row per session, ≤ ~16KB text by construction.
+  claudeStreamBuf: defineTable({
+    sessionId: v.id("claudeSessions"),
+    turn: v.number(),
+    seq: v.number(), // the seq this segment will finalize as
+    text: v.string(),
+    updatedAt: v.number(),
+  }).index("by_session", ["sessionId"]),
+
+  // Browser → daemon command queue. A pending user-turn row doubles as the
+  // optimistic transcript echo (the finalized user message lands with a seq
+  // when the daemon delivers it).
+  claudeInbound: defineTable({
+    sessionId: v.id("claudeSessions"),
+    kind: v.union(
+      v.literal("user-turn"),
+      v.literal("interrupt"),
+      v.literal("stop"),
+    ),
+    text: v.optional(v.string()),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("delivered"),
+      v.literal("done"),
+      v.literal("interrupted"),
+      v.literal("failed"),
+    ),
+    createdAt: v.number(),
+    deliveredAt: v.optional(v.number()),
+  }).index("by_session_status", ["sessionId", "status"]),
+
+  // Permission requests. Pending requests WAIT INDEFINITELY (no auto-deny —
+  // an auto-denial at 3 a.m. makes the model take a path Tom never chose);
+  // stop supersedes, daemon restart expires, and the card shows its age.
+  claudePermissions: defineTable({
+    sessionId: v.id("claudeSessions"),
+    requestId: v.string(), // daemon-minted uuid
+    toolName: v.string(),
+    input: v.any(), // truncated by the daemon like tool-calls
+    status: v.union(
+      v.literal("pending"),
+      v.literal("allowed"),
+      v.literal("denied"),
+      v.literal("superseded"),
+      v.literal("expired"),
+    ),
+    requestedAt: v.number(),
+    decidedAt: v.optional(v.number()),
+    decidedBy: v.optional(v.string()), // "tom" | "daemon-restart" | "stop"
+    note: v.optional(v.string()), // Tom's optional message; a deny note reaches the model verbatim
+    appliedAt: v.optional(v.number()), // daemon acked applying the decision to the SDK
+  })
+    .index("by_session_status", ["sessionId", "status"])
+    .index("by_request", ["requestId"]),
+
+  // Daemon heartbeat singleton — its own table so the frequent patch never
+  // invalidates transcript queries. Staleness is computed at render:
+  // lastSeenAt older than ~30s ⇒ "worker last heard from Xm ago".
+  claudeDaemonHealth: defineTable({
+    lastSeenAt: v.number(),
+    daemonStartedAt: v.number(),
+    version: v.string(),
+    activeAccount: v.optional(v.string()), // "gmail" | "wpi"
+    lastIngestError: v.optional(v.string()),
+  }),
 });
