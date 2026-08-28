@@ -437,6 +437,39 @@ export const internalStoreWorkerPrep = internalMutation({
   },
 });
 
+// The preparation path for LIFE todos (spec §15, swarm-lite): the worker's
+// preparer job advances an unprepared capture toward ready-for-tom by
+// attaching the ground-up brief, the smallest entry action, and a qualitative
+// work description. It never touches statement/status/dates — those are
+// Tom's (or the capture's) and preparation must not rewrite intent.
+export const internalPrepareTodo = internalMutation({
+  args: {
+    id: v.string(),
+    brief: v.optional(v.string()),
+    entryAction: v.optional(v.string()),
+    workDescription: v.optional(v.string()),
+    readiness: v.optional(
+      v.union(v.literal("preparing"), v.literal("ready-for-tom")),
+    ),
+  },
+  handler: async (ctx, { id, brief, entryAction, workDescription, readiness }) => {
+    const normalized = ctx.db.normalizeId("dtsTodos", id);
+    if (!normalized) throw new Error(`Unknown todo id: ${id}`);
+    const todo = await ctx.db.get(normalized);
+    if (!todo) throw new Error(`Unknown todo id: ${id}`);
+    const patch: Record<string, unknown> = { updatedAt: Date.now() };
+    if (brief !== undefined) patch.brief = brief;
+    if (entryAction !== undefined) patch.entryAction = entryAction;
+    if (workDescription !== undefined) patch.workDescription = workDescription;
+    if (readiness !== undefined) patch.readiness = readiness;
+    await ctx.db.patch(normalized, patch);
+    await logEvent(ctx, "prepared", normalized, {
+      readiness,
+      fields: [brief && "brief", entryAction && "entryAction", workDescription && "workDescription"].filter(Boolean),
+    });
+  },
+});
+
 export const internalListTodos = internalQuery({
   args: {},
   handler: async (ctx) => {
