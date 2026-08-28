@@ -109,6 +109,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # (hash cursor in /var/lib/dts/brief-hashes.json), so most runs are no-ops.
 17 */2 * * * root /usr/bin/node /opt/dts/brief-code-todos.mjs >> /var/log/dts/brief-code-todos.log 2>&1
 
+# Prepare unprepared LIFE todos (#dump captures, consolidation candidates)
+# via headless Claude: ground-up brief + smallest entry action + work
+# description, readiness advanced — so raw captures reach Tom pre-chewed.
+# Every 2nd hour at :37 (odd minute; no collision with the other jobs).
+37 */2 * * * root /usr/bin/node /opt/dts/prepare-life-todos.mjs >> /var/log/dts/prepare-life-todos.log 2>&1
+
 # Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
 # propose-archive) every 10 minutes, so a ruling made in the UI takes effect
 # within minutes. The job serializes itself via /var/lib/dts/apply.lock —

@@ -212,6 +212,50 @@ const dtsPrep = httpAction(async (ctx, request) => {
 
 http.route({ path: "/dts/prep", method: "POST", handler: dtsPrep });
 
+// POST /dts/prepare-todo — the worker's preparer job attaches brief /
+// entry action / work description to a life todo and advances its readiness.
+// Body: { id, brief?, entryAction?, workDescription?, readiness? }.
+const dtsPrepareTodo = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.id !== "string" || b.id.length === 0) {
+    return jsonResponse(400, { error: "id (non-empty string) required" });
+  }
+  if (
+    b.readiness !== undefined &&
+    b.readiness !== "preparing" &&
+    b.readiness !== "ready-for-tom"
+  ) {
+    return jsonResponse(400, {
+      error: 'readiness must be "preparing" or "ready-for-tom"',
+    });
+  }
+  const str = (x: unknown) => (typeof x === "string" ? x : undefined);
+  try {
+    await ctx.runMutation(internal.dts.internalPrepareTodo, {
+      id: b.id,
+      brief: str(b.brief),
+      entryAction: str(b.entryAction),
+      workDescription: str(b.workDescription),
+      readiness: b.readiness as "preparing" | "ready-for-tom" | undefined,
+    });
+    return jsonResponse(200, { ok: true });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/dts/prepare-todo", method: "POST", handler: dtsPrepareTodo });
+
 // GET /dts/state — everything the prep job needs: all todos, the queue row for
 // the day being prepared, and `prepDay` itself. The server owns the day
 // arithmetic (5 a.m. boundary + DST) so the worker never computes a day key —
