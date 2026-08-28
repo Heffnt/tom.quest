@@ -19,11 +19,15 @@
 // from Convex (/dts/state) and everything it produces goes to Convex
 // (/dts/prep). The box can vanish at 4:31 and today is still covered.
 
-import { execFileSync } from "node:child_process";
-import { loadEnv, convexFetch, nyHour } from "./dts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  nyHour,
+  runClaude,
+  extractJsonObject,
+} from "./dts-lib.mjs";
 
 const QUEUE_MAX = 7;
-const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active"; // symlink managed by dts-account
 
 async function main() {
   const force = process.argv.includes("--force");
@@ -152,58 +156,18 @@ async function main() {
 
   // --- Run headless Claude -------------------------------------------------
   // Model deliberately left at the CLI default — Tom's Max plan covers it,
-  // and one prep call a day is nowhere near any limit.
-  // CLAUDE_CONFIG_DIR points at the "active" account symlink (dts-account).
+  // and one prep call a day is nowhere near any limit. runClaude (dts-lib)
+  // owns the mechanics: prompt over stdin, envelope unwrapping, the
+  // --max-turns 8 non-agentic default, and the active-account config dir.
   console.log(`[prepare-queue] ${day}: asking Claude to rank ${todos.length} todos…`);
-  // The prompt goes over STDIN, not argv: Linux caps a single argv element at
-  // ~128 KiB and the todo JSON will eventually exceed that (review-caught).
-  // --max-turns 8 (not 1): with tools enabled, a single stray tool call would
-  // consume a 1-turn budget and end the run with an error envelope.
-  const stdout = execFileSync(
-    "claude",
-    ["-p", "--output-format", "json", "--max-turns", "8"],
-    {
-      input: prompt,
-      env: { ...process.env, CLAUDE_CONFIG_DIR },
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-      timeout: 10 * 60 * 1000, // ten minutes, then give up (fallback covers the day)
-    },
-  );
+  const answerText = runClaude(prompt, {
+    timeoutMs: 10 * 60 * 1000, // ten minutes, then give up (fallback covers the day)
+  });
 
   // --- Parse robustly ------------------------------------------------------
-  // With --output-format json the CLI prints an envelope like
-  // {"type":"result","subtype":"success","result":"<the model's text>", ...}.
-  // An error envelope (e.g. subtype "error_max_turns") has NO result field —
-  // that is a hard failure, not something to brace-extract garbage from
-  // (review-caught). If stdout isn't JSON at all, treat it as the raw answer.
-  let answerText = stdout;
-  try {
-    const envelope = JSON.parse(stdout);
-    if (envelope && typeof envelope === "object" && envelope.type === "result") {
-      if (typeof envelope.result !== "string") {
-        throw new Error(
-          `claude returned an error envelope (subtype: ${envelope.subtype ?? "?"})`,
-        );
-      }
-      answerText = envelope.result;
-    }
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      // stdout wasn't the JSON envelope — fall through with raw text.
-    } else {
-      throw err;
-    }
-  }
-  // Strip code fences the model might add despite instructions, then take the
-  // outermost {...} span (first "{" to last "}").
-  answerText = answerText.replace(/```[a-z]*\n?/gi, "");
-  const first = answerText.indexOf("{");
-  const last = answerText.lastIndexOf("}");
-  if (first === -1 || last <= first) {
-    throw new Error(`no JSON object in Claude output: ${answerText.slice(0, 200)}`);
-  }
-  const parsed = JSON.parse(answerText.slice(first, last + 1));
+  // extractJsonObject strips code fences the model might add despite
+  // instructions and takes the outermost {...} span.
+  const parsed = extractJsonObject(answerText);
 
   // --- Validate ------------------------------------------------------------
   const knownIds = new Set(todos.map((t) => t._id));

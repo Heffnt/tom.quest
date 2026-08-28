@@ -1,6 +1,8 @@
 // dts-lib.mjs — shared helpers for the DTS worker jobs (poll-dump.mjs,
-// prepare-queue.mjs). Plain Node ESM, ZERO npm dependencies: node:fs and the
-// global fetch (Node >= 18, this box runs Node 22) are all we use.
+// prepare-queue.mjs, and the code-todo jobs brief-code-todos.mjs /
+// apply-rulings.mjs / execute-approved.mjs). Plain Node ESM, ZERO npm
+// dependencies: node:fs, node:child_process and the global fetch (Node >= 18,
+// this box runs Node 22) are all we use.
 //
 // WHY no dependencies: the box owns no state and must be rebuildable by one
 // script with nothing but Node itself. No node_modules means no lockfile, no
@@ -8,6 +10,7 @@
 // into /opt/dts/ and cron runs them.
 
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Env file parsing
@@ -127,4 +130,84 @@ export async function convexFetch(env, path, body = undefined) {
     throw new Error(`${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
   }
   return JSON.parse(text);
+}
+
+// ---------------------------------------------------------------------------
+// Headless Claude Code
+// ---------------------------------------------------------------------------
+
+// The "active" account symlink managed by the dts-account CLI helper — every
+// headless Claude invocation on this box goes through it, so switching Max
+// accounts is one `dts-account use` away and no job hardcodes an account.
+export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
+
+// Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
+// (the envelope is unwrapped here; parsing the answer is the caller's job —
+// see extractJsonObject below for the JSON-answer case).
+//
+// Two modes:
+//   non-agentic (default) — the read-only default permission mode: the model
+//       may read files under `cwd` with its tools but cannot edit or run
+//       commands. Default --max-turns 8, not 1: with tools enabled, a single
+//       stray tool call would consume a 1-turn budget and end the run with an
+//       error envelope (review-caught on prepare-queue).
+//   agentic (agentic: true) — --permission-mode bypassPermissions and a
+//       --max-turns default of 200: the executor mode, where the model edits
+//       files and runs tests inside a throwaway clone. NEVER point agentic
+//       mode at a directory whose damage you can't discard.
+//
+// The prompt goes over STDIN, not argv: Linux caps a single argv element at
+// ~128 KiB and embedded todo/ledger JSON will eventually exceed that
+// (review-caught on prepare-queue).
+export function runClaude(prompt, { cwd, timeoutMs, agentic = false, maxTurns } = {}) {
+  const turns = maxTurns ?? (agentic ? 200 : 8);
+  const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
+  if (agentic) args.push("--permission-mode", "bypassPermissions");
+  const stdout = execFileSync("claude", args, {
+    input: prompt,
+    cwd,
+    env: { ...process.env, CLAUDE_CONFIG_DIR },
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: timeoutMs ?? 10 * 60 * 1000,
+  });
+
+  // With --output-format json the CLI prints an envelope like
+  // {"type":"result","subtype":"success","result":"<the model's text>", ...}.
+  // An error envelope (e.g. subtype "error_max_turns") has NO result field —
+  // that is a hard failure, not something to brace-extract garbage from
+  // (review-caught). If stdout isn't JSON at all, treat it as the raw answer.
+  let answerText = stdout;
+  try {
+    const envelope = JSON.parse(stdout);
+    if (envelope && typeof envelope === "object" && envelope.type === "result") {
+      if (typeof envelope.result !== "string") {
+        throw new Error(
+          `claude returned an error envelope (subtype: ${envelope.subtype ?? "?"})`,
+        );
+      }
+      answerText = envelope.result;
+    }
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      // stdout wasn't the JSON envelope — fall through with raw text.
+    } else {
+      throw err;
+    }
+  }
+  return answerText;
+}
+
+// Pull the single JSON object out of a model answer: strip any code fences the
+// model added despite instructions, then take the outermost {...} span (first
+// "{" to last "}") and parse it. Throws when there is no object at all, with
+// the head of the answer included so cron logs show WHAT came back instead.
+export function extractJsonObject(answerText) {
+  const stripped = answerText.replace(/```[a-z]*\n?/gi, "");
+  const first = stripped.indexOf("{");
+  const last = stripped.lastIndexOf("}");
+  if (first === -1 || last <= first) {
+    throw new Error(`no JSON object in Claude output: ${stripped.slice(0, 200)}`);
+  }
+  return JSON.parse(stripped.slice(first, last + 1));
 }

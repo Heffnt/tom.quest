@@ -23,10 +23,16 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "== [1/7] apt packages (curl, git) =="
+echo "== [1/7] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl git ca-certificates
+# For the code-todo jobs: python3 + python3-yaml is the sanctioned YAML parser
+# (the jobs shell out to it — the no-npm-deps rule leaves Node without one)
+# and python3-pytest runs CMT's own guard tests before any push; gh opens the
+# executor's PRs. apt-get install is a no-op when already present, so re-runs
+# stay fast and idempotent.
+apt-get install -y python3 python3-yaml python3-pytest gh
 
 echo "== [2/7] Node 22 (NodeSource) =="
 # Only (re)install if node is missing or not major version 22 — keeps re-runs
@@ -44,13 +50,17 @@ echo "claude: $(claude --version || true)"
 
 echo "== [4/7] directories =="
 # /opt/dts            — the job scripts (copied from the repo, below)
-# /var/lib/dts        — the ONLY local state: the Slack poll cursor
+# /var/lib/dts        — small local state: the Slack poll cursor, the
+#     brief-hash cursor, and the apply/execute lock dirs (all harmless to
+#     lose; see each job's header)
+# /var/cache/dts      — rebuildable caches: the shallow CMT clone, the brief
+#     markdown copies, and the executor's throwaway full clones
 # /etc/dts            — worker.env (secrets; mode 600)
 # /var/log/dts        — cron output
 # /root/.claude-accounts/{gmail,wpi} — one Claude Code config dir per Max
 #     account; an "active" symlink (managed by dts-account) picks which one
 #     the jobs use.
-mkdir -p /opt/dts /var/lib/dts /etc/dts /var/log/dts \
+mkdir -p /opt/dts /var/lib/dts /var/cache/dts /etc/dts /var/log/dts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi
 
 echo "== [5/7] install worker files =="
@@ -91,6 +101,26 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 30 8 * * * root /usr/bin/node /opt/dts/prepare-queue.mjs >> /var/log/dts/prepare-queue.log 2>&1
 30 9 * * * root /usr/bin/node /opt/dts/prepare-queue.mjs >> /var/log/dts/prepare-queue.log 2>&1
 
+# CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> apply/execute):
+
+# Brief open CMT code todos via headless Claude, every 2nd hour at :17 (an
+# odd minute so it never collides with the other jobs' slots). Incremental —
+# only entries whose YAML changed since their last brief are re-briefed
+# (hash cursor in /var/lib/dts/brief-hashes.json), so most runs are no-ops.
+17 */2 * * * root /usr/bin/node /opt/dts/brief-code-todos.mjs >> /var/log/dts/brief-code-todos.log 2>&1
+
+# Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
+# propose-archive) every 10 minutes, so a ruling made in the UI takes effect
+# within minutes. The job serializes itself via /var/lib/dts/apply.lock —
+# overlapping cron ticks exit immediately instead of double-applying.
+*/10 * * * * root /usr/bin/node /opt/dts/apply-rulings.mjs >> /var/log/dts/apply-rulings.log 2>&1
+
+# Execute ONE approved plan per hour at :45 (agentic Claude in a throwaway
+# clone, 45-min cap, PR as output — merging the PR is the human gate). One
+# per hour bounds Claude usage and keeps PRs reviewable in series;
+# /var/lib/dts/execute.lock (stale after 3h) stops overlap.
+45 * * * * root /usr/bin/node /opt/dts/execute-approved.mjs >> /var/log/dts/execute-approved.log 2>&1
+
 # Log hygiene: truncate the DTS logs on the 1st of each month. Deliberately
 # crude — these logs are debugging convenience, not state, and this box keeps
 # nothing it can't lose.
@@ -105,8 +135,8 @@ NEXT STEPS (manual, in order):
 
   1. Fill in the secrets:
        nano /etc/dts/worker.env
-     (CONVEX_SITE_URL, DTS_WORKER_KEY, SLACK_BOT_TOKEN, SLACK_DUMP_CHANNEL_ID
-      — the file explains each one.)
+     (CONVEX_SITE_URL, DTS_WORKER_KEY, SLACK_BOT_TOKEN, SLACK_DUMP_CHANNEL_ID,
+      GH_TOKEN — the file explains each one.)
 
   2. Log in both Claude Max accounts (interactive, over this SSH session):
        dts-account login gmail

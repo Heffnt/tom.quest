@@ -15,6 +15,7 @@ import type * as brews from "../brews.js";
 import type * as canvas from "../canvas.js";
 import type * as crons from "../crons.js";
 import type * as dts from "../dts.js";
+import type * as dtsCode from "../dtsCode.js";
 import type * as dtsShared from "../dtsShared.js";
 import type * as dtsSync from "../dtsSync.js";
 import type * as forge from "../forge.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   canvas: typeof canvas;
   crons: typeof crons;
   dts: typeof dts;
+  dtsCode: typeof dtsCode;
   dtsShared: typeof dtsShared;
   dtsSync: typeof dtsSync;
   forge: typeof forge;

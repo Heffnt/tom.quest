@@ -11,6 +11,10 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import TodoRow from "./components/todo-row";
+import CodeTodoRow, {
+  type CodeBrief,
+  type CodeRuling,
+} from "./components/code-todo-row";
 import {
   ageText,
   parseDateInput,
@@ -130,11 +134,15 @@ export default function InventoryClient() {
   const router = useRouter();
   const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
   const mirror = useQuery(api.dts.listMirror, isTom ? {} : "skip");
+  const codeBriefs = useQuery(api.dtsCode.listCodeBriefs, isTom ? {} : "skip");
+  const codeRulings = useQuery(api.dtsCode.listCodeRulings, isTom ? {} : "skip");
   const recordEvent = useMutation(api.dts.recordEvent);
 
   const now = Date.now();
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Code-todo rows expand independently, keyed by repo + externalId.
+  const [codeExpanded, setCodeExpanded] = useState<Set<string>>(new Set());
   const [link, setLink] = useState<{
     item: string;
     intent: LinkIntent | null;
@@ -272,6 +280,46 @@ export default function InventoryClient() {
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [mirror]);
 
+  // Briefs and rulings, keyed by repo + externalId. For rulings, the row
+  // with the latest ruledAt is the live one — earlier rows are history.
+  const codeKey = (repo: string, externalId: string) =>
+    `${repo}\u0000${externalId}`;
+
+  const briefByKey = useMemo(() => {
+    const map = new Map<string, CodeBrief>();
+    for (const b of codeBriefs ?? []) map.set(codeKey(b.repo, b.externalId), b);
+    return map;
+  }, [codeBriefs]);
+
+  const liveRulingByKey = useMemo(() => {
+    const map = new Map<string, CodeRuling>();
+    for (const r of codeRulings ?? []) {
+      const key = codeKey(r.repo, r.externalId);
+      const prev = map.get(key);
+      if (!prev || r.ruledAt > prev.ruledAt) map.set(key, r);
+    }
+    return map;
+  }, [codeRulings]);
+
+  const toggleCode = (repo: string, externalId: string) => {
+    const key = codeKey(repo, externalId);
+    const opening = !codeExpanded.has(key);
+    setCodeExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    // Instrumentation: expanding a briefed row is an engagement. Code todos
+    // have no dtsTodos id, so the ids ride in data (todoId is life-todo only).
+    if (opening) {
+      void recordEvent({
+        kind: "engaged",
+        data: { via: "inventory-code", repo, externalId },
+      }).catch(() => {});
+    }
+  };
+
   // ── Gates ─────────────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -315,6 +363,13 @@ export default function InventoryClient() {
     groups.dated.length + groups.conditionBound.length + groups.whenever.length;
   const openMirrorCount = (mirror ?? []).filter(
     (r) => r.status === "open",
+  ).length;
+  // Open items with a prepared brief and no ruling yet — the section summary.
+  const briefedAwaitingCount = (mirror ?? []).filter(
+    (r) =>
+      r.status === "open" &&
+      briefByKey.has(codeKey(r.repo, r.externalId)) &&
+      !liveRulingByKey.has(codeKey(r.repo, r.externalId)),
   ).length;
 
   return (
@@ -435,13 +490,20 @@ export default function InventoryClient() {
           )}
         </section>
 
-        {/* 5 — Code todos (read-only mirror; the repo is the system of record) */}
+        {/* 5 — Code todos (mirrored; each repo is its own system of record.
+            Open items carry a prepared brief and Tom's ruling controls;
+            rulings are recorded here and applied back by the worker). */}
         <section className="space-y-2">
           <SectionHeader
             title="Code todos"
             count={(mirror ?? []).length}
-            note={`${openMirrorCount} open — mirrored read-only; each repo is its own system of record`}
+            note={`${openMirrorCount} open — mirrored; each repo is its own system of record`}
           />
+          {briefedAwaitingCount > 0 && (
+            <p className="text-sm text-text-muted">
+              {briefedAwaitingCount} briefed awaiting your ruling
+            </p>
+          )}
           {mirrorByRepo.length === 0 ? (
             <p className="text-sm text-text-faint">No mirrored code todos.</p>
           ) : (
@@ -450,32 +512,54 @@ export default function InventoryClient() {
                 <h3 className="text-sm text-text-muted">
                   {repo} <span className="text-text-faint">{rows.length}</span>
                 </h3>
-                <div className="space-y-0.5">
-                  {rows.map((r) => (
-                    <a
-                      key={r._id}
-                      href={r.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex flex-wrap items-baseline gap-x-3 px-2 py-1 rounded hover:bg-surface/60"
-                    >
-                      <span
-                        className={`text-sm ${
-                          r.status === "open"
-                            ? "text-text"
-                            : "text-text-faint line-through"
-                        }`}
+                <div className="space-y-1">
+                  {rows.map((r) => {
+                    const key = codeKey(r.repo, r.externalId);
+                    const brief = briefByKey.get(key);
+                    if (r.status === "open" && brief) {
+                      return (
+                        <CodeTodoRow
+                          key={r._id}
+                          row={r}
+                          brief={brief}
+                          ruling={liveRulingByKey.get(key)}
+                          now={now}
+                          expanded={codeExpanded.has(key)}
+                          onToggle={() => toggleCode(r.repo, r.externalId)}
+                        />
+                      );
+                    }
+                    return (
+                      <a
+                        key={r._id}
+                        href={r.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex flex-wrap items-baseline gap-x-3 px-2 py-1 rounded hover:bg-surface/60"
                       >
-                        {r.statement}
-                      </span>
-                      <span className="text-xs text-text-faint border border-border rounded px-1 py-px">
-                        {r.tier}
-                      </span>
-                      <span className="text-xs text-text-faint ml-auto">
-                        {r.status} · synced {ageText(r.syncedAt, now)}
-                      </span>
-                    </a>
-                  ))}
+                        <span
+                          className={`text-sm ${
+                            r.status === "open"
+                              ? "text-text"
+                              : "text-text-faint line-through"
+                          }`}
+                        >
+                          {r.statement}
+                        </span>
+                        <span className="text-xs text-text-faint border border-border rounded px-1 py-px">
+                          {r.tier}
+                        </span>
+                        {r.status === "open" && (
+                          <span className="text-xs text-text-faint">
+                            not yet briefed
+                          </span>
+                        )}
+                        <span className="text-xs text-text-faint ml-auto">
+                          {r.status} · synced {ageText(r.syncedAt, now)}
+                        </span>
+                      </a>
+                    );
+                  })}
                 </div>
               </div>
             ))

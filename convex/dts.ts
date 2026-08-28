@@ -53,7 +53,7 @@ const DATE_OUTCOME = v.union(
   v.literal("missed"),
 );
 
-async function logEvent(
+export async function logEvent(
   ctx: MutationCtx,
   kind: string,
   todoId?: Id<"dtsTodos">,

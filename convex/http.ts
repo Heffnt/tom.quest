@@ -228,4 +228,147 @@ const dtsState = httpAction(async (ctx, request) => {
 
 http.route({ path: "/dts/state", method: "GET", handler: dtsState });
 
+// ── DTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
+// Same DTS_WORKER_KEY path: the worker posts ground-up briefs for open code
+// todos, reads back Tom's pending rulings, and reports each application. The
+// worker never rules — recordCodeRuling is Tom-gated in dtsCode.ts.
+
+const CODE_RECOMMENDATIONS = [
+  "approve",
+  "needs-session",
+  "propose-archive",
+  "stale-replan",
+] as const;
+const CODE_EXEC_CLASSES = ["box", "needs-turing"] as const;
+
+type CodeBrief = {
+  repo: string;
+  externalId: string;
+  sourceHash: string;
+  brief: string;
+  recommendation: (typeof CODE_RECOMMENDATIONS)[number];
+  execClass: (typeof CODE_EXEC_CLASSES)[number];
+  evidence?: string;
+};
+
+// Validate one posted brief. Every field the schema requires must arrive as a
+// non-empty string / a known enum member — a malformed item rejects the whole
+// batch by index so the worker can fix its payload.
+function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string } {
+  if (typeof item !== "object" || item === null) {
+    return { error: `briefs[${i}] must be an object` };
+  }
+  const b = item as Record<string, unknown>;
+  for (const field of ["repo", "externalId", "sourceHash", "brief"] as const) {
+    if (typeof b[field] !== "string" || b[field].length === 0) {
+      return { error: `briefs[${i}].${field} (non-empty string) required` };
+    }
+  }
+  if (
+    !CODE_RECOMMENDATIONS.includes(
+      b.recommendation as (typeof CODE_RECOMMENDATIONS)[number],
+    )
+  ) {
+    return {
+      error: `briefs[${i}].recommendation must be one of ${CODE_RECOMMENDATIONS.join(" | ")}`,
+    };
+  }
+  if (
+    !CODE_EXEC_CLASSES.includes(b.execClass as (typeof CODE_EXEC_CLASSES)[number])
+  ) {
+    return {
+      error: `briefs[${i}].execClass must be one of ${CODE_EXEC_CLASSES.join(" | ")}`,
+    };
+  }
+  if (b.evidence !== undefined && typeof b.evidence !== "string") {
+    return { error: `briefs[${i}].evidence must be a string when present` };
+  }
+  return {
+    repo: b.repo as string,
+    externalId: b.externalId as string,
+    sourceHash: b.sourceHash as string,
+    brief: b.brief as string,
+    recommendation: b.recommendation as (typeof CODE_RECOMMENDATIONS)[number],
+    execClass: b.execClass as (typeof CODE_EXEC_CLASSES)[number],
+    evidence: b.evidence as string | undefined,
+  };
+}
+
+// POST /dts/code-briefs — the worker's prepared briefs, upserted by
+// (repo, externalId). Body: { briefs: [{ repo, externalId, sourceHash, brief,
+// recommendation, execClass, evidence? }] }.
+const dtsCodeBriefs = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(b.briefs)) {
+    return jsonResponse(400, { error: "briefs (array) required" });
+  }
+  const briefs: CodeBrief[] = [];
+  for (let i = 0; i < b.briefs.length; i++) {
+    const parsed = parseCodeBrief(b.briefs[i], i);
+    if ("error" in parsed) return jsonResponse(400, parsed);
+    briefs.push(parsed);
+  }
+  await ctx.runMutation(internal.dtsCode.internalStoreBriefs, { briefs });
+  return jsonResponse(200, { ok: true, count: briefs.length });
+});
+
+http.route({ path: "/dts/code-briefs", method: "POST", handler: dtsCodeBriefs });
+
+// GET /dts/code-rulings — the rulings a worker job should act on (unapplied
+// and not superseded by a newer ruling on the same item). Each row carries its
+// _id, which the worker echoes back to /dts/code-ruling-applied.
+const dtsCodeRulings = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  const pending = await ctx.runQuery(internal.dtsCode.internalPendingRulings, {});
+  return jsonResponse(200, { pending });
+});
+
+http.route({ path: "/dts/code-rulings", method: "GET", handler: dtsCodeRulings });
+
+// POST /dts/code-ruling-applied — the worker's apply report. Body: { id,
+// result } where result is a commit sha / PR url / error text.
+const dtsCodeRulingApplied = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.id !== "string" || b.id.length === 0) {
+    return jsonResponse(400, { error: "id (non-empty string) required" });
+  }
+  if (typeof b.result !== "string" || b.result.length === 0) {
+    return jsonResponse(400, { error: "result (non-empty string) required" });
+  }
+  try {
+    await ctx.runMutation(internal.dtsCode.internalMarkRulingApplied, {
+      id: b.id,
+      result: b.result,
+    });
+    return jsonResponse(200, { ok: true });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/dts/code-ruling-applied",
+  method: "POST",
+  handler: dtsCodeRulingApplied,
+});
+
 export default http;

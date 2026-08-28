@@ -136,5 +136,34 @@
     The weekly materials include engagement-latency outliers and
     restructuring candidates computed from real recorded events.
 
+- id: dts-cmt-ruling-loop
+  readiness: ready-for-tom
+  status: done
+  created: 2026-08-27
+  cites: [dts-spec:15, dts-spec:5]
+  statement: >-
+    Run the full DTS pipeline over CMT's vqc/todos.yaml: worker-written
+    ground-up briefs per open entry (with recommendation criteria
+    approve / needs-session / propose-archive / stale-replan and a
+    box-vs-needs-turing execution class), ruling controls on the Inventory,
+    bookkeeping rulings applied to CMT master guard-gated, approved plans
+    executed agentically in throwaway clones as PRs (merging the PR is the
+    persist-tom-gate), and needs-session rulings materialized as session
+    agenda files in CMT's dev/handoff/.
+  completion_condition: >-
+    An open CMT todo is briefed on the Inventory; each ruling kind round-trips
+    (recorded in the UI, applied by the worker, outcome visible); an approved
+    plan produces a reviewable PR that closes its todo entry in-commit.
+  plan: >-
+    Convex dtsCodeBriefs/dtsCodeRulings + /dts/code-* endpoints; Inventory
+    ruling controls; three worker jobs (brief-code-todos, apply-rulings,
+    execute-approved) on the box. Ratified inline in conversation 2026-08-28.
+  resolution: >-
+    Landed in the same commit as this entry: convex/dtsCode.ts (+schema,
+    http routes, digest line, 6 tests), app/inventory/components/
+    code-todo-row.tsx, worker jobs brief-code-todos/apply-rulings/
+    execute-approved + dts-code-lib, cron entries. Tom's rulings: PRs for
+    execution, direct-to-master for bookkeeping, brief all entries at once.
+
 # Discovered-but-undecided gaps live in vqc/ledger.yaml, not here (a todo is
 # a CHOICE; a ledger entry is KNOWLEDGE — VQC D28).

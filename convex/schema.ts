@@ -448,4 +448,52 @@ export default defineSchema({
   })
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_status", ["status"]),
+
+  // Ground-up briefs the worker box prepares for open code todos, one live row
+  // per (repo, externalId) — upserted by internalStoreBriefs, so a re-brief
+  // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
+  // when the entry changes upstream, the hash mismatch marks the brief stale
+  // and the worker rewrites it. `recommendation` is the worker's read, never a
+  // verdict — Tom rules (dtsCodeRulings); `execClass` says where an approved
+  // item can run; `evidence` carries the commits/files that justify a
+  // propose-archive.
+  dtsCodeBriefs: defineTable({
+    repo: v.string(),
+    externalId: v.string(),
+    sourceHash: v.string(),
+    brief: v.string(), // ground-up markdown
+    recommendation: v.union(
+      v.literal("approve"),
+      v.literal("needs-session"),
+      v.literal("propose-archive"),
+      v.literal("stale-replan"),
+    ),
+    execClass: v.union(v.literal("box"), v.literal("needs-turing")),
+    evidence: v.optional(v.string()),
+    preparedAt: v.number(),
+  }).index("by_repo_external", ["repo", "externalId"]),
+
+  // Tom's rulings on briefed code todos. APPEND-ONLY: a new ruling on the same
+  // (repo, externalId) is a NEW row (history kept, nothing-is-lost); the
+  // newest ruledAt is the live ruling. Worker jobs read pending rulings
+  // (appliedAt unset, not superseded) via GET /dts/code-rulings and report
+  // back through internalMarkRulingApplied, which stamps appliedAt +
+  // applyResult (commit sha / PR url / error text).
+  dtsCodeRulings: defineTable({
+    repo: v.string(),
+    externalId: v.string(),
+    ruling: v.union(
+      v.literal("approve"),
+      v.literal("needs-session"),
+      v.literal("propose-archive"),
+      v.literal("stale-replan"),
+      v.literal("defer"),
+    ),
+    note: v.optional(v.string()),
+    ruledAt: v.number(),
+    appliedAt: v.optional(v.number()),
+    applyResult: v.optional(v.string()),
+  })
+    .index("by_repo_external", ["repo", "externalId"])
+    .index("by_ruled", ["ruledAt"]),
 });

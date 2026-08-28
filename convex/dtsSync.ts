@@ -40,9 +40,10 @@ export const sendDigest = internalAction({
       return;
     }
 
-    // The full-table read is only needed when composing the fallback text —
-    // the worker-prepared happy path skips it (review finding: this is the one
-    // daily payload that would otherwise grow with the never-pruned archive).
+    // The full-table reads are only needed when composing the fallback text —
+    // the worker-prepared happy path skips them (review finding: this is the
+    // one daily payload that would otherwise grow with the never-pruned
+    // archive).
     const text =
       row?.digestText ??
       composeFallbackDigest(
@@ -50,6 +51,7 @@ export const sendDigest = internalAction({
         row ?? null,
         await ctx.runQuery(internal.dts.internalListTodos, {}),
         now,
+        await ctx.runQuery(internal.dtsCode.internalAwaitingRulingCount, {}),
       );
 
     const res = await fetch(SLACK_POST_URL, {
@@ -79,6 +81,7 @@ function composeFallbackDigest(
   row: Doc<"dtsDailyQueues"> | null,
   todos: Doc<"dtsTodos">[],
   now: number,
+  awaitingRulingCount: number,
 ): string {
   const byId = new Map(todos.map((t) => [t._id, t]));
   const lines: string[] = [`*DTS digest — ${day}*`];
@@ -121,8 +124,21 @@ function composeFallbackDigest(
       `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/inventory|Inventory>`,
     );
   }
+  // Briefed code todos with no ruling yet sit next to the tom-gate line — the
+  // same "waiting on you" area, descriptive, no verdicts.
+  if (awaitingRulingCount > 0) {
+    lines.push(
+      "",
+      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/inventory|Inventory>`,
+    );
+  }
 
-  if (dated.length === 0 && queueTodos.length === 0 && atGate.length === 0) {
+  if (
+    dated.length === 0 &&
+    queueTodos.length === 0 &&
+    atGate.length === 0 &&
+    awaitingRulingCount === 0
+  ) {
     lines.push("", "Nothing today.");
   }
 
