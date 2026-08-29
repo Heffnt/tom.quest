@@ -377,9 +377,15 @@ export function closeEntryText(text, cfg, { id, resolution, today }) {
   blockLines[statusAt] = `  status: archived`;
   blockLines.push(...resolutionLines);
 
+  // findEntryBlock strips the blank lines that separate this entry from the
+  // next one, but endLine still points past them — splicing the stripped block
+  // back in would delete the separator and reflow the file. Put them back, so
+  // the diff stays "one status line changed, two lines added".
+  const trailingBlanks =
+    found.endLine - found.startLine - found.block.split("\n").length;
   const rewritten = lines
     .slice(0, found.startLine)
-    .concat(blockLines, lines.slice(found.endLine));
+    .concat(blockLines, Array(trailingBlanks).fill(""), lines.slice(found.endLine));
   return { ok: true, text: rewritten.join("\n") };
 }
 

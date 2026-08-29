@@ -174,6 +174,27 @@ describe("closeEntryText", () => {
     expect(alphaBlock).not.toContain("resolution");
   });
 
+  // witness: drop the trailing-blank restoration in closeEntryText's in-place
+  // path and this goes red — the blank line separating alpha from beta
+  // disappears, turning a two-line edit into a whole-file reflow.
+  it("touches only the closed entry's own lines", () => {
+    const cfg = REPOS["tom.quest"];
+    const out = closeEntryText(IN_PLACE_FILE, cfg, {
+      id: "alpha",
+      resolution: "superseded",
+      today: "2026-03-04",
+    });
+    const before = IN_PLACE_FILE.split("\n");
+    const after = out.text!.split("\n");
+    // Everything from beta's id line on is byte-identical to the original.
+    expect(after.slice(after.indexOf("- id: beta"))).toEqual(
+      before.slice(before.indexOf("- id: beta")),
+    );
+    // And exactly three lines changed: the status line, plus the two-line
+    // resolution (`resolution: >-` and one wrapped body line).
+    expect(after.length).toBe(before.length + 2);
+  });
+
   it("reports an already-closed entry as a no-op, not a failure", () => {
     const closed = closeEntryText(IN_PLACE_FILE, REPOS["tom.quest"], {
       id: "beta",
