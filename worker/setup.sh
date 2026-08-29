@@ -53,8 +53,9 @@ echo "== [4/8] directories =="
 # /var/lib/tts        — small local state: the Slack poll cursor, the
 #     brief-hash cursor, and the apply/execute lock dirs (all harmless to
 #     lose; see each job's header)
-# /var/cache/tts      — rebuildable caches: the shallow CMT clone, the brief
-#     markdown copies, and the executor's throwaway full clones
+# /var/cache/tts      — rebuildable caches: one shallow clone per governed
+#     repo (see CODE_REPOS in tts-code-lib.mjs), the brief markdown copies,
+#     and the executor's throwaway full clones
 # /etc/tts            — worker.env (secrets; mode 600)
 # /var/log/tts        — cron output
 # /root/.claude-accounts/{gmail,wpi} — one Claude Code config dir per Max

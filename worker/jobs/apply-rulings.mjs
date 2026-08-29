@@ -5,25 +5,31 @@
 //   node /opt/tts/apply-rulings.mjs
 //
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
-// open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
-// this job GETs /tts/rulings — a UNIFIED feed whose rows carry
-// subjectType "life"|"code" and verdict "approve"|"revise"|"session"|
-// "archive" — takes only the CODE rows (life rows belong to
-// prepare-life-todos.mjs), applies each pending one, then POSTs
-// /tts/ruling-applied so the UI shows the outcome. The verdicts:
+// open todo in every GOVERNED REPO (see CODE_REPOS in tts-code-lib.mjs); Tom
+// rules in the tom.quest UI; Convex queues the ruling; this job GETs
+// /tts/rulings — a UNIFIED feed whose rows carry subjectType "life"|"code"
+// and verdict "approve"|"revise"|"session"|"archive" — takes only the CODE
+// rows (life rows belong to prepare-life-todos.mjs), applies each pending one,
+// then POSTs /tts/ruling-applied so the UI shows the outcome. The verdicts:
 //   revise   -> Tom's sentence redirects the plan: force a re-brief that
 //               proposes a fresh one
-//   session  -> push a session-agenda file to CMT master for Tom to open a
+//   session  -> deliver a session-agenda file to the repo for Tom to open a
 //               live Claude session from
-//   archive  -> close the todo in vqc/todos.yaml (guard-checked, never
-//               pushed red)
+//   archive  -> close the todo in the repo's registry (guard-checked, never
+//               delivered red)
 //   approve  -> NOT ours. execute-approved.mjs owns approvals; we skip them
 //               entirely (not even mark-applied).
 // There is NO "defer" verdict — not ruling IS deferring.
 //
+// DELIVERY IS PER-REPO. A repo's `pushMode` decides whether a session agenda
+// or an archive lands as a commit straight on its default branch ("direct",
+// CMT) or as a branch plus a pull request ("pull-request", tom.quest — whose
+// default branch is the production deploy branch and whose own todos guard
+// runs only in CI). Same surgery, different last step.
+//
 // SERIALIZATION: a 10-minute cron plus pushes that can take minutes means
 // runs can overlap; the mkdir lock /var/lib/tts/apply.lock ensures only one
-// applier mutates the cache clone / pushes at a time. Stale locks (a crashed
+// applier mutates the cache clones / pushes at a time. Stale locks (a crashed
 // holder) are broken after 30 minutes.
 //
 // FAILURE POLICY: a ruling that fails for an ENVIRONMENTAL reason (push race,
@@ -36,14 +42,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadEnv, convexFetch } from "./tts-lib.mjs";
 import {
-  CMT_REPO,
-  CMT_DEFAULT_BRANCH,
-  TODOS_PATH,
-  TODOS_GUARD_TEST,
   REPLAN_SENTINEL,
-  CLOSED_BANNER_PREFIX,
+  repoConfig,
+  repoCacheDir,
+  closeEntryText,
+  verifyTodosFile,
+  runRepoGuard,
+  yamlToJson,
   git,
-  cmtRepoDir,
   readBriefHashes,
   writeBriefHashes,
   briefCachePath,
@@ -63,53 +69,82 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// Greedy word-wrap to `width` columns — for YAML `>-` block-scalar bodies,
-// which re-fold on parse, so the wrap points are cosmetic (matching the
-// file's ~100-column style) and never semantic.
-function wrapText(text, width) {
-  const words = text.split(/\s+/).filter((w) => w !== "");
-  const lines = [];
-  let line = "";
-  for (const word of words) {
-    if (line === "") line = word;
-    else if (line.length + 1 + word.length <= width) line += " " + word;
-    else {
-      lines.push(line);
-      line = word;
-    }
-  }
-  if (line !== "") lines.push(line);
-  return lines;
-}
-
-// Run the todos guard test in the repo; {ok, tail} where tail is the last
-// chunk of pytest output for the failure report Tom will read in the UI.
-function runTodosGuard(repoDir) {
-  try {
-    execFileSync("python3", ["-m", "pytest", TODOS_GUARD_TEST, "-q"], {
-      cwd: repoDir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 5 * 60 * 1000,
-    });
-    return { ok: true, tail: "" };
-  } catch (err) {
-    const out = `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim();
-    return { ok: false, tail: out.slice(-400) };
-  }
-}
-
 // The brief cache file's content, or null when it was never written / was
 // lost (the cache is rebuildable, so absence is a degraded path, not an
 // error). Also extracts the "Evidence:" header line the briefing job wrote.
-function readBriefCache(externalId) {
+function readBriefCache(repo, externalId) {
   try {
-    const text = fs.readFileSync(briefCachePath(CMT_REPO, externalId), "utf8");
+    const text = fs.readFileSync(briefCachePath(repo, externalId), "utf8");
     const evidence = text.match(/^Evidence: (.*)$/m)?.[1] ?? null;
     return { text, evidence };
   } catch {
     return null;
   }
+}
+
+// The ids currently in a repo's registry — the "before" snapshot every piece
+// of text surgery is verified against (verifyTodosFile).
+function registryIds(cfg, repoDir) {
+  const parsed = yamlToJson(path.join(repoDir, cfg.todosPath));
+  return Array.isArray(parsed)
+    ? parsed.filter((e) => e && typeof e === "object").map((e) => e.id)
+    : [];
+}
+
+// ---------------------------------------------------------------------------
+// Delivery: the last step that turns staged changes into something Tom sees
+// ---------------------------------------------------------------------------
+
+// Create the PR for an already-pushed branch, or return the URL of the one
+// that already exists (a re-ruling reuses the branch namespace, and `gh pr
+// create` refuses when a PR is already open for that head).
+function prUrlFor(env, cfg, repoDir, branch, title, body) {
+  const ghEnv = { ...process.env, GH_TOKEN: env.GH_TOKEN };
+  try {
+    const out = execFileSync(
+      "gh",
+      ["pr", "create", "--title", title, "--base", cfg.defaultBranch, "--head", branch, "--body", body],
+      { cwd: repoDir, encoding: "utf8", env: ghEnv, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    // gh prints the PR URL as the last non-empty stdout line.
+    return out.split("\n").map((l) => l.trim()).filter((l) => l !== "").pop() ?? "(no URL in gh output)";
+  } catch {
+    const out = execFileSync("gh", ["pr", "view", branch, "--json", "url", "-q", ".url"], {
+      cwd: repoDir,
+      encoding: "utf8",
+      env: ghEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return out.trim();
+  }
+}
+
+// Commit the already-staged working-tree changes and deliver them the way the
+// repo's pushMode says. Returns { unchanged: true } when there was nothing to
+// commit, else { unchanged: false, ref } where ref is the commit sha (direct)
+// or the pull-request URL. `baseSha` is where the cache clone sat before this
+// ruling touched it — the pull-request path returns the clone to it so the
+// next ruling in the same run starts from the default branch again.
+function deliver(env, cfg, repoDir, { baseSha, branch, commitMessage, prTitle, prBody }) {
+  // A re-ruling can produce byte-identical content; `git commit` then fails
+  // with "nothing to commit", which would read as an environmental failure
+  // and retry forever. Unchanged content is already-applied, not an error.
+  if (git(repoDir, "status", "--porcelain").trim() === "") return { unchanged: true };
+
+  if (cfg.pushMode === "direct") {
+    git(repoDir, "commit", "-m", commitMessage);
+    git(repoDir, "push", "origin", cfg.defaultBranch);
+    return { unchanged: false, ref: git(repoDir, "rev-parse", "HEAD").trim().slice(0, 12) };
+  }
+
+  // pull-request: the branch namespace tts/* is owned by this job, so a retry
+  // overwrites its own failed attempt's leftover branch rather than rejecting.
+  git(repoDir, "checkout", "-B", branch);
+  git(repoDir, "commit", "-m", commitMessage);
+  git(repoDir, "push", "--force", "origin", branch);
+  const url = prUrlFor(env, cfg, repoDir, branch, prTitle, prBody);
+  git(repoDir, "checkout", "-B", cfg.defaultBranch, baseSha);
+  return { unchanged: false, ref: url };
 }
 
 // --- the per-verdict handlers (each returns the applied-result string) -----
@@ -121,24 +156,24 @@ function readBriefCache(externalId) {
 // briefed" and the redirect would be lost.
 function applyRevise(ruling) {
   const hashes = readBriefHashes();
-  hashes[`${CMT_REPO}:${ruling.externalId}`] =
+  hashes[`${ruling.repo}:${ruling.externalId}`] =
     REPLAN_SENTINEL + (ruling.sentence ? `: ${ruling.sentence}` : "");
   writeBriefHashes(hashes);
   return "replan queued";
 }
 
 // session: write a self-contained session agenda into the repo itself
-// and push it to master. WHY in the repo: Tom starts the session with
-//   claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
+// and deliver it. WHY in the repo: Tom starts the session with
+//   claude "Run the TTS session in <handoffDir>/tts-session-<id>.md"
 // from any checkout — the agenda travels with the code it is about, needs no
 // tom.quest access, and its git history records what Tom was asked.
-function applySession(env, repoDir, ruling) {
+function applySession(env, cfg, repoDir, baseSha, ruling) {
   const id = ruling.externalId;
-  const todosText = fs.readFileSync(path.join(repoDir, TODOS_PATH), "utf8");
+  const todosText = fs.readFileSync(path.join(repoDir, cfg.todosPath), "utf8");
   const found = findEntryBlock(todosText, id);
-  const cached = readBriefCache(id);
+  const cached = readBriefCache(cfg.repo, id);
 
-  const agendaRel = `dev/handoff/tts-session-${id}.md`;
+  const agendaRel = `${cfg.handoffDir}/tts-session-${id}.md`;
   const agenda = [
     `# TTS session agenda — ${id}`,
     ``,
@@ -150,10 +185,10 @@ function applySession(env, repoDir, ruling) {
     `    claude "Run the TTS session in ${agendaRel}"`,
     ``,
     ...(ruling.sentence ? [`Tom's sentence with the ruling: ${ruling.sentence}`, ``] : []),
-    `## The todo entry (from ${TODOS_PATH})`,
+    `## The todo entry (from ${cfg.todosPath})`,
     ``,
     "```yaml",
-    found ? found.block : `# entry ${id} not found in ${TODOS_PATH} at apply time`,
+    found ? found.block : `# entry ${id} not found in ${cfg.todosPath} at apply time`,
     "```",
     ``,
     `## The brief`,
@@ -165,42 +200,34 @@ function applySession(env, repoDir, ruling) {
     ``,
   ].join("\n");
 
-  fs.mkdirSync(path.join(repoDir, "dev/handoff"), { recursive: true });
+  fs.mkdirSync(path.join(repoDir, cfg.handoffDir), { recursive: true });
   fs.writeFileSync(path.join(repoDir, agendaRel), agenda);
   git(repoDir, "add", agendaRel);
-  // A re-ruling can produce a byte-identical agenda; `git commit` then fails
-  // with "nothing to commit", which would read as an environmental failure
-  // and retry forever. An unchanged agenda is already-applied, not an error.
-  if (git(repoDir, "status", "--porcelain").trim() === "") {
-    return `session agenda already current (${agendaRel})`;
-  }
-  git(repoDir, "commit", "-m", `tts: session agenda for ${id}`);
-  git(repoDir, "push", "origin", CMT_DEFAULT_BRANCH);
-  const sha = git(repoDir, "rev-parse", "HEAD").trim();
-  return `session agenda pushed — ${sha.slice(0, 12)} (${agendaRel})`;
+
+  const delivered = deliver(env, cfg, repoDir, {
+    baseSha,
+    branch: `tts/session-${id}`,
+    commitMessage: `tts: session agenda for ${id}`,
+    prTitle: `tts: session agenda for ${id}`,
+    prBody:
+      `Tom ruled "session" on the code todo \`${id}\`: its plan embeds a judgment` +
+      ` call only he can make. This adds the session agenda he opens the working` +
+      ` session from.\n\nMerging this PR delivers the agenda to ${cfg.defaultBranch}.`,
+  });
+  return delivered.unchanged
+    ? `session agenda already current (${agendaRel})`
+    : `session agenda delivered — ${delivered.ref} (${agendaRel})`;
 }
 
-// archive: close the todo by TEXT SURGERY on vqc/todos.yaml — move
-// the entry block below the closed-todos banner, adding `closed:` +
-// `resolution:`. The FULL body is kept (statement, cites, plan, …): the guard
-// requires every entry's schema fields open or closed, and keeping the body
-// also keeps the diff a pure move-plus-two-fields, easy to review.
-function applyArchive(env, repoDir, ruling) {
+// archive: close the todo by TEXT SURGERY on the repo's registry, in that
+// repo's own closure convention (see closeEntryText / CODE_REPOS.closureStyle).
+function applyArchive(env, cfg, repoDir, baseSha, ruling) {
   const id = ruling.externalId;
-  const todosFile = path.join(repoDir, TODOS_PATH);
+  const todosFile = path.join(repoDir, cfg.todosPath);
   const text = fs.readFileSync(todosFile, "utf8");
+  const idsBefore = registryIds(cfg, repoDir);
 
-  const found = findEntryBlock(text, id);
-  if (!found) return `ARCHIVE FAILED: entry ${id} not found in ${TODOS_PATH}`;
-  if (/^ {2}closed:/m.test(found.block)) return `already closed — nothing to do`;
-  if (!text.split("\n").some((l) => l.startsWith(CLOSED_BANNER_PREFIX))) {
-    return `ARCHIVE FAILED: no closed-todos banner in ${TODOS_PATH}`;
-  }
-
-  // Build the archived block: `closed:` slots in right after `created:` (the
-  // file's own convention), the resolution goes at the end as a `>-` block
-  // scalar with the file's 2-space key / 4-space continuation indents.
-  const cached = readBriefCache(id);
+  const cached = readBriefCache(cfg.repo, id);
   const resolutionText = [
     `Archived by Tom's TTS ruling of ${todayISO()}.`,
     ruling.sentence ?? "",
@@ -209,38 +236,45 @@ function applyArchive(env, repoDir, ruling) {
     .filter((s) => s !== "")
     .join(" ");
 
-  const blockLines = found.block.split("\n");
-  const createdAt = blockLines.findIndex((l) => /^ {2}created:/.test(l));
-  const closedLine = `  closed: ${todayISO()}`;
-  if (createdAt !== -1) blockLines.splice(createdAt + 1, 0, closedLine);
-  else blockLines.push(closedLine);
-  blockLines.push(`  resolution: >-`);
-  for (const line of wrapText(resolutionText, 96)) blockLines.push(`    ${line}`);
-
-  // Remove the block from the live surface, re-append at file end (which is
-  // below the banner by construction — closed history accumulates at the
-  // bottom), one blank line before it, single trailing newline after.
-  const lines = text.split("\n");
-  const remaining = lines.slice(0, found.startLine).concat(lines.slice(found.endLine));
-  while (remaining.length > 0 && remaining[remaining.length - 1].trim() === "") {
-    remaining.pop();
+  const closed = closeEntryText(text, cfg, {
+    id,
+    resolution: resolutionText,
+    today: todayISO(),
+  });
+  if (!closed.ok) {
+    return closed.already ? closed.reason : `ARCHIVE FAILED: ${closed.reason}`;
   }
-  fs.writeFileSync(todosFile, remaining.concat([""], blockLines).join("\n") + "\n");
+  fs.writeFileSync(todosFile, closed.text);
 
-  // Guard gate: the todos guard is the file's own definition of well-formed.
-  // Red means our surgery (or the pre-existing file) is broken — never push
-  // red; revert and surface the pytest tail to Tom in the UI.
-  const guard = runTodosGuard(repoDir);
-  if (!guard.ok) {
-    git(repoDir, "checkout", "--", TODOS_PATH);
-    return `GUARDS FAILED: ${guard.tail}`;
+  // Guard gate, in two layers. verifyTodosFile is the box's own floor and runs
+  // for every repo: still a list, no id lost or gained, the target entry now
+  // reads closed with a resolution. runRepoGuard additionally runs the repo's
+  // OWN todos test when the box can (CMT's pytest module; tom.quest's vitest
+  // guard needs node_modules the shallow clone has none of, so its real guard
+  // runs in CI on the pull request instead — which is why tom.quest is
+  // pushMode "pull-request"). Red means our surgery (or the pre-existing file)
+  // is broken — never deliver red; revert and surface the output to Tom.
+  for (const check of [
+    verifyTodosFile(cfg, repoDir, { idsBefore, closedId: id }),
+    runRepoGuard(cfg, repoDir),
+  ]) {
+    if (!check.ok) {
+      git(repoDir, "checkout", "--", cfg.todosPath);
+      return `GUARDS FAILED: ${check.tail}`;
+    }
   }
 
-  git(repoDir, "add", TODOS_PATH);
-  git(repoDir, "commit", "-m", `todo(${id}): closed — archived by TTS ruling`);
-  git(repoDir, "push", "origin", CMT_DEFAULT_BRANCH);
-  const sha = git(repoDir, "rev-parse", "HEAD").trim();
-  return `archived — ${sha.slice(0, 12)}`;
+  git(repoDir, "add", cfg.todosPath);
+  const delivered = deliver(env, cfg, repoDir, {
+    baseSha,
+    branch: `tts/archive-${id}`,
+    commitMessage: `todo(${id}): closed — archived by TTS ruling`,
+    prTitle: `todo(${id}): closed — archived by TTS ruling`,
+    prBody:
+      `Tom ruled "archive" on the code todo \`${id}\`. This closes the entry in` +
+      ` \`${cfg.todosPath}\` in this repo's own convention.\n\n${resolutionText}`,
+  });
+  return delivered.unchanged ? `already closed — nothing to do` : `archived — ${delivered.ref}`;
 }
 
 async function main() {
@@ -262,31 +296,41 @@ async function main() {
     );
     if (actionable.length === 0) return;
 
-    // Refresh the cache clone once, only if some ruling needs the repo.
-    const needsRepo = actionable.some(
-      (r) => r.repo === CMT_REPO && (r.verdict === "session" || r.verdict === "archive"),
-    );
-    const repoDir = needsRepo ? cmtRepoDir(env) : null;
+    // Refresh each repo's cache clone at most once per run, and only when some
+    // ruling actually needs that repo's tree. `baseSha` is the clone's tip
+    // right after the refresh — every rollback and every pull-request return
+    // trip targets it.
+    const clones = new Map(); // repo -> { repoDir, baseSha }
+    const cloneFor = (cfg) => {
+      if (!clones.has(cfg.repo)) {
+        const repoDir = repoCacheDir(env, cfg);
+        clones.set(cfg.repo, { repoDir, baseSha: git(repoDir, "rev-parse", "HEAD").trim() });
+      }
+      return clones.get(cfg.repo);
+    };
 
     let failures = 0;
     for (const ruling of actionable) {
       const label = `${ruling.repo}:${ruling.externalId} [${ruling.verdict}]`;
+      const cfg = repoConfig(ruling.repo);
       // Snapshot HEAD so any half-done repo mutation can be rolled back —
       // commits happen only after guards pass, so a mid-handler crash leaves
       // at most working-tree changes plus possibly an unpushed commit.
-      const startSha = repoDir ? git(repoDir, "rev-parse", "HEAD").trim() : null;
+      let clone = null;
       try {
         let result;
-        if (ruling.repo !== CMT_REPO) {
-          // Only CMT is wired up today. Mark applied rather than leaving it
-          // pending forever — Tom sees "unsupported repo" instead of silence.
+        if (cfg === null) {
+          // Not a governed repo. Mark applied rather than leaving it pending
+          // forever — Tom sees "unsupported repo" instead of silence.
           result = `unsupported repo: ${ruling.repo}`;
         } else if (ruling.verdict === "revise") {
           result = applyRevise(ruling);
         } else if (ruling.verdict === "session") {
-          result = applySession(env, repoDir, ruling);
+          clone = cloneFor(cfg);
+          result = applySession(env, cfg, clone.repoDir, clone.baseSha, ruling);
         } else if (ruling.verdict === "archive") {
-          result = applyArchive(env, repoDir, ruling);
+          clone = cloneFor(cfg);
+          result = applyArchive(env, cfg, clone.repoDir, clone.baseSha, ruling);
         } else {
           // A verdict this worker predates. Mark applied so the queue can't
           // clog; the text tells Tom to update the worker.
@@ -300,10 +344,11 @@ async function main() {
         // retries against a freshly reset clone.
         failures++;
         console.error(`[apply-rulings] ${label} FAILED (left pending): ${err.message}`);
-        if (repoDir && startSha) {
+        if (clone) {
           try {
-            git(repoDir, "reset", "--hard", startSha);
-            git(repoDir, "clean", "-fd");
+            git(clone.repoDir, "checkout", "-B", cfg.defaultBranch, clone.baseSha);
+            git(clone.repoDir, "reset", "--hard", clone.baseSha);
+            git(clone.repoDir, "clean", "-fd");
           } catch (resetErr) {
             console.error(`[apply-rulings] cache rollback failed: ${resetErr.message}`);
           }

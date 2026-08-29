@@ -222,6 +222,12 @@ function composeFallbackDigest(
 // divergent copies) via the GitHub contents API. Link-by-id-never-copy: the
 // mirror stores only what the Inventory needs to display + deep-link. Silently
 // a no-op until GITHUB_MIRROR_TOKEN is configured.
+//
+// EVERY repo listed here must also appear in CODE_REPOS in
+// worker/jobs/tts-code-lib.mjs — mirroring a repo the worker does not brief
+// makes its todos invisible rather than slow (no ruling card, and
+// form-batches.mjs drops unbriefed rows). worker/jobs/tts-code-lib.test.ts
+// fences the two lists, repo and branch, in both directions.
 const MIRROR_SOURCES = [
   { repo: "ComplexMultiTrigger", branch: "master" },
   { repo: "tom.quest", branch: "main" },
