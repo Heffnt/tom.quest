@@ -1411,6 +1411,211 @@ function buildAutoMissionPrompt(
   return lines.filter((l): l is string => l !== null).join("\n");
 }
 
+// ── The prospecting lane ─────────────────────────────────────────────────────
+// Tom's directive (2026-08-29): "review the CMT and tom.quest repos for issues
+// to make more to-dos." A PROSPECTING MISSION is an autonomous session that
+// works no todo: it reads one repo's fresh checkout, looks for concrete issues,
+// and captures each new one as an unprepared item.
+//
+// PARALLEL, NOT LAST RESORT (Tom's amendment the same night: keeping the box at
+// FULL CAPACITY overnight is the top priority, and "six hours is insane"). Real
+// todo work takes the per-tick budget FIRST; prospecting spends whatever is
+// left over on the same tick. So a tick that admits one real mission out of a
+// budget of two admits a prospector alongside it — the budget is a capacity
+// bound, and leaving it unspent is the thing being fixed.
+//
+// Doctrine kept intact: input gates PERSISTENCE, not implementation, and the
+// worker key may CAPTURE but never rule. A captured finding lands as an
+// ordinary unprepared todo and waits for Tom's pen like any other. Speculative
+// findings are welcome — Tom reviews everything, and a review he declines costs
+// him one glance.
+
+// WikiTom is deliberately absent: it is a wiki, not a source of code issues.
+const PROSPECT_REPOS = ["ComplexMultiTrigger", "tom.quest"] as const;
+
+// How many prospecting missions may be LIVE at once. Two, so both repos can be
+// under review at the same time while real work keeps its own slots; every
+// prospector still counts against maxLiveAutonomous like any other session.
+const PROSPECT_MAX_LIVE = 2;
+
+// At most one prospecting mission per repo per 30 minutes. Not a backoff and
+// not a rationing device — just enough to stop a repo being re-scanned in
+// identical state twice in a row: a capture needs a few minutes to flow into
+// prep, so a scan minutes apart would read the same tree and reach the same
+// findings. The clock starts at CREATION, so a prospector that errors has
+// already spent the window by the time it ends.
+const PROSPECT_COOLDOWN_MS = 30 * 60 * 1000;
+// How far back the cooldown/fairness read looks, and how many rows it may
+// read. dtsEvents is the system's append-only instrumentation (busy: every
+// surfacing, capture, and queue cycle lands there), so the read is bounded on
+// both axes — see the truncation note in admitProspectMission.
+const PROSPECT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+const PROSPECT_EVENT_SCAN = 1000;
+// Quality over volume: the cap is stated in the prompt, not enforced here (the
+// capture route is the agent's own pen). One number, one home.
+const PROSPECT_CAPTURE_CAP = 8;
+
+// Opening prompt for a PROSPECTING mission. Same house voice and same shape as
+// buildAutoMissionPrompt (contract opening → the mission → the pens → the
+// prohibitions → the ending), with two differences that follow from working no
+// todo: there is no item facts block and no prepare pen, and the read-first
+// step is mandatory because the only way to avoid handing Tom a duplicate is
+// to look at what he already holds.
+function buildProspectMissionPrompt(
+  repo: string,
+  sessionId: Id<"claudeSessions">,
+): string {
+  const lines: string[] = [
+    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
+    "",
+    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for CONCRETE, ACTIONABLE issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
+    "",
+    "What counts as a finding:",
+    "- a failing or skipped test — name the test and the file it lives in",
+    "- dead code: a function, export, module, flag, or config key nothing reaches",
+    "- a document that contradicts the code it describes — name both files",
+    "- a TODO or FIXME comment in the source that nothing tracks",
+    "- a broken link between modules: a stale import path, a field one side renamed and the other still reads, one rule implemented two different ways in two files",
+    "- vocabulary drift: one fact carried under two names, or one name meaning two different things",
+    "",
+    `The quality bar: every finding NAMES the file or files it lives in, and is actionable by a future session holding nothing but your one sentence and the repo. A finding you are not certain about is still worth capturing when it is CONCRETE — Tom reads every item and declining one costs him a glance. What is not worth capturing is a style nitpick or a "this could be cleaner" with no named change: if you cannot say what would change and where, it is not a finding. At most ${PROSPECT_CAPTURE_CAP} captures for the whole mission: a short list of real findings is worth more than a long one, and finding NOTHING new is an honest, complete outcome.`,
+    "",
+    "The pens (shell commands; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment):",
+    "",
+    "1. READ WHAT TTS ALREADY HOLDS — do this BEFORE you capture anything:",
+    "```",
+    `curl -s "$CONVEX_SITE_URL/tts/state" -H "X-TTS-Key: $TTS_WORKER_KEY"`,
+    "```",
+    'The response carries every item in the system under "todos". Read their statements. Never capture a finding that restates one of them, or that an item plainly already covers — a duplicate costs Tom a triage he has already done.',
+  ];
+  // ComplexMultiTrigger tracks its own code todos in-repo (vqc/todos.yaml is
+  // the file the dtsCodeTodoMirror cron reads from each repo's default
+  // branch). Those are already-tracked work and must not be re-captured.
+  if (repo === "ComplexMultiTrigger") {
+    lines.push(
+      "",
+      `This repo also tracks its own code todos in \`vqc/todos.yaml\` in your checkout. Read that file too, and drop any finding it already names.`,
+    );
+  }
+  lines.push(
+    "",
+    "2. Capture ONE new finding (repeat per finding, up to the cap above):",
+    "```",
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Delete the unreachable helper someHelper in path/to/file.ts", "source": "prospecting", "provenance": "prospect mission ${sessionId}, ${repo}, path/to/file.ts"}'`,
+    "```",
+    'The statement is ONE imperative sentence that names the file or files. The provenance is where you found it, in exactly the shape above — that is how the item says which mission and which path it came from. Keep "source" as "prospecting".',
+    "",
+    "3. Record this session's outcome when the mission is done:",
+    "```",
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what was captured"}'`,
+    "```",
+    '"completed" is the right outcome whether you captured findings or none — say what you captured, or say "nothing new found" and mean it. Record "errored" only when something blocked the review itself (the checkout was unusable, /tts/state would not answer).',
+    "",
+    `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Change no file in the checkout, commit nothing, push nothing, and open no pull request: this mission's only output is captured items. Do not capture a duplicate of something TTS already holds, and do not capture more than ${PROSPECT_CAPTURE_CAP} items.`,
+    "",
+    "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
+  );
+  return lines.join("\n");
+}
+
+// The prospecting lane's whole body, called with whatever per-tick budget the
+// work walk left unspent. Returns the repo it prospected, or undefined when it
+// declined. It creates AT MOST ONE mission per tick: a second one would read a
+// tree the first has not finished reading.
+async function admitProspectMission(
+  ctx: MutationCtx,
+  now: number,
+  liveSessions: Doc<"claudeSessions">[],
+): Promise<string | undefined> {
+  // At most PROSPECT_MAX_LIVE prospectors alive at once. An autonomous session
+  // with NO todoId is what a prospecting mission looks like — a mission for
+  // real work always carries the todo it works, so this needs no extra field to
+  // key off. (liveSessions is this tick's snapshot, taken before any creation;
+  // since this lane creates one mission per tick at most, nothing it made can
+  // be missing from the count it just used.)
+  const liveProspectors = liveSessions.filter(
+    (s) => s.mode === "autonomous" && s.todoId === undefined,
+  ).length;
+  if (liveProspectors >= PROSPECT_MAX_LIVE) return undefined;
+
+  // The cooldown and the fairness order both come from this lane's own event
+  // trail. Read NEWEST-first inside a lookback window and bounded: truncation
+  // drops the OLDEST rows, so a repo's cooldown-relevant event is always in
+  // the scan and the bound can only cost fairness, never the cooldown.
+  const recentEvents = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_at", (q) => q.gte("at", now - PROSPECT_LOOKBACK_MS))
+    .order("desc")
+    .take(PROSPECT_EVENT_SCAN);
+  // ...unless the scan filled up INSIDE the cooldown window, where it cannot
+  // prove any repo is out of cooldown. Decline the tick rather than guess — a
+  // wrongly-skipped tick costs five minutes, and a wrongly-admitted one costs a
+  // whole session re-reading a tree it just read. With a 30-minute window this
+  // branch needs PROSPECT_EVENT_SCAN events inside half an hour, which the
+  // system does not produce in ordinary use.
+  const oldestScanned = recentEvents[recentEvents.length - 1]?.at;
+  if (
+    recentEvents.length >= PROSPECT_EVENT_SCAN &&
+    oldestScanned !== undefined &&
+    oldestScanned > now - PROSPECT_COOLDOWN_MS
+  ) {
+    return undefined;
+  }
+
+  // Rows are newest-first, so the first sighting of a repo IS its last
+  // prospecting.
+  const lastByRepo = new Map<string, number>();
+  for (const e of recentEvents) {
+    if (e.kind !== "prospect-mission-created") continue;
+    const eventRepo = (e.data as { repo?: unknown } | undefined)?.repo;
+    if (typeof eventRepo !== "string") continue;
+    if (!lastByRepo.has(eventRepo)) lastByRepo.set(eventRepo, e.at);
+  }
+
+  // The eligible repo whose last prospecting is OLDEST wins; a repo never
+  // prospected is older than any timestamp, and a tie keeps PROSPECT_REPOS
+  // order (the comparison is strict <).
+  let repo: string | undefined;
+  let repoLastAt = Infinity;
+  for (const candidate of PROSPECT_REPOS) {
+    const lastAt = lastByRepo.get(candidate) ?? -Infinity;
+    if (now - lastAt < PROSPECT_COOLDOWN_MS) continue;
+    if (lastAt < repoLastAt) {
+      repo = candidate;
+      repoLastAt = lastAt;
+    }
+  }
+  if (repo === undefined) return undefined;
+
+  const sessionId = await ctx.db.insert("claudeSessions", {
+    title: `prospect: ${repo}`,
+    // "adhoc" because this mission works no todo — which is also the fact the
+    // one-at-a-time check above reads (todoId stays unset).
+    kind: "adhoc",
+    repo,
+    mode: "autonomous",
+    status: "requested",
+    statusChangedAt: now,
+    nextSeq: 0,
+    createdAt: now,
+  });
+  await ctx.db.insert("claudeInbound", {
+    sessionId,
+    kind: "user-turn",
+    text: buildProspectMissionPrompt(repo, sessionId),
+    status: "pending",
+    createdAt: now,
+  });
+  // The cooldown clock, started at CREATION rather than at the outcome: an
+  // errored prospector has already written this row, so the 30 minutes above is
+  // the entire wait for a failed run and this lane needs no second mechanism.
+  await logEvent(ctx, "prospect-mission-created", undefined, {
+    sessionId,
+    repo,
+  });
+  return repo;
+}
+
 // ── Autonomous-session scheduler (P3, cron every 5 min) ──────────────────────
 // Walks Tom's committed and pending work and admits up to a handful of
 // autonomous groundwork sessions when — and only when — the box has headroom.
@@ -1770,8 +1975,22 @@ export const internalAutoSchedule = internalMutation({
       });
     }
 
-    // Quiet when idle: the scheduler event only exists when something was
-    // admitted — no-op ticks leave no trace.
+    // ── The prospecting lane (parallel with the work walk) ───────────────────
+    // Real todo work has now taken its share of `capacity`; prospecting spends
+    // what is LEFT, on this same tick. The guard is the leftover budget itself
+    // (picked.size < capacity), so prospecting can never take a slot the walk
+    // above wanted — but an unspent slot goes to prospecting rather than going
+    // unused, which is the full-capacity rule. The mission it creates is an
+    // ordinary autonomous session: it counts against maxLiveAutonomous on every
+    // later tick, and against this tick's budget as the one pick it is.
+    if (picked.size < capacity) {
+      await admitProspectMission(ctx, now, liveSessions);
+    }
+
+    // Quiet when idle: the scheduler event only exists when real work was
+    // admitted — no-op ticks leave no trace. A prospecting admission does not
+    // pass through here: its trace is the "prospect-mission-created" event,
+    // which names the session and the repo.
     if (picked.size > 0) {
       await logEvent(ctx, "auto-session-scheduler", undefined, {
         admitted: picked.size,

@@ -109,6 +109,29 @@ async function autoSessions(t: ReturnType<typeof convexTest>) {
   );
 }
 
+// The two kinds of autonomous session the scheduler makes, told apart by the
+// one field that separates them: a mission for REAL WORK always carries the
+// todo it works, and a PROSPECTING mission works no todo at all. Both are
+// created on the same tick now that prospecting is parallel, so a test about
+// the work walk counts workSessions, not every autonomous row.
+async function workSessions(t: ReturnType<typeof convexTest>) {
+  return (await autoSessions(t)).filter((s) => s.todoId !== undefined);
+}
+
+async function prospectSessions(t: ReturnType<typeof convexTest>) {
+  return (await autoSessions(t)).filter((s) => s.todoId === undefined);
+}
+
+// The prospecting lane's own trail: one row per created mission, naming the
+// session and the repo. It is also the cooldown clock the lane reads back.
+async function prospectEvents(t: ReturnType<typeof convexTest>) {
+  return await t.run(async (ctx) =>
+    (await ctx.db.query("dtsEvents").collect()).filter(
+      (e) => e.kind === "prospect-mission-created",
+    ),
+  );
+}
+
 // A finished autonomous run in this todo's history — the input to every
 // backoff and circuit-breaker rule.
 async function insertPastAutoSession(
@@ -1593,7 +1616,7 @@ describe("autonomous session scheduler", () => {
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
 
-    const sessions = await autoSessions(t);
+    const sessions = await workSessions(t);
     expect(sessions).toHaveLength(1);
     const session = sessions[0];
     expect(session.mode).toBe("autonomous");
@@ -1745,7 +1768,7 @@ describe("autonomous session scheduler", () => {
     });
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    expect(await autoSessions(t)).toHaveLength(0);
+    expect(await workSessions(t)).toHaveLength(0);
   });
 
   // witness: drop the `live.verdict === "session"` clause from the exclusion
@@ -1777,7 +1800,7 @@ describe("autonomous session scheduler", () => {
     );
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    expect(await autoSessions(t)).toHaveLength(0);
+    expect(await workSessions(t)).toHaveLength(0);
   });
 
   it("backs off a todo whose last autonomous run did not complete", async () => {
@@ -1800,7 +1823,7 @@ describe("autonomous session scheduler", () => {
     });
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    const created = (await autoSessions(t)).filter(
+    const created = (await workSessions(t)).filter(
       (s) => s.title !== "past auto run",
     );
     expect(created).toHaveLength(0);
@@ -1831,9 +1854,13 @@ describe("autonomous session scheduler", () => {
     );
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    // Every session row, not just the autonomous ones — the reopened run is
+    // "interactive" now, so a mode filter would hide the very row under test.
+    // The prospecting mission this tick's leftover budget also created carries
+    // no todo, and this test is about the todo's history.
     const created = await t.run(async (ctx) =>
       (await ctx.db.query("claudeSessions").collect()).filter(
-        (s) => s.title !== "past auto run",
+        (s) => s.title !== "past auto run" && s.todoId !== undefined,
       ),
     );
     expect(created).toHaveLength(0);
@@ -1857,14 +1884,14 @@ describe("autonomous session scheduler", () => {
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(
-      (await autoSessions(t)).filter((s) => s.title !== "past auto run"),
+      (await workSessions(t)).filter((s) => s.title !== "past auto run"),
     ).toHaveLength(0);
 
     // The todo moved since the run — there is new ground to cover.
     await t.run(async (ctx) => ctx.db.patch(todoId, { updatedAt: ranAt + 1 }));
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(
-      (await autoSessions(t)).filter((s) => s.title !== "past auto run"),
+      (await workSessions(t)).filter((s) => s.title !== "past auto run"),
     ).toHaveLength(1);
   });
 
@@ -1929,7 +1956,7 @@ describe("autonomous session scheduler", () => {
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(
-      (await autoSessions(t)).filter((s) => s.title !== "past auto run"),
+      (await workSessions(t)).filter((s) => s.title !== "past auto run"),
     ).toHaveLength(1);
   });
 
@@ -2167,5 +2194,233 @@ describe("autonomous session scheduler", () => {
     // Both workspace variants carry the implement-anyway doctrine: a Tom
     // decision in the plan never parks the session.
     expect(inbound[0].text).toContain("does NOT block you");
+  });
+});
+
+// ── The prospecting lane ─────────────────────────────────────────────────────
+// A PROSPECTING MISSION is an autonomous session that works no todo: it reads
+// one repo and captures the concrete issues it finds as new unprepared items
+// (Tom's directive, 2026-08-29: "review the CMT and tom.quest repos for issues
+// to make more to-dos").
+//
+// The rule these tests pin is Tom's amendment the same night: prospecting runs
+// IN PARALLEL with real todo work, spending whatever per-tick budget the work
+// walk left unspent, because keeping the box at full capacity overnight is the
+// top priority. It is NOT the last resort it was first built as.
+describe("prospecting lane", () => {
+  // The two repos the lane may prospect. WikiTom is deliberately absent: it is
+  // a wiki, not a source of code issues.
+  const PROSPECT_REPOS = ["ComplexMultiTrigger", "tom.quest"];
+
+  // Take a live session out of the live set, so a test about the cooldown is
+  // not silently answered by the live-prospector cap instead.
+  async function endSession(
+    t: ReturnType<typeof convexTest>,
+    id: Id<"claudeSessions">,
+  ) {
+    await t.run(async (ctx) => ctx.db.patch(id, { status: "ended" as const }));
+  }
+
+  // witness: put the lane back behind `picked.size === 0` (the last-resort
+  // shape) and this test goes red — a tick that admitted one real mission out
+  // of a budget of two would leave the second slot unspent all night.
+  it("spends the tick's leftover budget on a prospector alongside real work", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    // The contract default: two new sessions per tick. One real todo is
+    // eligible, so exactly one slot is left over.
+    await enableAuto(t);
+    await heartbeat(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "draft the reading list",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+
+    // The real work went first and still got its mission.
+    const work = await workSessions(t);
+    expect(work).toHaveLength(1);
+    expect(work[0].todoId).toBe(todoId);
+
+    // ...and the leftover slot became a prospecting mission on the SAME tick.
+    const prospectors = await prospectSessions(t);
+    expect(prospectors).toHaveLength(1);
+    const prospector = prospectors[0];
+    expect(PROSPECT_REPOS).toContain(prospector.repo);
+    expect(prospector.title).toBe(`prospect: ${prospector.repo}`);
+    // "adhoc" and no todoId: this mission works no item — which is also the
+    // fact the lane's own live-prospector count reads.
+    expect(prospector.kind).toBe("adhoc");
+    expect(prospector.todoId).toBeUndefined();
+    expect(prospector.mode).toBe("autonomous");
+    expect(prospector.status).toBe("requested");
+
+    // Its mission turn is queued for the daemon like any other.
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: prospector._id,
+    });
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0].kind).toBe("user-turn");
+
+    // The lane's own trail names the session and the repo — the scheduler
+    // event stays the work walk's.
+    const events = await prospectEvents(t);
+    expect(events).toHaveLength(1);
+    expect(events[0].data as { sessionId: string; repo: string }).toEqual({
+      sessionId: prospector._id,
+      repo: prospector.repo,
+    });
+  });
+
+  // witness: drop the `picked.size < capacity` guard and this test goes red —
+  // prospecting would take a slot the work walk wanted.
+  it("creates no prospector when real work consumed the whole budget", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    await tom.mutation(api.tts.createTodo, { statement: "draft the agenda" });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+
+    expect(await workSessions(t)).toHaveLength(1);
+    expect(await prospectSessions(t)).toHaveLength(0);
+    expect(await prospectEvents(t)).toHaveLength(0);
+  });
+
+  // Two rules agree on this tick and either one alone would carry it: the
+  // cooldown skips the repo just prospected, and the oldest-first comparator
+  // prefers the repo never prospected. Each is pinned on its own below; this
+  // one pins their shared effect — witness: remove both (leave the lane taking
+  // PROSPECT_REPOS[0]) and it goes red, every tick re-reading one tree.
+  it("sends the next prospecting to the repo the first one did not read", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+
+    // No todos at all: every tick's whole budget is leftover, and the lane
+    // still creates exactly ONE mission per tick.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const first = await prospectSessions(t);
+    expect(first).toHaveLength(1);
+    // Never prospected beats never prospected on the order in the source.
+    expect(first[0].repo).toBe("ComplexMultiTrigger");
+    await endSession(t, first[0]._id);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const second = await prospectSessions(t);
+    expect(second).toHaveLength(2);
+    const repos = second.map((s) => s.repo).sort();
+    expect(repos).toEqual(["ComplexMultiTrigger", "tom.quest"]);
+  });
+
+  // Two witnesses, one per half. Delete the cooldown skip and the first half
+  // goes red — a third prospector would re-read a tree read moments ago. Widen
+  // PROSPECT_COOLDOWN_MS back to six hours ("six hours is insane") and the
+  // second half goes red — the box would idle the night out on a repo it read
+  // once. The last assertion is the fairness comparator's own: invert
+  // `lastAt < repoLastAt` and the newest-read repo would win instead.
+  it("declines while both repos are inside the cooldown, then takes the stalest", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const both = await prospectSessions(t);
+    expect(both).toHaveLength(2);
+    // Both out of the live set, so ONLY the cooldown can decline the tick.
+    for (const s of both) await endSession(t, s._id);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await prospectSessions(t)).toHaveLength(2);
+
+    // Age the trail past the 30-minute window, tom.quest more recently than
+    // ComplexMultiTrigger: the repo whose last prospecting is OLDEST wins.
+    const now = Date.now();
+    const events = await prospectEvents(t);
+    await t.run(async (ctx) => {
+      for (const e of events) {
+        const repo = (e.data as { repo: string }).repo;
+        await ctx.db.patch(e._id, {
+          at: repo === "tom.quest" ? now - 31 * 60_000 : now - 90 * 60_000,
+        });
+      }
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const after = await prospectSessions(t);
+    expect(after).toHaveLength(3);
+    const newest = after.sort((a, b) => b.createdAt - a.createdAt)[0];
+    expect(newest.repo).toBe("ComplexMultiTrigger");
+  });
+
+  // witness: raise PROSPECT_MAX_LIVE or drop the count entirely and this test
+  // goes red — prospectors would crowd out the real work they ride beside.
+  it("holds at two live prospectors", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    // Two live autonomous sessions carrying no todo IS two live prospectors —
+    // the absence of a todo is what the cap counts.
+    await insertPastAutoSession(t, { status: "running" });
+    await insertPastAutoSession(t, { status: "running" });
+
+    // Nothing else stands in the way: no todos to spend the budget, and no
+    // prospecting event anywhere, so both repos are out of cooldown.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await prospectEvents(t)).toHaveLength(0);
+    expect(
+      (await prospectSessions(t)).filter((s) => s.title !== "past auto run"),
+    ).toHaveLength(0);
+  });
+
+  // witness: remove the /tts/state step from buildProspectMissionPrompt and
+  // this test goes red — the mission's only defence against handing Tom a
+  // duplicate is reading what he already holds.
+  it("briefs the mission to read, capture, and never push", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const prospector = (await prospectSessions(t))[0];
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: prospector._id,
+    });
+    const text = inbound[0].text;
+
+    // The dedupe read comes before the capture pen, and both are named.
+    expect(text).toContain("/tts/state");
+    expect(text).toContain("/tts/capture");
+    expect(text.indexOf("/tts/state")).toBeLessThan(
+      text.indexOf("/tts/capture"),
+    );
+    expect(text).toContain('"source": "prospecting"');
+    // At most eight captures, said in the prompt because the capture route is
+    // the agent's own pen and enforces no cap of its own.
+    expect(text).toContain("At most 8 captures");
+    expect(text).toContain("do not capture more than 8 items");
+    // It names its own session and repo, and the outcome pen.
+    expect(text).toContain(prospector._id);
+    expect(text).toContain(prospector.repo!);
+    expect(text).toContain("/tts/session-outcome");
+
+    // Read-and-capture only: none of the work walk's workspace instructions
+    // reach a prospector, and the prohibition is stated outright.
+    expect(text).toContain("push nothing");
+    expect(text).not.toContain("push the branch");
+    expect(text).not.toContain("gh pr create");
+    expect(text).not.toContain("NEVER merge");
+    expect(text).not.toContain(`session/${prospector._id}`);
+
+    // Same env contract as every autonomous mission: the ingest key never
+    // reaches a model-reachable environment, so the prompt cannot name it.
+    expect(text).toContain("TTS_WORKER_KEY");
+    expect(text).not.toContain("SESSIONS_WORKER_KEY");
   });
 });
