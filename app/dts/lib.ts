@@ -242,13 +242,6 @@ export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Epoch ms → <input type="datetime-local"> value in LOCAL time. */
-export function toDatetimeLocal(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
 // The intent vocabulary is owned by convex/dtsShared.ts (dtsItemLink is the
 // single producer of ?item=&intent= links); this is just its local name.
 export type { DtsLinkIntent as LinkIntent } from "@/convex/dtsShared";
@@ -262,22 +255,12 @@ export function fmtDate(ms: number): string {
   });
 }
 
-/** "2026-08-30" in local time — for date-history lines and date-input prefills. */
+/** "2026-08-30" in local time — for date-history lines. */
 export function isoDate(ms: number): string {
   const d = new Date(ms);
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
-}
-
-/**
- * <input type="date"> value → epoch ms at noon LOCAL time (avoids the
- * UTC-midnight off-by-one when the value round-trips through a date key).
- */
-export function parseDateInput(value: string): number | undefined {
-  if (!value) return undefined;
-  const ms = new Date(`${value}T12:00:00`).getTime();
-  return Number.isNaN(ms) ? undefined : ms;
 }
 
 /** Descriptive age: "12 min ago", "3 h ago", "1 day ago", "41 days ago". */

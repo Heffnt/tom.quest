@@ -7,13 +7,13 @@
 // for the caller to render instead of being swallowed.
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import {
   buildTodoSessionPrompt,
   type BatchMemberContext,
+  type LiveRulingContext,
 } from "@/app/lib/dts-session-prompt";
 
 // Resolve a batch's members to live statements + statuses against the todos
@@ -44,9 +44,35 @@ function resolveMembers(
   });
 }
 
+// A browser tab claimed during the click itself, before the createSession
+// round trip. Browsers only honour window.open inside the user-gesture call
+// stack, so callers reserve first and point the tab at the session once the
+// id comes back; a failed mutation closes it again.
+export type ReservedTab = {
+  goto: (sessionId: string) => void;
+  close: () => void;
+};
+
+// Must be called synchronously inside a click handler, before any await.
+export function reserveSessionTab(): ReservedTab {
+  const tab = window.open("", "_blank");
+  return {
+    goto: (sessionId) => {
+      const href = `/sessions?session=${sessionId}`;
+      // Popup blocked (or the tab was closed): fall back to this tab. Plain
+      // location.assign keeps this helper hook-free, so click handlers can
+      // call it without a router in scope.
+      if (tab && !tab.closed) tab.location.href = href;
+      else window.location.assign(href);
+    },
+    close: () => {
+      if (tab && !tab.closed) tab.close();
+    },
+  };
+}
+
 export function useOpenTodoSession() {
   const createSession = useMutation(api.claudeSessions.createSession);
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,9 +83,22 @@ export function useOpenTodoSession() {
       // For batch todos (members set): the todos + mirror the caller already
       // holds, so the prompt carries live member statements and statuses.
       batch?: { todos: Doc<"dtsTodos">[]; mirror: Doc<"dtsCodeTodoMirror">[] };
+      // A tab the caller already reserved in its own click handler (e.g. the
+      // session verdict, which records a ruling first). Omit it and open
+      // reserves one itself — synchronously, before the mutation.
+      tab?: ReservedTab;
+      // The ruling just recorded (session verdict path) — its sentence goes
+      // into the session prompt so Tom never repeats himself.
+      ruling?: LiveRulingContext;
     },
   ) => {
-    if (busy) return;
+    if (busy) {
+      // A caller that reserved its own tab in the click (the session verdict)
+      // would otherwise strand a blank window on the second click.
+      opts?.tab?.close();
+      return;
+    }
+    const tab = opts?.tab ?? reserveSessionTab();
     setBusy(true);
     setError(null);
     try {
@@ -78,10 +117,12 @@ export function useOpenTodoSession() {
           todo.members !== undefined && opts?.batch
             ? { members: resolveMembers(todo, opts.batch) }
             : undefined,
+          opts?.ruling,
         ),
       });
-      router.push(`/sessions?session=${id}`);
+      tab.goto(id);
     } catch (e) {
+      tab.close();
       setError(e instanceof Error ? e.message : "the session did not open");
     } finally {
       setBusy(false);

@@ -71,17 +71,56 @@ export function dtsPrepDay(utcMs: number): string {
 }
 
 /**
+ * The UTC instant of `hourNy` o'clock New York on the calendar date whose UTC
+ * midnight is `utcMidnight`. The offset must be sampled AT the instant we are
+ * solving for, not at some fixed hour of the date: on a transition day midnight
+ * and midday sit on opposite sides of the 2 a.m. switch. So: guess with the
+ * offset at the naive instant, then re-sample at the candidate — one correction
+ * is enough, because the two candidates are an hour apart and the switch is one
+ * hour wide.
+ */
+function nyHourUtcMs(utcMidnight: number, hourNy: number): number {
+  const naive = utcMidnight + hourNy * HOUR_MS;
+  const guess = naive - nyOffsetHours(naive) * HOUR_MS;
+  return naive - nyOffsetHours(guess) * HOUR_MS;
+}
+
+/**
+ * UTC bounds [start, end) of the NY day named by a YYYY-MM-DD key, running from
+ * `hourNy` local on that date to `hourNy` local the next. DST-correct at both
+ * edges: a spring-forward day is 23 hours long, a fall-back day 25.
+ */
+function nyDayBoundsUtc(
+  day: string,
+  hourNy: number,
+): { start: number; end: number } {
+  const utcMidnight = Date.parse(day);
+  return {
+    start: nyHourUtcMs(utcMidnight, hourNy),
+    end: nyHourUtcMs(utcMidnight + DAY_MS, hourNy),
+  };
+}
+
+/**
  * UTC bounds [start, end) of a DTS day: 5 a.m. NY on the key's date to 5 a.m.
- * NY the next day. The offset is sampled at the date's midday so DST
- * transitions (2 a.m., inside the previous DTS day) cannot skew it.
+ * NY the next day.
  */
 export function dtsDayBoundsUtc(day: string): { start: number; end: number } {
-  const utcMidnight = Date.parse(day);
-  const offset = nyOffsetHours(utcMidnight + 12 * HOUR_MS);
-  const start = utcMidnight + (DTS_DIGEST_NY_HOUR - offset) * HOUR_MS;
-  const offsetNext = nyOffsetHours(utcMidnight + 36 * HOUR_MS);
-  const end = utcMidnight + DAY_MS + (DTS_DIGEST_NY_HOUR - offsetNext) * HOUR_MS;
-  return { start, end };
+  return nyDayBoundsUtc(day, DTS_DIGEST_NY_HOUR);
+}
+
+/**
+ * UTC bounds [start, end) of a CALENDAR day in New York: local midnight to the
+ * next local midnight. This is the window a /dts calendar COLUMN covers — the
+ * day-scoped time note carries that column's YYYY-MM-DD label (schema:
+ * dtsTimeNotes.day) and the server resolves it here, so browser-local ms and
+ * `day + DAY_MS` arithmetic never enter the picture.
+ */
+export function nyCalendarDayBoundsUtc(day: string): {
+  start: number;
+  end: number;
+} {
+  return nyDayBoundsUtc(day, 0);
 }
 
 /**

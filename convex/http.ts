@@ -1,7 +1,9 @@
 import { httpRouter } from "convex/server";
+import type { FunctionArgs } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
+import { nowContext } from "./dts";
 import { dtsPrepDay } from "./dtsShared";
 
 const http = httpRouter();
@@ -213,8 +215,10 @@ const dtsPrep = httpAction(async (ctx, request) => {
 http.route({ path: "/dts/prep", method: "POST", handler: dtsPrep });
 
 // POST /dts/prepare-todo — the worker's preparer job attaches brief /
-// entry action / work description to a life todo and advances its readiness.
-// Body: { id, brief?, entryAction?, workDescription?, readiness? }.
+// entry action / work description to a life todo and advances its readiness,
+// plus the date the statement itself states, if any.
+// Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
+// dateKind? }.
 const dtsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = dtsAuth(request);
   if (denied) return denied;
@@ -237,6 +241,18 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
       error: 'readiness must be "preparing" or "ready-for-tom"',
     });
   }
+  if (
+    b.dateKind !== undefined &&
+    b.dateKind !== "external" &&
+    b.dateKind !== "self-imposed"
+  ) {
+    return jsonResponse(400, {
+      error: 'dateKind must be "external" or "self-imposed"',
+    });
+  }
+  if (b.dueAt !== undefined && typeof b.dueAt !== "number") {
+    return jsonResponse(400, { error: "dueAt must be a number (epoch ms)" });
+  }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
     await ctx.runMutation(internal.dts.internalPrepareTodo, {
@@ -245,6 +261,10 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
       entryAction: str(b.entryAction),
       workDescription: str(b.workDescription),
       readiness: b.readiness as "preparing" | "ready-for-tom" | undefined,
+      // The date the STATEMENT states, when it states one. The mutation is
+      // the real gate: a first date only, never over an existing one.
+      dueAt: b.dueAt as number | undefined,
+      dateKind: b.dateKind as "external" | "self-imposed" | undefined,
     });
     return jsonResponse(200, { ok: true });
   } catch (e) {
@@ -268,10 +288,103 @@ const dtsState = httpAction(async (ctx, request) => {
     new URL(request.url).searchParams.get("day") ?? dtsPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.dts.internalListTodos, {});
   const queue = await ctx.runQuery(internal.dts.internalGetDay, { day });
-  return jsonResponse(200, { todos, queue, prepDay: day });
+  // nowContext carries the NY calendar date too — a different question from
+  // prepDay (which rolls at 5 a.m.) and the one a preparer needs to resolve
+  // "sept 3" or "Friday" in a statement. Same rule either way: the server owns
+  // the clock, the worker repeats it back.
+  return jsonResponse(200, { todos, queue, prepDay: day, ...nowContext(Date.now()) });
 });
 
 http.route({ path: "/dts/state", method: "GET", handler: dtsState });
+
+// ── DTS time notes (ratified 2026-08-29) ─────────────────────────────────────
+// Same DTS_WORKER_KEY path. Tom writes one freeform sentence about time
+// against a todo, a block, or a calendar day; apply-time-notes.mjs reads the
+// pending queue here, asks Claude for concrete actions, and posts them back.
+// The SERVER decides what is legal (internalApplyTimeNote re-validates every
+// action against the same helpers the Tom-gated mutations use) — these routes
+// only carry the traffic.
+
+// POST /dts/time-notes — the pending queue, each note with the full context it
+// is about, plus the server's clock: the worker never computes New York time
+// itself (the /dts/state prepDay convention), it repeats back what it is told.
+const dtsTimeNotes = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  const notes = await ctx.runQuery(internal.dts.internalPendingTimeNotes, {});
+  return jsonResponse(200, { notes, ...nowContext(Date.now()) });
+});
+
+http.route({ path: "/dts/time-notes", method: "POST", handler: dtsTimeNotes });
+
+// POST /dts/apply-time-note — the worker's verdict on one note.
+// Body: { id, status: "applied"|"needs-session", result, actions? }.
+// A rejection here is the POINT of the endpoint: the note stays pending (the
+// mutation rolls back whole) and the job re-submits it as needs-session with
+// the reason, so a kept-dates violation surfaces to Tom instead of landing.
+// The actions array is passed to the mutation AS WRITTEN — the Convex union
+// validator is the single gate. No projection step: a sanitizer that silently
+// dropped a field the model DID send (a create-block category, say) would let a
+// half-understood action land as a different, legal one. Malformed in, 400 out,
+// needs-session on Tom's page.
+
+// One note is one sentence; ten actions is already far past what one sentence
+// asks for (Convex bounded-args guideline).
+const TIME_NOTE_ACTIONS_MAX = 10;
+
+// The mutation's OWN declared arg type — the only assertion here, and one that
+// cannot drift from the validator the way a hand-written projection could.
+type TimeNoteActions = FunctionArgs<
+  typeof internal.dts.internalApplyTimeNote
+>["actions"];
+const dtsApplyTimeNote = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.id !== "string" || b.id.length === 0) {
+    return jsonResponse(400, { error: "id (non-empty string) required" });
+  }
+  if (b.status !== "applied" && b.status !== "needs-session") {
+    return jsonResponse(400, {
+      error: 'status must be "applied" or "needs-session"',
+    });
+  }
+  if (typeof b.result !== "string" || b.result.trim().length === 0) {
+    return jsonResponse(400, { error: "result (non-empty string) required" });
+  }
+  if (Array.isArray(b.actions) && b.actions.length > TIME_NOTE_ACTIONS_MAX) {
+    return jsonResponse(400, {
+      error: `at most ${TIME_NOTE_ACTIONS_MAX} actions per time note — got ${b.actions.length}`,
+    });
+  }
+  try {
+    const outcome = await ctx.runMutation(internal.dts.internalApplyTimeNote, {
+      id: b.id,
+      status: b.status,
+      result: b.result,
+      actions: Array.isArray(b.actions)
+        ? (b.actions as TimeNoteActions)
+        : undefined,
+    });
+    return jsonResponse(200, outcome);
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/dts/apply-time-note",
+  method: "POST",
+  handler: dtsApplyTimeNote,
+});
 
 // ── DTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
 // Same DTS_WORKER_KEY path: the worker posts ground-up briefs for open code

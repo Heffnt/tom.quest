@@ -1,9 +1,14 @@
 "use client";
 
 // One life-todo row: click-to-expand summary line + detail panel.
-// Panel order: intent banner → action row (session + verdicts) → status strip
-// → importance → date controls → brief → "edit" disclosure (field editors,
-// full fact grid, date history). Actions sit at the top everywhere.
+// Panel order: intent banner → session + options (verdicts, done/archive,
+// importance) → time note → brief → "edit" disclosure (field editors, full
+// fact grid, date history). Actions sit at the top everywhere.
+//
+// Timing FACTS are displayed all over this row (countdown, dueAt, dateKind,
+// latest safe, wake, date history); timing INPUT is one time note — the row
+// has no date picker at all, and an agent reads the note (app/dts/components/
+// time-note-field.tsx).
 //
 // A batch is a life todo with members, so it reaches this row too (the by-
 // individual tab lists every todo): the header marks it and the fact grid
@@ -16,14 +21,13 @@ import { api } from "@/convex/_generated/api";
 import { countdownText } from "@/convex/dtsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
-import VerdictButtons from "./verdict-buttons";
-import { ImportanceButtons, StatusActions } from "./status-actions";
+import OptionsRow from "./options-row";
+import TimeNoteField, { type TimeNote } from "./time-note-field";
 import {
   ageText,
   errMessage,
   fmtDate,
   isoDate,
-  parseDateInput,
   type LinkIntent,
   type Todo,
 } from "../lib";
@@ -118,6 +122,7 @@ export default function TodoRow({
   onToggle,
   intent,
   onIntentCleared,
+  timeNotes,
 }: {
   todo: Todo;
   now: number;
@@ -126,12 +131,12 @@ export default function TodoRow({
   /** Deep-link intent aimed at THIS todo (?item=…&intent=…), else null. */
   intent: LinkIntent | null;
   onIntentCleared: () => void;
+  /** This todo's time notes, bucketed by the tab that holds the query. */
+  timeNotes: readonly TimeNote[];
 }) {
   const updateTodo = useMutation(api.dts.updateTodo);
   const setStatus = useMutation(api.dts.setStatus);
-  const recordDateOutcome = useMutation(api.dts.recordDateOutcome);
   const recordEvent = useMutation(api.dts.recordEvent);
-  const recordRuling = useMutation(api.dtsRulings.recordRuling);
   const {
     open: openTodoSession,
     busy: sessionBusy,
@@ -142,11 +147,7 @@ export default function TodoRow({
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
-  // Date-control drafts (Done/Archive/commit-time drafts live in StatusActions)
-  const [dateDraft, setDateDraft] = useState("");
-  const [latestSafeDraft, setLatestSafeDraft] = useState("");
-  // Edit-disclosure drafts
-  const [wakeAtDraft, setWakeAtDraft] = useState("");
+  // Edit-disclosure draft (dates never come from this row — see the time note)
   const [wakeConditionDraft, setWakeConditionDraft] = useState("");
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -188,28 +189,6 @@ export default function TodoRow({
       }
       onIntentCleared();
     });
-
-  const renegotiate = () => {
-    const newDueAt = parseDateInput(dateDraft);
-    if (todo.dueAt !== undefined && now >= todo.dueAt) {
-      setError("date already passed — record missed instead");
-      return;
-    }
-    if (newDueAt === undefined) {
-      setError("pick a date first");
-      return;
-    }
-    void run(() =>
-      recordDateOutcome({ id: todo._id, outcome: "renegotiated", newDueAt }),
-    );
-  };
-
-  const recordMissed = () => {
-    const newDueAt = parseDateInput(dateDraft);
-    void run(() =>
-      recordDateOutcome({ id: todo._id, outcome: "missed", newDueAt }),
-    );
-  };
 
   // Summary-line facts, per status/timing.
   const facts: React.ReactNode[] = [];
@@ -298,7 +277,7 @@ export default function TodoRow({
         onClick={onToggle}
         className="w-full text-left px-3 py-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
       >
-        <span className="text-sm text-text">{todo.statement}</span>
+        <span className="text-base text-text">{todo.statement}</span>
         {todo.members !== undefined && (
           <span className={chipCls}>batch · {todo.members.length} members</span>
         )}
@@ -351,11 +330,16 @@ export default function TodoRow({
             </div>
           )}
 
-          {/* 2 — action row */}
+          {/* 2 — session + options (the one options surface: verdicts when
+              this is a gate item, done/archive, importance). A gate item is
+              ruled from wherever it is seen, not only from the batches tab —
+              batched members lose that strip. */}
           <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
             <div className="space-y-0.5">
               <div className="flex items-center gap-1">
                 <button
+                  // No tab is reserved here: open() reserves one itself,
+                  // synchronously, still inside this click's gesture stack.
                   onClick={() => void openTodoSession(todo)}
                   disabled={busy || sessionBusy}
                   className={btnCls}
@@ -372,151 +356,23 @@ export default function TodoRow({
                 <div className="text-xs text-error">{sessionError}</div>
               )}
             </div>
-          </div>
-
-          {/* verdicts — a gate item is ruled from wherever it is seen, not
-              only from the batches tab (batched members lose that strip) */}
-          {todo.status === "active" && todo.readiness === "ready-for-tom" && (
-            <VerdictButtons
-              record={(args) => recordRuling({ todoId: todo._id, ...args })}
-              afterSession={() => openTodoSession(todo)}
+            <OptionsRow
+              todo={todo}
+              rulable={
+                todo.status === "active" && todo.readiness === "ready-for-tom"
+              }
+              afterSession={(tab, ruling) =>
+                void openTodoSession(todo, { tab, ruling })
+              }
             />
-          )}
-
-          {/* status strip — same component the batch card renders */}
-          <StatusActions todo={todo} />
-
-          <ImportanceButtons todo={todo} />
-
-          {/* date controls */}
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <input
-                type="date"
-                value={dateDraft}
-                onChange={(e) => setDateDraft(e.target.value)}
-                className={inputCls}
-              />
-              {todo.dueAt === undefined ? (
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => {
-                      const dueAt = parseDateInput(dateDraft);
-                      if (dueAt === undefined) {
-                        setError("pick a date first");
-                        return;
-                      }
-                      void run(() => updateTodo({ id: todo._id, dueAt }));
-                    }}
-                    disabled={busy}
-                    className={btnCls}
-                  >
-                    Set date
-                  </button>
-                  <Caption>{"dts.updateTodo({dueAt})"}</Caption>
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={renegotiate}
-                      disabled={busy}
-                      className={btnCls}
-                    >
-                      Renegotiate
-                    </button>
-                    <Caption>
-                      {'dts.recordDateOutcome({outcome:"renegotiated", newDueAt})'}
-                    </Caption>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={recordMissed}
-                      disabled={busy}
-                      className={btnCls}
-                    >
-                      Record missed
-                    </button>
-                    <Caption>
-                      {`dts.recordDateOutcome({outcome:"missed"${
-                        dateDraft ? ", newDueAt" : ""
-                      }})`}
-                    </Caption>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <select
-                      value={todo.dateKind ?? "self-imposed"}
-                      onChange={(e) =>
-                        void run(() =>
-                          updateTodo({
-                            id: todo._id,
-                            dateKind: e.target.value as
-                              | "external"
-                              | "self-imposed",
-                          }),
-                        )
-                      }
-                      className={inputCls}
-                    >
-                      <option value="external">external</option>
-                      <option value="self-imposed">self-imposed</option>
-                    </select>
-                    <Caption>{"dts.updateTodo({dateKind})"}</Caption>
-                  </div>
-                </>
-              )}
-            </div>
-            {todo.timingClass === "condition-bound" && (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <span className="text-xs text-text-faint self-center">
-                  latest safe:
-                </span>
-                <input
-                  type="date"
-                  value={latestSafeDraft}
-                  onChange={(e) => setLatestSafeDraft(e.target.value)}
-                  className={inputCls}
-                />
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => {
-                      const latestSafeAt = parseDateInput(latestSafeDraft);
-                      if (latestSafeAt === undefined) {
-                        setError("pick a latest-safe date first");
-                        return;
-                      }
-                      void run(() =>
-                        updateTodo({ id: todo._id, latestSafeAt }),
-                      );
-                    }}
-                    disabled={busy}
-                    className={btnCls}
-                  >
-                    Set latest safe
-                  </button>
-                  <Caption>{"dts.updateTodo({latestSafeAt})"}</Caption>
-                </div>
-                {todo.latestSafeAt !== undefined && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() =>
-                        void run(() =>
-                          updateTodo({ id: todo._id, latestSafeAt: null }),
-                        )
-                      }
-                      disabled={busy}
-                      className={btnCls}
-                    >
-                      Clear latest safe
-                    </button>
-                    <Caption>{"dts.updateTodo({latestSafeAt:null})"}</Caption>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
-          {/* 3 — brief */}
+          {/* 3 — time note: the row's only timing INPUT. Due dates, latest
+              safe, renegotiations and missed dates are all written by the
+              agent that reads this note. */}
+          <TimeNoteField todoId={todo._id} notes={timeNotes} />
+
+          {/* 4 — brief */}
           {todo.brief && (
             <div className="space-y-1">
               <div className="text-xs text-text-faint">brief</div>
@@ -526,7 +382,7 @@ export default function TodoRow({
             </div>
           )}
 
-          {/* 4 — edit disclosure */}
+          {/* 5 — edit disclosure */}
           <button
             onClick={() => setEditOpen((v) => !v)}
             className="text-xs text-text-faint hover:text-text-muted"
@@ -605,12 +461,6 @@ export default function TodoRow({
                     placeholder="wake condition (optional)"
                     className={`${inputCls} w-64`}
                   />
-                  <input
-                    type="date"
-                    value={wakeAtDraft}
-                    onChange={(e) => setWakeAtDraft(e.target.value)}
-                    className={inputCls}
-                  />
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() =>
@@ -620,7 +470,6 @@ export default function TodoRow({
                             status: "waiting",
                             wakeCondition:
                               wakeConditionDraft.trim() || undefined,
-                            wakeAt: parseDateInput(wakeAtDraft),
                           }),
                         )
                       }

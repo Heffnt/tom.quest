@@ -1,26 +1,20 @@
-"use client";
-
 // The ⓘ bubble every mono mutation caption on /dts sits behind. label is the
-// exact backend call the neighboring control fires (UI = code); title gives a
-// hover preview, click pins the caption inline.
-
-import { useState } from "react";
+// exact backend call the neighboring control fires (UI = code); it shows only
+// on hover/focus, in a floating tooltip — it never enters the page flow.
 
 export default function Info({ label }: { label: string }) {
-  const [open, setOpen] = useState(false);
   return (
-    <span className="inline-flex items-baseline gap-1">
+    <span className="relative inline-flex items-baseline group">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        title={label}
+        tabIndex={0}
         className="text-[10px] text-text-faint hover:text-text-muted"
       >
         ⓘ
       </button>
-      {open && (
-        <span className="font-mono text-[10px] text-text-faint">{label}</span>
-      )}
+      <span className="hidden group-hover:block group-focus-within:block absolute bottom-full left-1/2 -translate-x-1/2 mb-1 font-mono text-[10px] bg-surface-alt text-text-muted border border-border rounded px-1.5 py-0.5 whitespace-nowrap z-30 shadow">
+        {label}
+      </span>
     </span>
   );
 }

@@ -471,6 +471,38 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_start", ["start"]),
 
+  // Time notes (ratified 2026-08-29): the ONE input for anything about time.
+  // Every native date/time picker is gone from the /dts page; instead Tom
+  // writes one freeform sentence ("push this to next Wednesday", "Sat 9-11 for
+  // chores") against exactly one context — a todo, a block, or a calendar day
+  // (`day` = the column's calendar-date LABEL, "YYYY-MM-DD", never epoch ms:
+  // the server resolves it in America/New_York via nyCalendarDayBoundsUtc, so
+  // the browser's timezone can never shift which day a note is about) — and
+  // the worker job apply-time-notes.mjs reads it, decides, and calls
+  // dts.internalApplyTimeNote. The server re-validates every action it asks
+  // for (kept-dates included), so an agent misreading a note cannot slide a
+  // date. status:
+  //   pending       — not yet read by the job
+  //   applied       — carried out; `result` is one plain sentence of what was
+  //                   done. Kept FOREVER (instrumentation/transparency);
+  //                   listTimeNotes shows only the last 24h of them.
+  //   needs-session — ambiguous or refused; `result` is the one-line reason,
+  //                   and Tom opens a session (the complicated-cases path).
+  dtsTimeNotes: defineTable({
+    text: v.string(),
+    todoId: v.optional(v.id("dtsTodos")),
+    blockId: v.optional(v.id("dtsBlocks")),
+    day: v.optional(v.string()), // "YYYY-MM-DD", New York calendar date
+    status: v.union(
+      v.literal("pending"),
+      v.literal("applied"),
+      v.literal("needs-session"),
+    ),
+    result: v.optional(v.string()),
+    createdAt: v.number(),
+    resolvedAt: v.optional(v.number()),
+  }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
+
   // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
   // supersedes dtsCodeRulings below). APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
@@ -494,7 +526,11 @@ export default defineSchema({
       v.literal("session"),
       v.literal("archive"),
     ),
-    sentence: v.optional(v.string()), // required for revise (enforced in dtsRulings.ts)
+    // One optional written note, accepted on EVERY verdict (2026-08-29): the
+    // redirect for revise (required there), the unarchive condition for
+    // archive, a free steering note for approve/session — the worker prompts
+    // inject all four as context.
+    sentence: v.optional(v.string()),
     ruledAt: v.number(),
     appliedAt: v.optional(v.number()),
     applyResult: v.optional(v.string()),

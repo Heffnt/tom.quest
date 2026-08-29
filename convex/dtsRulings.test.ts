@@ -544,4 +544,75 @@ describe("DTS unified rulings", () => {
       await t.run(async (ctx) => ctx.db.query("dtsCodeRulings").collect()),
     ).toHaveLength(5);
   });
+
+  // witness: reject `sentence` on any verdict but revise in insertRuling
+  // (convex/dtsRulings.ts) and the approve/session assertions below go red.
+  it("accepts a sentence on every verdict; revise still requires one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const a = await tom.mutation(api.dts.createTodo, { statement: "approve me" });
+    const s = await tom.mutation(api.dts.createTodo, { statement: "talk to me" });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: a,
+      verdict: "approve",
+      sentence: "yes, and keep the scope to the kitchen",
+    });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: s,
+      verdict: "session",
+      sentence: "I want to see the numbers first",
+    });
+    const rulings = await tom.query(api.dtsRulings.listRulings, {});
+    expect(rulings.find((r) => r.todoId === a)?.sentence).toBe(
+      "yes, and keep the scope to the kitchen",
+    );
+    expect(rulings.find((r) => r.todoId === s)?.sentence).toBe(
+      "I want to see the numbers first",
+    );
+    // A blank sentence is stored as absent, not as "".
+    const b = await tom.mutation(api.dts.createTodo, { statement: "no note" });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: b,
+      verdict: "approve",
+      sentence: "   ",
+    });
+    expect(
+      (await tom.query(api.dtsRulings.listRulings, {})).find(
+        (r) => r.todoId === b,
+      )?.sentence,
+    ).toBeUndefined();
+    // revise is still the one verdict that cannot go without one.
+    const r = await tom.mutation(api.dts.createTodo, { statement: "redo" });
+    await expect(
+      tom.mutation(api.dtsRulings.recordRuling, { todoId: r, verdict: "revise" }),
+    ).rejects.toThrow(/sentence verdict/);
+  });
+
+  // witness: drop the `unarchiveCondition ?? trimmed` fallback in insertRuling
+  // — the archive note would stop meaning "propose it back when…".
+  it("an archive sentence IS the unarchive condition", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.dts.createTodo, { statement: "shelve it" });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: id,
+      verdict: "archive",
+      sentence: "when the lease renews",
+    });
+    const [todo] = await tom.query(api.dts.listTodos, {});
+    expect(todo.status).toBe("archived");
+    expect(todo.unarchiveCondition).toBe("when the lease renews");
+    // An explicit unarchiveCondition still wins over the sentence.
+    const other = await tom.mutation(api.dts.createTodo, { statement: "other" });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: other,
+      verdict: "archive",
+      sentence: "a note",
+      unarchiveCondition: "the explicit one",
+    });
+    const todos = await tom.query(api.dts.listTodos, {});
+    expect(todos.find((x) => x._id === other)?.unarchiveCondition).toBe(
+      "the explicit one",
+    );
+  });
 });

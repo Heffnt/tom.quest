@@ -23,6 +23,14 @@
 // "frozen" flag in the prompt reflects only Tom's OTHER touches (edits,
 // status changes, importance he set himself).
 //
+// NOTES ON THE OTHER VERDICTS (2026-08-29): approve / session / archive may
+// each carry a written note too. The approve and session ones are NOT commands
+// to re-form anything and are never consumed — they are standing steering
+// context (what he approved and why, what he wants talked through), injected
+// alongside the ruling history so the groupings track what he actually wants.
+// ARCHIVE notes are left out: an archive sentence is the unarchive CONDITION
+// for one retired item, not steering about what to group.
+//
 // NO-STATE RULE: Convex is read and written each run. The only local file is
 // the input-hash cursor in /var/lib/dts/ — losing it merely costs one extra
 // Claude invocation on inputs that had not changed (brief-hashes pattern).
@@ -78,6 +86,15 @@ function prompt(ctx) {
           `Tom ruled "revise" on these batches — each sentence redirects the`,
           `re-forming and overrides any other reading of the inputs:`,
           ...ctx.revises.map((r) => `- batch "${r.statement}": ${r.sentence}`),
+          ``,
+        ]
+      : []),
+    ...(ctx.notes.length > 0
+      ? [
+          `NOTES TOM WROTE WITH HIS APPROVE AND SESSION RULINGS. These are`,
+          `steering context about what he wants, not instructions to re-form a`,
+          `specific batch and not items to act on:`,
+          ...ctx.notes.map((n) => `- [${n.verdict}] ${n.subject}: ${n.sentence}`),
           ``,
         ]
       : []),
@@ -141,6 +158,33 @@ async function main() {
       revises.push({ ruling: r, statement: batch.statement, sentence: r.sentence ?? "" });
     }
   }
+
+  // Notes Tom wrote with his APPROVE and SESSION verdicts (2026-08-29: every
+  // verdict may carry a sentence). Unlike a revise sentence — which commands a
+  // re-form and is consumed — these are standing steering context: what he
+  // approved and why, what he wants talked through. Newest first, bounded.
+  //
+  // ARCHIVE sentences are excluded on purpose: an archive note is the
+  // UNARCHIVE CONDITION ("when the lease is up"), a fact about one retired
+  // item, not a statement of what Tom wants grouped. Feeding conditions in here
+  // as steering invites the model to re-form around things Tom just set aside.
+  const NOTE_MAX = 20;
+  const recent = Array.isArray(recentRulings) ? recentRulings : [];
+  const notes = recent
+    .filter(
+      (r) =>
+        (r.verdict === "approve" || r.verdict === "session") &&
+        (r.sentence ?? "").trim() !== "",
+    )
+    .slice(0, NOTE_MAX)
+    .map((r) => ({
+      verdict: r.verdict,
+      subject:
+        r.subjectType === "life"
+          ? `life "${all.find((t) => t._id === r.todoId)?.statement ?? r.todoId}"`
+          : `code ${r.repo} ${r.externalId}`,
+      sentence: r.sentence.trim(),
+    }));
 
   const batchRows = [...batchById.values()]
     .filter((t) => t.status === "active" || t.status === "waiting")
@@ -221,7 +265,14 @@ async function main() {
   const reviseSentences = revises.map((r) => r.sentence);
   const inputHash = createHash("sha256")
     .update(
-      JSON.stringify({ life, code, batches: batchRows, archivedStatements, reviseSentences }),
+      JSON.stringify({
+        life,
+        code,
+        batches: batchRows,
+        archivedStatements,
+        reviseSentences,
+        notes,
+      }),
     )
     .digest("hex");
   let storedHash = null;
@@ -244,7 +295,8 @@ async function main() {
       batches: batchRows,
       archivedStatements,
       revises,
-      recentRulings: (Array.isArray(recentRulings) ? recentRulings : []).map((r) => ({
+      notes,
+      recentRulings: recent.map((r) => ({
         subjectType: r.subjectType,
         todoId: r.todoId ?? null,
         repo: r.repo ?? null,

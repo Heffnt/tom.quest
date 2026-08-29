@@ -13,7 +13,10 @@ import {
   dtsDayBoundsUtc,
   dtsDayKey,
   dtsPrepDay,
+  nyCalendarDayBoundsUtc,
+  nyCalendarDayKey,
   nyLocalHour,
+  nyOffsetHours,
 } from "./dtsShared";
 
 // DTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
@@ -588,11 +591,59 @@ export const internalBulkUpdate = internalMutation({
   },
 });
 
-// Kept-dates rule (spec §8): every date resolves to done | renegotiated |
-// missed; renegotiation is only legal BEFORE the date arrives; the silent
-// slide is the one forbidden outcome. "renegotiated" and "missed" both require
-// a newDueAt only when the item stays dated ("missed" without a new date drops
-// the item back to whenever with the miss on record).
+// The ONE implementation of the kept-dates rule (spec §8) — used by the
+// Tom-gated recordDateOutcome below AND by internalApplyTimeNote (the time-note
+// worker acting on Tom's written instruction), so the rule cannot drift between
+// the two doors. Every date resolves to done | renegotiated | missed;
+// renegotiation is only legal BEFORE the date arrives; the silent slide is the
+// one forbidden outcome. "renegotiated" and "missed" both take a newDueAt only
+// when the item stays dated ("missed" without a new date drops the item back to
+// whenever with the miss on record).
+export async function applyDateOutcome(
+  ctx: MutationCtx,
+  todo: Doc<"dtsTodos">,
+  {
+    outcome,
+    newDueAt,
+    note,
+  }: {
+    outcome: "done" | "renegotiated" | "missed";
+    newDueAt?: number;
+    note?: string;
+  },
+) {
+  if (todo.dueAt === undefined) throw new Error("Todo has no date to resolve");
+  const now = Date.now();
+  if (outcome === "renegotiated") {
+    if (now >= todo.dueAt) {
+      throw new Error(
+        "Renegotiation is only allowed before the date arrives — record it as missed, then set a new date",
+      );
+    }
+    if (newDueAt === undefined) {
+      throw new Error("Renegotiation requires the new date");
+    }
+  }
+  const patch: Record<string, unknown> = {
+    updatedAt: now,
+    dateOutcomes: [
+      ...(todo.dateOutcomes ?? []),
+      { dueAt: todo.dueAt, outcome, recordedAt: now, note },
+    ],
+  };
+  if (outcome === "done") {
+    resolveDateAsDone(todo, now, note, patch); // overwrites dateOutcomes consistently
+  } else if (newDueAt !== undefined) {
+    patch.dueAt = newDueAt;
+    if (todo.dateKind === undefined) patch.dateKind = "self-imposed";
+  } else {
+    patch.dueAt = undefined;
+    patch.timingClass = "whenever";
+  }
+  await ctx.db.patch(todo._id, patch);
+  await logEvent(ctx, "date-outcome", todo._id, { outcome, newDueAt, note });
+}
+
 export const recordDateOutcome = mutation({
   args: {
     id: v.id("dtsTodos"),
@@ -600,40 +651,11 @@ export const recordDateOutcome = mutation({
     newDueAt: v.optional(v.number()),
     note: v.optional(v.string()),
   },
-  handler: async (ctx, { id, outcome, newDueAt, note }) => {
+  handler: async (ctx, { id, ...args }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
     if (!todo) throw new Error("DTS todo not found");
-    if (todo.dueAt === undefined) throw new Error("Todo has no date to resolve");
-    const now = Date.now();
-    if (outcome === "renegotiated") {
-      if (now >= todo.dueAt) {
-        throw new Error(
-          "Renegotiation is only allowed before the date arrives — record it as missed, then set a new date",
-        );
-      }
-      if (newDueAt === undefined) {
-        throw new Error("Renegotiation requires the new date");
-      }
-    }
-    const patch: Record<string, unknown> = {
-      updatedAt: now,
-      dateOutcomes: [
-        ...(todo.dateOutcomes ?? []),
-        { dueAt: todo.dueAt, outcome, recordedAt: now, note },
-      ],
-    };
-    if (outcome === "done") {
-      resolveDateAsDone(todo, now, note, patch); // overwrites dateOutcomes consistently
-    } else if (newDueAt !== undefined) {
-      patch.dueAt = newDueAt;
-      if (todo.dateKind === undefined) patch.dateKind = "self-imposed";
-    } else {
-      patch.dueAt = undefined;
-      patch.timingClass = "whenever";
-    }
-    await ctx.db.patch(id, patch);
-    await logEvent(ctx, "date-outcome", id, { outcome, newDueAt, note });
+    await applyDateOutcome(ctx, todo, args);
   },
 });
 
@@ -722,6 +744,84 @@ export const listBlocks = query({
   },
 });
 
+// The ONE implementation of each block write (the applyStatusChange pattern) —
+// shared by the Tom-gated mutations below and by internalApplyTimeNote, so a
+// time note placing a block obeys exactly the same validation as the calendar.
+
+export async function insertBlock(
+  ctx: MutationCtx,
+  {
+    start,
+    end,
+    todoId,
+    category,
+    note,
+  }: {
+    start: number;
+    end: number;
+    todoId?: Id<"dtsTodos">;
+    category?: string;
+    note?: string;
+  },
+) {
+  // Trim BEFORE the exactly-one check: a whitespace-only category must not
+  // pass the check and then collapse into a targetless block.
+  const trimmedCategory = category?.trim() || undefined;
+  requireOneBlockTarget(todoId, trimmedCategory);
+  if (end <= start) throw new Error("A block ends after it starts");
+  if (todoId !== undefined) {
+    const todo = await ctx.db.get(todoId);
+    if (!todo) throw new Error("DTS todo not found");
+  }
+  const id = await ctx.db.insert("dtsBlocks", {
+    start,
+    end,
+    todoId,
+    category: trimmedCategory,
+    note,
+    createdAt: Date.now(),
+  });
+  await logEvent(ctx, "block-created", todoId, {
+    start,
+    end,
+    category: trimmedCategory,
+  });
+  return id;
+}
+
+export async function patchBlock(
+  ctx: MutationCtx,
+  block: Doc<"dtsBlocks">,
+  { start, end, note }: { start?: number; end?: number; note?: string | null },
+) {
+  const nextStart = start ?? block.start;
+  const nextEnd = end ?? block.end;
+  if (nextEnd <= nextStart) throw new Error("A block ends after it starts");
+  await ctx.db.patch(block._id, {
+    start: nextStart,
+    end: nextEnd,
+    note: note === null ? undefined : (note ?? block.note),
+  });
+  // block-moved only when the span actually changed — a note-only edit is
+  // not a move and must not fake one in the event stream.
+  if (nextStart !== block.start || nextEnd !== block.end) {
+    await logEvent(ctx, "block-moved", block.todoId, {
+      from: { start: block.start, end: block.end },
+      to: { start: nextStart, end: nextEnd },
+      category: block.category,
+    });
+  }
+}
+
+export async function removeBlock(ctx: MutationCtx, block: Doc<"dtsBlocks">) {
+  await ctx.db.delete(block._id);
+  await logEvent(ctx, "block-deleted", block.todoId, {
+    start: block.start,
+    end: block.end,
+    category: block.category,
+  });
+}
+
 export const createBlock = mutation({
   args: {
     start: v.number(),
@@ -730,27 +830,9 @@ export const createBlock = mutation({
     category: v.optional(v.string()),
     note: v.optional(v.string()),
   },
-  handler: async (ctx, { start, end, todoId, category, note }) => {
+  handler: async (ctx, args) => {
     await requireTomId(ctx);
-    // Trim BEFORE the exactly-one check: a whitespace-only category must not
-    // pass the check and then collapse into a targetless block.
-    const trimmedCategory = category?.trim() || undefined;
-    requireOneBlockTarget(todoId, trimmedCategory);
-    if (end <= start) throw new Error("A block ends after it starts");
-    if (todoId !== undefined) {
-      const todo = await ctx.db.get(todoId);
-      if (!todo) throw new Error("DTS todo not found");
-    }
-    const id = await ctx.db.insert("dtsBlocks", {
-      start,
-      end,
-      todoId,
-      category: trimmedCategory,
-      note,
-      createdAt: Date.now(),
-    });
-    await logEvent(ctx, "block-created", todoId, { start, end, category });
-    return id;
+    return await insertBlock(ctx, args);
   },
 });
 
@@ -761,27 +843,11 @@ export const updateBlock = mutation({
     end: v.optional(v.number()),
     note: v.optional(v.union(v.string(), v.null())),
   },
-  handler: async (ctx, { id, start, end, note }) => {
+  handler: async (ctx, { id, ...args }) => {
     await requireTomId(ctx);
     const block = await ctx.db.get(id);
     if (!block) throw new Error("Block not found");
-    const nextStart = start ?? block.start;
-    const nextEnd = end ?? block.end;
-    if (nextEnd <= nextStart) throw new Error("A block ends after it starts");
-    await ctx.db.patch(id, {
-      start: nextStart,
-      end: nextEnd,
-      note: note === null ? undefined : (note ?? block.note),
-    });
-    // block-moved only when the span actually changed — a note-only edit is
-    // not a move and must not fake one in the event stream.
-    if (nextStart !== block.start || nextEnd !== block.end) {
-      await logEvent(ctx, "block-moved", block.todoId, {
-        from: { start: block.start, end: block.end },
-        to: { start: nextStart, end: nextEnd },
-        category: block.category,
-      });
-    }
+    await patchBlock(ctx, block, args);
   },
 });
 
@@ -791,14 +857,504 @@ export const deleteBlock = mutation({
     await requireTomId(ctx);
     const block = await ctx.db.get(id);
     if (!block) throw new Error("Block not found");
-    await ctx.db.delete(id);
-    await logEvent(ctx, "block-deleted", block.todoId, {
-      start: block.start,
-      end: block.end,
-      category: block.category,
-    });
+    await removeBlock(ctx, block);
   },
 });
+
+// ── Time notes (ratified 2026-08-29) ─────────────────────────────────────────
+// The /dts page has no date or time pickers left. Tom writes one sentence
+// against exactly one context — a todo, a block, or a calendar day — and the
+// worker job apply-time-notes.mjs reads it and asks for concrete actions via
+// internalApplyTimeNote. The server re-validates EVERY action against the same
+// helpers the Tom-gated mutations use (kept dates, block target/span), so a
+// misread note is refused, not silently obeyed; the job then re-submits the
+// note as "needs-session" carrying the server's reason.
+
+// How long an applied note stays on the page after it lands (descriptive
+// transparency: Tom sees what just happened, then it stops being clutter).
+const TIME_NOTE_VISIBLE_MS = 24 * 3_600_000;
+
+function requireOneTimeNoteContext(
+  todoId: unknown,
+  blockId: unknown,
+  day: unknown,
+) {
+  const set = [todoId, blockId, day].filter((x) => x !== undefined).length;
+  if (set !== 1) {
+    throw new Error(
+      "A time note has exactly one context: a todoId, a blockId, or a day",
+    );
+  }
+}
+
+// A day-scoped note carries the calendar-date LABEL of the column Tom clicked
+// ("YYYY-MM-DD"), never a timestamp. The server reads it as a New York calendar
+// day (nyCalendarDayBoundsUtc), so the browser's own timezone cannot decide
+// which day a note is about.
+const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// A day the page could not paint anyway is not worth a range query: an
+// unbounded list is capped so one subscription stays one page-worth of rows.
+const TIME_NOTE_LIST_MAX = 200;
+
+export const listTimeNotes = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTomId(ctx);
+    const byStatus = (status: "pending" | "needs-session" | "applied") =>
+      ctx.db
+        .query("dtsTimeNotes")
+        .withIndex("by_status_and_resolvedAt", (q) => q.eq("status", status));
+    // Applied notes are kept forever (instrumentation); only the last 24h of
+    // them ride the page's subscription — hence resolvedAt in the index. The
+    // pending/needs-session arms have no time bound of their own, so they take
+    // a fixed page instead of collecting an unbounded backlog.
+    const cutoff = Date.now() - TIME_NOTE_VISIBLE_MS;
+    const [pending, needsSession, recentlyApplied] = await Promise.all([
+      byStatus("pending").take(TIME_NOTE_LIST_MAX),
+      byStatus("needs-session").take(TIME_NOTE_LIST_MAX),
+      ctx.db
+        .query("dtsTimeNotes")
+        .withIndex("by_status_and_resolvedAt", (q) =>
+          q.eq("status", "applied").gte("resolvedAt", cutoff),
+        )
+        .collect(),
+    ]);
+    return [...pending, ...needsSession, ...recentlyApplied];
+  },
+});
+
+export const createTimeNote = mutation({
+  args: {
+    text: v.string(),
+    todoId: v.optional(v.id("dtsTodos")),
+    blockId: v.optional(v.id("dtsBlocks")),
+    day: v.optional(v.string()),
+  },
+  handler: async (ctx, { text, todoId, blockId, day }) => {
+    await requireTomId(ctx);
+    const trimmed = text.trim();
+    if (trimmed === "") throw new Error("A time note needs text");
+    requireOneTimeNoteContext(todoId, blockId, day);
+    if (day !== undefined && !DAY_KEY_RE.test(day)) {
+      throw new Error(`A day is a calendar date, YYYY-MM-DD — got ${day}`);
+    }
+    if (todoId !== undefined && !(await ctx.db.get(todoId))) {
+      throw new Error("DTS todo not found");
+    }
+    if (blockId !== undefined && !(await ctx.db.get(blockId))) {
+      throw new Error("Block not found");
+    }
+    const id = await ctx.db.insert("dtsTimeNotes", {
+      text: trimmed,
+      todoId,
+      blockId,
+      day,
+      status: "pending",
+      createdAt: Date.now(),
+    });
+    await logEvent(ctx, "time-note", todoId, { text: trimmed, blockId, day });
+    return id;
+  },
+});
+
+// Tom withdraws a note he no longer wants acted on. An APPLIED note is not
+// deletable — it already changed the world, and its record is the only trace
+// of why (nothing-ever-lost applies to what happened, not to what is queued).
+export const deleteTimeNote = mutation({
+  args: { id: v.id("dtsTimeNotes") },
+  handler: async (ctx, { id }) => {
+    await requireTomId(ctx);
+    const note = await ctx.db.get(id);
+    if (!note) throw new Error("Time note not found");
+    if (note.status === "applied") {
+      throw new Error("An applied time note is history — it is not deleted");
+    }
+    await ctx.db.delete(id);
+    await logEvent(ctx, "time-note-deleted", note.todoId, { text: note.text });
+  },
+});
+
+// The actions a time note may ask for. Every one of them is validated again
+// below against the same helpers the equivalent Tom-gated mutation uses.
+const TIME_NOTE_ACTION = v.union(
+  v.object({
+    kind: v.literal("set-due"),
+    dueAt: v.number(),
+    dateKind: v.optional(DATE_KIND),
+  }),
+  v.object({
+    kind: v.literal("renegotiate"),
+    newDueAt: v.number(),
+    note: v.optional(v.string()),
+  }),
+  // A miss may come with the replacement date in the same breath ("I blew
+  // Tuesday, do it Friday") — the outcome row records the miss, newDueAt is the
+  // new date. Omit it and the item drops back to whenever with the miss on
+  // record (applyDateOutcome's existing two branches).
+  v.object({
+    kind: v.literal("record-missed"),
+    newDueAt: v.optional(v.number()),
+    note: v.optional(v.string()),
+  }),
+  // The date stands; only its NATURE was misread ("that deadline is the
+  // landlord's, not mine").
+  v.object({ kind: v.literal("set-date-kind"), dateKind: DATE_KIND }),
+  v.object({ kind: v.literal("set-latest-safe"), latestSafeAt: v.number() }),
+  v.object({ kind: v.literal("clear-latest-safe") }),
+  v.object({
+    kind: v.literal("set-waiting"),
+    wakeAt: v.optional(v.number()),
+    wakeCondition: v.optional(v.string()),
+  }),
+  v.object({ kind: v.literal("set-active") }),
+  v.object({
+    kind: v.literal("create-block"),
+    start: v.number(),
+    end: v.number(),
+    todoId: v.optional(v.string()),
+    category: v.optional(v.string()),
+  }),
+  v.object({
+    kind: v.literal("update-block"),
+    blockId: v.string(),
+    start: v.number(),
+    end: v.number(),
+  }),
+  v.object({ kind: v.literal("delete-block"), blockId: v.string() }),
+);
+
+// The pending queue with the full context each note needs, for the worker job
+// (POST /dts/time-notes). Nothing here is a decision — it is the facts the
+// note is about, so the job never has to guess what "it" refers to.
+export const internalPendingTimeNotes = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const notes = await ctx.db
+      .query("dtsTimeNotes")
+      .withIndex("by_status_and_resolvedAt", (q) => q.eq("status", "pending"))
+      .take(TIME_NOTE_LIST_MAX);
+    if (notes.length === 0) return [];
+    // Blocks are read PER NEEDED WINDOW off by_start, never as a whole table:
+    // one NY calendar day per note that needs one, memoized so N notes on the
+    // same day cost one range query. "That day's blocks" = the blocks that
+    // START that day — the same rule the day column paints by.
+    const blocksByDay = new Map<string, Doc<"dtsBlocks">[]>();
+    const dayBlocks = async (dayKey: string) => {
+      const cached = blocksByDay.get(dayKey);
+      if (cached) return cached;
+      let rows: Doc<"dtsBlocks">[] = [];
+      // A key that is not a calendar date has no window. createTimeNote is the
+      // only writer and validates the same shape, but this read serves the
+      // whole worker queue every two minutes: one malformed row must not take
+      // every other note down with a NaN range query.
+      if (DAY_KEY_RE.test(dayKey)) {
+        const { start, end } = nyCalendarDayBoundsUtc(dayKey);
+        rows = await ctx.db
+          .query("dtsBlocks")
+          .withIndex("by_start", (q) => q.gte("start", start).lt("start", end))
+          .collect();
+      }
+      blocksByDay.set(dayKey, rows);
+      return rows;
+    };
+    // The active list is the same for every day-scoped note, and most runs have
+    // none at all — read it once, lazily.
+    let activeTodos: Doc<"dtsTodos">[] | null = null;
+    const activeOnce = async () => {
+      activeTodos ??= await ctx.db
+        .query("dtsTodos")
+        .withIndex("by_status", (q) => q.eq("status", "active"))
+        .collect();
+      return activeTodos;
+    };
+    const out = [];
+    for (const note of notes) {
+      let context: unknown = null;
+      if (note.todoId !== undefined) {
+        const todo = await ctx.db.get(note.todoId);
+        context = todo
+          ? {
+              kind: "todo",
+              todo: {
+                _id: todo._id,
+                statement: todo.statement,
+                status: todo.status,
+                timingClass: todo.timingClass,
+                dueAt: todo.dueAt ?? null,
+                dateKind: todo.dateKind ?? null,
+                latestSafeAt: todo.latestSafeAt ?? null,
+                wakeAt: todo.wakeAt ?? null,
+                wakeCondition: todo.wakeCondition ?? null,
+                dateOutcomes: todo.dateOutcomes ?? [],
+              },
+            }
+          : { kind: "todo", todo: null };
+      } else if (note.blockId !== undefined) {
+        const block = await ctx.db.get(note.blockId);
+        context = block
+          ? {
+              kind: "block",
+              block,
+              // Same NY calendar date as the block — what else is committed
+              // that day, so a move can be judged against the day's shape.
+              sameDayBlocks: (
+                await dayBlocks(nyCalendarDayKey(block.start))
+              ).filter((b) => b._id !== block._id),
+            }
+          : { kind: "block", block: null, sameDayBlocks: [] };
+      } else if (note.day !== undefined) {
+        context = {
+          kind: "day",
+          dayBlocks: await dayBlocks(note.day),
+          activeTodos: (await activeOnce()).map((t) => ({
+            _id: t._id,
+            statement: t.statement,
+            category: t.category ?? null,
+            dueAt: t.dueAt ?? null,
+          })),
+        };
+      }
+      out.push({ ...note, context });
+    }
+    return out;
+  },
+});
+
+// The worker's write-back (POST /dts/apply-time-note). Every action is
+// re-validated HERE with the shared helpers — applyDateOutcome for kept dates,
+// applyStatusChange for waiting/active, insert/patch/removeBlock for the
+// calendar — so the agent's reading of Tom's sentence is a PROPOSAL, never an
+// authority. Any rejection throws, the whole mutation rolls back (note left
+// pending), and the job re-submits it as "needs-session" with the reason.
+export const internalApplyTimeNote = internalMutation({
+  args: {
+    id: v.string(),
+    status: v.union(v.literal("applied"), v.literal("needs-session")),
+    result: v.string(),
+    actions: v.optional(v.array(TIME_NOTE_ACTION)),
+  },
+  handler: async (ctx, { id, status, result, actions }) => {
+    const normalized = ctx.db.normalizeId("dtsTimeNotes", id);
+    if (!normalized) throw new Error(`Unknown time note id: ${id}`);
+    const note = await ctx.db.get(normalized);
+    if (!note) throw new Error(`Unknown time note id: ${id}`);
+    if (note.status !== "pending") {
+      throw new Error(`Time note is already ${note.status}`);
+    }
+    if (result.trim() === "") throw new Error("result (one sentence) required");
+    const list = actions ?? [];
+    if (status === "needs-session" && list.length > 0) {
+      throw new Error("A needs-session time note carries no actions");
+    }
+
+    const now = Date.now();
+    // The todo the note is about — the only subject a todo-scoped action may
+    // touch (a day/block note has none, so those actions are refused). RE-READ
+    // per action, never hoisted: one note may carry a sequence ("I missed
+    // Tuesday, do it Friday"), and a Convex read sees this mutation's own
+    // earlier writes, so action N validates against action N−1's RESULT rather
+    // than against a snapshot from before the loop.
+    const requireSubject = async (kind: string) => {
+      const subject = note.todoId ? await ctx.db.get(note.todoId) : null;
+      if (!subject) {
+        throw new Error(`${kind} needs a time note written on a todo`);
+      }
+      return subject;
+    };
+    const getBlock = async (raw: string) => {
+      const blockId = ctx.db.normalizeId("dtsBlocks", raw);
+      const block = blockId && (await ctx.db.get(blockId));
+      if (!block) throw new Error(`Unknown block id: ${raw}`);
+      return block;
+    };
+    // A time note is Tom's own written instruction, so an action that lands
+    // through it is a Tom touch — stamped exactly where the equivalent public
+    // mutation stamps it (updateTodo and setStatus do; recordDateOutcome and
+    // the block mutations do not).
+    const touch = async (todoId: Id<"dtsTodos">) =>
+      ctx.db.patch(todoId, { tomTouchedAt: now });
+
+    for (const action of list) {
+      switch (action.kind) {
+        case "set-due": {
+          const todo = await requireSubject("set-due");
+          // First date is free; a second one is a renegotiation (kept dates).
+          if (todo.dueAt !== undefined) {
+            throw new Error(
+              "This todo already has a date — moving it is a renegotiation, not a new date (kept-dates rule)",
+            );
+          }
+          await ctx.db.patch(todo._id, {
+            dueAt: action.dueAt,
+            dateKind: action.dateKind ?? "self-imposed",
+            timingClass: "dated",
+            updatedAt: now,
+            tomTouchedAt: now,
+          });
+          await logEvent(ctx, "updated", todo._id, {
+            fields: ["dueAt"],
+            via: "time-note",
+          });
+          break;
+        }
+        case "renegotiate": {
+          const todo = await requireSubject("renegotiate");
+          // applyDateOutcome enforces "before the date" — no silent slides,
+          // no post-hoc renegotiation.
+          await applyDateOutcome(ctx, todo, {
+            outcome: "renegotiated",
+            newDueAt: action.newDueAt,
+            note: action.note,
+          });
+          break;
+        }
+        case "record-missed": {
+          const todo = await requireSubject("record-missed");
+          if (todo.dueAt === undefined) {
+            throw new Error("Todo has no date to resolve");
+          }
+          if (now < todo.dueAt) {
+            throw new Error(
+              "The date has not arrived — a date that is still ahead is renegotiated, not missed",
+            );
+          }
+          // With newDueAt the item stays dated on the replacement date; without
+          // it, it drops back to whenever — applyDateOutcome's own two branches,
+          // and the miss is on record either way.
+          await applyDateOutcome(ctx, todo, {
+            outcome: "missed",
+            newDueAt: action.newDueAt,
+            note: action.note,
+          });
+          break;
+        }
+        case "set-date-kind": {
+          const todo = await requireSubject("set-date-kind");
+          // Whose deadline it is only means anything while there IS one.
+          if (todo.dueAt === undefined) {
+            throw new Error("Todo has no date to describe");
+          }
+          await ctx.db.patch(todo._id, {
+            dateKind: action.dateKind,
+            updatedAt: now,
+            tomTouchedAt: now,
+          });
+          await logEvent(ctx, "updated", todo._id, {
+            fields: ["dateKind"],
+            via: "time-note",
+          });
+          break;
+        }
+        case "set-latest-safe": {
+          const todo = await requireSubject("set-latest-safe");
+          await ctx.db.patch(todo._id, {
+            latestSafeAt: action.latestSafeAt,
+            updatedAt: now,
+            tomTouchedAt: now,
+          });
+          await logEvent(ctx, "updated", todo._id, {
+            fields: ["latestSafeAt"],
+            via: "time-note",
+          });
+          break;
+        }
+        case "clear-latest-safe": {
+          const todo = await requireSubject("clear-latest-safe");
+          await ctx.db.patch(todo._id, {
+            latestSafeAt: undefined,
+            updatedAt: now,
+            tomTouchedAt: now,
+          });
+          await logEvent(ctx, "updated", todo._id, {
+            fields: ["latestSafeAt"],
+            via: "time-note",
+          });
+          break;
+        }
+        case "set-waiting": {
+          const todo = await requireSubject("set-waiting");
+          // MERGE, don't replace: a note that only moves the wake DATE ("wait
+          // until the 15th instead") says nothing about the wake condition, and
+          // applyStatusChange writes both fields unconditionally — so an
+          // omitted field carries the stored value forward instead of erasing
+          // a fact Tom never asked to lose.
+          await applyStatusChange(ctx, todo, {
+            status: "waiting",
+            wakeAt: action.wakeAt ?? todo.wakeAt,
+            wakeCondition: action.wakeCondition ?? todo.wakeCondition,
+            note: note.text,
+          });
+          await touch(todo._id);
+          break;
+        }
+        case "set-active": {
+          const todo = await requireSubject("set-active");
+          await applyStatusChange(ctx, todo, {
+            status: "active",
+            note: note.text,
+          });
+          await touch(todo._id);
+          break;
+        }
+        case "create-block": {
+          let blockTodoId: Id<"dtsTodos"> | undefined;
+          if (action.todoId !== undefined) {
+            const t = ctx.db.normalizeId("dtsTodos", action.todoId);
+            if (!t) throw new Error(`Unknown todo id: ${action.todoId}`);
+            blockTodoId = t;
+          } else if (action.category === undefined && note.todoId) {
+            // A block asked for from a todo's own note defaults to that todo.
+            blockTodoId = note.todoId;
+          }
+          await insertBlock(ctx, {
+            start: action.start,
+            end: action.end,
+            todoId: blockTodoId,
+            category: action.category,
+          });
+          break;
+        }
+        case "update-block": {
+          const block = await getBlock(action.blockId);
+          await patchBlock(ctx, block, {
+            start: action.start,
+            end: action.end,
+          });
+          break;
+        }
+        case "delete-block": {
+          await removeBlock(ctx, await getBlock(action.blockId));
+          break;
+        }
+      }
+    }
+
+    await ctx.db.patch(normalized, {
+      status,
+      result: result.trim(),
+      resolvedAt: now,
+    });
+    await logEvent(ctx, "time-note-resolved", note.todoId, {
+      status,
+      result: result.trim(),
+      actions: list.map((a) => a.kind),
+    });
+    return { ok: true, applied: list.length };
+  },
+});
+
+// The server owns the clock (the /dts/state prepDay convention): the worker
+// never computes New York time itself, it repeats back what this returns.
+export function nowContext(utcMs: number) {
+  return {
+    now: utcMs,
+    nowIso: new Date(utcMs).toISOString(),
+    nyCalendarDay: nyCalendarDayKey(utcMs),
+    nyOffsetHours: nyOffsetHours(utcMs),
+    timezone: "America/New_York",
+  };
+}
 
 // Instrumentation hook for the surfaces (spec §10): Focus/Inventory record
 // engagement, queue cycling, session starts, etc. Kind is free-form by
@@ -903,8 +1459,11 @@ export const internalStoreWorkerPrep = internalMutation({
 // The preparation path for LIFE todos (spec §15, swarm-lite): the worker's
 // preparer job advances an unprepared capture toward ready-for-tom by
 // attaching the ground-up brief, the smallest entry action, and a qualitative
-// work description. It never touches statement/status/dates — those are
-// Tom's (or the capture's) and preparation must not rewrite intent.
+// work description. It never touches statement or status — those are Tom's
+// (or the capture's) and preparation must not rewrite intent. Since
+// 2026-08-29 it may also set a FIRST dueAt, and only when the statement
+// itself states the date (the QuickAdd date input is gone): Tom's own words,
+// never an agent's guess, and never over an existing date.
 export const internalPrepareTodo = internalMutation({
   args: {
     id: v.string(),
@@ -917,10 +1476,17 @@ export const internalPrepareTodo = internalMutation({
     importanceLevel: v.optional(IMPORTANCE_LEVEL),
     importanceRationale: v.optional(v.string()),
     plan: v.optional(v.array(PLAN_STEP)),
+    // The date the STATEMENT itself states ("pay rent sept 3"). The QuickAdd
+    // date input is gone (2026-08-29), so this is how an explicit date Tom
+    // wrote in his own words reaches the row. Statement text is Tom's, so this
+    // is not an agent inventing a date — but the guard below is absolute: only
+    // when the todo has no dueAt yet, never an overwrite.
+    dueAt: v.optional(v.number()),
+    dateKind: v.optional(DATE_KIND),
   },
   handler: async (
     ctx,
-    { id, brief, entryAction, workDescription, readiness, importanceLevel, importanceRationale, plan },
+    { id, brief, entryAction, workDescription, readiness, importanceLevel, importanceRationale, plan, dueAt, dateKind },
   ) => {
     const normalized = ctx.db.normalizeId("dtsTodos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
@@ -946,6 +1512,7 @@ export const internalPrepareTodo = internalMutation({
         workDescription !== undefined && "workDescription",
         readiness !== undefined && "readiness",
         importanceLevel !== undefined && "importance",
+        dueAt !== undefined && "dueAt",
       ].filter(Boolean);
       if (skippedFields.length > 0) {
         await logEvent(ctx, "prepare-skipped-batch", normalized, {
@@ -973,6 +1540,22 @@ export const internalPrepareTodo = internalMutation({
           patch.importance = importance;
         }
       }
+      if (dueAt !== undefined) {
+        // Kept-dates rule (spec §8): a stored date moves only through
+        // recordDateOutcome / a time note. The preparer gets the FIRST date
+        // only — an existing one is never overwritten, and the skip is named.
+        // A RESOLVED date counts as a date: an item whose date was recorded
+        // missed or renegotiated has a dateOutcomes history, and letting a
+        // re-prep read the same statement and hand back the very date Tom just
+        // resolved would resurrect it behind his back.
+        if (todo.dueAt !== undefined || (todo.dateOutcomes ?? []).length > 0) {
+          await logEvent(ctx, "due-skipped", normalized, { dueAt });
+        } else {
+          patch.dueAt = dueAt;
+          patch.dateKind = dateKind ?? "self-imposed";
+          patch.timingClass = "dated";
+        }
+      }
     }
     if (plan !== undefined) {
       // A plan on a Tom-touched row is his — preparation must not clobber it.
@@ -991,6 +1574,7 @@ export const internalPrepareTodo = internalMutation({
         patch.workDescription !== undefined && "workDescription",
         patch.importance !== undefined && "importance",
         patch.plan !== undefined && "plan",
+        patch.dueAt !== undefined && "dueAt",
       ].filter(Boolean),
     });
   },

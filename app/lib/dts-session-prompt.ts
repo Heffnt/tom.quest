@@ -61,11 +61,22 @@ export type BatchMemberContext = {
   status: string;
 };
 
+// The live (newest) ruling on this todo, when the caller holds one. Every
+// verdict may carry a sentence (ratified 2026-08-29) — the note Tom wrote when
+// he ruled — and the session that follows a "session" verdict is exactly where
+// that sentence has to arrive, or he has to repeat himself.
+export type LiveRulingContext = {
+  verdict: "approve" | "revise" | "session" | "archive";
+  sentence?: string;
+};
+
 export function buildTodoSessionPrompt(
   todo: Doc<"dtsTodos">,
   kind: "gate" | "focus-item",
   batch?: { members: BatchMemberContext[] },
+  ruling?: LiveRulingContext,
 ): string {
+  const rulingNote = ruling?.sentence?.trim();
   const lines = [
     CONTRACT,
     "",
@@ -73,6 +84,14 @@ export function buildTodoSessionPrompt(
       ? "This is a tom-gate session: the item below is ready-for-tom and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."
       : "This is a focus session: Tom chose to begin this item now. Open with the smallest concrete first step and work it with him.",
     "",
+    ...(ruling
+      ? [
+          rulingNote
+            ? `Tom's standing ruling on this item is "${ruling.verdict}", and he wrote: ${rulingNote}. That sentence is his instruction for this session and overrides any other reading of the item.`
+            : `Tom's standing ruling on this item is "${ruling.verdict}" (no note written).`,
+          "",
+        ]
+      : []),
     `The item ("${todo.statement}"):`,
     fact("timing", todo.timingClass),
     fact(

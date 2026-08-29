@@ -10,8 +10,19 @@
 // the swarm's smallest member: per unprepared life todo, headless Claude
 // writes a short ground-up brief, the smallest entry action, and a
 // qualitative work description, then advances readiness. It never rewrites
-// the statement, never sets dates, never changes status — preparation must
-// not alter intent (those are Tom's).
+// the statement and never changes status — preparation must not alter intent
+// (those are Tom's).
+//
+// DATES (2026-08-29): the QuickAdd date input is gone from the /dts page, so
+// an explicit date now reaches a todo through the words Tom captured. This job
+// extracts a date ONLY when the STATEMENT itself states one ("pay rent sept
+// 3") — that is Tom's own text, not an agent inventing a date — and only for a
+// todo with no date AND no resolved date in its history. The server
+// (internalPrepareTodo) enforces the same guard: a first date only, never an
+// overwrite and never a resurrection of one Tom already resolved. It also asks
+// whose deadline it is ("dateKind"), so an externally imposed date is not
+// filed as one Tom chose. Everything vaguer than an explicit date stays
+// undated; Tom's time notes are how dates move after that.
 //
 // readiness after preparation:
 //   ready-for-tom  — a self-contained personal task: the only missing thing
@@ -31,12 +42,18 @@
 //
 // NO-STATE RULE: nothing local; Convex is read and written each run.
 
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./dts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  nyNoonUtcMs,
+} from "./dts-lib.mjs";
 
 const BATCH_MAX = 10;
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 
-function prompt(todo, reviseSentence) {
+function prompt(todo, reviseSentence, today) {
   return [
     `You are preparing one item in DTS, Tom's personal todo system. It was`,
     `captured as a raw thought; your job is to make it arrive pre-chewed.`,
@@ -77,9 +94,23 @@ function prompt(todo, reviseSentence) {
     `4. "readiness" — "ready-for-tom" if the only missing ingredient is Tom`,
     `   acting or deciding; "preparing" if an agent could still usefully do`,
     `   groundwork first (research, drafting, gathering links).`,
+    `5. "dueDate" — ONLY when the statement ITSELF names an explicit date`,
+    `   ("pay rent sept 3", "call the bank on Friday the 12th"). Then give it`,
+    `   as "YYYY-MM-DD"; today is ${today} in New York, which is how you`,
+    `   resolve a bare month+day or weekday to a year. Otherwise give null.`,
+    `   NEVER infer, estimate, or invent a date — no "this seems urgent, so`,
+    `   next week". A date you were not told in the statement is a date that`,
+    `   does not exist. Only the words in "statement" count; a date mentioned`,
+    `   anywhere else is not this item's date.`,
+    `6. "dateKind" — ONLY when you gave a dueDate. "external" if the statement`,
+    `   shows the deadline was imposed by someone or something else (a bill, a`,
+    `   landlord, a booking window, a court date); "self-imposed" if it reads`,
+    `   as Tom's own choice of when. When the statement does not say, answer`,
+    `   "self-imposed". Otherwise give null.`,
     ``,
     `Answer ONLY a JSON object:`,
-    `{"brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "..."}`,
+    `{"brief": "...", "entryAction": "...", "workDescription": "...",`,
+    ` "readiness": "...", "dueDate": null, "dateKind": null}`,
   ].join("\n");
 }
 
@@ -137,9 +168,10 @@ async function main() {
   for (const todo of batch) {
     const revise = reviseByTodo.get(todo._id) ?? null;
     try {
-      const answer = runClaude(prompt(todo, revise?.sentence ?? null), {
-        timeoutMs: CLAUDE_TIMEOUT_MS,
-      });
+      const answer = runClaude(
+        prompt(todo, revise?.sentence ?? null, state.nyCalendarDay),
+        { timeoutMs: CLAUDE_TIMEOUT_MS },
+      );
       const parsed = extractJsonObject(answer);
       if (
         typeof parsed.brief !== "string" ||
@@ -149,12 +181,35 @@ async function main() {
       ) {
         throw new Error(`bad shape: ${JSON.stringify(parsed).slice(0, 120)}`);
       }
+      // A date the STATEMENT states, in Tom's own words. Sent only when the
+      // todo has no date AND no date HISTORY — a todo whose date Tom already
+      // resolved (missed, renegotiated) must never have that same date handed
+      // back to it by a re-prep of the same sentence. The server enforces both
+      // halves regardless (internalPrepareTodo); this filter just keeps the job
+      // from asking. A malformed date is dropped, never guessed at: the rest of
+      // the preparation still lands.
+      let dueAt;
+      const dateSettled =
+        todo.dueAt !== undefined || (todo.dateOutcomes ?? []).length > 0;
+      if (typeof parsed.dueDate === "string" && !dateSettled) {
+        try {
+          dueAt = nyNoonUtcMs(parsed.dueDate.trim());
+        } catch (e) {
+          console.error(
+            `[prepare-life-todos] ${todo._id} ignoring dueDate: ${e.message}`,
+          );
+        }
+      }
+      // Whose deadline it is, as the statement reads it — passed through, not
+      // assumed. Anything but a clean "external" is self-imposed.
+      const dateKind = parsed.dateKind === "external" ? "external" : "self-imposed";
       await convexFetch(env, "/dts/prepare-todo", {
         id: todo._id,
         brief: parsed.brief,
         entryAction: parsed.entryAction,
         workDescription: parsed.workDescription,
         readiness: parsed.readiness,
+        ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
       });
       if (revise) {
         // The re-prep landed — consume the ruling so the UI shows the

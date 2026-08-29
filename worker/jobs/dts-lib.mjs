@@ -102,6 +102,22 @@ export function nyHour(ms) {
   return nyWallClock(ms).getUTCHours();
 }
 
+// Epoch ms of NOON New York on a YYYY-MM-DD calendar date. THE storage
+// convention for dueAt (convex/dtsShared.ts countdownText): a date written as
+// UTC midnight still reads as the previous NY evening and reports a day early,
+// so every writer normalizes to local noon. Callers hand this a plain calendar
+// date — the only date form a model is ever asked to produce.
+export function nyNoonUtcMs(dayKey) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+    throw new Error(`not a YYYY-MM-DD date: ${dayKey}`);
+  }
+  const utcNoon = Date.parse(`${dayKey}T12:00:00Z`);
+  if (Number.isNaN(utcNoon)) throw new Error(`unparseable date: ${dayKey}`);
+  // Offset sampled at that day's midday, so a DST transition (2 a.m.) can't
+  // skew it.
+  return utcNoon - nyUtcOffsetHours(utcNoon) * 3_600_000;
+}
+
 // NOTE: this module deliberately has NO day-key function. The DTS day key
 // (5 a.m. boundary) is a server-owned fact: /dts/state returns `prepDay` and
 // the jobs repeat it back. A second hand-rolled copy of that math lived here
@@ -115,6 +131,13 @@ export function nyHour(ms) {
 // Call a /dts/* endpoint on the Convex site origin. GET when no body, POST
 // (JSON) when a body is given. Throws on non-2xx with the response text
 // included, so cron logs show WHY a call failed.
+//
+// The thrown Error carries `status` (the HTTP code) and `body` (the response
+// text) so a caller can tell the two failure KINDS apart — the difference
+// decides what happens to the work: a 4xx is the server REFUSING what was sent
+// (content: re-sending it changes nothing), while a 5xx or a network throw is
+// environmental (retry next tick). A network failure throws before any response
+// exists, so `status` is undefined there — which is exactly the signal.
 export async function convexFetch(env, path, body = undefined) {
   const url = env.CONVEX_SITE_URL.replace(/\/+$/, "") + path;
   const res = await fetch(url, {
@@ -127,9 +150,27 @@ export async function convexFetch(env, path, body = undefined) {
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
+    const err = new Error(`${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
+    err.status = res.status;
+    err.body = text;
+    throw err;
   }
   return JSON.parse(text);
+}
+
+// The message the server put in a rejection body ({ "error": "..." }), for
+// re-filing a refused item with the server's OWN words rather than an HTTP
+// line. Falls back to the error message when the body is not that shape.
+export function serverErrorMessage(err) {
+  try {
+    const parsed = JSON.parse(err?.body ?? "");
+    if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+  } catch {
+    // not JSON — fall through
+  }
+  return String(err?.message ?? err);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,9 +200,15 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 // The prompt goes over STDIN, not argv: Linux caps a single argv element at
 // ~128 KiB and embedded todo/ledger JSON will eventually exceed that
 // (review-caught on prepare-queue).
-export function runClaude(prompt, { cwd, timeoutMs, agentic = false, maxTurns } = {}) {
+// `model` maps to --model: mechanical jobs (parsing one sentence into concrete
+// actions) pass a cheap model; omit it and the account default applies.
+export function runClaude(
+  prompt,
+  { cwd, timeoutMs, agentic = false, maxTurns, model } = {},
+) {
   const turns = maxTurns ?? (agentic ? 200 : 8);
   const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
+  if (model) args.push("--model", model);
   if (agentic) args.push("--permission-mode", "bypassPermissions");
   const stdout = execFileSync("claude", args, {
     input: prompt,
