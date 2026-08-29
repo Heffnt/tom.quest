@@ -1107,11 +1107,11 @@ describe("TTS batches and annotations", () => {
     expect(after.filter((e) => e.kind === "prepare-skipped-batch")).toHaveLength(1);
   });
 
-  // witness: restore the old blanket "Tom-touched row with a plan → skip" in
-  // internalPrepareTodo and this test goes red — the moment Tom wrote one step
-  // of his own, the batch's live autonomous session could no longer check its
-  // own steps off, which is the whole reason a batch gets a session.
-  it("a Tom-touched batch takes agent plan writes that keep Tom's steps", async () => {
+  // witness: restore any plan gate in internalPrepareTodo and this test goes
+  // red — the moment Tom wrote one step of his own, the batch's live session
+  // could no longer check its own steps off, which is the whole reason a
+  // batch gets a session.
+  it("a Tom-touched batch takes agent plan writes", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await storeBatch(t, { plan: [step("gather the sources")] });
@@ -1128,36 +1128,23 @@ describe("TTS batches and annotations", () => {
     });
     expect((await findBatch(t))?.tomTouchedAt).toBeDefined();
 
-    // The session agent checks its own step off and adds another. Tom's step
-    // is still there by text, so the whole plan lands.
+    // The session agent checks its own step off, adds another, and rewrites
+    // Tom's — the batch branch (members !== undefined) applies the plan just
+    // as the plain-row branch does.
     await t.mutation(internal.tts.internalPrepareTodo, {
       id: batch!._id,
       plan: [
         { ...step("gather the sources"), status: "done" as const, doneAt: 1 },
-        tomStep,
+        { ...tomStep, text: "tom picks the venue — three candidates now" },
         step("draft the summary"),
       ],
     });
-    let fresh = await findBatch(t);
+    const fresh = await findBatch(t);
     expect(fresh?.plan).toHaveLength(3);
     expect(fresh?.plan?.[0].status).toBe("done");
-
-    // A plan that drops Tom's step is refused WHOLE — never merged in part.
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: batch!._id,
-      plan: [step("gather the sources")],
-    });
-    fresh = await findBatch(t);
-    expect(fresh?.plan).toHaveLength(3);
+    expect(fresh?.plan?.[1].text).toBe("tom picks the venue — three candidates now");
     const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(
-      events.some(
-        (e) =>
-          e.kind === "plan-skipped" &&
-          (e.data as { reason?: string; step?: string } | undefined)?.step ===
-            "tom picks the venue",
-      ),
-    ).toBe(true);
+    expect(events.some((e) => e.kind === "plan-skipped")).toBe(false);
   });
 
   // witness: add updatedAt to setImportance's patch in convex/tts.ts — the
@@ -1246,7 +1233,11 @@ describe("TTS batches and annotations", () => {
     ).rejects.toThrow(/Unknown todo id/);
   });
 
-  it("preparer importance/plan defer to Tom's overrides", async () => {
+  // witness: drop the setBy-"tom" guard from agentImportancePatch in
+  // convex/dts.ts — importance is a RULING, so an agent estimate must never
+  // land on top of one Tom spoke. (Plan text is the neighbouring field with
+  // the opposite rule; the test below pins that half.)
+  it("preparer importance defers to Tom's override", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.mutation(internal.tts.internalCapture, {
@@ -1260,71 +1251,34 @@ describe("TTS batches and annotations", () => {
       id: captured._id,
       level: "high",
     });
-    const step = { text: "look it up", actor: "agent" as const, status: "open" as const };
-    // tomTouchedAt is set but there is no plan yet: the plan writes, the
-    // agent importance is ignored (Tom already ruled).
+    const step = {
+      text: "look it up",
+      actor: "agent" as const,
+      status: "open" as const,
+    };
+    // One call carries both: the agent importance is ignored, the plan lands.
     await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
       importanceLevel: "low",
       importanceRationale: "agent guess",
       plan: [step],
     });
-    let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.importance).toMatchObject({ level: "high", setBy: "tom" });
     expect(todo.plan).toHaveLength(1);
-    // Agent steps flow freely even on a Tom-touched row: the plan gate
-    // preserves TOM's steps, not the whole plan (the old blanket skip froze
-    // live batch sessions the moment Tom touched the row at all).
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: captured._id,
-      plan: [step, { ...step, text: "second draft" }],
-    });
-    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(2);
-    // Tom writes a step of his own; an incoming plan that DROPS its text is
-    // refused whole (Tom's asks never vanish by agent hand)…
-    const tomStep = {
-      text: "tom decides the venue",
-      actor: "tom" as const,
-      status: "open" as const,
-    };
-    await tom.mutation(api.tts.updateTodo, {
-      id: captured._id,
-      plan: [step, { ...step, text: "second draft" }, tomStep],
-    });
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: captured._id,
-      plan: [step], // tom's step vanished
-    });
-    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(3); // unchanged
-    // …while one that keeps his text lands: reordered, checked off, trimmed
-    // of agent steps.
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: captured._id,
-      plan: [tomStep, { ...step, status: "done" as const, doneAt: 1 }],
-    });
-    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(2);
-    expect(todo.plan?.[0].actor).toBe("tom");
     const events = await tom.query(api.tts.listRecentEvents, {});
     expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
-    expect(
-      events.some(
-        (e) =>
-          e.kind === "plan-skipped" &&
-          (e.data as { reason?: string } | undefined)?.reason ===
-            "tom-step dropped",
-      ),
-    ).toBe(true);
   });
 
-  // witness: the tomTouchedAt === undefined condition on the plan gate in
-  // internalPrepareTodo (convex/tts.ts) — the first fleet run showed the
-  // unconditional check refusing legitimate refinements of agent-authored
-  // tom-steps on untouched batcher rows.
-  it("untouched rows take plan rewrites freely; the pen reports planApplied", async () => {
+  // witness: reintroduce ANY plan gate in internalPrepareTodo (convex/dts.ts)
+  // — a tom-step check, a Tom-touched check, either one — and this test goes
+  // red. Ratified doctrine (Tom, 2026-08-29): his input gates what PERSISTS
+  // (rulings, merges, statuses), never the plan text an agent works from, and
+  // the first fleet run showed such a check refusing legitimate refinements of
+  // agent-authored tom-steps.
+  it("plans always land, on untouched and Tom-touched rows alike", async () => {
     const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
     await t.mutation(internal.tts.internalCapture, {
       statement: "captured",
       source: "slack-capture",
@@ -1332,26 +1286,48 @@ describe("TTS batches and annotations", () => {
     const [captured] = await t.run(async (ctx) =>
       ctx.db.query("dtsTodos").collect(),
     );
+    const step = {
+      text: "look it up",
+      actor: "agent" as const,
+      status: "open" as const,
+    };
     const tomStep = {
       text: "decide the venue",
       actor: "tom" as const,
       status: "open" as const,
     };
-    // Agent-authored plan with a tom-step, via the pen (no Tom door touched).
-    const first = await t.mutation(internal.tts.internalPrepareTodo, {
+
+    // (a) UNTOUCHED row: an agent-authored plan carrying a tom-step, then a
+    // reword of that very step — the refinement the old gate refused.
+    expect(captured.tomTouchedAt).toBeUndefined();
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
-      plan: [tomStep],
+      plan: [step, tomStep],
     });
-    expect(first.planApplied).toBe(true);
-    // Rewording the tom-step on the UNTOUCHED row lands — the plan is wholly
-    // agent-authored until Tom has a hand in the row.
-    const reworded = await t.mutation(internal.tts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
-      plan: [{ ...tomStep, text: "decide the venue — three-way now" }],
+      plan: [step, { ...tomStep, text: "decide the venue — three-way now" }],
     });
-    expect(reworded.planApplied).toBe(true);
-    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan?.[0].text).toBe("decide the venue — three-way now");
+    let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan?.[1].text).toBe("decide the venue — three-way now");
+
+    // (b) TOM-TOUCHED row: Tom writes the plan himself (updateTodo stamps
+    // tomTouchedAt), and the agent then DROPS his step. That lands too.
+    await tom.mutation(api.tts.updateTodo, {
+      id: captured._id,
+      plan: [step, tomStep],
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.tomTouchedAt).toBeDefined();
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [{ ...step, status: "done" as const, doneAt: 1 }],
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan).toHaveLength(1);
+    expect(todo.plan?.[0].status).toBe("done");
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(events.some((e) => e.kind === "plan-skipped")).toBe(false);
   });
 
   // witness: drop the one-live-batch collect from updateTodo's members branch

@@ -255,7 +255,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
-    const result = await ctx.runMutation(internal.tts.internalPrepareTodo, {
+    await ctx.runMutation(internal.tts.internalPrepareTodo, {
       id: b.id,
       brief: str(b.brief),
       entryAction: str(b.entryAction),
@@ -272,10 +272,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       importanceRationale: str(b.importanceRationale),
       plan: b.plan as never,
     });
-    // planApplied/planSkipReason ride back verbatim: a writing agent must
-    // SEE a refused plan (the first fleet run had agents report refinements
-    // that were silently skipped by the tom-step guard).
-    return jsonResponse(200, { ok: true, ...result });
+    return jsonResponse(200, { ok: true });
   } catch (e) {
     return jsonResponse(400, {
       error: e instanceof Error ? e.message : String(e),
