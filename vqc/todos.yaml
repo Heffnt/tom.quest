@@ -272,12 +272,15 @@
   statement: >-
     Tom's ruling 2026-08-29 (adoption.md session-permission-posture):
     replace the indefinite-park permission model with classifier-driven
-    auto mode — the daemon's canUseTool consults a classifier (cheap model
-    call with the session's workdir/repo context) that rules each gated
-    tool call allow/deny instead of interrupting Tom; decisions and reasons
-    land in the transcript. Any residual card is small, full-width,
-    unobtrusive, and approves on Enter. Also satisfies the preparation
-    swarm's requirement that background sessions never block on Tom.
+    auto mode. The parking removal LANDED in e90f66c (sibling session,
+    Phases 2-3): nothing parks on Tom in any session mode; the boundary is
+    throwaway workdir + session/<id> branches + Tom-only pens, with
+    out-of-workdir edits auto-denied. REMAINING scope: the classifier — a
+    cheap-model judgment on gated calls (with workdir/repo context) so the
+    boundary is not the only defense on a box holding a push-capable
+    GitHub token and Convex keys; its decisions and reasons land in the
+    transcript. Any residual card kept is small, full-width, unobtrusive,
+    and approves on Enter.
   completion_condition: >-
     A session completes a multi-tool turn (including Bash) with zero Tom
     interaction; each classifier decision is visible in the transcript
