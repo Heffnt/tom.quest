@@ -112,6 +112,7 @@ function claimSession(env, sessions, row) {
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
+    model: row.model,
     // The reopen generation this Session speaks for: stamped into every ingest
     // so the server can tell a live flush from a pre-reopen replay.
     reopenEpoch: row.reopenEpoch ?? 0,
@@ -173,6 +174,7 @@ function adoptSession(env, sessions, row) {
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
+    model: row.model,
     reopenEpoch: row.reopenEpoch ?? 0,
     onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
   });

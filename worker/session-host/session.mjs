@@ -277,7 +277,7 @@ async function* promptStream(queue) {
 // ── The Session class ────────────────────────────────────────────────────────
 
 export class Session {
-  constructor({ id, repo, env, nextSeq, mode, reopenEpoch, onUsageSignal }) {
+  constructor({ id, repo, env, nextSeq, mode, reopenEpoch, onUsageSignal, model }) {
     this.id = id;
     this.repo = repo;
     this.env = env;
@@ -285,6 +285,11 @@ export class Session {
     // the wall-clock cap, and the auto-end-after-result behavior. The
     // permission posture is mode-independent (unified auto mode).
     this.mode = mode ?? "interactive";
+    // Model policy (Tom 2026-08-29): workers run the account default (Opus);
+    // the planner tags a todo "fable" when the work needs high intelligence
+    // and the scheduler copies the tag onto the session row. Only that one
+    // escalation is honored here — anything else stays on the default.
+    this.model = model === "fable" ? "claude-fable-5" : undefined;
     // Host-provided callback for usage-limit signals (account auto-switch
     // lives in session-host.mjs — it is box-level, not per-session).
     this.onUsageSignal = onUsageSignal;
@@ -657,6 +662,7 @@ export class Session {
         // Autonomous missions are one long agentic turn — same budget as the
         // executor's agentic runs.
         ...(this.mode === "autonomous" ? { maxTurns: AUTO_MAX_TURNS } : {}),
+        ...(this.model ? { model: this.model } : {}),
         ...(resume ? { resume } : {}),
       },
     });
