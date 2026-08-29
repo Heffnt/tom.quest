@@ -246,6 +246,9 @@ export function selectBatches(
 
   const unbatchedLife = lifeRows.filter(
     (t) =>
+      // A row bound into a graph batch renders inside that batch's card —
+      // its ONE home. Listing it here too would repeat content.
+      t.batchId === undefined &&
       !batchIds.has(t._id as string) &&
       !claimed.has(clientMemberKey({ todoId: t._id })),
   );
