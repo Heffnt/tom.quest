@@ -490,10 +490,19 @@ export function tick(state: State): Signals {
 // 7. Live state pokes — UI-side mid-execution overrides
 // ==========================================================================
 //
-// The visualizer treats every register and RAM cell as live-editable. These
-// helpers do the format conversion and width clamping; the underlying State
-// fields are plain Bits and any caller can set them directly, but going
-// through these helpers keeps the validation in one place.
+// The visualizer treats every register and RAM cell as live-editable, and the
+// whole of that path from this file is parseValue below. It is the only place
+// a typed string becomes Bits, and the only place width clamping happens.
+//
+// The write itself is a plain field assignment, deliberately not wrapped here.
+// A register edit is `pokeCpu(s => { s[field] = next })` in registers-panel.tsx
+// and a RAM edit is `pokeCpu(s => { s.ram[idx] = next })` in ram-grid.tsx —
+// pokeCpu (compiler-store.tsx) is the single choke point, because it is what
+// flags hasOverrides and bumps the render tick. A per-field setter here would
+// add a second name for the assignment without adding a second check: State
+// fields are plain Bits, parseValue has already clamped the value, and the
+// only bound an assignment could still check — a RAM address in 0..255 — is
+// unreachable, since ram-grid maps over the 256-entry ram array itself.
 
 /**
  * Parse a string the user typed into a value. Accepts:
@@ -521,17 +530,6 @@ export function parseValue(input: string, width: number): Bits | null {
   }
   if (!Number.isFinite(n)) return null;
   return fromInt(n, width);
-}
-
-export function pokePc(state: State, value: Bits): void { state.pc = value; }
-export function pokeIr(state: State, value: Bits): void { state.ir = value; }
-export function pokeAcc(state: State, value: Bits): void { state.acc = value; }
-export function pokePhase(state: State, value: Bits): void { state.phase = value; }
-export function pokeHalted(state: State, value: Bits): void { state.halted = value; }
-
-export function pokeRam(state: State, addr: number, value: Bits): void {
-  if (addr < 0 || addr > 255) return;
-  state.ram[addr] = value;
 }
 
 // ==========================================================================
