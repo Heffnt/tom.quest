@@ -2,12 +2,6 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
-export const USER_ROLES = v.union(
-  v.literal("user"),
-  v.literal("admin"),
-  v.literal("tom"),
-);
-
 export default defineSchema({
   ...authTables,
   users: defineTable({
@@ -18,7 +12,14 @@ export default defineSchema({
     phone: v.optional(v.string()),
     phoneVerificationTime: v.optional(v.number()),
     isAnonymous: v.optional(v.boolean()),
-    role: v.optional(USER_ROLES),
+    // The role vocabulary has a twin: the UserRole TYPE in convex/authRoles.ts,
+    // which every gate (roleAccess, requireTom) branches on. A validator and a
+    // type cannot be one declaration, so adding a role means editing both — the
+    // union here and UserRole there — or roleAccess silently treats the new
+    // role as "user". Absent role means "user"; see authRoles.roleAccess.
+    role: v.optional(
+      v.union(v.literal("user"), v.literal("admin"), v.literal("tom")),
+    ),
   })
     .index("email", ["email"])
     .index("phone", ["phone"]),
@@ -154,9 +155,11 @@ export default defineSchema({
     userId: v.id("users"),
     createdAt: v.number(),
     lastActivityAt: v.number(),
-  })
-    .index("by_canvas_activity", ["canvasId", "lastActivityAt"])
-    .index("by_user", ["userId"]),
+    // Chats are always reached through their canvas, never listed per user:
+    // convex/canvas.ts queries by_canvas_activity, and ownership is checked by
+    // ownChatOrThrow, which db.get()s the row and compares userId. A by_user
+    // index had no query and was removed. Re-add it only with a caller.
+  }).index("by_canvas_activity", ["canvasId", "lastActivityAt"]),
 
   canvasMessages: defineTable({
     chatId: v.id("canvasChats"),
