@@ -652,6 +652,13 @@ export default defineSchema({
     kind: v.string(),
     todoId: v.optional(v.id("dtsTodos")),
     data: v.optional(v.any()),
+    // Set on the ONE event kind that is an instruction rather than a record:
+    // "plan-repair" (a worker found a `needs` edge wrong). The planner reads
+    // the unconsumed ones each run and stamps the ones it acted on. Without a
+    // consumed marker the same repair is re-asserted every two hours for a
+    // week, and the model's most likely response to an instruction to fix
+    // something already fixed is to restructure something else.
+    consumedAt: v.optional(v.number()),
   })
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"]),

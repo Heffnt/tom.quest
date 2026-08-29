@@ -887,6 +887,38 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/plan-graph", method: "POST", handler: ttsPlanGraph });
 
+// POST /tts/plan-repairs-consumed — the planner reports which plan-repair
+// reports it has now acted on. Body: { ids: [eventId, ...] }. A repair is an
+// INSTRUCTION to fix the graph, not a record to keep re-reading: unconsumed it
+// is re-injected into the prompt every two hours for a week, telling the
+// planner to fix an edge it already dropped. Same drop-don't-reject posture as
+// the pens above — an unknown or already-consumed id is simply not counted.
+const ttsPlanRepairsConsumed = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(b.ids)) {
+    return jsonResponse(400, { error: "ids (array) required" });
+  }
+  const result = await ctx.runMutation(
+    internal.tts.internalMarkPlanRepairsConsumed,
+    { ids: b.ids.filter((x): x is string => typeof x === "string") },
+  );
+  return jsonResponse(200, result);
+});
+
+http.route({
+  path: "/tts/plan-repairs-consumed",
+  method: "POST",
+  handler: ttsPlanRepairsConsumed,
+});
+
 // POST /tts/session-outcome — an autonomous session's outcome pen. Body:
 // { sessionId, outcome: "completed"|"errored", summary?, planRepair? }. It lives under the
 // TTS key ON PURPOSE: an autonomous session's environment carries ONLY

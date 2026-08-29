@@ -192,6 +192,39 @@ export function frontier<T extends GraphTodo>(todos: readonly T[]): T[] {
   return todos.filter((t) => isReady(t, doneSet));
 }
 
+/** The slice of a todo the goal-condition rule reads. */
+export type GoalTodo = {
+  kind?: "task" | "goal";
+  condition?: string;
+  timingClass?: "dated" | "condition-bound" | "whenever";
+  codeRepo?: string;
+  codeExternalId?: string;
+};
+
+/**
+ * CHECKABLE — a goal an agent may go and verify, and therefore a goal a worker
+ * session may record done. ONE HOME, because two callers must never disagree
+ * about it: the scheduler decides what to hand a worker (claudeSessions), and
+ * the pen decides what a worker's `status: "done"` may close (tts).
+ *
+ * The bar is a GOAL CONDITION — a sentence about the world that is either true
+ * yet or not ("the lease is signed"), or a code subject whose upstream status
+ * answers the same question. `condition` is a TWO-READING field (schema.ts):
+ * on a `timingClass: "condition-bound"` row it is the TRIGGER that says when
+ * the todo may start ("when the landlord sends the paperwork"), which is not a
+ * completion test at all. Reading a trigger as a completion test is how an
+ * agent closes one of Tom's own todos the moment the trigger fires — so a
+ * condition-bound row is checkable ONLY through a code subject.
+ */
+export function goalCheckable(todo: GoalTodo): boolean {
+  if (todo.kind !== "goal") return false;
+  if (todo.codeRepo !== undefined && todo.codeExternalId !== undefined) {
+    return true;
+  }
+  if (todo.timingClass === "condition-bound") return false;
+  return (todo.condition ?? "").trim() !== "";
+}
+
 // ── The writing standard (one home; ratified 2026-08-29) ────────────────────
 // EVERY piece of natural language TTS shows Tom — a batch statement, a task
 // statement, a ground-up explanation, a digest line, a decision list — is

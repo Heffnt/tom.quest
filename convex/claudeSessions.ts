@@ -37,7 +37,13 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) and
 // the writing standard the worker mission pastes into its prompt — the page,
 // the planner, and the scheduler must all mean the same thing by "ready".
-import { DAEMON_STALE_MS, WRITING_STANDARD, buildDoneSet, isReady } from "./ttsShared";
+import {
+  DAEMON_STALE_MS,
+  WRITING_STANDARD,
+  buildDoneSet,
+  goalCheckable,
+  isReady,
+} from "./ttsShared";
 export { DAEMON_STALE_MS };
 
 const LIVE_STATUSES = [
@@ -1563,7 +1569,7 @@ function buildWorkerPrompt(args: {
     "",
     ...(isGoal
       ? [
-          "Your todo is a GOAL, so the work is CHECKING, not building. Read the condition above and find out whether it holds right now — in the repository, in the system, in whatever the condition is about. If it holds, record the goal done with evidence naming exactly what you checked and what you saw. If it does not hold, change nothing and say in your outcome summary what is still missing; a goal that is not met yet is an honest, complete session.",
+          "Your todo is a GOAL, so the work is CHECKING, not building. The condition above is a statement about the world that is either true yet or not. Find out which — in the repository, in the system, in whatever the condition is about. If it holds, record the goal done with evidence naming exactly what you checked and what you saw. If it does not hold, change nothing and say in your outcome summary what is still missing; a goal that is not met yet is an honest, complete session, and the fleet asks the same question again a day later.",
         ]
       : [
           'Your todo is a TASK. There are two ways it ends, and which one it is becomes clear as you work:',
@@ -1836,6 +1842,28 @@ async function admitProspectMission(
 const AUTO_BLOCK_HORIZON_MS = 48 * 60 * 60 * 1000;
 const AUTO_BACKOFF_MS = 24 * 60 * 60 * 1000;
 const AUTO_CIRCUIT_WINDOW_MS = 3 * 60 * 60 * 1000;
+// How long a GOAL rests between checks. A goal is not work — it is a question
+// put to the world ("is the lease signed yet?"), and the honest answer to it
+// changes only as the batch's tasks land. So a checked-and-unmet goal waits a
+// day and is asked again, rather than being retired by the completed-backoff
+// (which reads "the session finished, and the row did not change" as "settled"
+// — true of a task, and the opposite of true of a goal).
+const AUTO_GOAL_RECHECK_MS = 24 * 60 * 60 * 1000;
+// How many autonomous sessions one todo may ever consume. The completed-run
+// rule below re-admits a todo whenever a session actually advanced its row, so
+// a task that genuinely takes four sessions gets four. This is the far bound on
+// the other case: a task that keeps recording progress and never finishes would
+// otherwise draw sessions forever. Past it the row still stands, still renders
+// ready on /tts, and is Tom's to move.
+const AUTO_MAX_SESSIONS_PER_TODO = 8;
+// How long a batch rests after Tom rules "session" on it. He asked for a
+// conversation, and the fleet must not consume the request by working the
+// graph out from under it — but a batch `session` verdict can never be marked
+// applied (claudeSessions has no batch subject yet, see ttsRulings), so an
+// applied-forever test would freeze every task in the graph permanently. A day
+// is the pause: long enough to have the conversation, short enough that
+// forgetting to have it costs a day rather than the batch.
+const AUTO_BATCH_SESSION_PAUSE_MS = 24 * 60 * 60 * 1000;
 // Usage-pressure fingerprints in an ending's own words — daemon endedReason
 // or agent outcomeSummary. LOCKSTEP with worker/session-host/session.mjs
 // USAGE_LIMIT_RE: both sides carry exactly this regex, narrowed on purpose to
@@ -2027,12 +2055,29 @@ export const internalAutoSchedule = internalMutation({
         ) {
           return true;
         }
-        // Last run completed: only re-run after the todo changed since.
-        if (
-          newest.outcome === "completed" &&
-          t.updatedAt <= newest.statusChangedAt
-        ) {
-          return true;
+        // The far bound: no todo draws sessions without end.
+        if (auto.length >= AUTO_MAX_SESSIONS_PER_TODO) return true;
+        if (newest.outcome === "completed") {
+          if (t.kind === "goal") {
+            // A GOAL is a question, not work. "The session completed and the
+            // row did not change" means the answer was NO — which is exactly
+            // the case that has to be asked again once the tasks have moved.
+            // Nothing bumps a goal's updatedAt (binding deliberately does not,
+            // and the planner never rewrites goals), so the row-changed test
+            // below would retire every goal after its first check and the
+            // batch would never reach done.
+            if (now - newest.statusChangedAt < AUTO_GOAL_RECHECK_MS) return true;
+          } else if (t.updatedAt <= newest.createdAt) {
+            // Last run completed and wrote NOTHING to the row: settled, do not
+            // redo it. Measured against the session's START, not its end:
+            // statusChangedAt is stamped when the session ends, AFTER every pen
+            // write it made, so an end-stamp test excludes precisely the
+            // sessions that did record progress — and the contract asks a
+            // worker for ONE STABLE STATE that "another session can pick up
+            // from cold". A row that moved during the session earns that
+            // second session; a row that did not, does not.
+            return true;
+          }
         }
       }
       return false;
@@ -2081,9 +2126,6 @@ export const internalAutoSchedule = internalMutation({
       list.push(t);
       readyByBatch.set(t.batchId, list);
     }
-    const goalCheckable = (t: Doc<"dtsTodos">): boolean =>
-      (t.condition ?? "").trim() !== "" ||
-      (t.codeRepo !== undefined && t.codeExternalId !== undefined);
     const agentWorkable = (t: Doc<"dtsTodos">): boolean =>
       t.kind === "goal" ? goalCheckable(t) : t.actor !== "tom";
 
@@ -2094,21 +2136,49 @@ export const internalAutoSchedule = internalMutation({
       // batch that is not there is not something to guess about.
       if (!batch || batch.status !== "active") continue;
       // The batch-level half of the pending-ruling exclusion: an unapplied
-      // verdict means Tom has spoken and the fleet must not race him, and a
-      // "session" verdict asked for a conversation that a worker must not
-      // silently consume.
+      // verdict means Tom has spoken and the fleet must not race him. A
+      // "session" verdict asked for a conversation, and it is the one verdict
+      // nothing can ever mark applied at the batch level — so it PAUSES the
+      // graph for a day rather than freezing it forever (a permanent freeze
+      // costs every task in the batch, recoverable only by a second ruling
+      // nothing tells him to record).
       const ruling = liveBySubject.get(
         subjectKey({ subjectType: "batch", batchId }),
       );
-      if (
-        ruling &&
-        (ruling.appliedAt === undefined || ruling.verdict === "session")
-      ) {
-        continue;
+      if (ruling) {
+        const paused =
+          ruling.verdict === "session"
+            ? now - ruling.ruledAt < AUTO_BATCH_SESSION_PAUSE_MS
+            : ruling.appliedAt === undefined;
+        if (paused) continue;
       }
-      for (const t of ready) {
-        if (!agentWorkable(t)) continue;
+      const workable = ready.filter(agentWorkable);
+      const tasks = workable.filter((t) => t.kind !== "goal");
+      for (const t of tasks) {
         graphCandidates.push({ todo: t, lane: "graph", batch });
+      }
+      // WORK FIRST, THEN CHECK. A goal has no needs — binding sets batchId and
+      // kind and nothing else — so it is ready from the moment it is bound,
+      // before a single task of the batch has run. Scheduling it there spends a
+      // session asking a question whose answer is certainly "not yet". A goal
+      // becomes checkable work only once no task of its batch can be admitted
+      // at all: that is when the world has had its chance to change. (Tested
+      // through excluded(), not through the ready set: a batch whose every
+      // ready task is held by a live session or resting on a backoff has no
+      // work moving either, and "nothing ready" alone would never come true
+      // for it.)
+      let taskMoving = false;
+      for (const t of tasks) {
+        if (!(await excluded(t))) {
+          taskMoving = true;
+          break;
+        }
+      }
+      if (taskMoving) continue;
+      for (const t of workable) {
+        if (t.kind === "goal") {
+          graphCandidates.push({ todo: t, lane: "graph", batch });
+        }
       }
     }
     // THE ORDER: where the work sits on a path first, then how soon it is due,
@@ -2140,13 +2210,30 @@ export const internalAutoSchedule = internalMutation({
       return a.todo.updatedAt - b.todo.updatedAt; // stalest first
     });
     candidates.push(...graphCandidates);
+    // THE FRONTIER'S QUOTA. Strict priority with no quota starves the legacy
+    // lanes outright: once the planner has been running for a day there are
+    // routinely more ready graph tasks than a tick has slots, and the walk
+    // never reaches them. So the frontier takes at most capacity-1 of the
+    // tick's slots whenever the tick has more than one, and the admission loop
+    // runs a SECOND pass with no quota — a reserved slot the legacy lanes did
+    // not use goes back to the graph rather than being left unspent.
+    const graphQuota = capacity <= 1 ? capacity : capacity - 1;
 
     // ── The LEGACY lanes (pre-migration rows only) ───────────────────────────
     // Every lane below is the v1 walk, untouched except for one added test:
     // the row must have no batchId. A row inside a batch is the frontier's to
     // schedule, and these lanes read v1 vocabulary (readiness, members, the
     // plan) that says nothing about a graph node.
+    //
+    // ONE EXCEPTION, and it is the block lane's: a GOAL is one of Tom's own
+    // todos, bound to a batch by the planner and otherwise unchanged. Binding
+    // it must not be what stops it getting groundwork — that would mean the
+    // planner silently removes a todo from every lane, the frontier (which
+    // only checks a goal, and only when the batch's work has stalled) and the
+    // preparer alike, precisely when Tom has put committed time on it.
     const legacy = (t: Doc<"dtsTodos">): boolean => t.batchId === undefined;
+    const legacyOrGoal = (t: Doc<"dtsTodos">): boolean =>
+      t.batchId === undefined || t.kind === "goal";
 
     // (1) Block prep: committed time starting within 48h whose subject is not
     // ready — the nearest commitments get groundwork first.
@@ -2159,7 +2246,7 @@ export const internalAutoSchedule = internalMutation({
     for (const block of blocks) {
       if (block.todoId !== undefined) {
         const t = todoById.get(block.todoId);
-        if (!t || t.status !== "active" || !legacy(t)) continue;
+        if (!t || t.status !== "active" || !legacyOrGoal(t)) continue;
         // Not ready: a plain todo short of ready-for-tom, or a batch with
         // open agent plan steps still to do.
         const notReady =
@@ -2177,7 +2264,7 @@ export const internalAutoSchedule = internalMutation({
             (t) =>
               t.category === block.category &&
               t.members === undefined &&
-              legacy(t) &&
+              legacyOrGoal(t) &&
               unprepared(t),
           )
           .sort((a, b) => a.updatedAt - b.updatedAt);
@@ -2244,10 +2331,7 @@ export const internalAutoSchedule = internalMutation({
     // ── Admit up to `capacity` picks ─────────────────────────────────────────
     const picked = new Set<string>();
     const counts: Record<string, number> = {};
-    for (const c of candidates) {
-      if (picked.size >= capacity) break;
-      if (picked.has(c.todo._id)) continue;
-      if (await excluded(c.todo)) continue;
+    const admit = async (c: Candidate): Promise<void> => {
       picked.add(c.todo._id);
       counts[c.lane] = (counts[c.lane] ?? 0) + 1;
 
@@ -2294,12 +2378,12 @@ export const internalAutoSchedule = internalMutation({
           .map((id) => todoById.get(id))
           .filter((t): t is Doc<"dtsTodos"> => t !== undefined)
           .map(asNeighbor);
+        // Everything that needs this todo, wherever it lives. Not scoped to the
+        // batch: `needs` may point at a batch-less todo (addressable() in
+        // tts.ts permits it), so a batch-scoped filter hides exactly the
+        // dependent the worker would never otherwise hear about.
         const dependents = todos
-          .filter(
-            (t) =>
-              t.batchId === c.todo.batchId &&
-              (t.needs ?? []).includes(c.todo._id),
-          )
+          .filter((t) => (t.needs ?? []).includes(c.todo._id))
           .map(asNeighbor);
         const siblings = (readyByBatch.get(c.todo.batchId as string) ?? [])
           .filter((t) => t._id !== c.todo._id)
@@ -2324,7 +2408,7 @@ export const internalAutoSchedule = internalMutation({
           todoId: c.todo._id,
           batchId: c.batch._id,
         });
-        continue;
+        return;
       }
 
       // Resolve batch members for the mission prompt (life via the collect,
@@ -2367,6 +2451,24 @@ export const internalAutoSchedule = internalMutation({
         sessionId,
         todoId: c.todo._id,
       });
+    };
+
+    // PASS ONE holds the frontier to its quota, so a tick with more ready
+    // graph tasks than slots still reaches the legacy lanes. PASS TWO runs the
+    // same walk with the quota lifted: a slot the legacy lanes had nothing to
+    // put in goes back to the graph rather than going unspent.
+    for (const c of candidates) {
+      if (picked.size >= capacity) break;
+      if (c.lane === "graph" && (counts.graph ?? 0) >= graphQuota) continue;
+      if (picked.has(c.todo._id)) continue;
+      if (await excluded(c.todo)) continue;
+      await admit(c);
+    }
+    for (const c of candidates) {
+      if (picked.size >= capacity) break;
+      if (picked.has(c.todo._id)) continue;
+      if (await excluded(c.todo)) continue;
+      await admit(c);
     }
 
     // ── The prospecting lane (parallel with the work walk) ───────────────────

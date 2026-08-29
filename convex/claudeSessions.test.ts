@@ -2801,6 +2801,216 @@ describe("frontier scheduler", () => {
     expect(await workSessions(t)).toHaveLength(0);
   });
 
+  // A worker session that has run to a stop: it recorded its outcome and the
+  // daemon ended it. `at` is the END stamp, which is always later than every
+  // pen write the session made — the distinction the completed-backoff turns
+  // on.
+  async function finishSession(
+    t: ReturnType<typeof convexTest>,
+    id: Id<"claudeSessions">,
+    at: number = Date.now() + 1000,
+  ) {
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id,
+      outcome: "completed",
+      summary: "completed: one state advanced",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(id, { status: "ended" as const, statusChangedAt: at }),
+    );
+  }
+
+  // THE MULTI-SESSION TASK. The mission asks a worker for ONE STABLE STATE,
+  // "a state another session can pick up from cold" — so the backoff after a
+  // completed run has to admit that pickup. witness: measure the backoff
+  // against the session's END (statusChangedAt) instead of its start
+  // (createdAt) and the second half goes red: the end stamp lands after every
+  // pen write the session made, so the sessions that DID record progress are
+  // exactly the ones excluded, and a two-session task wedges forever with
+  // nothing saying so.
+  it("re-admits a completed task that advanced, and leaves a settled one alone", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the migration batch",
+      tasks: [{ statement: "write the migration", actor: "agent" }],
+    });
+    const task = byStatement(await batchTodos(t, batchId), "write the migration");
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const first = await workSessions(t);
+    expect(first).toHaveLength(1);
+
+    // It ended completed having written NOTHING to the row: settled work, not
+    // to be redone.
+    await finishSession(t, first[0]._id);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(1);
+
+    // Now a session that DID advance it: the pen writes during the session,
+    // and the end stamp lands after that write.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: task._id,
+      evidence: "branch session/x, schema written",
+    });
+    const second = await workSessions(t);
+    await finishSession(t, second[0]._id, Date.now() + 2000);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const third = await workSessions(t);
+    expect(third).toHaveLength(2);
+    expect(third.every((s) => s.todoId === task._id)).toBe(true);
+  });
+
+  // A GOAL IS A QUESTION, ASKED AGAIN. witness (first half): drop the
+  // work-first rule from the frontier walk and the goal is checked on the very
+  // first tick, before a single task has run, spending a session on a question
+  // whose answer is certainly "not yet". witness (second half): let the
+  // completed-backoff's row-changed test apply to a goal and the last
+  // assertion goes red — nothing bumps a goal's updatedAt (binding does not,
+  // and the planner never rewrites goals), so every goal would be checked
+  // exactly once, no batch would ever reach done, and anything needing a goal
+  // would block forever.
+  it("checks a goal after the work, and asks again the next day", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "the lease is signed",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(goalId, { condition: "the signed lease is in the folder" }),
+    );
+    const batchId = await storeGraph(t, {
+      statement: "the apartment batch",
+      tasks: [{ statement: "send the landlord the form", actor: "agent" }],
+      goalIds: [goalId],
+    });
+    const send = byStatement(
+      await batchTodos(t, batchId),
+      "send the landlord the form",
+    );
+
+    // The work goes first; the goal is not touched while a task can move.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const onWork = await workSessions(t);
+    expect(onWork).toHaveLength(1);
+    expect(onWork[0].todoId).toBe(send._id);
+
+    // The task lands, so nothing else in the batch is workable — now the goal
+    // is worth asking about.
+    await finishSession(t, onWork[0]._id);
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: send._id,
+      status: "done",
+      evidence: "form posted",
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const onGoal = (await workSessions(t)).filter((s) => s.todoId === goalId);
+    expect(onGoal).toHaveLength(1);
+
+    // The answer was "not yet": an honest, complete session that changed
+    // nothing. Inside the day, the question is not re-asked.
+    await finishSession(t, onGoal[0]._id);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect((await workSessions(t)).filter((s) => s.todoId === goalId)).toHaveLength(1);
+
+    // A day later it is.
+    await t.run(async (ctx) =>
+      ctx.db.patch(onGoal[0]._id, {
+        statusChangedAt: Date.now() - 25 * 60 * 60 * 1000,
+      }),
+    );
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect((await workSessions(t)).filter((s) => s.todoId === goalId)).toHaveLength(2);
+  });
+
+  // witness: read `condition` as a completion test on every goal (drop the
+  // timingClass arm of goalCheckable in ttsShared.ts) and this goes red — a
+  // condition-bound todo's condition is its TRIGGER ("when the landlord sends
+  // the paperwork"), so a worker would find the trigger fired and close one of
+  // Tom's own todos, past the freeze every other agent write respects.
+  it("never hands a worker a condition-bound goal to check", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the apartment lease",
+      timingClass: "condition-bound",
+      condition: "the landlord sends the renewal paperwork",
+    });
+    await storeGraph(t, {
+      statement: "the lease batch",
+      tasks: [],
+      goalIds: [goalId],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+  });
+
+  // witness: filter the block lane on batchId (the plain legacy test) and this
+  // goes red — the planner binding one of Tom's todos as a goal would remove
+  // it from the block lane, from the frontier (a goal is only CHECKED, and
+  // only once the batch's work has stalled) and from the preparer at once,
+  // exactly when he has put committed time on it.
+  it("still prepares a bound goal Tom put committed time on", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "book the flights",
+    });
+    await storeGraph(t, {
+      statement: "the travel batch",
+      tasks: [],
+      goalIds: [goalId],
+    });
+    const now = Date.now();
+    await tom.mutation(api.tts.createBlock, {
+      start: now + 60 * 60 * 1000,
+      end: now + 2 * 60 * 60 * 1000,
+      todoId: goalId,
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(goalId);
+  });
+
+  // witness: push the frontier's candidates in with no quota (strict priority)
+  // and this goes red — once the planner has been running there are routinely
+  // more ready graph tasks than a tick has slots, and the walk never reaches
+  // the legacy lanes at all.
+  it("reserves a slot for the legacy lanes when the frontier overflows", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "the busy batch",
+      tasks: [
+        { statement: "one", actor: "agent" },
+        { statement: "two", actor: "agent" },
+        { statement: "three", actor: "agent" },
+        { statement: "four", actor: "agent" },
+      ],
+    });
+    const legacyId = await tom.mutation(api.tts.createTodo, {
+      statement: "draft the reading list",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.some((s) => s.todoId === legacyId)).toBe(true);
+  });
+
   // witness: drop the batch-level ruling lookup from the frontier walk and
   // this test goes red — Tom asked for a conversation about this batch, and
   // the fleet would consume the request with a worker session instead.
@@ -2821,6 +3031,20 @@ describe("frontier scheduler", () => {
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(await workSessions(t)).toHaveLength(0);
+
+    // witness: read that verdict as a permanent exclusion (appliedAt is never
+    // set on a batch `session` — claudeSessions has no batch subject) and the
+    // second half goes red: one conversation Tom meant to have would freeze
+    // every task in the batch forever, recoverable only by a second ruling
+    // nothing tells him to record. It is a PAUSE, and a day long.
+    const ruling = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsRulings").collect())[0],
+    );
+    await t.run(async (ctx) =>
+      ctx.db.patch(ruling._id, { ruledAt: Date.now() - 25 * 60 * 60 * 1000 }),
+    );
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(1);
   });
 
   // witness: drop the live-session exclusion (the claim) and this goes red —
@@ -2854,8 +3078,10 @@ describe("frontier scheduler", () => {
 
   // witness: drop the model line from the session insert in
   // convex/claudeSessions.ts and this test goes red — the daemon reads the
-  // tier off the session row, so a task the planner marked as needing the
-  // stronger model would silently run on the default one.
+  // tier off the session row (session-host.mjs claimSession/adoptSession pass
+  // row.model into the Session, which maps "fable" to the SDK model id in
+  // session.mjs), so a task the planner marked as needing the stronger model
+  // would silently run on the default one.
   it("carries a task's model tier onto the session row and the poll", async () => {
     const t = convexTest({ schema, modules });
     await withTom(t);

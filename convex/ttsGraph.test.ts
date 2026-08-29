@@ -514,7 +514,245 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     });
     expect(archived.archived).toBe(1);
     expect((await oneBatch(t)).status).toBe("archived");
-    expect(await batchTodos(t, res.batchId!)).toHaveLength(1);
+    const rows = await batchTodos(t, res.batchId!);
+    expect(rows).toHaveLength(1); // never deleted
+    // witness: patch only the batches row — "leftover" stays an ACTIVE todo
+    // carrying a batchId, which the frontier skips (its batch is not active),
+    // every legacy lane skips (it has a batchId) and the preparer skips too:
+    // open work no scheduler will ever admit again and nothing will ever
+    // mention.
+    expect(rows[0].status).toBe("archived");
+  });
+
+  // witness: archive the batch alone and this goes red on both counts — the
+  // task becomes work nothing can reach, and the GOAL (one of Tom's own todos,
+  // which the planner merely bound here) is stranded in a retired batch
+  // instead of going back to the pool the preparer and the lanes read.
+  it("archiving a batch archives its tasks and returns its goals", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "the lease is signed",
+    });
+    const res = await storeGraph(t, {
+      tasks: [graphTask("leftover"), graphTask("landed", { status: "done" })],
+      goalIds: [goalId],
+    });
+    await storeGraph(t, {
+      batchId: res.batchId!,
+      tasks: [],
+      archive: true,
+    });
+
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(byStatement(rows, "leftover")!.status).toBe("archived");
+    // A done task keeps its resting state: it is the record of what landed.
+    expect(byStatement(rows, "landed")!.status).toBe("done");
+    const goal = byStatement(rows, "the lease is signed")!;
+    expect(goal.status).toBe("active");
+    expect(goal.batchId).toBeUndefined();
+    expect(goal.kind).toBeUndefined();
+  });
+
+  // witness: let a reworded task without its id simply mint a new row — the
+  // planner is an LLM re-emitting the whole graph every run, so the batch ends
+  // up holding both wordings, both ready, both agent-workable, and two worker
+  // sessions do the same work on the same branch namespace.
+  it("retires a task the payload dropped, and keeps one that was worked", async () => {
+    const t = convexTest({ schema, modules });
+    await storeGraph(t, {
+      tasks: [graphTask("gather the sources"), graphTask("write the summary")],
+    });
+    const batch = await oneBatch(t);
+    const before = await batchTodos(t, batch._id);
+    const worked = byStatement(before, "write the summary")!;
+    // A session has already advanced this one.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: worked._id,
+      evidence: "branch session/x",
+    });
+
+    // The planner rewords the first task and omits both ids.
+    const again = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("gather every source")],
+    });
+    expect(again.created).toBe(1);
+    expect(again.retired).toBe(1);
+    const after = await batchTodos(t, batch._id);
+    expect(byStatement(after, "gather the sources")!.status).toBe("archived");
+    expect(byStatement(after, "gather every source")!.status).toBe("active");
+    // Worked, so it is REPORTED and left standing, never archived.
+    expect(byStatement(after, "write the summary")!.status).toBe("active");
+    expect(again.skipped).toEqual([
+      {
+        ref: "write the summary",
+        why: "left in the batch: the planner did not re-emit it, and a session has already worked it",
+      },
+    ]);
+  });
+
+  // witness: bind on `members === undefined` alone (the pre-fix rule) and this
+  // goes red — the row would sit in a v1 batch AND a v2 batch at once, the
+  // exact state validateBatchMembers refuses in the other direction, and
+  // batchOwned then makes it unschedulable from either side. The planner's
+  // client-side filter is not this check: it governs which ids are OFFERED,
+  // not which the model may emit.
+  it("refuses to bind a row a live v1 batch already claims", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const memberId = await tom.mutation(api.tts.createTodo, {
+      statement: "call the landlord",
+    });
+    await t.run(async (ctx) => ctx.db.patch(memberId, { source: "batcher" }));
+    await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [
+        {
+          statement: "the v1 grouping",
+          brief: "b",
+          members: [{ todoId: memberId }],
+        },
+      ],
+    });
+
+    const res = await storeGraph(t, { goalIds: [memberId] });
+    expect(res.goalsBound).toBe(0);
+    expect(res.skipped).toEqual([
+      { ref: memberId, why: "is a member of a live v1 batch" },
+    ]);
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(memberId)))?.batchId,
+    ).toBeUndefined();
+  });
+
+  // witness: infer "did the batch store?" from the skip report (the pre-fix
+  // rule) and this goes red — a TASK's skip carries the task's statement as
+  // its ref, so a task whose statement happens to equal the batch's reads as a
+  // refused batch, and the planner silently drops Tom's revise ruling.
+  it("says whether the batch itself stored, separately from its tasks", async () => {
+    const t = convexTest({ schema, modules });
+    const stored = await storeGraph(t, {
+      statement: "get the apartment",
+      tasks: [graphTask("get the apartment", { needs: [99] })],
+    });
+    expect(stored.batchStored).toBe(true);
+    expect(stored.skipped[0].ref).toBe("get the apartment"); // the TASK's ref
+
+    const frozenBatch = await oneBatch(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(frozenBatch._id, { tomTouchedAt: Date.now() }),
+    );
+    const refused = await storeGraph(t, {
+      batchId: frozenBatch._id,
+      tasks: [graphTask("anything")],
+    });
+    expect(refused.batchStored).toBe(false);
+  });
+
+  // THE COMPLETION PEN'S THREE BARS. witness: gate the `status: "done"` branch
+  // of internalPrepareTodo on batchId alone (the pre-fix rule) and both
+  // refusals go red — goal binding is explicitly allowed on Tom-touched rows,
+  // so every bound goal became a row an agent could close, and `condition`
+  // reads as the TRIGGER on a condition-bound row, which is the common case
+  // rather than the corner.
+  it("refuses the completion pen on a frozen task and an uncheckable goal", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const skips = async () =>
+      (await t.run(async (ctx) => ctx.db.query("dtsEvents").collect()))
+        .filter((e) => e.kind === "done-skipped")
+        .map((e) => (e.data as { why: string }).why);
+
+    // (a) A task Tom has ruled on.
+    await storeGraph(t, { tasks: [graphTask("do it")] });
+    const batch = await oneBatch(t);
+    const [task] = await batchTodos(t, batch._id);
+    await t.run(async (ctx) =>
+      ctx.db.patch(task._id, { tomTouchedAt: Date.now() }),
+    );
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: task._id,
+      status: "done",
+      evidence: "e",
+    });
+    expect((await batchTodos(t, batch._id))[0].status).toBe("active");
+    expect(await skips()).toEqual([
+      "Tom-touched (frozen) — only he closes a row he has ruled on",
+    ]);
+
+    // (b) A goal whose `condition` is its TRIGGER, not a completion test.
+    const triggerGoal = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the apartment lease",
+      timingClass: "condition-bound",
+      condition: "the landlord sends the renewal paperwork",
+    });
+    await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [],
+      goalIds: [triggerGoal],
+    });
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: triggerGoal,
+      status: "done",
+      evidence: "the paperwork arrived",
+    });
+    expect((await t.run(async (ctx) => ctx.db.get(triggerGoal)))?.status).toBe(
+      "active",
+    );
+    expect((await skips())[1]).toMatch(/goal condition/);
+
+    // (c) A CHECKABLE goal is the one thing an agent may close on a
+    // Tom-touched row, and that is the design: checking the world and
+    // recording the answer is a goal's whole contract.
+    const realGoal = await tom.mutation(api.tts.createTodo, {
+      statement: "the lease is signed",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(realGoal, {
+        condition: "the signed lease is in the folder",
+        tomTouchedAt: Date.now(),
+      }),
+    );
+    await storeGraph(t, { batchId: batch._id, tasks: [], goalIds: [realGoal] });
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: realGoal,
+      status: "done",
+      evidence: "lease.pdf, signed both sides",
+    });
+    expect((await t.run(async (ctx) => ctx.db.get(realGoal)))?.status).toBe(
+      "done",
+    );
+  });
+
+  // witness: serve every plan-repair in the window regardless (drop the
+  // consumedAt filter) and this goes red — a repair the planner acted on is
+  // re-injected as an instruction to FIX THE STRUCTURE every two hours for a
+  // week, and the likeliest response to "fix an edge that is already gone" is
+  // to restructure something else.
+  it("serves a plan repair once and stops after it is consumed", async () => {
+    const t = convexTest({ schema, modules });
+    const eventId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "plan-repair",
+        data: { report: "write the summary does not need gather the sources" },
+      }),
+    );
+    expect(
+      await t.query(internal.tts.internalRecentPlanRepairs, {}),
+    ).toHaveLength(1);
+
+    const first = await t.mutation(internal.tts.internalMarkPlanRepairsConsumed, {
+      ids: [eventId, "not-an-id"],
+    });
+    expect(first.consumed).toBe(1);
+    expect(await t.query(internal.tts.internalRecentPlanRepairs, {})).toEqual([]);
+    // Consuming twice is a no-op, not a second consumption.
+    const second = await t.mutation(
+      internal.tts.internalMarkPlanRepairsConsumed,
+      { ids: [eventId] },
+    );
+    expect(second.consumed).toBe(0);
   });
 
   // witness: write the payload's condition/groundUpExplanation/evidence
@@ -826,7 +1064,16 @@ describe("TTS rulings on a batch", () => {
     expect(archived.unarchiveCondition).toBe("if the landlord calls back");
     const rulings = await tom.query(api.ttsRulings.listRulings, {});
     const last = rulings.find((r) => r.verdict === "archive")!;
-    expect(last.applyResult).toBe("batch archived");
+    // witness: patch only the batches row on archive — its unfinished tasks
+    // stay active with a batchId no scheduler will ever admit again (the
+    // frontier skips a non-active batch, every legacy lane skips a batchId
+    // row, and so does the preparer): open work invisible to everything.
+    expect(last.applyResult).toBe(
+      "batch archived (1 task(s) archived, 0 goal(s) returned)",
+    );
+    expect(
+      (await batchTodos(t, batch._id)).every((r) => r.status === "archived"),
+    ).toBe(true);
 
     // witness: leave a batch `revise` unapplied — every worker filters the
     // pending feed to life/code, so it would sit in internalPendingRulings
@@ -1028,19 +1275,28 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
   it("never steals a member the planner already bound to a v2 batch", async () => {
     const t = convexTest({ schema, modules });
     const { member } = await seedOldWorld(t);
-    const bound = await t.mutation(internal.tts.internalStorePlanGraph, {
-      statement: "already planned",
-      tasks: [],
-      goalIds: [member],
+    // Bound straight through the database, not through the planner's pen: the
+    // pen now REFUSES to bind a row a live v1 batch still claims (that is the
+    // v1/v2 collision), so this is the only way to stand up the state the
+    // migration has to survive — a row bound before the v1 batch was formed,
+    // or bound while the batcher happened to be mid-run.
+    const plannerBatch = await t.run(async (ctx) => {
+      const batchId = await ctx.db.insert("batches", {
+        statement: "already planned",
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.patch(member, { batchId, kind: "goal" as const });
+      return batchId;
     });
-    expect(bound.goalsBound).toBe(1);
 
     const counts = await t.mutation(internal.tts.internalMigrateToGraph, {});
     expect(counts).toMatchObject({ batches: 1, goals: 0, alreadyBound: 1 });
     const goal = (await t.run(async (ctx) =>
       ctx.db.get(member),
     )) as Doc<"dtsTodos">;
-    expect(goal.batchId).toBe(bound.batchId); // still the planner's batch
+    expect(goal.batchId).toBe(plannerBatch); // still the planner's batch
   });
 
   // witness: drop the batchId guard from validateBatchMembers — the migration

@@ -136,10 +136,13 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 #                       (the work), wired by `needs` edges, so the todos whose
 #                       needs are all done are the ready ones.
 #
-# They cannot collide: the server refuses a v1 batch that claims a row already
-# inside a v2 batch, and each job consumes only its own revise rulings (v1
-# takes rulings whose subject is a members-bearing todo, v2 takes rulings whose
-# subject is a batch row, which exist only in v2).
+# They cannot collide, and the guard is the SERVER'S in both directions: it
+# refuses a v1 batch that claims a row already inside a v2 batch, and it
+# refuses to bind a row a live v1 batch claims as a v2 goal. (The planner's
+# own filter is not that guard — it governs which ids are offered to the
+# model, not which the model may emit.) Each job also consumes only its own
+# revise rulings: v1 takes rulings whose subject is a members-bearing todo, v2
+# takes rulings whose subject is a batch row, which exist only in v2.
 #
 # AT CUTOVER: delete the form-batches line below, and nothing else here.
 # plan-graphs already sits in the slot that will be the only one left.

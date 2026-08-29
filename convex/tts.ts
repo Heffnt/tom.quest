@@ -12,6 +12,7 @@ import {
   DAY_MS,
   MAX_NEEDS,
   TTS_PREP_NY_HOUR,
+  goalCheckable,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   nyLocalHour,
@@ -1655,13 +1656,33 @@ export const internalPrepareTodo = internalMutation({
     if (status === "done") {
       const fresh = await ctx.db.get(normalized);
       if (!fresh) return;
-      if (fresh.batchId === undefined) {
-        // Named refusal rather than a silent skip: a worker that thinks it
-        // closed a todo and did not would report work as landed that is still
-        // open, and only this row would say otherwise.
-        await logEvent(ctx, "done-skipped", normalized, {
-          why: "only a todo inside a batch may be completed by the pen",
-        });
+      // THE THREE BARS, most specific first. Each is a NAMED refusal rather
+      // than a silent skip: a worker that thinks it closed a todo and did not
+      // would report work as landed that is still open, and only this row
+      // would say otherwise.
+      //
+      //   (a) inside a batch — a standalone life todo is Tom's to close.
+      //   (b) not frozen, unless it is a checkable goal. tomTouchedAt is the
+      //       freeze every other agent write in this file respects, and goal
+      //       binding is explicitly allowed on Tom-touched rows, so without
+      //       this bar every bound goal became a row an agent could close.
+      //       A CHECKABLE goal is the one exception, and it is the design:
+      //       checking the world and recording the answer is a goal's whole
+      //       contract.
+      //   (c) a goal's condition is a GOAL CONDITION. `condition` reads two
+      //       ways (schema.ts): on a condition-bound row it is the TRIGGER
+      //       that says when the todo may start, not a completion test.
+      //       Closing on a fired trigger is closing Tom's todo for him.
+      const why =
+        fresh.batchId === undefined
+          ? "only a todo inside a batch may be completed by the pen"
+          : fresh.kind === "goal" && !goalCheckable(fresh)
+            ? "a goal is completed by the pen only when its condition is a goal condition (a condition-bound row's condition is its trigger)"
+            : fresh.tomTouchedAt !== undefined && fresh.kind !== "goal"
+              ? "Tom-touched (frozen) — only he closes a row he has ruled on"
+              : null;
+      if (why !== null) {
+        await logEvent(ctx, "done-skipped", normalized, { why });
       } else if (fresh.status !== "done") {
         await applyStatusChange(ctx, fresh, {
           status: "done",
@@ -1933,6 +1954,66 @@ function cycleBoundNodes(edges: Map<string, string[]>): Set<string> {
   return remaining;
 }
 
+/**
+ * WHAT HAPPENS TO A BATCH'S CONTENTS WHEN THE BATCH GOES AWAY. Archiving only
+ * the `batches` row leaves its todos behind as active rows with a batchId
+ * nothing will ever schedule: the frontier skips them (their batch is not
+ * active), every legacy lane skips them (they carry a batchId), and the
+ * preparer skips them too. They become open work that is invisible to the
+ * whole system.
+ *
+ * So the two kinds part ways, each to the place it came from:
+ *   tasks — the batch's own work, archived with it. Their statements only ever
+ *           meant something inside this batch's plan.
+ *   goals — TOM'S OWN TODOS, which the planner merely bound here. They are
+ *           unbound (batchId and kind cleared) and returned to the general
+ *           pool, where the preparer and the legacy lanes pick them up again
+ *           and the planner may bind them into a batch that is still live.
+ *
+ * Never touches a done row (its resting state is the record of what landed) or
+ * a Tom-touched task (he ruled on it; the archive is not an agent's to make).
+ */
+export async function archiveBatchContents(
+  ctx: MutationCtx,
+  batchId: Id<"batches">,
+  note: string,
+) {
+  const rows = await ctx.db
+    .query("dtsTodos")
+    .withIndex("by_batch", (q) => q.eq("batchId", batchId))
+    .collect();
+  let archivedTasks = 0;
+  let unboundGoals = 0;
+  for (const row of rows) {
+    if (row.kind === "goal") {
+      // No updatedAt bump, the mirror of the binding rule: binding and
+      // unbinding are both structural annotations, and bumping would resurface
+      // a gate Tom already ruled on (the needs-me ruledAt<updatedAt
+      // predicate). The row's own content is untouched either way.
+      await ctx.db.patch(row._id, { batchId: undefined, kind: undefined });
+      unboundGoals++;
+      continue;
+    }
+    if (row.status === "done" || row.status === "archived") continue;
+    if (row.tomTouchedAt !== undefined) continue;
+    await applyStatusChange(ctx, row, {
+      status: "archived",
+      unarchiveCondition: "the batch it belonged to comes back",
+      note,
+    });
+    archivedTasks++;
+  }
+  if (archivedTasks > 0 || unboundGoals > 0) {
+    await logEvent(ctx, "graph-batch-emptied", undefined, {
+      batchId,
+      archivedTasks,
+      unboundGoals,
+      note,
+    });
+  }
+  return { archivedTasks, unboundGoals };
+}
+
 // The planner's pen (the internalStoreBatches pattern, one batch per call):
 // upserts ONE batch's graph — the batch row, its tasks, and the goals bound to
 // it. Drop-don't-reject: a task that fails validation is SKIPPED with a named
@@ -1953,10 +2034,17 @@ export const internalStorePlanGraph = internalMutation({
     const statement = args.statement.trim();
     const result = {
       batchId: null as Id<"batches"> | null,
+      // Did THIS BATCH's graph store? The caller consumes Tom's revise ruling
+      // on exactly this fact, and it cannot be read off `skipped`: a task's
+      // skip carries the task's statement as its ref, and a task whose
+      // statement happens to equal the batch's would read as a refused batch.
+      // One field, stated by the only code that knows.
+      batchStored: false,
       created: 0,
       updated: 0,
       unchanged: 0,
       goalsBound: 0,
+      retired: 0,
       archived: 0,
       skipped: [] as { ref: string; why: string }[],
     };
@@ -2261,6 +2349,7 @@ export const internalStorePlanGraph = internalMutation({
       });
     }
     const batchId = result.batchId!;
+    result.batchStored = true;
 
     // Payload order + backward-only index refs mean every dep already has its
     // id by the time it is read.
@@ -2351,6 +2440,25 @@ export const internalStorePlanGraph = internalMutation({
     // would resurface already-ruled gates (the needs-me ruledAt<updatedAt
     // predicate), exactly as importance-only writes must not.
     const goalIds = args.goalIds ?? [];
+    // The rows a live v1 batch already claims. validateBatchMembers refuses a
+    // v1 batch that claims a row inside a v2 batch; this is the same rule in
+    // the other direction, and without it the collision the server-side check
+    // exists to prevent lands through the goal binder — a row in a v1 batch
+    // AND a v2 batch at once, unschedulable from either side (batchOwned
+    // excludes it in claudeSessions, and the v1 lanes filter on batchId).
+    // The planner's client-side filter is not this check: it governs which ids
+    // are OFFERED, not which the model may emit. Read once, and only when
+    // there is a goal to bind.
+    const v1Claimed = new Set<string>();
+    if (goalIds.length > 0) {
+      for (const row of await ctx.db.query("dtsTodos").collect()) {
+        if (row.members === undefined) continue;
+        if (row.status === "archived" || row.status === "done") continue;
+        for (const m of row.members) {
+          if (m.todoId !== undefined) v1Claimed.add(m.todoId);
+        }
+      }
+    }
     for (let g = 0; g < goalIds.length; g++) {
       const raw = goalIds[g];
       // Bounded like every other array here: a batch is FOR at most as many
@@ -2376,6 +2484,10 @@ export const internalStorePlanGraph = internalMutation({
         result.skipped.push({ ref: raw, why: "is a v1 batch" });
         continue;
       }
+      if (v1Claimed.has(todo._id)) {
+        result.skipped.push({ ref: raw, why: "is a member of a live v1 batch" });
+        continue;
+      }
       if (claimedIds.has(todo._id)) {
         result.skipped.push({
           ref: raw,
@@ -2392,9 +2504,52 @@ export const internalStorePlanGraph = internalMutation({
       result.goalsBound++;
     }
 
+    // ── Retire what the payload dropped ──────────────────────────────────────
+    // THE TASKS ARRAY IS THE BATCH'S TASK LIST. Identity without an id is exact
+    // statement match, and the planner is an LLM re-emitting the whole graph
+    // every run: a task it REWORDS while omitting its id mints a second row,
+    // and both are then ready, both agent-workable, and both get sessions doing
+    // the same work on the same branch namespace. Nothing else retires the
+    // first, so this does.
+    //
+    // WHAT IT WILL NOT TOUCH, because a dropped row must never be lost work: a
+    // goal (Tom's own todo), a row Tom has touched, a row from any other
+    // source, a terminal row, and — the load-bearing one — any row a session
+    // has already written to (evidence recorded, or readiness moved off
+    // "unprepared"). Those stay in the batch and are reported, not archived.
+    // The rule is also skipped entirely when nothing landed, so a payload the
+    // server dropped whole cannot empty a graph.
+    if (landing.length > 0) {
+      for (const row of existingRows) {
+        // claimedIds, not the landing set: a task the payload DID address and
+        // the server then dropped (a cycle, a fan-in cap) was listed by the
+        // planner, and dropping an edge is not the same statement as dropping
+        // the task.
+        if (claimedIds.has(row._id)) continue;
+        if (row.kind === "goal") continue;
+        if (row.status !== "active") continue;
+        if (row.source !== "planner") continue;
+        if (row.tomTouchedAt !== undefined) continue;
+        if (row.evidence !== undefined || row.readiness !== "unprepared") {
+          result.skipped.push({
+            ref: row.statement,
+            why: "left in the batch: the planner did not re-emit it, and a session has already worked it",
+          });
+          continue;
+        }
+        await applyStatusChange(ctx, row, {
+          status: "archived",
+          unarchiveCondition: "the planner puts it back in the graph",
+          note: "planner: no longer in the graph",
+        });
+        result.retired++;
+      }
+    }
+
     if (args.archive) {
       await ctx.db.patch(batchId, { status: "archived", updatedAt: now });
       result.archived = 1;
+      await archiveBatchContents(ctx, batchId, "planner: batch archived");
     }
 
     await logEvent(ctx, "graph-stored", undefined, {
@@ -2403,6 +2558,7 @@ export const internalStorePlanGraph = internalMutation({
       updated: result.updated,
       unchanged: result.unchanged,
       goalsBound: result.goalsBound,
+      retired: result.retired,
       archived: result.archived,
       skipped: result.skipped.length > 0 ? result.skipped : undefined,
     });
@@ -2575,9 +2731,40 @@ export const internalRecentPlanRepairs = internalQuery({
       .query("dtsEvents")
       .withIndex("by_at", (q) => q.gte("at", since))
       .order("desc")
-      .filter((q) => q.eq(q.field("kind"), PLAN_REPAIR_KIND))
+      .filter((q) =>
+        q.and(
+          q.eq(q.field("kind"), PLAN_REPAIR_KIND),
+          // UNCONSUMED ONLY. A repair is an INSTRUCTION ("this edge is wrong"),
+          // not a record, and the planner runs every two hours over the same
+          // seven-day window: without this the planner is told to fix an edge
+          // it already dropped, ~84 times per repair. The window is still the
+          // outer bound — a repair nothing ever consumes ages out as before.
+          q.eq(q.field("consumedAt"), undefined),
+        ),
+      )
       .take(Math.min(limit ?? 20, 100));
     return rows;
+  },
+});
+
+// The planner's consume pen for the above: the repairs it has now acted on.
+// Stamped, never deleted — dtsEvents is append-only instrumentation, and what
+// the planner consumed and when is part of the record.
+export const internalMarkPlanRepairsConsumed = internalMutation({
+  args: { ids: v.array(v.string()) },
+  handler: async (ctx, { ids }) => {
+    const now = Date.now();
+    let consumed = 0;
+    for (const raw of ids.slice(0, 100)) {
+      const id = ctx.db.normalizeId("dtsEvents", raw);
+      if (!id) continue;
+      const row = await ctx.db.get(id);
+      if (!row || row.kind !== PLAN_REPAIR_KIND) continue;
+      if (row.consumedAt !== undefined) continue;
+      await ctx.db.patch(id, { consumedAt: now });
+      consumed++;
+    }
+    return { consumed };
   },
 });
 

@@ -45,7 +45,10 @@
 // edge that is not a real prerequisite, a missing one that blocked it) records
 // a "plan-repair" event. That is the only channel by which doing the work
 // corrects the planning of it, so those reports are injected as instructions
-// to FIX THE STRUCTURE, not as commentary.
+// to FIX THE STRUCTURE, not as commentary. Like a revise ruling they are
+// CONSUMED once the batch they are about has been re-planned
+// (/tts/plan-repairs-consumed): an instruction re-asserted every two hours
+// after it has been carried out is an instruction to change something else.
 //
 // NO-STATE RULE: Convex is read and written each run. The only local file is
 // the input-hash cursor in /var/lib/tts/ — losing it merely costs one extra
@@ -328,18 +331,25 @@ async function main() {
   // is worker-written and its exact shape belongs to the worker, so read it
   // defensively: name the task if the event names one, and pass the report
   // through as text either way.
-  const repairs = (Array.isArray(planRepairs) ? planRepairs : []).map((e) => {
+  // Each carries the event id and the batch the reported task lives in, so a
+  // repair can be CONSUMED once the batch it is about has been re-planned. A
+  // repair is an instruction, not a record: left unconsumed the same "fix this
+  // edge" is re-asserted every run for a week, long after the edge is gone.
+  const repairRows = (Array.isArray(planRepairs) ? planRepairs : []).map((e) => {
     const data = e?.data ?? {};
-    const subject =
-      all.find((t) => t._id === (e.todoId ?? data.todoId))?.statement ??
-      data.statement ??
-      "an unnamed task";
+    const todo = all.find((t) => t._id === (e.todoId ?? data.todoId));
+    const subject = todo?.statement ?? data.statement ?? "an unnamed task";
     const report =
       typeof data === "string"
         ? data
         : (data.report ?? data.finding ?? data.note ?? JSON.stringify(data));
-    return `task "${subject}": ${report}`;
+    return {
+      id: e._id,
+      batchId: todo?.batchId ?? null,
+      line: `task "${subject}": ${report}`,
+    };
   });
+  const repairs = repairRows.map((r) => r.line);
 
   // Existing graphs, most-recently-updated first, bounded. Compact
   // projections — exactly the fields the planner reasons over.
@@ -528,10 +538,17 @@ async function main() {
 
   // --- Ship it, ONE BATCH PER CALL -----------------------------------------
   // The pen takes one batch's graph at a time, so a batch the server refuses
-  // costs only itself: the rest of the run still lands. `served` records which
-  // statements actually stored, which is what decides whether a revise ruling
-  // is consumed below.
-  const totals = { created: 0, updated: 0, unchanged: 0, goalsBound: 0, archived: 0 };
+  // costs only itself: the rest of the run still lands. `served` records the
+  // BATCH IDS that actually stored, which is what decides whether a revise
+  // ruling and a plan repair are consumed below.
+  const totals = {
+    created: 0,
+    updated: 0,
+    unchanged: 0,
+    goalsBound: 0,
+    retired: 0,
+    archived: 0,
+  };
   const served = new Set();
   let failed = 0;
   for (const batch of parsed.batches) {
@@ -554,17 +571,16 @@ async function main() {
     }
     for (const key of Object.keys(totals)) totals[key] += result[key] ?? 0;
     const skipped = result.skipped ?? [];
-    // The batch itself did not store when the server never resolved it
-    // (batchId null) or when it named the batch's own statement in the skip
-    // report (an unknown id, a Tom-touched freeze, a terminal status).
-    const batchSkipped =
-      result.batchId === null || skipped.some((s) => s.ref === statement);
-    if (!batchSkipped) served.add(statement);
+    // Whether the batch's graph stored is the SERVER'S statement (batchStored),
+    // not something inferred from the skip report: a task's skip carries the
+    // task's statement as its ref, so a task whose statement happens to equal
+    // the batch's read as a refused batch and silently cost Tom his ruling.
+    if (result.batchStored && result.batchId) served.add(result.batchId);
     console.log(
       `[plan-graphs] "${statement}": ${result.created} created, ` +
         `${result.updated} updated, ${result.unchanged} unchanged, ` +
-        `${result.goalsBound} goal(s) bound, ${result.archived} archived, ` +
-        `${skipped.length} skipped`,
+        `${result.goalsBound} goal(s) bound, ${result.retired ?? 0} retired, ` +
+        `${result.archived} archived, ${skipped.length} skipped`,
     );
     for (const s of skipped) {
       console.log(`[plan-graphs] skipped ${s.ref}: ${s.why}`);
@@ -578,8 +594,24 @@ async function main() {
   console.log(
     `[plan-graphs] totals: ${totals.created} created, ${totals.updated} updated, ` +
       `${totals.unchanged} unchanged, ${totals.goalsBound} goal(s) bound, ` +
-      `${totals.archived} archived, ${failed} batch(es) lost`,
+      `${totals.retired} retired, ${totals.archived} archived, ` +
+      `${failed} batch(es) lost`,
   );
+
+  // Consume the plan repairs this run actually answered: the ones whose task
+  // lives in a batch that stored, plus the ones whose task can no longer be
+  // found at all (nothing will ever be able to act on those, and re-asserting
+  // them for a week only invites the planner to restructure something else).
+  // A repair about a batch that was held back or refused stays unconsumed and
+  // is shown again next run — the same discipline as a revise ruling.
+  const consumable = repairRows
+    .filter((r) => r.batchId === null || served.has(r.batchId))
+    .map((r) => r.id)
+    .filter((id) => typeof id === "string");
+  if (consumable.length > 0) {
+    await convexFetch(env, "/tts/plan-repairs-consumed", { ids: consumable });
+    console.log(`[plan-graphs] consumed ${consumable.length} plan repair(s)`);
+  }
 
   // Consume a batch-revise ruling ONLY when its re-plan actually landed. The
   // server DROPS what fails validation instead of rejecting the call, so a
@@ -588,7 +620,14 @@ async function main() {
   // pending, it forces the next run (the hash check is bypassed while a revise
   // is pending) to try again.
   for (const r of revises) {
-    if (!served.has(r.statement)) {
+    // Keyed by BATCH ID, not by statement: the whole point of many a revise
+    // sentence is a rename ("call this batch something clearer"), and the
+    // planner then stores the batch under a new statement. Keying on the
+    // stored statement leaves such a ruling pending forever — and a pending
+    // revise bypasses the input-hash short-circuit, so the job would make a
+    // full Claude call every two hours forever, re-applying an instruction
+    // that already landed. The server always returns the batch id.
+    if (!served.has(r.batchId)) {
       console.log(
         `[plan-graphs] revise ruling for "${r.statement}" left pending: ` +
           `the re-planned batch did not store`,

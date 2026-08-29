@@ -148,14 +148,22 @@ async function main() {
   //
   // members === undefined on BOTH branches: a members-bearing todo is a batch,
   // and batches are prepared (and re-formed on revise) by form-batches.mjs.
-  // batchId === undefined for the same reason one schema version later: a
-  // schema-v2 row carrying batchId is a task or goal inside a batches row, and
-  // "unprepared" is this job's INBOX, not a resting state — briefing one would
-  // advance it to "ready-for-tom" and flood the needs-me feed with plan steps.
+  // A schema-v2 TASK (a row carrying batchId whose kind is not "goal") is
+  // excluded for the same reason one schema version later: it is a step inside
+  // a batches row, "unprepared" is this job's INBOX rather than a resting
+  // state, and briefing one would advance it to "ready-for-tom" and flood the
+  // needs-me feed with plan steps.
+  //
+  // A GOAL IS NOT EXCLUDED. A goal is one of Tom's own todos that the planner
+  // bound to a batch and otherwise left untouched — binding must not be what
+  // stops it getting prepared, or the planner would silently remove a todo
+  // from this job, from the legacy lanes, and from the frontier at once.
+  const isGraphTask = (t) =>
+    t.batchId !== undefined && t.batchId !== null && t.kind !== "goal";
   const targets = (state.todos ?? []).filter(
     (t) =>
       t.members === undefined &&
-      t.batchId === undefined &&
+      !isGraphTask(t) &&
       (reviseByTodo.has(t._id) ||
         (t.status === "active" &&
           (t.readiness === "unprepared" ||
