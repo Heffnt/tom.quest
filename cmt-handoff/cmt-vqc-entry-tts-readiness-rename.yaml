@@ -1,0 +1,71 @@
+- id: tts-readiness-rename
+  tier: R
+  created: 2026-08-29
+  # cites: C2 `one-name` (the two-tier reservation — `tier` is a RESERVED word this registry
+  # spends a second time), D28 `intent-registry` (this registry's own doctrine, whose text
+  # carries the schema being renamed).
+  cites: [C2, D28]
+  statement: >-
+    rename this registry's `tier: R|C|H` to the TTS readiness words, so the reserved word `tier`
+    is spent once. The vqc-ladder inventory reserves **tier** for CONSTITUTION NORMATIVITY
+    (axioms -> ideals -> doctrines -> statutes) and separately reserves **cadence** for the
+    execution axis whose third rung is `compute-tier`; `todos.yaml` then spends `tier` a third
+    time on a resolution path, which is the collision C2's two-tier reservation exists to
+    prevent. WikiTom `tts/spec.md` §5.1 (Tom's ruling 2026-08-27) already fixed the target
+    spelling — `readiness: unprepared | preparing | ready-for-tom` plus `status: active |
+    waiting | archived | done` — and tom.quest's `vqc/todos.yaml` is the running reference
+    implementation of it. That spec text names this rename as a CMT-side todo; this entry is
+    that todo, which did not exist until now.
+  completion_condition: >-
+    `vqc/todos.yaml` carries `readiness` + `status` on every entry with no `tier:` key left,
+    `tests/guards/todo_guards.py` validates the new vocabulary (and its tier reporter counts
+    readiness values), the D28 article text states the renamed schema, the vqc-ladder inventory
+    regenerates clean, and `python -m tests.guards.todo_guards` prints the counts.
+  plan: |-
+    THE MAPPING (WikiTom tts/spec.md §5.1, verbatim): "R and C both -> `ready-for-tom`
+    (readiness); H -> dissolved into `waiting`-or-`archived` (status)."
+
+    SO IT IS NOT A PURE RENAME, and the two lossy points are the whole of Tom's ruling:
+
+    (a) R and C COLLAPSE. Today the letter carries a schema obligation — R requires `plan`
+        (todo_guards.tier_plan_problems), C carries an `agenda`. Both become `ready-for-tom`,
+        so the obligation needs another carrier. Cheapest faithful option: keep both fields and
+        make the guard require `plan` OR `agenda` at `ready-for-tom` — the distinction survives
+        as the SHAPE of what Tom is handed (a plan to ratify vs. an agenda to sit with), which
+        is what the spec means by "the gate's content shows what kind of input it needs".
+        tom.quest's reference file models neither: it has `plan` and no `agenda`, because its
+        entries are all plan-shaped so far. Adopting it verbatim would silently drop the 6 open
+        agendas this registry carries.
+    (b) H DISSOLVES INTO STATUS. `tier: H` is load-bearing beyond labelling: `todo_guards`
+        collects the ledger ids cited by OPEN tier-H todos so the ledger health reporter marks
+        them `(H-parked)` and exempts them from staleness pressure. After the rename that
+        exemption must key off `status: waiting`, or parked debt starts reading as overdue.
+
+    CURRENT STATE (counted 2026-08-29, with this entry in the file): 40 entries — 29 R, 8 C,
+    3 H across the whole file; `python -m tests.guards.todo_guards` reports the OPEN surface as
+    31 open / 9 closed, R 22 / C 6 / H 3.
+
+    SITES, all in this repo:
+      * `vqc/todos.yaml` — the schema comment block, the three section banners, and one `tier:`
+        line per entry (40).
+      * `tests/guards/todo_guards.py` — VALID_TIERS (:30), IDENTITY_FIELDS (:33), the schema
+        check (:96), tier_plan_problems (:116), the tier-H ledger filter (:145), _TIER_LABELS
+        (:155), and the module docstring (:5).
+      * `vqc/constitution.md` — D28's body states the schema (`tier` (R|C|H)) and defines the
+        three tiers in prose. This is a DOCTRINE amendment, not a mechanical edit: it is
+        deliberate, expensive, and logged, and it is the reason this entry is tier R rather
+        than something a session does in passing.
+      * the vqc-ladder reserved-vocabulary inventory — regenerated (`python -m
+        tests.guards.regen`), so it follows the statute rather than being hand-edited.
+
+    NOT A SITE, despite the spec listing it: `vqc/steering.yaml`. Its `tier` occurrences
+    (:43, :45, :379, :382, :622) are test/commit/compute cadence tiers — the OTHER reserved
+    sense — and must not be renamed. Checked 2026-08-29.
+
+    EXECUTION ORDER: guard first (accept both spellings), then the data, then the guard again
+    (accept only the new spelling), then D28 and the regen — so the suite is green at every
+    step and no commit leaves the registry unvalidated.
+
+    TOM RULES: the (a) carrier for the R/C distinction, and whether `blocked_on` survives
+    (tom.quest's reference file drops it;
+    this registry uses it for genuinely externally-gated intent).
