@@ -18,15 +18,27 @@ import type { Doc } from "./_generated/dataModel";
 
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 
+// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+// One switch for every chat.postMessage site in this file. The senders and their
+// composition logic stay intact (this is "off for now", not a removal); flip to
+// true to turn the messages back on, and re-register the digest crons in
+// convex/crons.ts. The INBOUND path (worker/jobs/poll-dump.mjs → /tts/capture)
+// is untouched.
+const OUTBOUND_SLACK_ENABLED: boolean = false;
+
 // ── Daily digest (spec §7) ───────────────────────────────────────────────────
 // Scheduled at two UTC times with a local-hour guard so DST needs no cron
 // edits; only the run landing in the 5 a.m. New York hour proceeds, and
-// digestSentAt makes it once-per-day. ALWAYS sends, even when empty
+// digestSentAt makes it once-per-day. ALWAYS sent, even when empty
 // (sends-even-when-empty rule): a missing digest means Convex/Slack breakage,
 // a digest that reports missing prep means worker breakage.
+// NOW OFF (see OUTBOUND_SLACK_ENABLED above): the crons are unregistered and
+// this returns before anything reads, so no digest is composed or posted.
 export const sendDigest = internalAction({
   args: { force: v.optional(v.boolean()) },
   handler: async (ctx, { force }) => {
+    // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+    if (!OUTBOUND_SLACK_ENABLED) return;
     const now = Date.now();
     if (!force && nyLocalHour(now) !== TTS_DIGEST_NY_HOUR) return;
     const day = ttsDayKey(now);
@@ -94,6 +106,10 @@ export const sendDigest = internalAction({
 export const internalSessionEventMessage = internalAction({
   args: { sessionId: v.string(), text: v.string() },
   handler: async (_ctx, { sessionId, text }) => {
+    // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+    // Callers still SCHEDULE this action on their edge transitions (the trigger
+    // wiring is what the tests cover); it just posts nothing.
+    if (!OUTBOUND_SLACK_ENABLED) return;
     const token = process.env.SLACK_BOT_TOKEN;
     const channel = process.env.SLACK_TTS_CHANNEL_ID;
     if (!token || !channel) {

@@ -45,11 +45,14 @@ async function insertPendingPermission(
   );
 }
 
-// The Slack event messages a mutation scheduled, read off the scheduler's own
+// The session event messages a mutation scheduled, read off the scheduler's own
 // system table — the observable effect of notifySessionEvent without reaching
 // into Slack. Rows persist through their run (convex-test patches state, never
-// deletes), so counting is stable whether or not the job has fired yet; the
-// action itself logs-and-returns with no Slack env configured.
+// deletes), so counting is stable whether or not the job has fired yet.
+// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+// These tests cover the EDGE-TRIGGER WIRING (which transitions schedule an event
+// and how many), which is unchanged; the scheduled action now returns before it
+// posts, so nothing here reaches Slack even with the env configured.
 async function sessionEventMessages(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
     (await ctx.db.system.query("_scheduled_functions").collect())

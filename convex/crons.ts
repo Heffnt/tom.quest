@@ -24,9 +24,10 @@ crons.interval(
 crons.cron("tts queue prep (edt)", "45 8 * * *", internal.tts.internalPrepareFallbackQueue, {});
 crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFallbackQueue, {});
 
-// The digest ALWAYS sends at 5 (sends-even-when-empty rule).
-crons.cron("tts digest (edt)", "0 9 * * *", internal.ttsSync.sendDigest, {});
-crons.cron("tts digest (est)", "0 10 * * *", internal.ttsSync.sendDigest, {});
+// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+// The 5 a.m. digest crons ("0 9" EDT / "0 10" EST → internal.ttsSync.sendDigest)
+// are unregistered; sendDigest itself also returns early. Re-add these two lines
+// to restore the sends-even-when-empty digest.
 
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});
