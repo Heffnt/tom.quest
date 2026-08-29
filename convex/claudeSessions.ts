@@ -14,7 +14,7 @@ import {
   markLiveSessionRulingApplied,
   subjectKey,
 } from "./dtsRulings";
-import { logEvent } from "./dts";
+import { IMPORTANCE_RANK, logEvent } from "./dts";
 
 // Claude Code session surface — the Convex half of the web wrapper around
 // headless Claude Code sessions on the worker box. Design ratified 2026-08-28
@@ -644,6 +644,27 @@ export const internalIngest = internalMutation({
       }
     }
 
+    // A payload that ENDS the session settles its still-pending inbound rows
+    // as "interrupted" (the forceClose orphan-settling pattern): a terminal
+    // session drops out of the daemon's live scan, so nothing else would ever
+    // settle them and a pending stop/user-turn row would spin in the UI
+    // forever. Runs AFTER the inboundUpdates loop so the daemon's own
+    // delivered/done facts from the same flush win first.
+    const becameTerminal =
+      !terminal &&
+      (args.status === "ended" || args.status === "failed");
+    if (becameTerminal) {
+      const orphanedInbound = await ctx.db
+        .query("claudeInbound")
+        .withIndex("by_session_status", (q) =>
+          q.eq("sessionId", args.sessionId).eq("status", "pending"),
+        )
+        .collect();
+      for (const row of orphanedInbound) {
+        await ctx.db.patch(row._id, { status: "interrupted" });
+      }
+    }
+
     for (const req of args.permissionRequests ?? []) {
       const existing = await ctx.db
         .query("claudePermissions")
@@ -729,6 +750,17 @@ export const internalRecordOutcome = internalMutation({
 // BashOutput/KillShell check is its freshest known state.
 
 const PREVIEW_CHARS = 200;
+// Evidence texts (launch results, latest checks) carry the FULL content text,
+// hard-capped — the panel promises verbatim evidence bounded by scroll, not a
+// preview.
+const EVIDENCE_CHARS = 2000;
+
+// The panel shows CURRENT work, so the reads are bounded newest-first windows
+// via by_session_kind: a Task or launch older than the window has scrolled out
+// of panel scope by construction — the transcript remains the full record.
+// This keeps read cost constant for the life of a session.
+const TOOL_CALL_WINDOW = 500;
+const TOOL_RESULT_WINDOW = 800;
 
 // Tool-call/tool-result content is daemon-written v.any(); read it loosely.
 type ToolCallContent = {
@@ -743,7 +775,9 @@ type ToolResultContent = {
 };
 
 // Flatten a tool-result content payload (a string, or an array of typed
-// blocks) to plain text for previews and id matching.
+// blocks) to plain text for previews and id matching. Lockstep with
+// app/sessions/lib.ts contentToText (the client's renderer of the same
+// daemon-written shapes — the client bundle cannot import this server module).
 function contentText(x: unknown): string {
   if (typeof x === "string") return x;
   if (Array.isArray(x)) {
@@ -758,10 +792,24 @@ function contentText(x: unknown): string {
   return x === undefined ? "" : JSON.stringify(x);
 }
 
+// Lockstep with app/sessions/lib.ts previewLine (the client's one-line
+// truncation of the same content).
 function previewText(x: unknown): string {
   const s = contentText(x);
   return s.length > PREVIEW_CHARS ? s.slice(0, PREVIEW_CHARS) + "…" : s;
 }
+
+// Full-text evidence, capped at EVIDENCE_CHARS — never the 200-char preview.
+function evidenceText(x: unknown): string {
+  const s = contentText(x);
+  return s.length > EVIDENCE_CHARS ? s.slice(0, EVIDENCE_CHARS) + "…" : s;
+}
+
+// A background launch's result text names the shell id (bash_N / shell_N);
+// checks are matched ONLY by exact equality of that id against the check
+// input's id-valued fields — substring containment mismatched bash_1 against
+// bash_12.
+const SHELL_ID_RE = /\b(bash_\d+|shell_\d+)\b/;
 
 export const getOpenToolWork = query({
   args: { sessionId: v.id("claudeSessions") },
@@ -772,19 +820,26 @@ export const getOpenToolWork = query({
     if (!session || !isLive(session.status)) {
       return { agents: [], commands: [], finished: [] };
     }
-    // Kind-scoped index reads: only the tool rows, never the whole transcript.
-    const calls = await ctx.db
-      .query("claudeMessages")
-      .withIndex("by_session_kind", (q) =>
-        q.eq("sessionId", sessionId).eq("kind", "tool-call"),
-      )
-      .collect(); // seq-ascending
-    const results = await ctx.db
-      .query("claudeMessages")
-      .withIndex("by_session_kind", (q) =>
-        q.eq("sessionId", sessionId).eq("kind", "tool-result"),
-      )
-      .collect();
+    // Kind-scoped index reads, bounded newest-first (TOOL_*_WINDOW above),
+    // reversed so downstream logic stays seq-ascending ("last wins" = newest).
+    const calls = (
+      await ctx.db
+        .query("claudeMessages")
+        .withIndex("by_session_kind", (q) =>
+          q.eq("sessionId", sessionId).eq("kind", "tool-call"),
+        )
+        .order("desc")
+        .take(TOOL_CALL_WINDOW)
+    ).reverse();
+    const results = (
+      await ctx.db
+        .query("claudeMessages")
+        .withIndex("by_session_kind", (q) =>
+          q.eq("sessionId", sessionId).eq("kind", "tool-result"),
+        )
+        .order("desc")
+        .take(TOOL_RESULT_WINDOW)
+    ).reverse();
     const resultById = new Map<string, Doc<"claudeMessages">>();
     for (const r of results) {
       const id = (r.content as ToolResultContent)?.toolUseId;
@@ -799,36 +854,33 @@ export const getOpenToolWork = query({
       }
     }
 
+    // ONE name per fact — this is the canonical field list, and the client
+    // agent-panel reads exactly these names (no aliases on either side).
     type AgentEntry = {
       toolUseId: string;
       subagentType: string;
       description: string;
       startedAt: number;
       running: boolean;
-      endedAt?: number;
-      isError?: boolean;
-      currentChild?: { toolName: string; inputPreview: string };
-      // Panel-facing alias of currentChild (the agent panel reads `current`).
       current?: { toolName: string; inputPreview: string };
     };
-    // A finished agent always has its result facts — required, not optional.
-    type FinishedAgentEntry = AgentEntry & {
-      endedAt: number;
-      isError: boolean;
+    type FinishedAgentEntry = {
+      toolUseId: string;
+      subagentType: string;
+      startedAt: number;
       durationMs: number;
+      isError: boolean;
       resultPreview: string;
     };
-    const agents: AgentEntry[] = [];
-    const finished: FinishedAgentEntry[] = [];
     type CommandEntry = {
       toolUseId: string;
       command: string;
-      launchedAt: number;
-      // Panel-facing alias of launchedAt.
       startedAt: number;
       launchResultText?: string;
       latestCheck?: { toolName: string; resultText: string; at: number };
     };
+    const agents: AgentEntry[] = [];
+    const finished: FinishedAgentEntry[] = [];
     const commands: CommandEntry[] = [];
 
     // Background-command checks: BashOutput/KillShell calls, seq-ascending.
@@ -844,32 +896,37 @@ export const getOpenToolWork = query({
       const result = resultById.get(c.toolUseId);
 
       if (c.toolName === "Task") {
-        const entry: AgentEntry = {
-          toolUseId: c.toolUseId,
-          subagentType:
-            typeof input.subagent_type === "string" ? input.subagent_type : "",
-          description:
-            typeof input.description === "string" ? input.description : "",
-          startedAt: call.createdAt,
-          running: result === undefined,
-        };
         if (result === undefined) {
+          const entry: AgentEntry = {
+            toolUseId: c.toolUseId,
+            subagentType:
+              typeof input.subagent_type === "string"
+                ? input.subagent_type
+                : "",
+            description:
+              typeof input.description === "string" ? input.description : "",
+            startedAt: call.createdAt,
+            running: true,
+          };
           const child = newestChildByParent.get(c.toolUseId);
           if (child) {
             const cc = child.content as ToolCallContent;
-            entry.currentChild = {
+            entry.current = {
               toolName: cc?.toolName ?? "",
               inputPreview: previewText(cc?.input),
             };
-            entry.current = entry.currentChild;
           }
           agents.push(entry);
         } else {
           finished.push({
-            ...entry,
-            endedAt: result.createdAt,
-            isError: (result.content as ToolResultContent)?.isError === true,
+            toolUseId: c.toolUseId,
+            subagentType:
+              typeof input.subagent_type === "string"
+                ? input.subagent_type
+                : "",
+            startedAt: call.createdAt,
             durationMs: result.createdAt - call.createdAt,
+            isError: (result.content as ToolResultContent)?.isError === true,
             resultPreview: previewText(
               (result.content as ToolResultContent)?.content,
             ),
@@ -879,34 +936,26 @@ export const getOpenToolWork = query({
         const entry: CommandEntry = {
           toolUseId: c.toolUseId,
           command: typeof input.command === "string" ? input.command : "",
-          launchedAt: call.createdAt,
           startedAt: call.createdAt,
         };
         if (result !== undefined) {
-          // The launch result names the background id; match checks against
-          // it VERBATIM (the check's own id-bearing input strings must appear
-          // in this text) — invent no state.
-          const launchText = contentText(
-            (result.content as ToolResultContent)?.content,
-          );
-          entry.launchResultText = previewText(
-            (result.content as ToolResultContent)?.content,
-          );
+          // The launch result names the shell id (SHELL_ID_RE); a check
+          // belongs to this launch ONLY when one of its id-valued input
+          // fields EQUALS that id — substring containment matched bash_1
+          // against bash_12. Invent no state: no id in the text, no checks.
+          const launchContent = (result.content as ToolResultContent)?.content;
+          entry.launchResultText = evidenceText(launchContent);
+          const shellId = contentText(launchContent).match(SHELL_ID_RE)?.[1];
           for (const check of checks) {
+            if (shellId === undefined) break;
             if (check.createdAt < call.createdAt) continue; // predates launch
             const checkContent = check.content as ToolCallContent;
             const checkInput = (checkContent?.input ?? {}) as Record<
               string,
               unknown
             >;
-            // Candidate ids: the check input's id-named string fields
-            // (bash_id / shell_id / …), matched verbatim in the launch text.
             const matches = Object.entries(checkInput).some(
-              ([key, value]) =>
-                /id/i.test(key) &&
-                typeof value === "string" &&
-                value.length > 0 &&
-                launchText.includes(value),
+              ([key, value]) => /id/i.test(key) && value === shellId,
             );
             if (!matches) continue;
             const checkResult =
@@ -916,7 +965,7 @@ export const getOpenToolWork = query({
             // checks are seq-ascending, so the last match is the newest.
             entry.latestCheck = {
               toolName: checkContent?.toolName ?? "",
-              resultText: previewText(
+              resultText: evidenceText(
                 (checkResult?.content as ToolResultContent)?.content,
               ),
               at: checkResult?.createdAt ?? check.createdAt,
@@ -927,9 +976,14 @@ export const getOpenToolWork = query({
       }
     }
 
-    // Last 10 finished agents, newest last (finished is call-order; end order
-    // matches it closely enough for a panel history).
-    return { agents, commands, finished: finished.slice(-10) };
+    // Panel history caps: newest 10 finished agents and newest 10 launches,
+    // newest last (both lists are call-order; end order matches closely
+    // enough for a panel history).
+    return {
+      agents,
+      commands: commands.slice(-10),
+      finished: finished.slice(-10),
+    };
   },
 });
 
@@ -1021,6 +1075,13 @@ function promptFact(label: string, value: string | undefined): string | null {
 // contract of app/lib/dts-session-prompt.ts, adapted for a session no one is
 // watching live). The sessionId rides in so the outcome pen can name this
 // session — the agent has no other way to learn its own id.
+//
+// Lockstep: app/lib/dts-session-prompt.ts is the interactive twin (its
+// CONTRACT opening, buildTodoSessionPrompt's item facts block, and the batch
+// members/plan blocks) — both files carry a note naming the other, and the
+// facts-block wording ('The item ("…"):', "The plan (N steps, in order):",
+// "The members (N, live statuses):") is kept identical where the posture
+// allows. No import across the convex boundary: that module is client code.
 function buildAutoMissionPrompt(
   todo: Doc<"dtsTodos">,
   sessionId: Id<"claudeSessions">,
@@ -1029,10 +1090,13 @@ function buildAutoMissionPrompt(
   const lines: (string | null)[] = [
     `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
     "",
+    // Facts block — same labels and order as the interactive twin's
+    // buildTodoSessionPrompt (category is autonomous-only: it scopes what a
+    // block-lane session may touch).
     `The item ("${todo.statement}"):`,
     promptFact("category", todo.category),
-    promptFact("entry action", todo.entryAction),
     promptFact("work description", todo.workDescription),
+    promptFact("entry action", todo.entryAction),
     promptFact("body", todo.body),
     promptFact("brief", todo.brief),
   ];
@@ -1064,7 +1128,11 @@ function buildAutoMissionPrompt(
     "",
     `The goal: do every open plan step with actor "agent" that needs no repository and no Tom — research, draft, gather, and write what you produce into the item via the prepare pen below. Advance readiness to "ready-for-tom" ONLY when the remaining work genuinely needs Tom. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
     "",
-    "The pens (shell commands; CONVEX_SITE_URL, DTS_WORKER_KEY, and SESSIONS_WORKER_KEY are already set in this session's environment):",
+    // The env contract: the daemon injects ONLY these two variables into an
+    // autonomous session's shell — SESSIONS_WORKER_KEY (the ingest key) never
+    // enters a model-reachable environment (the auth-clobber lesson), which
+    // is why the outcome pen below rides the DTS key.
+    "The pens (shell commands; CONVEX_SITE_URL and DTS_WORKER_KEY are already set in this session's environment):",
     "",
     "1. Write your work into the item:",
     "```",
@@ -1074,13 +1142,13 @@ function buildAutoMissionPrompt(
     "",
     "2. Record this session's outcome when the mission is done:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/sessions/outcome" -H "X-Sessions-Key: $SESSIONS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what landed where"}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/dts/session-outcome" -H "X-DTS-Key: $DTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what landed where"}'`,
     "```",
     '"completed" means the mission produced its artifact; otherwise record "errored" with a summary saying what blocked you.',
     "",
     "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
     "",
-    "Ending: record the outcome via the /sessions/outcome command, then simply stop responding — the daemon ends the session after your final turn.",
+    "Ending: record the outcome via the /dts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -1097,8 +1165,14 @@ const AUTO_BLOCK_HORIZON_MS = 48 * 60 * 60 * 1000;
 const AUTO_BACKOFF_MS = 24 * 60 * 60 * 1000;
 const AUTO_CIRCUIT_WINDOW_MS = 3 * 60 * 60 * 1000;
 // Usage-pressure fingerprints in an ending's own words — daemon endedReason
-// or agent outcomeSummary.
-const AUTO_USAGE_RE = /usage.?limit|rate.?limit|overloaded/i;
+// or agent outcomeSummary. LOCKSTEP with worker/session-host/session.mjs
+// USAGE_LIMIT_RE: both sides carry exactly this regex, narrowed on purpose to
+// account usage caps ("usage limit", "limit reached") — transient API weather
+// ("rate limit", "overloaded") must not stand the fleet down for 3h. The
+// daemon routes SDK error text into outcomeSummary on any abnormal autonomous
+// turn end ("autonomous turn failed: …"), which is what makes this breaker
+// live: the usage-limit wording actually reaches the fields tested below.
+const AUTO_USAGE_RE = /usage.?limit|limit reached/i;
 
 export const internalAutoSchedule = internalMutation({
   args: {},
@@ -1169,10 +1243,14 @@ export const internalAutoSchedule = internalMutation({
     if (capacity <= 0) return;
 
     // ── The work walk ────────────────────────────────────────────────────────
+    // ONE collect feeds everything below: todoById (member/prompt resolution
+    // needs terminal rows too), the batch-ownership set, and the lanes — which
+    // read only ACTIVE rows, filtered once here instead of once per lane.
     const todos = await ctx.db.query("dtsTodos").collect();
     const todoById = new Map<Id<"dtsTodos">, Doc<"dtsTodos">>(
       todos.map((t) => [t._id, t]),
     );
+    const active = todos.filter((t) => t.status === "active");
     // Members of non-terminal batches — the batch owns them (exclusion below).
     const batchOwned = new Set<string>();
     for (const t of todos) {
@@ -1188,110 +1266,16 @@ export const internalAutoSchedule = internalMutation({
     const unprepared = (t: Doc<"dtsTodos">): boolean =>
       t.readiness === "unprepared" || t.readiness === "preparing";
 
-    // Candidates in walk order; lane + blockCategory ride along for the
-    // created session's kind and the scheduler event's counts.
-    type Candidate = {
-      todo: Doc<"dtsTodos">;
-      lane: "block" | "batch" | "dated" | "condition-bound" | "whenever";
-      blockCategory?: string;
-    };
-    const candidates: Candidate[] = [];
-
-    // (1) Block prep: committed time starting within 48h whose subject is not
-    // ready — the nearest commitments get groundwork first.
-    const blocks = await ctx.db
-      .query("dtsBlocks")
-      .withIndex("by_start", (q) =>
-        q.gte("start", now).lt("start", now + AUTO_BLOCK_HORIZON_MS),
-      )
-      .collect();
-    for (const block of blocks) {
-      if (block.todoId !== undefined) {
-        const t = todoById.get(block.todoId);
-        if (!t || t.status !== "active") continue;
-        // Not ready: a plain todo short of ready-for-tom, or a batch with
-        // open agent plan steps still to do.
-        const notReady =
-          t.members !== undefined
-            ? hasOpenAgentStep(t)
-            : t.readiness !== "ready-for-tom";
-        if (notReady) candidates.push({ todo: t, lane: "block" });
-      } else if (block.category !== undefined && block.category !== "code") {
-        // Category block: pick the stalest unprepared todo in the category.
-        const inCategory = todos.filter(
-          (t) =>
-            t.status === "active" &&
-            t.category === block.category &&
-            t.members === undefined &&
-            unprepared(t),
-        );
-        inCategory.sort((a, b) => a.updatedAt - b.updatedAt);
-        if (inCategory.length > 0) {
-          candidates.push({
-            todo: inCategory[0],
-            lane: "block",
-            blockCategory: block.category,
-          });
-        }
-      }
-    }
-
-    // (2) Active batches with open agent plan steps, importance
-    // high > medium > low > unset.
-    const importanceRank = (t: Doc<"dtsTodos">): number =>
-      t.importance === undefined
-        ? 3
-        : { high: 0, medium: 1, low: 2 }[t.importance.level];
-    const batches = todos.filter(
-      (t) =>
-        t.members !== undefined && t.status === "active" && hasOpenAgentStep(t),
-    );
-    batches.sort((a, b) => importanceRank(a) - importanceRank(b));
-    for (const t of batches) candidates.push({ todo: t, lane: "batch" });
-
-    // (3) Dated actives still unprepared, soonest due first.
-    const dated = todos.filter(
-      (t) =>
-        t.status === "active" &&
-        t.members === undefined &&
-        t.timingClass === "dated" &&
-        unprepared(t),
-    );
-    dated.sort((a, b) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity));
-    for (const t of dated) candidates.push({ todo: t, lane: "dated" });
-
-    // (4) Condition-bound actives, tightest latest-safe first.
-    const conditionBound = todos.filter(
-      (t) =>
-        t.status === "active" &&
-        t.members === undefined &&
-        t.timingClass === "condition-bound" &&
-        unprepared(t),
-    );
-    conditionBound.sort(
-      (a, b) => (a.latestSafeAt ?? Infinity) - (b.latestSafeAt ?? Infinity),
-    );
-    for (const t of conditionBound) {
-      candidates.push({ todo: t, lane: "condition-bound" });
-    }
-
-    // (5) Whenever actives, stalest first.
-    const whenever = todos.filter(
-      (t) =>
-        t.status === "active" &&
-        t.members === undefined &&
-        t.timingClass === "whenever" &&
-        unprepared(t),
-    );
-    whenever.sort((a, b) => a.updatedAt - b.updatedAt);
-    for (const t of whenever) candidates.push({ todo: t, lane: "whenever" });
-
     // ── Per-candidate exclusions (cheapest first) ────────────────────────────
-    const excluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
+    const computeExcluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
       // Code todos live in the mirror; their work happens in the repo.
       if (t.category === "code") return true;
       // A member of a non-terminal batch is owned by the batch.
       if (batchOwned.has(t._id)) return true;
+      // An existing live session already references this todo — checked
+      // against the liveSessions array the failsafe (d) already collected,
+      // not a per-candidate by_todo query.
+      if (liveSessions.some((s) => s.todoId === t._id)) return true;
       // A live (unapplied) ruling means Tom already spoke — do not race it;
       // a live "session" verdict must not be silently consumed by an
       // autonomous session (a real conversation was asked for).
@@ -1305,13 +1289,13 @@ export const internalAutoSchedule = internalMutation({
       if (live && (live.appliedAt === undefined || live.verdict === "session")) {
         return true;
       }
-      // An existing live session already references this todo.
+      // Backoff from autonomous session history (do not redo settled work) —
+      // the ONE remaining by_todo collect: backoff needs the terminal history
+      // the liveSessions array cannot carry.
       const history = await ctx.db
         .query("claudeSessions")
         .withIndex("by_todo", (q) => q.eq("todoId", t._id))
         .collect();
-      if (history.some((s) => isLive(s.status))) return true;
-      // Backoff from autonomous session history (do not redo settled work):
       const auto = history
         .filter((s) => s.mode === "autonomous")
         .sort((a, b) => b.createdAt - a.createdAt);
@@ -1342,6 +1326,112 @@ export const internalAutoSchedule = internalMutation({
       }
       return false;
     };
+    // Memoized: the category-block lane probes candidates through excluded()
+    // too, so a todo must not pay the ruling/history reads twice per tick.
+    const exclusionByTodo = new Map<string, boolean>();
+    const excluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
+      const cached = exclusionByTodo.get(t._id);
+      if (cached !== undefined) return cached;
+      const verdict = await computeExcluded(t);
+      exclusionByTodo.set(t._id, verdict);
+      return verdict;
+    };
+
+    // Candidates in walk order; lane + blockCategory ride along for the
+    // created session's kind and the scheduler event's counts.
+    type Candidate = {
+      todo: Doc<"dtsTodos">;
+      lane: "block" | "batch" | "dated" | "condition-bound" | "whenever";
+      blockCategory?: string;
+    };
+    const candidates: Candidate[] = [];
+
+    // (1) Block prep: committed time starting within 48h whose subject is not
+    // ready — the nearest commitments get groundwork first.
+    const blocks = await ctx.db
+      .query("dtsBlocks")
+      .withIndex("by_start", (q) =>
+        q.gte("start", now).lt("start", now + AUTO_BLOCK_HORIZON_MS),
+      )
+      .collect();
+    for (const block of blocks) {
+      if (block.todoId !== undefined) {
+        const t = todoById.get(block.todoId);
+        if (!t || t.status !== "active") continue;
+        // Not ready: a plain todo short of ready-for-tom, or a batch with
+        // open agent plan steps still to do.
+        const notReady =
+          t.members !== undefined
+            ? hasOpenAgentStep(t)
+            : t.readiness !== "ready-for-tom";
+        if (notReady) candidates.push({ todo: t, lane: "block" });
+      } else if (block.category !== undefined && block.category !== "code") {
+        // Category block: the stalest NON-excluded unprepared todo in the
+        // category — probed through excluded() (memoized, so the admission
+        // loop re-check is free). The old pick-one-then-test admitted nothing
+        // whenever the single stalest pick happened to be excluded.
+        const inCategory = active
+          .filter(
+            (t) =>
+              t.category === block.category &&
+              t.members === undefined &&
+              unprepared(t),
+          )
+          .sort((a, b) => a.updatedAt - b.updatedAt);
+        for (const t of inCategory) {
+          if (await excluded(t)) continue;
+          candidates.push({
+            todo: t,
+            lane: "block",
+            blockCategory: block.category,
+          });
+          break;
+        }
+      }
+    }
+
+    // (2) Active batches with open agent plan steps, importance desc —
+    // IMPORTANCE_RANK from ./dts is the ONE server encoding (higher = more
+    // important, unset ranks 0 and lands last).
+    const rank = (t: Doc<"dtsTodos">): number =>
+      t.importance === undefined ? 0 : IMPORTANCE_RANK[t.importance.level];
+    const batches = active.filter(
+      (t) => t.members !== undefined && hasOpenAgentStep(t),
+    );
+    batches.sort((a, b) => rank(b) - rank(a));
+    for (const t of batches) candidates.push({ todo: t, lane: "batch" });
+
+    // (3) Dated actives still unprepared, soonest due first.
+    const dated = active.filter(
+      (t) =>
+        t.members === undefined && t.timingClass === "dated" && unprepared(t),
+    );
+    dated.sort((a, b) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity));
+    for (const t of dated) candidates.push({ todo: t, lane: "dated" });
+
+    // (4) Condition-bound actives, tightest latest-safe first.
+    const conditionBound = active.filter(
+      (t) =>
+        t.members === undefined &&
+        t.timingClass === "condition-bound" &&
+        unprepared(t),
+    );
+    conditionBound.sort(
+      (a, b) => (a.latestSafeAt ?? Infinity) - (b.latestSafeAt ?? Infinity),
+    );
+    for (const t of conditionBound) {
+      candidates.push({ todo: t, lane: "condition-bound" });
+    }
+
+    // (5) Whenever actives, stalest first.
+    const whenever = active.filter(
+      (t) =>
+        t.members === undefined &&
+        t.timingClass === "whenever" &&
+        unprepared(t),
+    );
+    whenever.sort((a, b) => a.updatedAt - b.updatedAt);
+    for (const t of whenever) candidates.push({ todo: t, lane: "whenever" });
 
     // ── Admit up to `capacity` picks ─────────────────────────────────────────
     const picked = new Set<string>();

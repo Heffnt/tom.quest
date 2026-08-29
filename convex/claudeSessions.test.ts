@@ -553,6 +553,69 @@ describe("claude sessions", () => {
     expect(after?.status).toBe("failed"); // the ending itself still lands
   });
 
+  // witness: delete the `becameTerminal` block from internalIngest in
+  // convex/claudeSessions.ts and this test goes red — a stop the daemon never
+  // acked would spin as a "sending" bubble forever on a closed session.
+  it("an ending flush settles the still-pending inbound rows as interrupted", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "one more thing",
+    });
+    const pending = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    const opener = pending.find((p) => p.text === "hello");
+    expect(pending).toHaveLength(2);
+
+    // One flush both ENDS the session and reports what the daemon did manage
+    // to deliver: the row it named keeps the daemon's fact, and only the rows
+    // nothing will ever settle are swept.
+    const res = await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "autonomous run complete",
+      inboundUpdates: [{ id: opener!._id, status: "done" as const }],
+    });
+    expect(res.pendingInbound).toHaveLength(0);
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("claudeInbound").collect(),
+    );
+    expect(rows.find((r) => r.text === "hello")?.status).toBe("done");
+    expect(rows.find((r) => r.text === "one more thing")?.status).toBe(
+      "interrupted",
+    );
+  });
+
+  // The outcome pen POST /dts/session-outcome reaches exactly this mutation
+  // (the route is thin: auth + body shape). Route-level auth is out of this
+  // harness's scope; the semantics it depends on are here.
+  it("the outcome pen names its session by id and trims the summary", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "errored",
+      summary: "  no source to read  ",
+    });
+    const session = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(session?.outcome).toBe("errored");
+    expect(session?.outcomeSummary).toBe("no source to read");
+    await expect(
+      t.mutation(internal.claudeSessions.internalRecordOutcome, {
+        id: "not-a-real-id",
+        outcome: "completed",
+        summary: "x",
+      }),
+    ).rejects.toThrow(/Unknown session id/);
+  });
+
   it("poll stores the box load and names each live session's posture", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -671,8 +734,9 @@ describe("open tool work", () => {
     expect(work.agents[0].description).toBe("map the module");
     expect(work.agents[0].running).toBe(true);
     // Calls are seq-ascending, so the newest child is what it is doing NOW.
-    expect(work.agents[0].currentChild?.toolName).toBe("Grep");
-    expect(work.agents[0].currentChild?.inputPreview).toContain("needle");
+    // Canonical name: `current` — one name per fact, no aliases.
+    expect(work.agents[0].current?.toolName).toBe("Grep");
+    expect(work.agents[0].current?.inputPreview).toContain("needle");
     expect(work.commands).toHaveLength(0); // foreground Bash + plain Read ignored
     expect(work.finished).toHaveLength(0);
   });
@@ -703,7 +767,8 @@ describe("open tool work", () => {
     expect(work.agents).toHaveLength(0);
     expect(work.finished).toHaveLength(1);
     expect(work.finished[0].toolUseId).toBe("task-1");
-    expect(work.finished[0].running).toBe(false);
+    expect(work.finished[0].subagentType).toBe("explorer");
+    expect(work.finished[0].durationMs).toBeGreaterThanOrEqual(0);
     expect(work.finished[0].isError).toBe(false);
     expect(work.finished[0].resultPreview).toBe(
       "the module reads config at startup",
@@ -734,7 +799,7 @@ describe("open tool work", () => {
           kind: "tool-result" as const,
           content: {
             toolUseId: "bash-1",
-            content: "Command running in background with ID: bg_42",
+            content: "Command running in background with ID: bash_42",
           },
         },
       ],
@@ -749,7 +814,7 @@ describe("open tool work", () => {
           content: {
             toolName: "BashOutput",
             toolUseId: "check-1",
-            input: { bash_id: "bg_42" },
+            input: { bash_id: "bash_42" },
           },
         },
         {
@@ -758,7 +823,11 @@ describe("open tool work", () => {
           kind: "tool-result" as const,
           content: { toolUseId: "check-1", content: "compiling routes…" },
         },
-        // A check for a DIFFERENT background id must not attach here.
+        // A check for a DIFFERENT background id must not attach here. This
+        // pins one containment direction only — the launch id CONTAINING the
+        // check's ("bash_42" ⊃ "bash_4"). The other direction, a check id
+        // containing the launch's, is pinned by "attaches a check to its own
+        // shell only" below; exact equality is what rules out both.
         {
           seq: 4,
           turn: 0,
@@ -766,7 +835,7 @@ describe("open tool work", () => {
           content: {
             toolName: "BashOutput",
             toolUseId: "check-2",
-            input: { bash_id: "bg_99" },
+            input: { bash_id: "bash_4" },
           },
         },
         {
@@ -784,9 +853,248 @@ describe("open tool work", () => {
     expect(work.commands).toHaveLength(1);
     expect(work.commands[0].toolUseId).toBe("bash-1");
     expect(work.commands[0].command).toBe("pnpm build");
-    expect(work.commands[0].launchResultText).toContain("bg_42");
+    expect(work.commands[0].launchResultText).toContain("bash_42");
     expect(work.commands[0].latestCheck?.toolName).toBe("BashOutput");
     expect(work.commands[0].latestCheck?.resultText).toBe("compiling routes…");
+  });
+
+  // The panel reads bounded newest-first windows (TOOL_CALL_WINDOW = 500 calls,
+  // TOOL_RESULT_WINDOW = 800 results in convex/claudeSessions.ts) and reverses
+  // them, so every "last wins" rule downstream still means NEWEST; a Task or
+  // launch older than the window has scrolled out of panel scope by
+  // construction. Writing 500 rows to watch one scroll out would buy nothing
+  // this does not: drop the .reverse() and "what it is doing now" silently
+  // becomes "what it did first", which is exactly what this pins — across a
+  // flush boundary, so it holds however the window slices the rows.
+  it("names a subagent's newest child call, not its oldest", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, sessionId } = await liveSessionWithToolWork(t);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 5,
+          turn: 0,
+          kind: "tool-call" as const,
+          content: {
+            toolName: "Edit",
+            toolUseId: "child-3",
+            input: { file_path: "/repo/c.ts" },
+          },
+          parentToolUseId: "task-1",
+        },
+      ],
+    });
+    const work = await tom.query(api.claudeSessions.getOpenToolWork, {
+      sessionId,
+    });
+    expect(work.agents[0].current?.toolName).toBe("Edit");
+    expect(work.agents[0].current?.inputPreview).toContain("/repo/c.ts");
+  });
+
+  // witness: match checks by substring containment (the old rule) instead of
+  // exact equality and this test goes red — "bash_1" is contained in a check
+  // for "bash_12", so the wrong shell's output would be shown as this
+  // command's freshest state.
+  it("attaches a check to its own shell only, newest check winning", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const bg = (seq: number, toolUseId: string, command: string) => ({
+      seq,
+      turn: 0,
+      kind: "tool-call" as const,
+      content: {
+        toolName: "Bash",
+        toolUseId,
+        input: { command, run_in_background: true },
+      },
+    });
+    const check = (seq: number, toolUseId: string, bash_id: string) => ({
+      seq,
+      turn: 0,
+      kind: "tool-call" as const,
+      content: { toolName: "BashOutput", toolUseId, input: { bash_id } },
+    });
+    const result = (seq: number, toolUseId: string, content: string) => ({
+      seq,
+      turn: 0,
+      kind: "tool-result" as const,
+      content: { toolUseId, content },
+    });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "running",
+      finalize: [
+        bg(0, "bash-a", "pnpm build"),
+        result(1, "bash-a", "Command running in background with ID: bash_1"),
+        bg(2, "bash-b", "pnpm test"),
+        result(3, "bash-b", "Command running in background with ID: bash_12"),
+        check(4, "check-a1", "bash_1"),
+        result(5, "check-a1", "a output, first look"),
+        check(6, "check-a2", "bash_1"),
+        result(7, "check-a2", "a output, second look"),
+        // Last in seq ON PURPOSE: under containment matching this would be the
+        // "newest" check for bash_1 as well as for bash_12.
+        check(8, "check-b", "bash_12"),
+        result(9, "check-b", "b output"),
+      ],
+    });
+    const work = await tom.query(api.claudeSessions.getOpenToolWork, {
+      sessionId,
+    });
+    expect(work.commands).toHaveLength(2);
+    const a = work.commands.find((c) => c.toolUseId === "bash-a");
+    const b = work.commands.find((c) => c.toolUseId === "bash-b");
+    expect(a?.latestCheck?.resultText).toBe("a output, second look");
+    expect(b?.latestCheck?.resultText).toBe("b output");
+  });
+
+  // witness: drop the .slice(-10) from the commands return and this test goes
+  // red — the panel's history would grow without bound for the session's life.
+  it("keeps the newest 10 background launches", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "running",
+      finalize: Array.from({ length: 12 }, (_, i) => ({
+        seq: i,
+        turn: 0,
+        kind: "tool-call" as const,
+        content: {
+          toolName: "Bash",
+          toolUseId: `bash-${i}`,
+          input: { command: `job ${i}`, run_in_background: true },
+        },
+      })),
+    });
+    const work = await tom.query(api.claudeSessions.getOpenToolWork, {
+      sessionId,
+    });
+    expect(work.commands).toHaveLength(10);
+    expect(work.commands[0].command).toBe("job 2"); // the two oldest dropped
+    expect(work.commands[9].command).toBe("job 11");
+  });
+
+  // ONE name per fact: the client agent panel reads exactly these keys, so a
+  // stray alias (the old currentChild/launchedAt/endedAt) is a bug on the
+  // server side of a two-file contract, not a harmless extra.
+  it("returns the canonical field names and nothing beside them", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "running",
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "tool-call" as const,
+          content: {
+            toolName: "Task",
+            toolUseId: "task-live",
+            input: { subagent_type: "explorer", description: "map it" },
+          },
+        },
+        {
+          seq: 1,
+          turn: 0,
+          kind: "tool-call" as const,
+          content: { toolName: "Read", toolUseId: "kid", input: { file_path: "/a" } },
+          parentToolUseId: "task-live",
+        },
+        {
+          seq: 2,
+          turn: 0,
+          kind: "tool-call" as const,
+          content: {
+            toolName: "Task",
+            toolUseId: "task-done",
+            input: { subagent_type: "reviewer", description: "read it" },
+          },
+        },
+        {
+          seq: 3,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "task-done", content: "nothing to report" },
+        },
+        {
+          seq: 4,
+          turn: 0,
+          kind: "tool-call" as const,
+          content: {
+            toolName: "Bash",
+            toolUseId: "bash-x",
+            input: { command: "pnpm build", run_in_background: true },
+          },
+        },
+        {
+          seq: 5,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: {
+            toolUseId: "bash-x",
+            content: "Command running in background with ID: bash_7",
+          },
+        },
+        {
+          seq: 6,
+          turn: 0,
+          kind: "tool-call" as const,
+          content: {
+            toolName: "BashOutput",
+            toolUseId: "check-x",
+            input: { bash_id: "bash_7" },
+          },
+        },
+        {
+          seq: 7,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "check-x", content: "compiling" },
+        },
+      ],
+    });
+    const work = await tom.query(api.claudeSessions.getOpenToolWork, {
+      sessionId,
+    });
+    expect(Object.keys(work).sort()).toEqual(["agents", "commands", "finished"]);
+    expect(Object.keys(work.agents[0]).sort()).toEqual([
+      "current",
+      "description",
+      "running",
+      "startedAt",
+      "subagentType",
+      "toolUseId",
+    ]);
+    expect(Object.keys(work.agents[0].current!).sort()).toEqual([
+      "inputPreview",
+      "toolName",
+    ]);
+    expect(Object.keys(work.finished[0]).sort()).toEqual([
+      "durationMs",
+      "isError",
+      "resultPreview",
+      "startedAt",
+      "subagentType",
+      "toolUseId",
+    ]);
+    expect(Object.keys(work.commands[0]).sort()).toEqual([
+      "command",
+      "latestCheck",
+      "launchResultText",
+      "startedAt",
+      "toolUseId",
+    ]);
+    expect(Object.keys(work.commands[0].latestCheck!).sort()).toEqual([
+      "at",
+      "resultText",
+      "toolName",
+    ]);
   });
 
   // witness: remove the isLive guard at the top of getOpenToolWork and this
@@ -885,7 +1193,12 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].kind).toBe("user-turn");
     expect(inbound[0].text).toContain(todoId); // the prepare pen names the item
     expect(inbound[0].text).toContain(session._id); // the outcome pen names it
-    expect(inbound[0].text).toContain("/sessions/outcome");
+    expect(inbound[0].text).toContain("/dts/session-outcome");
+    // The env contract: an autonomous session's shell carries ONLY
+    // CONVEX_SITE_URL + DTS_WORKER_KEY, so the ingest key never reaches a
+    // model-reachable environment — the prompt must not so much as name it.
+    expect(inbound[0].text).toContain("DTS_WORKER_KEY");
+    expect(inbound[0].text).not.toContain("SESSIONS_WORKER_KEY");
 
     const events = await t.run(async (ctx) =>
       ctx.db.query("dtsEvents").collect(),
@@ -1121,6 +1434,137 @@ describe("autonomous session scheduler", () => {
     expect(
       (await autoSessions(t)).filter((s) => s.title !== "past auto run"),
     ).toHaveLength(0);
+  });
+
+  // The breaker's live path: the daemon wraps the SDK's own error text into
+  // outcomeSummary ("autonomous turn failed: …") on any abnormal autonomous
+  // turn end, so usage-limit wording arrives THERE, not only in endedReason.
+  it("stands down on a usage-limit ending reported as an outcome summary", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await eligibleTodo(tom, "plenty to do");
+    await insertPastAutoSession(t, {
+      status: "failed",
+      statusChangedAt: Date.now() - 60_000,
+      outcome: "errored",
+      outcomeSummary:
+        "autonomous turn failed: Claude AI usage limit reached|1756400000",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(
+      (await autoSessions(t)).filter((s) => s.title !== "past auto run"),
+    ).toHaveLength(0);
+  });
+
+  // witness: widen AUTO_USAGE_RE back to /rate.?limit|overloaded/ and this test
+  // goes red — transient API weather would stand the whole fleet down for the
+  // full three-hour window, which is what the narrowing was for.
+  it("does not stand down on transient API weather", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await eligibleTodo(tom, "plenty to do");
+    await insertPastAutoSession(t, {
+      status: "failed",
+      statusChangedAt: Date.now() - 60_000,
+      outcome: "errored",
+      endedReason: "rate limit exceeded, retrying",
+      outcomeSummary: "autonomous turn failed: API Error 529 overloaded_error",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(
+      (await autoSessions(t)).filter((s) => s.title !== "past auto run"),
+    ).toHaveLength(1);
+  });
+
+  // witness: restore the old pick-one-then-test order in the category-block
+  // lane (take the stalest, THEN run it through excluded()) and this test goes
+  // red — one excluded item at the head starves the whole category.
+  it("a category block walks past an excluded item to the stalest it may take", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const now = Date.now();
+    const stalest = await tom.mutation(api.dts.createTodo, {
+      statement: "the stalest chore",
+      category: "chores",
+    });
+    const next = await tom.mutation(api.dts.createTodo, {
+      statement: "the next chore",
+      category: "chores",
+    });
+    // Tom already spoke on the stalest one — the fleet must not race it.
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: stalest,
+      verdict: "revise",
+      sentence: "shorter",
+    });
+    // Staleness stated outright: the ruling above bumped the stalest row's
+    // updatedAt, and two creates in one millisecond would otherwise tie.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(stalest, { updatedAt: now - 2000 });
+      await ctx.db.patch(next, { updatedAt: now - 1000 });
+    });
+    await tom.mutation(api.dts.createBlock, {
+      start: now + 60 * 60 * 1000,
+      end: now + 2 * 60 * 60 * 1000,
+      category: "chores",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await autoSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(next);
+    // kind + blockCategory say the BLOCK lane admitted it: the whenever lane
+    // would have reached the same todo as a plain "focus-item".
+    expect(sessions[0].kind).toBe("block");
+    expect(sessions[0].blockCategory).toBe("chores");
+  });
+
+  // witness: sort the batch lane `rank(a) - rank(b)`, or invert
+  // IMPORTANCE_RANK in convex/dts.ts, and this test goes red — the tick's one
+  // admission would go to the least important batch.
+  it("walks the most important batch first", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const openStep = [
+      {
+        text: "gather the sources",
+        actor: "agent" as const,
+        status: "open" as const,
+      },
+    ];
+    const lowMember = await eligibleTodo(tom, "low member");
+    const highMember = await eligibleTodo(tom, "high member");
+    // The low batch is created FIRST, so a stable sort leaves it in front
+    // unless the importance comparator actually moves it.
+    const low = await eligibleTodo(tom, "low batch");
+    const high = await eligibleTodo(tom, "high batch");
+    await tom.mutation(api.dts.updateTodo, {
+      id: low,
+      members: [{ todoId: lowMember }],
+      plan: openStep,
+    });
+    await tom.mutation(api.dts.updateTodo, {
+      id: high,
+      members: [{ todoId: highMember }],
+      plan: openStep,
+    });
+    await tom.mutation(api.dts.setImportance, { id: low, level: "low" });
+    await tom.mutation(api.dts.setImportance, { id: high, level: "high" });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await autoSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(high);
   });
 
   // witness: move the batch lane below the dated lane and this test goes red.

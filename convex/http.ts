@@ -589,6 +589,51 @@ http.route({
   handler: dtsBatchContext,
 });
 
+// POST /dts/session-outcome — an autonomous session's outcome pen. Body:
+// { sessionId, outcome: "completed"|"errored", summary? }. It lives under the
+// DTS key ON PURPOSE: an autonomous session's environment carries ONLY
+// CONVEX_SITE_URL + DTS_WORKER_KEY — SESSIONS_WORKER_KEY never enters a
+// model-reachable shell (the auth-clobber lesson: the ingest key would let a
+// prompt-injected session forge poll/ingest traffic for every session), so
+// the one key the agent holds must be the one this pen accepts.
+const dtsSessionOutcome = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  if (b.outcome !== "completed" && b.outcome !== "errored") {
+    return jsonResponse(400, {
+      error: 'outcome must be "completed" or "errored"',
+    });
+  }
+  try {
+    await ctx.runMutation(internal.claudeSessions.internalRecordOutcome, {
+      id: b.sessionId,
+      outcome: b.outcome,
+      summary: typeof b.summary === "string" ? b.summary : "",
+    });
+    return jsonResponse(200, { ok: true });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/dts/session-outcome",
+  method: "POST",
+  handler: dtsSessionOutcome,
+});
+
 // ── Claude Code session-host endpoints ───────────────────────────────────────
 // The session-host daemon's channel (worker/session-host/). Its OWN key —
 // SESSIONS_WORKER_KEY shares nothing with the other keys (the auth-clobber
@@ -671,49 +716,6 @@ http.route({
   path: "/sessions/ingest",
   method: "POST",
   handler: sessionsIngest,
-});
-
-// POST /sessions/outcome — an autonomous session's outcome pen. Body:
-// { sessionId, outcome: "completed"|"errored", summary? }. Same
-// SESSIONS_WORKER_KEY as poll/ingest: the key is guaranteed present in the
-// session's environment by the daemon, so the agent curls this instead of
-// running convex CLI commands it does not have credentials for.
-const sessionsOutcome = httpAction(async (ctx, request) => {
-  const denied = sessionsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.sessionId !== "string" || b.sessionId === "") {
-    return jsonResponse(400, { error: "sessionId required" });
-  }
-  if (b.outcome !== "completed" && b.outcome !== "errored") {
-    return jsonResponse(400, {
-      error: 'outcome must be "completed" or "errored"',
-    });
-  }
-  try {
-    await ctx.runMutation(internal.claudeSessions.internalRecordOutcome, {
-      id: b.sessionId,
-      outcome: b.outcome,
-      summary: typeof b.summary === "string" ? b.summary : "",
-    });
-    return jsonResponse(200, { ok: true });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({
-  path: "/sessions/outcome",
-  method: "POST",
-  handler: sessionsOutcome,
 });
 
 export default http;

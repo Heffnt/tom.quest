@@ -5,7 +5,7 @@
 // Auto-scrolls only when the reader is already near the bottom; preserves
 // position when earlier pages load.
 
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -15,37 +15,42 @@ import MessageRow from "./message-row";
 
 const NEAR_BOTTOM_PX = 150;
 
-// A subagent's rows arrive interleaved in the one seq stream. Consecutive
-// rows carrying the same parentToolUseId fold into a single closed group so
-// the inner work never buries the main thread. Strict seq order is kept: a
-// parent interrupted by the main thread and resumed yields two groups, in
-// place, rather than one merged group out of order.
-type Group =
-  | { kind: "row"; message: Message }
-  | { kind: "agent"; parentToolUseId: string; messages: Message[] };
+// A subagent's rows arrive interleaved in the one seq stream — several
+// parallel agents take turns, row by row. EVERY row carrying a given
+// parentToolUseId goes into ONE group, anchored where that parent's first row
+// sits. So display deviates from strict seq order across groups: one agent is
+// one fold, and its later rows are pulled up to it. Within a group the rows
+// stay in seq order. The honest per-row alternative (only consecutive rows
+// fold) shattered parallel agents into dozens of one-row folds, which buries
+// the main thread far worse than the reordering does.
+type AgentGroup = {
+  kind: "agent";
+  parentToolUseId: string;
+  messages: Message[];
+};
+type Group = { kind: "row"; message: Message } | AgentGroup;
 
 function groupRows(messages: Message[]): Group[] {
   const groups: Group[] = [];
+  const byParent = new Map<string, AgentGroup>();
   for (const message of messages) {
     const parent = message.parentToolUseId;
     if (parent === undefined) {
       groups.push({ kind: "row", message });
       continue;
     }
-    const last = groups[groups.length - 1];
-    if (
-      last !== undefined &&
-      last.kind === "agent" &&
-      last.parentToolUseId === parent
-    ) {
-      last.messages.push(message);
+    const open = byParent.get(parent);
+    if (open !== undefined) {
+      open.messages.push(message);
       continue;
     }
-    groups.push({
+    const group: AgentGroup = {
       kind: "agent",
       parentToolUseId: parent,
       messages: [message],
-    });
+    };
+    byParent.set(parent, group);
+    groups.push(group);
   }
   return groups;
 }
@@ -87,10 +92,13 @@ const Transcript = memo(function Transcript({
     sessionId,
   });
 
-  // results are seq-descending (newest first); display ascending.
-  const messages = [...results].reverse();
-  const groups = groupRows(messages);
-  const subagentTypes = subagentTypeIndex(messages);
+  // results are seq-descending (newest first); display ascending. The stream
+  // buf re-renders this component several times a second, so the reverse and
+  // both passes over the loaded rows are keyed on the rows themselves and not
+  // redone until a page or a finalized message actually lands.
+  const messages = useMemo(() => [...results].reverse(), [results]);
+  const groups = useMemo(() => groupRows(messages), [messages]);
+  const subagentTypes = useMemo(() => subagentTypeIndex(messages), [messages]);
   const pendingTurns = (pendingInbound ?? []).filter(
     (row) => row.kind === "user-turn",
   );

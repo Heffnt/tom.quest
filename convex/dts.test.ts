@@ -1086,6 +1086,59 @@ describe("DTS batches and annotations", () => {
     expect(after.filter((e) => e.kind === "prepare-skipped-batch")).toHaveLength(1);
   });
 
+  // witness: restore the old blanket "Tom-touched row with a plan → skip" in
+  // internalPrepareTodo and this test goes red — the moment Tom wrote one step
+  // of his own, the batch's live autonomous session could no longer check its
+  // own steps off, which is the whole reason a batch gets a session.
+  it("a Tom-touched batch takes agent plan writes that keep Tom's steps", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await storeBatch(t, { plan: [step("gather the sources")] });
+    const batch = await findBatch(t);
+    const tomStep = {
+      text: "tom picks the venue",
+      actor: "tom" as const,
+      status: "open" as const,
+    };
+    // Tom adds a step of his own — which also freezes the row to the batcher.
+    await tom.mutation(api.dts.updateTodo, {
+      id: batch!._id,
+      plan: [step("gather the sources"), tomStep],
+    });
+    expect((await findBatch(t))?.tomTouchedAt).toBeDefined();
+
+    // The session agent checks its own step off and adds another. Tom's step
+    // is still there by text, so the whole plan lands.
+    await t.mutation(internal.dts.internalPrepareTodo, {
+      id: batch!._id,
+      plan: [
+        { ...step("gather the sources"), status: "done" as const, doneAt: 1 },
+        tomStep,
+        step("draft the summary"),
+      ],
+    });
+    let fresh = await findBatch(t);
+    expect(fresh?.plan).toHaveLength(3);
+    expect(fresh?.plan?.[0].status).toBe("done");
+
+    // A plan that drops Tom's step is refused WHOLE — never merged in part.
+    await t.mutation(internal.dts.internalPrepareTodo, {
+      id: batch!._id,
+      plan: [step("gather the sources")],
+    });
+    fresh = await findBatch(t);
+    expect(fresh?.plan).toHaveLength(3);
+    const events = await tom.query(api.dts.listRecentEvents, {});
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "plan-skipped" &&
+          (e.data as { reason?: string; step?: string } | undefined)?.step ===
+            "tom picks the venue",
+      ),
+    ).toBe(true);
+  });
+
   // witness: add updatedAt to setImportance's patch in convex/dts.ts — the
   // annotation would resurface ruled gates via ruledAt<updatedAt.
   it("setImportance writes Tom's level as an annotation (no updatedAt bump)", async () => {
@@ -1198,16 +1251,51 @@ describe("DTS batches and annotations", () => {
     let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.importance).toMatchObject({ level: "high", setBy: "tom" });
     expect(todo.plan).toHaveLength(1);
-    // Now a plan exists on a Tom-touched row — a re-prepare must not clobber it.
+    // Agent steps flow freely even on a Tom-touched row: the plan gate
+    // preserves TOM's steps, not the whole plan (the old blanket skip froze
+    // live batch sessions the moment Tom touched the row at all).
     await t.mutation(internal.dts.internalPrepareTodo, {
       id: captured._id,
       plan: [step, { ...step, text: "second draft" }],
     });
     [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(1);
+    expect(todo.plan).toHaveLength(2);
+    // Tom writes a step of his own; an incoming plan that DROPS its text is
+    // refused whole (Tom's asks never vanish by agent hand)…
+    const tomStep = {
+      text: "tom decides the venue",
+      actor: "tom" as const,
+      status: "open" as const,
+    };
+    await tom.mutation(api.dts.updateTodo, {
+      id: captured._id,
+      plan: [step, { ...step, text: "second draft" }, tomStep],
+    });
+    await t.mutation(internal.dts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [step], // tom's step vanished
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan).toHaveLength(3); // unchanged
+    // …while one that keeps his text lands: reordered, checked off, trimmed
+    // of agent steps.
+    await t.mutation(internal.dts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [tomStep, { ...step, status: "done" as const, doneAt: 1 }],
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan).toHaveLength(2);
+    expect(todo.plan?.[0].actor).toBe("tom");
     const events = await tom.query(api.dts.listRecentEvents, {});
     expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
-    expect(events.some((e) => e.kind === "plan-skipped")).toBe(true);
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "plan-skipped" &&
+          (e.data as { reason?: string } | undefined)?.reason ===
+            "tom-step dropped",
+      ),
+    ).toBe(true);
   });
 
   // witness: drop the one-live-batch collect from updateTodo's members branch

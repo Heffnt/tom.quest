@@ -24,13 +24,17 @@ cron, never by the browser) runs the same way as any session with three
 differences: the SDK query gets `maxTurns: 200`; a 90-minute wall-clock cap
 per turn interrupts and ends the session errored ("autonomous time cap");
 and after the mission's result the daemon ends the session itself
-(endedReason "autonomous run complete") — nobody would ever send stop. The
-agent records its own outcome via the key-authed pen
-`POST $CONVEX_SITE_URL/sessions/outcome` (X-Sessions-Key), and writes prep
+(endedReason "autonomous run complete") — nobody would ever send stop. An
+abnormal turn end (SDK error) or a daemon restart also ENDS an autonomous
+session, errored — the interactive park-idle recovery assumes Tom will send
+the next turn, and autonomous sessions have no Tom; the scheduler's backoff
+owns retries. The agent records its own outcome via the key-authed pen
+`POST $CONVEX_SITE_URL/dts/session-outcome` (X-DTS-Key), and writes prep
 via `POST $CONVEX_SITE_URL/dts/prepare-todo` (X-DTS-Key) — the daemon passes
-CONVEX_SITE_URL, SESSIONS_WORKER_KEY, and DTS_WORKER_KEY into every
-session's environment so those curls work. A daemon-stamped outcome (time
-cap) never overwrites an agent-recorded one — the server ignores it when an
+CONVEX_SITE_URL and DTS_WORKER_KEY (only — the sessions ingest key never
+enters a model-reachable shell) into every session's environment so those
+curls work. A daemon-stamped outcome (time cap, turn failure, restart)
+never overwrites an agent-recorded one — the server ignores it when an
 outcome already exists.
 - `session.mjs` — one live session: the SDK query and its streaming input
   queue, seq/turn assignment, the outbox + ~400ms flush machinery, subagent

@@ -71,6 +71,14 @@ export function shortAge(ms: number, now: number): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+// contentToText / previewLine below are the client-side twins of contentText
+// / previewText in convex/claudeSessions.ts. Deliberately named apart so a
+// reader is never unsure which side they are looking at: the server pair
+// flattens for stored previews (fixed PREVIEW_CHARS cap, no whitespace
+// collapsing), this pair renders for the screen (caller-chosen max, newlines
+// collapsed). Same job, different cut — keep the two comments in lockstep if
+// either behaviour moves.
+
 /**
  * Message content is v.any(). Render strings directly; anything else via
  * JSON.stringify (never String(x) — that gives "[object Object]").

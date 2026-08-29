@@ -12,10 +12,6 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { previewLine, shortAge } from "../lib";
 
-// The finished fold is a tail, not a history — the transcript itself keeps
-// every subagent that ever ran.
-const FINISHED_SHOWN = 10;
-
 /** Elapsed span: "12s", "4m", "2h" — durations, not ages (shortAge's job). */
 function durationText(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -47,14 +43,12 @@ export default function AgentPanel({
     return null;
   }
 
-  // Newest first, and only a tail — the query's ordering is not relied on.
-  const recentFinished = [...finished]
-    .sort((a, b) => b.startedAt - a.startedAt)
-    .slice(0, FINISHED_SHOWN);
-
+  // finished arrives already ordered and already capped to a tail by
+  // getOpenToolWork — rendered as given. The fold is a tail, not a history;
+  // the transcript itself keeps every subagent that ever ran.
   return (
     <div className="w-72 h-full overflow-y-auto border-l border-border px-2.5 py-3 space-y-3">
-      {(agents.length > 0 || recentFinished.length > 0) && (
+      {(agents.length > 0 || finished.length > 0) && (
         <div className="space-y-1.5">
           <div className="text-[10px] text-text-faint">agents</div>
           {agents.map((a) => (
@@ -81,13 +75,13 @@ export default function AgentPanel({
               )}
             </div>
           ))}
-          {recentFinished.length > 0 && (
+          {finished.length > 0 && (
             <details className="text-xs">
               <summary className="cursor-pointer list-none text-[10px] text-text-faint hover:text-text-muted">
-                finished ({recentFinished.length})
+                finished ({finished.length})
               </summary>
               <div className="mt-1 space-y-1">
-                {recentFinished.map((a) => (
+                {finished.map((a) => (
                   <div
                     key={a.toolUseId}
                     className="border border-border/60 rounded px-2 py-1.5 space-y-0.5"
@@ -117,7 +111,12 @@ export default function AgentPanel({
 
       {commands.length > 0 && (
         <div className="space-y-1.5">
-          <div className="text-[10px] text-text-faint">commands</div>
+          {/* Not "running": the panel knows the command was launched in the
+              background and knows what the last check printed. Whether it is
+              still alive is the evidence's business, not the header's. */}
+          <div className="text-[10px] text-text-faint">
+            background · latest evidence
+          </div>
           {commands.map((c) => (
             <div
               key={c.toolUseId}

@@ -169,6 +169,25 @@ function adoptSession(env, sessions, row) {
   });
   sessions.set(row.id, s);
   s.sdkSessionId = row.sdkSessionId;
+  if (row.mode === "autonomous") {
+    // Park-idle-await-next-turn is an interactive invariant — an autonomous
+    // session has no Tom to send that turn, so an adopted one would sit live
+    // forever (counted against the fleet cap, its todo excluded). End it
+    // errored; the scheduler's backoff owns the retry. The outcome rides the
+    // ingest and never overwrites one the agent already recorded.
+    s.finalizeRow("system", {
+      text: "session-host restarted mid-mission; autonomous session ended",
+    });
+    s.outcomeToSend = {
+      outcome: "errored",
+      outcomeSummary: "daemon restarted mid-mission",
+    };
+    s.setStatus("ended");
+    s.endedReasonToSend = "daemon restarted mid-mission";
+    s.requestFlush(true);
+    s.cleanupWorkdir();
+    return;
+  }
   s.status = "idle";
   s.statusToSend = "idle";
   s.finalizeRow("system", {
@@ -303,11 +322,7 @@ async function main() {
     const now = Date.now();
     for (const s of sessions.values()) {
       if (s.dead) continue; // a dead session's lastActivityAt must not pin 1s
-      if (
-        s.status === "running" ||
-        s.status === "awaiting-permission" ||
-        now - s.lastActivityAt < HOT_WINDOW_MS
-      ) {
+      if (s.status === "running" || now - s.lastActivityAt < HOT_WINDOW_MS) {
         delay = POLL_HOT_MS;
         break;
       }

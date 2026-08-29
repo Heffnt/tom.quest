@@ -71,7 +71,11 @@ const AUTO_TURN_CAP_MS = 90 * 60 * 1000;
 
 // Usage-limit signals in SDK errors / error results — the session-host
 // reacts by switching the active Max account (see maybeSwitchAccount).
-export const USAGE_LIMIT_RE = /usage.?limit|rate.?limit|overloaded/i;
+// Deliberately NARROW: "overloaded" (a transient API 529) must not burn the
+// 3h switch throttle on a signal that resolves by itself. LOCKSTEP: the
+// scheduler's circuit breaker in convex/claudeSessions.ts (AUTO_USAGE_RE)
+// carries the same pattern — change both together.
+export const USAGE_LIMIT_RE = /usage.?limit|limit reached/i;
 
 // ── Small utilities ──────────────────────────────────────────────────────────
 
@@ -161,7 +165,8 @@ export class Session {
     this.turn = nextSeq;
 
     // Local mirror of the daemon-reported status ("starting" | "idle" |
-    // "running" | "awaiting-permission" | "ended" | "failed").
+    // "running" | "ended" | "failed"; "awaiting-permission" is historical —
+    // the unified auto gate no longer produces it).
     this.status = "starting";
     this.sdkSessionId = undefined;
     this.workdir = undefined;
@@ -185,17 +190,19 @@ export class Session {
 
     // Outbox: everything awaiting ingest. Arrays are drained by flush and
     // re-prepended on failure (order matters for finalize: seq-ascending).
+    // permissionUpdates carries only ACKS of historical decided rows — the
+    // unified auto gate produces no new permission requests.
     this.outbox = {
       finalize: [],
       inboundUpdates: [],
-      permissionRequests: [],
       permissionUpdates: [],
     };
     this.statusToSend = undefined;
-    this.outcomeToSend = undefined; // { outcome, outcomeSummary } — time-cap stamp
+    this.outcomeToSend = undefined; // { outcome, outcomeSummary } — daemon-stamped ending
     this.endedReasonToSend = undefined;
     this.sdkSessionIdToSend = undefined;
     this.activeUserTurnText = ""; // for the SDK-echo dedupe (user text blocks)
+    this.lastTurnErrorText = undefined; // last SDK error — autonomous outcomeSummary
     this.cwdToSend = undefined;
     this.lastSdkEventAt = undefined;
     this.lastSdkEventAtDirty = false;
@@ -207,10 +214,9 @@ export class Session {
     this.flushImmediateAgain = false;
     this.ingestAttempt = 0;
 
-    // Command / permission bookkeeping.
+    // Command bookkeeping.
     this.processedInbound = new Set(); // inbound _ids already acted on locally
     this.activeUserTurnId = null; // delivered user-turn awaiting its result
-    this.permissionWaiters = new Map(); // requestId -> { resolve, input }
     this.serverInbound = []; // latest pending inbound rows from server
     // Synchronous in-flight guard for #deliverUserTurn (review fix: the
     // status gate in processCommands stays "idle" across the awaited
@@ -268,7 +274,6 @@ export class Session {
       !this.flushInFlight &&
       this.outbox.finalize.length === 0 &&
       this.outbox.inboundUpdates.length === 0 &&
-      this.outbox.permissionRequests.length === 0 &&
       this.outbox.permissionUpdates.length === 0 &&
       this.statusToSend === undefined &&
       this.outcomeToSend === undefined &&
@@ -378,10 +383,15 @@ export class Session {
         // regardless of how this daemon was started (systemd EnvironmentFile
         // vs manual run), so they are passed explicitly, on top of the full
         // process env (the SDK child needs PATH, HOME, CLAUDE_CONFIG_DIR…).
+        // ONLY the DTS worker key enters a session's shell — its write
+        // surface (capture, prep, briefs, batches, ruling-applied,
+        // session-outcome) is the same one the cron jobs' agentic runs
+        // already expose to a model. SESSIONS_WORKER_KEY must never be here:
+        // it authorizes transcript ingest, and a model-reachable ingest key
+        // would let a confused session corrupt any transcript.
         env: {
           ...process.env,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
-          SESSIONS_WORKER_KEY: this.env.SESSIONS_WORKER_KEY,
           ...(this.env.DTS_WORKER_KEY
             ? { DTS_WORKER_KEY: this.env.DTS_WORKER_KEY }
             : {}),
@@ -425,6 +435,9 @@ export class Session {
         const msg = truncated(String(err?.message ?? err), ERROR_TEXT_LIMIT).value;
         this.finalizeRow("error", { message: msg });
         log(`session ${this.id}: SDK error:`, msg);
+        // Kept for the autonomous outcomeSummary — usage-limit text reaching
+        // the outcome is what makes the scheduler's circuit breaker live.
+        this.lastTurnErrorText = msg;
         if (USAGE_LIMIT_RE.test(msg)) {
           this.onUsageSignal?.(msg.slice(0, 200), this);
         }
@@ -450,29 +463,32 @@ export class Session {
       this.bufText = "";
     }
     this.bufDirty = true; // clear the live tail server-side
-    // Settle any parked permission waiters (review fix: interrupt/stop/kill
-    // all supersede parked permissions but the iterator-error path did not —
-    // the canUseTool promise leaked and the server row stayed pending,
-    // pinning a dead Allow/Deny card in the UI).
-    for (const [requestId, waiter] of this.permissionWaiters) {
-      this.outbox.permissionUpdates.push({
-        requestId,
-        status: "expired",
-        decidedBy: "turn-died",
-        applied: true,
-      });
-      waiter.resolve({
-        behavior: "deny",
-        message: "the turn ended before a decision",
-      });
-    }
-    this.permissionWaiters.clear();
     if (this.activeUserTurnId) {
       this.outbox.inboundUpdates.push({
         id: this.activeUserTurnId,
         status: wasError ? "failed" : "interrupted",
       });
       this.activeUserTurnId = null;
+    }
+    if (this.mode === "autonomous" && wasError) {
+      // An autonomous session has no Tom to send the next turn — the
+      // interactive "park idle, resumable" recovery would leave it live
+      // forever: counted against the fleet cap, its todo excluded, workdir
+      // never cleaned. End it errored; the scheduler's backoff owns retry.
+      // The SDK error text rides the outcome so the usage circuit breaker
+      // can read it. (A Tom-sent interrupt — wasError false — parks idle
+      // like any session: interrupting IS taking the session over.)
+      this.queue?.close();
+      this.stopRequested = true;
+      this.outcomeToSend = {
+        outcome: "errored",
+        outcomeSummary: `autonomous turn failed: ${(this.lastTurnErrorText ?? "no error text").slice(0, 160)}`,
+      };
+      this.setStatus("ended");
+      this.endedReasonToSend = "autonomous turn failed";
+      this.requestFlush(true);
+      this.cleanupWorkdir();
+      return;
     }
     this.setStatus("idle");
     this.requestFlush(true);
@@ -616,11 +632,16 @@ export class Session {
               b.type === "text" &&
               typeof b.text === "string" &&
               b.text.trim() !== "" &&
-              b.text !== this.activeUserTurnText
+              !(
+                this.activeUserTurnText !== "" &&
+                b.text.includes(this.activeUserTurnText)
+              )
             ) {
-              // The equality guard skips the SDK's echo of the turn we just
-              // delivered — everything else here (task notifications, system
-              // nudges) is real transcript content, recorded as system rows.
+              // The containment guard skips the SDK's echo of the turn we
+              // just delivered (echoes may arrive wrapped in added context,
+              // so equality alone re-records the whole prompt) — everything
+              // else here (task notifications, system nudges) is real
+              // transcript content, recorded as system rows.
               const t = truncated(b.text);
               this.finalizeRow(
                 "system",
@@ -669,10 +690,11 @@ export class Session {
         if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
           // An autonomous session is ONE mission turn — nobody would ever
           // send stop, so the daemon ends it itself. The agent's own outcome
-          // (recorded via the /sessions/outcome pen) is already server-side;
-          // a session that recorded none reads as non-completed to the
-          // scheduler's backoff.
-          void this.#endAutonomous("autonomous run complete");
+          // (recorded via the /dts/session-outcome pen) is already
+          // server-side; a session that recorded none reads as non-completed
+          // to the scheduler's backoff. Inbound rows still pending at this
+          // point are settled server-side when the terminal status lands.
+          this.#endAutonomous("autonomous run complete");
           break;
         }
         if (!this.stopRequested) this.setStatus("idle");
@@ -717,66 +739,24 @@ export class Session {
     }
     return { behavior: "allow", updatedInput: input };
   }
-  // NOTE: the permission-card plumbing below (permissionWaiters,
-  // applyDecisions, supersedePermissions, the claudePermissions protocol)
-  // stays intact — this gate no longer produces pending cards, but decided
-  // rows can still arrive from history and must keep settling cleanly.
+  // NOTE: applyDecisions below survives ack-only — this gate produces no
+  // pending cards, but historical decided rows can still arrive and must be
+  // acked so the server stops piggybacking them.
 
-  // Apply decided permission rows (from a poll row or an ingest piggyback).
+  // Ack decided permission rows (from a poll row or an ingest piggyback).
+  // The unified auto gate parks nothing, so no waiter can exist — a decided
+  // row is always historical (pre-unification, or a dead prompting turn);
+  // ack `applied` so the server stops piggybacking it.
   applyDecisions(rows = []) {
     for (const row of rows ?? []) {
       if (row.status !== "allowed" && row.status !== "denied") continue;
       if (row.appliedAt !== undefined && row.appliedAt !== null) continue;
-      const waiter = this.permissionWaiters.get(row.requestId);
-      if (waiter) {
-        this.permissionWaiters.delete(row.requestId);
-        if (row.status === "allowed") {
-          waiter.resolve({ behavior: "allow", updatedInput: waiter.input });
-        } else {
-          waiter.resolve({
-            behavior: "deny",
-            message: row.note || "denied by Tom",
-          });
-        }
-        this.outbox.permissionUpdates.push({
-          requestId: row.requestId,
-          applied: true,
-        });
-        if (
-          this.status === "awaiting-permission" &&
-          this.permissionWaiters.size === 0
-        ) {
-          this.setStatus("running");
-        }
-        this.requestFlush(true);
-      } else {
-        // Decided row with no local waiter — the prompting turn died (daemon
-        // restart). Ack `applied` anyway so the server stops piggybacking a
-        // decision nobody can consume.
-        this.outbox.permissionUpdates.push({
-          requestId: row.requestId,
-          applied: true,
-        });
-        this.requestFlush(false);
-      }
-    }
-  }
-
-  // Settle every locally-parked permission as superseded (interrupt/stop).
-  supersedePermissions(decidedBy) {
-    for (const [requestId, waiter] of this.permissionWaiters) {
       this.outbox.permissionUpdates.push({
-        requestId,
-        status: "superseded",
-        decidedBy,
+        requestId: row.requestId,
         applied: true,
       });
-      waiter.resolve({
-        behavior: "deny",
-        message: `superseded by ${decidedBy}`,
-      });
+      this.requestFlush(false);
     }
-    this.permissionWaiters.clear();
   }
 
   // ── inbound commands ───────────────────────────────────────────────────────
@@ -908,7 +888,9 @@ export class Session {
     }
   }
 
-  // The 90-minute wall-clock cap fired mid-turn: interrupt and end errored.
+  // The 90-minute wall-clock cap fired mid-turn: interrupt the live turn,
+  // then end errored. stopRequested is set BEFORE the interrupt so the
+  // iterator's throw reads as expected in #readLoop (no #turnDied re-entry).
   // The outcome rides the ingest payload; the server applies it only when
   // the agent recorded none (agent-recorded outcome wins).
   async #autoTimeCap() {
@@ -916,20 +898,7 @@ export class Session {
     this.finalizeRow("error", {
       message: "autonomous time cap — turn interrupted after 90 minutes",
     });
-    await this.#endAutonomous("autonomous time cap", {
-      outcome: "errored",
-      outcomeSummary: "autonomous time cap: interrupted after 90 minutes",
-    });
-  }
-
-  // End an autonomous session from the daemon side (auto-end after the
-  // mission's result, or the time cap). Mirrors #doStop minus the inbound
-  // row bookkeeping (no browser command exists to acknowledge).
-  async #endAutonomous(endedReason, outcome) {
-    if (this.dead || this.status === "ended" || this.status === "failed") return;
-    this.#clearAutoTimer();
     this.stopRequested = true;
-    this.supersedePermissions("stop");
     if (this.q && this.status === "running") {
       this.interruptRequested = true;
       try {
@@ -938,6 +907,21 @@ export class Session {
         // expected-adjacent; the iterator throw is handled in #readLoop
       }
     }
+    this.#endAutonomous("autonomous time cap", {
+      outcome: "errored",
+      outcomeSummary: "autonomous time cap: interrupted after 90 minutes",
+    });
+  }
+
+  // End an autonomous session from the daemon side: the auto-end after the
+  // mission's result (no outcome arg — the agent's own /dts/session-outcome
+  // record is already server-side) or the time cap (outcome errored). Never
+  // interrupts — the result path's query has already finished its turn, and
+  // the time cap interrupts before calling here.
+  #endAutonomous(endedReason, outcome) {
+    if (this.dead || this.status === "ended" || this.status === "failed") return;
+    this.#clearAutoTimer();
+    this.stopRequested = true;
     this.queue?.close();
     if (this.bufText !== "") {
       this.finalizeRow("assistant-text", { text: this.bufText });
@@ -960,9 +944,8 @@ export class Session {
 
   async #doInterrupt(row) {
     this.outbox.inboundUpdates.push({ id: row._id, status: "done" });
-    if (this.q && (this.status === "running" || this.status === "awaiting-permission")) {
+    if (this.q && this.status === "running") {
       this.interruptRequested = true;
-      this.supersedePermissions("interrupt");
       try {
         await this.q.interrupt();
         // The iterator now throws; #readLoop's finally runs #turnDied →
@@ -980,9 +963,8 @@ export class Session {
     this.#clearAutoTimer();
     this.stopRequested = true;
     this.outbox.inboundUpdates.push({ id: row._id, status: "done" });
-    this.supersedePermissions("stop");
     if (this.q) {
-      if (this.status === "running" || this.status === "awaiting-permission") {
+      if (this.status === "running") {
         this.interruptRequested = true;
         try {
           await this.q.interrupt();
@@ -1029,10 +1011,6 @@ export class Session {
       // AbortController.abort() doesn't throw, but stay paranoid
     }
     this.queue?.close();
-    for (const [, waiter] of this.permissionWaiters) {
-      waiter.resolve({ behavior: "deny", message: "session closed" });
-    }
-    this.permissionWaiters.clear();
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
@@ -1055,7 +1033,6 @@ export class Session {
     this.outbox = {
       finalize: [],
       inboundUpdates: [],
-      permissionRequests: [],
       permissionUpdates: [],
     };
     this.bufDirty = false;
@@ -1219,12 +1196,6 @@ export class Session {
       this.outbox.inboundUpdates = [];
       any = true;
     }
-    if (this.outbox.permissionRequests.length > 0) {
-      snap.permissionRequests = payload.permissionRequests =
-        this.outbox.permissionRequests;
-      this.outbox.permissionRequests = [];
-      any = true;
-    }
     if (this.outbox.permissionUpdates.length > 0) {
       snap.permissionUpdates = payload.permissionUpdates =
         this.outbox.permissionUpdates;
@@ -1266,11 +1237,6 @@ export class Session {
     if (snap.inboundUpdates) {
       this.outbox.inboundUpdates = snap.inboundUpdates.concat(
         this.outbox.inboundUpdates,
-      );
-    }
-    if (snap.permissionRequests) {
-      this.outbox.permissionRequests = snap.permissionRequests.concat(
-        this.outbox.permissionRequests,
       );
     }
     if (snap.permissionUpdates) {
