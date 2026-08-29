@@ -223,6 +223,15 @@ export default defineSchema({
     memberKey: v.string(),
     name: v.string(),
     color: v.string(),
+    // DANGER — do not drop this column casually. Nothing reads or writes it any
+    // more: the member-icon upload path was removed because no client ever
+    // called it, and avatars are the initial-on-colour fallback. It stays
+    // because deleting a column is validated against every existing row on
+    // push, and this repo has ONE Convex deployment: if any perfumeMembers row
+    // in prod still carries an iconStorageId (set by an earlier version or by
+    // hand in the dashboard), the push is rejected and that failure blocks the
+    // whole site's deploy, not just /perfume. Read the prod table first, then
+    // drop it. An optional column no code touches costs nothing until then.
     iconStorageId: v.optional(v.id("_storage")),
     registeredAt: v.number(),
     lastSeenAt: v.number(),

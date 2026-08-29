@@ -4,7 +4,6 @@
 // nickname-by-anyone, deleteBrew (owner/admin), and idempotent + faithful
 // migration (§9). Mirrors the harness/utilities of convex/perfume.test.ts.
 
-import { Blob as NodeBlob } from "node:buffer";
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
@@ -1188,33 +1187,27 @@ describe("importInventory", () => {
   });
 });
 
-// ── member icon URLs (client can never resolve a storageId) ──────────────────
+// ── member fields (no icon: the avatar is the initial on the member colour) ──
 
-describe("listMembers iconUrl", () => {
-  it("resolves an uploaded icon to a servable url; iconless members carry null", async () => {
-    const { t, alice, bob, aliceKey } = await setup();
+describe("listMembers shape", () => {
+  it("returns name, colour and freshness only — no icon field to render from", async () => {
+    const { alice, aliceKey } = await setup();
     await alice.mutation(api.brews.registerMember, {});
-    await bob.mutation(api.brews.registerMember, {});
-    // Store a blob and attach it to Alice as her icon (bypassing the upload-url
-    // round trip the client uses; setMemberIcon persists the storageId). Use
-    // node:buffer's Blob — the jsdom test environment's Blob polyfill lacks the
-    // arrayBuffer() method convex-test's storage.store hashes the bytes with.
-    const storageId = await t.run(async (ctx) =>
-      ctx.storage.store(
-        new NodeBlob(["icon-bytes"], { type: "image/png" }) as unknown as Blob,
-      ),
-    );
-    await alice.mutation(api.brews.setMemberIcon, { storageId });
 
     const members = await alice.query(api.brews.listMembers, {});
     const a = members.find((m) => m.memberKey === aliceKey)!;
-    const b = members.find((m) => m.memberKey !== aliceKey)!;
-    expect(a.iconStorageId).not.toBeNull();
-    expect(typeof a.iconUrl).toBe("string"); // resolved, not a bare id
-    expect(a.iconUrl).not.toBeNull();
-    // Bob never uploaded — both the id and the url are null.
-    expect(b.iconStorageId).toBeNull();
-    expect(b.iconUrl).toBeNull();
+    expect(Object.keys(a).sort()).toEqual([
+      "color",
+      "fresh",
+      "lastSeenAt",
+      "memberKey",
+      "name",
+      "registeredAt",
+    ]);
+    // Guards the deletion: an icon field coming back would mean the upload path
+    // grew a reader again, and Avatar (top-bar.tsx) has no image case to use it.
+    expect("iconUrl" in a).toBe(false);
+    expect("iconStorageId" in a).toBe(false);
   });
 });
 

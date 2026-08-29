@@ -74,8 +74,6 @@ export type MemberInfo = {
   memberKey: string;
   name: string;
   color: string;
-  iconStorageId: string | null; // uploaded icon, if any
-  iconUrl: string | null; // server-resolved servable URL for iconStorageId
   registeredAt: number;
   lastSeenAt: number;
   fresh: boolean; // lastSeen within the activity window (server-computed)
