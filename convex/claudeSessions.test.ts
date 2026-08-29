@@ -1181,7 +1181,9 @@ describe("autonomous session scheduler", () => {
     expect(sessions).toHaveLength(1);
     const session = sessions[0];
     expect(session.mode).toBe("autonomous");
-    expect(session.repo).toBe("none"); // v1: empty scratch, never repo edits
+    // "draft the reading list" names no repo and holds no code members, so
+    // pickMissionRepo lands on the empty-scratch posture.
+    expect(session.repo).toBe("none");
     expect(session.kind).toBe("focus-item");
     expect(session.status).toBe("requested");
     expect(session.todoId).toBe(todoId);
@@ -1596,5 +1598,125 @@ describe("autonomous session scheduler", () => {
     });
     expect(inbound[0].text).toContain("BATCH");
     expect(inbound[0].text).toContain("batch member");
+  });
+
+  // ── Which repo the mission's workspace holds (pickMissionRepo) ─────────────
+  // Ratified doctrine (Tom, 2026-08-29): autonomous missions IMPLEMENT rather
+  // than stop at a Tom decision, so a mission whose work lives in a repo gets
+  // a real checkout. These three pin the whole rule: code members vote, an
+  // unfamiliar winner is refused, and words decide when nothing votes.
+
+  // witness: drop the tally in pickMissionRepo (convex/claudeSessions.ts) and
+  // this test goes red — a code batch would open in an empty scratch dir with
+  // nothing to edit.
+  it("a batch's code members vote for the mission's repo", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    await t.mutation(internal.dts.internalStoreBatches, {
+      batches: [
+        {
+          statement: "the triggering rework",
+          brief: "three mirror rows, one seam",
+          // Two votes for ComplexMultiTrigger, one for WikiTom: most
+          // frequent wins, and the loser's repo is not what gets cloned.
+          members: [
+            { repo: "ComplexMultiTrigger", externalId: "cmt-001" },
+            { repo: "WikiTom", externalId: "wt-009" },
+            { repo: "ComplexMultiTrigger", externalId: "cmt-002" },
+          ],
+          plan: [
+            { text: "gather the sources", actor: "agent", status: "open" },
+          ],
+        },
+      ],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await autoSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].repo).toBe("ComplexMultiTrigger");
+
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: sessions[0]._id,
+    });
+    // The repo variant of the workspace block: a named checkout, the session's
+    // own branch, and the one gate the doctrine keeps for Tom.
+    expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
+    expect(inbound[0].text).toContain(`session/${sessions[0]._id}`);
+    expect(inbound[0].text).toContain("NEVER merge");
+    expect(inbound[0].text).not.toContain("EMPTY scratch directory");
+    // The removed plan gate left no wording behind in either variant.
+    expect(inbound[0].text).not.toContain("planApplied");
+  });
+
+  // witness: drop the AUTO_REPOS membership check from pickMissionRepo — the
+  // daemon's REPO_GITHUB map throws on a repo it cannot clone, so the session
+  // would die on its first turn instead of doing groundwork.
+  it("an unclonable repo among the code members falls back to empty scratch", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    await t.mutation(internal.dts.internalStoreBatches, {
+      batches: [
+        {
+          statement: "someone else's tracker",
+          brief: "mirrored from a repo the daemon cannot clone",
+          members: [
+            { repo: "NotAKnownRepo", externalId: "x-1" },
+            { repo: "NotAKnownRepo", externalId: "x-2" },
+          ],
+          plan: [{ text: "read the rows", actor: "agent", status: "open" }],
+        },
+      ],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await autoSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].repo).toBe("none");
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: sessions[0]._id,
+    });
+    expect(inbound[0].text).toContain("EMPTY scratch directory");
+    expect(inbound[0].text).not.toContain("NEVER merge");
+  });
+
+  // witness: drop the statement/brief substring fallback from pickMissionRepo
+  // and the named item below goes to "none" — a life-shaped todo that is
+  // plainly about a repo would have nothing to edit.
+  it("with nothing voting, the item's own words pick the repo or nothing does", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    // A life-only batch: life members carry todoId and vote for nothing.
+    const memberId = await eligibleTodo(tom, "book the room");
+    const batchId = await eligibleTodo(tom, "the offsite");
+    await tom.mutation(api.dts.updateTodo, {
+      id: batchId,
+      members: [{ todoId: memberId }],
+      plan: [{ text: "gather the sources", actor: "agent", status: "open" }],
+    });
+    const namedId = await eligibleTodo(tom, "fix the tom.quest deploy check");
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await autoSessions(t);
+    expect(sessions).toHaveLength(2);
+    const batchSession = sessions.find((s) => s.todoId === batchId);
+    const namedSession = sessions.find((s) => s.todoId === namedId);
+    expect(batchSession?.repo).toBe("none");
+    expect(namedSession?.repo).toBe("tom.quest");
+
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: batchSession!._id,
+    });
+    expect(inbound[0].text).toContain("EMPTY scratch directory");
+    expect(inbound[0].text).not.toContain("planApplied");
+    // Both workspace variants carry the implement-anyway doctrine: a Tom
+    // decision in the plan never parks the session.
+    expect(inbound[0].text).toContain("does NOT block you");
   });
 });

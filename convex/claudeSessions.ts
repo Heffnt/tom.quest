@@ -1071,6 +1071,45 @@ function promptFact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
 }
 
+// The repos a session can be checked out into. The AUTHORITY is the daemon's
+// REPO_GITHUB map in worker/session-host/session.mjs — it is what actually
+// clones, and it throws on a repo it does not know. Anything outside this
+// list becomes "none" (an empty scratch workspace) rather than a session that
+// dies on its first turn.
+const AUTO_REPOS = ["tom.quest", "ComplexMultiTrigger", "WikiTom"] as const;
+
+// Which repo should this mission's workspace hold?
+//
+// A batch votes with its code members: each {repo, externalId} member is one
+// tally mark for its repo and the most frequent wins (a tie keeps the first
+// one seen, since the Map preserves insertion order and the comparison below
+// is strict >). A batch with no code members — and any plain life todo — gets
+// "none" UNLESS the item's own words name a known repo verbatim. That last
+// check is a plain substring test on purpose: cheap and honest, and the worst
+// a wrong hit costs is one scratch checkout nobody touches.
+function pickMissionRepo(todo: Doc<"dtsTodos">): string {
+  const tally = new Map<string, number>();
+  for (const m of todo.members ?? []) {
+    // A code member is the {repo, externalId} pair; a life member carries
+    // todoId instead and votes for nothing.
+    if (m.repo === undefined || m.externalId === undefined) continue;
+    tally.set(m.repo, (tally.get(m.repo) ?? 0) + 1);
+  }
+  let winner: string | undefined;
+  let winnerCount = 0;
+  for (const [repo, count] of tally) {
+    if (count > winnerCount) {
+      winner = repo;
+      winnerCount = count;
+    }
+  }
+  if (winner !== undefined) {
+    return (AUTO_REPOS as readonly string[]).includes(winner) ? winner : "none";
+  }
+  const text = `${todo.statement} ${todo.brief ?? ""}`;
+  return AUTO_REPOS.find((repo) => text.includes(repo)) ?? "none";
+}
+
 // Opening prompt for an AUTONOMOUS session (house voice: the ground-up
 // contract of app/lib/dts-session-prompt.ts, adapted for a session no one is
 // watching live). The sessionId rides in so the outcome pen can name this
@@ -1085,6 +1124,7 @@ function promptFact(label: string, value: string | undefined): string | null {
 function buildAutoMissionPrompt(
   todo: Doc<"dtsTodos">,
   sessionId: Id<"claudeSessions">,
+  repo: string,
   members?: AutoMemberContext[],
 ): string {
   const lines: (string | null)[] = [
@@ -1126,7 +1166,12 @@ function buildAutoMissionPrompt(
   }
   lines.push(
     "",
-    `The goal: do every open plan step with actor "agent" that needs no repository and no Tom — research, draft, gather, and write what you produce into the item via the prepare pen below. Advance readiness to "ready-for-tom" ONLY when the remaining work genuinely needs Tom. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
+    `The goal: do every open plan step with actor "agent" — research, draft, gather, and write what you produce into the item via the prepare pen below. Advance readiness to "ready-for-tom" ONLY when the remaining work genuinely needs Tom. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
+    "",
+    // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
+    // implementation — a session that halts at a decision leaves him nothing
+    // concrete to rule on.
+    `Tom decisions: a plan step that names a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in that step's text or its evidence; the decision then surfaces where the work persists — the pull request, or the batch's ruling. Reserve actor-"tom" steps for what ONLY Tom can do: rulings, merges, and real-world actions.`,
     "",
     // The env contract: the daemon injects ONLY these two variables into an
     // autonomous session's shell — SESSIONS_WORKER_KEY (the ingest key) never
@@ -1139,7 +1184,6 @@ function buildAutoMissionPrompt(
     `curl -s -X POST "$CONVEX_SITE_URL/dts/prepare-todo" -H "X-DTS-Key: $DTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "importanceLevel": "medium", "importanceRationale": "...", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
     "```",
     'Every field except "id" is optional — send only what you produced. On a batch only "plan" lands (the server skips the other fields by design).',
-    'CHECK THE RESPONSE: it returns {"planApplied": true|false, "planSkipReason"?}. planApplied false means the server refused the plan (on a Tom-touched row every existing actor-"tom" step\'s text must appear VERBATIM in your plan) — resend keeping those step texts word-for-word, and put your proposed rewording of a tom-step into a NEW agent step ("propose to Tom: …") instead. Never report a plan as landed without planApplied true.',
     "",
     "2. Record this session's outcome when the mission is done:",
     "```",
@@ -1147,7 +1191,18 @@ function buildAutoMissionPrompt(
     "```",
     '"completed" means the mission produced its artifact; otherwise record "errored" with a summary saying what blocked you.',
     "",
-    "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
+    // Two workspace variants. "none" is the groundwork posture (unchanged);
+    // a repo-equipped mission implements the code itself and stops exactly at
+    // the merge — the one gate the doctrine keeps for Tom.
+    ...(repo === "none"
+      ? [
+          "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
+        ]
+      : [
+          `The workspace: your working directory is a fresh checkout of ${repo} on branch session/${sessionId}. Implement the agent steps INCLUDING the code ones. Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary.`,
+          "",
+          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
+        ]),
     "",
     "Ending: record the outcome via the /dts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
@@ -1444,6 +1499,9 @@ export const internalAutoSchedule = internalMutation({
       picked.add(c.todo._id);
       counts[c.lane] = (counts[c.lane] ?? 0) + 1;
 
+      // Missions are repo-equipped when the work has a repo (pickMissionRepo);
+      // "none" keeps the empty-scratch groundwork posture.
+      const repo = pickMissionRepo(c.todo);
       const sessionId = await ctx.db.insert("claudeSessions", {
         title: "auto: " + c.todo.statement.slice(0, 60),
         // Category-block picks work a category ("block"); everything else
@@ -1451,7 +1509,7 @@ export const internalAutoSchedule = internalMutation({
         kind: c.blockCategory !== undefined ? "block" : "focus-item",
         blockCategory: c.blockCategory,
         todoId: c.todo._id,
-        repo: "none", // v1: groundwork only, empty scratch — never repo edits
+        repo,
         mode: "autonomous",
         status: "requested",
         statusChangedAt: now,
@@ -1490,7 +1548,7 @@ export const internalAutoSchedule = internalMutation({
       await ctx.db.insert("claudeInbound", {
         sessionId,
         kind: "user-turn",
-        text: buildAutoMissionPrompt(c.todo, sessionId, members),
+        text: buildAutoMissionPrompt(c.todo, sessionId, repo, members),
         status: "pending",
         createdAt: now,
       });
