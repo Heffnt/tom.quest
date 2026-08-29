@@ -30,7 +30,10 @@ export const DEFAULT_TOM_PARAMS: TomSymbolParams = {
   dotSize: 60,
 };
 
-export const DEFAULT_TOM_OPTIONS: TomSymbolOptions = {
+// Module-private: the only reader is TomSymbol's own `options` default below.
+// (DEFAULT_TOM_PARAMS is exported because symbol-game.tsx derives its geometry
+// from it; nothing outside this file has ever needed the options.)
+const DEFAULT_TOM_OPTIONS: TomSymbolOptions = {
   dotShape:     "circle",
   tailCut:      "horizontal",
   showBaseline: "off",
