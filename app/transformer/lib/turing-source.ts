@@ -2,8 +2,16 @@ import type { ModelConfig } from "./model";
 import type { DataSource, GenerationHandle, TensorStats, Trace, WeightWindow, WeightWindowReq } from "./trace";
 
 // Live backend: turing-api/transformer_server.py running next to a real model
-// on a Turing GPU node, reachable through a cloudflared quick tunnel. The
-// server ships dense per-step data (attention patterns, MLP top-k/histogram)
+// on a Turing GPU compute node. Compute nodes are not publicly reachable, so
+// the browser never talks to that process directly. The trace server writes its
+// cluster LAN address into ~/.tviz-server.json on the shared NFS home, and
+// turing-api's /transformer-trace/{path} route (turing-api/main.py) reads that
+// registration and forwards to it. `baseUrl` here is therefore that proxy
+// prefix — https://turing.tom.quest/transformer-trace by default, see
+// app/transformer/state.ts — where turing.tom.quest is the one named cloudflared
+// tunnel in front of turing-api, not a per-job quick tunnel.
+//
+// The server ships dense per-step data (attention patterns, MLP top-k/histogram)
 // inside the generate response, so only the weight windows are fetched lazily.
 
 type ServerConfig = {

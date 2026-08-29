@@ -8,15 +8,26 @@ DataSource seam the frontend consumes (app/transformer/lib/turing-source.ts):
     GET  /weights/{tensor}          strided window of a weight matrix
     GET  /weights/{tensor}/stats    mean / std / absMax for the color scale
 
-Launch on a compute node (see the allocate-form / salloc), then expose with a
-cloudflared quick tunnel:
+Launch on a compute node (see the allocate-form / salloc). This process gets no
+tunnel of its own. On startup it writes its cluster LAN address to
+~/.tviz-server.json on the shared NFS home (see _register below), and the
+/transformer-trace/{path} route in turing-api/main.py reads that registration
+and forwards browser traffic to it. Public reachability comes from the single
+named cloudflared tunnel already in front of turing-api at turing.tom.quest, so
+the frontend's default base URL is https://turing.tom.quest/transformer-trace
+(app/transformer/state.ts).
 
     python turing-api/transformer_server.py --model meta-llama/Llama-3.2-1B-Instruct \
-        --port 8899 --token SECRET
-    cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8899
+        --host 0.0.0.0 --port 8899 --token SECRET
 
-Auth is a single shared token in the x-trace-token header (CORS is open — the
-browser talks to the tunnel directly).
+--host 0.0.0.0 is required. _register always advertises the LAN address, and
+turing-api runs on a different machine (the login node), so it has to be able
+to connect over the cluster LAN. Leaving the 127.0.0.1 default registers an
+address the proxy cannot reach and every request comes back 503.
+
+Auth is a single shared token in the x-trace-token header, which the proxy
+forwards through unchanged. CORS is open here too, but on the proxied path the
+headers the browser actually sees are turing-api's.
 """
 
 from __future__ import annotations
