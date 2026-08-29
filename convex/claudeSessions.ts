@@ -1139,6 +1139,7 @@ function buildAutoMissionPrompt(
     `curl -s -X POST "$CONVEX_SITE_URL/dts/prepare-todo" -H "X-DTS-Key: $DTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "importanceLevel": "medium", "importanceRationale": "...", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
     "```",
     'Every field except "id" is optional — send only what you produced. On a batch only "plan" lands (the server skips the other fields by design).',
+    'CHECK THE RESPONSE: it returns {"planApplied": true|false, "planSkipReason"?}. planApplied false means the server refused the plan (on a Tom-touched row every existing actor-"tom" step\'s text must appear VERBATIM in your plan) — resend keeping those step texts word-for-word, and put your proposed rewording of a tom-step into a NEW agent step ("propose to Tom: …") instead. Never report a plan as landed without planApplied true.',
     "",
     "2. Record this session's outcome when the mission is done:",
     "```",

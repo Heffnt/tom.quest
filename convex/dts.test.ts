@@ -1298,6 +1298,41 @@ describe("DTS batches and annotations", () => {
     ).toBe(true);
   });
 
+  // witness: the tomTouchedAt === undefined condition on the plan gate in
+  // internalPrepareTodo (convex/dts.ts) — the first fleet run showed the
+  // unconditional check refusing legitimate refinements of agent-authored
+  // tom-steps on untouched batcher rows.
+  it("untouched rows take plan rewrites freely; the pen reports planApplied", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.dts.internalCapture, {
+      statement: "captured",
+      source: "slack-capture",
+    });
+    const [captured] = await t.run(async (ctx) =>
+      ctx.db.query("dtsTodos").collect(),
+    );
+    const tomStep = {
+      text: "decide the venue",
+      actor: "tom" as const,
+      status: "open" as const,
+    };
+    // Agent-authored plan with a tom-step, via the pen (no Tom door touched).
+    const first = await t.mutation(internal.dts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [tomStep],
+    });
+    expect(first.planApplied).toBe(true);
+    // Rewording the tom-step on the UNTOUCHED row lands — the plan is wholly
+    // agent-authored until Tom has a hand in the row.
+    const reworded = await t.mutation(internal.dts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [{ ...tomStep, text: "decide the venue — three-way now" }],
+    });
+    expect(reworded.planApplied).toBe(true);
+    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan?.[0].text).toBe("decide the venue — three-way now");
+  });
+
   // witness: drop the one-live-batch collect from updateTodo's members branch
   // in convex/dts.ts
   it("updateTodo members enforce one live batch per subject and stamp the touch", async () => {

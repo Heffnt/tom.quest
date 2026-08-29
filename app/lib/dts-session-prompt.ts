@@ -121,7 +121,7 @@ export function buildTodoSessionPrompt(
       "Walk-through contract:",
       '- Work the plan IN ORDER. Steps with actor "agent" you do yourself.',
       '- At each OPEN step with actor "tom", STOP and put it to Tom as one concrete question — do not run ahead of him.',
-      `- Record plan progress the moment a step closes: \`npx convex run dts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff.`,
+      `- Record plan progress the moment a step closes: \`npx convex run dts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff. The result carries planApplied; false means a tom-step's text was dropped (on a Tom-touched row every actor-"tom" step must keep its exact text) — resend with those texts verbatim; rewording a tom-step is itself a question for Tom.`,
       "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any member) via dtsRulings:internalRecordRuling; status/date changes via dts:internalTriage.",
       "- Apply Tom's spoken en-masse property changes (importance, category) via dts:internalBulkUpdate.",
       "- All of these are pens for Tom's spoken word — use them only while Tom is present in the session.",

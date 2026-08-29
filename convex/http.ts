@@ -239,7 +239,7 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
   }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
-    await ctx.runMutation(internal.dts.internalPrepareTodo, {
+    const result = await ctx.runMutation(internal.dts.internalPrepareTodo, {
       id: b.id,
       brief: str(b.brief),
       entryAction: str(b.entryAction),
@@ -252,7 +252,10 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
       importanceRationale: str(b.importanceRationale),
       plan: b.plan as never,
     });
-    return jsonResponse(200, { ok: true });
+    // planApplied/planSkipReason ride back verbatim: a writing agent must
+    // SEE a refused plan (the first fleet run had agents report refinements
+    // that were silently skipped by the tom-step guard).
+    return jsonResponse(200, { ok: true, ...result });
   } catch (e) {
     return jsonResponse(400, {
       error: e instanceof Error ? e.message : String(e),
