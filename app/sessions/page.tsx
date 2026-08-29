@@ -4,7 +4,7 @@ import SessionsClient from "./sessions-client";
 export const metadata: Metadata = {
   title: "Sessions | tom.Quest",
   description:
-    "DTS Sessions — Claude Code sessions on the worker box: transcripts, permission requests, controls.",
+    "TTS Sessions — Claude Code sessions on the worker box: transcripts, permission requests, controls.",
 };
 
 export default function SessionsPage() {

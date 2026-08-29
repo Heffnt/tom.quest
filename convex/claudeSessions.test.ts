@@ -411,10 +411,10 @@ describe("claude sessions", () => {
   it("createSession with a todoId marks the live unapplied session ruling applied", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, {
+    const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "talk this through",
     });
-    await tom.mutation(api.dtsRulings.recordRuling, {
+    await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
       verdict: "session",
     });
@@ -425,7 +425,7 @@ describe("claude sessions", () => {
       todoId,
       initialPrompt: "let's talk",
     });
-    const [ruling] = await tom.query(api.dtsRulings.listRulings, {});
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling.appliedAt).toBeDefined();
     expect(ruling.applyResult).toBe(`session ${sessionId}`);
   });
@@ -435,13 +435,13 @@ describe("claude sessions", () => {
   it("createSession does not consume a non-session or already-applied ruling", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, {
+    const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "just do it",
     });
     // revise stays pending until the preparer consumes the sentence — the
     // live non-session ruling createSession must NOT touch. (approve on a
     // life todo applies instantly at record time, so it can't play this role.)
-    await tom.mutation(api.dtsRulings.recordRuling, {
+    await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
       verdict: "revise",
       sentence: "shorter",
@@ -453,11 +453,11 @@ describe("claude sessions", () => {
       todoId,
       initialPrompt: "poke at it",
     });
-    const [ruling] = await tom.query(api.dtsRulings.listRulings, {});
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling.appliedAt).toBeUndefined(); // revise is the preparer's to apply
 
     // An already-applied session ruling is not re-stamped by a second session.
-    const sessionRulingId = await tom.mutation(api.dtsRulings.recordRuling, {
+    const sessionRulingId = await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
       verdict: "session",
     });
@@ -475,7 +475,7 @@ describe("claude sessions", () => {
       todoId,
       initialPrompt: "talk again",
     });
-    const rulings = await tom.query(api.dtsRulings.listRulings, {});
+    const rulings = await tom.query(api.ttsRulings.listRulings, {});
     const sessionRuling = rulings.find((r) => r._id === sessionRulingId);
     expect(sessionRuling?.applyResult).toBe(`session ${secondSession}`);
     expect(firstSession).not.toBe(secondSession);
@@ -590,7 +590,7 @@ describe("claude sessions", () => {
     );
   });
 
-  // The outcome pen POST /dts/session-outcome reaches exactly this mutation
+  // The outcome pen POST /tts/session-outcome reaches exactly this mutation
   // (the route is thin: auth + body shape). Route-level auth is out of this
   // harness's scope; the semantics it depends on are here.
   it("the outcome pen names its session by id and trims the summary", async () => {
@@ -619,7 +619,7 @@ describe("claude sessions", () => {
   it("poll stores the box load and names each live session's posture", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, {
+    const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "groundwork subject",
     });
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
@@ -1165,7 +1165,7 @@ describe("autonomous session scheduler", () => {
     tom: Awaited<ReturnType<typeof withTom>>,
     statement = "draft the reading list",
   ) {
-    return await tom.mutation(api.dts.createTodo, { statement });
+    return await tom.mutation(api.tts.createTodo, { statement });
   }
 
   it("admits one autonomous session with its mission and its event", async () => {
@@ -1193,11 +1193,11 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].kind).toBe("user-turn");
     expect(inbound[0].text).toContain(todoId); // the prepare pen names the item
     expect(inbound[0].text).toContain(session._id); // the outcome pen names it
-    expect(inbound[0].text).toContain("/dts/session-outcome");
+    expect(inbound[0].text).toContain("/tts/session-outcome");
     // The env contract: an autonomous session's shell carries ONLY
-    // CONVEX_SITE_URL + DTS_WORKER_KEY, so the ingest key never reaches a
+    // CONVEX_SITE_URL + TTS_WORKER_KEY, so the ingest key never reaches a
     // model-reachable environment — the prompt must not so much as name it.
-    expect(inbound[0].text).toContain("DTS_WORKER_KEY");
+    expect(inbound[0].text).toContain("TTS_WORKER_KEY");
     expect(inbound[0].text).not.toContain("SESSIONS_WORKER_KEY");
 
     const events = await t.run(async (ctx) =>
@@ -1298,20 +1298,20 @@ describe("autonomous session scheduler", () => {
     await heartbeat(t);
 
     // Code todos live in the mirror; their work happens in the repo.
-    await tom.mutation(api.dts.createTodo, {
+    await tom.mutation(api.tts.createTodo, {
       statement: "fix the flaky test",
       category: "code",
     });
     // A member of a non-terminal batch is the batch's to advance.
     const memberId = await eligibleTodo(tom, "member item");
     const batchId = await eligibleTodo(tom, "the batch");
-    await tom.mutation(api.dts.updateTodo, {
+    await tom.mutation(api.tts.updateTodo, {
       id: batchId,
       members: [{ todoId: memberId }],
     });
     // A live unapplied ruling means Tom already spoke — do not race it.
     const ruledId = await eligibleTodo(tom, "revise this one");
-    await tom.mutation(api.dtsRulings.recordRuling, {
+    await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: ruledId,
       verdict: "revise",
       sentence: "shorter",
@@ -1338,7 +1338,7 @@ describe("autonomous session scheduler", () => {
     await enableAuto(t);
     await heartbeat(t);
     const todoId = await eligibleTodo(tom, "needs a conversation");
-    await tom.mutation(api.dtsRulings.recordRuling, {
+    await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
       verdict: "session",
     });
@@ -1491,16 +1491,16 @@ describe("autonomous session scheduler", () => {
     await enableAuto(t, { maxNewPerTick: 1 });
     await heartbeat(t);
     const now = Date.now();
-    const stalest = await tom.mutation(api.dts.createTodo, {
+    const stalest = await tom.mutation(api.tts.createTodo, {
       statement: "the stalest chore",
       category: "chores",
     });
-    const next = await tom.mutation(api.dts.createTodo, {
+    const next = await tom.mutation(api.tts.createTodo, {
       statement: "the next chore",
       category: "chores",
     });
     // Tom already spoke on the stalest one — the fleet must not race it.
-    await tom.mutation(api.dtsRulings.recordRuling, {
+    await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: stalest,
       verdict: "revise",
       sentence: "shorter",
@@ -1511,7 +1511,7 @@ describe("autonomous session scheduler", () => {
       await ctx.db.patch(stalest, { updatedAt: now - 2000 });
       await ctx.db.patch(next, { updatedAt: now - 1000 });
     });
-    await tom.mutation(api.dts.createBlock, {
+    await tom.mutation(api.tts.createBlock, {
       start: now + 60 * 60 * 1000,
       end: now + 2 * 60 * 60 * 1000,
       category: "chores",
@@ -1528,7 +1528,7 @@ describe("autonomous session scheduler", () => {
   });
 
   // witness: sort the batch lane `rank(a) - rank(b)`, or invert
-  // IMPORTANCE_RANK in convex/dts.ts, and this test goes red — the tick's one
+  // IMPORTANCE_RANK in convex/tts.ts, and this test goes red — the tick's one
   // admission would go to the least important batch.
   it("walks the most important batch first", async () => {
     const t = convexTest({ schema, modules });
@@ -1548,18 +1548,18 @@ describe("autonomous session scheduler", () => {
     // unless the importance comparator actually moves it.
     const low = await eligibleTodo(tom, "low batch");
     const high = await eligibleTodo(tom, "high batch");
-    await tom.mutation(api.dts.updateTodo, {
+    await tom.mutation(api.tts.updateTodo, {
       id: low,
       members: [{ todoId: lowMember }],
       plan: openStep,
     });
-    await tom.mutation(api.dts.updateTodo, {
+    await tom.mutation(api.tts.updateTodo, {
       id: high,
       members: [{ todoId: highMember }],
       plan: openStep,
     });
-    await tom.mutation(api.dts.setImportance, { id: low, level: "low" });
-    await tom.mutation(api.dts.setImportance, { id: high, level: "high" });
+    await tom.mutation(api.tts.setImportance, { id: low, level: "low" });
+    await tom.mutation(api.tts.setImportance, { id: high, level: "high" });
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const sessions = await autoSessions(t);
@@ -1574,13 +1574,13 @@ describe("autonomous session scheduler", () => {
     await enableAuto(t, { maxNewPerTick: 1 });
     await heartbeat(t);
 
-    await tom.mutation(api.dts.createTodo, {
+    await tom.mutation(api.tts.createTodo, {
       statement: "dated and unprepared",
       dueAt: Date.now() + 60 * 60 * 1000,
     });
     const memberId = await eligibleTodo(tom, "batch member");
     const batchId = await eligibleTodo(tom, "the batch");
-    await tom.mutation(api.dts.updateTodo, {
+    await tom.mutation(api.tts.updateTodo, {
       id: batchId,
       members: [{ todoId: memberId }],
       plan: [{ text: "gather the sources", actor: "agent", status: "open" }],

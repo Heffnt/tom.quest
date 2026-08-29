@@ -29,21 +29,21 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
 
 | Statute | Home |
 |---|---|
-| Todos (choice: decided intent) | `vqc/todos.yaml` — DTS vocabulary (readiness/status axes) is this repo's ratified re-expression of D28's tiers; closure = status + resolution in the same commit as the work; ids never reused |
+| Todos (choice: decided intent) | `vqc/todos.yaml` — TTS vocabulary (readiness/status axes) is this repo's ratified re-expression of D28's tiers; closure = status + resolution in the same commit as the work; ids never reused |
 | Ledger (knowledge: discovered gaps) | `vqc/ledger.yaml` — open entries only; graduation deletes the entry in the work's commit |
 | Steering (corrections) | `vqc/steering.yaml` |
 | File classification (C9) | `vqc/classification.yaml` (enforcement: ledger `classification-unenforced`) |
-| Cite resolution set | constitution article ids (`A*`, `C1`–`C9`, `D1`–`D28`), `dts-spec:<section>` (sections of WikiTom `dts/spec.md`), and open ledger entry ids — enforced by `vqc/todos.test.ts` |
+| Cite resolution set | constitution article ids (`A*`, `C1`–`C9`, `D1`–`D28`), `tts-spec:<section>` (sections of WikiTom `tts/spec.md`), and open ledger entry ids — enforced by `vqc/todos.test.ts` |
 | Registries (C7) | `app/components/page-routes.ts` (pages); Convex schema (`convex/schema.ts`) |
 | Contract fences | `scripts/check-auth-boundary.mjs`, `scripts/check-heavy-libs.mjs` |
 | Layer DAG (D5) | none yet — ledger `no-layer-dag` |
 | Rulings log | below, this file, append-only |
-| Scratch roots (D26) | `dts/` (declared in classification.yaml) |
+| Scratch roots (D26) | `tts/` (declared in classification.yaml) |
 | Witness faults (D8) | none yet — ledger `no-witness-fault-harness`; interim: `witness:` comments in guard tests |
 | Worker box definition | `worker/setup.sh` — the box owns no durable state; a rebuild from this script IS the box |
 | Secrets flow | `secrets/convex.env` → `npx convex env set` (Vercel half broken: ledger `secrets-sync-vercel-drift`); per-family keys, never shared |
-| Session-surface design | code comments only — ledger `session-surface-design-homeless` (target: a dts/spec.md section) |
-| DTS spec prose (vocabulary, contracts) | WikiTom `dts/spec.md` — agent-facing renderings (e.g. app/lib/dts-session-prompt.ts preamble) summarize it, never redefine it |
+| Session-surface design | code comments only — ledger `session-surface-design-homeless` (target: a tts/spec.md section) |
+| TTS spec prose (vocabulary, contracts) | WikiTom `tts/spec.md` — agent-facing renderings (e.g. app/lib/tts-session-prompt.ts preamble) summarize it, never redefine it |
 
 ## Cadences
 
@@ -61,9 +61,9 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
   date: 2026-08-27
   question: How do D28's R/C/H tiers map into this repo?
   ruling: Split into readiness (unprepared/preparing/ready-for-tom) × status
-    (active/waiting/archived/done) per the DTS spec; this file is the
+    (active/waiting/archived/done) per the TTS spec; this file is the
     reference implementation CMT will migrate to.
-  cites: [D28, dts-spec:5]
+  cites: [D28, tts-spec:5]
 - id: closure-by-status
   date: 2026-08-27
   question: Closed-todos banner (CMT style) or status field?
@@ -71,10 +71,10 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
     same commit as the work; ids never reused. Faithful to D28's archive
     requirement without the banner mechanics.
   cites: [D28]
-- id: dts-shared-time-edge
+- id: tts-shared-time-edge
   date: 2026-08-27
-  question: May app/ and worker/ import from convex/dtsShared.ts?
-  ruling: Yes — it is the one home for DTS time/link math (C1 outranks a
+  question: May app/ and worker/ import from convex/ttsShared.ts?
+  ruling: Yes — it is the one home for TTS time/link math (C1 outranks a
     layering aesthetic); recorded pending a real layer DAG.
   cites: [C1, D5]
 - id: digest-env-missing-is-quiet
@@ -83,8 +83,8 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
     fail-loud (C3)?
   ruling: Sanctioned — the sends-even-when-empty design makes the ABSENT
     digest itself the loud failure signal; throwing inside a cron adds no
-    louder channel. Scope: convex/dtsSync.ts sendDigest only.
-  cites: [C3, dts-spec:7]
+    louder channel. Scope: convex/ttsSync.ts sendDigest only.
+  cites: [C3, tts-spec:7]
 - id: agent-created-todos
   date: 2026-08-29
   question: Must todo creation wait for Tom's ruling (todo = Tom's choice)?
@@ -93,7 +93,7 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
     records decided intent (not a stray fact — those stay in the ledger),
     but the deciding agent may be the one who found it. Tom's gates sit at
     plans (ready-for-tom) and persistence, not at creation.
-  cites: [D28, dts-spec:5]
+  cites: [D28, tts-spec:5]
 - id: session-permission-posture
   date: 2026-08-29
   question: Keep the indefinite-park permission model for the session surface?
@@ -101,11 +101,23 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
     classifier rules each gated tool call instead of interrupting Tom. Any
     residual permission card must be small and unobtrusive, never crowd the
     transcript, span the full window width, and approve on Enter.
-  cites: [dts-spec:15]
+  cites: [tts-spec:15]
 - id: session-surface-rendering
   date: 2026-08-29
   question: What does Tom want rendered in a session transcript?
   ruling: All natural language from the agent — assistant text AND thinking —
     rendered in full by default. Tool calls visible but compact by default
     (one line, expand on demand). The page uses the full window width.
-  cites: [dts-spec:12]
+  cites: [tts-spec:12]
+- id: tts-rename
+  date: 2026-08-29
+  question: Is the DTS -> TTS (Toms Todo System) rename real, and how far
+    does it reach?
+  ruling: Real ("fix it everywhere"). Renamed 1:1 across code, routes
+    (/dts redirects to /tts), env vars (TTS_WORKER_KEY, SLACK_TTS_CHANNEL_ID),
+    the WikiTom spec directory (tts/spec.md; dts/spec.md left as a pointer),
+    vqc registry ids, and the cite scheme (tts-spec:N). The ONE exception:
+    the eight populated dts* Convex table names are frozen historical
+    identifiers — prod schema is additive-only and a data migration buys no
+    behavior. Documented at the table block in convex/schema.ts.
+  cites: [C1, C6]

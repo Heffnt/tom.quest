@@ -1,4 +1,4 @@
-# DTS session-host
+# TTS session-host
 
 The daemon that runs real Claude Code sessions on the worker box and streams
 them into tom.quest. Convex is the message bus: the browser writes commands
@@ -6,7 +6,7 @@ them into tom.quest. Convex is the message bus: the browser writes commands
 decisions; this daemon polls `/sessions/poll`, runs the actual sessions via
 `@anthropic-ai/claude-agent-sdk`, and persists every event back through
 `/sessions/ingest` (both key-authed with `X-Sessions-Key` =
-`SESSIONS_WORKER_KEY` from `/etc/dts/worker.env`).
+`SESSIONS_WORKER_KEY` from `/etc/tts/worker.env`).
 
 Files:
 
@@ -15,7 +15,7 @@ Files:
   admission signal), claim new sessions, adopt survivors after a restart,
   reap terminal ones, adaptive cadence (1s hot / 5s warm / 30s idle), and the
   usage-limit account auto-switch (a usage/rate-limit signal flips the
-  dts-account symlink to the other Max account, at most once per 3h).
+  tts-account symlink to the other Max account, at most once per 3h).
 
 ## Autonomous sessions
 
@@ -29,9 +29,9 @@ abnormal turn end (SDK error) or a daemon restart also ENDS an autonomous
 session, errored — the interactive park-idle recovery assumes Tom will send
 the next turn, and autonomous sessions have no Tom; the scheduler's backoff
 owns retries. The agent records its own outcome via the key-authed pen
-`POST $CONVEX_SITE_URL/dts/session-outcome` (X-DTS-Key), and writes prep
-via `POST $CONVEX_SITE_URL/dts/prepare-todo` (X-DTS-Key) — the daemon passes
-CONVEX_SITE_URL and DTS_WORKER_KEY (only — the sessions ingest key never
+`POST $CONVEX_SITE_URL/tts/session-outcome` (X-TTS-Key), and writes prep
+via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key) — the daemon passes
+CONVEX_SITE_URL and TTS_WORKER_KEY (only — the sessions ingest key never
 enters a model-reachable shell) into every session's environment so those
 curls work. A daemon-stamped outcome (time cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an
@@ -52,9 +52,9 @@ outcome already exists.
 The box owns no durable state; everything this daemon creates is harmless to
 lose:
 
-- `/opt/dts/session-host/` (incl. `node_modules`) — a copy of this directory;
+- `/opt/tts/session-host/` (incl. `node_modules`) — a copy of this directory;
   rebuilt by re-running `worker/setup.sh`. Cost of losing: nothing.
-- `/var/cache/dts/sessions/<id>/…` — per-session workdirs (empty scratch for
+- `/var/cache/tts/sessions/<id>/…` — per-session workdirs (empty scratch for
   repo "none", a fresh shallow clone on branch `session/<id>` otherwise).
   Deleted when a session ends. Cost of losing one mid-session: un-pushed /
   un-committed files in that workspace — the daemon rebuilds the dir on the
@@ -73,12 +73,12 @@ on turn boundaries / tool calls / permissions / errors).
 
 The worker box's standing rule is ZERO npm dependencies (a copy is a deploy;
 no lockfile, no install step, no supply-chain surface — see
-`worker/jobs/dts-lib.mjs`). This package is the single sanctioned exception:
+`worker/jobs/tts-lib.mjs`). This package is the single sanctioned exception:
 `@anthropic-ai/claude-agent-sdk` (pinned to 0.3.250, the version whose
 behavior was validated on this box), because interactive sessions need the
 SDK's streaming input, `interrupt()`, `canUseTool`, and resume-by-id — none
 of which the `claude -p` CLI wrapping used by the cron jobs can provide.
-`setup.sh` runs `npm install --omit=dev` in `/opt/dts/session-host/` as part
+`setup.sh` runs `npm install --omit=dev` in `/opt/tts/session-host/` as part
 of the install; that is the whole ceremony.
 
 ## Running
@@ -86,23 +86,23 @@ of the install; that is the whole ceremony.
 Normally systemd runs it (installed by `worker/setup.sh`):
 
 ```
-systemctl status dts-session-host
-journalctl -u dts-session-host -f      # watch the logs (stdout -> journald)
+systemctl status tts-session-host
+journalctl -u tts-session-host -f      # watch the logs (stdout -> journald)
 ```
 
 Manually (for debugging — stop the unit first, two daemons would double-claim
 sessions):
 
 ```
-systemctl stop dts-session-host
-node /opt/dts/session-host/session-host.mjs
-systemctl start dts-session-host
+systemctl stop tts-session-host
+node /opt/tts/session-host/session-host.mjs
+systemctl start tts-session-host
 ```
 
-It reads `/etc/dts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
+It reads `/etc/tts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
 `GH_TOKEN` optional but needed for private-repo clones) and expects
 `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active` (baked into the systemd
-unit) so `dts-account use` switches which Max account sessions run under.
+unit) so `tts-account use` switches which Max account sessions run under.
 
 ## Restart semantics
 

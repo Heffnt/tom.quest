@@ -14,7 +14,7 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import {
   buildTodoSessionPrompt,
   type BatchMemberContext,
-} from "@/app/lib/dts-session-prompt";
+} from "@/app/lib/tts-session-prompt";
 
 // Resolve a batch's members to live statements + statuses against the todos
 // and mirror the caller already subscribes to — a member whose mirror row is

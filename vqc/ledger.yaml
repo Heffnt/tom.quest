@@ -11,7 +11,7 @@
 #   id              stable kebab-case id, never reused
 #   kind            descent | alignment | pending-fence | steering-graduation | scratch-graduation
 #   created         YYYY-MM-DD
-#   cites           constitution article ids (A*/C1-C9/D1-D28) or dts-spec:<section>
+#   cites           constitution article ids (A*/C1-C9/D1-D28) or tts-spec:<section>
 #   statement       the discovered fact, one short paragraph
 #   graduates_when  the checkable condition under which the entry is deleted
 #
@@ -22,8 +22,8 @@
   created: 2026-08-27
   cites: [D8]
   statement: >-
-    New DTS guard tests (vqc/todos.test.ts, vqc/registries.test.ts,
-    convex/dts.test.ts) have no witness-fault registry or kill-check runner:
+    New TTS guard tests (vqc/todos.test.ts, vqc/registries.test.ts,
+    convex/tts.test.ts) have no witness-fault registry or kill-check runner:
     nothing verifies that each detector actually goes red under the planted
     bug it exists to catch. Interim discipline: new guard tests carry a
     "witness:" comment naming the one-line edit that makes them fail.
@@ -58,27 +58,27 @@
     moved under a declared design stratum with status front-matter and debt
     ids.
 
-- id: dts-collect-pagination
+- id: tts-collect-pagination
   kind: descent
   created: 2026-08-27
-  cites: [C8, dts-spec:5]
+  cites: [C8, tts-spec:5]
   statement: >-
-    convex/dts.ts performs unbounded .collect() on dtsTodos in queries, the
+    convex/tts.ts performs unbounded .collect() on dtsTodos in queries, the
     fallback-prep mutation (which has Convex transaction read limits), and
     the worker state endpoint. Fine at single-user scale for years, but the
     tables are never pruned by design.
   graduates_when: >-
-    No DTS mutation or HTTP-served query performs an unbounded .collect()
+    No TTS mutation or HTTP-served query performs an unbounded .collect()
     over a table that grows without bound.
 
-- id: dts-digest-single-renderer
+- id: tts-digest-single-renderer
   kind: descent
   created: 2026-08-27
-  cites: [C1, dts-spec:7]
+  cites: [C1, tts-spec:7]
   statement: >-
     The digest format is specified twice — as English rules in the worker's
     prompt (worker/jobs/prepare-queue.mjs) and as code in
-    composeFallbackDigest (convex/dtsSync.ts) — and the two can drift
+    composeFallbackDigest (convex/ttsSync.ts) — and the two can drift
     silently. Weigh a single renderer over structured model output against
     losing the model's freedom to word the digest (the reworded-reminders
     rule cuts both ways).
@@ -96,7 +96,7 @@
     check-heavy-libs) but no machine-readable layer DAG: import edges between
     app/, convex/, and worker/ are undeclared, so an agent cannot verify a
     new edge is sanctioned. (One deliberate edge today: app and worker import
-    convex/dtsShared.ts as the one home for DTS time math.)
+    convex/ttsShared.ts as the one home for TTS time math.)
   graduates_when: >-
     A declared allowed-edges statute exists with a commit-cadence check, and
     each edge carries a rationale.
@@ -116,17 +116,17 @@
 - id: session-surface-design-homeless
   kind: alignment
   created: 2026-08-29
-  cites: [C1, C6, dts-spec:15]
+  cites: [C1, C6, tts-spec:15]
   statement: >-
     The ratified session-surface design (2026-08-28: Convex-is-the-stream,
     two-tier transcript, key-authed channel, heartbeat-derived staleness)
     is documented only in code comments (convex/claudeSessions.ts,
-    convex/schema.ts, worker/session-host/README.md) — WikiTom dts/spec.md
+    convex/schema.ts, worker/session-host/README.md) — WikiTom tts/spec.md
     never mentions the surface, so the design has no canonical prose home
     and Tom's 2026-08-29 rendering/permission rulings amend a document
     that does not exist.
   graduates_when: >-
-    dts/spec.md carries a session-surface section stating the design and
+    tts/spec.md carries a session-surface section stating the design and
     its vocabulary, and the code comments point at it instead of being it.
 
 - id: session-constants-two-homes
@@ -143,7 +143,7 @@
     cannot import Convex-runtime modules, which is why the mirrors exist.
   graduates_when: >-
     Each constant has one home the others import or generate from (e.g.
-    convex/dtsShared.ts, which both app and worker already import), or a
+    convex/ttsShared.ts, which both app and worker already import), or a
     byte-equality check ties the mirrors.
 
 - id: secrets-sync-vercel-drift
@@ -153,7 +153,7 @@
   statement: >-
     pnpm secrets:sync fails on the Vercel half — Vercel CLI 59.x requires
     --value/--yes instead of stdin for non-interactive env add — so the
-    sanctioned secrets path is broken and the DTS Convex vars were pushed
+    sanctioned secrets path is broken and the TTS Convex vars were pushed
     directly with npx convex env set. (Also surfaced as a task chip.)
   graduates_when: >-
     pnpm secrets:sync completes end-to-end against the current Vercel CLI.

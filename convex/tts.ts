@@ -9,20 +9,20 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import {
-  DTS_PREP_NY_HOUR,
-  dtsDayBoundsUtc,
-  dtsDayKey,
-  dtsPrepDay,
+  TTS_PREP_NY_HOUR,
+  ttsDayBoundsUtc,
+  ttsDayKey,
+  ttsPrepDay,
   nyLocalHour,
-} from "./dtsShared";
+} from "./ttsShared";
 
-// DTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
-// and the code-todo mirror. Spec: WikiTom dts/spec.md. Everything Tom-facing is
+// TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
+// and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
 // Tom-gated (forge.ts pattern); everything the worker box or crons touch goes
-// through internal functions (http.ts routes are key-authed with DTS_WORKER_KEY).
+// through internal functions (http.ts routes are key-authed with TTS_WORKER_KEY).
 
 async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
-  return await requireTom(ctx, "DTS");
+  return await requireTom(ctx, "TTS");
 }
 
 // One queue size for every producer: the fallback rules here and (mirrored in
@@ -58,11 +58,11 @@ export const IMPORTANCE_LEVEL = v.union(
   v.literal("high"),
 );
 // The ONE server-side encoding of importance order: higher = more important,
-// unset ranks 0 (below "low"). Lockstep with app/dts/lib.ts IMPORTANCE_RANK —
+// unset ranks 0 (below "low"). Lockstep with app/tts/lib.ts IMPORTANCE_RANK —
 // the client bundle cannot import this server module, so it carries a copy of
 // the same values; change both together.
 export const IMPORTANCE_RANK = { low: 1, medium: 2, high: 3 } as const;
-// A batch member addresses exactly one subject, in the dtsRulings shape
+// A batch member addresses exactly one subject, in the ttsRulings shape
 // (life by todoId, code by repo+externalId) — enforced in validateBatchMembers.
 const MEMBER = v.object({
   todoId: v.optional(v.id("dtsTodos")),
@@ -79,7 +79,7 @@ const PLAN_STEP = v.object({
 
 type Member = { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string };
 
-// Same identity convention as dtsRulings.subjectKey — one vocabulary for
+// Same identity convention as ttsRulings.subjectKey — one vocabulary for
 // "which subject is this" everywhere.
 export function memberKey(m: Member): string {
   return m.todoId !== undefined
@@ -101,7 +101,7 @@ type Importance = {
 };
 
 // The ONE implementation of the agent-importance guard (used by
-// internalPrepareTodo, internalStoreBatches, and dtsCode.internalStoreBriefs):
+// internalPrepareTodo, internalStoreBatches, and ttsCode.internalStoreBriefs):
 // an agent write never overwrites Tom's — returns undefined when the stored
 // value has setBy "tom" (the caller logs importance-skipped), else the new
 // importance object.
@@ -214,7 +214,7 @@ export const getToday = query({
   args: {},
   handler: async (ctx) => {
     await requireTomId(ctx);
-    const day = dtsDayKey(Date.now());
+    const day = ttsDayKey(Date.now());
     const row = await ctx.db
       .query("dtsDailyQueues")
       .withIndex("by_day", (q) => q.eq("day", day))
@@ -316,7 +316,7 @@ export const updateTodo = mutation({
   handler: async (ctx, { id, ...fields }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("DTS todo not found");
+    if (!todo) throw new Error("TTS todo not found");
     // Kept-dates rule (spec §8): a date never just disappears — the silent
     // slide is the one forbidden outcome. Clearing dueAt directly is refused;
     // dates leave via recordDateOutcome (done / renegotiated / missed).
@@ -411,7 +411,7 @@ function resolveDateAsDone(
 
 // The ONE implementation of a status transition (spec §5.1) — used by the
 // Tom-gated setStatus below, by internalTriage (live sessions applying
-// Tom's spoken rulings via `npx convex run`), and by dtsRulings.recordRuling
+// Tom's spoken rulings via `npx convex run`), and by ttsRulings.recordRuling
 // (the archive verdict). Nothing is ever deleted: "archived" and "done" are
 // the only terminal states, both kept and visible.
 export async function applyStatusChange(
@@ -469,7 +469,7 @@ export const setStatus = mutation({
   handler: async (ctx, { id, ...args }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("DTS todo not found");
+    if (!todo) throw new Error("TTS todo not found");
     await applyStatusChange(ctx, todo, args);
     // Stamped HERE, not in applyStatusChange: internalStoreBatches archives
     // its own batches through applyStatusChange, and an agent action must not
@@ -481,7 +481,7 @@ export const setStatus = mutation({
 // Triage from a LIVE session with Tom (the Friday session, or any interactive
 // session where he rules out loud and the session agent records it): an
 // internal mutation so the agent can apply rulings via `npx convex run
-// dts:internalTriage` with the deploy credentials Tom's machine holds. Only
+// tts:internalTriage` with the deploy credentials Tom's machine holds. Only
 // ever run while Tom is present and ruling — it is his pen, not a policy
 // actor. Same status semantics as setStatus (one implementation), plus an
 // optional self-imposed date for undated items (dated items keep the
@@ -530,7 +530,7 @@ export const internalTriage = internalMutation({
 
 // Bulk field edits from a LIVE session with Tom (the internalTriage pattern):
 // an internal mutation so the session agent can record Tom's spoken rulings
-// via `npx convex run dts:internalBulkUpdate` with the deploy credentials
+// via `npx convex run tts:internalBulkUpdate` with the deploy credentials
 // Tom's machine holds. Only ever run while Tom is present and ruling — it is
 // his pen, not a policy actor; importance therefore lands as setBy "tom"
 // (it records his SPOKEN ruling, which the agent guard must respect).
@@ -608,7 +608,7 @@ export const recordDateOutcome = mutation({
   handler: async (ctx, { id, outcome, newDueAt, note }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("DTS todo not found");
+    if (!todo) throw new Error("TTS todo not found");
     if (todo.dueAt === undefined) throw new Error("Todo has no date to resolve");
     const now = Date.now();
     if (outcome === "renegotiated") {
@@ -654,7 +654,7 @@ export const setImportance = mutation({
   handler: async (ctx, { id, level }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("DTS todo not found");
+    if (!todo) throw new Error("TTS todo not found");
     const now = Date.now();
     await ctx.db.patch(id, {
       importance:
@@ -676,7 +676,7 @@ export const setPlanStep = mutation({
   handler: async (ctx, { id, index, status }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("DTS todo not found");
+    if (!todo) throw new Error("TTS todo not found");
     if (todo.plan === undefined) throw new Error("Todo has no plan");
     if (!Number.isInteger(index) || index < 0 || index >= todo.plan.length) {
       throw new Error(`Plan has no step ${index}`);
@@ -744,7 +744,7 @@ export const createBlock = mutation({
     if (end <= start) throw new Error("A block ends after it starts");
     if (todoId !== undefined) {
       const todo = await ctx.db.get(todoId);
-      if (!todo) throw new Error("DTS todo not found");
+      if (!todo) throw new Error("TTS todo not found");
     }
     const id = await ctx.db.insert("dtsBlocks", {
       start,
@@ -807,7 +807,7 @@ export const deleteBlock = mutation({
 
 // Instrumentation hook for the surfaces (spec §10): Focus/Inventory record
 // engagement, queue cycling, session starts, etc. Kind is free-form by
-// convention; the analysis layer is a later DTS todo.
+// convention; the analysis layer is a later TTS todo.
 export const recordEvent = mutation({
   args: {
     kind: v.string(),
@@ -1013,7 +1013,7 @@ export const internalPrepareTodo = internalMutation({
   },
 });
 
-// The batcher's write path (key-authed POST /dts/batches). Drop-don't-reject
+// The batcher's write path (key-authed POST /tts/batches). Drop-don't-reject
 // (the internalStoreWorkerPrep pattern): one bad grouping must not fail the
 // batch run, so a batch that fails member validation, collides on an occupied
 // member, or targets a row the batcher may not touch is SKIPPED with a named
@@ -1304,12 +1304,12 @@ export const internalPrepareFallbackQueue = internalMutation({
   args: { force: v.optional(v.boolean()) },
   handler: async (ctx, { force }) => {
     const now = Date.now();
-    if (!force && nyLocalHour(now) !== DTS_PREP_NY_HOUR) return; // 4 a.m. hour, before the 5 a.m. send
-    // CRITICAL: prep runs BEFORE the 5 a.m. boundary, so dtsDayKey(now) would
-    // name YESTERDAY. dtsPrepDay names the day the coming digest belongs to —
+    if (!force && nyLocalHour(now) !== TTS_PREP_NY_HOUR) return; // 4 a.m. hour, before the 5 a.m. send
+    // CRITICAL: prep runs BEFORE the 5 a.m. boundary, so ttsDayKey(now) would
+    // name YESTERDAY. ttsPrepDay names the day the coming digest belongs to —
     // the digest and getToday then find this row. (Review-caught bug.)
-    const day = dtsPrepDay(now);
-    const bounds = dtsDayBoundsUtc(day);
+    const day = ttsPrepDay(now);
+    const bounds = ttsDayBoundsUtc(day);
 
     // Wake waiting items whose wake time falls inside the day being prepared —
     // not `wakeAt <= now`: wake times are stored as noon local, and a 4 a.m.
@@ -1404,7 +1404,7 @@ export const internalPrepareFallbackQueue = internalMutation({
   },
 });
 
-// ── Internal: code-todo mirror upserts (from dtsSync.refreshMirror) ──────────
+// ── Internal: code-todo mirror upserts (from ttsSync.refreshMirror) ──────────
 export const internalReplaceMirror = internalMutation({
   args: {
     repo: v.string(),

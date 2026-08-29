@@ -1,7 +1,7 @@
 # vqc/todos.yaml — tom.quest's governed code-todo registry.
 #
 # This brings VQC (the governance system from the ComplexMultiTrigger repo)
-# into tom.quest, using DTS vocabulary from day one (WikiTom dts/spec.md
+# into tom.quest, using TTS vocabulary from day one (WikiTom tts/spec.md
 # §5.1, §12.1) — this file is the reference implementation of the renamed
 # tiers that CMT will migrate to (that migration is a CMT-side todo).
 #
@@ -22,7 +22,7 @@
 #   status                active | waiting | archived | done
 #   created               YYYY-MM-DD
 #   cites                 non-empty; constitution article ids (A*/C1-C9/D1-D28),
-#                         dts-spec:<section> (WikiTom dts/spec.md), or open
+#                         tts-spec:<section> (WikiTom tts/spec.md), or open
 #                         vqc/ledger.yaml entry ids — a todo CITES a debt
 #                         entry, never duplicates its content
 #   statement             what and why, one short paragraph
@@ -32,13 +32,13 @@
 #
 # List order = priority order (Tom's ratified post-MVP sequence, 2026-08-27).
 
-- id: dts-email-canvas-ingestion
+- id: tts-email-canvas-ingestion
   readiness: unprepared
   status: active
   created: 2026-08-27
-  cites: [dts-spec:17, dts-spec:18]
+  cites: [tts-spec:17, tts-spec:18]
   statement: >-
-    Ingest Outlook (WPI) email and Canvas assignments into DTS as proposed
+    Ingest Outlook (WPI) email and Canvas assignments into TTS as proposed
     items riding the daily digest (spec §5.2 email decomposition:
     noticing/recording/interrupting decoupled). First step is the 5-minute
     WPI tenant app-consent probe, which decides Microsoft Graph vs.
@@ -49,11 +49,11 @@
     candidates/dated items with provenance links, with the triage profile
     consulted for the email judgment.
 
-- id: dts-weekly-reflective-session
+- id: tts-weekly-reflective-session
   readiness: unprepared
   status: active
   created: 2026-08-27
-  cites: [dts-spec:11]
+  cites: [tts-spec:11]
   statement: >-
     Build the weekly reflective session as a feature (spec §11): materials
     prepared Friday 5 a.m. (window through Sunday), the eight-part agenda,
@@ -63,14 +63,14 @@
     sessions from manually prepared materials.
   completion_condition: >-
     A Friday arrives and the prepared agenda exists without anyone asking;
-    the session's rulings land as DTS mutations; the session outcome is
+    the session's rulings land as TTS mutations; the session outcome is
     recorded as an event.
 
-- id: dts-preparation-swarm-codex-review
+- id: tts-preparation-swarm-codex-review
   readiness: unprepared
   status: active
   created: 2026-08-27
-  cites: [dts-spec:15, C8]
+  cites: [tts-spec:15, C8]
   statement: >-
     Build the preparation swarm (spec §15) — background agents that advance
     items from unprepared toward ready-for-tom (brief, options, plan,
@@ -82,17 +82,17 @@
     without human involvement, having passed a Codex check, and the
     readiness pipeline timestamps are recorded.
 
-- id: dts-two-way-event-messages
+- id: tts-two-way-event-messages
   readiness: unprepared
   status: active
   created: 2026-08-27
-  cites: [dts-spec:7]
+  cites: [tts-spec:7]
   statement: >-
     Event messages (spec §7): immediate Slack messages when the pipeline
     needs Tom or completes something he awaits — implemented as TWO-WAY
     conversations, where replying in the Slack thread continues a Claude
     Code session, so a tom-gate can be worked from the phone. The OUTBOUND
-    half was pulled forward into dts-session-needs-you-notify (Tom's triage
+    half was pulled forward into tts-session-needs-you-notify (Tom's triage
     2026-08-29); this entry keeps the reply-in-thread half (Slack Events
     API, inbound auth, thread-to-session binding).
   completion_condition: >-
@@ -100,11 +100,11 @@
     and replying to that message reaches a live Claude Code session that can
     integrate the reply into the plan.
 
-- id: dts-values-file
+- id: tts-values-file
   readiness: unprepared
   status: active
   created: 2026-08-27
-  cites: [dts-spec:11, dts-spec:18]
+  cites: [tts-spec:11, tts-spec:18]
   statement: >-
     The values file (spec §11, §18): Tom-authored directions used for Focus
     prioritization and the weekly direction check. Authored by Tom in a
@@ -113,11 +113,11 @@
     The values file exists in WikiTom, Tom has ratified its content, and
     queue construction + the weekly direction check both read it.
 
-- id: dts-session-sweep
+- id: tts-session-sweep
   readiness: unprepared
   status: active
   created: 2026-08-27
-  cites: [dts-spec:9, dts-spec:17]
+  cites: [tts-spec:9, tts-spec:17]
   statement: >-
     Daily sweep of Claude Code session transcripts (local Windows machine +
     Turing over SSH; cloud sessions deferred) extracting started-but-
@@ -129,11 +129,11 @@
     resumable candidate with a re-entry paragraph, and re-running the sweep
     does not duplicate it.
 
-- id: dts-focus-interaction-analysis
+- id: tts-focus-interaction-analysis
   readiness: unprepared
   status: active
   created: 2026-08-27
-  cites: [dts-spec:10, dts-spec:6]
+  cites: [tts-spec:10, tts-spec:6]
   statement: >-
     The analysis layer over Focus/Inventory instrumentation (spec §6, §10):
     engagement-latency computation, forgetting-vs-avoidance classification,
@@ -143,13 +143,13 @@
     The weekly materials include engagement-latency outliers and
     restructuring candidates computed from real recorded events.
 
-- id: dts-cmt-ruling-loop
+- id: tts-cmt-ruling-loop
   readiness: ready-for-tom
   status: done
   created: 2026-08-27
-  cites: [dts-spec:15, dts-spec:5]
+  cites: [tts-spec:15, tts-spec:5]
   statement: >-
-    Run the full DTS pipeline over CMT's vqc/todos.yaml: worker-written
+    Run the full TTS pipeline over CMT's vqc/todos.yaml: worker-written
     ground-up briefs per open entry (with recommendation criteria
     approve / needs-session / propose-archive / stale-replan and a
     box-vs-needs-turing execution class), ruling controls on the Inventory,
@@ -162,21 +162,21 @@
     (recorded in the UI, applied by the worker, outcome visible); an approved
     plan produces a reviewable PR that closes its todo entry in-commit.
   plan: >-
-    Convex dtsCodeBriefs/dtsCodeRulings + /dts/code-* endpoints; Inventory
+    Convex dtsCodeBriefs/dtsCodeRulings + /tts/code-* endpoints; Inventory
     ruling controls; three worker jobs (brief-code-todos, apply-rulings,
     execute-approved) on the box. Ratified inline in conversation 2026-08-28.
   resolution: >-
-    Landed in the same commit as this entry: convex/dtsCode.ts (+schema,
+    Landed in the same commit as this entry: convex/ttsCode.ts (+schema,
     http routes, digest line, 6 tests), app/inventory/components/
     code-todo-row.tsx, worker jobs brief-code-todos/apply-rulings/
-    execute-approved + dts-code-lib, cron entries. Tom's rulings: PRs for
+    execute-approved + tts-code-lib, cron entries. Tom's rulings: PRs for
     execution, direct-to-master for bookkeeping, brief all entries at once.
 
-- id: dts-session-wrapper
+- id: tts-session-wrapper
   readiness: ready-for-tom
   status: done
   created: 2026-08-28
-  cites: [dts-spec:15, dts-spec:7]
+  cites: [tts-spec:15, tts-spec:7]
   statement: >-
     The session surface: a Claude-desktop-like web chat page at
     tom.quest/sessions driving headless Claude Code sessions on the worker
@@ -205,13 +205,13 @@
     review found 26 candidates; all confirmed fixes applied (headliners:
     permanent-400 flush wedge → drop-and-report; force-close orphan
     settlement; terminal-state scalar guard; delivery race; keyAuth +
-    TomGate dedup graduating ledger dts-shared-gate-dedup). 77/77 tests.
+    TomGate dedup graduating ledger tts-shared-gate-dedup). 77/77 tests.
 
-- id: dts-batches-autonomy-round
+- id: tts-batches-autonomy-round
   readiness: ready-for-tom
   status: done
   created: 2026-08-28
-  cites: [dts-spec:5, dts-spec:15]
+  cites: [tts-spec:5, tts-spec:15]
   statement: >-
     Batches, plans, importance — a batch IS a dtsTodos row with members
     (life by todoId, code by repo+externalId) so every existing action works
@@ -233,11 +233,11 @@
     and prompted the agent-created-todos ruling. Entry added after the
     fact so closure is on record; details in the two commit messages.
 
-- id: dts-session-render-honesty
+- id: tts-session-render-honesty
   readiness: ready-for-tom
   status: active
   created: 2026-08-29
-  cites: [C3, dts-spec:15]
+  cites: [C3, tts-spec:15]
   statement: >-
     The session surface's render layer drops facts the daemon records
     (2026-08-29 three-angle analysis): tool-result rows render as JSON of
@@ -264,11 +264,11 @@
     by_session permissions query (new index) exposes decisions. Pure repair
     of the ratified failure-honesty design — no new design decisions.
 
-- id: dts-session-auto-permissions
+- id: tts-session-auto-permissions
   readiness: preparing
   status: active
   created: 2026-08-29
-  cites: [dts-spec:15]
+  cites: [tts-spec:15]
   statement: >-
     Tom's ruling 2026-08-29 (adoption.md session-permission-posture):
     replace the indefinite-park permission model with classifier-driven
@@ -287,11 +287,11 @@
     with its reason; a destructive command outside the sanctioned set is
     refused with a recorded reason and the model course-corrects.
 
-- id: dts-session-arrival-redesign
+- id: tts-session-arrival-redesign
   readiness: preparing
   status: active
   created: 2026-08-29
-  cites: [dts-spec:9, dts-spec:12]
+  cites: [tts-spec:9, tts-spec:12]
   statement: >-
     Rebuild the session surface around arrival (arrive, orient, understand,
     rule, leave) instead of watching. Tom's rulings 2026-08-29 (adoption.md
@@ -312,11 +312,11 @@
     from me" are each answerable from one screen without scrolling the
     transcript, and an ended session leads with its outcome.
 
-- id: dts-session-lifecycle
+- id: tts-session-lifecycle
   readiness: preparing
   status: active
   created: 2026-08-29
-  cites: [dts-spec:9]
+  cites: [tts-spec:9]
   statement: >-
     Session lifecycle beyond the happy path: resume an ended session
     (sdkSessionId is retained and the daemon resumes by it — only the UI
@@ -332,14 +332,14 @@
     deletion; a weekly-kind session can be created and found from the
     browser.
 
-- id: dts-session-needs-you-notify
+- id: tts-session-needs-you-notify
   readiness: preparing
   status: active
   created: 2026-08-29
-  cites: [dts-spec:7]
+  cites: [tts-spec:7]
   statement: >-
     The outbound half of event messages, pulled forward from
-    dts-two-way-event-messages (Tom's triage 2026-08-29): a Slack message
+    tts-two-way-event-messages (Tom's triage 2026-08-29): a Slack message
     within a minute when a session needs Tom (residual permission, agent
     question, turn ended with a question) or completes something he awaits
     (outcome recorded), with a deep link to the session. Reuses the

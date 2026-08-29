@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 // SCHEMA of choice-files at use (fail-loud, C3/D24) — they never freeze
 // content: editing these files is the intended operation.
 
-const ARTICLE_OR_SPEC = /^(A\d+|C[1-9]|D\d+|dts-spec:\d+(\.\d+)?)$/;
+const ARTICLE_OR_SPEC = /^(A\d+|C[1-9]|D\d+|tts-spec:\d+(\.\d+)?)$/;
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 

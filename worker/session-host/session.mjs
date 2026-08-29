@@ -29,10 +29,10 @@ import {
 const execFile = promisify(execFileCb);
 
 // Session workdirs live under /var/cache by the box's convention: everything
-// under /var/cache/dts is rebuildable, so `rm -rf` of any of it is harmless
+// under /var/cache/tts is rebuildable, so `rm -rf` of any of it is harmless
 // (the no-state rule). A session's real output leaves through git pushes /
 // whatever Tom asks the model to do — never through files that stay here.
-export const SESSIONS_ROOT = "/var/cache/dts/sessions";
+export const SESSIONS_ROOT = "/var/cache/tts/sessions";
 
 // The repos a session may check out (claudeSessions.repo). Everything is
 // under github.com/Heffnt — same owner the code-todo jobs use.
@@ -284,8 +284,8 @@ export class Session {
   // ── workdir ────────────────────────────────────────────────────────────────
 
   // Create (or re-create) this session's working directory.
-  //   repo "none"  -> /var/cache/dts/sessions/<id>/ws       (empty scratch)
-  //   repo known   -> /var/cache/dts/sessions/<id>/<repo>   (fresh shallow
+  //   repo "none"  -> /var/cache/tts/sessions/<id>/ws       (empty scratch)
+  //   repo known   -> /var/cache/tts/sessions/<id>/<repo>   (fresh shallow
   //                   clone on branch session/<id>)
   // forResume marks the bootstrap-after-restart path: if the dir vanished we
   // rebuild it and say so in a system row — the transcript must never imply
@@ -378,12 +378,12 @@ export class Session {
         abortController: this.abort,
         canUseTool: (toolName, input, opts) =>
           this.#canUseTool(toolName, input, opts),
-        // The pens are key-authed curls (POST /dts/prepare-todo,
+        // The pens are key-authed curls (POST /tts/prepare-todo,
         // POST /sessions/outcome) — the session's shell must see the keys
         // regardless of how this daemon was started (systemd EnvironmentFile
         // vs manual run), so they are passed explicitly, on top of the full
         // process env (the SDK child needs PATH, HOME, CLAUDE_CONFIG_DIR…).
-        // ONLY the DTS worker key enters a session's shell — its write
+        // ONLY the TTS worker key enters a session's shell — its write
         // surface (capture, prep, briefs, batches, ruling-applied,
         // session-outcome) is the same one the cron jobs' agentic runs
         // already expose to a model. SESSIONS_WORKER_KEY must never be here:
@@ -392,8 +392,8 @@ export class Session {
         env: {
           ...process.env,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
-          ...(this.env.DTS_WORKER_KEY
-            ? { DTS_WORKER_KEY: this.env.DTS_WORKER_KEY }
+          ...(this.env.TTS_WORKER_KEY
+            ? { TTS_WORKER_KEY: this.env.TTS_WORKER_KEY }
             : {}),
         },
         // Autonomous missions are one long agentic turn — same budget as the
@@ -690,7 +690,7 @@ export class Session {
         if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
           // An autonomous session is ONE mission turn — nobody would ever
           // send stop, so the daemon ends it itself. The agent's own outcome
-          // (recorded via the /dts/session-outcome pen) is already
+          // (recorded via the /tts/session-outcome pen) is already
           // server-side; a session that recorded none reads as non-completed
           // to the scheduler's backoff. Inbound rows still pending at this
           // point are settled server-side when the terminal status lands.
@@ -914,7 +914,7 @@ export class Session {
   }
 
   // End an autonomous session from the daemon side: the auto-end after the
-  // mission's result (no outcome arg — the agent's own /dts/session-outcome
+  // mission's result (no outcome arg — the agent's own /tts/session-outcome
   // record is already server-side) or the time cap (outcome errored). Never
   // interrupts — the result path's query has already finished its turn, and
   // the time cap interrupts before calling here.

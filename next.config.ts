@@ -5,6 +5,11 @@ const nextConfig: NextConfig = {
   // pi-coding-agent ships native clipboard bindings (koffi) that Turbopack
   // cannot bundle into server chunks; load it at runtime instead.
   serverExternalPackages: ["@earendil-works/pi-coding-agent"],
+  async redirects() {
+    // DTS -> TTS rename (2026-08-29): links in already-sent Slack digests
+    // point at /dts?item=... — query params are preserved by default.
+    return [{ source: "/dts", destination: "/tts", permanent: true }];
+  },
 };
 
 export default withSentryConfig(nextConfig, {

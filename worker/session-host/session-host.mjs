@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// session-host.mjs — the DTS session-host daemon: runs real Claude Code
+// session-host.mjs — the TTS session-host daemon: runs real Claude Code
 // sessions (via @anthropic-ai/claude-agent-sdk) on this box and persists
 // every event into tom.quest's Convex backend, which IS the message bus:
 //
@@ -9,7 +9,7 @@
 // This file owns the poll loop and the Session map; the per-session work
 // (SDK query, seq assignment, outbox/flush, permission gate) lives in
 // session.mjs, shared helpers in lib.mjs. Runs under systemd
-// (dts-session-host.service, Restart=always) — see README.md.
+// (tts-session-host.service, Restart=always) — see README.md.
 //
 // THE NO-STATE RULE, applied: this process holds NOTHING durable. All state
 // is pulled fresh from /sessions/poll every tick (full state, no cursors),
@@ -54,7 +54,7 @@ const POLL_IDLE_MS = 30_000;
 const HOT_WINDOW_MS = 30_000;
 
 // Which Claude Max account the SDK runs under — the box's "active" symlink
-// (managed by dts-account; CLAUDE_CONFIG_DIR in the systemd unit points at
+// (managed by tts-account; CLAUDE_CONFIG_DIR in the systemd unit points at
 // it). Reported to the server as a display fact only.
 function readActiveAccount() {
   try {
@@ -68,7 +68,7 @@ const execFile = promisify(execFileCb);
 
 // ── usage-limit account auto-switch (ratified 2026-08-28) ────────────────────
 // A session that hits a usage/rate limit signals here; the daemon flips the
-// active symlink to the OTHER Max account via dts-account so the fleet (and
+// active symlink to the OTHER Max account via tts-account so the fleet (and
 // Tom) keep working, at most once per 3h (in-memory throttle — a restart
 // resets it, harmlessly). Tradeoff, stated: NEW queries run under the new
 // account; existing sdkSessionIds live in the old account's config dir, so a
@@ -88,7 +88,7 @@ async function maybeSwitchAccount(signalText, session) {
   lastAccountSwitchAt = now;
   const other = active === "gmail" ? "wpi" : "gmail";
   try {
-    await execFile("/usr/local/bin/dts-account", ["use", other]);
+    await execFile("/usr/local/bin/tts-account", ["use", other]);
     log(`usage limit detected — switched account ${active} -> ${other} (${signalText})`);
     session?.finalizeRow("system", {
       text: `usage limit detected — switched account ${active} -> ${other}`,

@@ -2,13 +2,13 @@
 
 // BATCHES — the default tab. Batch cards (importance desc), then the
 // selectNeedsMe rows no batch claims, then the ruled-but-not-yet-applied
-// pipeline strip. selectBatches (app/dts/lib.ts) is the ONE selector — the
+// pipeline strip. selectBatches (app/tts/lib.ts) is the ONE selector — the
 // shell's tab badge counts the same selection, so count and rows cannot drift.
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { countdownText } from "@/convex/dtsShared";
+import { countdownText } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import VerdictButtons from "./verdict-buttons";
@@ -30,7 +30,7 @@ import {
   type MirrorRow,
   type PlanStep,
   type Todo,
-} from "@/app/dts/lib";
+} from "@/app/tts/lib";
 
 const primaryBtnCls =
   "bg-accent text-bg rounded-md px-3 py-1 text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none";
@@ -184,8 +184,8 @@ function BatchCard({
   onToggle: () => void;
   onOpenItem: (id: string) => void;
 }) {
-  const recordRuling = useMutation(api.dtsRulings.recordRuling);
-  const setPlanStep = useMutation(api.dts.setPlanStep);
+  const recordRuling = useMutation(api.ttsRulings.recordRuling);
+  const setPlanStep = useMutation(api.tts.setPlanStep);
   const {
     open: openSession,
     busy: sessionBusy,
@@ -286,7 +286,7 @@ function BatchCard({
             <div className="border-l-2 border-accent pl-2 space-y-1">
               <div className="flex items-baseline gap-2">
                 <span className="text-xs text-text">needs you</span>
-                <Info label='dts.setPlanStep({index, status:"done"})' />
+                <Info label='tts.setPlanStep({index, status:"done"})' />
               </div>
               {/* the SAME line the full plan renders — evidence link and all;
                   planNeedsYou keeps each step's plan index, which is what
@@ -307,7 +307,7 @@ function BatchCard({
             <div className="space-y-1">
               <div className="flex items-baseline gap-2">
                 <span className="text-xs text-text-faint">plan</span>
-                <Info label="dts.setPlanStep({index, status})" />
+                <Info label="tts.setPlanStep({index, status})" />
               </div>
               {todo.plan.map((step, i) => (
                 <PlanStepLine
@@ -360,7 +360,7 @@ function LifeRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const recordRuling = useMutation(api.dtsRulings.recordRuling);
+  const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const { open: openSession, error: sessionError } = useOpenTodoSession();
 
   return (
@@ -429,11 +429,11 @@ export default function BatchesTab({
   onOpenItem: (id: string) => void;
 }) {
   const { isTom } = useAuth();
-  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
-  const mirror = useQuery(api.dts.listMirror, isTom ? {} : "skip");
-  const briefs = useQuery(api.dtsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.dtsRulings.listRulings, isTom ? {} : "skip");
-  const recordEvent = useMutation(api.dts.recordEvent);
+  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
+  const briefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -448,7 +448,7 @@ export default function BatchesTab({
     if (opening) engage();
   };
 
-  // ONE definition of the selection (app/dts/lib.ts selectBatches) — the
+  // ONE definition of the selection (app/tts/lib.ts selectBatches) — the
   // shell's tab badge counts the same selection, so count and rows cannot
   // drift.
   const selection = useMemo(
@@ -468,7 +468,7 @@ export default function BatchesTab({
     [mirror],
   );
 
-  // Live ruling per subject — the shared derivation (app/dts/lib.ts), the same
+  // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
   // one the by-individual tab feeds CodeTodoRow.
   const liveRulingByKey = useMemo(
     () => liveRulingsByKey(rulings ?? []),

@@ -327,11 +327,11 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_brew", ["brewId"]),
 
-  // ── DTS (Delegated Todo System) ──────────────────────────────────────────────
-  // Spec: WikiTom dts/spec.md (canonical). Life todos live HERE (system of
+  // ── TTS (Delegated Todo System) ──────────────────────────────────────────────
+  // Spec: WikiTom tts/spec.md (canonical). Life todos live HERE (system of
   // record); code todos stay in each repo's vqc/todos.yaml and are only
   // mirrored (dtsCodeTodoMirror). Single-user by design: every function in
-  // convex/dts.ts is Tom-gated, so rows carry no userId.
+  // convex/tts.ts is Tom-gated, so rows carry no userId.
   //
   // Vocabulary (spec §12.1) is stored literally:
   //   readiness: unprepared | preparing | ready-for-tom
@@ -339,6 +339,12 @@ export default defineSchema({
   //   timingClass: dated | condition-bound | whenever
   // Nothing is ever deleted (spec principle 2): terminal states are status
   // "done" or "archived", both kept and visible.
+  //
+  // NAMING: the dts* table names below are FROZEN pre-rename identifiers
+  // (DTS -> TTS, Tom 2026-08-29, adoption.md `tts-rename`). Convex prod is
+  // additive-only; renaming a populated table is a data migration for zero
+  // behavioral value. Everything human-facing says TTS; only these table
+  // names keep the old prefix.
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
@@ -394,10 +400,10 @@ export default defineSchema({
     // A row with `members` IS a batch — that one field is the whole
     // discrimination. Because a batch is a real dtsTodos row, every action
     // (rulings, blocks, sessions, done/archive) works on it with no new code.
-    // Each member addresses exactly one subject in the dtsRulings shape:
+    // Each member addresses exactly one subject in the ttsRulings shape:
     // { todoId } for a life todo, { repo, externalId } for a code todo
     // (mirror-row _ids are unstable — rows are deleted on upstream close).
-    // Enforced in dts.ts: no batch-in-batch; a subject is in at most one
+    // Enforced in tts.ts: no batch-in-batch; a subject is in at most one
     // non-terminal batch.
     members: v.optional(
       v.array(
@@ -459,7 +465,7 @@ export default defineSchema({
   // Tom's calendar, targeting EITHER a single todo (a per-todo commitment —
   // "I will do this Tue 9–11") OR a category of todos ("Sat morning — chores";
   // category "code" = the code-todo mirror). Exactly one of todoId/category is
-  // set (enforced in dts.ts). Blocks are calendar strokes, not todos: they may
+  // set (enforced in tts.ts). Blocks are calendar strokes, not todos: they may
   // be moved or deleted freely (every change is an event; nothing-ever-lost
   // governs todos, not schedule mechanics).
   dtsBlocks: defineTable({
@@ -494,7 +500,7 @@ export default defineSchema({
       v.literal("session"),
       v.literal("archive"),
     ),
-    sentence: v.optional(v.string()), // required for revise (enforced in dtsRulings.ts)
+    sentence: v.optional(v.string()), // required for revise (enforced in ttsRulings.ts)
     ruledAt: v.number(),
     appliedAt: v.optional(v.number()),
     applyResult: v.optional(v.string()),
@@ -517,7 +523,7 @@ export default defineSchema({
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"]),
 
-  // One row per DTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
+  // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The worker box posts a Claude-prepared queue + digest text before 5;
   // a fallback cron builds a simple-rules queue if none arrived. The digest
   // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
@@ -591,11 +597,11 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
-  // Kept as read-only history — non-defer rows are copied into dtsRulings by
-  // dtsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
+  // DEPRECATED (2026-08-28): superseded by the unified ttsRulings table above.
+  // Kept as read-only history — non-defer rows are copied into ttsRulings by
+  // ttsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
   // stay here only (defer is no longer a verdict: not ruling IS deferring).
-  // No new writes. Remove in the dts→tts rename round.
+  // No new writes. Remove in the tts→tts rename round.
   dtsCodeRulings: defineTable({
     repo: v.string(),
     externalId: v.string(),
@@ -614,7 +620,7 @@ export default defineSchema({
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_ruled", ["ruledAt"]),
 
-  // ── Claude Code session surface (spec: WikiTom dts/spec.md; design ratified
+  // ── Claude Code session surface (spec: WikiTom tts/spec.md; design ratified
   // 2026-08-28) ────────────────────────────────────────────────────────────────
   // A web chat wrapper around headless Claude Code sessions running on the
   // worker box. Convex IS the stream: the box's session-host daemon persists

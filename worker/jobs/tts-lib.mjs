@@ -1,4 +1,4 @@
-// dts-lib.mjs — shared helpers for the DTS worker jobs (poll-dump.mjs,
+// tts-lib.mjs — shared helpers for the TTS worker jobs (poll-dump.mjs,
 // prepare-queue.mjs, and the code-todo jobs brief-code-todos.mjs /
 // apply-rulings.mjs / execute-approved.mjs). Plain Node ESM, ZERO npm
 // dependencies: node:fs, node:child_process and the global fetch (Node >= 18,
@@ -7,7 +7,7 @@
 // WHY no dependencies: the box owns no state and must be rebuildable by one
 // script with nothing but Node itself. No node_modules means no lockfile, no
 // install step, no supply-chain surface — setup.sh just copies these files
-// into /opt/dts/ and cron runs them.
+// into /opt/tts/ and cron runs them.
 
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -16,12 +16,12 @@ import { execFileSync } from "node:child_process";
 // Env file parsing
 // ---------------------------------------------------------------------------
 
-// Read /etc/dts/worker.env (KEY=VALUE lines; '#' comments and blank lines
+// Read /etc/tts/worker.env (KEY=VALUE lines; '#' comments and blank lines
 // ignored; an optional leading "export " and optional surrounding quotes are
 // tolerated so the same file can be `source`d from bash if ever needed).
 // Throws with a clear message if a required key is missing, because every
 // caller needs all of them to do anything useful.
-export function loadEnv(path = "/etc/dts/worker.env") {
+export function loadEnv(path = "/etc/tts/worker.env") {
   const env = {};
   const text = fs.readFileSync(path, "utf8");
   for (const rawLine of text.split("\n")) {
@@ -44,7 +44,7 @@ export function loadEnv(path = "/etc/dts/worker.env") {
   }
   for (const required of [
     "CONVEX_SITE_URL",
-    "DTS_WORKER_KEY",
+    "TTS_WORKER_KEY",
     "SLACK_BOT_TOKEN",
     "SLACK_DUMP_CHANNEL_ID",
   ]) {
@@ -102,8 +102,8 @@ export function nyHour(ms) {
   return nyWallClock(ms).getUTCHours();
 }
 
-// NOTE: this module deliberately has NO day-key function. The DTS day key
-// (5 a.m. boundary) is a server-owned fact: /dts/state returns `prepDay` and
+// NOTE: this module deliberately has NO day-key function. The TTS day key
+// (5 a.m. boundary) is a server-owned fact: /tts/state returns `prepDay` and
 // the jobs repeat it back. A second hand-rolled copy of that math lived here
 // once and disagreed with Convex's for five hours after each DST transition —
 // the worker computes only the local-hour guard above, nothing more.
@@ -112,7 +112,7 @@ export function nyHour(ms) {
 // Convex HTTP endpoints (key-authed)
 // ---------------------------------------------------------------------------
 
-// Call a /dts/* endpoint on the Convex site origin. GET when no body, POST
+// Call a /tts/* endpoint on the Convex site origin. GET when no body, POST
 // (JSON) when a body is given. Throws on non-2xx with the response text
 // included, so cron logs show WHY a call failed.
 export async function convexFetch(env, path, body = undefined) {
@@ -120,7 +120,7 @@ export async function convexFetch(env, path, body = undefined) {
   const res = await fetch(url, {
     method: body === undefined ? "GET" : "POST",
     headers: {
-      "X-DTS-Key": env.DTS_WORKER_KEY,
+      "X-TTS-Key": env.TTS_WORKER_KEY,
       ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -136,9 +136,9 @@ export async function convexFetch(env, path, body = undefined) {
 // Headless Claude Code
 // ---------------------------------------------------------------------------
 
-// The "active" account symlink managed by the dts-account CLI helper — every
+// The "active" account symlink managed by the tts-account CLI helper — every
 // headless Claude invocation on this box goes through it, so switching Max
-// accounts is one `dts-account use` away and no job hardcodes an account.
+// accounts is one `tts-account use` away and no job hardcodes an account.
 export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT

@@ -78,7 +78,7 @@ export default function VerdictButtons({
             {v}
           </button>
         ))}
-        <Info label='dtsRulings.recordRuling({verdict:"…"})' />
+        <Info label='ttsRulings.recordRuling({verdict:"…"})' />
       </div>
 
       {mode === "revise" && (

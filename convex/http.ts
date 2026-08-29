@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
-import { dtsPrepDay } from "./dtsShared";
+import { ttsPrepDay } from "./ttsShared";
 
 const http = httpRouter();
 
@@ -27,7 +27,7 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 // The one key-auth gate for every agent-facing route (ledger graduation:
-// dts-shared-gate-dedup). Each route family keeps its OWN env key and header
+// tts-shared-gate-dedup). Each route family keeps its OWN env key and header
 // (sharing nothing between keys — the auth-clobber lesson); what they share
 // is the guard's shape: 503 when the key is unconfigured, then a
 // constant-time compare, 401 on mismatch. Returns null when authorized.
@@ -136,21 +136,21 @@ const poolRead = httpAction(async (ctx, request) => {
 
 http.route({ path: "/pool", method: "GET", handler: poolRead });
 
-// ── DTS worker endpoints (spec: WikiTom dts/spec.md) ─────────────────────────
-// The worker box's narrow, key-authed path into DTS, mirroring the /pool
-// pattern: DTS_WORKER_KEY lives only in the Convex env and shares nothing with
+// ── TTS worker endpoints (spec: WikiTom tts/spec.md) ─────────────────────────
+// The worker box's narrow, key-authed path into TTS, mirroring the /pool
+// pattern: TTS_WORKER_KEY lives only in the Convex env and shares nothing with
 // the other keys. The worker may capture items, post the day's prepared
 // queue+digest, and read state to prepare from — never rule, archive, or
 // delete (those are Tom-gated mutations).
 
-function dtsAuth(request: Request): Response | null {
-  return keyAuth(request, "DTS_WORKER_KEY", "X-DTS-Key");
+function ttsAuth(request: Request): Response | null {
+  return keyAuth(request, "TTS_WORKER_KEY", "X-TTS-Key");
 }
 
-// POST /dts/capture — one captured thought/message becomes an `unprepared`
+// POST /tts/capture — one captured thought/message becomes an `unprepared`
 // item. Body: { statement, source?, provenance? }.
-const dtsCapture = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsCapture = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
   try {
@@ -162,7 +162,7 @@ const dtsCapture = httpAction(async (ctx, request) => {
   if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
     return jsonResponse(400, { error: "statement (non-empty string) required" });
   }
-  const id = await ctx.runMutation(internal.dts.internalCapture, {
+  const id = await ctx.runMutation(internal.tts.internalCapture, {
     statement: b.statement,
     source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
@@ -170,12 +170,12 @@ const dtsCapture = httpAction(async (ctx, request) => {
   return jsonResponse(200, { ok: true, id });
 });
 
-http.route({ path: "/dts/capture", method: "POST", handler: dtsCapture });
+http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 
-// POST /dts/prep — the worker's Claude-prepared daily queue + digest text.
+// POST /tts/prep — the worker's Claude-prepared daily queue + digest text.
 // Body: { day, todoIds: string[], reasons?: string[], digestText? }.
-const dtsPrep = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsPrep = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
   try {
@@ -194,7 +194,7 @@ const dtsPrep = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "todoIds (string[]) required" });
   }
   try {
-    await ctx.runMutation(internal.dts.internalStoreWorkerPrep, {
+    await ctx.runMutation(internal.tts.internalStoreWorkerPrep, {
       day: b.day,
       todoIds: b.todoIds as string[],
       reasons: Array.isArray(b.reasons)
@@ -210,13 +210,13 @@ const dtsPrep = httpAction(async (ctx, request) => {
   }
 });
 
-http.route({ path: "/dts/prep", method: "POST", handler: dtsPrep });
+http.route({ path: "/tts/prep", method: "POST", handler: ttsPrep });
 
-// POST /dts/prepare-todo — the worker's preparer job attaches brief /
+// POST /tts/prepare-todo — the worker's preparer job attaches brief /
 // entry action / work description to a life todo and advances its readiness.
 // Body: { id, brief?, entryAction?, workDescription?, readiness? }.
-const dtsPrepareTodo = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsPrepareTodo = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
   try {
@@ -239,7 +239,7 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
   }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
-    await ctx.runMutation(internal.dts.internalPrepareTodo, {
+    await ctx.runMutation(internal.tts.internalPrepareTodo, {
       id: b.id,
       brief: str(b.brief),
       entryAction: str(b.entryAction),
@@ -260,29 +260,29 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
   }
 });
 
-http.route({ path: "/dts/prepare-todo", method: "POST", handler: dtsPrepareTodo });
+http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo });
 
-// GET /dts/state — everything the prep job needs: all todos, the queue row for
+// GET /tts/state — everything the prep job needs: all todos, the queue row for
 // the day being prepared, and `prepDay` itself. The server owns the day
 // arithmetic (5 a.m. boundary + DST) so the worker never computes a day key —
 // two hand-rolled implementations of that math diverged on DST Sundays before
 // this was centralized (review finding). An explicit ?day= overrides.
-const dtsState = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsState = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   const day =
-    new URL(request.url).searchParams.get("day") ?? dtsPrepDay(Date.now());
-  const todos = await ctx.runQuery(internal.dts.internalListTodos, {});
-  const queue = await ctx.runQuery(internal.dts.internalGetDay, { day });
+    new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
+  const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
+  const queue = await ctx.runQuery(internal.tts.internalGetDay, { day });
   return jsonResponse(200, { todos, queue, prepDay: day });
 });
 
-http.route({ path: "/dts/state", method: "GET", handler: dtsState });
+http.route({ path: "/tts/state", method: "GET", handler: ttsState });
 
-// ── DTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
-// Same DTS_WORKER_KEY path: the worker posts ground-up briefs for open code
+// ── TTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
+// Same TTS_WORKER_KEY path: the worker posts ground-up briefs for open code
 // todos, reads back Tom's pending rulings, and reports each application. The
-// worker never rules — recordCodeRuling is Tom-gated in dtsCode.ts.
+// worker never rules — recordCodeRuling is Tom-gated in ttsCode.ts.
 
 const CODE_RECOMMENDATIONS = [
   "approve",
@@ -345,11 +345,11 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
   };
 }
 
-// POST /dts/code-briefs — the worker's prepared briefs, upserted by
+// POST /tts/code-briefs — the worker's prepared briefs, upserted by
 // (repo, externalId). Body: { briefs: [{ repo, externalId, sourceHash, brief,
 // recommendation, execClass, evidence? }] }.
 const dtsCodeBriefs = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+  const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
   try {
@@ -367,38 +367,38 @@ const dtsCodeBriefs = httpAction(async (ctx, request) => {
     if ("error" in parsed) return jsonResponse(400, parsed);
     briefs.push(parsed);
   }
-  await ctx.runMutation(internal.dtsCode.internalStoreBriefs, { briefs });
+  await ctx.runMutation(internal.ttsCode.internalStoreBriefs, { briefs });
   return jsonResponse(200, { ok: true, count: briefs.length });
 });
 
-http.route({ path: "/dts/code-briefs", method: "POST", handler: dtsCodeBriefs });
+http.route({ path: "/tts/code-briefs", method: "POST", handler: dtsCodeBriefs });
 
-// GET /dts/code-rulings — the rulings a worker job should act on (unapplied
+// GET /tts/code-rulings — the rulings a worker job should act on (unapplied
 // and not superseded by a newer ruling on the same subject), from the unified
-// dtsRulings table. BOTH subject types ride the feed: rows carry subjectType
+// ttsRulings table. BOTH subject types ride the feed: rows carry subjectType
 // ("code" → the apply job; "life" with verdict "revise" → the preparer
 // consumes the sentence). Each row carries its _id, which the worker echoes
-// back to /dts/code-ruling-applied.
+// back to /tts/code-ruling-applied.
 const dtsCodeRulings = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+  const denied = ttsAuth(request);
   if (denied) return denied;
   const pending = await ctx.runQuery(
-    internal.dtsRulings.internalPendingRulings,
+    internal.ttsRulings.internalPendingRulings,
     {},
   );
   return jsonResponse(200, { pending });
 });
 
-// Canonical path: /dts/rulings — the feed serves BOTH subject types, so the
+// Canonical path: /tts/rulings — the feed serves BOTH subject types, so the
 // old code-scoped name is kept only as an alias for not-yet-redeployed
-// workers (drop the alias in the dts→tts rename round).
-http.route({ path: "/dts/rulings", method: "GET", handler: dtsCodeRulings });
-http.route({ path: "/dts/code-rulings", method: "GET", handler: dtsCodeRulings });
+// workers (drop the alias in the tts→tts rename round).
+http.route({ path: "/tts/rulings", method: "GET", handler: dtsCodeRulings });
+http.route({ path: "/tts/code-rulings", method: "GET", handler: dtsCodeRulings });
 
-// POST /dts/code-ruling-applied — the worker's apply report. Body: { id,
+// POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
 // result } where result is a commit sha / PR url / error text.
-const dtsCodeRulingApplied = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
   try {
@@ -414,7 +414,7 @@ const dtsCodeRulingApplied = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "result (non-empty string) required" });
   }
   try {
-    await ctx.runMutation(internal.dtsRulings.internalMarkRulingApplied, {
+    await ctx.runMutation(internal.ttsRulings.internalMarkRulingApplied, {
       id: b.id,
       result: b.result,
     });
@@ -426,25 +426,25 @@ const dtsCodeRulingApplied = httpAction(async (ctx, request) => {
   }
 });
 
-// Canonical path: /dts/ruling-applied (any subject type); old name aliased
+// Canonical path: /tts/ruling-applied (any subject type); old name aliased
 // for not-yet-redeployed workers.
 http.route({
-  path: "/dts/ruling-applied",
+  path: "/tts/ruling-applied",
   method: "POST",
-  handler: dtsCodeRulingApplied,
+  handler: ttsCodeRulingApplied,
 });
 http.route({
-  path: "/dts/code-ruling-applied",
+  path: "/tts/code-ruling-applied",
   method: "POST",
-  handler: dtsCodeRulingApplied,
+  handler: ttsCodeRulingApplied,
 });
 
-// ── DTS batches (ratified 2026-08-28) ────────────────────────────────────────
-// Same DTS_WORKER_KEY path: the batcher job reads context, then posts its
+// ── TTS batches (ratified 2026-08-28) ────────────────────────────────────────
+// Same TTS_WORKER_KEY path: the batcher job reads context, then posts its
 // desired batch set. It can only touch source-"batcher" rows that Tom has
 // never touched — the freeze/skip gates live in internalStoreBatches.
 
-// The sanitizers for POST /dts/batches: the body is model-written JSON, so
+// The sanitizers for POST /tts/batches: the body is model-written JSON, so
 // each batch is PROJECTED to exactly the known shape — unknown keys and
 // shape-invalid scalars are dropped, never rejected, because one stray LLM
 // key must not abort the whole POST. The mutation's arg validators stay the
@@ -525,12 +525,12 @@ function sanitizeBatch(item: unknown): Record<string, unknown> | undefined {
   return out;
 }
 
-// POST /dts/batches — the batcher's desired batch set. Body: { batches:
+// POST /tts/batches — the batcher's desired batch set. Body: { batches:
 // [{ id?, statement, brief, members, plan?, importanceLevel?,
 // importanceRationale? }], archiveIds? }. Sanitized (drop-don't-reject)
 // before the mutation; the mutation's per-batch skip report is the response.
-const dtsBatches = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsBatches = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
   try {
@@ -550,7 +550,7 @@ const dtsBatches = httpAction(async (ctx, request) => {
     ? b.archiveIds.filter((x): x is string => typeof x === "string")
     : undefined;
   try {
-    const result = await ctx.runMutation(internal.dts.internalStoreBatches, {
+    const result = await ctx.runMutation(internal.tts.internalStoreBatches, {
       batches: batches as never,
       archiveIds,
     });
@@ -565,39 +565,39 @@ const dtsBatches = httpAction(async (ctx, request) => {
   }
 });
 
-http.route({ path: "/dts/batches", method: "POST", handler: dtsBatches });
+http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
 
-// GET /dts/batch-context — everything the batcher groups from: all life
+// GET /tts/batch-context — everything the batcher groups from: all life
 // todos (batches included), the code-todo mirror, the code briefs, and Tom's
 // recent rulings (grouping signal).
-const dtsBatchContext = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsBatchContext = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   // Four independent reads — issued in parallel, not awaited one by one.
   const [todos, mirror, briefs, recentRulings] = await Promise.all([
-    ctx.runQuery(internal.dts.internalListTodos, {}),
-    ctx.runQuery(internal.dts.internalListMirror, {}),
-    ctx.runQuery(internal.dtsCode.internalListBriefs, {}),
-    ctx.runQuery(internal.dtsRulings.internalRecentRulings, { limit: 200 }),
+    ctx.runQuery(internal.tts.internalListTodos, {}),
+    ctx.runQuery(internal.tts.internalListMirror, {}),
+    ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
+    ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
   ]);
   return jsonResponse(200, { todos, mirror, briefs, recentRulings });
 });
 
 http.route({
-  path: "/dts/batch-context",
+  path: "/tts/batch-context",
   method: "GET",
-  handler: dtsBatchContext,
+  handler: ttsBatchContext,
 });
 
-// POST /dts/session-outcome — an autonomous session's outcome pen. Body:
+// POST /tts/session-outcome — an autonomous session's outcome pen. Body:
 // { sessionId, outcome: "completed"|"errored", summary? }. It lives under the
-// DTS key ON PURPOSE: an autonomous session's environment carries ONLY
-// CONVEX_SITE_URL + DTS_WORKER_KEY — SESSIONS_WORKER_KEY never enters a
+// TTS key ON PURPOSE: an autonomous session's environment carries ONLY
+// CONVEX_SITE_URL + TTS_WORKER_KEY — SESSIONS_WORKER_KEY never enters a
 // model-reachable shell (the auth-clobber lesson: the ingest key would let a
 // prompt-injected session forge poll/ingest traffic for every session), so
 // the one key the agent holds must be the one this pen accepts.
-const dtsSessionOutcome = httpAction(async (ctx, request) => {
-  const denied = dtsAuth(request);
+const ttsSessionOutcome = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
   try {
@@ -629,9 +629,9 @@ const dtsSessionOutcome = httpAction(async (ctx, request) => {
 });
 
 http.route({
-  path: "/dts/session-outcome",
+  path: "/tts/session-outcome",
   method: "POST",
-  handler: dtsSessionOutcome,
+  handler: ttsSessionOutcome,
 });
 
 // ── Claude Code session-host endpoints ───────────────────────────────────────

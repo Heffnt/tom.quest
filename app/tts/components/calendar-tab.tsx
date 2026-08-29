@@ -1,6 +1,6 @@
 "use client";
 
-// DTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
+// TTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
 // stacks, in time order: committed blocks (dtsBlocks), due marks (dueAt),
 // wake marks (waiting todos' wakeAt), and — on today only — the day's queue
 // from getToday. Blocks are calendar strokes: create / move / delete freely;
@@ -12,7 +12,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
-import { buildBlockSessionPrompt } from "@/app/lib/dts-session-prompt";
+import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
 import Info from "./info";
 import { errMessage, toDatetimeLocal } from "../lib";
 
@@ -88,8 +88,8 @@ function BlockChip({
   sessionBusy: boolean;
   sessionError: string | null;
 }) {
-  const updateBlock = useMutation(api.dts.updateBlock);
-  const deleteBlock = useMutation(api.dts.deleteBlock);
+  const updateBlock = useMutation(api.tts.updateBlock);
+  const deleteBlock = useMutation(api.tts.deleteBlock);
   const isCategory = block.category !== undefined;
   const [open, setOpen] = useState(false);
   const [startDraft, setStartDraft] = useState(toDatetimeLocal(block.start));
@@ -178,14 +178,14 @@ function BlockChip({
               <button onClick={move} disabled={busy} className={btnCls}>
                 Move
               </button>
-              <Info label="dts.updateBlock({start,end})" />
+              <Info label="tts.updateBlock({start,end})" />
             </div>
           )}
           <div className="flex items-center gap-1">
             <button onClick={remove} disabled={busy} className={btnCls}>
               Delete
             </button>
-            <Info label="dts.deleteBlock({id})" />
+            <Info label="tts.deleteBlock({id})" />
           </div>
           {isCategory && (
             <div>
@@ -224,7 +224,7 @@ function AddBlockForm({
   categories: string[];
   onClose: () => void;
 }) {
-  const createBlock = useMutation(api.dts.createBlock);
+  const createBlock = useMutation(api.tts.createBlock);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("10:00");
   const [endTouched, setEndTouched] = useState(false);
@@ -277,7 +277,7 @@ function AddBlockForm({
     }
   };
 
-  const listId = `dts-cats-${dayStart}`;
+  const listId = `tts-cats-${dayStart}`;
 
   return (
     <form
@@ -362,8 +362,8 @@ function AddBlockForm({
         <Info
           label={
             mode === "todo"
-              ? "dts.createBlock({start,end,todoId})"
-              : "dts.createBlock({start,end,category})"
+              ? "tts.createBlock({start,end,todoId})"
+              : "tts.createBlock({start,end,category})"
           }
         />
       </div>
@@ -383,16 +383,16 @@ export default function CalendarTab({
   const router = useRouter();
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
-  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
+  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
   // Only the visible week's blocks ride the subscription (dtsBlocks grows
   // forever; the by_start index serves the range).
   const blocks = useQuery(
-    api.dts.listBlocks,
+    api.tts.listBlocks,
     isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
-  const today = useQuery(api.dts.getToday, isTom ? {} : "skip");
+  const today = useQuery(api.tts.getToday, isTom ? {} : "skip");
   const createSession = useMutation(api.claudeSessions.createSession);
-  const recordEvent = useMutation(api.dts.recordEvent);
+  const recordEvent = useMutation(api.tts.recordEvent);
   const [addDay, setAddDay] = useState<number | null>(null); // dayStart ms
   const [sessionBusyId, setSessionBusyId] = useState<Id<"dtsBlocks"> | null>(
     null,

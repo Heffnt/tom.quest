@@ -1,6 +1,6 @@
-// dts-code-lib.mjs — shared helpers for the DTS CODE-TODO jobs
+// tts-code-lib.mjs — shared helpers for the TTS CODE-TODO jobs
 // (brief-code-todos.mjs, apply-rulings.mjs, execute-approved.mjs). Plain Node
-// ESM, ZERO npm dependencies — same rules as dts-lib.mjs.
+// ESM, ZERO npm dependencies — same rules as tts-lib.mjs.
 //
 // The code-todo loop in one breath: CMT (github.com/Heffnt/ComplexMultiTrigger)
 // keeps its standing intent in vqc/todos.yaml; the briefing job explains each
@@ -10,15 +10,15 @@
 // merging that PR is the human gate.
 //
 // STATE ON THIS BOX (all harmless to lose, per the no-state rule):
-//   /var/cache/dts/ComplexMultiTrigger — shallow cache clone; rebuilt from
+//   /var/cache/tts/ComplexMultiTrigger — shallow cache clone; rebuilt from
 //       origin on every use, so deleting it costs one clone.
-//   /var/cache/dts/briefs/<repo>/<id>.md — local copy of each posted brief so
+//   /var/cache/tts/briefs/<repo>/<id>.md — local copy of each posted brief so
 //       the apply job can embed it in session agendas without a Convex read
 //       endpoint; rebuildable by re-briefing (--force).
-//   /var/lib/dts/brief-hashes.json — cursor: the source hash each entry was
+//   /var/lib/tts/brief-hashes.json — cursor: the source hash each entry was
 //       last briefed at. Losing it just re-briefs everything once (the Convex
 //       POST upserts, so duplicates cost only Claude time).
-//   /var/lib/dts/{apply,execute}.lock — mkdir-based cron serialization locks.
+//   /var/lib/tts/{apply,execute}.lock — mkdir-based cron serialization locks.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -27,15 +27,15 @@ import { execFileSync } from "node:child_process";
 
 export const CMT_REPO = "ComplexMultiTrigger";
 export const CMT_DEFAULT_BRANCH = "master";
-export const CMT_CACHE_DIR = "/var/cache/dts/ComplexMultiTrigger";
+export const CMT_CACHE_DIR = "/var/cache/tts/ComplexMultiTrigger";
 export const TODOS_PATH = "vqc/todos.yaml"; // relative to the repo root
 // The guard test for todos.yaml — run from the CMT repo root. This ONE test
 // module (not the whole guard suite) is the contract for "todos.yaml is still
 // well-formed after my surgery".
 export const TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
 
-export const BRIEF_HASHES_FILE = "/var/lib/dts/brief-hashes.json";
-export const BRIEF_CACHE_ROOT = "/var/cache/dts/briefs";
+export const BRIEF_HASHES_FILE = "/var/lib/tts/brief-hashes.json";
+export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
 
 // Cursor-value sentinel prefix: apply-rulings sets an entry's cursor value to
 // "replan-requested[: <Tom's sentence>]" instead of a real hash when Tom's
@@ -71,7 +71,7 @@ export function git(dir, ...args) {
 // effect on the next cron tick.
 export function cmtRemoteUrl(env) {
   if (!env.GH_TOKEN) {
-    throw new Error("missing GH_TOKEN in /etc/dts/worker.env — the code-todo jobs need it");
+    throw new Error("missing GH_TOKEN in /etc/tts/worker.env — the code-todo jobs need it");
   }
   return `https://x-access-token:${env.GH_TOKEN}@github.com/Heffnt/${CMT_REPO}.git`;
 }

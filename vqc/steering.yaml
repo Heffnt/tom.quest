@@ -37,7 +37,7 @@
     changes as observable behavior; end rulings with what he needs to decide
     plus a recommendation. His understanding is the pipeline's bottleneck —
     convoluted prose costs more than slow agents. Full contract: WikiTom
-    dts/spec.md section 12.
+    tts/spec.md section 12.
   incidents: 0
   graduation: prose
 
@@ -51,7 +51,7 @@
     documents, unless Tom explicitly asks for a document. Durable gaps go in
     vqc/ledger.yaml; decided work goes in vqc/todos.yaml. (Transferred from
     Tom's identical standing preference in the ComplexMultiTrigger repo;
-    dts/implementation-plan.md predates this transfer and was explicitly
+    tts/implementation-plan.md predates this transfer and was explicitly
     requested.)
   incidents: 0
   graduation: prose
@@ -73,11 +73,11 @@
   kind: pre-emption
   owner: tom
   created: 2026-08-27
-  trigger: writing any DTS-surface copy (pages, digest, event messages)
+  trigger: writing any TTS-surface copy (pages, digest, event messages)
   correction: >-
     System language states observable facts and renders zero verdicts — no
     scolding AND no praise, no streaks or scores. Spec principles 3-5
-    (WikiTom dts/spec.md section 4). No guard can check tone; this row keeps
+    (WikiTom tts/spec.md section 4). No guard can check tone; this row keeps
     the rule in view.
   incidents: 0
   graduation: prose

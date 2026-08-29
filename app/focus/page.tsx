@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// The Focus surface merged into /dts (calendar tab). Any ?item=&intent= deep
+// The Focus surface merged into /tts (calendar tab). Any ?item=&intent= deep
 // link is carried across (?item forces the everything tab client-side).
 export default async function FocusPage({
   searchParams,
@@ -11,5 +11,5 @@ export default async function FocusPage({
   const qs = new URLSearchParams({ tab: "calendar" });
   if (typeof sp.item === "string") qs.set("item", sp.item);
   if (typeof sp.intent === "string") qs.set("intent", sp.intent);
-  redirect(`/dts?${qs.toString()}`);
+  redirect(`/tts?${qs.toString()}`);
 }

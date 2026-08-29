@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // brief-code-todos.mjs — brief every open CMT code-todo for Tom's ruling.
 //
-// Run by cron at 17 past every 2nd hour (see /etc/cron.d/dts). Manual runs:
-//   node /opt/dts/brief-code-todos.mjs           # brief what changed
-//   node /opt/dts/brief-code-todos.mjs --force   # re-brief EVERYTHING
+// Run by cron at 17 past every 2nd hour (see /etc/cron.d/tts). Manual runs:
+//   node /opt/tts/brief-code-todos.mjs           # brief what changed
+//   node /opt/tts/brief-code-todos.mjs --force   # re-brief EVERYTHING
 //
 // WHAT A BRIEF IS: vqc/todos.yaml in the ComplexMultiTrigger repo is Tom's
 // standing-intent registry — each entry is a decided piece of work with a
@@ -15,7 +15,7 @@
 //
 // INCREMENTALITY: an entry is re-briefed only when its YAML changed since the
 // last posted brief, tracked by a sha256 source hash in the local cursor file
-// /var/lib/dts/brief-hashes.json. Losing that file is harmless: everything
+// /var/lib/tts/brief-hashes.json. Losing that file is harmless: everything
 // gets re-briefed once and the Convex POST upserts. A cursor value of
 // "replan-requested..." (set by apply-rulings on a stale-replan ruling) also
 // forces a re-brief AND switches the prompt to ask for a fresh plan.
@@ -26,7 +26,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./dts-lib.mjs";
+import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 import {
   CMT_REPO,
   TODOS_PATH,
@@ -38,7 +38,7 @@ import {
   writeBriefHashes,
   briefCachePath,
   findEntryBlock,
-} from "./dts-code-lib.mjs";
+} from "./tts-code-lib.mjs";
 
 // At most this many briefs per cron run (all pending with --force). The cap
 // bounds the run: 8 entries x the 10-minute per-entry Claude timeout is 80
@@ -110,7 +110,7 @@ function briefPrompt(entryYaml, replanNote) {
 // body is embedded in needs-session agendas.
 function briefCacheMarkdown(externalId, parsed) {
   return [
-    `# DTS brief — ${CMT_REPO}:${externalId}`,
+    `# TTS brief — ${CMT_REPO}:${externalId}`,
     ``,
     `Recommendation: ${parsed.recommendation}`,
     `Exec-class: ${parsed.execClass}`,
@@ -202,7 +202,7 @@ async function main() {
       // Durable in dependency order: Convex first (the system of record),
       // then the local brief cache, then the cursor — so a crash can only
       // leave us re-doing work, never believing work happened that didn't.
-      await convexFetch(env, "/dts/code-briefs", {
+      await convexFetch(env, "/tts/code-briefs", {
         briefs: [
           {
             repo: CMT_REPO,

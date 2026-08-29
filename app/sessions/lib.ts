@@ -1,11 +1,11 @@
-// Shared types + helpers for the DTS Sessions surface (headless Claude Code
+// Shared types + helpers for the TTS Sessions surface (headless Claude Code
 // sessions on the worker box; convex/claudeSessions.ts is the contract).
 // Copy rules: descriptive never evaluative, plain hyphenated vocabulary.
 
 import type { Doc } from "@/convex/_generated/dataModel";
 
 // Age text is shared with the Inventory surface — one definition.
-export { ageText } from "../dts/lib";
+export { ageText } from "../tts/lib";
 
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
