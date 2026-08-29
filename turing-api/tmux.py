@@ -45,30 +45,6 @@ def capture_output(session_name: str, lines: int = 500) -> str:
     return stdout
 
 
-def list_session_clients(session_name: str) -> list[str]:
-    target = shlex.quote(session_name)
-    stdout, _, returncode = run(
-        f"tmux list-clients -t {target} -F '#{{client_tty}}' 2>/dev/null"
-    )
-    if returncode != 0:
-        return []
-    return [line.strip() for line in stdout.strip().split("\n") if line.strip()]
-
-
-def count_session_clients(session_name: str) -> int:
-    return len(list_session_clients(session_name))
-
-
-def detach_session_clients(session_name: str) -> int:
-    detached = 0
-    for client_tty in list_session_clients(session_name):
-        target = shlex.quote(client_tty)
-        _, _, returncode = run(f"tmux detach-client -t {target}")
-        if returncode == 0:
-            detached += 1
-    return detached
-
-
 def resize_session_window(session_name: str, cols: int, rows: int) -> bool:
     target = shlex.quote(session_name)
     run(f"tmux set-option -t {target} window-size latest")

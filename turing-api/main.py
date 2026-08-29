@@ -15,12 +15,9 @@ from tmux import (
     cleanup_session,
     capture_output,
     session_exists,
-    send_to_session,
-    count_session_clients,
-    detach_session_clients,
 )
 from job_screens import get_screen_name, remove_screen_mapping
-from dirs import list_directory, get_home_dir, resolve_within_root, PathNotAllowed
+from dirs import resolve_within_root, PathNotAllowed
 from fastapi.responses import FileResponse
 import boolback_snapshot
 import forge
@@ -104,19 +101,6 @@ class JobResponse(BaseModel):
     job_name: str
     gpu_stats: JobGpuStatsResponse | None = None
 
-class RunCommandRequest(BaseModel):
-    command: str
-
-class RunCommandResponse(BaseModel):
-    success: bool
-
-class SessionClientsResponse(BaseModel):
-    attached_clients: int
-
-class DetachClientsResponse(BaseModel):
-    success: bool
-    detached_clients: int
-
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -191,56 +175,14 @@ def gpu_report(auth: bool = Depends(verify_api_key)) -> dict:
 def gpu_types(auth: bool = Depends(verify_api_key)) -> dict:
     return {"types": get_free_gpu_type_info()}
 
-@app.get("/dirs")
-def list_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
-    if not path:
-        path = get_home_dir()
-    return list_directory(path)
-
-@app.get("/file")
-def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
-    try:
-        resolved = resolve_within_root(path)
-    except PathNotAllowed as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    if not resolved.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    try:
-        return {"content": resolved.read_text(encoding="utf-8"), "path": path}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
-
 # --- boolback snapshot surface (BUILD STEP 2) ----------------------------------
-# Three read-only endpoints confined to $BOOLEAN_BACKDOOR_OUTPUT. The CMT builder
-# is NEVER imported here; it runs as a subprocess (conda run) kicked from a daemon
-# thread. The picker chooses a snapshot-able output ROOT; a refresh POST-kicks a
-# rebuild; the blob is the gzipped snapshot streamed back through a binary Next
-# route. All three are sync `def` for the same event-loop reason as above.
-
-@app.get("/cmt-dirs")
-def cmt_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
-    """List child dirs of a CMT output location for the snapshot dir-picker.
-    Pinned to $BOOLEAN_BACKDOOR_OUTPUT (not the /dirs $HOME root)."""
-    try:
-        root = boolback_snapshot.cmt_root()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    try:
-        resolved = resolve_within_root(path or str(root), root=root)
-    except PathNotAllowed as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    if not resolved.is_dir():
-        raise HTTPException(status_code=404, detail=f"Not a directory: {path}")
-    try:
-        dirs = [
-            item.name
-            for item in sorted(resolved.iterdir())
-            if item.is_dir() and not item.name.startswith(".")
-        ]
-    except PermissionError:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
-    return {"path": str(resolved), "dirs": dirs, "error": None}
-
+# Read-only endpoints confined to $BOOLEAN_BACKDOOR_OUTPUT. The CMT builder is
+# NEVER imported here; it runs as a subprocess (conda run) kicked from a daemon
+# thread. A refresh POST-kicks a rebuild; the blob is the gzipped snapshot streamed
+# back through a binary Next route. All are sync `def` for the same event-loop
+# reason as above. These are also the ONLY file-reading endpoints left: the generic
+# $HOME-rooted /file and /dirs were deleted (no tom.quest caller ever asked for
+# them), so every path a request can name is jailed to a feature-specific root.
 
 @app.get("/cmt-node")
 def cmt_node(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
@@ -416,28 +358,12 @@ def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends
     output = capture_output(session_name, lines)
     return {"session_name": session_name, "output": output}
 
-@app.post("/sessions/{session_name}/run", response_model=RunCommandResponse)
-def run_session_command(session_name: str, request: RunCommandRequest, auth: bool = Depends(verify_api_key)) -> RunCommandResponse:
-    if not request.command.strip():
-        raise HTTPException(status_code=400, detail="Command is required")
-    if not session_exists(session_name):
-        raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
-    if not send_to_session(session_name, request.command):
-        raise HTTPException(status_code=502, detail="Failed to send command to session")
-    return RunCommandResponse(success=True)
-
-@app.get("/sessions/{session_name}/clients", response_model=SessionClientsResponse)
-def get_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> SessionClientsResponse:
-    if not session_exists(session_name):
-        raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
-    return SessionClientsResponse(attached_clients=count_session_clients(session_name))
-
-@app.post("/sessions/{session_name}/detach-clients", response_model=DetachClientsResponse)
-def post_detach_session_clients(session_name: str, auth: bool = Depends(verify_api_key)) -> DetachClientsResponse:
-    if not session_exists(session_name):
-        raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
-    detached_clients = detach_session_clients(session_name)
-    return DetachClientsResponse(success=True, detached_clients=detached_clients)
+# A tmux session is otherwise driven ONLY through the terminal WebSocket
+# (`ws.py`), which attaches a pty. The former HTTP shortcuts around it —
+# POST /sessions/{name}/run (tmux send-keys), GET /sessions/{name}/clients and
+# POST /sessions/{name}/detach-clients (tmux list-/detach-client) — were deleted:
+# no tom.quest client ever called them, so they were a keystroke-injection and
+# session-eviction surface with nothing on the other end.
 
 if __name__ == "__main__":
     import uvicorn

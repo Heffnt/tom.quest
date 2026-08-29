@@ -58,12 +58,22 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   (`slurm.py:183`) and returns **all** of the user's jobs — there is no server-side tag
   separating pool/reconciler jobs from manual ones. A 500 here freezes the reconciler, so
   the parser is defensive (maxsplit=7).
-- **File access:** `GET /file` / `GET /dirs` confined to `TURING_FILE_ROOT` (default
-  `$HOME`) via `resolve_within_root` (`dirs.py:22`), which collapses `..`, follows
-  symlinks, and additionally **refuses secret paths** (`.ssh`/`.aws`/`.gnupg`,
-  `.env`/`.pem`/`.key`). This is the **only** confined file primitive in the app.
+- **File access:** every path a request can name goes through `resolve_within_root`
+  (`dirs.py`), which collapses `..`, follows symlinks, and additionally **refuses secret
+  paths** (`.ssh`/`.aws`/`.gnupg`, `.env`/`.pem`/`.key`). This is the **only** confined
+  file primitive in the app. It takes an **explicit root** — there is no default and no
+  `$HOME`-wide surface: `/cmt-node` and `/cmt-file` are jailed to `$BOOLEAN_BACKDOOR_OUTPUT`,
+  `/forge/*` to the forge root. The generic `GET /file` / `GET /dirs` that once carried the
+  `$HOME` default were deleted (Aug 2026) because no tom.quest client called them.
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
-  gated, session-scoped.
+  gated, session-scoped. It is the **only** way a tmux session is driven: the HTTP shortcuts
+  around it (`POST /sessions/{name}/run`, `GET /sessions/{name}/clients`,
+  `POST /sessions/{name}/detach-clients`) were deleted (Aug 2026) as uncalled.
+- **The caller rule:** the Next proxy (`app/api/turing/[...path]/route.ts`) forwards **any**
+  path an admin names, so a route no client asks for is reachable attack surface with
+  nothing on the other end. Every served route is listed with its caller in `RouteSurfaceTest`
+  (`main_test.py`); a new route adds its caller there, and a route that loses its last caller
+  is deleted.
 - **The async invariant (load-bearing):** every endpoint that shells out is plain `def`,
   never `async def`; only `/health` is async. A blocking subprocess call inside `async def`
   freezes the event loop and starved `/health` during the **June 2026 outage**
@@ -153,7 +163,10 @@ an outcome signal for them (§8.3).
 4. **Fail-closed.** Unreadable actual state ⇒ skip the cycle, carry prior state; never act
    against an unknown world.
 5. **Sync-`def` for anything blocking.** Preserve the June-2026 invariant.
-6. **Confine every file read** through `dirs.py:resolve_within_root` (§8.4).
+6. **Confine every file read** through `dirs.py:resolve_within_root`, passing the tightest
+   root the feature needs (§8.4).
+7. **No endpoint without a caller.** Ship a route with the client that asks for it, and
+   delete a route when its last caller goes (§1.1).
 
 ---
 
@@ -370,7 +383,10 @@ lives in booleanbackdoors's own analysis CLI (`python -m boolean_backdoor.analys
   **GPU-hours** (`ElapsedRaw × gres/gpu`), and terminal `State`. Do **not** poll on a tight
   loop expecting instant terminal state. Match `CANCELLED` by prefix (`CANCELLED by <uid>`).
 - **The worker log tail:** the failure reason for a worker that died (workers redirect to
-  `~/<name>.log`, under `$HOME`, read via the confined `/file`, §8.4).
+  `~/<name>.log`, under `$HOME`). This needs a **new** endpoint shaped to that one job —
+  a log name, jailed to the worker-log root — not a generic file read: the old `$HOME`-wide
+  `/file` was deleted as uncalled (§1.1), and a purpose-shaped endpoint is what §8.4 asks
+  for anyway.
 
 ### 8.2 The dashboard
 
@@ -390,15 +406,18 @@ Outcomes come from:
 
 - **clean exit vs crash** ← the worker's exit (a clean exit-0 frees the GPU via self-`scancel`,
   §4.2; a nonzero exit or a vanish-before-progress is a crash, §8.5).
-- **the failure reason** ← the tail of the worker's `~/<name>.log` (confined `/file`).
+- **the failure reason** ← the tail of the worker's `~/<name>.log` (through a confined
+  log-tail endpoint, §8.1).
 - **GPU-hours and wall `TIMEOUT`/`CANCELLED`** ← `sacct` (the one thing it is good for here).
 
 ### 8.4 Confinement
 
 tom.Quest does not walk the artifact tree, so there is no large scan to bound — its file
 access is just the worker log tails. Still, **every file endpoint goes through
-`dirs.py:resolve_within_root`** (regression-test that `../`, absolute escapes, and
-`.env`/`.ssh`/`.pem`/`.key` targets are 403).
+`dirs.py:resolve_within_root` with its own explicit root** (regression-tested on the
+primitive itself in `dirs_test.py`: `../`, absolute escapes, symlink escapes, and
+`.env`/`.ssh`/`.pem`/`.key` targets all raise `PathNotAllowed`). A file endpoint is also
+subject to the caller rule in §1.1: it exists only while something asks for it.
 
 ### 8.5 Failure surfacing
 
@@ -441,7 +460,7 @@ command authoring admin-only (§7). Whole-GPU single-GPU workers; `desiredCount`
 `[0, 16]`, with SLURM `DenyOnLimit` (12 on `short`) the hard backstop and the real-QOS
 shared-budget clamp deferred (§4.5, §13). Convex: durable writes through mutations; HTTP
 endpoints in `convex/http.ts`; adding fields needs no `_generated` hand-edit. Confinement through
-`resolve_within_root` (§8.4).
+`resolve_within_root` with an explicit root (§8.4). No endpoint without a caller (§1.1).
 
 ---
 

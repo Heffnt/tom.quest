@@ -23,7 +23,7 @@ def _request(method: str, path: str, **kwargs) -> httpx.Response:
 
 
 class BoolbackSnapshotTest(unittest.TestCase):
-    """The /cmt-dirs + /boolback-snapshot* surface is confined to
+    """The /cmt-node, /cmt-file and /boolback-snapshot* surface is confined to
     $BOOLEAN_BACKDOOR_OUTPUT, serves the LATEST cached snapshot (staleness-tolerant,
     never blocking), and rebuilds via an sbatch argv list (shell=False) so neither a
     traversal escape nor a shell-metacharacter dir name can read arbitrary files or
@@ -56,17 +56,6 @@ class BoolbackSnapshotTest(unittest.TestCase):
         with gzip.open(cf, "wb") as f:
             f.write(body)
         return cf
-
-    # --- /cmt-dirs ------------------------------------------------------------
-
-    def test_cmt_dirs_lists_children(self) -> None:
-        res = _request("GET", "/cmt-dirs")
-        self.assertEqual(res.status_code, 200)
-        self.assertIn("experiment_output", res.json()["dirs"])
-
-    def test_cmt_dirs_rejects_traversal(self) -> None:
-        res = _request("GET", "/cmt-dirs", params={"path": f"{self.root}/../../etc"})
-        self.assertEqual(res.status_code, 403)
 
     # --- GET /boolback-snapshot (serve-latest status) ------------------------
 

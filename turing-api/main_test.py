@@ -1,9 +1,8 @@
 import asyncio
-import tempfile
+import re
 import threading
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -84,92 +83,75 @@ class AllocateCountTest(unittest.TestCase):
         self.assertEqual(res.json()["job_ids"], ["100", "101", "102"])
 
 
-class FileAccessTest(unittest.TestCase):
-    """/file and /dirs are confined to ALLOWED_FILE_ROOT and refuse secrets even
-    inside it, so a network-reachable GET can't read ~/.ssh, .env, or /etc."""
+class RouteSurfaceTest(unittest.TestCase):
+    """Every route the API serves has a named caller in tom.quest. An endpoint no
+    client asks for is still reachable by anyone holding the shared API key (the
+    Next proxy at app/api/turing/[...path]/route.ts forwards ANY path an admin
+    names), so an uncalled route is pure attack surface. This list is the contract:
+    adding a route means adding its caller here, and it is what caught the six
+    uncalled routes deleted in this test's introducing commit — GET /dirs,
+    GET /file, GET /cmt-dirs, POST /sessions/{name}/run,
+    GET /sessions/{name}/clients, POST /sessions/{name}/detach-clients."""
 
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name).resolve()
-        (self.root / "ok.txt").write_text("hello")
-        (self.root / ".env").write_text("SECRET=1")
-        self._patches = [patch("dirs.ALLOWED_FILE_ROOT", self.root), patch("main.API_KEY", "")]
-        for p in self._patches:
-            p.start()
+    # Routes FastAPI mounts on its own; no tom.quest code asks for them.
+    FRAMEWORK_ROUTES = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 
-    def tearDown(self) -> None:
-        for p in self._patches:
-            p.stop()
-        self._tmp.cleanup()
+    # path -> the caller that asks for it
+    CALLERS = {
+        "/health": "convex/serverHealth.ts pollTuring cron",
+        "/gpu-report": "app/turing/turing-client.tsx",
+        "/gpu-types": "app/turing/components/allocate-form.tsx, pool-panel.tsx",
+        "/allocate": "app/turing/components/allocate-form.tsx, convex/gpuPool.ts",
+        "/jobs": "app/turing/turing-client.tsx, convex/gpuPool.ts reconcile",
+        "/jobs/{job_id}": "app/turing/components/job-table.tsx, convex/gpuPool.ts",
+        "/sessions/{session_name}/output": "app/turing/components/terminal-modal.tsx",
+        "/ws/sessions/{session_name}": "app/turing/terminal/[session]/terminal-client.tsx",
+        "/transformer-trace/{path}": "app/transformer/lib/turing-source.ts",
+        "/cmt-node": "app/api/boolback/node/route.ts",
+        "/cmt-file": "app/api/boolback/file/route.ts",
+        "/boolback-snapshot": "app/boolback/data/source.ts (POST), boolback_cron.sh",
+        "/boolback-snapshot-blob": "app/api/boolback/blob/route.ts",
+        "/forge/train": "app/forge/components/builder-form.tsx",
+        "/forge/train/{run_id}": "app/forge/components/job-list.tsx",
+        "/forge/runs": "app/forge/components/job-list.tsx",
+        "/forge/serve": "app/forge/components/job-list.tsx",
+        "/forge/serve/{run_id}": "app/forge/components/chat-panel.tsx",
+        # No caller as of the Aug 2026 sweep. Left in place because it is the stop
+        # half of /forge/serve, which does have callers; the same sweep's other
+        # uncalled routes were deleted (see this class's docstring).
+        "/forge/serve/{run_id}/stop": "",
+        "/forge/chat": "app/forge/components/chat-panel.tsx",
+    }
 
-    def test_serves_file_within_root(self) -> None:
-        res = _request("GET", "/file", params={"path": str(self.root / "ok.txt")})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["content"], "hello")
+    @staticmethod
+    def _served_paths() -> set[str]:
+        # Starlette keeps the converter in the path ("{path:path}"); the caller map
+        # names the parameter alone.
+        return {
+            re.sub(r":[a-z_]+\}", "}", route.path)
+            for route in main.app.routes
+            if isinstance(getattr(route, "path", None), str)
+        }
 
-    def test_rejects_file_outside_root(self) -> None:
-        res = _request("GET", "/file", params={"path": "/etc/passwd"})
-        self.assertEqual(res.status_code, 403)
+    def test_every_served_route_has_a_caller(self) -> None:
+        unlisted = self._served_paths() - set(self.CALLERS) - self.FRAMEWORK_ROUTES
+        self.assertEqual(
+            unlisted,
+            set(),
+            "route served with no caller listed: delete it, or add its caller to CALLERS",
+        )
 
-    def test_rejects_traversal_escape(self) -> None:
-        res = _request("GET", "/file", params={"path": f"{self.root}/../../../etc/passwd"})
-        self.assertEqual(res.status_code, 403)
-
-    def test_rejects_env_file_within_root(self) -> None:
-        res = _request("GET", "/file", params={"path": str(self.root / ".env")})
-        self.assertEqual(res.status_code, 403)
-
-    def test_dirs_rejects_outside_root(self) -> None:
-        res = _request("GET", "/dirs", params={"path": "/etc"})
-        self.assertEqual(res.status_code, 200)
-        body = res.json()
-        self.assertEqual(body["dirs"], [])
-        self.assertTrue(body["error"])
-
-
-class RunCommandTest(unittest.TestCase):
-    """POST /sessions/{name}/run lets an authenticated caller run a command in an
-    existing allocation instead of resorting to out-of-band tmux send-keys."""
-
-    def test_run_sends_command_to_existing_session(self) -> None:
-        with (
-            patch("main.API_KEY", ""),
-            patch("main.session_exists", return_value=True),
-            patch("main.send_to_session", return_value=True) as send,
+    def test_deleted_file_and_session_routes_stay_deleted(self) -> None:
+        served = self._served_paths()
+        for gone in (
+            "/dirs",
+            "/file",
+            "/cmt-dirs",
+            "/sessions/{session_name}/run",
+            "/sessions/{session_name}/clients",
+            "/sessions/{session_name}/detach-clients",
         ):
-            res = _request("POST", "/sessions/1_alloc/run", json={"command": "nvidia-smi"})
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(res.json()["success"])
-        send.assert_called_once_with("1_alloc", "nvidia-smi")
-
-    def test_run_404_when_session_missing(self) -> None:
-        with (
-            patch("main.API_KEY", ""),
-            patch("main.session_exists", return_value=False),
-            patch("main.send_to_session") as send,
-        ):
-            res = _request("POST", "/sessions/missing/run", json={"command": "ls"})
-        self.assertEqual(res.status_code, 404)
-        send.assert_not_called()
-
-    def test_run_400_when_command_blank(self) -> None:
-        with (
-            patch("main.API_KEY", ""),
-            patch("main.session_exists", return_value=True),
-            patch("main.send_to_session") as send,
-        ):
-            res = _request("POST", "/sessions/1_alloc/run", json={"command": "   "})
-        self.assertEqual(res.status_code, 400)
-        send.assert_not_called()
-
-    def test_run_502_when_send_fails(self) -> None:
-        with (
-            patch("main.API_KEY", ""),
-            patch("main.session_exists", return_value=True),
-            patch("main.send_to_session", return_value=False),
-        ):
-            res = _request("POST", "/sessions/1_alloc/run", json={"command": "ls"})
-        self.assertEqual(res.status_code, 502)
+            self.assertNotIn(gone, served)
 
 
 class ListJobsTest(unittest.TestCase):

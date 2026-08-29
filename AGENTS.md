@@ -54,7 +54,8 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Terminal WebSockets open directly from the browser to `wss://turing.tom.quest` after admins fetch a short-lived HMAC token from `/api/turing/ws-credentials`.
 - Liveness is owned by a Convex cron (`internal.serverHealth.pollTuring`) that probes `/health` and writes to the `serverHealth` table; `useServer("turing").status` reads it.
 - The proxy detects HTML/non-JSON upstream responses and converts them to structured JSON errors.
-- The API binds `127.0.0.1` (only the co-located cloudflared reaches it; not the shared cluster LAN). `/file` and `/dirs` are confined to `TURING_FILE_ROOT` (default home) and refuse secret-bearing paths.
+- The API binds `127.0.0.1` (only the co-located cloudflared reaches it; not the shared cluster LAN). Every path a request can name is confined by `dirs.resolve_within_root`, which takes an explicit feature-specific root (there is no default) and refuses secret-bearing paths.
+- The Next proxy forwards any path an admin names, so an endpoint with no caller is pure attack surface. Every route the API serves is listed with its caller in `RouteSurfaceTest` (`turing-api/main_test.py`); adding a route means adding its caller there, or deleting the route.
 - Declarative GPU pool: desired state lives in the `gpuPool` table; the Convex cron `internal.gpuPool.reconcile` reconciles desired-vs-actual against the API, tracking its own jobs in `gpuPoolAllocation` so it only ever cancels pool-created jobs. Requires `TURING_API_KEY` in the Convex env (not just Vercel).
 
 ## Deployment
