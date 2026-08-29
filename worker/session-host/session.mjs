@@ -25,6 +25,7 @@ import {
   truncated,
   ERROR_TEXT_LIMIT,
 } from "./lib.mjs";
+import { BANNED_TOOLS, bannedToolDenial } from "./banned-tools.mjs";
 
 const execFile = promisify(execFileCb);
 
@@ -66,6 +67,12 @@ const FLUSH_THROTTLE_MS = 400;
 // before checking cwd). MultiEdit is included because it is the same class
 // of tool as Edit in current CLIs.
 const EDIT_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
+
+// …and one class of tool is banned outright rather than judged per call:
+// BANNED_TOOLS in banned-tools.mjs (currently AskUserQuestion alone), whose
+// header says why. It is passed to the SDK as `disallowedTools` in
+// startQuery — which removes it from the model's context — and denied again
+// in #canUseTool for any path that reaches the gate anyway.
 
 // ── The Bash classifier (Tom's ruling 2026-08-29, adoption.md
 //    `session-permission-posture`) ──────────────────────────────────────────
@@ -631,6 +638,12 @@ export class Session {
         cwd: this.workdir,
         includePartialMessages: true,
         permissionMode: "default",
+        // Banned tools, removed from the model's context by the SDK ("These
+        // tools will be removed from the model's context and cannot be used,
+        // even if they would otherwise be allowed" — sdk.d.ts). The gate's
+        // matching deny is the backstop, not the mechanism: a tool the model
+        // never sees is a tool it never spends a turn on.
+        disallowedTools: BANNED_TOOLS,
         abortController: this.abort,
         canUseTool: (toolName, input, opts) =>
           this.#canUseTool(toolName, input, opts),
@@ -982,6 +995,22 @@ export class Session {
     // session/<id> branch namespace, Tom's merge gate, Tom-only ruling pens
     // — and every allowed call still lands as a tool-call transcript row.
     // The one kept per-call check: edit tools must target the workdir.
+    //
+    // Before it, the flat ban. `disallowedTools` already keeps these out of
+    // the model's context, so reaching here means some path put the call
+    // through anyway (a resumed session carrying an older tool list, a
+    // subagent, an SDK change). Denying with a corrective message — and a
+    // system row, same failure-honesty reason as the edit denial below — is
+    // strictly better than the allow, which would return no chosen option and
+    // let the model continue as if it had asked someone.
+    const banned = bannedToolDenial(toolName, this.mode);
+    if (banned !== null) {
+      this.finalizeRow("system", {
+        text: `auto-denied ${toolName}: banned in tom.quest sessions (no surface answers it) — a corrective message was sent to the model`,
+      });
+      this.requestFlush(false);
+      return { behavior: "deny", message: banned };
+    }
     if (EDIT_TOOLS.has(toolName)) {
       const target =
         typeof input?.file_path === "string"
