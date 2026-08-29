@@ -2392,7 +2392,7 @@ describe("prospecting lane", () => {
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId: prospector._id,
     });
-    const text = inbound[0].text;
+    const text = inbound[0].text ?? "";
 
     // The dedupe read comes before the capture pen, and both are named.
     expect(text).toContain("/tts/state");
