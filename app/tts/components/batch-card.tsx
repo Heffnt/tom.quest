@@ -4,9 +4,10 @@
 // holding how todos get completed. Its plan is a graph of task- and
 // goal-todos; a todo is ready when everything it needs is done.
 // Collapsed = statement · task progress (amber = Tom's, green = agents') ·
-// what's ready now. Expanded = display text (+ "more" → ground-up
-// explanation) → actions → ready now → blocked (visible, never hidden) →
-// done → goals. Every item opens a detail dialog; nothing shifts the page.
+// what's ready now. Expanded = display text (whole block clickable → the
+// ground-up explanation) → actions → ready now → blocked (visible, never
+// hidden) → done → goals. Every item opens a detail dialog; nothing shifts
+// the page, and everything clickable changes on hover.
 import PlanBar from "./plan-bar";
 import type { RulingVerdict } from "./ruling-dialog";
 import type { DetailItem } from "./detail-dialog";
@@ -104,7 +105,7 @@ export default function BatchCard({
       <button
         type="button"
         onClick={onToggle}
-        className="grid w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-3 px-3 py-2 text-left"
+        className="grid w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-3 rounded-lg px-3 py-2 text-left hover:bg-surface-alt/40"
       >
         <span className="text-[11px] text-text-faint">{expanded ? "▾" : "▸"}</span>
         <span className="min-w-0">
@@ -139,17 +140,13 @@ export default function BatchCard({
       {expanded && (
         <div className="border-t border-border px-3 pb-3 pt-2.5">
           {graph.groundUp !== undefined && (
-            <p className="mb-2.5 text-[13px] text-text-muted">
-              {graph.groundUp.split(". ").slice(0, 2).join(". ")}
-              {". "}
-              <button
-                type="button"
-                onClick={() => onDetail({ kind: "batch", graph })}
-                className="text-accent underline underline-offset-2"
-              >
-                more
-              </button>
-            </p>
+            <button
+              type="button"
+              onClick={() => onDetail({ kind: "batch", graph })}
+              className="-mx-1.5 mb-2.5 block w-[calc(100%+0.75rem)] rounded px-1.5 py-1 text-left text-[13px] text-text-muted hover:bg-surface-alt/60 hover:text-text"
+            >
+              {graph.groundUp.split(". ").slice(0, 2).join(". ")}.
+            </button>
           )}
 
           <div className="mb-3 flex flex-wrap items-center gap-1.5">
@@ -182,7 +179,7 @@ export default function BatchCard({
                   key={t.id}
                   type="button"
                   onClick={() => onDetail(taskDetail(t))}
-                  className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px]"
+                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
                 >
                   <span className="text-text-faint">○</span>
                   <span
@@ -208,7 +205,7 @@ export default function BatchCard({
                   key={t.id}
                   type="button"
                   onClick={() => onDetail(taskDetail(t))}
-                  className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px] opacity-60"
+                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] opacity-60 hover:bg-surface-alt/60 hover:opacity-90"
                 >
                   <span className="text-text-faint">○</span>
                   <span
@@ -235,7 +232,7 @@ export default function BatchCard({
               <button
                 type="button"
                 onClick={onToggleDone}
-                className="mt-2.5 block text-[11px] uppercase tracking-wide text-accent underline underline-offset-2"
+                className="mt-2.5 block rounded text-[11px] uppercase tracking-wide text-accent underline underline-offset-2 hover:text-text"
               >
                 {showDone ? "hide" : "show"} {done.length} done
               </button>
@@ -245,7 +242,7 @@ export default function BatchCard({
                     key={t.id}
                     type="button"
                     onClick={() => onDetail(taskDetail(t))}
-                    className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px]"
+                    className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
                   >
                     <span className="text-success">✓</span>
                     <span
@@ -271,7 +268,7 @@ export default function BatchCard({
                   key={g.id}
                   type="button"
                   onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
-                  className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px]"
+                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
                 >
                   <span className={g.met ? "text-success" : "text-text-faint"}>
                     {g.met ? "✓" : "◇"}
