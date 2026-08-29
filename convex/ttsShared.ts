@@ -103,6 +103,34 @@ export function countdownText(dueAt: number, now: number): string {
   return `${-dayDiff} days overdue`;
 }
 
+// ── Session-surface constants (one home; ledger graduation
+// session-constants-two-homes) ───────────────────────────────────────────────
+// app/sessions and convex/claudeSessions import these directly. The worker
+// daemon CANNOT (only worker/ is deployed to the box, and Node does not load
+// .ts), so it carries its own halves: session.mjs's REPO_GITHUB is a literal
+// mirror of SESSION_REPOS, while session-host.mjs has no DAEMON_STALE_MS at
+// all — its POLL_IDLE_MS cadence is the other half of a DERIVED contract
+// (staleness = 3 missed idle polls). scripts/check-session-mirrors.mjs fences
+// both — literal equality for the repo map, the 3x relation for staleness —
+// and fails the guardrails run when either drifts.
+
+/**
+ * The repos a session may check out, with their GitHub homes. The browser's
+ * repo picker is Object.keys(SESSION_REPOS) + "none"; the daemon clones
+ * SESSION_REPOS[repo].
+ */
+export const SESSION_REPOS = {
+  "tom.quest": "Heffnt/tom.quest",
+  ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
+  WikiTom: "Heffnt/WikiTom",
+} as const;
+
+/**
+ * The browser treats the session daemon as unreachable past this heartbeat
+ * age; forceClose is allowed only past it. 90s = 3 missed 30s idle polls.
+ */
+export const DAEMON_STALE_MS = 90_000;
+
 /** Deep link to one item on the /tts page (Everything tab), optionally
  * carrying an intent the page confirms before acting (state changes only on
  * the confirmed click — Slack's link-preview crawler fetches URLs, spec §7).

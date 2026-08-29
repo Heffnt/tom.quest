@@ -1,16 +1,22 @@
 "use client";
 
-// List view: every session (live first), plus the new-session form.
-// Browser-created sessions are ad hoc by definition — gate / focus-item /
-// weekly sessions are created by the system with a todoId attached.
+// List view: every session in triage order, a filter row, and the
+// new-session form behind a button. Browser-created sessions are ad hoc or
+// weekly — gate / focus-item / block sessions are created by the system.
 
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import Info from "@/app/tts/components/info";
-import type { Session } from "../lib";
-import { REPO_OPTIONS, ageText, isLive, statusChipClass } from "../lib";
+import type { Session, SessionStatus } from "../lib";
+import {
+  REPO_OPTIONS,
+  ageText,
+  isLive,
+  previewLine,
+  statusChipClass,
+} from "../lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-xs text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
@@ -191,6 +197,7 @@ function NewSessionForm({
   const createSession = useMutation(api.claudeSessions.createSession);
   const [title, setTitle] = useState("");
   const [repo, setRepo] = useState<string>("tom.quest");
+  const [kind, setKind] = useState<"adhoc" | "weekly">("adhoc");
   const [prompt, setPrompt] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -202,7 +209,7 @@ function NewSessionForm({
     try {
       const id = await createSession({
         title,
-        kind: "adhoc",
+        kind,
         repo,
         initialPrompt: prompt,
       });
@@ -218,7 +225,6 @@ function NewSessionForm({
 
   return (
     <div className="border border-border rounded-lg bg-surface/40 p-3 space-y-2">
-      <div className="text-sm text-text">New session</div>
       <div className="flex flex-col sm:flex-row gap-2">
         <input
           type="text"
@@ -237,6 +243,14 @@ function NewSessionForm({
               {r}
             </option>
           ))}
+        </select>
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value as "adhoc" | "weekly")}
+          className="bg-surface-alt border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+        >
+          <option value="adhoc">adhoc</option>
+          <option value="weekly">weekly</option>
         </select>
       </div>
       <textarea
@@ -259,6 +273,34 @@ function NewSessionForm({
   );
 }
 
+// The list is a triage surface — needs-you outranks recency. Bands, top to
+// bottom: waiting on Tom, running, spinning up, idle, over.
+const TRIAGE_BAND: Record<SessionStatus, number> = {
+  "awaiting-permission": 0,
+  running: 1,
+  starting: 2,
+  requested: 2,
+  idle: 3,
+  ended: 4,
+  failed: 4,
+};
+
+const FILTERS = ["all", "live", "autonomous", "ended"] as const;
+type Filter = (typeof FILTERS)[number];
+
+function matchesFilter(s: Session, filter: Filter): boolean {
+  switch (filter) {
+    case "live":
+      return isLive(s.status);
+    case "autonomous":
+      return s.mode === "autonomous";
+    case "ended":
+      return !isLive(s.status);
+    case "all":
+      return true;
+  }
+}
+
 export default function SessionList({
   sessions,
   now,
@@ -268,24 +310,69 @@ export default function SessionList({
   now: number;
   onOpen: (id: Id<"claudeSessions">) => void;
 }) {
+  const [filter, setFilter] = useState<Filter>("all");
+  const [formOpen, setFormOpen] = useState(false);
+
   if (sessions === undefined) {
     return <div className="text-sm text-text-faint">loading sessions…</div>;
   }
 
-  // listSessions is newest-first; live sessions float above the rest,
-  // relative order preserved.
-  const ordered = [
-    ...sessions.filter((s) => isLive(s.status)),
-    ...sessions.filter((s) => !isLive(s.status)),
-  ];
+  // Within a band: the longest-waiting permission sits at the very top, the
+  // terminal band reads newest-first, and everything else keeps listSessions'
+  // own newest-first order (Array.prototype.sort is stable).
+  const ordered = sessions
+    .filter((s) => matchesFilter(s, filter))
+    .sort((a, b) => {
+      const band = TRIAGE_BAND[a.status] - TRIAGE_BAND[b.status];
+      if (band !== 0) return band;
+      if (TRIAGE_BAND[a.status] === 0)
+        return a.statusChangedAt - b.statusChangedAt;
+      if (TRIAGE_BAND[a.status] === 4) return b.createdAt - a.createdAt;
+      return 0;
+    });
 
   return (
     <div className="space-y-4">
       <AutoFleetStrip />
-      <NewSessionForm onCreated={onOpen} />
+      {formOpen ? (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setFormOpen(false)}
+            className={btnCls}
+          >
+            Close
+          </button>
+          <NewSessionForm onCreated={onOpen} />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setFormOpen(true)}
+          className="rounded px-3 py-1.5 text-sm border border-accent text-accent hover:bg-surface-alt"
+        >
+          New session
+        </button>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {FILTERS.map((f) => (
+          <button
+            key={f}
+            type="button"
+            onClick={() => setFilter(f)}
+            className={`rounded px-2 py-0.5 text-xs border ${
+              filter === f
+                ? "border-accent text-accent"
+                : "border-border text-text-muted hover:text-text"
+            }`}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
       {ordered.length === 0 ? (
         <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
-          no sessions yet
+          no sessions
         </div>
       ) : (
         <ul className="border border-border rounded-lg bg-surface/40 divide-y divide-border">
@@ -318,10 +405,21 @@ export default function SessionList({
                   <span>{s.repo}</span>
                   <span>{ageText(s.statusChangedAt, now)}</span>
                 </div>
+                {/* What an ended session came to, in the row itself. */}
+                {!isLive(s.status) && s.outcomeSummary !== undefined && (
+                  <div className="text-xs text-text-muted">
+                    {previewLine(s.outcomeSummary, 90)}
+                  </div>
+                )}
               </button>
             </li>
           ))}
         </ul>
+      )}
+      {sessions.length === 100 && (
+        <div className="text-xs text-text-faint">
+          showing the latest 100 sessions
+        </div>
       )}
     </div>
   );

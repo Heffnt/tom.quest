@@ -1,42 +1,91 @@
 "use client";
 
-// One finalized transcript row, rendered by kind. Content is v.any() —
-// strings render directly, objects via JSON.stringify (lib.contentToText).
+// One finalized transcript row, rendered by kind.
+//
+// THE RULE (ratified 2026-08-29): every word of natural language the agent
+// produced — assistant text AND thinking — is on screen in full, always. Only
+// machine traffic (tool calls, tool results) is compacted to one line with an
+// expand. Content is v.any(): the per-kind readers live in ../lib and each one
+// knows the daemon's shape for its kind, so no row ever renders as the
+// serialized wrapper around its own payload.
 
 import type { Message } from "../lib";
 import {
+  compactInput,
   contentToText,
+  errorTextOf,
+  isErrorOf,
   previewLine,
   toolInputOf,
   toolNameOf,
+  toolResultTextOf,
+  truncationNoteOf,
+  toolUseIdOf,
 } from "../lib";
+import Markdown from "./markdown";
 
+/** The daemon's verbatim note about a payload it cut — never paraphrased. */
+function TruncationNote({ note }: { note: string | undefined }) {
+  if (note === undefined) return null;
+  return (
+    <div className="mt-1 font-mono text-[10px] text-text-faint px-1">{note}</div>
+  );
+}
+
+/**
+ * Machine traffic: one line by default, full payload on tap. `tone` colors the
+ * label — error results say "failed" in the error color.
+ */
 function CollapsedRow({
   label,
+  labelTone,
+  suffix,
   preview,
   body,
+  note,
 }: {
   label: string;
+  labelTone?: string;
+  suffix?: string;
   preview: string;
   body: string;
+  note?: string;
 }) {
   return (
-    <details className="group text-sm">
-      <summary className="cursor-pointer list-none flex items-baseline gap-2 px-3 py-1.5 rounded border border-border/60 text-text-faint hover:bg-surface-alt/50">
-        <span className="shrink-0 text-text-muted font-mono text-xs">
+    <details className="text-sm">
+      <summary className="cursor-pointer list-none flex items-baseline gap-2 px-2 py-1 rounded text-text-faint hover:bg-surface-alt/50">
+        <span
+          className={`shrink-0 font-mono text-xs ${labelTone ?? "text-text-muted"}`}
+        >
           {label}
         </span>
+        {suffix !== undefined && (
+          <span className="shrink-0 font-mono text-xs text-text-faint">
+            {suffix}
+          </span>
+        )}
         <span className="truncate min-w-0">{preview}</span>
       </summary>
       <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs text-text-muted bg-surface-alt/50 border border-border rounded p-3 overflow-x-auto">
         {body}
       </pre>
+      <TruncationNote note={note} />
     </details>
   );
 }
 
-export default function MessageRow({ message }: { message: Message }) {
+export default function MessageRow({
+  message,
+  toolNames,
+}: {
+  message: Message;
+  // toolUseId → toolName, built by the transcript from the loaded tool-call
+  // rows. Absent when the matching call has not been paged in — the row then
+  // shows no name rather than a guessed one.
+  toolNames?: ReadonlyMap<string, string>;
+}) {
   const { kind, content } = message;
+  const note = truncationNoteOf(content);
 
   switch (kind) {
     case "user": {
@@ -45,47 +94,60 @@ export default function MessageRow({ message }: { message: Message }) {
           <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text">
             {contentToText(content)}
           </pre>
+          <TruncationNote note={note} />
         </div>
       );
     }
     case "assistant-text": {
       return (
-        <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text px-1">
-          {contentToText(content)}
-        </pre>
+        <div className="px-1">
+          <Markdown text={contentToText(content)} />
+          <TruncationNote note={note} />
+        </div>
       );
     }
     case "thinking": {
-      const text = contentToText(content);
+      // Full text, no fold: thinking is the agent's reasoning, and hiding it
+      // was the loudest complaint. Muted + a left rule keeps it visually
+      // secondary without taking it away.
       return (
-        <details className="text-sm">
-          <summary className="cursor-pointer list-none text-text-faint text-xs px-1">
-            thinking — {previewLine(text, 64)}
-          </summary>
-          <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-xs text-text-faint border-l border-border pl-3 py-1">
-            {text}
+        <div className="border-l border-border pl-3 py-0.5">
+          <div className="font-mono text-[10px] text-text-faint/70">
+            thinking
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-sans text-xs text-text-faint">
+            {contentToText(content)}
           </pre>
-        </details>
+          <TruncationNote note={note} />
+        </div>
       );
     }
     case "tool-call": {
       const name = toolNameOf(content);
-      const inputText = contentToText(toolInputOf(content));
+      const input = toolInputOf(content);
+      const body = compactInput(name, input);
       return (
         <CollapsedRow
           label={name}
-          preview={previewLine(inputText)}
-          body={inputText}
+          preview={previewLine(body)}
+          body={body}
+          note={note}
         />
       );
     }
     case "tool-result": {
-      const text = contentToText(content);
+      const failed = isErrorOf(content);
+      const id = toolUseIdOf(content);
+      const name = id === undefined ? undefined : toolNames?.get(id);
+      const text = toolResultTextOf(content);
       return (
         <CollapsedRow
-          label="result"
+          label={failed ? "failed" : "→"}
+          labelTone={failed ? "text-error" : undefined}
+          suffix={name}
           preview={previewLine(text)}
           body={text}
+          note={note}
         />
       );
     }
@@ -103,22 +165,46 @@ export default function MessageRow({ message }: { message: Message }) {
         typeof content === "object" &&
         content !== null &&
         (content as Record<string, unknown>).source === "sdk";
+      const text = contentToText(content);
+      const preview = previewLine(text, 160);
+      const mark = fromSdk ? (
+        <span className="font-mono text-[10px] text-text-faint/70 mr-1.5">
+          sdk
+        </span>
+      ) : null;
+      // These are the honesty rows (workspace rebuilt, turn interrupted,
+      // account switched). A long one gets an expand rather than a silent cut.
+      const flat = text.replace(/\s+/g, " ").trim();
+      if (preview !== flat) {
+        return (
+          <details className="text-center text-xs text-text-faint px-1">
+            <summary className="cursor-pointer list-none hover:text-text-muted">
+              {mark}
+              {preview}
+            </summary>
+            <pre className="mt-1 text-left whitespace-pre-wrap break-words font-sans text-xs text-text-faint">
+              {text}
+            </pre>
+            <TruncationNote note={note} />
+          </details>
+        );
+      }
       return (
         <div className="text-center text-xs text-text-faint px-1">
-          {fromSdk && (
-            <span className="font-mono text-[10px] text-text-faint/70 mr-1.5">
-              sdk
-            </span>
-          )}
-          {previewLine(contentToText(content), 160)}
+          {mark}
+          {preview}
+          <TruncationNote note={note} />
         </div>
       );
     }
     case "error": {
       return (
-        <pre className="whitespace-pre-wrap break-words font-sans text-sm text-error border border-error/40 rounded px-3 py-2">
-          {contentToText(content)}
-        </pre>
+        <div className="border border-error/40 rounded px-3 py-2">
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm text-error">
+            {errorTextOf(content)}
+          </pre>
+          <TruncationNote note={note} />
+        </div>
       );
     }
   }

@@ -8,6 +8,7 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import {
   liveRulings,
@@ -17,10 +18,11 @@ import {
 import { IMPORTANCE_RANK, logEvent } from "./tts";
 
 // Claude Code session surface — the Convex half of the web wrapper around
-// headless Claude Code sessions on the worker box. Design ratified 2026-08-28
-// (first-principles, canvas explicitly NOT a precedent — steering gotcha
-// canvas-code-unvalidated). Convex IS the stream: the daemon persists SDK
-// events via key-authed /sessions/* routes; the browser subscribes.
+// headless Claude Code sessions on the worker box. CANONICAL DESIGN HOME:
+// WikiTom tts/spec.md §20 (ratified 2026-08-28; first-principles, canvas
+// explicitly NOT a precedent — steering gotcha canvas-code-unvalidated).
+// Convex IS the stream: the daemon persists SDK events via key-authed
+// /sessions/* routes; the browser subscribes.
 //
 // Ownership split (state machine): the BROWSER owns create, inbound commands
 // (user-turn / interrupt / stop), permission decisions, and stale-only
@@ -30,14 +32,10 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
   return await requireTom(ctx, "Sessions");
 }
 
-// The browser treats the daemon as unreachable when the heartbeat is older
-// than this; forceClose is allowed only past this threshold (a reachable
-// daemon should execute a stop command instead). 90s = 3 missed idle polls
-// (the daemon's idle cadence is 30s) — review finding: 60s left only 2×
-// headroom, so one transient failure plus the UI's 15s tick produced a false
-// "worker unreachable" with a live Force close button. Mirrored in
-// app/sessions/lib.ts (client bundle cannot import this server module).
-export const DAEMON_STALE_MS = 90_000;
+// The staleness threshold lives in ttsShared (one home; the worker daemon's
+// literal mirror is fenced by scripts/check-session-mirrors.mjs).
+import { DAEMON_STALE_MS } from "./ttsShared";
+export { DAEMON_STALE_MS };
 
 const LIVE_STATUSES = [
   "requested",
@@ -80,6 +78,45 @@ async function getSessionOrThrow(
   const session = await ctx.db.get(id);
   if (!session) throw new Error("Session not found");
   return session;
+}
+
+// ── Session event messages (todo tts-session-needs-you-notify) ───────────────
+// A Slack line the moment a session needs Tom or records what it did. The
+// Slack POST is an ACTION (network), so a mutation cannot await it — it is
+// scheduled at runAfter(0) and rides the transaction: if the mutation rolls
+// back, the message is never scheduled at all, so Slack never reports a
+// transition that did not happen.
+//
+// EDGE TRIGGERS ONLY. Every call site below sits on a transition that the
+// surrounding code makes unrepeatable (a live→terminal status patch, an
+// undefined→set outcome). The daemon polls and
+// flushes continuously; a level-triggered "is this session blocked" check
+// would send one message per flush for the whole time Tom is asleep.
+function notifySessionEvent(
+  ctx: MutationCtx,
+  sessionId: Id<"claudeSessions">,
+  text: string,
+): Promise<Id<"_scheduled_functions">> {
+  return ctx.scheduler.runAfter(
+    0,
+    internal.ttsSync.internalSessionEventMessage,
+    { sessionId, text },
+  );
+}
+
+// ONE wording for an outcome event, shared by the daemon's stamp
+// (internalIngest) and the agent's pen (internalRecordOutcome) — the two
+// writers of the same fact must not describe it two ways. Descriptive, one
+// line, no exclamation marks.
+function outcomeEventText(
+  title: string,
+  outcome: "completed" | "errored",
+  summary: string | undefined,
+): string {
+  const said = (summary ?? "").trim();
+  return `session "${title}" recorded its outcome: ${outcome} — ${
+    said === "" ? "no summary reported" : said
+  }`;
 }
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
@@ -207,14 +244,112 @@ export const createSession = mutation({
     if (todoId !== undefined) {
       await markLiveSessionRulingApplied(ctx, todoId, sessionId);
     }
+    // The ratified rule is "every session ends with a written outcome
+    // record". The autonomous mission prompt (buildAutoMissionPrompt below)
+    // already hands its agent both halves of what that needs — the session's
+    // own id and the /tts/session-outcome pen — but an INTERACTIVE session got
+    // neither, so it had no writer for its own outcome at all. The footer is
+    // appended SERVER-SIDE, after the insert, because the id does not exist
+    // until then: the client composing the prompt cannot know it.
+    const promptWithOutcomeFooter =
+      initialPrompt + outcomePenFooter(sessionId);
     await ctx.db.insert("claudeInbound", {
       sessionId,
       kind: "user-turn",
-      text: initialPrompt,
+      text: promptWithOutcomeFooter,
       status: "pending",
       createdAt: now,
     });
     return sessionId;
+  },
+});
+
+// The interactive twin of the autonomous mission's pen #2 — same route, same
+// key, same env contract (CONVEX_SITE_URL + TTS_WORKER_KEY are the only two
+// variables the daemon injects; SESSIONS_WORKER_KEY never enters a
+// model-reachable environment). Kept verbatim-close to the autonomous wording
+// so the two prompts teach one command, not two.
+function outcomePenFooter(sessionId: Id<"claudeSessions">): string {
+  return (
+    `\n\n---\nThis session's id: ${sessionId}. When the session's work concludes (or you and Tom agree it is done), record the outcome:\n` +
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what happened"}'\n` +
+    `("completed" = the session's purpose was met; otherwise "errored" with what blocked it. CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment.)`
+  );
+}
+
+// Re-entry (spec §9: an ended session accepts a follow-up turn and continues
+// with context intact). Before this, an ending was a dead end — the only way
+// back to a finished conversation was a NEW session with none of its context.
+export const reopenSession = mutation({
+  args: { sessionId: v.id("claudeSessions"), text: v.string() },
+  handler: async (ctx, { sessionId, text }) => {
+    await requireTomId(ctx);
+    const session = await getSessionOrThrow(ctx, sessionId);
+    if (session.status !== "ended" && session.status !== "failed") {
+      throw new Error(
+        `Session is ${session.status} — a live session takes a turn via sendMessage; reopen is for an ended or failed one`,
+      );
+    }
+    if (text.trim() === "") throw new Error("Message is empty");
+    const now = Date.now();
+    await ctx.db.patch(sessionId, {
+      status: "idle",
+      statusChangedAt: now,
+      // Reopening an autonomous session IS taking it over: Tom is now in the
+      // conversation, so the posture becomes interactive. Left as
+      // "autonomous", the daemon would re-apply the auto-end path (end the
+      // session after the agent's next final turn, under a wall-clock cap) and
+      // close the conversation out from under him.
+      mode: "interactive",
+      // ...but the flip must not ERASE the fact that this was an autonomous
+      // run: the scheduler's per-todo backoff walk reads history by
+      // `mode === "autonomous"`, and a reopened-then-ended run vanishing from
+      // that history re-admits work Tom just closed by hand. This field is the
+      // history signal `mode` can no longer carry.
+      ...(session.mode === "autonomous"
+        ? { reopenedFromAutonomous: true }
+        : {}),
+      // The two facts the DAEMON needs (see the note below): reopenedAt marks
+      // this re-entry into the live poll as a reopen rather than a restart, and
+      // reopenEpoch is the generation a pre-reopen ingest replay is measured
+      // against (internalIngest drops stale STATE).
+      reopenedAt: now,
+      reopenEpoch: (session.reopenEpoch ?? 0) + 1,
+      // endedReason / outcome / outcomeSummary are deliberately LEFT IN PLACE:
+      // they are the honest history of the PREVIOUS ending, not claims about
+      // the session's present state, and the transcript that follows keeps
+      // them honest. Clearing them would erase the record of how it ended.
+    });
+    await ctx.db.insert("claudeInbound", {
+      sessionId,
+      kind: "user-turn",
+      text,
+      status: "pending",
+      createdAt: now,
+    });
+    // A reopened session reappears in the poll's live scan, and delivery
+    // resumes from sdkSessionId (the SDK resume key persisted on the row).
+    // But the daemon DOES need the two fields above to handle it honestly:
+    // re-entering the live poll with no local Session is byte-identical to a
+    // daemon restart, so without reopenedAt the adoption writes a false
+    // "session-host restarted; previous turn interrupted" row; and if the
+    // daemon still holds a draining local for the ending it just reported, its
+    // blind flush retry would land as a stale ingest without reopenEpoch. Both
+    // are read in worker/session-host/session-host.mjs (poll loop +
+    // adoptSession); the epoch also rides every ingest payload.
+  },
+});
+
+// Retitling is pure labelling — the title is Tom's handle on a session in the
+// list, and nothing downstream keys off it.
+export const renameSession = mutation({
+  args: { sessionId: v.id("claudeSessions"), title: v.string() },
+  handler: async (ctx, { sessionId, title }) => {
+    await requireTomId(ctx);
+    await getSessionOrThrow(ctx, sessionId);
+    const trimmed = title.trim();
+    if (trimmed === "") throw new Error("Title is empty");
+    await ctx.db.patch(sessionId, { title: trimmed });
   },
 });
 
@@ -448,6 +583,13 @@ export const internalPoll = internalMutation({
           blockCategory: s.blockCategory,
           sdkSessionId: s.sdkSessionId,
           nextSeq: s.nextSeq,
+          // The reopen protocol: reopenedAt tells the adopt path this session
+          // re-entered the live scan by a reopen (no restart happened, no turn
+          // was interrupted); reopenEpoch is stamped into every ingest the
+          // daemon sends for it, so a pre-reopen flush replay is recognizable
+          // as stale server-side.
+          reopenedAt: s.reopenedAt,
+          reopenEpoch: s.reopenEpoch ?? 0,
           pendingInbound,
           permissions,
         });
@@ -460,7 +602,7 @@ export const internalPoll = internalMutation({
 // ── Internal: daemon ingest (per-session flush) ──────────────────────────────
 // ONE transaction per flush (~400ms cadence while streaming). Carries any
 // subset of: status transition, stream-buffer replacement, finalized message
-// rows, inbound acks, permission requests/acks. The response piggybacks this
+// rows, inbound acks, permission acks. The response piggybacks this
 // session's pending commands + fresh decisions, which is what makes polling
 // feel push-like exactly when a turn is live.
 
@@ -478,6 +620,10 @@ const MESSAGE_KIND = v.union(
 export const internalIngest = internalMutation({
   args: {
     sessionId: v.id("claudeSessions"),
+    // The reopen generation this daemon holds for the session (from the poll
+    // row it claimed/adopted from). A payload whose epoch is older than the
+    // row's carries pre-reopen state and is treated as stale below.
+    reopenEpoch: v.optional(v.number()),
     // Daemon-reported session facts (all optional — send what changed).
     status: v.optional(
       v.union(
@@ -536,15 +682,10 @@ export const internalIngest = internalMutation({
         }),
       ),
     ),
-    permissionRequests: v.optional(
-      v.array(
-        v.object({
-          requestId: v.string(),
-          toolName: v.string(),
-          input: v.any(),
-        }),
-      ),
-    ),
+    // There is no permissionRequests arg: under the unified auto gate the
+    // daemon parks nothing for Tom (#canUseTool returns allow or deny on every
+    // path), so nothing ever produced one. The permissionUpdates ack loop below
+    // stays — historical pending rows still need expiring and acking.
     // Daemon acks that a decision reached the SDK; also used to mark
     // pending rows expired/superseded on restart or stop.
     permissionUpdates: v.optional(
@@ -589,13 +730,27 @@ export const internalIngest = internalMutation({
     // that records what actually happened, or advance activity facts
     // (review finding: the guard originally covered status alone).
     const terminal = !isLive(session.status);
+    // The same "rows yes, state no" verdict for a payload from BEFORE a reopen.
+    // The daemon's ending flush is a blind retry (a committed mutation whose
+    // response was lost is re-sent verbatim), and Tom can reopen in that
+    // window — the replay then arrives at a LIVE row, so `terminal` is false
+    // and the old ending would be re-applied over the reopen, sweeping his new
+    // turn to "interrupted". The epoch the daemon stamped is the ordering fact
+    // that tells the two apart.
+    const stale =
+      args.reopenEpoch !== undefined &&
+      args.reopenEpoch < (session.reopenEpoch ?? 0);
+    const noState = terminal || stale;
 
-    if (args.buf !== undefined || terminal) {
+    // (A stale payload also clears the live tail here. That is self-healing:
+    // the reopened session's own daemon rewrites the buf on its next flush,
+    // ~400ms later.)
+    if (args.buf !== undefined || noState) {
       const existing = await ctx.db
         .query("claudeStreamBuf")
         .withIndex("by_session", (q) => q.eq("sessionId", args.sessionId))
         .first();
-      if (terminal || args.buf === null) {
+      if (noState || args.buf === null) {
         if (existing) await ctx.db.delete(existing._id);
       } else if (args.buf) {
         if (existing) {
@@ -610,7 +765,7 @@ export const internalIngest = internalMutation({
       }
     }
 
-    if (!terminal) {
+    if (!noState) {
       if (args.status !== undefined && args.status !== session.status) {
         patch.status = args.status;
         patch.statusChangedAt = now;
@@ -621,10 +776,19 @@ export const internalIngest = internalMutation({
       if (args.cwd !== undefined) patch.cwd = args.cwd;
       if (args.lastSdkEventAt !== undefined)
         patch.lastSdkEventAt = args.lastSdkEventAt;
+      // The reopen is spent the moment the session is actually running again:
+      // this daemon has taken the reopening turn, so the NEXT adoption of this
+      // session really would be a restart and must say so. Only a current-epoch
+      // payload may clear it (a stale replay never reaches this branch).
+      if (args.status === "running" && session.reopenedAt !== undefined) {
+        patch.reopenedAt = undefined;
+      }
     }
     // Daemon-stamped outcome lands ONLY on a session with no outcome yet —
     // an agent-recorded outcome always wins over the daemon's cap-path stamp.
-    if (args.outcome !== undefined && session.outcome === undefined) {
+    const outcomeNewlyApplied =
+      args.outcome !== undefined && session.outcome === undefined;
+    if (outcomeNewlyApplied) {
       patch.outcome = args.outcome;
       if (args.outcomeSummary !== undefined) {
         patch.outcomeSummary = args.outcomeSummary;
@@ -632,6 +796,18 @@ export const internalIngest = internalMutation({
     }
     if (Object.keys(patch).length > 0) {
       await ctx.db.patch(args.sessionId, patch);
+    }
+
+    // EDGE: the outcome field went undefined → set, and it can only make that
+    // crossing once (every later ingest reads a defined session.outcome and
+    // skips the branch above). The daemon may re-send the same outcome on
+    // every flush of a closing session; only the first one notifies.
+    if (outcomeNewlyApplied && args.outcome !== undefined) {
+      await notifySessionEvent(
+        ctx,
+        args.sessionId,
+        outcomeEventText(session.title, args.outcome, args.outcomeSummary),
+      );
     }
 
     for (const upd of args.inboundUpdates ?? []) {
@@ -651,7 +827,7 @@ export const internalIngest = internalMutation({
     // forever. Runs AFTER the inboundUpdates loop so the daemon's own
     // delivered/done facts from the same flush win first.
     const becameTerminal =
-      !terminal &&
+      !noState &&
       (args.status === "ended" || args.status === "failed");
     if (becameTerminal) {
       const orphanedInbound = await ctx.db
@@ -665,22 +841,32 @@ export const internalIngest = internalMutation({
       }
     }
 
-    for (const req of args.permissionRequests ?? []) {
-      const existing = await ctx.db
-        .query("claudePermissions")
-        .withIndex("by_request", (q) => q.eq("requestId", req.requestId))
-        .first();
-      if (existing) continue; // retry replay
-      await ctx.db.insert("claudePermissions", {
-        sessionId: args.sessionId,
-        requestId: req.requestId,
-        toolName: req.toolName,
-        input: req.input,
-        status: "pending",
-        requestedAt: now,
-      });
+    // EDGE: a failure is reported once, on the live→terminal crossing.
+    // `becameTerminal` requires `!noState` (the session was live at the top of
+    // this transaction AND the payload is not a pre-reopen replay), and the
+    // patch above just made it terminal, so every later flush computes
+    // `terminal === true` and cannot re-fire. The `stale` half is what closes
+    // the reopen hole: a replayed failure flush arrives at a live row again,
+    // and without it Tom would be told twice about one failure.
+    if (becameTerminal && args.status === "failed") {
+      await notifySessionEvent(
+        ctx,
+        args.sessionId,
+        `session "${session.title}" failed — ${
+          args.endedReason ?? session.endedReason ?? "no reason reported"
+        }`,
+      );
     }
 
+    // NOTE (review finding): there was a permission-REQUEST insert loop here,
+    // with a Slack "waiting on a permission decision" message on the insert
+    // edge. It was unreachable: the daemon's unified auto gate allows or denies
+    // every tool call itself and has never had a producer for such a request,
+    // so the loop could only ever run for a payload no code emits. Removed
+    // rather than left as a promise the system does not keep. The live
+    // needs-you edges are the failed ending above and the first outcome record;
+    // a genuine "this session needs Tom" signal has to be wired to a reachable
+    // edge (a turn that ends with a question), which is new work.
     for (const upd of args.permissionUpdates ?? []) {
       const row = await ctx.db
         .query("claudePermissions")
@@ -735,10 +921,26 @@ export const internalRecordOutcome = internalMutation({
     if (!normalized) throw new Error(`Unknown session id: ${id}`);
     const session = await ctx.db.get(normalized);
     if (!session) throw new Error(`Unknown session id: ${id}`);
+    // Read the PRE-patch value: unlike the daemon's stamp in internalIngest,
+    // this pen overwrites freely (the agent may re-record a sharper summary,
+    // or correct completed → errored after a late failure), so the row itself
+    // stops being an edge after the first write.
+    const firstRecord = session.outcome === undefined;
     await ctx.db.patch(normalized, {
       outcome,
       outcomeSummary: summary.trim(),
     });
+    // EDGE: only the first record notifies. A re-record still lands in the
+    // row — the surface always shows the agent's latest word — but Slack is
+    // told once, so an agent that revises its wording three times does not
+    // ping Tom three times.
+    if (firstRecord) {
+      await notifySessionEvent(
+        ctx,
+        normalized,
+        outcomeEventText(session.title, outcome, summary),
+      );
+    }
   },
 });
 
@@ -1175,6 +1377,16 @@ const AUTO_CIRCUIT_WINDOW_MS = 3 * 60 * 60 * 1000;
 // live: the usage-limit wording actually reaches the fields tested below.
 const AUTO_USAGE_RE = /usage.?limit|limit reached/i;
 
+// "This session RAN as an autonomous one" — the question every history read
+// below is actually asking. `mode` alone answers it wrongly for a reopened
+// session: reopenSession flips mode to "interactive" so the daemon drops the
+// auto-end path, which would silently drop the run out of the backoff walk and
+// out of the usage breaker's window. reopenedFromAutonomous is the provenance
+// that survives the flip.
+function wasAutonomous(s: Doc<"claudeSessions">): boolean {
+  return s.mode === "autonomous" || s.reopenedFromAutonomous === true;
+}
+
 export const internalAutoSchedule = internalMutation({
   args: {},
   handler: async (ctx) => {
@@ -1231,7 +1443,7 @@ export const internalAutoSchedule = internalMutation({
     }
     const tripped = recentTerminal.some(
       (s) =>
-        s.mode === "autonomous" &&
+        wasAutonomous(s) &&
         (AUTO_USAGE_RE.test(s.endedReason ?? "") ||
           AUTO_USAGE_RE.test(s.outcomeSummary ?? "")),
     );
@@ -1298,7 +1510,7 @@ export const internalAutoSchedule = internalMutation({
         .withIndex("by_todo", (q) => q.eq("todoId", t._id))
         .collect();
       const auto = history
-        .filter((s) => s.mode === "autonomous")
+        .filter(wasAutonomous)
         .sort((a, b) => b.createdAt - a.createdAt);
       const newest = auto[0];
       if (newest) {

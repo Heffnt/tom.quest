@@ -41,10 +41,16 @@ outcome already exists.
   parentage stamping (`parentToolUseId` on rows produced under a Task call;
   subagent stream deltas never touch the live tail), and the permission
   posture (unified auto mode, ratified 2026-08-28: nothing parks on Tom in
-  any session mode; the one per-call check kept is the out-of-workdir edit
-  denial. The safety boundary is structural — throwaway workdir, session/<id>
-  branch namespace, Tom's merge gate, Tom-only ruling pens — and every
-  allowed call lands as a transcript row).
+  any session mode). The safety boundary is structural — throwaway workdir,
+  session/<id> branch namespace, Tom's merge gate, Tom-only ruling pens — and
+  every allowed call lands as a transcript row. Two per-call checks survive
+  that structure, because a shell is neither a file nor a branch (spec §20.2):
+  the out-of-workdir edit denial, and a classifier verdict on Bash commands
+  matching the danger fingerprint (pushing, remote access, box configuration,
+  credential names, uploading request bodies, deleting by absolute path) —
+  verdicts land in the transcript as rows, allow and deny alike, are memoized
+  per session so an agentic loop pays once, and the classifier is FAIL-OPEN
+  (unreachable ⇒ allowed, and the transcript says so).
 - `lib.mjs` — env parsing, `sessionsFetch`, backoff, 32KB truncation.
 
 ## The no-state rule, as applied here

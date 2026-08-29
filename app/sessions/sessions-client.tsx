@@ -86,9 +86,9 @@ export default function SessionsClient() {
     ) : null;
 
   const body = activeId ? (
-    // Wider than the list: the open session carries the agent panel beside
-    // the transcript from sm up.
-    <div className="h-[calc(100dvh-4rem)] flex flex-col max-w-5xl mx-auto w-full">
+    // Full window width (Tom's ruling): the transcript is the work surface and
+    // the agent panel sits beside it from sm up — neither gets a column cap.
+    <div className="h-[calc(100dvh-4rem)] flex flex-col w-full">
       {banner}
       <SessionView
         sessionId={activeId}
@@ -104,10 +104,6 @@ export default function SessionsClient() {
       <div className="px-3 sm:px-4 py-6 space-y-4">
         <header>
           <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>
-          <p className="text-text-muted text-sm mt-1">
-            Claude Code sessions on the worker box — create one, watch its
-            transcript, answer its permission requests.
-          </p>
         </header>
         <SessionList sessions={sessions} now={now} onOpen={openSession} />
       </div>

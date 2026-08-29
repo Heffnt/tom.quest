@@ -620,17 +620,16 @@ export default defineSchema({
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_ruled", ["ruledAt"]),
 
-  // ── Claude Code session surface (spec: WikiTom tts/spec.md; design ratified
-  // 2026-08-28) ────────────────────────────────────────────────────────────────
-  // A web chat wrapper around headless Claude Code sessions running on the
-  // worker box. Convex IS the stream: the box's session-host daemon persists
-  // SDK events here (key-authed /sessions/* routes, SESSIONS_WORKER_KEY) and
-  // the browser renders reactively. Two-tier transcript: claudeMessages rows
-  // are FINALIZED (written once, seq-ordered, paginate forever);
-  // claudeStreamBuf is the one small live-tail row per session, patched on a
-  // ~400ms throttle and flushed into a finalized segment every ~16KB — so the
-  // hot subscription stays constant-size. Failure honesty is DERIVED at
-  // render (heartbeat staleness), never written as a diagnosis.
+  // ── Claude Code session surface ──────────────────────────────────────────────
+  // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;
+  // rendering + permission rulings 2026-08-29). These comments carry only what
+  // the schema itself needs: Convex IS the stream (the box's session-host
+  // daemon persists SDK events via key-authed /sessions/* routes,
+  // SESSIONS_WORKER_KEY; the browser renders reactively); the two-tier
+  // transcript (claudeMessages rows are FINALIZED, written once, seq-ordered;
+  // claudeStreamBuf is the one small live-tail row, ~400ms throttle, segment-
+  // finalized every ~16KB); failure honesty is DERIVED at render (heartbeat
+  // staleness), never written as a diagnosis.
 
   claudeSessions: defineTable({
     title: v.string(),
@@ -652,10 +651,12 @@ export default defineSchema({
     mode: v.optional(
       v.union(v.literal("interactive"), v.literal("autonomous")),
     ),
-    // Lifecycle: requested (browser) → starting → idle ⇄ running ⇄
-    // awaiting-permission → ended | failed. The browser owns: create,
-    // enqueue inbound, decide permissions, and stale-only forceClose.
-    // Everything else is daemon-reported fact.
+    // Lifecycle: requested (browser) → starting → idle ⇄ running →
+    // ended | failed; reopenSession takes ended/failed back to idle.
+    // "awaiting-permission" is HISTORICAL (pre-auto-mode rows keep it; the
+    // unified auto gate never produces it — tts-spec:20.1). The browser owns:
+    // create, enqueue inbound, reopen, decide residual permissions, and
+    // stale-only forceClose. Everything else is daemon-reported fact.
     status: v.union(
       v.literal("requested"),
       v.literal("starting"),
@@ -666,6 +667,26 @@ export default defineSchema({
       v.literal("failed"),
     ),
     statusChangedAt: v.number(),
+    // ── The reopen protocol (three facts a reopen leaves behind) ──────────────
+    // Set by reopenSession, cleared by internalIngest the first time the daemon
+    // reports "running" again. Its ONE reader is the daemon's adopt path: a
+    // reopened session re-enters the live poll with no local Session, which is
+    // indistinguishable from a daemon restart — without this flag the adoption
+    // stamps "session-host restarted; previous turn interrupted" into a
+    // transcript where no restart happened and no turn was interrupted.
+    reopenedAt: v.optional(v.number()),
+    // Monotonic reopen generation. The daemon stamps the epoch it holds into
+    // every ingest; the server drops STATE (never finalize rows) from a payload
+    // whose epoch predates the current one. Without it, an ending flush that
+    // committed but lost its response is blind-retried after the reopen and
+    // re-terminalizes the session — sweeping Tom's reopening turn to
+    // "interrupted" and re-firing the failure message.
+    reopenEpoch: v.optional(v.number()),
+    // Reopening an autonomous session flips mode to "interactive" (the daemon
+    // must drop the auto-end path), which would erase the run from the
+    // scheduler's per-todo autonomous history and let it re-admit work Tom just
+    // closed by hand. This preserves the provenance the history filter reads.
+    reopenedFromAutonomous: v.optional(v.boolean()),
     endedReason: v.optional(v.string()), // descriptive, verbatim
     // Session outcomes (ratified 2026-08-28): every session ends with a written
     // outcome record — "completed" (purpose met, including ending by recording
@@ -748,9 +769,11 @@ export default defineSchema({
     deliveredAt: v.optional(v.number()),
   }).index("by_session_status", ["sessionId", "status"]),
 
-  // Permission requests. Pending requests WAIT INDEFINITELY (no auto-deny —
-  // an auto-denial at 3 a.m. makes the model take a path Tom never chose);
-  // stop supersedes, daemon restart expires, and the card shows its age.
+  // Permission requests — HISTORICAL/RESIDUAL under the unified auto
+  // permission gate (tts-spec:20.2, ruling session-permission-posture
+  // 2026-08-29: nothing parks on Tom; the boundary is structural plus the
+  // Bash classifier). The table stays for pre-unification rows and any
+  // residual card; stop supersedes, daemon restart expires.
   claudePermissions: defineTable({
     sessionId: v.id("claudeSessions"),
     requestId: v.string(), // daemon-minted uuid
@@ -765,7 +788,11 @@ export default defineSchema({
     ),
     requestedAt: v.number(),
     decidedAt: v.optional(v.number()),
-    decidedBy: v.optional(v.string()), // "tom" | "daemon-restart" | "stop"
+    // "tom" | "daemon-restart" | "session-reopen" | "stop" | "force-close" —
+    // who or what settled it. The daemon mints no NEW requests (the unified
+    // auto gate decides every call itself); these paths serve the historical
+    // rows that predate it.
+    decidedBy: v.optional(v.string()),
     note: v.optional(v.string()), // Tom's optional message; a deny note reaches the model verbatim
     appliedAt: v.optional(v.number()), // daemon acked applying the decision to the SDK
   })

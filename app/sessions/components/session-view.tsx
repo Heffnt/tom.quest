@@ -5,8 +5,8 @@
 // transcript is the only scrolling region (phone-first).
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { useQuery } from "convex/react";
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { ageText, isLive, shortAge, statusChipClass } from "../lib";
@@ -34,6 +34,14 @@ export default function SessionView({
   const pendingPermissions = useQuery(api.claudeSessions.getPendingPermissions, {
     sessionId,
   });
+  const renameSession = useMutation(api.claudeSessions.renameSession);
+
+  // Rename: the h1 IS the control — tapping it swaps in an input that looks
+  // the same. Enter blurs (the blur handler is the single save path, so Enter
+  // and click-away cannot both fire it); Escape sets this flag first so the
+  // blur it causes discards instead of saving.
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const cancelRename = useRef(false);
 
   // The agent panel holds a live Convex subscription, so `hidden sm:block`
   // alone would still pay for it on a phone that never shows it — mount it
@@ -70,6 +78,17 @@ export default function SessionView({
     );
   }
 
+  const commitRename = (value: string) => {
+    setTitleDraft(null);
+    if (cancelRename.current) {
+      cancelRename.current = false;
+      return;
+    }
+    const next = value.trim();
+    if (next === "" || next === session.title) return;
+    void renameSession({ sessionId, title: next });
+  };
+
   const quietWhileRunning =
     session.status === "running" &&
     session.lastSdkEventAt !== undefined &&
@@ -87,9 +106,35 @@ export default function SessionView({
           >
             &larr;
           </button>
-          <h1 className="text-sm sm:text-base text-text truncate min-w-0 flex-1">
-            {session.title}
-          </h1>
+          {titleDraft === null ? (
+            <h1
+              onClick={() => {
+                cancelRename.current = false;
+                setTitleDraft(session.title);
+              }}
+              className="text-sm sm:text-base text-text truncate min-w-0 flex-1 cursor-text"
+            >
+              {session.title}
+            </h1>
+          ) : (
+            <input
+              type="text"
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={(e) => commitRename(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                } else if (e.key === "Escape") {
+                  cancelRename.current = true;
+                  e.currentTarget.blur();
+                }
+              }}
+              className="text-sm sm:text-base text-text min-w-0 flex-1 bg-transparent border-b border-accent/60 focus:outline-none"
+            />
+          )}
           {session.mode === "autonomous" && (
             <span className="shrink-0 border border-border rounded px-1.5 py-0.5 text-xs text-text-muted">
               autonomous
@@ -129,6 +174,20 @@ export default function SessionView({
             </span>
           )}
         </div>
+        {/* The arrival headline for an ended session: what it came to, ahead
+            of the transcript it came to it in. Live-gated like session-list's
+            copy of the same field — a reopened session keeps its old outcome
+            as history, which must not headline an actively-streaming run. */}
+        {!isLive(session.status) && session.outcome !== undefined && (
+          <div
+            className={`text-xs pl-9 break-words ${
+              session.outcome === "errored" ? "text-error" : "text-text-muted"
+            }`}
+          >
+            outcome: {session.outcome}
+            {session.outcomeSummary ? ` — ${session.outcomeSummary}` : ""}
+          </div>
+        )}
       </header>
 
       {/* Transcript + permission cards are the conversation column; the agent
@@ -139,10 +198,12 @@ export default function SessionView({
           work, and keeps sm:block so a narrowed window hides it. */}
       <div className="flex-1 min-h-0 flex flex-row">
         <div className="flex-1 min-w-0 flex flex-col">
-          <Transcript sessionId={sessionId} />
+          <Transcript sessionId={sessionId} sessionStatus={session.status} />
 
           {pendingPermissions && pendingPermissions.length > 0 && (
-            <div className="border-t border-border px-3 sm:px-4 py-2.5 space-y-2 max-h-[45dvh] overflow-y-auto">
+            // Cards may never crowd out the transcript (Tom's ruling): a
+            // compact strip that scrolls, not a half-screen tray.
+            <div className="border-t border-border px-3 sm:px-4 py-2 space-y-1.5 max-h-40 overflow-y-auto">
               {pendingPermissions.map((p) => (
                 <PermissionCard key={p._id} permission={p} now={now} />
               ))}

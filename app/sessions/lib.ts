@@ -16,11 +16,11 @@ export type DaemonHealth = Doc<"claudeDaemonHealth">;
 
 export type SessionStatus = Session["status"];
 
-// Mirrors DAEMON_STALE_MS = 90_000 in convex/claudeSessions.ts (a Convex
-// module cannot be imported into client bundles without pulling server code
-// along). Three missed 30s heartbeats before the surface calls the worker
-// stale — keep the two constants in lockstep.
-export const DAEMON_STALE_MS = 90_000;
+// One home for the session constants: convex/ttsShared.ts (client-safe, no
+// server imports). The worker daemon's literal mirrors are fenced by
+// scripts/check-session-mirrors.mjs.
+export { DAEMON_STALE_MS } from "@/convex/ttsShared";
+import { SESSION_REPOS } from "@/convex/ttsShared";
 
 export const LIVE_STATUSES: readonly SessionStatus[] = [
   "requested",
@@ -34,12 +34,7 @@ export function isLive(status: SessionStatus): boolean {
   return LIVE_STATUSES.includes(status);
 }
 
-export const REPO_OPTIONS = [
-  "tom.quest",
-  "ComplexMultiTrigger",
-  "WikiTom",
-  "none",
-] as const;
+export const REPO_OPTIONS = [...Object.keys(SESSION_REPOS), "none"] as const;
 
 /** Token classes for the status chip — dark tokens only. */
 export function statusChipClass(status: SessionStatus): string {
@@ -152,6 +147,100 @@ export function subagentTypeOf(content: unknown): string | undefined {
     if (typeof i.subagent_type === "string") return i.subagent_type;
   }
   return undefined;
+}
+
+// ── tool-result / error unwrapping ───────────────────────────────────────────
+// A tool-result row's content is the daemon's WRAPPER object
+// ({ toolUseId, content, isError?, truncationNote? }), not the tool output.
+// contentToText on the wrapper serializes the scaffolding — the exact defect
+// the render-honesty round removed. These three read the wrapper's fields.
+// Both shapes of the inner content are handled: the daemon now flattens to a
+// plain string, but rows written before that fix still carry the SDK's array
+// of typed blocks.
+
+/**
+ * The tool output itself, as plain text. Never the serialized wrapper: string
+ * content passes through, a block array joins its items' `.text` (non-text
+ * blocks via JSON.stringify), anything else is JSON.
+ */
+export function toolResultTextOf(content: unknown): string {
+  const inner =
+    typeof content === "object" && content !== null && "content" in content
+      ? (content as { content: unknown }).content
+      : content;
+  if (typeof inner === "string") return inner;
+  if (Array.isArray(inner)) {
+    return inner
+      .map((b) => {
+        const text = (b as Record<string, unknown> | null)?.text;
+        return typeof text === "string" ? text : safeJson(b);
+      })
+      .join("\n");
+  }
+  if (inner === null || inner === undefined) return "";
+  return safeJson(inner);
+}
+
+/** Whether the daemon marked this tool result as a failure. */
+export function isErrorOf(content: unknown): boolean {
+  return (
+    typeof content === "object" &&
+    content !== null &&
+    (content as Record<string, unknown>).isError === true
+  );
+}
+
+/**
+ * The daemon's verbatim note when it cut a payload down to the size cap —
+ * carried on any kind, rendered as a footer so the cut is never silent.
+ */
+export function truncationNoteOf(content: unknown): string | undefined {
+  if (typeof content === "object" && content !== null) {
+    const note = (content as Record<string, unknown>).truncationNote;
+    if (typeof note === "string") return note;
+  }
+  return undefined;
+}
+
+/**
+ * Error-row text. The daemon writes two shapes: `{ message }` (its own
+ * failures) and `{ subtype, result, total_cost_usd }` (an SDK error result,
+ * the one place cost is persisted). Both render as prose, never as JSON.
+ */
+export function errorTextOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (typeof content === "object" && content !== null) {
+    const c = content as Record<string, unknown>;
+    if (typeof c.message === "string") return c.message;
+    if (typeof c.subtype === "string") {
+      const result =
+        typeof c.result === "string" ? c.result : contentToText(c.result);
+      const head = result === "" ? c.subtype : `${c.subtype}: ${result}`;
+      return typeof c.total_cost_usd === "number"
+        ? `${head}\ncost $${c.total_cost_usd}`
+        : head;
+    }
+  }
+  return contentToText(content);
+}
+
+/** JSON.stringify that never throws (cycles, BigInt) — used by the unwrappers. */
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "(unrenderable content)";
+  }
+}
+
+/**
+ * Local wall-clock "14:05" — 24-hour, zero-padded, no Intl (the surface must
+ * render identically on the server pass and in the browser).
+ */
+export function formatClock(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /**

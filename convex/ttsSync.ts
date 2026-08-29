@@ -76,6 +76,50 @@ export const sendDigest = internalAction({
   },
 });
 
+// ── Session event messages (todo tts-session-needs-you-notify) ───────────────
+// The OUTBOUND half of spec §7's two-way event messages: one Slack line the
+// moment a session needs Tom (a permission decision) or records what it did
+// (an outcome, or a failure), each carrying a deep link to the session.
+//
+// Same plumbing as the digest above — chat.postMessage with SLACK_BOT_TOKEN,
+// posting to SLACK_TTS_CHANNEL_ID. Missing env is log-and-return, following
+// the sanctioned ruling `digest-env-missing-is-quiet` (vqc/adoption.md,
+// 2026-08-27): a scheduled job that throws adds no louder channel than the
+// console line, and the session surface in the browser carries the same facts
+// regardless of whether Slack was reachable.
+//
+// The CALLERS decide when to send (convex/claudeSessions.ts schedules this on
+// edge-triggered transitions only, so a session that polls for an hour while
+// blocked still produces exactly one message). Nothing here dedupes.
+export const internalSessionEventMessage = internalAction({
+  args: { sessionId: v.string(), text: v.string() },
+  handler: async (_ctx, { sessionId, text }) => {
+    const token = process.env.SLACK_BOT_TOKEN;
+    const channel = process.env.SLACK_TTS_CHANNEL_ID;
+    if (!token || !channel) {
+      console.error(
+        "TTS session event: SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured",
+      );
+      return;
+    }
+    // The link is the point: the message says what happened, the URL is where
+    // to act on it.
+    const body = `${text}\nhttps://www.tom.quest/sessions?session=${sessionId}`;
+    const res = await fetch(SLACK_POST_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({ channel, text: body, unfurl_links: false }),
+    });
+    const result = (await res.json()) as { ok: boolean; error?: string };
+    if (!result.ok) {
+      console.error(`TTS session event: Slack rejected the post: ${result.error}`);
+    }
+  },
+});
+
 function composeFallbackDigest(
   day: string,
   row: Doc<"dtsDailyQueues"> | null,

@@ -235,7 +235,7 @@
 
 - id: tts-session-render-honesty
   readiness: ready-for-tom
-  status: active
+  status: done
   created: 2026-08-29
   cites: [C3, tts-spec:15]
   statement: >-
@@ -263,10 +263,20 @@
     isError/truncationNote/compactInput and honest queue labels; a
     by_session permissions query (new index) exposes decisions. Pure repair
     of the ratified failure-honesty design — no new design decisions.
+  resolution: >-
+    Landed in the same commit as this closure (parallel-agent round,
+    2026-08-29): daemon flattens tool-result block arrays to text at the
+    source; out-of-workdir auto-denials write a system row; the UI renders
+    tool output as output (toolResultTextOf), marks failed results, shows
+    truncationNote footers, renders error rows legibly (errorTextOf), uses
+    compactInput for tool-call one-liners, and labels queued turns
+    honestly. The allow-note and decision-history items were OBSOLETED by
+    the unified auto gate (nothing parks, so no notes and no new
+    decisions); permission rows remain rendered for historical data.
 
 - id: tts-session-auto-permissions
-  readiness: preparing
-  status: active
+  readiness: ready-for-tom
+  status: done
   created: 2026-08-29
   cites: [tts-spec:15]
   statement: >-
@@ -286,10 +296,22 @@
     interaction; each classifier decision is visible in the transcript
     with its reason; a destructive command outside the sanctioned set is
     refused with a recorded reason and the model course-corrects.
+  plan: >-
+    Three-tier Bash gate in the daemon: sanctioned pens free, ordinary
+    commands free, danger-fingerprint commands ruled by a haiku classifier
+    with verdicts as transcript rows, fail-open onto the structural
+    boundary. Ratified via rulings 2026-08-29.
+  resolution: >-
+    Landed in the same commit as this closure: session.mjs #classifyBash
+    (claude CLI, haiku, 30s timeout, per-session verdict cache), the
+    danger-fingerprint and sanctioned-pen regexes, verdict + unavailable
+    system rows. Live-fire verification (a real dangerous command denied
+    in a prod session) pending the first session that trips the danger
+    tier.
 
 - id: tts-session-arrival-redesign
-  readiness: preparing
-  status: active
+  readiness: ready-for-tom
+  status: done
   created: 2026-08-29
   cites: [tts-spec:9, tts-spec:12]
   statement: >-
@@ -311,10 +333,25 @@
     happened since I left, what is it doing right now, what does it need
     from me" are each answerable from one screen without scrolling the
     transcript, and an ended session leads with its outcome.
+  plan: >-
+    Tom's rulings 2026-08-29 (session-surface-rendering) plus the
+    analysis-derived arrival features; built in the parallel-agent round.
+  resolution: >-
+    Landed in the same commit as this closure: full window width; all
+    agent natural language (assistant text via a dependency-free markdown
+    renderer, thinking in full, muted); tool calls compact one-liners
+    with expand; turn separators with ingest-time clocks; the
+    unread-since-last-visit divider (localStorage read position); honest
+    live indicators (cursor only while running, unmatched-tool-call
+    "running" line); outcome records wired end-to-end (createSession
+    appends the session-outcome pen footer with the session id; list and
+    view render outcome/outcomeSummary); the list reordered as a triage
+    surface (needs-Tom first) with filter chips and a collapsed create
+    form.
 
 - id: tts-session-lifecycle
-  readiness: preparing
-  status: active
+  readiness: ready-for-tom
+  status: done
   created: 2026-08-29
   cites: [tts-spec:9]
   statement: >-
@@ -331,10 +368,22 @@
     intact; stopping a session with unpushed workdir changes warns before
     deletion; a weekly-kind session can be created and found from the
     browser.
+  plan: >-
+    reopenSession + renameSession mutations, daemon work preservation
+    before every workdir deletion, kind-at-create, list filters, cap
+    label. Ratified via the 2026-08-29 triage.
+  resolution: >-
+    Landed in the same commit as this closure: reopenSession (ended/
+    failed to idle, mode flips to interactive on takeover, daemon resumes
+    by sdkSessionId), composer "Send - reopens session" path,
+    renameSession + tap-to-rename, daemon #preserveWork (pushes local-only
+    commits to session/<id>, records discarded uncommitted changes) on
+    stop/auto-end/turn-death/force-kill, weekly kind creatable from the
+    browser, filter chips, "showing the latest 100 sessions" label.
 
 - id: tts-session-needs-you-notify
-  readiness: preparing
-  status: active
+  readiness: ready-for-tom
+  status: done
   created: 2026-08-29
   cites: [tts-spec:7]
   statement: >-
@@ -349,6 +398,25 @@
     A session that blocks on Tom produces a Slack message within a minute
     linking to it, and a session recording an outcome produces one message,
     not one per poll.
+  plan: >-
+    Edge-triggered Slack posts from internalIngest and the outcome pen,
+    reusing the digest's chat.postMessage path and SLACK_TTS_CHANNEL_ID.
+    Ratified via the 2026-08-29 triage.
+  resolution: >-
+    Landed: ttsSync internalSessionEventMessage (log-and-return on missing
+    env, per the digest-env-missing-is-quiet ruling) scheduled on two LIVE
+    edges - a failed ending (the live-to-terminal crossing in
+    internalIngest) and the first outcome record (internalIngest's stamp
+    and the agent's internalRecordOutcome pen) - each firing at most once,
+    deep link included. Within-a-minute latency holds by construction
+    (scheduler runAfter 0). A third edge, permission-request insert, was
+    REMOVED as unreachable: under the unified auto gate the daemon allows
+    or denies every tool call itself and never parks one for Tom, so
+    nothing ever produced a permission request to notify about. The
+    "needs Tom" half of this todo therefore has no live signal: wiring one
+    to a reachable edge (a turn that ends with a question to Tom) is new
+    work, not this todo's landed code. First real Slack post pending the
+    next qualifying transition in prod.
 
 # Tree-facts (discovered debt) live in vqc/ledger.yaml, not here (a todo is
 # a CHOICE; a ledger entry is KNOWLEDGE — VQC D28). Since the 2026-08-29

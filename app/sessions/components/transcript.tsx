@@ -5,15 +5,35 @@
 // Auto-scrolls only when the reader is already near the bottom; preserves
 // position when earlier pages load.
 
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { Message } from "../lib";
-import { subagentTypeOf, toolUseIdOf } from "../lib";
+import {
+  compactInput,
+  formatClock,
+  previewLine,
+  subagentTypeOf,
+  toolInputOf,
+  toolNameOf,
+  toolUseIdOf,
+} from "../lib";
 import MessageRow from "./message-row";
 
 const NEAR_BOTTOM_PX = 150;
+
+// Where the reader got to last visit, per session. Written continuously while
+// the transcript is open; read ONCE on mount so the divider stays put.
+const lastReadKey = (sessionId: string) => `tts.sessions.lastReadSeq.${sessionId}`;
 
 // A subagent's rows arrive interleaved in the one seq stream — several
 // parallel agents take turns, row by row. EVERY row carrying a given
@@ -70,13 +90,86 @@ function subagentTypeIndex(messages: Message[]): Map<string, string> {
   return types;
 }
 
+// toolUseId → toolName over the loaded window, so a tool-result row can name
+// the call it answers. A result whose call has not been paged in yet shows no
+// name — never an invented one.
+function toolNameIndex(messages: Message[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const message of messages) {
+    if (message.kind !== "tool-call") continue;
+    const id = toolUseIdOf(message.content);
+    if (id !== undefined) names.set(id, toolNameOf(message.content));
+  }
+  return names;
+}
+
+// The turn separator's clock. createdAt is stamped at INGEST (the daemon
+// batches a flush per ~400ms), so it is coarse by design — a turn marker, not
+// a timing measurement. Static text: no ticking, so the memo below holds.
+function TurnDivider({ at }: { at: number }) {
+  return (
+    <div className="flex items-center gap-3 pt-3 pb-1" aria-hidden>
+      <div className="h-px flex-1 bg-border" />
+      <span className="font-mono text-[10px] text-text-faint">
+        {formatClock(at)}
+      </span>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+// The last top-level tool-call in the loaded window with no tool-result
+// answering it — i.e. the call the agent is still inside. Returns null when
+// there is none (the call is older than the loaded window, or the tool already
+// returned): the live tail then renders nothing rather than inventing a state
+// the rows do not show.
+function openToolCall(
+  messages: Message[],
+): { name: string; preview: string } | null {
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (m.kind !== "tool-result") continue;
+    const id = toolUseIdOf(m.content);
+    if (id !== undefined) answered.add(id);
+  }
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m.kind !== "tool-call" || m.parentToolUseId !== undefined) continue;
+    const id = toolUseIdOf(m.content);
+    if (id === undefined || answered.has(id)) continue;
+    const name = toolNameOf(m.content);
+    return {
+      name,
+      preview: previewLine(compactInput(name, toolInputOf(m.content)), 64),
+    };
+  }
+  return null;
+}
+
+function UnreadDivider() {
+  return (
+    <div className="flex items-center gap-3 py-1">
+      <div className="h-px flex-1 bg-accent/40" />
+      <span className="text-[10px] text-accent/80">
+        — new since your last visit —
+      </span>
+      <div className="h-px flex-1 bg-accent/40" />
+    </div>
+  );
+}
+
 // Memoized: the parent tree re-renders on a 15s age tick, but the transcript
-// shows no ages — sessionId is its only prop, so the tick must not re-render
-// every row.
+// shows no ages, so the tick must not re-render every row. Both props are safe
+// under that rule — sessionId is fixed for the pane, and sessionStatus changes
+// rarely and always means something (a re-render on a status flip is the point:
+// the live cursor, the queued caption and the running-tool tail all depend on
+// it).
 const Transcript = memo(function Transcript({
   sessionId,
+  sessionStatus,
 }: {
   sessionId: Id<"claudeSessions">;
+  sessionStatus: string;
 }) {
   const {
     results,
@@ -99,6 +192,7 @@ const Transcript = memo(function Transcript({
   const messages = useMemo(() => [...results].reverse(), [results]);
   const groups = useMemo(() => groupRows(messages), [messages]);
   const subagentTypes = useMemo(() => subagentTypeIndex(messages), [messages]);
+  const toolNames = useMemo(() => toolNameIndex(messages), [messages]);
   const pendingTurns = (pendingInbound ?? []).filter(
     (row) => row.kind === "user-turn",
   );
@@ -120,6 +214,43 @@ const Transcript = memo(function Transcript({
   // Previous first-message seq, to detect growth at the TOP of the list.
   const prevFirstSeqRef = useRef<number | null>(null);
   const [showJump, setShowJump] = useState(false);
+
+  // Unread mark. The stored seq is read ONCE, on mount, into state — so the
+  // divider is frozen where the reader left off and does not creep down as new
+  // rows land during the visit. localStorage throws in some privacy modes;
+  // every touch is guarded and a failure simply means no divider.
+  const [lastReadSeq, setLastReadSeq] = useState<number | null>(null);
+  const didReadStorageRef = useRef(false);
+  const storageKey = lastReadKey(sessionId);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      const seq = raw === null ? Number.NaN : Number(raw);
+      if (Number.isFinite(seq)) setLastReadSeq(seq);
+    } catch {
+      // storage unavailable — no divider, nothing else changes
+    }
+    // Gates the write-back below: the read must always happen first, and
+    // layout effects run before this passive one on the same commit.
+    didReadStorageRef.current = true;
+  }, [storageKey]);
+
+  // The group the divider sits above: the first one ANCHORED after the stored
+  // seq. Null when nothing was stored, or nothing is newer. Anchor, not
+  // rows.some — an agent group is anchored at its parent's first row and
+  // absorbs later rows out of seq order, so `some` would re-anchor the divider
+  // back above already-read main-thread rows whenever a long-running Task
+  // emitted one more row since the last visit. Trade-off: new rows absorbed
+  // into an already-read agent group no longer summon a divider — they sit
+  // inside the collapsed fold anyway.
+  const unreadGroupKey = useMemo(() => {
+    if (lastReadSeq === null) return null;
+    for (const g of groups) {
+      const rows = g.kind === "row" ? [g.message] : g.messages;
+      if (rows[0].seq > lastReadSeq) return rows[0]._id;
+    }
+    return null;
+  }, [groups, lastReadSeq]);
 
   const scrollToBottom = () => {
     const el = containerRef.current;
@@ -143,8 +274,18 @@ const Transcript = memo(function Transcript({
   }:${pendingControls.length}`;
 
   const firstSeq = messages.length > 0 ? messages[0].seq : null;
+  const lastSeq = messages.length > 0 ? messages[messages.length - 1].seq : null;
 
   useLayoutEffect(() => {
+    // Write-back first, and only after the mount read has run — otherwise the
+    // very first commit would overwrite the mark before it was read.
+    if (didReadStorageRef.current && lastSeq !== null) {
+      try {
+        window.localStorage.setItem(storageKey, String(lastSeq));
+      } catch {
+        // storage unavailable — the mark just doesn't move
+      }
+    }
     const el = containerRef.current;
     if (!el) return;
     const prevFirstSeq = prevFirstSeqRef.current;
@@ -179,7 +320,7 @@ const Transcript = memo(function Transcript({
     } else {
       setShowJump(true);
     }
-  }, [contentSignature, pageStatus, firstSeq]);
+  }, [contentSignature, pageStatus, firstSeq, lastSeq, storageKey]);
 
   const loadEarlier = () => {
     const el = containerRef.current;
@@ -188,6 +329,17 @@ const Transcript = memo(function Transcript({
       : null;
     loadMore(60);
   };
+
+  // What the agent is doing right now — derived, never asserted (see
+  // openToolCall).
+  const runningTool = useMemo(
+    () => (sessionStatus === "running" ? openToolCall(messages) : null),
+    [messages, sessionStatus],
+  );
+
+  // The buf row survives a turn as an empty string, so "is text streaming" is
+  // a text check, not a row check.
+  const streaming = (streamBuf?.text ?? "") !== "";
 
   const empty =
     pageStatus !== "LoadingFirstPage" &&
@@ -230,30 +382,57 @@ const Transcript = memo(function Transcript({
           </div>
         )}
 
-        {groups.map((g) =>
-          g.kind === "row" ? (
-            <MessageRow key={g.message._id} message={g.message} />
-          ) : (
-            <details key={g.messages[0]._id} className="text-sm">
-              <summary className="cursor-pointer list-none text-xs text-text-faint px-1 hover:text-text-muted">
-                agent{" "}
-                {subagentTypes.get(g.parentToolUseId) ?? g.parentToolUseId} —{" "}
-                {g.messages.length} rows
-              </summary>
-              <div className="mt-1 space-y-2 border-l border-border pl-3">
-                {g.messages.map((m) => (
-                  <MessageRow key={m._id} message={m} />
-                ))}
-              </div>
-            </details>
-          ),
-        )}
+        {groups.map((g) => {
+          const anchor = g.kind === "row" ? g.message : g.messages[0];
+          return (
+            <Fragment key={anchor._id}>
+              {anchor._id === unreadGroupKey && <UnreadDivider />}
+              {/* A top-level user row starts a turn — mark it with the clock. */}
+              {g.kind === "row" &&
+                g.message.kind === "user" &&
+                g.message.parentToolUseId === undefined && (
+                  <TurnDivider at={g.message.createdAt} />
+                )}
+              {g.kind === "row" ? (
+                <MessageRow message={g.message} toolNames={toolNames} />
+              ) : (
+                <details className="text-sm">
+                  <summary className="cursor-pointer list-none text-xs text-text-faint px-1 hover:text-text-muted">
+                    agent{" "}
+                    {subagentTypes.get(g.parentToolUseId) ?? g.parentToolUseId}{" "}
+                    — {g.messages.length} rows
+                  </summary>
+                  <div className="mt-1 space-y-2 border-l border-border pl-3">
+                    {g.messages.map((m) => (
+                      <MessageRow key={m._id} message={m} toolNames={toolNames} />
+                    ))}
+                  </div>
+                </details>
+              )}
+            </Fragment>
+          );
+        })}
 
         {streamBuf && (
           <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text px-1">
             {streamBuf.text}
-            <span className="inline-block w-2 h-4 ml-0.5 align-text-bottom bg-accent animate-pulse" />
+            {/* The cursor is a claim that text is still coming. It only pulses
+                while the session is actually running — otherwise it blinked
+                forever over a dead buffer. */}
+            {sessionStatus === "running" && (
+              <span className="inline-block w-2 h-4 ml-0.5 align-text-bottom bg-accent animate-pulse" />
+            )}
           </pre>
+        )}
+
+        {!streaming && runningTool !== null && (
+          <div className="flex items-baseline gap-2 px-2 text-xs text-text-faint">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />
+            <span className="font-mono text-text-muted shrink-0">
+              {runningTool.name} running
+            </span>
+            <span className="truncate min-w-0">{runningTool.preview}</span>
+          </div>
         )}
 
         {pendingTurns.map((row) => (
@@ -264,7 +443,11 @@ const Transcript = memo(function Transcript({
             <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
               {row.text ?? ""}
             </pre>
-            <div className="text-xs text-text-faint mt-1">sending</div>
+            <div className="text-xs text-text-faint mt-1">
+              {sessionStatus === "running"
+                ? "queued — delivers when the current turn ends"
+                : "sending"}
+            </div>
           </div>
         ))}
 

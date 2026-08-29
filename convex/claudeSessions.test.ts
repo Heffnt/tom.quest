@@ -22,6 +22,42 @@ async function createBasicSession(tom: Awaited<ReturnType<typeof withTom>>) {
   });
 }
 
+// A pending permission row, written straight into the table: the daemon has no
+// producer for one (its unified auto gate allows or denies every tool call
+// itself), so internalIngest takes no permissionRequests. The decide / ack /
+// expire paths still serve these HISTORICAL rows, which is what the tests
+// below exercise.
+async function insertPendingPermission(
+  t: ReturnType<typeof convexTest>,
+  sessionId: Id<"claudeSessions">,
+  requestId: string,
+  toolName = "Bash",
+) {
+  return await t.run(async (ctx) =>
+    ctx.db.insert("claudePermissions", {
+      sessionId,
+      requestId,
+      toolName,
+      input: { command: "git push" },
+      status: "pending" as const,
+      requestedAt: Date.now(),
+    }),
+  );
+}
+
+// The Slack event messages a mutation scheduled, read off the scheduler's own
+// system table — the observable effect of notifySessionEvent without reaching
+// into Slack. Rows persist through their run (convex-test patches state, never
+// deletes), so counting is stable whether or not the job has fired yet; the
+// action itself logs-and-returns with no Slack env configured.
+async function sessionEventMessages(t: ReturnType<typeof convexTest>) {
+  return await t.run(async (ctx) =>
+    (await ctx.db.system.query("_scheduled_functions").collect())
+      .filter((job) => job.name.includes("internalSessionEventMessage"))
+      .map((job) => job.args[0] as { sessionId: string; text: string }),
+  );
+}
+
 // A box with plenty of headroom: 1/8 per-cpu load, 8GB free — every admission
 // guard passes, so a scheduler test that stays a no-op failed on the rule it
 // is actually about.
@@ -140,7 +176,9 @@ describe("claude sessions", () => {
     });
     expect(inbound).toHaveLength(1);
     expect(inbound[0].kind).toBe("user-turn");
-    expect(inbound[0].text).toBe("hello");
+    // Tom's prompt verbatim at the head; the outcome-pen footer is appended
+    // server-side (pinned by its own test below).
+    expect(inbound[0].text?.startsWith("hello")).toBe(true);
   });
 
   it("daemon poll claims state and heartbeat; ingest transitions and delivers", async () => {
@@ -215,13 +253,7 @@ describe("claude sessions", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      status: "awaiting-permission",
-      permissionRequests: [
-        { requestId: "req-1", toolName: "Bash", input: { command: "git push" } },
-      ],
-    });
+    await insertPendingPermission(t, sessionId, "req-1");
     const pending = await tom.query(api.claudeSessions.getPendingPermissions, {
       sessionId,
     });
@@ -300,13 +332,7 @@ describe("claude sessions", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      status: "awaiting-permission",
-      permissionRequests: [
-        { requestId: "req-orphan", toolName: "Bash", input: { command: "ls" } },
-      ],
-    });
+    await insertPendingPermission(t, sessionId, "req-orphan");
     // No heartbeat row exists → daemon unconfirmed → forceClose permitted.
     await tom.mutation(api.claudeSessions.forceClose, { sessionId });
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
@@ -567,7 +593,9 @@ describe("claude sessions", () => {
     const pending = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId,
     });
-    const opener = pending.find((p) => p.text === "hello");
+    // The opener carries createSession's outcome-pen footer, so it is found by
+    // its head, not by exact text.
+    const opener = pending.find((p) => p.text?.startsWith("hello"));
     expect(pending).toHaveLength(2);
 
     // One flush both ENDS the session and reports what the daemon did manage
@@ -584,7 +612,7 @@ describe("claude sessions", () => {
     const rows = await t.run(async (ctx) =>
       ctx.db.query("claudeInbound").collect(),
     );
-    expect(rows.find((r) => r.text === "hello")?.status).toBe("done");
+    expect(rows.find((r) => r.text?.startsWith("hello"))?.status).toBe("done");
     expect(rows.find((r) => r.text === "one more thing")?.status).toBe(
       "interrupted",
     );
@@ -614,6 +642,279 @@ describe("claude sessions", () => {
         summary: "x",
       }),
     ).rejects.toThrow(/Unknown session id/);
+  });
+
+  // witness: delete the `outcomePenFooter(sessionId)` append from createSession
+  // in convex/claudeSessions.ts and this test goes red — an interactive
+  // session would have no way to learn its own id, and so no writer for the
+  // ratified "every session ends with a written outcome record".
+  it("createSession hands the session its own id and the outcome pen", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    const text = inbound[0].text ?? "";
+    expect(text).toContain(sessionId); // the id the client could not know
+    expect(text).toContain("/tts/session-outcome");
+    // Same env contract as the autonomous mission: only the TTS key, never
+    // the ingest key, is named to a model-reachable shell.
+    expect(text).toContain("TTS_WORKER_KEY");
+    expect(text).not.toContain("SESSIONS_WORKER_KEY");
+  });
+
+  // witness: drop the `mode: "interactive"` line from reopenSession's patch in
+  // convex/claudeSessions.ts and this test goes red — a reopened autonomous
+  // session would keep the daemon's auto-end path and close itself again after
+  // one turn, out from under the conversation Tom just restarted.
+  it("reopens an ended session as idle and interactive, keeping its ending on the record", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.run(async (ctx) =>
+      ctx.db.patch(sessionId, { mode: "autonomous" as const }),
+    );
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "autonomous run complete",
+      outcome: "completed" as const,
+      outcomeSummary: "brief written into the item",
+    });
+
+    await tom.mutation(api.claudeSessions.reopenSession, {
+      sessionId,
+      text: "one more thing",
+    });
+    const session = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(session?.status).toBe("idle");
+    expect(session?.mode).toBe("interactive");
+    // The previous ending is history, not a claim about the present state —
+    // it stays on the row, and the transcript that follows keeps it honest.
+    expect(session?.endedReason).toBe("autonomous run complete");
+    expect(session?.outcome).toBe("completed");
+    expect(session?.outcomeSummary).toBe("brief written into the item");
+
+    // The ending swept the opener as interrupted, so the reopening turn is
+    // the one pending row the daemon's poll will pick up.
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0].text).toBe("one more thing");
+  });
+
+  // witness: remove the status guard from reopenSession and this test goes red
+  // — reopening a RUNNING session would patch it back to idle mid-turn.
+  it("refuses to reopen a live session, or to reopen with an empty turn", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await expect(
+      tom.mutation(api.claudeSessions.reopenSession, {
+        sessionId,
+        text: "still live",
+      }),
+    ).rejects.toThrow(/sendMessage/);
+
+    await tom.mutation(api.claudeSessions.forceClose, { sessionId });
+    await expect(
+      tom.mutation(api.claudeSessions.reopenSession, {
+        sessionId,
+        text: "   ",
+      }),
+    ).rejects.toThrow(/empty/);
+    const session = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(session?.status).toBe("ended"); // the refusal changed nothing
+  });
+
+  // ── The reopen protocol ────────────────────────────────────────────────────
+  // A reopen puts a terminal row back into the live poll, which is
+  // indistinguishable from a daemon restart AND races the daemon's blind retry
+  // of the ending flush it just sent. The three fields below are what the
+  // daemon and the scheduler read to tell those apart.
+
+  // witness: drop reopenedAt, reopenEpoch, or reopenedFromAutonomous from
+  // reopenSession's patch in convex/claudeSessions.ts and this test goes red —
+  // the daemon would stamp a fabricated restart row, a stale flush could
+  // re-terminalize the session, and the scheduler would lose the run's history.
+  it("a reopen stamps the marker, bumps the epoch, and keeps autonomous provenance", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.run(async (ctx) =>
+      ctx.db.patch(sessionId, { mode: "autonomous" as const }),
+    );
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "autonomous run complete",
+    });
+
+    await tom.mutation(api.claudeSessions.reopenSession, {
+      sessionId,
+      text: "one more thing",
+    });
+    const first = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(first?.reopenedAt).toEqual(expect.any(Number));
+    expect(first?.reopenEpoch).toBe(1);
+    // mode is now "interactive" (Tom took it over), so this is the only
+    // surviving record that the run was autonomous.
+    expect(first?.reopenedFromAutonomous).toBe(true);
+
+    // Both facts ride the poll — they are the daemon's only inputs.
+    const poll = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+    });
+    const polled = poll.sessions[0] as {
+      reopenedAt?: number;
+      reopenEpoch?: number;
+    };
+    expect(polled.reopenedAt).toBe(first?.reopenedAt);
+    expect(polled.reopenEpoch).toBe(1);
+
+    // A second ending and a second reopen: the epoch is a generation counter,
+    // so every reopen invalidates one more round of in-flight flushes.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      reopenEpoch: 1,
+      status: "ended",
+      endedReason: "stopped by Tom",
+    });
+    await tom.mutation(api.claudeSessions.reopenSession, {
+      sessionId,
+      text: "and another",
+    });
+    const second = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(second?.reopenEpoch).toBe(2);
+  });
+
+  // witness: replace `noState` with `terminal` at internalIngest's state gates
+  // in convex/claudeSessions.ts and this test goes red — the daemon's blind
+  // retry of an ending it already landed would end the session a second time,
+  // discard the turn Tom just sent, and report the failure to Slack twice.
+  it("a pre-reopen flush replay lands its rows but no state, and says nothing", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    // The ending flush: it COMMITS, and its response is lost on the wire, so
+    // the daemon will send it again.
+    const endingFlush = {
+      sessionId,
+      reopenEpoch: 0,
+      status: "failed" as const,
+      endedReason: "the SDK process exited without a final turn",
+      finalize: [
+        { seq: 0, turn: 0, kind: "system" as const, content: "the end" },
+      ],
+    };
+    await t.mutation(internal.claudeSessions.internalIngest, endingFlush);
+    expect(await sessionEventMessages(t)).toHaveLength(1);
+
+    await tom.mutation(api.claudeSessions.reopenSession, {
+      sessionId,
+      text: "what happened there?",
+    });
+    // The retry arrives with the epoch the daemon held BEFORE the reopen.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      ...endingFlush,
+      finalize: [
+        { seq: 1, turn: 0, kind: "system" as const, content: "the end (retry)" },
+      ],
+    });
+
+    const session = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(session?.status).toBe("idle"); // not re-terminalized
+    // Tom's reopening turn is still waiting for the daemon, not swept away.
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0].text).toBe("what happened there?");
+    // Slack was told about the failure once, on the real crossing.
+    expect(await sessionEventMessages(t)).toHaveLength(1);
+    // Transcript completeness is unconditional: a stale payload's rows are
+    // still part of what happened.
+    const messages = await t.run(async (ctx) =>
+      ctx.db.query("claudeMessages").collect(),
+    );
+    expect(messages.map((m) => m.content)).toEqual([
+      "the end",
+      "the end (retry)",
+    ]);
+  });
+
+  // witness: remove the `reopenedAt: undefined` clear from internalIngest and
+  // this test goes red — the marker would stick forever, so a LATER genuine
+  // daemon death on this session would be adopted silently instead of saying
+  // the turn was interrupted.
+  it("the daemon reporting running again spends the reopen marker", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "stopped by Tom",
+    });
+    await tom.mutation(api.claudeSessions.reopenSession, {
+      sessionId,
+      text: "carry on",
+    });
+
+    // A stale replay must not spend it (the reopen has not been served yet).
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      reopenEpoch: 0,
+      status: "running",
+    });
+    const during = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(during?.reopenedAt).toEqual(expect.any(Number));
+
+    // The adopting daemon takes the reopening turn: the reopen is now spent.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      reopenEpoch: 1,
+      status: "running",
+    });
+    const after = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(after?.status).toBe("running");
+    expect(after?.reopenedAt).toBeUndefined();
+  });
+
+  // witness: drop the trimmed-empty check from renameSession and this test
+  // goes red — a session could be left with a blank handle in the list.
+  it("renames a session and refuses a blank title", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await tom.mutation(api.claudeSessions.renameSession, {
+      sessionId,
+      title: "  the reading-list session  ",
+    });
+    const session = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(session?.title).toBe("the reading-list session");
+    await expect(
+      tom.mutation(api.claudeSessions.renameSession, { sessionId, title: " " }),
+    ).rejects.toThrow(/empty/);
   });
 
   it("poll stores the box load and names each live session's posture", async () => {
@@ -648,6 +949,121 @@ describe("claude sessions", () => {
     };
     expect(polled.mode).toBe("autonomous");
     expect(polled.todoId).toBe(todoId);
+  });
+});
+
+// ── Needs-you Slack event messages (todo tts-session-needs-you-notify) ───────
+// Every send below is EDGE-triggered: the todo's completion condition is "one
+// message, not one per poll", and the daemon flushes several times a second
+// while a session is live. Each test therefore repeats the daemon's behavior
+// (a replayed flush, a re-record) and pins that the count does not move.
+
+describe("session event messages", () => {
+  // witness: drop the `firstRecord` guard from internalRecordOutcome in
+  // convex/claudeSessions.ts and this test goes red — an agent that revises
+  // its own summary would ping Tom once per revision.
+  it("notifies once when the agent records an outcome, never on a re-record", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "completed",
+      summary: "brief written into the item",
+    });
+    const first = await sessionEventMessages(t);
+    expect(first).toHaveLength(1);
+    expect(first[0].sessionId).toBe(sessionId);
+    expect(first[0].text).toBe(
+      'session "test session" recorded its outcome: completed — brief written into the item',
+    );
+
+    // The agent sharpens its wording (or corrects the verdict): the ROW takes
+    // the new word — the surface always shows the agent's latest — but Slack
+    // is not told twice.
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "errored",
+      summary: "the source turned out to be paywalled",
+    });
+    expect(await sessionEventMessages(t)).toHaveLength(1);
+    const session = await tom.query(api.claudeSessions.getSession, {
+      id: sessionId,
+    });
+    expect(session?.outcome).toBe("errored");
+    expect(session?.outcomeSummary).toBe(
+      "the source turned out to be paywalled",
+    );
+  });
+
+  // A "waiting on a permission decision" message used to be tested here. It
+  // was removed with the edge itself: the daemon's unified auto gate decides
+  // every tool call, so no permission request is ever created and the message
+  // could not fire in production — the old test hand-built a payload no daemon
+  // code emits, green-lighting dead code.
+
+  // witness: drop the `becameTerminal` conjunct from the failure branch of
+  // internalIngest (leaving `args.status === "failed"` alone) and this test
+  // goes red — every late flush naming the same failure would re-send it.
+  it("notifies once on the crossing into failed, and not on a normal ending", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const failed = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: failed,
+      status: "failed",
+      endedReason: "the SDK process exited without a final turn",
+    });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: failed,
+      status: "failed",
+      endedReason: "the SDK process exited without a final turn",
+    });
+    const messages = await sessionEventMessages(t);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe(
+      'session "test session" failed — the SDK process exited without a final turn',
+    );
+
+    // A session that simply ENDS is not a needs-you event: Tom stopped it, or
+    // it finished, and its outcome record is the thing worth a message.
+    const ended = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: ended,
+      status: "ended",
+      endedReason: "stopped by Tom",
+    });
+    expect(await sessionEventMessages(t)).toHaveLength(1);
+  });
+
+  // The daemon's cap-path stamp is the same fact as the agent's pen and gets
+  // the same one-line wording — two writers, one description.
+  it("notifies once when the daemon stamps an outcome onto a session that had none", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "autonomous run complete",
+      outcome: "completed" as const,
+      outcomeSummary: "daemon saw the final turn",
+    });
+    const messages = await sessionEventMessages(t);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe(
+      'session "test session" recorded its outcome: completed — daemon saw the final turn',
+    );
+
+    // A second flush re-sending the same outcome reads a defined
+    // session.outcome and stamps nothing, so it says nothing.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      outcome: "completed" as const,
+      outcomeSummary: "daemon saw the final turn",
+    });
+    expect(await sessionEventMessages(t)).toHaveLength(1);
   });
 });
 
@@ -1384,6 +1800,39 @@ describe("autonomous session scheduler", () => {
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const created = (await autoSessions(t)).filter(
       (s) => s.title !== "past auto run",
+    );
+    expect(created).toHaveLength(0);
+  });
+
+  // witness: narrow the history filter back to `s.mode === "autonomous"` (drop
+  // wasAutonomous's reopenedFromAutonomous half) and this test goes red — the
+  // fleet would re-admit a subject the moment Tom reopened its run and closed
+  // it by hand, because the flip to "interactive" erased the run from history.
+  it("keeps a reopened autonomous run in the todo's backoff history", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const todoId = await eligibleTodo(tom, "reopened and finished by hand");
+    const pastId = await insertPastAutoSession(t, {
+      todoId,
+      statusChangedAt: Date.now() - 60 * 60 * 1000,
+      outcome: "errored",
+      outcomeSummary: "no source to read",
+    });
+    // Tom reopened it (mode flips to interactive) and it ended again.
+    await t.run(async (ctx) =>
+      ctx.db.patch(pastId, {
+        mode: "interactive" as const,
+        reopenedFromAutonomous: true,
+      }),
+    );
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const created = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeSessions").collect()).filter(
+        (s) => s.title !== "past auto run",
+      ),
     );
     expect(created).toHaveLength(0);
   });

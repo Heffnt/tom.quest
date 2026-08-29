@@ -1,10 +1,11 @@
 "use client";
 
 // Composer + session controls. Enter inserts a newline; Ctrl/Cmd+Enter sends;
-// the Send button always works. Disabled with a descriptive line once the
-// session is ended/failed. Interrupt while running or awaiting-permission;
-// Stop with an inline confirm; Force close only when the worker heartbeat
-// is stale.
+// the Send button always works. On an ended/failed session the same box stays,
+// with the descriptive status line above it and a send that reopens the
+// session (the daemon resumes the SDK session by id). Interrupt while running
+// or awaiting-permission; Stop with an inline confirm; Force close only when
+// the worker heartbeat is stale.
 
 import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
@@ -24,6 +25,7 @@ export default function Composer({
   const sendMessage = useMutation(api.claudeSessions.sendMessage);
   const sendControl = useMutation(api.claudeSessions.sendControl);
   const forceClose = useMutation(api.claudeSessions.forceClose);
+  const reopenSession = useMutation(api.claudeSessions.reopenSession);
 
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -40,12 +42,16 @@ export default function Composer({
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_PX)}px`;
   };
 
-  const send = async () => {
+  // One submit path for both postures — the only difference is which mutation
+  // the text goes to. reopenSession queues the text as the next turn on a
+  // session whose status is ended/failed.
+  const send = async (reopen = false) => {
     if (text.trim() === "" || sending) return;
     setSending(true);
     setError(null);
     try {
-      await sendMessage({ sessionId: session._id, text });
+      if (reopen) await reopenSession({ sessionId: session._id, text });
+      else await sendMessage({ sessionId: session._id, text });
       setText("");
       const el = textareaRef.current;
       if (el) el.style.height = "auto";
@@ -76,11 +82,47 @@ export default function Composer({
     }
   };
 
+  // The label says exactly what the button does — on an ended session the
+  // same text also restarts it, so the label carries that.
+  const textRow = (label: string, reopen: boolean) => (
+    <div className="flex items-end gap-2">
+      <textarea
+        ref={textareaRef}
+        value={text}
+        rows={1}
+        onChange={(e) => {
+          setText(e.target.value);
+          autoGrow();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            void send(reopen);
+          }
+        }}
+        placeholder="message the session"
+        className="flex-1 min-w-0 resize-none bg-surface-alt border border-border rounded px-3 py-2 text-sm placeholder:text-text-faint focus:outline-none focus:border-accent"
+      />
+      <button
+        type="button"
+        onClick={() => void send(reopen)}
+        disabled={sending || text.trim() === ""}
+        className="shrink-0 rounded px-4 py-2 text-sm border border-accent text-accent hover:bg-surface-alt disabled:opacity-50"
+      >
+        {label}
+      </button>
+    </div>
+  );
+
   if (!live) {
     return (
-      <div className="border-t border-border px-3 sm:px-4 py-3 text-sm text-text-muted">
-        session {session.status}
-        {session.endedReason ? ` — ${session.endedReason}` : ""}
+      <div className="border-t border-border px-3 sm:px-4 py-2.5 space-y-2">
+        <div className="text-sm text-text-muted">
+          session {session.status}
+          {session.endedReason ? ` — ${session.endedReason}` : ""}
+        </div>
+        {error && <div className="text-xs text-error">{error}</div>}
+        {textRow("Send — reopens session", true)}
       </div>
     );
   }
@@ -88,33 +130,7 @@ export default function Composer({
   return (
     <div className="border-t border-border px-3 sm:px-4 py-2.5 space-y-2">
       {error && <div className="text-xs text-error">{error}</div>}
-      <div className="flex items-end gap-2">
-        <textarea
-          ref={textareaRef}
-          value={text}
-          rows={1}
-          onChange={(e) => {
-            setText(e.target.value);
-            autoGrow();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-          placeholder="message the session"
-          className="flex-1 min-w-0 resize-none bg-surface-alt border border-border rounded px-3 py-2 text-sm placeholder:text-text-faint focus:outline-none focus:border-accent"
-        />
-        <button
-          type="button"
-          onClick={() => void send()}
-          disabled={sending || text.trim() === ""}
-          className="shrink-0 rounded px-4 py-2 text-sm border border-accent text-accent hover:bg-surface-alt disabled:opacity-50"
-        >
-          Send
-        </button>
-      </div>
+      {textRow("Send", false)}
       <div className="flex flex-wrap items-center gap-2 text-xs">
         {/* The daemon supports interrupt while awaiting-permission too — it
             supersedes the parked permission request. */}
@@ -129,8 +145,11 @@ export default function Composer({
           </button>
         )}
         {confirmingStop ? (
-          <span className="flex items-center gap-2">
-            <span className="text-text-muted">stop this session?</span>
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="text-text-muted">
+              stop? committed work is pushed to the session branch; uncommitted
+              changes are discarded
+            </span>
             <button
               type="button"
               onClick={() => void control("stop")}

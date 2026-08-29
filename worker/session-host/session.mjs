@@ -36,6 +36,9 @@ export const SESSIONS_ROOT = "/var/cache/tts/sessions";
 
 // The repos a session may check out (claudeSessions.repo). Everything is
 // under github.com/Heffnt — same owner the code-todo jobs use.
+// MIRROR of SESSION_REPOS in convex/ttsShared.ts (the one home) — this file
+// cannot import .ts and only worker/ is deployed to the box. Fenced:
+// scripts/check-session-mirrors.mjs fails guardrails on drift.
 const REPO_GITHUB = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
@@ -49,7 +52,8 @@ const BUF_SEGMENT_BYTES = 16 * 1024;
 // permission, status change, error) bypass it.
 const FLUSH_THROTTLE_MS = 400;
 
-// ── Permission posture (ratified by Tom, 2026-08-28 revision) ────────────────
+// ── Permission posture (ratified by Tom, 2026-08-28 revision; canonical home
+// WikiTom tts/spec.md §20.2) ─────────────────────────────────────────────────
 // Unified auto mode, every session mode: no tool call parks on Tom. The
 // durable safety boundary is structural, not per-call — sessions work in
 // throwaway workdirs under /var/cache (deleted at end), pushes land only in
@@ -62,6 +66,118 @@ const FLUSH_THROTTLE_MS = 400;
 // before checking cwd). MultiEdit is included because it is the same class
 // of tool as Edit in current CLIs.
 const EDIT_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
+
+// ── The Bash classifier (Tom's ruling 2026-08-29, adoption.md
+//    `session-permission-posture`) ──────────────────────────────────────────
+// Auto mode still parks NOTHING on Tom. But the structural boundary above is
+// a boundary on FILES and BRANCHES, and a shell is neither: one Bash call can
+// push to main, read any env var and POST it somewhere, or rewrite the box's
+// own /etc and account config. So Bash — and only Bash — gets a cheap-model
+// classifier standing in for the prompt that used to park. Three tiers,
+// cheapest first, because latency here is latency on every command a session
+// runs.
+//
+// Tier 1: the system's own write pens. A session records its outcome and
+// prepares todos by key-authed curl to $CONVEX_SITE_URL — that IS the
+// sanctioned path, so it never pays classifier latency and never writes a row
+// (bookkeeping must not fill the transcript it is bookkeeping for).
+// Flag-order tolerant (`-X POST -s`, `-sS -X POST`, a leading -H all match)
+// so the common variants keep the zero-latency/zero-row contract, but still
+// START-anchored so nothing can piggyback ahead of the curl. Anything that
+// misses here is not denied — it falls to tier 3, whose prompt ALLOWs these
+// POSTs explicitly.
+const SANCTIONED_PEN_RE =
+  /^curl(?:\s+-(?:s|sS|S)\b|\s+-X\s+POST|\s+-H\s+"[^"]*")*\s+"?\$CONVEX_SITE_URL\//;
+// …and only a LONE pen qualifies for the fast path. A start anchor alone
+// would wave through `<pen> && git push origin main` (or a second line
+// dumping env to an attacker), because the anchor says nothing about what
+// follows. #canUseTool therefore strips the single-quoted -d '{…}' body (so
+// JSON contents can't trip the check) and refuses the fast path if any shell
+// control operator survives — those commands go to tier 2/3, which inspect
+// the whole line.
+const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
+
+// Tier 2: the danger fingerprint. No match → allow immediately. Ordinary dev
+// flow (tests, builds, greps, git add/commit/diff) must pay ZERO latency, so
+// the classifier is never in its path. Each alternative catches:
+//   git push        — the one git verb that leaves the throwaway clone
+//   ssh / scp / rsync — moving anything on or off the box
+//   sudo / systemctl / crontab — box-level privilege and persistence
+//   /etc/ /root/    — the box's own configuration, outside every workdir
+//   .claude-accounts — the Max-account credential store the CLI reads
+//   GH_TOKEN / WORKER_KEY — the two secret names that exist in this env
+//   curl with a body/upload flag — the exfiltration shape (plain GETs are fine)
+//   wget            — same, in its fetch-and-write direction
+//   rm on an absolute path — deletion that can reach outside the workdir
+// Two alternatives are deliberately loose about WHITESPACE, because the tight
+// versions missed the real shapes: `git -C <dir> push` (git's own global
+// options between the verb and the subcommand — the form this very file uses)
+// and a backslash-continued multi-line curl whose -d sits on line 2. The git
+// span excludes ; | & so it can't run past one shell command segment; both
+// span backslash-newline continuations. Over-matching only costs a classifier
+// call, which then allows the benign command.
+const BASH_DANGER_RE =
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+
+// Tier 3 mechanics: the box's own authenticated `claude` CLI (same binary the
+// cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
+// model, short timeout. A verdict must never cost more than the command.
+const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
+const CLASSIFIER_TIMEOUT_MS = 30_000;
+const CLASSIFIER_MAXBUFFER = 256 * 1024; // a one-line verdict; nothing more
+// Per-session verdict memo. Agentic loops re-run the same command constantly
+// (the same `git push origin session/<id>` after every commit) and each rerun
+// would otherwise cost a CLI spawn and a duplicate transcript row.
+const CLASSIFIER_CACHE_MAX = 200;
+
+// One-line, ~120-char rendition of a command for transcript rows: whitespace
+// collapsed so a heredoc or a multi-line pipeline stays one readable line.
+function commandPreview(command) {
+  const oneLine = String(command).replace(/\s+/g, " ").trim();
+  return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
+}
+
+// The classifier prompt. States the box's actual posture (disposable clone,
+// one sanctioned branch) so the model rules on what would ESCAPE that
+// posture rather than on how dangerous the command looks in the abstract —
+// `rm -rf node_modules` inside a throwaway clone is nothing, and the prompt
+// has to say why. The command rides in verbatim between markers so quoting
+// inside it can't read as instructions.
+function classifierPrompt({ command, workdir, branch }) {
+  return [
+    "You are a one-shot security classifier for an autonomous coding agent running on a disposable worker box.",
+    `The agent works in a throwaway clone at ${workdir}. That clone is deleted when the session ends, so damage confined to it costs nothing. The agent's only sanctioned push target is the branch ${branch}.`,
+    "",
+    "DENY the command if it would:",
+    `- push to any branch other than ${branch}, or to a protected branch (main or master)`,
+    "- exfiltrate secrets or environment values off the box (tokens, keys, env dumps, credential files sent anywhere)",
+    "- touch /etc, /root, systemd, cron, SSH configuration, or Claude account configuration",
+    "- delete anything outside the working directory",
+    "- open interactive remote access to or from the box",
+    "",
+    "ALLOW everything else, including ordinary development work inside the clone: builds, tests, package installs, file deletion inside the working directory, reads of any kind, and pushes to " +
+      branch +
+      ".",
+    // Without this the DENY rule about keys literally describes the system's
+    // own pens (they carry X-TTS-Key), and a wrong DENY on the outcome pen
+    // strands the session's outcome — which the scheduler reads as a failed
+    // run and backs the todo off for 24h. Tier 1 catches the canonical pen,
+    // but variants (heredoc bodies, -d @file) legitimately land here.
+    'ALSO ALLOW the system\'s own bookkeeping POSTs to "$CONVEX_SITE_URL/tts/..." authenticated with the X-TTS-Key header — that is the sanctioned write path, not exfiltration; ALLOW those.',
+    "",
+    "The command, verbatim between the markers:",
+    "<<<COMMAND",
+    String(command),
+    "COMMAND>>>",
+    "",
+    "The first line of your reply must be exactly `ALLOW` or `DENY: <one-line reason>`. Write nothing before that line.",
+  ].join("\n");
+}
+
+// Work preservation (spec §20.2) runs on the stop path, so its ONE network step
+// — the push of local-only commits to session/<id> — is time-boxed: a session
+// must reach "ended" even when the remote is unreachable.
+const PRESERVE_PUSH_TIMEOUT_MS = 60_000;
 
 // Autonomous sessions: SDK turn budget (matches the executor's agentic
 // budget) and the wall-clock cap per delivered turn — past it the turn is
@@ -87,6 +203,24 @@ async function git(dir, ...args) {
     maxBuffer: 8 * 1024 * 1024,
   });
   return stdout;
+}
+
+// SDK tool_result content is a string OR an array of typed blocks. Flatten to
+// plain text AT THE SOURCE so every downstream reader (transcript rows, the
+// agent panel) renders tool output as output — never as serialized block
+// scaffolding with escaped newlines (render-honesty round, the single
+// highest-volume defect: every result row showed `{"toolUseId": …`).
+export function toolResultText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) =>
+        typeof b?.text === "string" ? b.text : JSON.stringify(b),
+      )
+      .join("\n");
+  }
+  if (content === undefined || content === null) return "";
+  return JSON.stringify(content);
 }
 
 // The verbatim error text the spec wants in endedReason: execFile's message
@@ -143,7 +277,7 @@ async function* promptStream(queue) {
 // ── The Session class ────────────────────────────────────────────────────────
 
 export class Session {
-  constructor({ id, repo, env, nextSeq, mode, onUsageSignal }) {
+  constructor({ id, repo, env, nextSeq, mode, reopenEpoch, onUsageSignal }) {
     this.id = id;
     this.repo = repo;
     this.env = env;
@@ -163,6 +297,16 @@ export class Session {
     // back (which would violate poll-only bootstrap).
     this.nextSeq = nextSeq;
     this.turn = nextSeq;
+
+    // Reopen generation, stamped onto every ingest payload. Because a failed
+    // ingest is retried BLINDLY, a terminal flush that committed but lost its
+    // response can be replayed after Tom has reopened the session — which
+    // would patch it back to "ended" and sweep his new turn to "interrupted".
+    // The server compares this epoch against the row's and rejects STATE (not
+    // rows) from a payload that predates the latest reopen; the transcript
+    // still lands, the stale ending no longer wins. Refreshed from the poll
+    // row in processServerState.
+    this.reopenEpoch = reopenEpoch ?? 0;
 
     // Local mirror of the daemon-reported status ("starting" | "idle" |
     // "running" | "ended" | "failed"; "awaiting-permission" is historical —
@@ -229,6 +373,11 @@ export class Session {
     // poll loop once sent (review fix: permanent-400 wedge).
     this.lastIngestError = undefined;
     this.lastIngestErrorAt = 0;
+
+    // Bash-classifier memo for this session: exact command string ->
+    // { allow, reason }. Per-session by design — a verdict depends on this
+    // session's workdir and branch, so it must not outlive them.
+    this.bashVerdicts = new Map();
 
     this.lastActivityAt = Date.now();
     this.dead = false; // force-killed / reaped; ignore stragglers
@@ -350,6 +499,101 @@ export class Session {
     this.workdir = dir;
   }
 
+  // Last chance before the workdir is deleted (spec §20.2: stopping must never
+  // SILENTLY destroy work). Two facts, in the order a reader needs them:
+  // what is being thrown away (uncommitted changes — unrecoverable, so say
+  // so), and what can still be saved (commits that exist only here — pushed
+  // to session/<id>, the one branch namespace this session may write).
+  // Never throws and never blocks ending: a session that cannot end is worse
+  // than a session that ended without its push. `silent` is the force-kill
+  // path, where the transcript is already closed server-side.
+  async #preserveWork({ silent = false } = {}) {
+    try {
+      if (this.repo === "none" || !this.workdir) return;
+      if (!fs.existsSync(path.join(this.workdir, ".git"))) return;
+      const branch = `session/${this.id}`;
+
+      const dirty = (await git(this.workdir, "status", "--porcelain")).trim();
+      if (dirty !== "" && !silent) {
+        const lines = dirty.split("\n");
+        const shown = lines.slice(0, 20).join("\n");
+        const more =
+          lines.length > 20 ? `\n(${lines.length - 20} more paths)` : "";
+        this.finalizeRow("system", {
+          text: `uncommitted changes were discarded with the workdir:\n${shown}${more}`,
+        });
+      }
+
+      // Split what the push can actually save from what dies regardless.
+      // The push below touches ONE ref, session/<id>, so only commits
+      // reachable from that branch are preserved — counting every unpushed
+      // commit (`--branches`) made the row claim commits on `fix/whatever`
+      // were pushed when the push had exited 0 without them.
+      const local = (
+        await git(this.workdir, "log", branch, "--not", "--remotes", "--oneline")
+      ).trim();
+      // The mirror image: commits on other branches or on a detached HEAD
+      // (invisible to --branches entirely). Unreachable from session/<id>, so
+      // the push cannot save them — and pushing the other branches is not an
+      // option, session/<id> is the one sanctioned namespace. Say so instead
+      // of losing them silently.
+      const stranded = (
+        await git(
+          this.workdir,
+          "log",
+          "--branches",
+          "HEAD",
+          "--not",
+          "--remotes",
+          branch,
+          "--oneline",
+        )
+      ).trim();
+      if (stranded !== "" && !silent) {
+        this.finalizeRow("system", {
+          text: `commit(s) outside ${branch} were discarded with the workdir:\n${stranded.slice(0, 1000)}`,
+        });
+      }
+      if (local === "") return;
+      const count = local.split("\n").length;
+      try {
+        // execFile directly rather than the git() helper: this is the one
+        // preservation step that touches the network, and it runs on the stop
+        // path — an unbounded push against an unreachable remote would hold
+        // the session in a non-terminal state forever. Timing out and saying
+        // so beats hanging.
+        await execFile("git", ["-C", this.workdir, "push", "origin", branch], {
+          maxBuffer: 8 * 1024 * 1024,
+          timeout: PRESERVE_PUSH_TIMEOUT_MS,
+        });
+        if (!silent) {
+          this.finalizeRow("system", {
+            text: `pushed ${count} commit(s) to ${branch} before the workdir was deleted`,
+          });
+        }
+      } catch (err) {
+        if (!silent) {
+          this.finalizeRow("system", {
+            text: `the push of ${count} commit(s) to ${branch} failed, so they are gone with the workdir:\n${local.slice(0, 1000)}\n${truncated(gitErrorText(err), ERROR_TEXT_LIMIT).value}`,
+          });
+        }
+      }
+    } catch (err) {
+      // git itself failed (no remote, a corrupt index, a vanished dir). The
+      // ending proceeds either way; the transcript just records why nothing
+      // was preserved.
+      if (!silent) {
+        this.finalizeRow("system", {
+          text: `preserving work before the workdir was deleted failed: ${truncated(gitErrorText(err), ERROR_TEXT_LIMIT).value}`,
+        });
+      }
+      log(
+        `session ${this.id}: work preservation failed (ignored):`,
+        String(err?.message ?? err),
+      );
+    }
+  }
+
   // Best-effort teardown. Losing this dir loses nothing durable (no-state
   // rule) — that is precisely why deleting it is safe here.
   cleanupWorkdir() {
@@ -366,6 +610,18 @@ export class Session {
   // ── the SDK query ──────────────────────────────────────────────────────────
 
   startQuery({ resume } = {}) {
+    // The daemon's own secrets, dropped from the env the session's shell
+    // inherits. Under systemd both arrive via EnvironmentFile=/etc/tts/
+    // worker.env, so without this destructure-drop `env` in any Bash call
+    // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
+    // confused session could rewrite ANY transcript) and GH_TOKEN is repo
+    // write for the whole account. Neither is reachable through the
+    // sanctioned pens, so nothing legitimate needs them.
+    const {
+      SESSIONS_WORKER_KEY: _ingestKey,
+      GH_TOKEN: _ghToken,
+      ...inheritedEnv
+    } = process.env;
     this.queue = new TurnQueue();
     this.abort = new AbortController();
     this.interruptRequested = false;
@@ -381,16 +637,18 @@ export class Session {
         // The pens are key-authed curls (POST /tts/prepare-todo,
         // POST /sessions/outcome) — the session's shell must see the keys
         // regardless of how this daemon was started (systemd EnvironmentFile
-        // vs manual run), so they are passed explicitly, on top of the full
-        // process env (the SDK child needs PATH, HOME, CLAUDE_CONFIG_DIR…).
-        // ONLY the TTS worker key enters a session's shell — its write
-        // surface (capture, prep, briefs, batches, ruling-applied,
-        // session-outcome) is the same one the cron jobs' agentic runs
-        // already expose to a model. SESSIONS_WORKER_KEY must never be here:
-        // it authorizes transcript ingest, and a model-reachable ingest key
-        // would let a confused session corrupt any transcript.
+        // vs manual run), so they are passed explicitly, on top of the
+        // process env MINUS the daemon's own secrets (the SDK child still
+        // needs PATH, HOME, CLAUDE_CONFIG_DIR…). ONLY the TTS worker key
+        // enters a session's shell — its write surface (capture, prep,
+        // briefs, batches, ruling-applied, session-outcome) is the same one
+        // the cron jobs' agentic runs already expose to a model.
+        // SESSIONS_WORKER_KEY and GH_TOKEN are SCRUBBED above (inheritedEnv):
+        // inheriting them is not hypothetical — systemd puts both in this
+        // process's env — and an ingest key reachable from the session's
+        // shell would let a confused session corrupt any transcript.
         env: {
-          ...process.env,
+          ...inheritedEnv,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
           ...(this.env.TTS_WORKER_KEY
             ? { TTS_WORKER_KEY: this.env.TTS_WORKER_KEY }
@@ -448,7 +706,7 @@ export class Session {
         this.queue = null;
       }
       if (!this.dead && !this.stopRequested && this.status !== "ended" && this.status !== "failed") {
-        this.#turnDied(failedTurn);
+        void this.#turnDied(failedTurn);
       }
     }
   }
@@ -456,7 +714,11 @@ export class Session {
   // The current turn ended abnormally (interrupt or SDK error). Preserve any
   // streamed-but-unfinalized text (nothing-ever-lost), settle the delivered
   // inbound row, go idle, and see whether another command is already queued.
-  #turnDied(wasError) {
+  // async ONLY for the autonomous-failure branch below, which pushes local
+  // commits before deleting the workdir; every other path runs to completion
+  // synchronously (no await precedes processCommands), so the delivery
+  // ordering this method has always had is unchanged.
+  async #turnDied(wasError) {
     this.#clearAutoTimer();
     if (this.bufText !== "") {
       this.finalizeRow("assistant-text", { text: this.bufText });
@@ -484,6 +746,9 @@ export class Session {
         outcome: "errored",
         outcomeSummary: `autonomous turn failed: ${(this.lastTurnErrorText ?? "no error text").slice(0, 160)}`,
       };
+      // A failed turn is exactly where work is most likely to be stranded —
+      // the commits made before the error die with the dir otherwise.
+      await this.#preserveWork();
       this.setStatus("ended");
       this.endedReasonToSend = "autonomous turn failed";
       this.requestFlush(true);
@@ -617,7 +882,7 @@ export class Session {
         if (Array.isArray(blocks)) {
           for (const b of blocks) {
             if (b.type === "tool_result") {
-              const t = truncated(b.content);
+              const t = truncated(toolResultText(b.content));
               this.finalizeRow(
                 "tool-result",
                 {
@@ -694,7 +959,9 @@ export class Session {
           // server-side; a session that recorded none reads as non-completed
           // to the scheduler's backoff. Inbound rows still pending at this
           // point are settled server-side when the terminal status lands.
-          this.#endAutonomous("autonomous run complete");
+          // void: the ending is async now (it pushes any local commits before
+          // the workdir goes) and this handler is synchronous.
+          void this.#endAutonomous("autonomous run complete");
           break;
         }
         if (!this.stopRequested) this.setStatus("idle");
@@ -730,6 +997,13 @@ export class Session {
         if (!inside) {
           // The hallucinated-absolute-path gotcha: deny with a corrective
           // message (no prompt) — the model reads it and retries in-tree.
+          // The row is not optional: without it Tom sees a tool-call followed
+          // by a failing result and no visible cause (failure honesty — the
+          // daemon's own decisions must be as legible as the model's).
+          this.finalizeRow("system", {
+            text: `auto-denied ${toolName}: ${resolved} is outside this session's workspace — a corrective message was sent to the model`,
+          });
+          this.requestFlush(false);
           return {
             behavior: "deny",
             message: `write inside the session directory ${this.workdir} — ${resolved} is outside this session's workspace`,
@@ -737,7 +1011,129 @@ export class Session {
         }
       }
     }
+    // Bash: the three-tier classifier gate (see the constants above for why
+    // Bash alone gets one).
+    if (toolName === "Bash" && typeof input?.command === "string") {
+      const command = input.command;
+      // Tier 1 — the system's own write pens: allow, no classifier, no row.
+      // Only a LONE pen qualifies. The single-quoted -d '{…}' body is
+      // stripped first so its JSON can't trip the check; anything with shell
+      // chaining left over (`<pen> && git push origin main`, or a second line
+      // POSTing $(env) somewhere) falls through to tier 2/3, which read the
+      // whole command rather than just its prefix.
+      const outsideQuotes = command.replace(/'[^']*'/g, "");
+      if (
+        SANCTIONED_PEN_RE.test(command) &&
+        !SHELL_CHAINING_RE.test(outsideQuotes)
+      ) {
+        return { behavior: "allow", updatedInput: input };
+      }
+      // Tier 2 — no danger fingerprint: allow, no classifier, no row.
+      if (BASH_DANGER_RE.test(command)) {
+        // Tier 3 — pay for a verdict.
+        const decision = await this.#classifyBash(command);
+        if (!decision.allow) {
+          return {
+            behavior: "deny",
+            message: `denied by this session's command classifier: ${decision.reason}`,
+          };
+        }
+      }
+    }
     return { behavior: "allow", updatedInput: input };
+  }
+
+  // Tier 3 of the Bash gate: ask the box's cheap model, memoize, and record.
+  // Returns { allow, reason }. Exactly ONE transcript row per new verdict;
+  // a cached verdict spawns no CLI and writes no duplicate row.
+  async #classifyBash(command) {
+    const cached = this.bashVerdicts.get(command);
+    if (cached) return cached;
+    const preview = commandPreview(command);
+    let decision;
+    try {
+      const { stdout } = await execFile(
+        "claude",
+        [
+          "-p",
+          classifierPrompt({
+            command,
+            workdir: this.workdir ?? SESSIONS_ROOT,
+            branch: `session/${this.id}`,
+          }),
+          "--model",
+          CLASSIFIER_MODEL,
+        ],
+        // Scrubbed env: the CLI authenticates through CLAUDE_CONFIG_DIR,
+        // which survives the scrub. The classifier's PROMPT embeds a
+        // model-authored command, so this process is model-influenced — the
+        // same reason the SDK child env is scrubbed applies here: neither
+        // the ingest key nor the GitHub token may sit in a process a model
+        // can steer.
+        // The prompt rides in argv rather than stdin — unlike tts-lib's
+        // runClaude — because it is one command, not a ledger dump; a command
+        // big enough to blow the ~128KiB argv cap fails the spawn and lands
+        // in the fail-open path below, which is the right answer anyway.
+        {
+          env: (() => {
+            const {
+              SESSIONS_WORKER_KEY: _ingest,
+              GH_TOKEN: _gh,
+              TTS_WORKER_KEY: _tts,
+              ...rest
+            } = process.env;
+            return rest;
+          })(),
+          timeout: CLASSIFIER_TIMEOUT_MS,
+          maxBuffer: CLASSIFIER_MAXBUFFER,
+        },
+      );
+      const firstLine = String(stdout ?? "").trim().split("\n", 1)[0].trim();
+      const head = firstLine.toUpperCase();
+      if (head.startsWith("ALLOW")) {
+        decision = { allow: true, reason: "" };
+      } else if (head.startsWith("DENY")) {
+        const colon = firstLine.indexOf(":");
+        const reason =
+          colon === -1 ? "" : firstLine.slice(colon + 1).trim();
+        decision = { allow: false, reason: reason || "no reason given" };
+      } else {
+        throw new Error(
+          `unparseable classifier reply: ${firstLine.slice(0, 200)}`,
+        );
+      }
+    } catch (err) {
+      // FAIL-OPEN, deliberately. Fail-closed would brick every session on any
+      // CLI hiccup (a usage limit, a timeout, an upgrade mid-run) — every
+      // fingerprinted command would deny and the session would spin against a
+      // wall it cannot see. The structural boundary is what actually holds;
+      // the classifier is a second layer, and a second layer that takes the
+      // system down when it stumbles is worse than no second layer.
+      log(
+        `session ${this.id}: bash classifier unavailable (allowing):`,
+        String(err?.message ?? err),
+      );
+      this.finalizeRow("system", {
+        text: `classifier unavailable for ${preview} — allowed; the structural boundary (throwaway workdir, session-branch pushes, Tom-only pens) remains`,
+      });
+      this.requestFlush(false);
+      // NOT memoized: a transient outage must not pin an unexamined "allow"
+      // on this command for the rest of the session.
+      return { allow: true, reason: "" };
+    }
+    this.finalizeRow("system", {
+      text: `classifier ${decision.allow ? "ALLOW" : "DENY"} ${preview}: ${
+        decision.allow ? "allowed" : decision.reason
+      }`,
+    });
+    this.requestFlush(false);
+    this.bashVerdicts.set(command, decision);
+    // Drop-oldest (Map iterates in insertion order) — the memo is a latency
+    // optimization, never a source of truth, so eviction costs one re-ask.
+    while (this.bashVerdicts.size > CLASSIFIER_CACHE_MAX) {
+      this.bashVerdicts.delete(this.bashVerdicts.keys().next().value);
+    }
+    return decision;
   }
   // NOTE: applyDecisions below survives ack-only — this gate produces no
   // pending cards, but historical decided rows can still arrive and must be
@@ -774,6 +1170,9 @@ export class Session {
       this.nextSeq = row.nextSeq;
       if (this.turn < row.nextSeq) this.turn = row.nextSeq;
     }
+    // Keep the epoch current so this session's future flushes are never
+    // mistaken for a pre-reopen replay.
+    this.reopenEpoch = row.reopenEpoch ?? this.reopenEpoch;
     this.applyDecisions(row.permissions);
     this.serverInbound = row.pendingInbound ?? [];
     this.processCommands();
@@ -907,7 +1306,7 @@ export class Session {
         // expected-adjacent; the iterator throw is handled in #readLoop
       }
     }
-    this.#endAutonomous("autonomous time cap", {
+    void this.#endAutonomous("autonomous time cap", {
       outcome: "errored",
       outcomeSummary: "autonomous time cap: interrupted after 90 minutes",
     });
@@ -918,7 +1317,7 @@ export class Session {
   // record is already server-side) or the time cap (outcome errored). Never
   // interrupts — the result path's query has already finished its turn, and
   // the time cap interrupts before calling here.
-  #endAutonomous(endedReason, outcome) {
+  async #endAutonomous(endedReason, outcome) {
     if (this.dead || this.status === "ended" || this.status === "failed") return;
     this.#clearAutoTimer();
     this.stopRequested = true;
@@ -936,6 +1335,9 @@ export class Session {
       this.activeUserTurnId = null;
     }
     if (outcome) this.outcomeToSend = outcome;
+    // An autonomous mission has no Tom watching to push for it — the commits
+    // it made exist ONLY here until this call (rows land in the flush below).
+    await this.#preserveWork();
     this.setStatus("ended");
     this.endedReasonToSend = endedReason;
     this.requestFlush(true);
@@ -960,6 +1362,26 @@ export class Session {
   }
 
   async #doStop(row) {
+    // Re-entry guard. A stop can land while another terminal path is already
+    // mid-flight — #endAutonomous awaits #preserveWork (a push, up to 60s)
+    // with status still "running", and processServerState/processCommands
+    // check only dead/ended/failed, so the stop branch was reachable during
+    // that window. Running the body again would start a SECOND concurrent
+    // `git push origin session/<id>` on the same clone and then rmSync the
+    // workdir out from under the first one's push. Every terminal path sets
+    // stopRequested synchronously before its first await, so it is a reliable
+    // termination-in-progress token: ack the row done (the session is ending
+    // anyway, so the stop IS honored) and return.
+    if (
+      this.dead ||
+      this.stopRequested ||
+      this.status === "ended" ||
+      this.status === "failed"
+    ) {
+      this.outbox.inboundUpdates.push({ id: row._id, status: "done" });
+      this.requestFlush(false);
+      return;
+    }
     this.#clearAutoTimer();
     this.stopRequested = true;
     this.outbox.inboundUpdates.push({ id: row._id, status: "done" });
@@ -989,6 +1411,9 @@ export class Session {
       });
       this.activeUserTurnId = null;
     }
+    // Before the terminal flush, not after: preservation ADDS rows, and they
+    // belong in the same ingest that carries the ending.
+    await this.#preserveWork();
     this.setStatus("ended");
     this.endedReasonToSend = "stopped by Tom";
     this.requestFlush(true);
@@ -1038,7 +1463,13 @@ export class Session {
     this.bufDirty = false;
     this.statusToSend = undefined;
     this.status = "ended"; // local only — never sent; the server's word was final
-    this.cleanupWorkdir();
+    // Silent preservation: the transcript is already closed server-side (the
+    // server's word was final), so nothing can be reported — but a push of
+    // local commits still saves the work. Best-effort, never awaited: the
+    // deletion follows either way.
+    void this.#preserveWork({ silent: true })
+      .catch(() => {})
+      .finally(() => this.cleanupWorkdir());
   }
 
   // ── flush machinery ────────────────────────────────────────────────────────
@@ -1209,6 +1640,10 @@ export class Session {
       payload.lastSdkEventAt = this.lastSdkEventAt;
       this.lastSdkEventAtDirty = false;
     }
+    // Unconditional: a blind retry re-sends this same payload, so the epoch
+    // it was BUILT under is exactly the fact the server needs to spot a
+    // pre-reopen replay (see the constructor).
+    payload.reopenEpoch = this.reopenEpoch;
     return { payload, snap };
   }
 

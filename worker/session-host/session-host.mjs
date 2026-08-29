@@ -49,7 +49,8 @@ const POLL_HOT_MS = 1_000;
 const POLL_WARM_MS = 5_000;
 // CONTRACT: idle poll 30s; the server/client staleness threshold is 90s =
 // 3 missed idle polls — if you change this cadence, change DAEMON_STALE_MS in
-// convex/claudeSessions.ts and app/sessions/lib.ts with it.
+// convex/ttsShared.ts (its one home; claudeSessions.ts and app/sessions/lib.ts
+// re-export from there) with it.
 const POLL_IDLE_MS = 30_000;
 const HOT_WINDOW_MS = 30_000;
 
@@ -111,6 +112,9 @@ function claimSession(env, sessions, row) {
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
+    // The reopen generation this Session speaks for: stamped into every ingest
+    // so the server can tell a live flush from a pre-reopen replay.
+    reopenEpoch: row.reopenEpoch ?? 0,
     onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
   });
   sessions.set(row.id, s);
@@ -153,10 +157,14 @@ function claimSession(env, sessions, row) {
   })();
 }
 
-// ── adopt: a session that was live when a previous daemon died ───────────────
-// Never auto-resume into a running turn (the turn's context is gone with the
-// old process); park the session idle with an honest system row. The NEXT
-// user turn resumes the SDK session by sdkSessionId — validated to survive
+// ── adopt: a live session this daemon holds no local Session for ─────────────
+// Two different histories arrive here identically. (1) A previous daemon died
+// while the session was live: never auto-resume into a running turn (the turn's
+// context is gone with the old process); park the session idle with an honest
+// system row. (2) Tom REOPENED an ended session: the row went terminal→idle
+// server-side, so it is simply live again — no restart happened and no turn was
+// interrupted, and row.reopenedAt is the one fact that says so. Either way the
+// NEXT user turn resumes the SDK session by sdkSessionId — validated to survive
 // even kill -9 with context intact.
 function adoptSession(env, sessions, row) {
   const s = new Session({
@@ -165,10 +173,12 @@ function adoptSession(env, sessions, row) {
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
+    reopenEpoch: row.reopenEpoch ?? 0,
     onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
   });
   sessions.set(row.id, s);
   s.sdkSessionId = row.sdkSessionId;
+  const reopened = row.reopenedAt !== undefined && row.reopenedAt !== null;
   if (row.mode === "autonomous") {
     // Park-idle-await-next-turn is an interactive invariant — an autonomous
     // session has no Tom to send that turn, so an adopted one would sit live
@@ -190,9 +200,15 @@ function adoptSession(env, sessions, row) {
   }
   s.status = "idle";
   s.statusToSend = "idle";
-  s.finalizeRow("system", {
-    text: "session-host restarted; previous turn interrupted",
-  });
+  if (!reopened) {
+    s.finalizeRow("system", {
+      text: "session-host restarted; previous turn interrupted",
+    });
+  }
+  // A reopen writes NO row: the transcript already carries the honest ending
+  // record, and Tom's reopening turn lands right after it — an adoption note
+  // would describe daemon bookkeeping, not anything that happened in the
+  // conversation.
   for (const p of row.permissions ?? []) {
     if (p.status === "pending") {
       // A permission card nobody can answer anymore — expire it explicitly
@@ -200,7 +216,9 @@ function adoptSession(env, sessions, row) {
       s.outbox.permissionUpdates.push({
         requestId: p.requestId,
         status: "expired",
-        decidedBy: "daemon-restart",
+        // Say which of the two adoptions expired it; "daemon-restart" on a
+        // reopen would be a fabricated cause.
+        decidedBy: reopened ? "session-reopen" : "daemon-restart",
       });
     } else if (
       (p.status === "allowed" || p.status === "denied") &&
@@ -213,8 +231,9 @@ function adoptSession(env, sessions, row) {
   }
   // NOTE: a user-turn that was DELIVERED mid-turn when the old daemon died
   // should read "interrupted", but /sessions/poll carries only PENDING
-  // inbound rows, so it cannot be reached from here — the system row above
-  // is the transcript's honest record of what happened to that turn.
+  // inbound rows, so it cannot be reached from here — the restart row above
+  // is the transcript's honest record of what happened to that turn. (A
+  // reopen has no such turn: the session had already ended.)
   s.requestFlush(true);
   // Decisions/commands already queued server-side (including any pending
   // user-turn, which will trigger the resume).
@@ -280,7 +299,20 @@ async function main() {
     for (const row of data.sessions ?? []) {
       listed.add(row.id);
       const local = sessions.get(row.id);
-      if (local) {
+      if (local && (local.dead || local.status === "ended" || local.status === "failed")) {
+        // A local we consider OVER, listed live again: Tom reopened it inside
+        // the window between our ending flush landing and the reap below
+        // deleting the entry. The stale local shadows everything — its
+        // processServerState and processCommands both early-return on a
+        // terminal status, and the reaper skips any listed id — so without
+        // this the reopening turn is never delivered and the session wedges
+        // "idle" forever. Let a not-yet-drained flush finish first (its final
+        // rows still belong in the transcript), then re-adopt.
+        if (!local.dead && !local.isDrained()) continue;
+        sessions.delete(row.id);
+        log(`re-adopting reopened session ${row.id} (local was ${local.status})`);
+        adoptSession(env, sessions, row);
+      } else if (local) {
         // Known session: reconcile (decisions, commands, defensive seq).
         local.processServerState(row);
       } else if (
@@ -292,7 +324,11 @@ async function main() {
         log(`claiming session ${row.id} (repo: ${row.repo})`);
         claimSession(env, sessions, row);
       } else {
-        log(`adopting session ${row.id} after restart (status was ${row.status})`);
+        log(
+          row.reopenedAt
+            ? `adopting session ${row.id} after a reopen (status ${row.status})`
+            : `adopting session ${row.id} after restart (status was ${row.status})`,
+        );
         adoptSession(env, sessions, row);
       }
     }
