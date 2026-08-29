@@ -10,6 +10,7 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { ageText, isLive, shortAge, statusChipClass } from "../lib";
 import Transcript from "./transcript";
+import AgentPanel from "./agent-panel";
 import PermissionCard from "./permission-card";
 import Composer from "./composer";
 
@@ -76,6 +77,11 @@ export default function SessionView({
           <h1 className="text-sm sm:text-base text-text truncate min-w-0 flex-1">
             {session.title}
           </h1>
+          {session.mode === "autonomous" && (
+            <span className="shrink-0 border border-border rounded px-1.5 py-0.5 text-xs text-text-muted">
+              autonomous
+            </span>
+          )}
           <span
             className={`shrink-0 border rounded px-1.5 py-0.5 text-xs ${statusChipClass(session.status)}`}
           >
@@ -112,15 +118,27 @@ export default function SessionView({
         </div>
       </header>
 
-      <Transcript sessionId={sessionId} />
+      {/* Transcript + permission cards are the conversation column; the agent
+          panel is a sibling, not a floating overlay. Below sm the phone gets
+          the conversation alone (the panel's facts are all in the transcript
+          anyway); the wrapper collapses to zero width, as does the panel
+          itself when there is no open tool work. */}
+      <div className="flex-1 min-h-0 flex flex-row">
+        <div className="flex-1 min-w-0 flex flex-col">
+          <Transcript sessionId={sessionId} />
 
-      {pendingPermissions && pendingPermissions.length > 0 && (
-        <div className="border-t border-border px-3 sm:px-4 py-2.5 space-y-2 max-h-[45dvh] overflow-y-auto">
-          {pendingPermissions.map((p) => (
-            <PermissionCard key={p._id} permission={p} now={now} />
-          ))}
+          {pendingPermissions && pendingPermissions.length > 0 && (
+            <div className="border-t border-border px-3 sm:px-4 py-2.5 space-y-2 max-h-[45dvh] overflow-y-auto">
+              {pendingPermissions.map((p) => (
+                <PermissionCard key={p._id} permission={p} now={now} />
+              ))}
+            </div>
+          )}
         </div>
-      )}
+        <div className="hidden sm:block shrink-0 min-h-0">
+          <AgentPanel sessionId={sessionId} />
+        </div>
+      </div>
 
       <Composer session={session} daemonStale={daemonStale} />
     </div>

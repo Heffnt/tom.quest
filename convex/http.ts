@@ -245,6 +245,12 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
       entryAction: str(b.entryAction),
       workDescription: str(b.workDescription),
       readiness: b.readiness as "preparing" | "ready-for-tom" | undefined,
+      // The newer preparer args (importance + plan) ride through loose-shape;
+      // the mutation's arg validators are the final gate and a mismatch
+      // surfaces as a named 400 below.
+      importanceLevel: b.importanceLevel as never,
+      importanceRationale: str(b.importanceRationale),
+      plan: b.plan as never,
     });
     return jsonResponse(200, { ok: true });
   } catch (e) {
@@ -621,6 +627,12 @@ const sessionsPoll = httpAction(async (ctx, request) => {
       typeof b.lastIngestError === "string"
         ? b.lastIngestError.slice(0, 2000)
         : undefined,
+    // Box load snapshot, loose-shape: the mutation's arg validator is the
+    // final gate; a malformed report surfaces as a validator error.
+    load:
+      typeof b.load === "object" && b.load !== null
+        ? (b.load as never)
+        : undefined,
   });
   return jsonResponse(200, result);
 });
@@ -659,6 +671,49 @@ http.route({
   path: "/sessions/ingest",
   method: "POST",
   handler: sessionsIngest,
+});
+
+// POST /sessions/outcome — an autonomous session's outcome pen. Body:
+// { sessionId, outcome: "completed"|"errored", summary? }. Same
+// SESSIONS_WORKER_KEY as poll/ingest: the key is guaranteed present in the
+// session's environment by the daemon, so the agent curls this instead of
+// running convex CLI commands it does not have credentials for.
+const sessionsOutcome = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  if (b.outcome !== "completed" && b.outcome !== "errored") {
+    return jsonResponse(400, {
+      error: 'outcome must be "completed" or "errored"',
+    });
+  }
+  try {
+    await ctx.runMutation(internal.claudeSessions.internalRecordOutcome, {
+      id: b.sessionId,
+      outcome: b.outcome,
+      summary: typeof b.summary === "string" ? b.summary : "",
+    });
+    return jsonResponse(200, { ok: true });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/sessions/outcome",
+  method: "POST",
+  handler: sessionsOutcome,
 });
 
 export default http;

@@ -109,6 +109,21 @@ export function toolNameOf(content: unknown): string {
   return "tool";
 }
 
+/**
+ * Best-effort tool-use id out of a tool-call content payload — the id a
+ * subagent row's parentToolUseId points back at. content is v.any(), so the
+ * same closed-list idiom as toolNameOf rather than one assumed field name.
+ */
+export function toolUseIdOf(content: unknown): string | undefined {
+  if (typeof content === "object" && content !== null) {
+    const c = content as Record<string, unknown>;
+    for (const key of ["toolUseId", "tool_use_id", "id"]) {
+      if (typeof c[key] === "string") return c[key] as string;
+    }
+  }
+  return undefined;
+}
+
 /** Best-effort tool input out of a tool-call content payload. */
 export function toolInputOf(content: unknown): unknown {
   if (typeof content === "object" && content !== null) {
@@ -116,6 +131,19 @@ export function toolInputOf(content: unknown): unknown {
     if ("input" in c) return c.input;
   }
   return content;
+}
+
+/**
+ * The subagent type of a Task tool-call. `subagent_type` is the SDK's own
+ * input field name and is quoted as-is — the surface never renames it.
+ */
+export function subagentTypeOf(content: unknown): string | undefined {
+  const input = toolInputOf(content);
+  if (typeof input === "object" && input !== null) {
+    const i = input as Record<string, unknown>;
+    if (typeof i.subagent_type === "string") return i.subagent_type;
+  }
+  return undefined;
 }
 
 /**

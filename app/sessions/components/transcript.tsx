@@ -9,9 +9,61 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import type { Message } from "../lib";
+import { subagentTypeOf, toolUseIdOf } from "../lib";
 import MessageRow from "./message-row";
 
 const NEAR_BOTTOM_PX = 150;
+
+// A subagent's rows arrive interleaved in the one seq stream. Consecutive
+// rows carrying the same parentToolUseId fold into a single closed group so
+// the inner work never buries the main thread. Strict seq order is kept: a
+// parent interrupted by the main thread and resumed yields two groups, in
+// place, rather than one merged group out of order.
+type Group =
+  | { kind: "row"; message: Message }
+  | { kind: "agent"; parentToolUseId: string; messages: Message[] };
+
+function groupRows(messages: Message[]): Group[] {
+  const groups: Group[] = [];
+  for (const message of messages) {
+    const parent = message.parentToolUseId;
+    if (parent === undefined) {
+      groups.push({ kind: "row", message });
+      continue;
+    }
+    const last = groups[groups.length - 1];
+    if (
+      last !== undefined &&
+      last.kind === "agent" &&
+      last.parentToolUseId === parent
+    ) {
+      last.messages.push(message);
+      continue;
+    }
+    groups.push({
+      kind: "agent",
+      parentToolUseId: parent,
+      messages: [message],
+    });
+  }
+  return groups;
+}
+
+// toolUseId → subagent_type, read off the Task tool-calls in the loaded
+// window. A group whose Task row has not been paged in yet keeps the bare id
+// as its label — an invented name would be worse than the literal one.
+function subagentTypeIndex(messages: Message[]): Map<string, string> {
+  const types = new Map<string, string>();
+  for (const message of messages) {
+    if (message.kind !== "tool-call") continue;
+    const id = toolUseIdOf(message.content);
+    if (id === undefined) continue;
+    const type = subagentTypeOf(message.content);
+    if (type !== undefined) types.set(id, type);
+  }
+  return types;
+}
 
 // Memoized: the parent tree re-renders on a 15s age tick, but the transcript
 // shows no ages — sessionId is its only prop, so the tick must not re-render
@@ -37,6 +89,8 @@ const Transcript = memo(function Transcript({
 
   // results are seq-descending (newest first); display ascending.
   const messages = [...results].reverse();
+  const groups = groupRows(messages);
+  const subagentTypes = subagentTypeIndex(messages);
   const pendingTurns = (pendingInbound ?? []).filter(
     (row) => row.kind === "user-turn",
   );
@@ -168,9 +222,24 @@ const Transcript = memo(function Transcript({
           </div>
         )}
 
-        {messages.map((m) => (
-          <MessageRow key={m._id} message={m} />
-        ))}
+        {groups.map((g) =>
+          g.kind === "row" ? (
+            <MessageRow key={g.message._id} message={g.message} />
+          ) : (
+            <details key={g.messages[0]._id} className="text-sm">
+              <summary className="cursor-pointer list-none text-xs text-text-faint px-1 hover:text-text-muted">
+                agent{" "}
+                {subagentTypes.get(g.parentToolUseId) ?? g.parentToolUseId} —{" "}
+                {g.messages.length} rows
+              </summary>
+              <div className="mt-1 space-y-2 border-l border-border pl-3">
+                {g.messages.map((m) => (
+                  <MessageRow key={m._id} message={m} />
+                ))}
+              </div>
+            </details>
+          ),
+        )}
 
         {streamBuf && (
           <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text px-1">

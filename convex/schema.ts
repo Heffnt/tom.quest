@@ -638,6 +638,14 @@ export default defineSchema({
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    // Session posture (P3, ratified 2026-08-28): absent = "interactive" (a
+    // Tom-driven chat). "autonomous" = fleet-scheduled groundwork with no one
+    // watching — the daemon auto-ends it after its final turn and a wall-clock
+    // cap interrupts a runaway. Autonomous sessions never rule and never touch
+    // code (repo "none" in v1).
+    mode: v.optional(
+      v.union(v.literal("interactive"), v.literal("autonomous")),
+    ),
     // Lifecycle: requested (browser) → starting → idle ⇄ running ⇄
     // awaiting-permission → ended | failed. The browser owns: create,
     // enqueue inbound, decide permissions, and stale-only forceClose.
@@ -667,7 +675,11 @@ export default defineSchema({
     // network retry and is dropped. Monotonic per session.
     nextSeq: v.number(),
     createdAt: v.number(),
-  }).index("by_status", ["status", "statusChangedAt"]),
+  })
+    .index("by_status", ["status", "statusChangedAt"])
+    // Per-todo session history: powers the "does a live session already
+    // reference this todo" exclusion and the scheduler's backoff walk.
+    .index("by_todo", ["todoId"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is
@@ -688,8 +700,16 @@ export default defineSchema({
       v.literal("error"),
     ),
     content: v.any(), // typed payload per kind; tool results truncated at 32KB by the daemon
+    // Subagent parentage (P2): on a tool-call row emitted INSIDE a running
+    // Task subagent, the parent Task's toolUseId — the daemon reports it so
+    // the agent panel can show what each subagent is doing right now.
+    parentToolUseId: v.optional(v.string()),
     createdAt: v.number(),
-  }).index("by_session_seq", ["sessionId", "seq"]),
+  })
+    .index("by_session_seq", ["sessionId", "seq"])
+    // Kind-scoped reads (getOpenToolWork): tool-call/tool-result rows only,
+    // without paging the whole transcript.
+    .index("by_session_kind", ["sessionId", "kind", "seq"]),
 
   // The live tail: ONE row per session, ≤ ~16KB text by construction.
   claudeStreamBuf: defineTable({
@@ -755,5 +775,31 @@ export default defineSchema({
     version: v.string(),
     activeAccount: v.optional(v.string()), // "gmail" | "wpi"
     lastIngestError: v.optional(v.string()),
+    // Box load snapshot, reported with each heartbeat — the input to the
+    // scheduler's load-based admission (the primary throttle of P3).
+    load: v.optional(
+      v.object({
+        loadavg1: v.number(),
+        cpus: v.number(),
+        freeMemMb: v.number(),
+        totalMemMb: v.number(),
+        liveSessions: v.number(),
+      }),
+    ),
+  }),
+
+  // Autonomous-fleet admission config (P3, ratified 2026-08-28). Singleton via
+  // .first() (the gpuPoolStatus pattern). Load-based admission is the PRIMARY
+  // throttle (Tom's ruling: no scalar cap as primary) — maxLiveAutonomous is a
+  // runaway failsafe only, maxNewPerTick bounds a clone burst. When no row
+  // exists the scheduler uses defaults with enabled FALSE, so nothing runs
+  // until the enable pen is used deliberately.
+  claudeAutoConfig: defineTable({
+    enabled: v.boolean(),
+    maxLoadPerCpu: v.number(), // admit while loadavg1 / cpus <= this
+    minFreeMemMb: v.number(), // admit while freeMemMb >= this
+    maxLiveAutonomous: v.number(),
+    maxNewPerTick: v.number(),
+    updatedAt: v.number(),
   }),
 });
