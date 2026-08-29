@@ -1,6 +1,6 @@
 "use client";
 
-// DTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
+// TTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
 // stacks, in time order: committed blocks (dtsBlocks), due marks (dueAt),
 // wake marks (waiting todos' wakeAt), and — on today only — the day's queue
 // from getToday. A category block can open a block session over its todos.
@@ -15,7 +15,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
-import { buildBlockSessionPrompt } from "@/app/lib/dts-session-prompt";
+import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
 import { reserveSessionTab } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
 import TimeNoteField, {
@@ -89,7 +89,7 @@ function BlockChip({
   sessionBusy: boolean;
   sessionError: string | null;
 }) {
-  const deleteBlock = useMutation(api.dts.deleteBlock);
+  const deleteBlock = useMutation(api.tts.deleteBlock);
   const isCategory = block.category !== undefined;
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -140,7 +140,7 @@ function BlockChip({
             <button onClick={remove} disabled={busy} className={btnCls}>
               Delete
             </button>
-            <Info label="dts.deleteBlock({id})" />
+            <Info label="tts.deleteBlock({id})" />
           </div>
           {isCategory && (
             <div>
@@ -176,18 +176,18 @@ export default function CalendarTab({
   const { isTom } = useAuth();
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
-  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
+  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
   // Only the visible week's blocks ride the subscription (dtsBlocks grows
   // forever; the by_start index serves the range).
   const blocks = useQuery(
-    api.dts.listBlocks,
+    api.tts.listBlocks,
     isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
-  const today = useQuery(api.dts.getToday, isTom ? {} : "skip");
+  const today = useQuery(api.tts.getToday, isTom ? {} : "skip");
   // ONE time-note subscription for the whole tab; days and blocks slice it.
-  const timeNotes = useQuery(api.dts.listTimeNotes, isTom ? {} : "skip");
+  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
   const createSession = useMutation(api.claudeSessions.createSession);
-  const recordEvent = useMutation(api.dts.recordEvent);
+  const recordEvent = useMutation(api.tts.recordEvent);
   const [addDay, setAddDay] = useState<string | null>(null); // "YYYY-MM-DD"
   const [sessionBusyId, setSessionBusyId] = useState<Id<"dtsBlocks"> | null>(
     null,

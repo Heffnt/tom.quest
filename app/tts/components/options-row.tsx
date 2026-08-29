@@ -1,6 +1,6 @@
 "use client";
 
-// THE options surface for every /dts subject — a life todo, a batch (a batch
+// THE options surface for every /tts subject — a life todo, a batch (a batch
 // IS a life todo) or a code item. One compact wrap row at the top of an
 // expanded panel: the four verdict chips, the status chips a life todo carries
 // (done · archive) and the importance setter.
@@ -8,7 +8,7 @@
 // The four verdicts are uniform (ratified 2026-08-29): clicking a chip selects
 // it and reveals ONE note input; confirming records the verdict with that note
 // as `sentence`. Only revise requires it. On archive the sentence IS the
-// unarchive condition (convex/dtsRulings.ts maps it), so one input serves all
+// unarchive condition (convex/ttsRulings.ts maps it), so one input serves all
 // four.
 //
 // This one component replaces VerdictButtons, StatusActions and
@@ -26,7 +26,7 @@ import {
   reserveSessionTab,
   type ReservedTab,
 } from "@/app/lib/use-open-todo-session";
-import type { LiveRulingContext } from "@/app/lib/dts-session-prompt";
+import type { LiveRulingContext } from "@/app/lib/tts-session-prompt";
 import {
   errMessage,
   IMPORTANCE_LEVELS,
@@ -144,12 +144,12 @@ const PLACEHOLDER: Record<Mode, string> = {
 };
 
 const INFO: Record<Mode, string> = {
-  approve: 'dtsRulings.recordRuling({verdict:"approve", sentence})',
-  revise: 'dtsRulings.recordRuling({verdict:"revise", sentence})',
-  session: 'dtsRulings.recordRuling({verdict:"session", sentence})',
-  archive: 'dtsRulings.recordRuling({verdict:"archive", sentence})',
-  done: 'dts.setStatus({status:"done", note})',
-  "set-archived": 'dts.setStatus({status:"archived", unarchiveCondition})',
+  approve: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
+  revise: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
+  session: 'ttsRulings.recordRuling({verdict:"session", sentence})',
+  archive: 'ttsRulings.recordRuling({verdict:"archive", sentence})',
+  done: 'tts.setStatus({status:"done", note})',
+  "set-archived": 'tts.setStatus({status:"archived", unarchiveCondition})',
 };
 
 export type OptionsRowProps = {
@@ -167,7 +167,7 @@ export type OptionsRowProps = {
   afterSession?: (tab: ReservedTab, ruling: LiveRulingContext) => void;
   /**
    * Code subjects only: importance is stored on the brief, so a mirror row
-   * with no brief has nowhere to put it (dtsCode.setCodeImportance rejects).
+   * with no brief has nowhere to put it (ttsCode.setCodeImportance rejects).
    * Defaults to shown.
    */
   showImportance?: boolean;
@@ -180,10 +180,10 @@ export default function OptionsRow({
   afterSession,
   showImportance = true,
 }: OptionsRowProps) {
-  const recordRuling = useMutation(api.dtsRulings.recordRuling);
-  const setStatus = useMutation(api.dts.setStatus);
-  const setImportance = useMutation(api.dts.setImportance);
-  const setCodeImportance = useMutation(api.dtsCode.setCodeImportance);
+  const recordRuling = useMutation(api.ttsRulings.recordRuling);
+  const setStatus = useMutation(api.tts.setStatus);
+  const setImportance = useMutation(api.tts.setImportance);
+  const setCodeImportance = useMutation(api.ttsCode.setCodeImportance);
 
   const [mode, setMode] = useState<Mode | null>(null);
   const [note, setNote] = useState("");
@@ -295,8 +295,8 @@ export default function OptionsRow({
 
   const importance = todo ? todo.importance : code?.importance;
   const importanceInfo = todo
-    ? 'dts.setImportance({level: "low"|"medium"|"high"|null})'
-    : 'dtsCode.setCodeImportance({repo, externalId, level: "low"|"medium"|"high"|null})';
+    ? 'tts.setImportance({level: "low"|"medium"|"high"|null})'
+    : 'ttsCode.setCodeImportance({repo, externalId, level: "low"|"medium"|"high"|null})';
 
   if (chips.length === 0 && !showImportance) return null;
 

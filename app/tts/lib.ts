@@ -1,4 +1,4 @@
-// Shared types + date/age helpers for the /dts surface.
+// Shared types + date/age helpers for the /tts surface.
 // All persisted dates are epoch-ms numbers (convex/schema.ts dtsTodos).
 
 import type { Doc } from "@/convex/_generated/dataModel";
@@ -14,7 +14,7 @@ export type Member = NonNullable<Todo["members"]>[number];
 
 export const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
 
-// The closed verdict set — convex/dtsRulings.ts owns the union; this is the
+// The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
 export const VERDICTS: RulingVerdict[] = [
@@ -25,7 +25,7 @@ export const VERDICTS: RulingVerdict[] = [
 ];
 
 // ── Ruling subject identity + live-ruling derivation ─────────────────────────
-// Client mirror of convex/dtsRulings.ts subjectKey/liveRulings — same key
+// Client mirror of convex/ttsRulings.ts subjectKey/liveRulings — same key
 // format, same newest-ruledAt/_creationTime rule, so the tabs, the badge, and
 // the worker feed always agree on which ruling is live.
 
@@ -52,7 +52,7 @@ export function isBatch(t: Todo): boolean {
   return t.members !== undefined;
 }
 
-// Client mirror of convex/dts.ts memberKey — one definition of the key format,
+// Client mirror of convex/tts.ts memberKey — one definition of the key format,
 // delegated to rulingSubjectKey/codeSubjectKey above, so member identity and
 // ruling identity cannot drift apart.
 export function clientMemberKey(m: Member): string {
@@ -64,7 +64,7 @@ export function clientMemberKey(m: Member): string {
 /**
  * Open actor-"tom" steps — the card's "needs you" strip. Each step keeps its
  * index in the todo's plan array, because that index is what
- * dts.setPlanStep({index}) addresses.
+ * tts.setPlanStep({index}) addresses.
  */
 export function planNeedsYou(plan: PlanStep[] | undefined): {
   count: number;
@@ -124,7 +124,7 @@ export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
 //   preparer touches the todo again (re-prep bumps updatedAt past ruledAt).
 // code: open + briefed, where the live ruling is missing or OLDER than the
 //   brief — a re-brief after a revise ruling returns the item for a fresh
-//   ruling (mirror of convex/dtsRulings.ts briefAwaitsRuling).
+//   ruling (mirror of convex/ttsRulings.ts briefAwaitsRuling).
 // pending: live rulings not yet applied (the "ruled, applying" strip).
 
 export type NeedsMe = {
@@ -242,9 +242,9 @@ export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// The intent vocabulary is owned by convex/dtsShared.ts (dtsItemLink is the
+// The intent vocabulary is owned by convex/ttsShared.ts (ttsItemLink is the
 // single producer of ?item=&intent= links); this is just its local name.
-export type { DtsLinkIntent as LinkIntent } from "@/convex/dtsShared";
+export type { TtsLinkIntent as LinkIntent } from "@/convex/ttsShared";
 
 /** "Aug 30, 2026" — absolute date, shown small/faint next to countdown text. */
 export function fmtDate(ms: number): string {

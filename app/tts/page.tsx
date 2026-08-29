@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
-import DtsClient from "./dts-client";
+import TtsClient from "./tts-client";
 
 export const metadata: Metadata = {
   title: "TTS | tom.Quest",
   description: "Tom's Todo System.",
 };
 
-export default function DtsPage() {
-  return <DtsClient />;
+export default function TtsPage() {
+  return <TtsClient />;
 }

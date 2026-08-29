@@ -2,7 +2,7 @@
 
 // BATCHES — the default tab. Batch cards (importance desc), then the
 // selectNeedsMe rows no batch claims, then the ruled-but-not-yet-applied
-// pipeline strip. selectBatches (app/dts/lib.ts) is the ONE selector — the
+// pipeline strip. selectBatches (app/tts/lib.ts) is the ONE selector — the
 // shell's tab badge counts the same selection, so count and rows cannot drift.
 //
 // A card is read at a glance: the statement large, the member progress as a
@@ -12,13 +12,13 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { countdownText } from "@/convex/dtsShared";
+import { countdownText } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import {
   useOpenTodoSession,
   type ReservedTab,
 } from "@/app/lib/use-open-todo-session";
-import type { LiveRulingContext } from "@/app/lib/dts-session-prompt";
+import type { LiveRulingContext } from "@/app/lib/tts-session-prompt";
 import CodeTodoRow from "./code-todo-row";
 import OptionsRow, { ImportanceBars } from "./options-row";
 import Info from "./info";
@@ -42,7 +42,7 @@ import {
   type MirrorRow,
   type PlanStep,
   type Todo,
-} from "@/app/dts/lib";
+} from "@/app/tts/lib";
 
 const primaryBtnCls =
   "bg-accent text-bg rounded-md px-3 py-1 text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none";
@@ -223,7 +223,7 @@ function BatchCard({
   onToggle: () => void;
   onOpenItem: (id: string) => void;
 }) {
-  const setPlanStep = useMutation(api.dts.setPlanStep);
+  const setPlanStep = useMutation(api.tts.setPlanStep);
   const {
     open: openSession,
     busy: sessionBusy,
@@ -335,7 +335,7 @@ function BatchCard({
           {/* needs you */}
           {needsYou.count > 0 && (
             <div className="border-l-2 border-accent pl-2 space-y-1">
-              <Info label='dts.setPlanStep({index, status:"done"})' />
+              <Info label='tts.setPlanStep({index, status:"done"})' />
               {/* the SAME line the full plan renders — evidence link and all;
                   planNeedsYou keeps each step's plan index, which is what
                   setPlanStep addresses */}
@@ -360,7 +360,7 @@ function BatchCard({
           {/* full plan — open steps, then the done ones behind one faint line */}
           {plan.length > 0 && (
             <div className="space-y-1">
-              <Info label="dts.setPlanStep({index, status})" />
+              <Info label="tts.setPlanStep({index, status})" />
               {openSteps.map(({ step, index }) => (
                 <PlanStepLine
                   key={index}
@@ -497,13 +497,13 @@ export default function BatchesTab({
   onOpenItem: (id: string) => void;
 }) {
   const { isTom } = useAuth();
-  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
-  const mirror = useQuery(api.dts.listMirror, isTom ? {} : "skip");
-  const briefs = useQuery(api.dtsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.dtsRulings.listRulings, isTom ? {} : "skip");
+  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
+  const briefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
   // ONE time-note subscription for the whole tab; each row slices it.
-  const timeNotes = useQuery(api.dts.listTimeNotes, isTom ? {} : "skip");
-  const recordEvent = useMutation(api.dts.recordEvent);
+  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -518,7 +518,7 @@ export default function BatchesTab({
     if (opening) engage();
   };
 
-  // ONE definition of the selection (app/dts/lib.ts selectBatches) — the
+  // ONE definition of the selection (app/tts/lib.ts selectBatches) — the
   // shell's tab badge counts the same selection, so count and rows cannot
   // drift.
   const selection = useMemo(
@@ -538,7 +538,7 @@ export default function BatchesTab({
     [mirror],
   );
 
-  // Live ruling per subject — the shared derivation (app/dts/lib.ts), the same
+  // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
   // one the by-individual tab feeds CodeTodoRow.
   const liveRulingByKey = useMemo(
     () => liveRulingsByKey(rulings ?? []),

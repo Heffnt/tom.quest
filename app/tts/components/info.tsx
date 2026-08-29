@@ -1,4 +1,4 @@
-// The ⓘ bubble every mono mutation caption on /dts sits behind. label is the
+// The ⓘ bubble every mono mutation caption on /tts sits behind. label is the
 // exact backend call the neighboring control fires (UI = code); it shows only
 // on hover/focus, in a floating tooltip — it never enters the page flow.
 

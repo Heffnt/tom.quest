@@ -5,14 +5,14 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   countdownText,
-  dtsDayBoundsUtc,
-  dtsDayKey,
-  dtsPrepDay,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
+  ttsDayBoundsUtc,
+  ttsDayKey,
+  ttsPrepDay,
   nyLocalHour,
   nyOffsetHours,
-} from "./dtsShared";
+} from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -23,7 +23,7 @@ async function withTom(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({ subject: tomId });
 }
 
-describe("dtsShared time helpers", () => {
+describe("ttsShared time helpers", () => {
   it("computes the New York offset across DST", () => {
     expect(nyOffsetHours(Date.UTC(2026, 7, 27, 12))).toBe(-4); // late August: EDT
     expect(nyOffsetHours(Date.UTC(2026, 0, 15, 12))).toBe(-5); // January: EST
@@ -34,41 +34,41 @@ describe("dtsShared time helpers", () => {
     expect(nyOffsetHours(Date.UTC(2026, 10, 1, 6, 0))).toBe(-5);
   });
 
-  it("rolls the DTS day over at 5 a.m. local, not midnight", () => {
-    // 2026-08-27 08:59 UTC = 04:59 EDT -> still the 26th's DTS day.
-    expect(dtsDayKey(Date.UTC(2026, 7, 27, 8, 59))).toBe("2026-08-26");
+  it("rolls the TTS day over at 5 a.m. local, not midnight", () => {
+    // 2026-08-27 08:59 UTC = 04:59 EDT -> still the 26th's TTS day.
+    expect(ttsDayKey(Date.UTC(2026, 7, 27, 8, 59))).toBe("2026-08-26");
     // 09:00 UTC = 05:00 EDT -> the 27th begins.
-    expect(dtsDayKey(Date.UTC(2026, 7, 27, 9, 0))).toBe("2026-08-27");
+    expect(ttsDayKey(Date.UTC(2026, 7, 27, 9, 0))).toBe("2026-08-27");
     expect(nyLocalHour(Date.UTC(2026, 7, 27, 9, 0))).toBe(5);
   });
 
   it("prep and digest land on the SAME day key (the review-caught bug)", () => {
     // Prep runs in the 4 a.m. hour, BEFORE the boundary; the digest at 5.
-    // dtsPrepDay must bridge them — dtsDayKey alone named yesterday at 4:45.
+    // ttsPrepDay must bridge them — ttsDayKey alone named yesterday at 4:45.
     const prepEdt = Date.UTC(2026, 7, 27, 8, 45); // 4:45 EDT
     const digestEdt = Date.UTC(2026, 7, 27, 9, 0); // 5:00 EDT
-    expect(dtsPrepDay(prepEdt)).toBe(dtsDayKey(digestEdt));
+    expect(ttsPrepDay(prepEdt)).toBe(ttsDayKey(digestEdt));
     const prepEst = Date.UTC(2026, 0, 15, 9, 45); // 4:45 EST
     const digestEst = Date.UTC(2026, 0, 15, 10, 0); // 5:00 EST
-    expect(dtsPrepDay(prepEst)).toBe(dtsDayKey(digestEst));
+    expect(ttsPrepDay(prepEst)).toBe(ttsDayKey(digestEst));
     // A midday --force re-prep rebuilds TODAY's queue, not tomorrow's.
     const noon = Date.UTC(2026, 7, 27, 16);
-    expect(dtsPrepDay(noon)).toBe(dtsDayKey(noon));
+    expect(ttsPrepDay(noon)).toBe(ttsDayKey(noon));
   });
 
   it("computes DST-correct day bounds (5 a.m. to 5 a.m. NY)", () => {
-    const edt = dtsDayBoundsUtc("2026-08-27");
+    const edt = ttsDayBoundsUtc("2026-08-27");
     expect(edt.start).toBe(Date.UTC(2026, 7, 27, 9)); // 5:00 EDT
     expect(edt.end).toBe(Date.UTC(2026, 7, 28, 9));
-    const est = dtsDayBoundsUtc("2026-01-15");
+    const est = ttsDayBoundsUtc("2026-01-15");
     expect(est.start).toBe(Date.UTC(2026, 0, 15, 10)); // 5:00 EST
     expect(est.end).toBe(Date.UTC(2026, 0, 16, 10));
     // Fall-back day: starts in EDT, ends in EST — 25 wall-clock hours.
-    const fall = dtsDayBoundsUtc("2026-10-31");
+    const fall = ttsDayBoundsUtc("2026-10-31");
     expect(fall.end - fall.start).toBe(25 * 3_600_000);
   });
 
-  // witness: make nyCalendarDayBoundsUtc use the 5 a.m. DTS boundary (or
+  // witness: make nyCalendarDayBoundsUtc use the 5 a.m. TTS boundary (or
   // hand-roll start + 86_400_000) — a day-scoped time note written on a
   // calendar column would cover the wrong 24 hours.
   it("computes calendar-day bounds (NY midnight to midnight)", () => {
@@ -94,51 +94,51 @@ describe("dtsShared time helpers", () => {
     expect(countdownText(now + 3 * 86_400_000, now)).toBe("in 3 days");
     expect(countdownText(now - 2 * 86_400_000, now)).toBe("2 days overdue");
     // Calendar semantics: an item due at 2 a.m. NY on the 28th is due on the
-    // 28th — the 5 a.m. DTS shift must not report it a day early (review).
+    // 28th — the 5 a.m. TTS shift must not report it a day early (review).
     expect(countdownText(Date.UTC(2026, 7, 28, 6), now)).toBe("tomorrow");
   });
 });
 
-describe("DTS todos", () => {
+describe("TTS todos", () => {
   it("gates every Tom-facing function on the tom role", async () => {
     const t = convexTest({ schema, modules });
     await expect(
-      t.mutation(api.dts.createTodo, { statement: "x" }),
+      t.mutation(api.tts.createTodo, { statement: "x" }),
     ).rejects.toThrow();
     const userId = await t.run(async (ctx) =>
       ctx.db.insert("users", { name: "u", email: "u@tom.quest", role: "user" }),
     );
     const user = t.withIdentity({ subject: userId });
     await expect(
-      user.mutation(api.dts.createTodo, { statement: "x" }),
+      user.mutation(api.tts.createTodo, { statement: "x" }),
     ).rejects.toThrow();
-    await expect(user.query(api.dts.listTodos, {})).rejects.toThrow();
+    await expect(user.query(api.tts.listTodos, {})).rejects.toThrow();
   });
 
   it("creates, lists, and instruments a todo", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, {
+    const id = await tom.mutation(api.tts.createTodo, {
       statement: "  email Ana Maria  ",
       dueAt: Date.now() + 86_400_000,
     });
-    const todos = await tom.query(api.dts.listTodos, {});
+    const todos = await tom.query(api.tts.listTodos, {});
     expect(todos).toHaveLength(1);
     expect(todos[0].statement).toBe("email Ana Maria");
     expect(todos[0].timingClass).toBe("dated"); // dueAt implies dated
     expect(todos[0].dateKind).toBe("self-imposed");
     expect(todos[0].readiness).toBe("unprepared");
     expect(todos[0].status).toBe("active");
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     expect(events.some((e) => e.kind === "created" && e.todoId === id)).toBe(true);
   });
 
   it("promotes whenever to dated when a date is set (spec §5.2)", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, { statement: "clean room" });
-    await tom.mutation(api.dts.updateTodo, { id, dueAt: Date.now() + 86_400_000 });
-    const [todo] = await tom.query(api.dts.listTodos, {});
+    const id = await tom.mutation(api.tts.createTodo, { statement: "clean room" });
+    await tom.mutation(api.tts.updateTodo, { id, dueAt: Date.now() + 86_400_000 });
+    const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.timingClass).toBe("dated");
     expect(todo.dateKind).toBe("self-imposed");
   });
@@ -147,24 +147,24 @@ describe("DTS todos", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const future = Date.now() + 5 * 86_400_000;
-    const id = await tom.mutation(api.dts.createTodo, {
+    const id = await tom.mutation(api.tts.createTodo, {
       statement: "reserve UH 400",
       dueAt: future,
     });
     // Renegotiation before the date: legal, recorded, date moves.
-    await tom.mutation(api.dts.recordDateOutcome, {
+    await tom.mutation(api.tts.recordDateOutcome, {
       id,
       outcome: "renegotiated",
       newDueAt: future + 86_400_000,
     });
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBe(future + 86_400_000);
     expect(todo.dateOutcomes).toHaveLength(1);
     expect(todo.dateOutcomes?.[0].outcome).toBe("renegotiated");
 
     // A missed date without a new one drops the item back to whenever, miss on record.
-    await tom.mutation(api.dts.recordDateOutcome, { id, outcome: "missed" });
-    [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.recordDateOutcome, { id, outcome: "missed" });
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBeUndefined();
     expect(todo.timingClass).toBe("whenever");
     expect(todo.dateOutcomes?.map((o) => o.outcome)).toEqual([
@@ -173,12 +173,12 @@ describe("DTS todos", () => {
     ]);
 
     // Renegotiating a past-due date is refused (record missed instead).
-    const pastDue = await tom.mutation(api.dts.createTodo, {
+    const pastDue = await tom.mutation(api.tts.createTodo, {
       statement: "late thing",
       dueAt: Date.now() - 1000,
     });
     await expect(
-      tom.mutation(api.dts.recordDateOutcome, {
+      tom.mutation(api.tts.recordDateOutcome, {
         id: pastDue,
         outcome: "renegotiated",
         newDueAt: Date.now() + 86_400_000,
@@ -189,12 +189,12 @@ describe("DTS todos", () => {
   it("resolves an open date as kept when the item is marked done", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, {
+    const id = await tom.mutation(api.tts.createTodo, {
       statement: "submit form",
       dueAt: Date.now() + 86_400_000,
     });
-    await tom.mutation(api.dts.setStatus, { id, status: "done" });
-    const [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.setStatus, { id, status: "done" });
+    const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("done");
     expect(todo.doneAt).toBeDefined();
     expect(todo.dateOutcomes?.[0].outcome).toBe("done");
@@ -203,24 +203,24 @@ describe("DTS todos", () => {
   it("refuses to clear a date silently and clears terminal facts on reopen", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, {
+    const id = await tom.mutation(api.tts.createTodo, {
       statement: "dated thing",
       dueAt: Date.now() + 86_400_000,
     });
     // The silent slide is forbidden (spec §8): dueAt:null is refused.
     await expect(
-      tom.mutation(api.dts.updateTodo, { id, dueAt: null }),
+      tom.mutation(api.tts.updateTodo, { id, dueAt: null }),
     ).rejects.toThrow(/never cleared silently/);
 
     // Archive with an unarchive condition, then reactivate: the stale
     // terminal facts must not linger on the live item.
-    await tom.mutation(api.dts.setStatus, {
+    await tom.mutation(api.tts.setStatus, {
       id,
       status: "archived",
       unarchiveCondition: "when Ana replies",
     });
-    await tom.mutation(api.dts.setStatus, { id, status: "active" });
-    const [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.setStatus, { id, status: "active" });
+    const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("active");
     expect(todo.archivedAt).toBeUndefined();
     expect(todo.unarchiveCondition).toBeUndefined();
@@ -231,11 +231,11 @@ describe("DTS todos", () => {
     const tom = await withTom(t);
     const ids = [];
     for (let i = 0; i < 9; i++) {
-      ids.push(await tom.mutation(api.dts.createTodo, { statement: `t${i}` }));
+      ids.push(await tom.mutation(api.tts.createTodo, { statement: `t${i}` }));
     }
     const sleeping = ids[0];
-    await tom.mutation(api.dts.setStatus, { id: sleeping, status: "waiting" });
-    await t.mutation(internal.dts.internalStoreWorkerPrep, {
+    await tom.mutation(api.tts.setStatus, { id: sleeping, status: "waiting" });
+    await t.mutation(internal.tts.internalStoreWorkerPrep, {
       day: "2026-08-27",
       todoIds: ids,
       digestText: "x",
@@ -248,7 +248,7 @@ describe("DTS todos", () => {
     expect(rows[0].entries.some((e) => e.todoId === sleeping)).toBe(false);
     // A malformed id is rejected by name.
     await expect(
-      t.mutation(internal.dts.internalStoreWorkerPrep, {
+      t.mutation(internal.tts.internalStoreWorkerPrep, {
         day: "2026-08-27",
         todoIds: ["not-a-real-id"],
       }),
@@ -257,7 +257,7 @@ describe("DTS todos", () => {
 
   it("captures worker submissions as unprepared items", async () => {
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.dts.internalCapture, {
+    await t.mutation(internal.tts.internalCapture, {
       statement: "buy climbing tape",
       source: "slack-capture",
       provenance: "slack:#dump",
@@ -272,14 +272,14 @@ describe("DTS todos", () => {
   // preserved-statement assertion below goes red.
   it("preparer attaches fields and advances readiness without touching intent", async () => {
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.dts.internalCapture, {
+    await t.mutation(internal.tts.internalCapture, {
       statement: "buy climbing tape",
       source: "slack-capture",
     });
     const [captured] = await t.run(async (ctx) =>
       ctx.db.query("dtsTodos").collect(),
     );
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
       brief: "Tape for finger protection.",
       entryAction: "Open the retailer page",
@@ -291,7 +291,7 @@ describe("DTS todos", () => {
     expect(todo.entryAction).toBe("Open the retailer page");
     expect(todo.statement).toBe("buy climbing tape"); // intent untouched
     await expect(
-      t.mutation(internal.dts.internalPrepareTodo, { id: "bogus" }),
+      t.mutation(internal.tts.internalPrepareTodo, { id: "bogus" }),
     ).rejects.toThrow(/Unknown todo id/);
   });
 
@@ -299,7 +299,7 @@ describe("DTS todos", () => {
   // rejects assertion below goes red.
   it("internalTriage applies status + self-imposed dates with kept-dates intact", async () => {
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.dts.internalCapture, {
+    await t.mutation(internal.tts.internalCapture, {
       statement: "reserve UH 400",
       source: "consolidation",
     });
@@ -307,15 +307,15 @@ describe("DTS todos", () => {
       ctx.db.query("dtsTodos").collect(),
     );
     const due = Date.now() + 3 * 86_400_000;
-    await t.mutation(internal.dts.internalTriage, { id: captured._id, dueAt: due });
+    await t.mutation(internal.tts.internalTriage, { id: captured._id, dueAt: due });
     let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.timingClass).toBe("dated");
     expect(todo.dateKind).toBe("self-imposed");
     // A second date via triage is refused — dates move via recordDateOutcome.
     await expect(
-      t.mutation(internal.dts.internalTriage, { id: captured._id, dueAt: due + 1 }),
+      t.mutation(internal.tts.internalTriage, { id: captured._id, dueAt: due + 1 }),
     ).rejects.toThrow(/kept-dates/);
-    await t.mutation(internal.dts.internalTriage, {
+    await t.mutation(internal.tts.internalTriage, {
       id: captured._id,
       status: "waiting",
       wakeAt: due,
@@ -330,21 +330,21 @@ describe("DTS todos", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const now = Date.now();
-    const overdue = await tom.mutation(api.dts.createTodo, {
+    const overdue = await tom.mutation(api.tts.createTodo, {
       statement: "overdue thing",
       dueAt: now - 86_400_000,
     });
-    await tom.mutation(api.dts.createTodo, { statement: "someday thing" });
-    const sleeping = await tom.mutation(api.dts.createTodo, {
+    await tom.mutation(api.tts.createTodo, { statement: "someday thing" });
+    const sleeping = await tom.mutation(api.tts.createTodo, {
       statement: "wake me",
     });
-    await tom.mutation(api.dts.setStatus, {
+    await tom.mutation(api.tts.setStatus, {
       id: sleeping,
       status: "waiting",
       wakeAt: now - 1000,
     });
 
-    await t.mutation(internal.dts.internalPrepareFallbackQueue, { force: true });
+    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
 
     const todos = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     const woken = todos.find((x) => x._id === sleeping);
@@ -366,12 +366,12 @@ describe("DTS todos", () => {
   it("worker prep overwrites the fallback queue for the same day", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, { statement: "a task" });
-    await t.mutation(internal.dts.internalPrepareFallbackQueue, { force: true });
+    const id = await tom.mutation(api.tts.createTodo, { statement: "a task" });
+    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
     const day = (
       await t.run(async (ctx) => ctx.db.query("dtsDailyQueues").collect())
     )[0].day;
-    await t.mutation(internal.dts.internalStoreWorkerPrep, {
+    await t.mutation(internal.tts.internalStoreWorkerPrep, {
       day,
       todoIds: [id],
       digestText: "*prepared by worker*",
@@ -386,14 +386,14 @@ describe("DTS todos", () => {
 
   it("mirror replace upserts and drops vanished rows", async () => {
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.dts.internalReplaceMirror, {
+    await t.mutation(internal.tts.internalReplaceMirror, {
       repo: "ComplexMultiTrigger",
       rows: [
         { externalId: "a", tier: "R", status: "open", statement: "s1", url: "u" },
         { externalId: "b", tier: "H", status: "open", statement: "s2", url: "u" },
       ],
     });
-    await t.mutation(internal.dts.internalReplaceMirror, {
+    await t.mutation(internal.tts.internalReplaceMirror, {
       repo: "ComplexMultiTrigger",
       rows: [
         { externalId: "a", tier: "R", status: "closed", statement: "s1", url: "u" },
@@ -408,34 +408,34 @@ describe("DTS todos", () => {
   });
 });
 
-describe("DTS blocks and category", () => {
+describe("TTS blocks and category", () => {
   const HOUR = 3_600_000;
 
-  // witness: remove the requireTomId call from listBlocks in convex/dts.ts
+  // witness: remove the requireTomId call from listBlocks in convex/tts.ts
   it("gates listBlocks on the tom role", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.query(api.dts.listBlocks, {})).rejects.toThrow();
+    await expect(t.query(api.tts.listBlocks, {})).rejects.toThrow();
     const userId = await t.run(async (ctx) =>
       ctx.db.insert("users", { name: "u", email: "u@tom.quest", role: "user" }),
     );
     const user = t.withIdentity({ subject: userId });
-    await expect(user.query(api.dts.listBlocks, {})).rejects.toThrow();
+    await expect(user.query(api.tts.listBlocks, {})).rejects.toThrow();
   });
 
   // witness: drop the requireOneBlockTarget call (or the end<=start throw)
-  // from createBlock in convex/dts.ts
+  // from createBlock in convex/tts.ts
   it("createBlock targets exactly one thing and validates the span", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "block me" });
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "block me" });
     const start = Date.now();
     // Zero targets.
     await expect(
-      tom.mutation(api.dts.createBlock, { start, end: start + HOUR }),
+      tom.mutation(api.tts.createBlock, { start, end: start + HOUR }),
     ).rejects.toThrow(/exactly one/);
     // Two targets.
     await expect(
-      tom.mutation(api.dts.createBlock, {
+      tom.mutation(api.tts.createBlock, {
         start,
         end: start + HOUR,
         todoId,
@@ -444,10 +444,10 @@ describe("DTS blocks and category", () => {
     ).rejects.toThrow(/exactly one/);
     // Zero-length and inverted spans.
     await expect(
-      tom.mutation(api.dts.createBlock, { start, end: start, category: "chores" }),
+      tom.mutation(api.tts.createBlock, { start, end: start, category: "chores" }),
     ).rejects.toThrow(/ends after/);
     await expect(
-      tom.mutation(api.dts.createBlock, {
+      tom.mutation(api.tts.createBlock, {
         start,
         end: start - HOUR,
         category: "chores",
@@ -456,35 +456,35 @@ describe("DTS blocks and category", () => {
   });
 
   // witness: drop the ctx.db.get existence check from createBlock's todoId
-  // branch in convex/dts.ts
+  // branch in convex/tts.ts
   it("createBlock validates the todo target exists", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "gone" });
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "gone" });
     await t.run(async (ctx) => ctx.db.delete(todoId));
     const start = Date.now();
     await expect(
-      tom.mutation(api.dts.createBlock, { start, end: start + HOUR, todoId }),
+      tom.mutation(api.tts.createBlock, { start, end: start + HOUR, todoId }),
     ).rejects.toThrow(/not found/);
   });
 
   it("creates, lists, and instruments blocks for both target kinds", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "a task" });
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "a task" });
     const start = Date.now();
-    const todoBlock = await tom.mutation(api.dts.createBlock, {
+    const todoBlock = await tom.mutation(api.tts.createBlock, {
       start,
       end: start + 2 * HOUR,
       todoId,
       note: "Tue 9-11",
     });
-    const categoryBlock = await tom.mutation(api.dts.createBlock, {
+    const categoryBlock = await tom.mutation(api.tts.createBlock, {
       start: start + 24 * HOUR,
       end: start + 26 * HOUR,
       category: "chores",
     });
-    const blocks = await tom.query(api.dts.listBlocks, {});
+    const blocks = await tom.query(api.tts.listBlocks, {});
     expect(blocks).toHaveLength(2);
     const perTodo = blocks.find((b) => b._id === todoBlock);
     expect(perTodo?.todoId).toBe(todoId);
@@ -493,41 +493,41 @@ describe("DTS blocks and category", () => {
     const perCategory = blocks.find((b) => b._id === categoryBlock);
     expect(perCategory?.category).toBe("chores");
     expect(perCategory?.todoId).toBeUndefined();
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     const created = events.filter((e) => e.kind === "block-created");
     expect(created).toHaveLength(2);
     expect(created.some((e) => e.todoId === todoId)).toBe(true);
   });
 
-  // witness: drop the recomputed-span throw from updateBlock in convex/dts.ts
+  // witness: drop the recomputed-span throw from updateBlock in convex/tts.ts
   it("updateBlock moves the span, validates it, and logs the move", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const start = Date.now();
-    const id = await tom.mutation(api.dts.createBlock, {
+    const id = await tom.mutation(api.tts.createBlock, {
       start,
       end: start + HOUR,
       category: "chores",
       note: "keep me",
     });
-    await tom.mutation(api.dts.updateBlock, {
+    await tom.mutation(api.tts.updateBlock, {
       id,
       start: start + 24 * HOUR,
       end: start + 25 * HOUR,
     });
-    let [block] = await tom.query(api.dts.listBlocks, {});
+    let [block] = await tom.query(api.tts.listBlocks, {});
     expect(block.start).toBe(start + 24 * HOUR);
     expect(block.end).toBe(start + 25 * HOUR);
     expect(block.note).toBe("keep me"); // omitted field untouched
     // A partial edit that would invert the span is refused.
     await expect(
-      tom.mutation(api.dts.updateBlock, { id, end: start }),
+      tom.mutation(api.tts.updateBlock, { id, end: start }),
     ).rejects.toThrow(/ends after/);
     // note: null clears it.
-    await tom.mutation(api.dts.updateBlock, { id, note: null });
-    [block] = await tom.query(api.dts.listBlocks, {});
+    await tom.mutation(api.tts.updateBlock, { id, note: null });
+    [block] = await tom.query(api.tts.listBlocks, {});
     expect(block.note).toBeUndefined();
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     const moved = events.find((e) => e.kind === "block-moved");
     expect(moved?.data).toMatchObject({
       from: { start, end: start + HOUR },
@@ -535,20 +535,20 @@ describe("DTS blocks and category", () => {
     });
   });
 
-  // witness: drop the logEvent call from deleteBlock in convex/dts.ts
+  // witness: drop the logEvent call from deleteBlock in convex/tts.ts
   it("deleteBlock removes the row and logs an event", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "a task" });
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "a task" });
     const start = Date.now();
-    const id = await tom.mutation(api.dts.createBlock, {
+    const id = await tom.mutation(api.tts.createBlock, {
       start,
       end: start + HOUR,
       todoId,
     });
-    await tom.mutation(api.dts.deleteBlock, { id });
-    expect(await tom.query(api.dts.listBlocks, {})).toHaveLength(0);
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    await tom.mutation(api.tts.deleteBlock, { id });
+    expect(await tom.query(api.tts.listBlocks, {})).toHaveLength(0);
+    const events = await tom.query(api.tts.listRecentEvents, {});
     const deleted = events.find((e) => e.kind === "block-deleted");
     expect(deleted?.todoId).toBe(todoId);
     expect(deleted?.data).toMatchObject({ start, end: start + HOUR });
@@ -557,22 +557,22 @@ describe("DTS blocks and category", () => {
   it("createTodo/updateTodo round-trip category, null clears", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, {
+    const id = await tom.mutation(api.tts.createTodo, {
       statement: "sweep the floor",
       category: "chores",
     });
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.category).toBe("chores");
-    await tom.mutation(api.dts.updateTodo, { id, category: "errands" });
-    [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.updateTodo, { id, category: "errands" });
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.category).toBe("errands");
-    await tom.mutation(api.dts.updateTodo, { id, category: null });
-    [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.updateTodo, { id, category: null });
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.category).toBeUndefined();
   });
 });
 
-describe("DTS batches and annotations", () => {
+describe("TTS batches and annotations", () => {
   // Real-clock tick: guarantees Date.now() advances between two mutations, so
   // "does not bump updatedAt" assertions cannot pass by same-millisecond luck.
   const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -600,7 +600,7 @@ describe("DTS batches and annotations", () => {
       importanceRationale: string;
     }> = {},
   ) =>
-    t.mutation(internal.dts.internalStoreBatches, {
+    t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           statement: "grouped work",
@@ -621,8 +621,8 @@ describe("DTS batches and annotations", () => {
   it("internalStoreBatches creates a batch with agent-set importance", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const a = await tom.mutation(api.dts.createTodo, { statement: "book flights" });
-    const res = await t.mutation(internal.dts.internalStoreBatches, {
+    const a = await tom.mutation(api.tts.createTodo, { statement: "book flights" });
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           statement: "  trip logistics  ",
@@ -649,7 +649,7 @@ describe("DTS batches and annotations", () => {
     expect(batch?.members).toHaveLength(2);
     expect(batch?.importance).toMatchObject({ level: "medium", setBy: "agent" });
     expect(batch?.tomTouchedAt).toBeUndefined(); // agent write, never a Tom touch
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     expect(
       events.some((e) => e.kind === "batch-formed" && e.todoId === batch?._id),
     ).toBe(true);
@@ -675,7 +675,7 @@ describe("DTS batches and annotations", () => {
   });
 
   // witness: drop the occupied-member check from internalStoreBatches in
-  // convex/dts.ts — one subject would ride two live batches.
+  // convex/tts.ts — one subject would ride two live batches.
   it("skips a batch whose member is already held by another live batch", async () => {
     const t = convexTest({ schema, modules });
     await storeBatch(t, { statement: "holder" });
@@ -698,7 +698,7 @@ describe("DTS batches and annotations", () => {
     await storeBatch(t, { statement: "holder", members: [cmt("cmt-001")] });
     const holder = await findBatch(t);
     // One call: holder gives cmt-001 up AND a new batch tries to take it.
-    const first = await t.mutation(internal.dts.internalStoreBatches, {
+    const first = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           id: holder!._id,
@@ -722,7 +722,7 @@ describe("DTS batches and annotations", () => {
       },
     ]);
     // Run two: cmt-001 is free now, so the same batch is created.
-    const second = await t.mutation(internal.dts.internalStoreBatches, {
+    const second = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         { statement: "taker", brief: "the new home", members: [cmt("cmt-001")] },
       ],
@@ -746,8 +746,8 @@ describe("DTS batches and annotations", () => {
     const tom = await withTom(t);
     await storeBatch(t, { statement: "frozen holder" });
     const holder = await findBatch(t);
-    await tom.mutation(api.dts.setImportance, { id: holder!._id, level: "high" });
-    const res = await t.mutation(internal.dts.internalStoreBatches, {
+    await tom.mutation(api.tts.setImportance, { id: holder!._id, level: "high" });
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           id: holder!._id,
@@ -790,7 +790,7 @@ describe("DTS batches and annotations", () => {
     ).toEqual(["cmt-001", "cmt-002"]);
   });
 
-  // witness: drop the members check from validateBatchMembers in convex/dts.ts
+  // witness: drop the members check from validateBatchMembers in convex/tts.ts
   it("refuses batch-in-batch (skipped, not stored)", async () => {
     const t = convexTest({ schema, modules });
     await storeBatch(t, { statement: "outer" });
@@ -810,8 +810,8 @@ describe("DTS batches and annotations", () => {
     const tom = await withTom(t);
     await storeBatch(t, { statement: "ruled on" });
     const batch = await findBatch(t);
-    await tom.mutation(api.dts.setImportance, { id: batch!._id, level: "high" });
-    const res = await t.mutation(internal.dts.internalStoreBatches, {
+    await tom.mutation(api.tts.setImportance, { id: batch!._id, level: "high" });
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           id: batch!._id,
@@ -836,7 +836,7 @@ describe("DTS batches and annotations", () => {
     const t = convexTest({ schema, modules });
     await storeBatch(t);
     const batch = await findBatch(t);
-    const res = await t.mutation(internal.dts.internalStoreBatches, {
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [],
       archiveIds: [batch!._id],
     });
@@ -848,7 +848,7 @@ describe("DTS batches and annotations", () => {
   });
 
   // witness: drop the setBy-"tom" guard from internalStoreBatches's update
-  // branch in convex/dts.ts. Importance is seeded directly here: every Tom
+  // branch in convex/tts.ts. Importance is seeded directly here: every Tom
   // door also stamps tomTouchedAt (which freezes the row first), so this
   // guard is the second fence — it must hold on its own.
   it("a batcher rewrite keeps importance Tom set (agent write ignored, logged)", async () => {
@@ -870,7 +870,7 @@ describe("DTS batches and annotations", () => {
     const fresh = await findBatch(t);
     expect(fresh?.statement).toBe("regrouped anyway"); // content rewrite landed
     expect(fresh?.importance).toMatchObject({ level: "high", setBy: "tom" });
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     expect(
       events.some(
         (e) => e.kind === "importance-skipped" && e.todoId === batch?._id,
@@ -952,7 +952,7 @@ describe("DTS batches and annotations", () => {
   // and re-posted {externalId, repo} are still one no-op.
   it("the unchanged check does not depend on member key order", async () => {
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.dts.internalStoreBatches, {
+    await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           statement: "grouped work",
@@ -963,7 +963,7 @@ describe("DTS batches and annotations", () => {
     });
     const batch = await findBatch(t);
     await tick();
-    const res = await t.mutation(internal.dts.internalStoreBatches, {
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           id: batch!._id,
@@ -984,7 +984,7 @@ describe("DTS batches and annotations", () => {
     const t = convexTest({ schema, modules });
     await storeBatch(t, { statement: "old grouping" });
     const old = await findBatch(t);
-    const res = await t.mutation(internal.dts.internalStoreBatches, {
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
           statement: "new grouping",
@@ -1009,7 +1009,7 @@ describe("DTS batches and annotations", () => {
   });
 
   // witness: drop the MAX_BATCH_MEMBERS / length-0 throws from
-  // validateBatchMembers in convex/dts.ts (Convex bounded-array guideline).
+  // validateBatchMembers in convex/tts.ts (Convex bounded-array guideline).
   it("a batch holds 1..20 members", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -1029,47 +1029,47 @@ describe("DTS batches and annotations", () => {
     });
     expect(ok).toMatchObject({ created: 1, skipped: [] });
     // The Tom-facing door enforces the same cap.
-    const id = await tom.mutation(api.dts.createTodo, { statement: "batchy" });
+    const id = await tom.mutation(api.tts.createTodo, { statement: "batchy" });
     await expect(
-      tom.mutation(api.dts.updateTodo, { id, members: [] }),
+      tom.mutation(api.tts.updateTodo, { id, members: [] }),
     ).rejects.toThrow(/at least one member/);
     await expect(
-      tom.mutation(api.dts.updateTodo, { id, members: many }),
+      tom.mutation(api.tts.updateTodo, { id, members: many }),
     ).rejects.toThrow(/at most 20 members/);
   });
 
   // witness: drop the MAX_PLAN_STEPS throws/skip from updateTodo,
-  // internalPrepareTodo, and internalStoreBatches in convex/dts.ts.
+  // internalPrepareTodo, and internalStoreBatches in convex/tts.ts.
   it("a plan holds at most 40 steps, at every door", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const long = Array.from({ length: 41 }, (_, i) => step(`s${i}`));
-    const id = await tom.mutation(api.dts.createTodo, { statement: "planned" });
+    const id = await tom.mutation(api.tts.createTodo, { statement: "planned" });
     await expect(
-      tom.mutation(api.dts.updateTodo, { id, plan: long }),
+      tom.mutation(api.tts.updateTodo, { id, plan: long }),
     ).rejects.toThrow(/at most 40 steps — got 41/);
     await expect(
-      t.mutation(internal.dts.internalPrepareTodo, { id, plan: long }),
+      t.mutation(internal.tts.internalPrepareTodo, { id, plan: long }),
     ).rejects.toThrow(/at most 40 steps — got 41/);
     // The batcher drops the batch instead of failing the run.
     const res = await storeBatch(t, { statement: "long plan", plan: long });
     expect(res).toMatchObject({ created: 0 });
     expect(res.skipped[0].why).toMatch(/at most 40 steps — got 41/);
     // Exactly 40 lands.
-    await tom.mutation(api.dts.updateTodo, { id, plan: long.slice(0, 40) });
-    const todos = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.updateTodo, { id, plan: long.slice(0, 40) });
+    const todos = await tom.query(api.tts.listTodos, {});
     expect(todos.find((x) => x._id === id)?.plan).toHaveLength(40);
   });
 
   // witness: drop the `todo.members !== undefined` branch from
-  // internalPrepareTodo in convex/dts.ts — the single-todo preparer would
+  // internalPrepareTodo in convex/tts.ts — the single-todo preparer would
   // rewrite the batcher's grouping brief.
   it("preparing a BATCH lands only the plan; the rest is skipped and named", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await storeBatch(t, { importanceLevel: "medium" });
     const batch = await findBatch(t);
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: batch!._id,
       brief: "a preparer's brief",
       entryAction: "open the first one",
@@ -1085,7 +1085,7 @@ describe("DTS batches and annotations", () => {
     expect(fresh?.readiness).toBe("ready-for-tom"); // untouched
     expect(fresh?.importance).toMatchObject({ level: "medium" });
     expect(fresh?.plan).toHaveLength(1); // the plan is the one field that lands
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     const skipped = events.find((e) => e.kind === "prepare-skipped-batch");
     expect(skipped?.todoId).toBe(batch?._id);
     expect((skipped?.data as { fields: string[] }).fields).toEqual([
@@ -1099,36 +1099,89 @@ describe("DTS batches and annotations", () => {
     const prepared = events.find((e) => e.kind === "prepared");
     expect((prepared?.data as { fields: string[] }).fields).toEqual(["plan"]);
     // A plan-only call on a batch skips nothing.
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: batch!._id,
       plan: [step("do the first member"), step("then the second")],
     });
-    const after = await tom.query(api.dts.listRecentEvents, {});
+    const after = await tom.query(api.tts.listRecentEvents, {});
     expect(after.filter((e) => e.kind === "prepare-skipped-batch")).toHaveLength(1);
   });
 
-  // witness: add updatedAt to setImportance's patch in convex/dts.ts — the
+  // witness: restore the old blanket "Tom-touched row with a plan → skip" in
+  // internalPrepareTodo and this test goes red — the moment Tom wrote one step
+  // of his own, the batch's live autonomous session could no longer check its
+  // own steps off, which is the whole reason a batch gets a session.
+  it("a Tom-touched batch takes agent plan writes that keep Tom's steps", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await storeBatch(t, { plan: [step("gather the sources")] });
+    const batch = await findBatch(t);
+    const tomStep = {
+      text: "tom picks the venue",
+      actor: "tom" as const,
+      status: "open" as const,
+    };
+    // Tom adds a step of his own — which also freezes the row to the batcher.
+    await tom.mutation(api.tts.updateTodo, {
+      id: batch!._id,
+      plan: [step("gather the sources"), tomStep],
+    });
+    expect((await findBatch(t))?.tomTouchedAt).toBeDefined();
+
+    // The session agent checks its own step off and adds another. Tom's step
+    // is still there by text, so the whole plan lands.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: batch!._id,
+      plan: [
+        { ...step("gather the sources"), status: "done" as const, doneAt: 1 },
+        tomStep,
+        step("draft the summary"),
+      ],
+    });
+    let fresh = await findBatch(t);
+    expect(fresh?.plan).toHaveLength(3);
+    expect(fresh?.plan?.[0].status).toBe("done");
+
+    // A plan that drops Tom's step is refused WHOLE — never merged in part.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: batch!._id,
+      plan: [step("gather the sources")],
+    });
+    fresh = await findBatch(t);
+    expect(fresh?.plan).toHaveLength(3);
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "plan-skipped" &&
+          (e.data as { reason?: string; step?: string } | undefined)?.step ===
+            "tom picks the venue",
+      ),
+    ).toBe(true);
+  });
+
+  // witness: add updatedAt to setImportance's patch in convex/tts.ts — the
   // annotation would resurface ruled gates via ruledAt<updatedAt.
   it("setImportance writes Tom's level as an annotation (no updatedAt bump)", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, { statement: "x" });
-    const [before] = await tom.query(api.dts.listTodos, {});
+    const id = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const [before] = await tom.query(api.tts.listTodos, {});
     await tick();
-    await tom.mutation(api.dts.setImportance, { id, level: "high" });
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.setImportance, { id, level: "high" });
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.importance).toMatchObject({ level: "high", setBy: "tom" });
     expect(todo.tomTouchedAt).toBeDefined();
     expect(todo.updatedAt).toBe(before.updatedAt);
-    await tom.mutation(api.dts.setImportance, { id, level: null });
-    [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.setImportance, { id, level: null });
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.importance).toBeUndefined();
   });
 
   it("setPlanStep checks a step off, reopens it, and rejects a bad index", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, { statement: "batchish" });
+    const id = await tom.mutation(api.tts.createTodo, { statement: "batchish" });
     // Seeded directly: updateTodo would stamp tomTouchedAt itself, hiding
     // whether setPlanStep stamps its own.
     await t.run(async (ctx) =>
@@ -1139,39 +1192,39 @@ describe("DTS batches and annotations", () => {
         ],
       }),
     );
-    const [before] = await tom.query(api.dts.listTodos, {});
+    const [before] = await tom.query(api.tts.listTodos, {});
     await tick();
-    await tom.mutation(api.dts.setPlanStep, { id, index: 1, status: "done" });
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.setPlanStep, { id, index: 1, status: "done" });
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.plan?.[1].status).toBe("done");
     expect(todo.plan?.[1].doneAt).toBeDefined();
     expect(todo.plan?.[0].status).toBe("open"); // sibling untouched
     expect(todo.tomTouchedAt).toBeDefined();
     expect(todo.updatedAt).toBe(before.updatedAt); // annotation, no bump
-    await tom.mutation(api.dts.setPlanStep, { id, index: 1, status: "open" });
-    [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.setPlanStep, { id, index: 1, status: "open" });
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.plan?.[1].doneAt).toBeUndefined(); // stale timestamp cleared
     await expect(
-      tom.mutation(api.dts.setPlanStep, { id, index: 5, status: "done" }),
+      tom.mutation(api.tts.setPlanStep, { id, index: 5, status: "done" }),
     ).rejects.toThrow(/no step 5/);
-    const planless = await tom.mutation(api.dts.createTodo, { statement: "y" });
+    const planless = await tom.mutation(api.tts.createTodo, { statement: "y" });
     await expect(
-      tom.mutation(api.dts.setPlanStep, { id: planless, index: 0, status: "done" }),
+      tom.mutation(api.tts.setPlanStep, { id: planless, index: 0, status: "done" }),
     ).rejects.toThrow(/no plan/);
   });
 
   it("internalBulkUpdate is Tom's pen: setBy tom, only content bumps updatedAt", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const id = await tom.mutation(api.dts.createTodo, { statement: "spoken" });
-    const [before] = await tom.query(api.dts.listTodos, {});
+    const id = await tom.mutation(api.tts.createTodo, { statement: "spoken" });
+    const [before] = await tom.query(api.tts.listTodos, {});
     await tick();
-    await t.mutation(internal.dts.internalBulkUpdate, {
+    await t.mutation(internal.tts.internalBulkUpdate, {
       updates: [
         { id, importanceLevel: "medium", importanceRationale: "he said so" },
       ],
     });
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.importance).toMatchObject({
       level: "medium",
       setBy: "tom", // records Tom's SPOKEN ruling, not an agent estimate
@@ -1180,14 +1233,14 @@ describe("DTS batches and annotations", () => {
     expect(todo.tomTouchedAt).toBeDefined();
     expect(todo.updatedAt).toBe(before.updatedAt); // importance-only: no bump
     await tick();
-    await t.mutation(internal.dts.internalBulkUpdate, {
+    await t.mutation(internal.tts.internalBulkUpdate, {
       updates: [{ id, category: "chores" }],
     });
-    [todo] = await tom.query(api.dts.listTodos, {});
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.category).toBe("chores");
     expect(todo.updatedAt).toBeGreaterThan(before.updatedAt); // content: bump
     await expect(
-      t.mutation(internal.dts.internalBulkUpdate, {
+      t.mutation(internal.tts.internalBulkUpdate, {
         updates: [{ id: "not-a-real-id", category: "x" }],
       }),
     ).rejects.toThrow(/Unknown todo id/);
@@ -1196,21 +1249,21 @@ describe("DTS batches and annotations", () => {
   it("preparer importance/plan defer to Tom's overrides", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    await t.mutation(internal.dts.internalCapture, {
+    await t.mutation(internal.tts.internalCapture, {
       statement: "captured",
       source: "slack-capture",
     });
     const [captured] = await t.run(async (ctx) =>
       ctx.db.query("dtsTodos").collect(),
     );
-    await tom.mutation(api.dts.setImportance, {
+    await tom.mutation(api.tts.setImportance, {
       id: captured._id,
       level: "high",
     });
     const step = { text: "look it up", actor: "agent" as const, status: "open" as const };
     // tomTouchedAt is set but there is no plan yet: the plan writes, the
     // agent importance is ignored (Tom already ruled).
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
       importanceLevel: "low",
       importanceRationale: "agent guess",
@@ -1219,64 +1272,134 @@ describe("DTS batches and annotations", () => {
     let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.importance).toMatchObject({ level: "high", setBy: "tom" });
     expect(todo.plan).toHaveLength(1);
-    // Now a plan exists on a Tom-touched row — a re-prepare must not clobber it.
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    // Agent steps flow freely even on a Tom-touched row: the plan gate
+    // preserves TOM's steps, not the whole plan (the old blanket skip froze
+    // live batch sessions the moment Tom touched the row at all).
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
       plan: [step, { ...step, text: "second draft" }],
     });
     [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(1);
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    expect(todo.plan).toHaveLength(2);
+    // Tom writes a step of his own; an incoming plan that DROPS its text is
+    // refused whole (Tom's asks never vanish by agent hand)…
+    const tomStep = {
+      text: "tom decides the venue",
+      actor: "tom" as const,
+      status: "open" as const,
+    };
+    await tom.mutation(api.tts.updateTodo, {
+      id: captured._id,
+      plan: [step, { ...step, text: "second draft" }, tomStep],
+    });
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [step], // tom's step vanished
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan).toHaveLength(3); // unchanged
+    // …while one that keeps his text lands: reordered, checked off, trimmed
+    // of agent steps.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [tomStep, { ...step, status: "done" as const, doneAt: 1 }],
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan).toHaveLength(2);
+    expect(todo.plan?.[0].actor).toBe("tom");
+    const events = await tom.query(api.tts.listRecentEvents, {});
     expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
-    expect(events.some((e) => e.kind === "plan-skipped")).toBe(true);
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "plan-skipped" &&
+          (e.data as { reason?: string } | undefined)?.reason ===
+            "tom-step dropped",
+      ),
+    ).toBe(true);
+  });
+
+  // witness: the tomTouchedAt === undefined condition on the plan gate in
+  // internalPrepareTodo (convex/tts.ts) — the first fleet run showed the
+  // unconditional check refusing legitimate refinements of agent-authored
+  // tom-steps on untouched batcher rows.
+  it("untouched rows take plan rewrites freely; the pen reports planApplied", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.tts.internalCapture, {
+      statement: "captured",
+      source: "slack-capture",
+    });
+    const [captured] = await t.run(async (ctx) =>
+      ctx.db.query("dtsTodos").collect(),
+    );
+    const tomStep = {
+      text: "decide the venue",
+      actor: "tom" as const,
+      status: "open" as const,
+    };
+    // Agent-authored plan with a tom-step, via the pen (no Tom door touched).
+    const first = await t.mutation(internal.tts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [tomStep],
+    });
+    expect(first.planApplied).toBe(true);
+    // Rewording the tom-step on the UNTOUCHED row lands — the plan is wholly
+    // agent-authored until Tom has a hand in the row.
+    const reworded = await t.mutation(internal.tts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [{ ...tomStep, text: "decide the venue — three-way now" }],
+    });
+    expect(reworded.planApplied).toBe(true);
+    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan?.[0].text).toBe("decide the venue — three-way now");
   });
 
   // witness: drop the one-live-batch collect from updateTodo's members branch
-  // in convex/dts.ts
+  // in convex/tts.ts
   it("updateTodo members enforce one live batch per subject and stamp the touch", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const a = await tom.mutation(api.dts.createTodo, { statement: "member a" });
-    const x = await tom.mutation(api.dts.createTodo, { statement: "batch x" });
-    await tom.mutation(api.dts.updateTodo, { id: x, members: [{ todoId: a }] });
-    const todos = await tom.query(api.dts.listTodos, {});
+    const a = await tom.mutation(api.tts.createTodo, { statement: "member a" });
+    const x = await tom.mutation(api.tts.createTodo, { statement: "batch x" });
+    await tom.mutation(api.tts.updateTodo, { id: x, members: [{ todoId: a }] });
+    const todos = await tom.query(api.tts.listTodos, {});
     const batch = todos.find((t2) => t2._id === x);
     expect(batch?.members).toHaveLength(1);
     expect(batch?.tomTouchedAt).toBeDefined();
-    const y = await tom.mutation(api.dts.createTodo, { statement: "batch y" });
+    const y = await tom.mutation(api.tts.createTodo, { statement: "batch y" });
     await expect(
-      tom.mutation(api.dts.updateTodo, { id: y, members: [{ todoId: a }] }),
+      tom.mutation(api.tts.updateTodo, { id: y, members: [{ todoId: a }] }),
     ).rejects.toThrow(/already in batch "batch x"/);
   });
 
   // witness: drop the `memberKey(m) === selfKey` throw from updateTodo's
-  // members branch in convex/dts.ts — a member could be promoted to a batch
+  // members branch in convex/tts.ts — a member could be promoted to a batch
   // while still riding another one (batch-in-batch through the back door).
   it("updateTodo refuses members on a row that is itself in a live batch", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const a = await tom.mutation(api.dts.createTodo, { statement: "member a" });
-    const c = await tom.mutation(api.dts.createTodo, { statement: "loose c" });
-    const x = await tom.mutation(api.dts.createTodo, { statement: "batch x" });
-    await tom.mutation(api.dts.updateTodo, { id: x, members: [{ todoId: a }] });
+    const a = await tom.mutation(api.tts.createTodo, { statement: "member a" });
+    const c = await tom.mutation(api.tts.createTodo, { statement: "loose c" });
+    const x = await tom.mutation(api.tts.createTodo, { statement: "batch x" });
+    await tom.mutation(api.tts.updateTodo, { id: x, members: [{ todoId: a }] });
     await expect(
-      tom.mutation(api.dts.updateTodo, { id: a, members: [{ todoId: c }] }),
+      tom.mutation(api.tts.updateTodo, { id: a, members: [{ todoId: c }] }),
     ).rejects.toThrow(/"member a" is a member of batch "batch x" — no batch-in-batch/);
     // Once the holding batch is terminal, the promotion is legal again.
-    await tom.mutation(api.dts.setStatus, { id: x, status: "archived" });
-    await tom.mutation(api.dts.updateTodo, { id: a, members: [{ todoId: c }] });
-    const todos = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.setStatus, { id: x, status: "archived" });
+    await tom.mutation(api.tts.updateTodo, { id: a, members: [{ todoId: c }] });
+    const todos = await tom.query(api.tts.listTodos, {});
     expect(todos.find((x2) => x2._id === a)?.members).toHaveLength(1);
   });
 
   // witness: drop the `status !== undefined || dueAt !== undefined` gate from
-  // internalTriage's tomTouchedAt patch in convex/dts.ts — a no-op/retry pen
+  // internalTriage's tomTouchedAt patch in convex/tts.ts — a no-op/retry pen
   // call would freeze a batch against the batcher forever.
   it("a no-op internalTriage call does not stamp tomTouchedAt", async () => {
     const t = convexTest({ schema, modules });
     await storeBatch(t, { statement: "still the batcher's" });
     const batch = await findBatch(t);
-    await t.mutation(internal.dts.internalTriage, {
+    await t.mutation(internal.tts.internalTriage, {
       id: batch!._id,
       note: "looked at it, ruled nothing",
     });
@@ -1288,7 +1411,7 @@ describe("DTS batches and annotations", () => {
     });
     expect(res).toMatchObject({ updated: 1, skipped: [] });
     // A triage that actually rules DOES freeze it.
-    await t.mutation(internal.dts.internalTriage, {
+    await t.mutation(internal.tts.internalTriage, {
       id: batch!._id,
       status: "waiting",
       wakeCondition: "after the trip",
@@ -1301,32 +1424,32 @@ describe("DTS batches and annotations", () => {
   it("the preparer sets a FIRST date only, never over an existing one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const undatedId = await tom.mutation(api.dts.createTodo, {
+    const undatedId = await tom.mutation(api.tts.createTodo, {
       statement: "pay rent sept 3",
     });
     const due = Date.UTC(2026, 8, 3, 16); // noon NY
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: undatedId,
       brief: "rent",
       dueAt: due,
     });
-    let todos = await tom.query(api.dts.listTodos, {});
+    let todos = await tom.query(api.tts.listTodos, {});
     expect(todos[0].dueAt).toBe(due);
     expect(todos[0].dateKind).toBe("self-imposed");
     expect(todos[0].timingClass).toBe("dated");
     // A second preparer date is refused (and named), leaving the stored one.
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: undatedId,
       dueAt: due + 5 * 86_400_000,
     });
-    todos = await tom.query(api.dts.listTodos, {});
+    todos = await tom.query(api.tts.listTodos, {});
     expect(todos[0].dueAt).toBe(due);
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
     // A batch's dates are never the single-todo preparer's business either.
     await storeBatch(t);
     const batch = await findBatch(t);
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: batch!._id,
       dueAt: due,
     });
@@ -1340,38 +1463,38 @@ describe("DTS batches and annotations", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const due = Date.UTC(2026, 8, 3, 16); // noon NY
-    const id = await tom.mutation(api.dts.createTodo, {
+    const id = await tom.mutation(api.tts.createTodo, {
       statement: "pay rent sept 3",
       dueAt: due,
     });
     // Tom resolves it: missed, no replacement — the item goes back to whenever
     // and the miss is on record.
-    await tom.mutation(api.dts.recordDateOutcome, { id, outcome: "missed" });
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    await tom.mutation(api.tts.recordDateOutcome, { id, outcome: "missed" });
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBeUndefined();
     expect(todo.dateOutcomes).toHaveLength(1);
     // The statement still says "sept 3", so the preparer offers it again.
-    await t.mutation(internal.dts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id,
       brief: "rent",
       dueAt: due,
     });
-    [todo] = await tom.query(api.dts.listTodos, {});
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBeUndefined();
     expect(todo.timingClass).toBe("whenever");
-    const events = await tom.query(api.dts.listRecentEvents, {});
+    const events = await tom.query(api.tts.listRecentEvents, {});
     expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
   });
 
   // witness: drop the members === undefined filter from
-  // internalPrepareFallbackQueue in convex/dts.ts
+  // internalPrepareFallbackQueue in convex/tts.ts
   it("fallback prep never queues a members-bearing row", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const solo = await tom.mutation(api.dts.createTodo, { statement: "solo" });
+    const solo = await tom.mutation(api.tts.createTodo, { statement: "solo" });
     await storeBatch(t);
     const batch = await findBatch(t);
-    await t.mutation(internal.dts.internalPrepareFallbackQueue, { force: true });
+    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
     const [queue] = await t.run(async (ctx) =>
       ctx.db.query("dtsDailyQueues").collect(),
     );
@@ -1384,7 +1507,7 @@ describe("DTS batches and annotations", () => {
 // proposes actions, and internalApplyTimeNote is the gate that decides whether
 // they are legal. These tests are about that gate — the agent's reading is
 // never the authority.
-describe("DTS time notes", () => {
+describe("TTS time notes", () => {
   const DAY = 86_400_000;
 
   const apply = (
@@ -1393,7 +1516,7 @@ describe("DTS time notes", () => {
     actions: Record<string, unknown>[],
     result = "did the thing",
   ) =>
-    t.mutation(internal.dts.internalApplyTimeNote, {
+    t.mutation(internal.tts.internalApplyTimeNote, {
       id,
       status: "applied",
       result,
@@ -1402,9 +1525,9 @@ describe("DTS time notes", () => {
 
   it("gates every Tom-facing time-note function on the tom role", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.query(api.dts.listTimeNotes, {})).rejects.toThrow();
+    await expect(t.query(api.tts.listTimeNotes, {})).rejects.toThrow();
     await expect(
-      t.mutation(api.dts.createTimeNote, {
+      t.mutation(api.tts.createTimeNote, {
         text: "tomorrow",
         day: "2026-08-29",
       }),
@@ -1419,14 +1542,14 @@ describe("DTS time notes", () => {
     const tom = await withTom(t);
     for (const day of ["2026-8-29", "tomorrow", "2026-08-29T00:00", ""]) {
       await expect(
-        tom.mutation(api.dts.createTimeNote, { text: "sat 9-11", day }),
+        tom.mutation(api.tts.createTimeNote, { text: "sat 9-11", day }),
       ).rejects.toThrow(/YYYY-MM-DD/);
     }
-    await tom.mutation(api.dts.createTimeNote, {
+    await tom.mutation(api.tts.createTimeNote, {
       text: "sat 9-11",
       day: "2026-08-29",
     });
-    const [note] = await tom.query(api.dts.listTimeNotes, {});
+    const [note] = await tom.query(api.tts.listTimeNotes, {});
     expect(note.day).toBe("2026-08-29");
   });
 
@@ -1435,26 +1558,26 @@ describe("DTS time notes", () => {
   it("a time note has exactly one context and real text", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "x" });
-    const blockId = await tom.mutation(api.dts.createBlock, {
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const blockId = await tom.mutation(api.tts.createBlock, {
       start: Date.now(),
       end: Date.now() + 3_600_000,
       category: "chores",
     });
     await expect(
-      tom.mutation(api.dts.createTimeNote, { text: "next week" }),
+      tom.mutation(api.tts.createTimeNote, { text: "next week" }),
     ).rejects.toThrow(/exactly one context/);
     await expect(
-      tom.mutation(api.dts.createTimeNote, { text: "next week", todoId, blockId }),
+      tom.mutation(api.tts.createTimeNote, { text: "next week", todoId, blockId }),
     ).rejects.toThrow(/exactly one context/);
     await expect(
-      tom.mutation(api.dts.createTimeNote, { text: "   ", todoId }),
+      tom.mutation(api.tts.createTimeNote, { text: "   ", todoId }),
     ).rejects.toThrow(/needs text/);
-    const id = await tom.mutation(api.dts.createTimeNote, {
+    const id = await tom.mutation(api.tts.createTimeNote, {
       text: "  next wednesday  ",
       todoId,
     });
-    const [note] = await tom.query(api.dts.listTimeNotes, {});
+    const [note] = await tom.query(api.tts.listTimeNotes, {});
     expect(note._id).toBe(id);
     expect(note.text).toBe("next wednesday");
     expect(note.status).toBe("pending");
@@ -1465,21 +1588,21 @@ describe("DTS time notes", () => {
   it("lists unresolved notes plus the last 24h of applied ones", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "x" });
-    const fresh = await tom.mutation(api.dts.createTimeNote, {
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const fresh = await tom.mutation(api.tts.createTimeNote, {
       text: "fresh",
       todoId,
     });
-    const stale = await tom.mutation(api.dts.createTimeNote, {
+    const stale = await tom.mutation(api.tts.createTimeNote, {
       text: "stale",
       todoId,
     });
-    const ambiguous = await tom.mutation(api.dts.createTimeNote, {
+    const ambiguous = await tom.mutation(api.tts.createTimeNote, {
       text: "sometime-ish",
       todoId,
     });
     await apply(t, fresh, [], "noted");
-    await t.mutation(internal.dts.internalApplyTimeNote, {
+    await t.mutation(internal.tts.internalApplyTimeNote, {
       id: ambiguous,
       status: "needs-session",
       result: "no anchor to read this against",
@@ -1494,7 +1617,7 @@ describe("DTS time notes", () => {
         resolvedAt: Date.now() - 2 * DAY,
       });
     });
-    const listed = await tom.query(api.dts.listTimeNotes, {});
+    const listed = await tom.query(api.tts.listTimeNotes, {});
     expect(listed.map((n) => n.text).sort()).toEqual(["fresh", "sometime-ish"]);
     expect(
       await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect()),
@@ -1506,19 +1629,19 @@ describe("DTS time notes", () => {
   it("deletes a pending or needs-session note, never an applied one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "x" });
-    const pending = await tom.mutation(api.dts.createTimeNote, {
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const pending = await tom.mutation(api.tts.createTimeNote, {
       text: "a",
       todoId,
     });
-    const applied = await tom.mutation(api.dts.createTimeNote, {
+    const applied = await tom.mutation(api.tts.createTimeNote, {
       text: "b",
       todoId,
     });
     await apply(t, applied, [], "noted");
-    await tom.mutation(api.dts.deleteTimeNote, { id: pending });
+    await tom.mutation(api.tts.deleteTimeNote, { id: pending });
     await expect(
-      tom.mutation(api.dts.deleteTimeNote, { id: applied }),
+      tom.mutation(api.tts.deleteTimeNote, { id: applied }),
     ).rejects.toThrow(/history/);
   });
 
@@ -1527,21 +1650,21 @@ describe("DTS time notes", () => {
   it("set-due gives a first date only; a second one is a renegotiation", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "rent" });
-    const first = await tom.mutation(api.dts.createTimeNote, {
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "rent" });
+    const first = await tom.mutation(api.tts.createTimeNote, {
       text: "due sept 3",
       todoId,
     });
     const due = Date.now() + 5 * DAY;
     await apply(t, first, [{ kind: "set-due", dueAt: due }], "due set to Sep 3");
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBe(due);
     expect(todo.dateKind).toBe("self-imposed");
     expect(todo.timingClass).toBe("dated");
     // A time note is Tom's own instruction: it stamps tomTouchedAt exactly
     // where updateTodo would.
     expect(todo.tomTouchedAt).toBeDefined();
-    const second = await tom.mutation(api.dts.createTimeNote, {
+    const second = await tom.mutation(api.tts.createTimeNote, {
       text: "actually the 8th",
       todoId,
     });
@@ -1550,9 +1673,9 @@ describe("DTS time notes", () => {
     ).rejects.toThrow(/kept-dates/);
     // The rejection rolled the whole thing back: date untouched, note still
     // pending for the job to re-submit as needs-session.
-    [todo] = await tom.query(api.dts.listTodos, {});
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBe(due);
-    const notes = await tom.query(api.dts.listTimeNotes, {});
+    const notes = await tom.query(api.tts.listTimeNotes, {});
     expect(notes.find((n) => n._id === second)?.status).toBe("pending");
   });
 
@@ -1561,27 +1684,27 @@ describe("DTS time notes", () => {
   it("renegotiate is legal before the date and refused after it", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const ahead = await tom.mutation(api.dts.createTodo, {
+    const ahead = await tom.mutation(api.tts.createTodo, {
       statement: "ahead",
       dueAt: Date.now() + 3 * DAY,
     });
-    const past = await tom.mutation(api.dts.createTodo, {
+    const past = await tom.mutation(api.tts.createTodo, {
       statement: "past",
       dueAt: Date.now() - 3 * DAY,
     });
-    const ok = await tom.mutation(api.dts.createTimeNote, {
+    const ok = await tom.mutation(api.tts.createTimeNote, {
       text: "push to friday",
       todoId: ahead,
     });
     const newDueAt = Date.now() + 9 * DAY;
     await apply(t, ok, [{ kind: "renegotiate", newDueAt, note: "trip" }], "moved");
-    const todos = await tom.query(api.dts.listTodos, {});
+    const todos = await tom.query(api.tts.listTodos, {});
     const moved = todos.find((x) => x._id === ahead)!;
     expect(moved.dueAt).toBe(newDueAt);
     expect(moved.dateOutcomes).toHaveLength(1);
     expect(moved.dateOutcomes?.[0].outcome).toBe("renegotiated");
 
-    const late = await tom.mutation(api.dts.createTimeNote, {
+    const late = await tom.mutation(api.tts.createTimeNote, {
       text: "push it back",
       todoId: past,
     });
@@ -1589,19 +1712,19 @@ describe("DTS time notes", () => {
       apply(t, late, [{ kind: "renegotiate", newDueAt }]),
     ).rejects.toThrow(/only allowed before the date arrives/);
     // …and the mirror rule: a date still ahead is not "missed".
-    const early = await tom.mutation(api.dts.createTimeNote, {
+    const early = await tom.mutation(api.tts.createTimeNote, {
       text: "I blew it",
       todoId: ahead,
     });
     await expect(apply(t, early, [{ kind: "record-missed" }])).rejects.toThrow(
       /has not arrived/,
     );
-    const missed = await tom.mutation(api.dts.createTimeNote, {
+    const missed = await tom.mutation(api.tts.createTimeNote, {
       text: "never happened",
       todoId: past,
     });
     await apply(t, missed, [{ kind: "record-missed" }], "recorded as missed");
-    const after = (await tom.query(api.dts.listTodos, {})).find(
+    const after = (await tom.query(api.tts.listTodos, {})).find(
       (x) => x._id === past,
     )!;
     expect(after.dueAt).toBeUndefined();
@@ -1614,7 +1737,7 @@ describe("DTS time notes", () => {
   it("todo-scoped actions need a note written on a todo", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const dayNote = await tom.mutation(api.dts.createTimeNote, {
+    const dayNote = await tom.mutation(api.tts.createTimeNote, {
       text: "sat 9-11 chores",
       day: nyCalendarDayKey(Date.now()),
     });
@@ -1628,8 +1751,8 @@ describe("DTS time notes", () => {
   it("set-waiting and set-active go through the one status implementation", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "later" });
-    const sleep = await tom.mutation(api.dts.createTimeNote, {
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "later" });
+    const sleep = await tom.mutation(api.tts.createTimeNote, {
       text: "wait until the lease renews",
       todoId,
     });
@@ -1640,16 +1763,16 @@ describe("DTS time notes", () => {
       [{ kind: "set-waiting", wakeAt, wakeCondition: "lease renews" }],
       "asleep until the lease renews",
     );
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("waiting");
     expect(todo.wakeAt).toBe(wakeAt);
     expect(todo.wakeCondition).toBe("lease renews");
-    const wake = await tom.mutation(api.dts.createTimeNote, {
+    const wake = await tom.mutation(api.tts.createTimeNote, {
       text: "wake it now",
       todoId,
     });
     await apply(t, wake, [{ kind: "set-active" }], "awake");
-    [todo] = await tom.query(api.dts.listTodos, {});
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("active");
     expect(todo.wakeAt).toBeUndefined();
     expect(todo.wakeCondition).toBeUndefined();
@@ -1660,12 +1783,12 @@ describe("DTS time notes", () => {
   it("block actions obey the same validation as the calendar mutations", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "gym" });
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "gym" });
     const start = Date.now() + DAY;
     const end = start + 3_600_000;
 
     // Two targets: refused, exactly as createBlock refuses it.
-    const bad = await tom.mutation(api.dts.createTimeNote, {
+    const bad = await tom.mutation(api.tts.createTimeNote, {
       text: "an hour tomorrow",
       todoId,
     });
@@ -1676,16 +1799,16 @@ describe("DTS time notes", () => {
     ).rejects.toThrow(/exactly one thing/);
 
     // From a todo's own note, an untargeted block belongs to that todo.
-    const good = await tom.mutation(api.dts.createTimeNote, {
+    const good = await tom.mutation(api.tts.createTimeNote, {
       text: "an hour tomorrow",
       todoId,
     });
     await apply(t, good, [{ kind: "create-block", start, end }], "placed 1h");
-    const [block] = await tom.query(api.dts.listBlocks, {});
+    const [block] = await tom.query(api.tts.listBlocks, {});
     expect(block.todoId).toBe(todoId);
 
     // Move it, then refuse a backwards span, then delete it.
-    const move = await tom.mutation(api.dts.createTimeNote, {
+    const move = await tom.mutation(api.tts.createTimeNote, {
       text: "an hour earlier",
       blockId: block._id,
     });
@@ -1702,10 +1825,10 @@ describe("DTS time notes", () => {
       ],
       "moved an hour earlier",
     );
-    expect((await tom.query(api.dts.listBlocks, {}))[0].start).toBe(
+    expect((await tom.query(api.tts.listBlocks, {}))[0].start).toBe(
       start - 3_600_000,
     );
-    const backwards = await tom.mutation(api.dts.createTimeNote, {
+    const backwards = await tom.mutation(api.tts.createTimeNote, {
       text: "make it end before it starts",
       blockId: block._id,
     });
@@ -1714,12 +1837,12 @@ describe("DTS time notes", () => {
         { kind: "update-block", blockId: block._id, start: end, end: start },
       ]),
     ).rejects.toThrow(/ends after it starts/);
-    const drop = await tom.mutation(api.dts.createTimeNote, {
+    const drop = await tom.mutation(api.tts.createTimeNote, {
       text: "cancel it",
       blockId: block._id,
     });
     await apply(t, drop, [{ kind: "delete-block", blockId: block._id }], "gone");
-    expect(await tom.query(api.dts.listBlocks, {})).toHaveLength(0);
+    expect(await tom.query(api.tts.listBlocks, {})).toHaveLength(0);
   });
 
   // witness: drop the note.status !== "pending" throw — a retried POST would
@@ -1727,16 +1850,16 @@ describe("DTS time notes", () => {
   it("a note is applied once, and needs-session carries no actions", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "x" });
-    const id = await tom.mutation(api.dts.createTimeNote, { text: "a", todoId });
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const id = await tom.mutation(api.tts.createTimeNote, { text: "a", todoId });
     await apply(t, id, [], "noted");
     await expect(apply(t, id, [], "again")).rejects.toThrow(/already applied/);
-    const other = await tom.mutation(api.dts.createTimeNote, {
+    const other = await tom.mutation(api.tts.createTimeNote, {
       text: "b",
       todoId,
     });
     await expect(
-      t.mutation(internal.dts.internalApplyTimeNote, {
+      t.mutation(internal.tts.internalApplyTimeNote, {
         id: other,
         status: "needs-session",
         result: "ambiguous",
@@ -1744,7 +1867,7 @@ describe("DTS time notes", () => {
       }),
     ).rejects.toThrow(/carries no actions/);
     await expect(
-      t.mutation(internal.dts.internalApplyTimeNote, {
+      t.mutation(internal.tts.internalApplyTimeNote, {
         id: other,
         status: "applied",
         result: "   ",
@@ -1757,31 +1880,31 @@ describe("DTS time notes", () => {
   it("the worker queue carries each note's own context", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, {
+    const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "reserve UH 400",
       dueAt: Date.now() + 2 * DAY,
     });
-    await tom.mutation(api.dts.createTimeNote, { text: "push it", todoId });
+    await tom.mutation(api.tts.createTimeNote, { text: "push it", todoId });
     // The day note names a NY calendar date; the block is placed inside that
     // date's NY window, which is how the server finds it (not by ms arithmetic
     // on a browser-local start-of-day).
     const day = nyCalendarDayKey(Date.now());
     const dayStart = nyCalendarDayBoundsUtc(day).start;
-    await tom.mutation(api.dts.createTimeNote, { text: "sat 9-11", day });
-    const blockId = await tom.mutation(api.dts.createBlock, {
+    await tom.mutation(api.tts.createTimeNote, { text: "sat 9-11", day });
+    const blockId = await tom.mutation(api.tts.createBlock, {
       start: dayStart + 9 * 3_600_000,
       end: dayStart + 11 * 3_600_000,
       category: "chores",
     });
-    await tom.mutation(api.dts.createTimeNote, { text: "earlier", blockId });
+    await tom.mutation(api.tts.createTimeNote, { text: "earlier", blockId });
     // A block on the NEXT calendar day is NOT this day's business.
-    await tom.mutation(api.dts.createBlock, {
+    await tom.mutation(api.tts.createBlock, {
       start: nyCalendarDayBoundsUtc(day).end + 3_600_000,
       end: nyCalendarDayBoundsUtc(day).end + 7_200_000,
       category: "chores",
     });
 
-    const queue = await t.query(internal.dts.internalPendingTimeNotes, {});
+    const queue = await t.query(internal.tts.internalPendingTimeNotes, {});
     expect(queue).toHaveLength(3);
     const byKind = new Map(
       queue.map((n) => [
@@ -1799,7 +1922,7 @@ describe("DTS time notes", () => {
     // Resolved notes leave the queue.
     await apply(t, queue[0]._id, [], "noted");
     expect(
-      await t.query(internal.dts.internalPendingTimeNotes, {}),
+      await t.query(internal.tts.internalPendingTimeNotes, {}),
     ).toHaveLength(2);
   });
 
@@ -1812,11 +1935,11 @@ describe("DTS time notes", () => {
     const tom = await withTom(t);
     // [record-missed, set-due]: the miss clears the date, so the set-due that
     // follows is a FIRST date, not a kept-dates violation.
-    const past = await tom.mutation(api.dts.createTodo, {
+    const past = await tom.mutation(api.tts.createTodo, {
       statement: "call the bank",
       dueAt: Date.now() - 3 * DAY,
     });
-    const both = await tom.mutation(api.dts.createTimeNote, {
+    const both = await tom.mutation(api.tts.createTimeNote, {
       text: "blew it — do it friday instead",
       todoId: past,
     });
@@ -1827,7 +1950,7 @@ describe("DTS time notes", () => {
       [{ kind: "record-missed" }, { kind: "set-due", dueAt: replacement }],
       "recorded the miss and set Friday",
     );
-    let todo = (await tom.query(api.dts.listTodos, {})).find(
+    let todo = (await tom.query(api.tts.listTodos, {})).find(
       (x) => x._id === past,
     )!;
     expect(todo.dateOutcomes).toHaveLength(1);
@@ -1837,11 +1960,11 @@ describe("DTS time notes", () => {
 
     // [renegotiate, renegotiate]: each one records the date it actually moved,
     // so BOTH outcome rows survive (a stale subject would overwrite the first).
-    const ahead = await tom.mutation(api.dts.createTodo, {
+    const ahead = await tom.mutation(api.tts.createTodo, {
       statement: "reserve the room",
       dueAt: Date.now() + 2 * DAY,
     });
-    const twice = await tom.mutation(api.dts.createTimeNote, {
+    const twice = await tom.mutation(api.tts.createTimeNote, {
       text: "push to thursday, no — friday",
       todoId: ahead,
     });
@@ -1856,7 +1979,7 @@ describe("DTS time notes", () => {
       ],
       "moved to Friday",
     );
-    todo = (await tom.query(api.dts.listTodos, {})).find((x) => x._id === ahead)!;
+    todo = (await tom.query(api.tts.listTodos, {})).find((x) => x._id === ahead)!;
     expect(todo.dueAt).toBe(second);
     expect(todo.dateOutcomes).toHaveLength(2);
     // The second row records the date the SECOND move replaced — the first
@@ -1869,11 +1992,11 @@ describe("DTS time notes", () => {
   it("record-missed may carry the replacement date", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, {
+    const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "renew the permit",
       dueAt: Date.now() - DAY,
     });
-    const note = await tom.mutation(api.dts.createTimeNote, {
+    const note = await tom.mutation(api.tts.createTimeNote, {
       text: "missed it, doing it friday",
       todoId,
     });
@@ -1884,7 +2007,7 @@ describe("DTS time notes", () => {
       [{ kind: "record-missed", newDueAt, note: "was travelling" }],
       "recorded as missed, now due Friday",
     );
-    const [todo] = await tom.query(api.dts.listTodos, {});
+    const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBe(newDueAt);
     expect(todo.timingClass).toBe("dated");
     expect(todo.dateOutcomes).toHaveLength(1);
@@ -1898,8 +2021,8 @@ describe("DTS time notes", () => {
   it("set-waiting preserves the fields the note did not mention", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "lease" });
-    const asleep = await tom.mutation(api.dts.createTimeNote, {
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "lease" });
+    const asleep = await tom.mutation(api.tts.createTimeNote, {
       text: "wait until the lease renews, check the 1st",
       todoId,
     });
@@ -1911,17 +2034,17 @@ describe("DTS time notes", () => {
       "asleep",
     );
     // Only the date moves; the condition is not mentioned and must survive.
-    const later = await tom.mutation(api.dts.createTimeNote, {
+    const later = await tom.mutation(api.tts.createTimeNote, {
       text: "make that the 15th instead",
       todoId,
     });
     const moved = wakeAt + 14 * DAY;
     await apply(t, later, [{ kind: "set-waiting", wakeAt: moved }], "moved");
-    let [todo] = await tom.query(api.dts.listTodos, {});
+    let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.wakeAt).toBe(moved);
     expect(todo.wakeCondition).toBe("lease renews");
     // …and the mirror: a condition-only note keeps the date.
-    const reworded = await tom.mutation(api.dts.createTimeNote, {
+    const reworded = await tom.mutation(api.tts.createTimeNote, {
       text: "really it's when the landlord writes back",
       todoId,
     });
@@ -1931,7 +2054,7 @@ describe("DTS time notes", () => {
       [{ kind: "set-waiting", wakeCondition: "landlord writes back" }],
       "reworded",
     );
-    [todo] = await tom.query(api.dts.listTodos, {});
+    [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.wakeAt).toBe(moved);
     expect(todo.wakeCondition).toBe("landlord writes back");
   });
@@ -1943,14 +2066,14 @@ describe("DTS time notes", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const dueAt = Date.now() + 4 * DAY;
-    const dated = await tom.mutation(api.dts.createTodo, {
+    const dated = await tom.mutation(api.tts.createTodo, {
       statement: "renew the lease",
       dueAt,
     });
-    const undated = await tom.mutation(api.dts.createTodo, {
+    const undated = await tom.mutation(api.tts.createTodo, {
       statement: "someday",
     });
-    const relabel = await tom.mutation(api.dts.createTimeNote, {
+    const relabel = await tom.mutation(api.tts.createTimeNote, {
       text: "that's the landlord's date, not mine",
       todoId: dated,
     });
@@ -1960,11 +2083,11 @@ describe("DTS time notes", () => {
       [{ kind: "set-date-kind", dateKind: "external" }],
       "marked as someone else's deadline",
     );
-    const todos = await tom.query(api.dts.listTodos, {});
+    const todos = await tom.query(api.tts.listTodos, {});
     const after = todos.find((x) => x._id === dated)!;
     expect(after.dateKind).toBe("external");
     expect(after.dueAt).toBe(dueAt); // the date itself never moved
-    const nothing = await tom.mutation(api.dts.createTimeNote, {
+    const nothing = await tom.mutation(api.tts.createTimeNote, {
       text: "external",
       todoId: undated,
     });

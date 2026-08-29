@@ -2,7 +2,7 @@
 // apply-time-notes.mjs — carry out Tom's freeform TIME NOTES.
 //
 // Run by cron every 2 minutes (see /etc/cron.d/dts). Manual run:
-//   node /opt/dts/apply-time-notes.mjs
+//   node /opt/tts/apply-time-notes.mjs
 //
 // WHAT A TIME NOTE IS: the /dts page has no date or time pickers left. When
 // Tom wants anything about time changed he writes one sentence against exactly
@@ -46,7 +46,7 @@ import {
   extractJsonObject,
   nyUtcOffsetHours,
   nyNoonUtcMs,
-} from "./dts-lib.mjs";
+} from "./tts-lib.mjs";
 
 const NOTE_MAX = 10; // per run; the rest wait two minutes
 const CLAUDE_TIMEOUT_MS = 3 * 60 * 1000;
@@ -57,7 +57,7 @@ const MODEL = "claude-sonnet-5"; // mechanical parsing — no need for a big mod
 // ---------------------------------------------------------------------------
 // The model reads and writes LOCAL wall-clock strings, never epoch ms: asking
 // a model for a millisecond timestamp is asking for an off-by-a-timezone bug.
-// The DST rules live in dts-lib (nyUtcOffsetHours); nothing is reimplemented.
+// The DST rules live in tts-lib (nyUtcOffsetHours); nothing is reimplemented.
 
 /** "YYYY-MM-DD HH:MM" in New York for an epoch-ms instant. */
 function nyLocal(ms) {
@@ -153,7 +153,7 @@ function prompt(note, clock) {
       ? `The note is about the calendar day ${note.day} (New York).`
       : null;
   return [
-    `You are reading ONE "time note" in DTS, Tom's personal todo system. A`,
+    `You are reading ONE "time note" in TTS, Tom's personal todo system. A`,
     `time note is a sentence Tom wrote about time — a due date, a wake time, a`,
     `block of committed time on his calendar. Your job is to turn that one`,
     `sentence into concrete actions, or to say plainly that you cannot.`,
@@ -225,7 +225,7 @@ function prompt(note, clock) {
 // Model answer -> wire shape
 // ---------------------------------------------------------------------------
 
-// Convert one model action to the shape POST /dts/apply-time-note takes
+// Convert one model action to the shape POST /tts/apply-time-note takes
 // (epoch ms). Throws on anything malformed — the caller turns that into a
 // needs-session, because a half-understood action must never be sent.
 function toWireAction(a) {
@@ -308,7 +308,7 @@ function toWireAction(a) {
 
 async function main() {
   const env = loadEnv();
-  const state = await convexFetch(env, "/dts/time-notes", {});
+  const state = await convexFetch(env, "/tts/time-notes", {});
   const notes = Array.isArray(state.notes) ? state.notes : [];
   if (notes.length === 0) return; // the common case: exit before spending anything
 
@@ -366,7 +366,7 @@ async function main() {
     // server's own words. Anything else (5xx, network, a dead endpoint) is
     // ENVIRONMENTAL: the note stays pending and the next tick retries it whole.
     try {
-      await convexFetch(env, "/dts/apply-time-note", { id: note._id, ...verdict });
+      await convexFetch(env, "/tts/apply-time-note", { id: note._id, ...verdict });
       console.log(
         `[apply-time-notes] ${note._id} ${verdict.status}: ${verdict.result}`,
       );
@@ -382,7 +382,7 @@ async function main() {
       }
       const why = `refused: ${serverErrorMessage(err).slice(0, 300)}`;
       try {
-        await convexFetch(env, "/dts/apply-time-note", {
+        await convexFetch(env, "/tts/apply-time-note", {
           id: note._id,
           status: "needs-session",
           result: why,

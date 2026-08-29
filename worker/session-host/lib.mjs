@@ -2,11 +2,11 @@
 // daemon (worker/session-host/). Companions: session.mjs (the per-session
 // class) and session-host.mjs (the poll loop).
 //
-// loadEnv is a minimal copy of worker/jobs/dts-lib.mjs's loadEnv (same file
+// loadEnv is a minimal copy of worker/jobs/tts-lib.mjs's loadEnv (same file
 // format, same tolerances — attribution: that file is the original) rather
 // than a ../jobs relative import, because setup.sh installs the two
-// directories to DIFFERENT places on the box (/opt/dts vs
-// /opt/dts/session-host), so a relative import that resolves in the repo
+// directories to DIFFERENT places on the box (/opt/tts vs
+// /opt/tts/session-host), so a relative import that resolves in the repo
 // would dangle after install. Divergence risk is tiny: the KEY=VALUE format
 // is frozen. The one real difference is the required-keys list — this daemon
 // needs CONVEX_SITE_URL + SESSIONS_WORKER_KEY and nothing else (GH_TOKEN is
@@ -15,9 +15,9 @@
 
 import fs from "node:fs";
 
-export const ENV_PATH = "/etc/dts/worker.env";
+export const ENV_PATH = "/etc/tts/worker.env";
 
-// Read /etc/dts/worker.env (KEY=VALUE lines; '#' comments and blank lines
+// Read /etc/tts/worker.env (KEY=VALUE lines; '#' comments and blank lines
 // ignored; optional leading "export " and optional surrounding quotes
 // tolerated so the same file can be `source`d from bash if ever needed).
 export function loadEnv(path = ENV_PATH) {
@@ -59,7 +59,7 @@ export function sleep(ms) {
 
 // POST a /sessions/* endpoint on the Convex site origin. Always POST, always
 // JSON — both routes take bodies. Auth is X-Sessions-Key: the session
-// surface's OWN key, deliberately not X-DTS-Key (one leaked key must not
+// surface's OWN key, deliberately not X-TTS-Key (one leaked key must not
 // open the other surface — see convex/http.ts). Throws on non-2xx with the
 // response text included so journald shows WHY a call failed; the thrown
 // error also carries `status` (the HTTP status) and `bodyText` (the server's

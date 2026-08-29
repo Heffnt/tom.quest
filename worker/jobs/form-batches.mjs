@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // form-batches.mjs — group life + code todos into batches via headless Claude.
 //
-// Run by cron every 6 hours at :07 UTC (see /etc/cron.d/dts). Manual run:
-//   node /opt/dts/form-batches.mjs
+// Run by cron every 6 hours at :07 UTC (see /etc/cron.d/tts). Manual run:
+//   node /opt/tts/form-batches.mjs
 //
 // WHY: one working session should unblock MANY todos — the effort Tom spends
 // understanding a corner of the code (or a corner of his life) amortizes over
@@ -16,7 +16,7 @@
 // REVISE RULINGS: Tom can rule "revise" on a batch with one written sentence.
 // This job collects the pending life-revise rulings whose subject is a
 // members-bearing todo, embeds the sentences in the prompt (they override any
-// other reading), and consumes each via /dts/ruling-applied only once the
+// other reading), and consumes each via /tts/ruling-applied only once the
 // server reports that batch as stored — a skipped batch leaves its ruling
 // pending for the next run. A revise verdict no longer freezes the batch
 // (server-side fix): it must stay rewritable for the re-form to land, so the
@@ -32,19 +32,19 @@
 // for one retired item, not steering about what to group.
 //
 // NO-STATE RULE: Convex is read and written each run. The only local file is
-// the input-hash cursor in /var/lib/dts/ — losing it merely costs one extra
+// the input-hash cursor in /var/lib/tts/ — losing it merely costs one extra
 // Claude invocation on inputs that had not changed (brief-hashes pattern).
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./dts-lib.mjs";
+import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 
-const HASH_PATH = "/var/lib/dts/batch-input-hash";
+const HASH_PATH = "/var/lib/tts/batch-input-hash";
 const CLAUDE_TIMEOUT_MS = 10 * 60 * 1000;
 
 function prompt(ctx) {
   return [
-    `You are the batcher for DTS, Tom's personal todo system. A "batch" is a`,
+    `You are the batcher for TTS, Tom's personal todo system. A "batch" is a`,
     `grouping of several todos — life todos (personal tasks) and code todos`,
     `(entries in his repos' todo files) — that one working session with Tom can`,
     `advance together, because they share the context he would have to load`,
@@ -139,9 +139,9 @@ async function main() {
   // --- Gather context ------------------------------------------------------
   const { todos, mirror, briefs, recentRulings } = await convexFetch(
     env,
-    "/dts/batch-context",
+    "/tts/batch-context",
   );
-  const { pending } = await convexFetch(env, "/dts/rulings");
+  const { pending } = await convexFetch(env, "/tts/rulings");
 
   const all = Array.isArray(todos) ? todos : [];
   const batchById = new Map(
@@ -316,7 +316,7 @@ async function main() {
   // --- Ship it; the server's skip report is the real validator -------------
   let result;
   try {
-    result = await convexFetch(env, "/dts/batches", {
+    result = await convexFetch(env, "/tts/batches", {
       batches: parsed.batches,
       ...(Array.isArray(parsed.archiveIds) ? { archiveIds: parsed.archiveIds } : {}),
     });
@@ -353,7 +353,7 @@ async function main() {
       );
       continue;
     }
-    await convexFetch(env, "/dts/ruling-applied", {
+    await convexFetch(env, "/tts/ruling-applied", {
       id: r.ruling._id,
       result: "revised: batches re-formed",
     });

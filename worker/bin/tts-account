@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dts-account — switch which Claude Max account the DTS worker jobs run under.
+# tts-account — switch which Claude Max account the TTS worker jobs run under.
 #
 # Two accounts live in separate Claude Code config dirs:
 #   /root/.claude-accounts/gmail
@@ -9,9 +9,9 @@
 # so switching accounts is just repointing the symlink — no job changes.
 #
 # Usage:
-#   dts-account use gmail|wpi     repoint the active symlink
-#   dts-account status            show which account is active
-#   dts-account login gmail|wpi   interactive `claude /login` for that account
+#   tts-account use gmail|wpi     repoint the active symlink
+#   tts-account status            show which account is active
+#   tts-account login gmail|wpi   interactive `claude /login` for that account
 #                                 (run this OVER SSH, interactively — it opens
 #                                 a browser-auth flow; not for cron)
 set -euo pipefail
@@ -19,7 +19,7 @@ set -euo pipefail
 BASE=/root/.claude-accounts
 
 usage() {
-  echo "usage: dts-account use gmail|wpi | dts-account status | dts-account login gmail|wpi" >&2
+  echo "usage: tts-account use gmail|wpi | tts-account status | tts-account login gmail|wpi" >&2
   exit 1
 }
 
@@ -41,7 +41,7 @@ case "${1:-}" in
     if [ -L "$BASE/active" ]; then
       echo "active account -> $(basename "$(readlink "$BASE/active")")"
     else
-      echo "no active account set — run: dts-account use gmail|wpi"
+      echo "no active account set — run: tts-account use gmail|wpi"
     fi
     ;;
   login)

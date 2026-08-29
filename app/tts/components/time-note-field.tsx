@@ -2,16 +2,16 @@
 
 // A time note: Tom's own words about when something happens, attached to one
 // context (a todo, a block, or a calendar day). There is no date picker on
-// /dts any more — the text IS the instruction, and a worker agent reads it
+// /tts any more — the text IS the instruction, and a worker agent reads it
 // against that context and applies it. A note it cannot read without guessing
 // comes back as needs-session for Tom to settle in conversation.
 //
-// The parent tab holds ONE dts.listTimeNotes subscription, buckets it ONCE
+// The parent tab holds ONE tts.listTimeNotes subscription, buckets it ONCE
 // with groupTimeNotes below, and hands each field the notes for its own
 // context — no per-row scan of the whole array.
 //
 // A day-scoped note carries the calendar-day STRING "YYYY-MM-DD" (the label of
-// the column Tom clicked); the server reads that day in the DTS canonical
+// the column Tom clicked); the server reads that day in the TTS canonical
 // timezone. Never epoch-ms — a day is a calendar day, not an instant.
 
 import { useState } from "react";
@@ -34,7 +34,7 @@ export const NO_NOTES: readonly TimeNote[] = Object.freeze([]);
 /**
  * Every note bucketed by its context key — `todoId ?? blockId ?? day` — with
  * each bucket sorted oldest first ONCE. Exactly one context field is set on a
- * note (convex/dts.ts requireOneTimeNoteContext), so that key is unambiguous:
+ * note (convex/tts.ts requireOneTimeNoteContext), so that key is unambiguous:
  * ids are Convex ids and a day is "YYYY-MM-DD", which cannot collide.
  *
  * A tab builds this in a useMemo over its one listTimeNotes subscription and
@@ -73,8 +73,8 @@ export default function TimeNoteField({
   /** The calendar's per-day `+` toggles the input; the chips always show. */
   showInput?: boolean;
 }) {
-  const createTimeNote = useMutation(api.dts.createTimeNote);
-  const deleteTimeNote = useMutation(api.dts.deleteTimeNote);
+  const createTimeNote = useMutation(api.tts.createTimeNote);
+  const deleteTimeNote = useMutation(api.tts.deleteTimeNote);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,7 +122,7 @@ export default function TimeNoteField({
           <button type="submit" disabled={!text.trim() || busy} className={btnCls}>
             note
           </button>
-          <Info label={`dts.createTimeNote({text,${contextLabel}})`} />
+          <Info label={`tts.createTimeNote({text,${contextLabel}})`} />
         </form>
       )}
 
@@ -151,7 +151,7 @@ export default function TimeNoteField({
             >
               ×
             </button>
-            <Info label="dts.deleteTimeNote({id})" />
+            <Info label="tts.deleteTimeNote({id})" />
           </div>
         ),
       )}

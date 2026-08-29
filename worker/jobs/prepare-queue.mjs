@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// prepare-queue.mjs — run headless Claude Code to choose today's DTS queue
+// prepare-queue.mjs — run headless Claude Code to choose today's TTS queue
 // and write the daily digest, then POST both to Convex.
 //
-// Run by cron at 08:30 AND 09:30 UTC (see /etc/cron.d/dts). Only one of those
+// Run by cron at 08:30 AND 09:30 UTC (see /etc/cron.d/tts). Only one of those
 // is 4-something a.m. in New York, depending on daylight saving; the NY-hour
 // guard below lets exactly that one proceed. Manual run for testing:
-//   node /opt/dts/prepare-queue.mjs --force
+//   node /opt/tts/prepare-queue.mjs --force
 //
 // RELIABILITY SPLIT (why failure here is acceptable): this worker job is the
 // smart-but-optional half. The Convex side runs a dumb fallback queue prep at
@@ -16,8 +16,8 @@
 // ANY failure this script just logs and exits 1 — no retries, no heroics.
 //
 // NO-STATE RULE: this script keeps nothing on disk. Everything it needs comes
-// from Convex (/dts/state) and everything it produces goes to Convex
-// (/dts/prep). The box can vanish at 4:31 and today is still covered.
+// from Convex (/tts/state) and everything it produces goes to Convex
+// (/tts/prep). The box can vanish at 4:31 and today is still covered.
 
 import {
   loadEnv,
@@ -25,7 +25,7 @@ import {
   nyHour,
   runClaude,
   extractJsonObject,
-} from "./dts-lib.mjs";
+} from "./tts-lib.mjs";
 
 const QUEUE_MAX = 7;
 
@@ -48,22 +48,22 @@ async function main() {
   const env = loadEnv();
 
   // --- Fetch state; THE SERVER OWNS THE DAY KEY ----------------------------
-  // /dts/state returns `prepDay`: the day the coming 5 a.m. digest belongs
+  // /tts/state returns `prepDay`: the day the coming 5 a.m. digest belongs
   // to, computed by Convex. This box deliberately does NOT compute day keys —
   // a second hand-rolled copy of the 5 a.m./DST math diverged from Convex's
   // on DST-transition Sundays (review-caught), so the day is now a
   // server-owned fact and this job just repeats it back.
-  const state = await convexFetch(env, "/dts/state");
+  const state = await convexFetch(env, "/tts/state");
   const day = state.prepDay;
   if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-    throw new Error(`/dts/state returned no usable prepDay: ${JSON.stringify(day)}`);
+    throw new Error(`/tts/state returned no usable prepDay: ${JSON.stringify(day)}`);
   }
 
   // --- Idempotence: has today already been prepared? -----------------------
   // The 08:30/09:30 double-fire plus manual runs mean we can be called more
   // than once per day; if a worker-prepared queue already exists, do nothing.
   // (A queue prepared by the Convex FALLBACK does not stop us: worker prep is
-  // the better version and /dts/prep overwrites it.)
+  // the better version and /tts/prep overwrites it.)
   if (state.queue && state.queue.preparedBy === "worker") {
     console.log(`[prepare-queue] queue for ${day} already prepared by worker — nothing to do`);
     return;
@@ -78,7 +78,7 @@ async function main() {
   // With zero live todos there is nothing for a model to decide — post the
   // deterministic empty result ourselves and save a Claude invocation.
   if (todos.length === 0) {
-    await convexFetch(env, "/dts/prep", {
+    await convexFetch(env, "/tts/prep", {
       day,
       todoIds: [],
       reasons: [],
@@ -105,12 +105,12 @@ async function main() {
   }));
 
   // --- The prompt ----------------------------------------------------------
-  // FUTURE IMPROVEMENT: the /dts/state API does not yet return yesterday's
+  // FUTURE IMPROVEMENT: the /tts/state API does not yet return yesterday's
   // digestText. When it does, include it in this prompt so the model can obey
   // the "repeat daily but reworded, never copy-pasted" rule against the
   // actual previous wording instead of from scratch.
   const prompt = [
-    `You are preparing today's queue and daily digest for DTS, Tom's personal todo system.`,
+    `You are preparing today's queue and daily digest for TTS, Tom's personal todo system.`,
     ``,
     `Today's day key: ${day}. Current time in epoch ms: ${now}. All dueAt/latestSafeAt/updatedAt values are epoch ms.`,
     ``,
@@ -136,13 +136,13 @@ async function main() {
     `- Every reminder is framed with its smallest entry action (the tiniest first step).`,
     `- Countdowns as time-distance, e.g. "in 3 days", never bare dates alone.`,
     `- Link every item mention using Slack mrkdwn link syntax:`,
-    `  <https://tom.quest/dts?item=THE_ID|the item's statement>`,
+    `  <https://tom.quest/tts?item=THE_ID|the item's statement>`,
     `  where THE_ID is that todo's _id from the JSON. Never a bare statement.`,
     `- Sections, in this order, and NOTHING else:`,
     `  *Dated* — items with dates, nearest first.`,
     `  *Today's queue* — the queued items, in order, each with its entry action.`,
     `  *Waiting on you* — just the COUNT of items with readiness "ready-for-tom",`,
-    `  linked as <https://tom.quest/dts|TTS>.`,
+    `  linked as <https://tom.quest/tts|TTS>.`,
     `  *Invitation* — the one invitation item, framed gently.`,
     `- Omit a section entirely when it has nothing in it.`,
     `- If there is nothing to say at all, the digest is the single line: Nothing today.`,
@@ -156,7 +156,7 @@ async function main() {
 
   // --- Run headless Claude -------------------------------------------------
   // Model deliberately left at the CLI default — Tom's Max plan covers it,
-  // and one prep call a day is nowhere near any limit. runClaude (dts-lib)
+  // and one prep call a day is nowhere near any limit. runClaude (tts-lib)
   // owns the mechanics: prompt over stdin, envelope unwrapping, the
   // --max-turns 8 non-agentic default, and the active-account config dir.
   console.log(`[prepare-queue] ${day}: asking Claude to rank ${todos.length} todos…`);
@@ -192,7 +192,7 @@ async function main() {
   }
 
   // --- Ship it -------------------------------------------------------------
-  await convexFetch(env, "/dts/prep", {
+  await convexFetch(env, "/tts/prep", {
     day,
     todoIds,
     reasons,

@@ -1,8 +1,8 @@
 "use client";
 
-// TTS (dts) — the one todo page: QuickAdd capture bar, three tabs
+// TTS (tts) — the one todo page: QuickAdd capture bar, three tabs
 // (calendar · batches · by individual), the active tab below. Tab state rides
-// ?tab=; ?item= (produced by dtsItemLink) forces the by-individual tab and is
+// ?tab=; ?item= (produced by ttsItemLink) forces the by-individual tab and is
 // handed to it as the link prop. Each tab fetches its own data with useQuery —
 // Convex dedupes subscriptions, so the shell's badge-count queries are free.
 
@@ -30,7 +30,7 @@ const TABS: Array<{ value: Tab; label: string }> = [
 ];
 
 function QuickAdd() {
-  const createTodo = useMutation(api.dts.createTodo);
+  const createTodo = useMutation(api.tts.createTodo);
   const [statement, setStatement] = useState("");
   const [category, setCategory] = useState("");
   const [busy, setBusy] = useState(false);
@@ -78,18 +78,18 @@ function QuickAdd() {
         >
           Add
         </button>
-        <Info label="dts.createTodo" />
+        <Info label="tts.createTodo" />
       </form>
       {error && <div className="text-xs text-error mt-1">{error}</div>}
     </div>
   );
 }
 
-export default function DtsClient() {
+export default function TtsClient() {
   // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
   const { isTom } = useAuth();
   const router = useRouter();
-  const recordEvent = useMutation(api.dts.recordEvent);
+  const recordEvent = useMutation(api.tts.recordEvent);
 
   const [tab, setTab] = useState<Tab>("batches");
   const [link, setLink] = useState<{
@@ -126,25 +126,25 @@ export default function DtsClient() {
 
   const clearLink = () => {
     setLink(null);
-    router.replace("/dts", { scroll: false });
+    router.replace("/tts", { scroll: false });
   };
 
-  // Instrumentation: one dts-opened per load, once data is here.
+  // Instrumentation: one tts-opened per load, once data is here.
   // Fire-and-forget — never blocks the UI.
-  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
+  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
   const openedRef = useRef(false);
   useEffect(() => {
     if (openedRef.current || todos === undefined) return;
     openedRef.current = true;
-    void recordEvent({ kind: "dts-opened" }).catch(() => {});
+    void recordEvent({ kind: "tts-opened" }).catch(() => {});
   }, [todos, recordEvent]);
 
-  // Batches badge: the SAME selector the tab renders (app/dts/lib.ts
+  // Batches badge: the SAME selector the tab renders (app/tts/lib.ts
   // selectBatches) so the count and the rows cannot drift. Same subscriptions
   // the tabs hold — Convex dedupes.
-  const mirror = useQuery(api.dts.listMirror, isTom ? {} : "skip");
-  const codeBriefs = useQuery(api.dtsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.dtsRulings.listRulings, isTom ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
+  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
 
   const batchesCount = useMemo(() => {
     const { batches, unbatchedLife, unbatchedCode } = selectBatches(

@@ -44,7 +44,7 @@ export async function requireViewer(ctx: AuthCtx): Promise<{
   return { userId, user, access: roleAccess(user?.role) };
 }
 
-// The one Tom gate. `label` names the surface in the error ("Forge", "DTS") so
+// The one Tom gate. `label` names the surface in the error ("Forge", "TTS") so
 // a denial says what was denied. Every Tom-only Convex module calls this —
 // never a local copy — so a change to the Tom check has exactly one home.
 export async function requireTom(

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // execute-approved.mjs — execute ONE approved code-todo plan as a PR.
 //
-// Run by cron at 45 past each hour (see /etc/cron.d/dts). Manual run:
-//   node /opt/dts/execute-approved.mjs
+// Run by cron at 45 past each hour (see /etc/cron.d/tts). Manual run:
+//   node /opt/tts/execute-approved.mjs
 //
 // THE EXECUTION HALF of the ruling loop: when Tom's verdict is "approve" on a
 // briefed CMT todo, the plan attached to that todo is cleared for autonomous
-// execution. This job reads the unified /dts/rulings feed (rows carry
+// execution. This job reads the unified /tts/rulings feed (rows carry
 // subjectType "life"|"code"), takes the OLDEST pending CODE approval, runs AGENTIC
 // headless Claude inside a throwaway full clone, and turns the result into a
 // PR on github.com/Heffnt/ComplexMultiTrigger. MERGING THE PR IS THE HUMAN
@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { loadEnv, convexFetch, runClaude } from "./dts-lib.mjs";
+import { loadEnv, convexFetch, runClaude } from "./tts-lib.mjs";
 import {
   CMT_REPO,
   CMT_DEFAULT_BRANCH,
@@ -43,16 +43,16 @@ import {
   findEntryBlock,
   acquireLock,
   releaseLock,
-} from "./dts-code-lib.mjs";
+} from "./tts-code-lib.mjs";
 
-const LOCK_DIR = "/var/lib/dts/execute.lock";
+const LOCK_DIR = "/var/lib/tts/execute.lock";
 const LOCK_STALE_MS = 3 * 60 * 60 * 1000; // execution legitimately runs ~45 min
 const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000;
 
 function execPrompt(externalId, entryYaml, briefText) {
   return [
     `You are executing an APPROVED plan in the ComplexMultiTrigger repo. Tom has`,
-    `ruled "approve" on the code todo below through DTS (his delegated todo`,
+    `ruled "approve" on the code todo below through TTS (his delegated todo`,
     `system); your job is to implement the todo's attached plan faithfully — the`,
     `plan is the ratified decision, not a suggestion. Follow the repo's AGENTS.md.`,
     ``,
@@ -83,7 +83,7 @@ function execPrompt(externalId, entryYaml, briefText) {
   ].join("\n");
 }
 
-// git in the exec clone (kept local: dts-code-lib's git() is identical, but
+// git in the exec clone (kept local: tts-code-lib's git() is identical, but
 // importing it for one alias reads worse than three lines).
 function git(dir, ...args) {
   return execFileSync("git", ["-C", dir, ...args], {
@@ -102,7 +102,7 @@ async function main() {
   let execDir = null;
   try {
     env = loadEnv();
-    const { pending } = await convexFetch(env, "/dts/rulings");
+    const { pending } = await convexFetch(env, "/tts/rulings");
     const approvals = (Array.isArray(pending) ? pending : [])
       .filter(
         (r) =>
@@ -113,8 +113,8 @@ async function main() {
 
     ruling = approvals[0]; // exactly ONE per run — see the header
     const id = ruling.externalId;
-    const branch = `dts/${id}`;
-    execDir = `/var/cache/dts/exec-${id}`;
+    const branch = `tts/${id}`;
+    execDir = `/var/cache/tts/exec-${id}`;
     console.log(`[execute-approved] executing ${id} (${approvals.length} approved pending)`);
 
     // Fresh FULL clone; delete any corpse from a crashed prior attempt.
@@ -171,7 +171,7 @@ async function main() {
       timeout: 5 * 60 * 1000,
     });
 
-    // Force: the dts/<id> branch namespace is owned by this executor alone,
+    // Force: the tts/<id> branch namespace is owned by this executor alone,
     // and a retry (Tom re-ruled approve after a failure) must overwrite the
     // failed attempt's leftover remote branch rather than reject.
     git(execDir, "push", "--force", "origin", branch);
@@ -186,7 +186,7 @@ async function main() {
         "pr",
         "create",
         "--title",
-        `dts: ${id}`,
+        `tts: ${id}`,
         "--base",
         CMT_DEFAULT_BRANCH,
         "--head",
@@ -209,7 +209,7 @@ async function main() {
         .filter((l) => l !== "")
         .pop() ?? "(no URL in gh output)";
 
-    await convexFetch(env, "/dts/ruling-applied", {
+    await convexFetch(env, "/tts/ruling-applied", {
       id: ruling._id,
       result: `PR opened: ${prUrl}`,
     });
@@ -222,7 +222,7 @@ async function main() {
     console.error(`[execute-approved] FAILED: ${reason}`);
     if (ruling && env) {
       try {
-        await convexFetch(env, "/dts/ruling-applied", {
+        await convexFetch(env, "/tts/ruling-applied", {
           id: ruling._id,
           result: `EXECUTION FAILED: ${reason}`,
         });

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // apply-rulings.mjs — carry out Tom's NON-EXECUTION rulings on code todos.
 //
-// Run by cron every 10 minutes (see /etc/cron.d/dts). Manual run:
-//   node /opt/dts/apply-rulings.mjs
+// Run by cron every 10 minutes (see /etc/cron.d/tts). Manual run:
+//   node /opt/tts/apply-rulings.mjs
 //
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
 // open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
-// this job GETs /dts/rulings — a UNIFIED feed whose rows carry
+// this job GETs /tts/rulings — a UNIFIED feed whose rows carry
 // subjectType "life"|"code" and verdict "approve"|"revise"|"session"|
 // "archive" — takes only the CODE rows (life rows belong to
 // prepare-life-todos.mjs), applies each pending one, then POSTs
-// /dts/ruling-applied so the UI shows the outcome. The verdicts:
+// /tts/ruling-applied so the UI shows the outcome. The verdicts:
 //   revise   -> Tom's sentence redirects the plan: force a re-brief that
 //               proposes a fresh one
 //   session  -> push a session-agenda file to CMT master for Tom to open a
@@ -22,7 +22,7 @@
 // There is NO "defer" verdict — not ruling IS deferring.
 //
 // SERIALIZATION: a 10-minute cron plus pushes that can take minutes means
-// runs can overlap; the mkdir lock /var/lib/dts/apply.lock ensures only one
+// runs can overlap; the mkdir lock /var/lib/tts/apply.lock ensures only one
 // applier mutates the cache clone / pushes at a time. Stale locks (a crashed
 // holder) are broken after 30 minutes.
 //
@@ -34,7 +34,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadEnv, convexFetch } from "./dts-lib.mjs";
+import { loadEnv, convexFetch } from "./tts-lib.mjs";
 import {
   CMT_REPO,
   CMT_DEFAULT_BRANCH,
@@ -50,10 +50,10 @@ import {
   findEntryBlock,
   acquireLock,
   releaseLock,
-} from "./dts-code-lib.mjs";
+} from "./tts-code-lib.mjs";
 import { execFileSync } from "node:child_process";
 
-const LOCK_DIR = "/var/lib/dts/apply.lock";
+const LOCK_DIR = "/var/lib/tts/apply.lock";
 const LOCK_STALE_MS = 30 * 60 * 1000;
 
 // Today as YYYY-MM-DD in UTC. Good enough for `closed:` dates: the only
@@ -129,7 +129,7 @@ function applyRevise(ruling) {
 
 // session: write a self-contained session agenda into the repo itself
 // and push it to master. WHY in the repo: Tom starts the session with
-//   claude "Run the DTS session in dev/handoff/dts-session-<id>.md"
+//   claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 // from any checkout — the agenda travels with the code it is about, needs no
 // tom.quest access, and its git history records what Tom was asked.
 function applySession(env, repoDir, ruling) {
@@ -138,16 +138,16 @@ function applySession(env, repoDir, ruling) {
   const found = findEntryBlock(todosText, id);
   const cached = readBriefCache(id);
 
-  const agendaRel = `dev/handoff/dts-session-${id}.md`;
+  const agendaRel = `dev/handoff/tts-session-${id}.md`;
   const agenda = [
-    `# DTS session agenda — ${id}`,
+    `# TTS session agenda — ${id}`,
     ``,
-    `This file is a session agenda written by DTS (Tom's delegated todo system)`,
+    `This file is a session agenda written by TTS (Tom's delegated todo system)`,
     `after Tom's "session" verdict on the code todo \`${id}\`: the todo's plan`,
     `embeds a judgment call only Tom can make, so the next step is a live working`,
     `session instead of autonomous execution. Tom starts it from the repo root:`,
     ``,
-    `    claude "Run the DTS session in ${agendaRel}"`,
+    `    claude "Run the TTS session in ${agendaRel}"`,
     ``,
     ...(ruling.sentence ? [`Tom's sentence with the ruling: ${ruling.sentence}`, ``] : []),
     `## The todo entry (from ${TODOS_PATH})`,
@@ -174,7 +174,7 @@ function applySession(env, repoDir, ruling) {
   if (git(repoDir, "status", "--porcelain").trim() === "") {
     return `session agenda already current (${agendaRel})`;
   }
-  git(repoDir, "commit", "-m", `dts: session agenda for ${id}`);
+  git(repoDir, "commit", "-m", `tts: session agenda for ${id}`);
   git(repoDir, "push", "origin", CMT_DEFAULT_BRANCH);
   const sha = git(repoDir, "rev-parse", "HEAD").trim();
   return `session agenda pushed — ${sha.slice(0, 12)} (${agendaRel})`;
@@ -202,7 +202,7 @@ function applyArchive(env, repoDir, ruling) {
   // scalar with the file's 2-space key / 4-space continuation indents.
   const cached = readBriefCache(id);
   const resolutionText = [
-    `Archived by Tom's DTS ruling of ${todayISO()}.`,
+    `Archived by Tom's TTS ruling of ${todayISO()}.`,
     ruling.sentence ?? "",
     cached?.evidence ? `Evidence: ${cached.evidence}` : "",
   ]
@@ -237,7 +237,7 @@ function applyArchive(env, repoDir, ruling) {
   }
 
   git(repoDir, "add", TODOS_PATH);
-  git(repoDir, "commit", "-m", `todo(${id}): closed — archived by DTS ruling`);
+  git(repoDir, "commit", "-m", `todo(${id}): closed — archived by TTS ruling`);
   git(repoDir, "push", "origin", CMT_DEFAULT_BRANCH);
   const sha = git(repoDir, "rev-parse", "HEAD").trim();
   return `archived — ${sha.slice(0, 12)}`;
@@ -250,7 +250,7 @@ async function main() {
   }
   try {
     const env = loadEnv();
-    const { pending } = await convexFetch(env, "/dts/rulings");
+    const { pending } = await convexFetch(env, "/tts/rulings");
     if (!Array.isArray(pending) || pending.length === 0) return; // quiet when idle
 
     // Rulings we act on this run: CODE subjects only (life rows on the same
@@ -292,7 +292,7 @@ async function main() {
           // clog; the text tells Tom to update the worker.
           result = `unsupported verdict: ${ruling.verdict}`;
         }
-        await convexFetch(env, "/dts/ruling-applied", { id: ruling._id, result });
+        await convexFetch(env, "/tts/ruling-applied", { id: ruling._id, result });
         console.log(`[apply-rulings] ${label}: ${result.split("\n")[0]}`);
       } catch (err) {
         // Environmental failure (push race, network, git). Roll the cache

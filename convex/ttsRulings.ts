@@ -8,11 +8,11 @@ import {
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { applyStatusChange, logEvent } from "./dts";
+import { applyStatusChange, logEvent } from "./tts";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
-// verdict set (see schema.ts dtsRulings) is the ONLY vocabulary any ruling
+// verdict set (see schema.ts ttsRulings) is the ONLY vocabulary any ruling
 // button anywhere may use:
 //   approve — execute as briefed
 //   revise  — one written sentence redirects the preparing agent, no session
@@ -43,7 +43,7 @@ export type RulingVerdict = "approve" | "revise" | "session" | "archive";
 
 // The ONE definition of a ruling subject's identity (repo names carry no
 // spaces; the type prefix keeps life and code keys disjoint). Client code
-// derives live rulings with the same rule via app/dts/lib.ts.
+// derives live rulings with the same rule via app/tts/lib.ts.
 export const subjectKey = (row: {
   subjectType: "life" | "code";
   todoId?: string;
@@ -61,14 +61,14 @@ export const subjectKey = (row: {
 export const listRulings = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, "DTS");
+    await requireTom(ctx, "TTS");
     return await ctx.db.query("dtsRulings").collect();
   },
 });
 
 // The ONE implementation of recording a ruling — used by the Tom-gated
 // recordRuling below and by internalRecordRuling (a live session's pen, the
-// dts.internalTriage pattern), so verdict semantics cannot drift between the
+// tts.internalTriage pattern), so verdict semantics cannot drift between the
 // two doors.
 async function insertRuling(
   ctx: MutationCtx,
@@ -115,7 +115,7 @@ async function insertRuling(
     let applyResult: string | undefined;
     if (isLife) {
       const todo = await ctx.db.get(todoId);
-      if (!todo) throw new Error("DTS todo not found");
+      if (!todo) throw new Error("TTS todo not found");
       // A ruling is a Tom touch: tomTouchedAt freezes the row to the batcher
       // (internalStoreBatches never rewrites or retires it) — EXCEPT revise,
       // the one verdict that hands the subject BACK to the preparing agent
@@ -182,14 +182,14 @@ export const recordRuling = mutation({
     unarchiveCondition: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireTom(ctx, "DTS");
+    await requireTom(ctx, "TTS");
     return await insertRuling(ctx, args);
   },
 });
 
-// A live session's ruling pen (dts.internalTriage pattern): internal so the
+// A live session's ruling pen (tts.internalTriage pattern): internal so the
 // session agent can record Tom's spoken verdicts via `npx convex run
-// dtsRulings:internalRecordRuling` with deploy credentials — recordRuling
+// ttsRulings:internalRecordRuling` with deploy credentials — recordRuling
 // above requires Tom's browser identity, which the box does not hold. Only
 // ever run while Tom is present and ruling; it is his pen, not a policy actor.
 export const internalRecordRuling = internalMutation({
@@ -301,7 +301,7 @@ export const internalMarkRulingApplied = internalMutation({
 // Digest input: how many briefed code todos await a ruling. A brief awaits
 // when its live ruling is missing OR OLDER than the brief — a re-brief after
 // a revise ruling puts the item back on Tom's plate (the fresh plan needs a
-// fresh ruling). The client-side needs-me selector (app/dts/lib.ts) mirrors
+// fresh ruling). The client-side needs-me selector (app/tts/lib.ts) mirrors
 // this predicate.
 export function briefAwaitsRuling(
   brief: { repo: string; externalId: string; preparedAt: number },
@@ -317,7 +317,7 @@ export function briefAwaitsRuling(
   return ruling === undefined || ruling.ruledAt < brief.preparedAt;
 }
 
-// Batcher context (GET /dts/batch-context): what Tom ruled lately, newest
+// Batcher context (GET /tts/batch-context): what Tom ruled lately, newest
 // first — a grouping signal, not a work feed (that is internalPendingRulings).
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
@@ -339,7 +339,7 @@ export const internalAwaitingRulingCount = internalQuery({
   },
 });
 
-// One-time migration (run at deploy: `npx convex run dtsRulings:internalMigrateCodeRulings`):
+// One-time migration (run at deploy: `npx convex run ttsRulings:internalMigrateCodeRulings`):
 // copy dtsCodeRulings history into the unified table under the ratified
 // verdict mapping. "defer" rows are NOT copied — defer is no longer a verdict
 // (not ruling is deferring); they stay in the deprecated table as history.

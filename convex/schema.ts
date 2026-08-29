@@ -327,11 +327,11 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_brew", ["brewId"]),
 
-  // ── DTS (Delegated Todo System) ──────────────────────────────────────────────
-  // Spec: WikiTom dts/spec.md (canonical). Life todos live HERE (system of
+  // ── TTS (Delegated Todo System) ──────────────────────────────────────────────
+  // Spec: WikiTom tts/spec.md (canonical). Life todos live HERE (system of
   // record); code todos stay in each repo's vqc/todos.yaml and are only
   // mirrored (dtsCodeTodoMirror). Single-user by design: every function in
-  // convex/dts.ts is Tom-gated, so rows carry no userId.
+  // convex/tts.ts is Tom-gated, so rows carry no userId.
   //
   // Vocabulary (spec §12.1) is stored literally:
   //   readiness: unprepared | preparing | ready-for-tom
@@ -339,6 +339,12 @@ export default defineSchema({
   //   timingClass: dated | condition-bound | whenever
   // Nothing is ever deleted (spec principle 2): terminal states are status
   // "done" or "archived", both kept and visible.
+  //
+  // NAMING: the dtsTodos-family table names below are FROZEN pre-rename
+  // identifiers (rename to TTS, Tom 2026-08-29, adoption.md `tts-rename`).
+  // Convex prod is additive-only; renaming a populated table is a data
+  // migration for zero behavioral value. Everything human-facing says TTS;
+  // only these table names keep the old prefix.
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
@@ -394,10 +400,10 @@ export default defineSchema({
     // A row with `members` IS a batch — that one field is the whole
     // discrimination. Because a batch is a real dtsTodos row, every action
     // (rulings, blocks, sessions, done/archive) works on it with no new code.
-    // Each member addresses exactly one subject in the dtsRulings shape:
+    // Each member addresses exactly one subject in the ttsRulings shape:
     // { todoId } for a life todo, { repo, externalId } for a code todo
     // (mirror-row _ids are unstable — rows are deleted on upstream close).
-    // Enforced in dts.ts: no batch-in-batch; a subject is in at most one
+    // Enforced in tts.ts: no batch-in-batch; a subject is in at most one
     // non-terminal batch.
     members: v.optional(
       v.array(
@@ -459,7 +465,7 @@ export default defineSchema({
   // Tom's calendar, targeting EITHER a single todo (a per-todo commitment —
   // "I will do this Tue 9–11") OR a category of todos ("Sat morning — chores";
   // category "code" = the code-todo mirror). Exactly one of todoId/category is
-  // set (enforced in dts.ts). Blocks are calendar strokes, not todos: they may
+  // set (enforced in tts.ts). Blocks are calendar strokes, not todos: they may
   // be moved or deleted freely (every change is an event; nothing-ever-lost
   // governs todos, not schedule mechanics).
   dtsBlocks: defineTable({
@@ -527,9 +533,9 @@ export default defineSchema({
       v.literal("archive"),
     ),
     // One optional written note, accepted on EVERY verdict (2026-08-29): the
-    // redirect for revise (required there), the unarchive condition for
-    // archive, a free steering note for approve/session — the worker prompts
-    // inject all four as context.
+    // redirect for revise (required there, enforced in ttsRulings.ts), the
+    // unarchive condition for archive, a free steering note for
+    // approve/session — the worker prompts inject all four as context.
     sentence: v.optional(v.string()),
     ruledAt: v.number(),
     appliedAt: v.optional(v.number()),
@@ -553,7 +559,7 @@ export default defineSchema({
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"]),
 
-  // One row per DTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
+  // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The worker box posts a Claude-prepared queue + digest text before 5;
   // a fallback cron builds a simple-rules queue if none arrived. The digest
   // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
@@ -627,11 +633,11 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
-  // Kept as read-only history — non-defer rows are copied into dtsRulings by
-  // dtsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
+  // DEPRECATED (2026-08-28): superseded by the unified ttsRulings table above.
+  // Kept as read-only history — non-defer rows are copied into ttsRulings by
+  // ttsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
   // stay here only (defer is no longer a verdict: not ruling IS deferring).
-  // No new writes. Remove in the dts→tts rename round.
+  // No new writes. Remove in the tts→tts rename round.
   dtsCodeRulings: defineTable({
     repo: v.string(),
     externalId: v.string(),
@@ -650,7 +656,7 @@ export default defineSchema({
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_ruled", ["ruledAt"]),
 
-  // ── Claude Code session surface (spec: WikiTom dts/spec.md; design ratified
+  // ── Claude Code session surface (spec: WikiTom tts/spec.md; design ratified
   // 2026-08-28) ────────────────────────────────────────────────────────────────
   // A web chat wrapper around headless Claude Code sessions running on the
   // worker box. Convex IS the stream: the box's session-host daemon persists
@@ -674,6 +680,14 @@ export default defineSchema({
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    // Session posture (P3, ratified 2026-08-28): absent = "interactive" (a
+    // Tom-driven chat). "autonomous" = fleet-scheduled groundwork with no one
+    // watching — the daemon auto-ends it after its final turn and a wall-clock
+    // cap interrupts a runaway. Autonomous sessions never rule and never touch
+    // code (repo "none" in v1).
+    mode: v.optional(
+      v.union(v.literal("interactive"), v.literal("autonomous")),
+    ),
     // Lifecycle: requested (browser) → starting → idle ⇄ running ⇄
     // awaiting-permission → ended | failed. The browser owns: create,
     // enqueue inbound, decide permissions, and stale-only forceClose.
@@ -703,7 +717,11 @@ export default defineSchema({
     // network retry and is dropped. Monotonic per session.
     nextSeq: v.number(),
     createdAt: v.number(),
-  }).index("by_status", ["status", "statusChangedAt"]),
+  })
+    .index("by_status", ["status", "statusChangedAt"])
+    // Per-todo session history: powers the "does a live session already
+    // reference this todo" exclusion and the scheduler's backoff walk.
+    .index("by_todo", ["todoId"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is
@@ -724,8 +742,16 @@ export default defineSchema({
       v.literal("error"),
     ),
     content: v.any(), // typed payload per kind; tool results truncated at 32KB by the daemon
+    // Subagent parentage (P2): on a tool-call row emitted INSIDE a running
+    // Task subagent, the parent Task's toolUseId — the daemon reports it so
+    // the agent panel can show what each subagent is doing right now.
+    parentToolUseId: v.optional(v.string()),
     createdAt: v.number(),
-  }).index("by_session_seq", ["sessionId", "seq"]),
+  })
+    .index("by_session_seq", ["sessionId", "seq"])
+    // Kind-scoped reads (getOpenToolWork): tool-call/tool-result rows only,
+    // without paging the whole transcript.
+    .index("by_session_kind", ["sessionId", "kind", "seq"]),
 
   // The live tail: ONE row per session, ≤ ~16KB text by construction.
   claudeStreamBuf: defineTable({
@@ -791,5 +817,31 @@ export default defineSchema({
     version: v.string(),
     activeAccount: v.optional(v.string()), // "gmail" | "wpi"
     lastIngestError: v.optional(v.string()),
+    // Box load snapshot, reported with each heartbeat — the input to the
+    // scheduler's load-based admission (the primary throttle of P3).
+    load: v.optional(
+      v.object({
+        loadavg1: v.number(),
+        cpus: v.number(),
+        freeMemMb: v.number(),
+        totalMemMb: v.number(),
+        liveSessions: v.number(),
+      }),
+    ),
+  }),
+
+  // Autonomous-fleet admission config (P3, ratified 2026-08-28). Singleton via
+  // .first() (the gpuPoolStatus pattern). Load-based admission is the PRIMARY
+  // throttle (Tom's ruling: no scalar cap as primary) — maxLiveAutonomous is a
+  // runaway failsafe only, maxNewPerTick bounds a clone burst. When no row
+  // exists the scheduler uses defaults with enabled FALSE, so nothing runs
+  // until the enable pen is used deliberately.
+  claudeAutoConfig: defineTable({
+    enabled: v.boolean(),
+    maxLoadPerCpu: v.number(), // admit while loadavg1 / cpus <= this
+    minFreeMemMb: v.number(), // admit while freeMemMb >= this
+    maxLiveAutonomous: v.number(),
+    maxNewPerTick: v.number(),
+    updatedAt: v.number(),
   }),
 });

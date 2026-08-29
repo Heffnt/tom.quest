@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// session-host.mjs — the DTS session-host daemon: runs real Claude Code
+// session-host.mjs — the TTS session-host daemon: runs real Claude Code
 // sessions (via @anthropic-ai/claude-agent-sdk) on this box and persists
 // every event into tom.quest's Convex backend, which IS the message bus:
 //
@@ -9,7 +9,7 @@
 // This file owns the poll loop and the Session map; the per-session work
 // (SDK query, seq assignment, outbox/flush, permission gate) lives in
 // session.mjs, shared helpers in lib.mjs. Runs under systemd
-// (dts-session-host.service, Restart=always) — see README.md.
+// (tts-session-host.service, Restart=always) — see README.md.
 //
 // THE NO-STATE RULE, applied: this process holds NOTHING durable. All state
 // is pulled fresh from /sessions/poll every tick (full state, no cursors),
@@ -18,7 +18,10 @@
 // resumes the SDK session by id.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
 import {
   loadEnv,
   log,
@@ -30,7 +33,7 @@ import {
 } from "./lib.mjs";
 import { Session, gitErrorText } from "./session.mjs";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
 // changed value is how the browser knows the daemon restarted.
 const DAEMON_STARTED_AT = Date.now();
@@ -51,13 +54,49 @@ const POLL_IDLE_MS = 30_000;
 const HOT_WINDOW_MS = 30_000;
 
 // Which Claude Max account the SDK runs under — the box's "active" symlink
-// (managed by dts-account; CLAUDE_CONFIG_DIR in the systemd unit points at
+// (managed by tts-account; CLAUDE_CONFIG_DIR in the systemd unit points at
 // it). Reported to the server as a display fact only.
 function readActiveAccount() {
   try {
     return path.basename(fs.readlinkSync("/root/.claude-accounts/active"));
   } catch {
     return undefined; // not a symlink / not set up — simply don't report
+  }
+}
+
+const execFile = promisify(execFileCb);
+
+// ── usage-limit account auto-switch (ratified 2026-08-28) ────────────────────
+// A session that hits a usage/rate limit signals here; the daemon flips the
+// active symlink to the OTHER Max account via tts-account so the fleet (and
+// Tom) keep working, at most once per 3h (in-memory throttle — a restart
+// resets it, harmlessly). Tradeoff, stated: NEW queries run under the new
+// account; existing sdkSessionIds live in the old account's config dir, so a
+// resume after a switch starts fresh context — the restart-adoption rules
+// already record that honestly in the transcript.
+const SWITCH_THROTTLE_MS = 3 * 60 * 60 * 1000;
+let lastAccountSwitchAt = 0;
+
+async function maybeSwitchAccount(signalText, session) {
+  const now = Date.now();
+  if (now - lastAccountSwitchAt < SWITCH_THROTTLE_MS) return;
+  const active = readActiveAccount();
+  if (active !== "gmail" && active !== "wpi") {
+    log(`usage limit signaled but active account unknown (${active}) — not switching`);
+    return;
+  }
+  lastAccountSwitchAt = now;
+  const other = active === "gmail" ? "wpi" : "gmail";
+  try {
+    await execFile("/usr/local/bin/tts-account", ["use", other]);
+    log(`usage limit detected — switched account ${active} -> ${other} (${signalText})`);
+    session?.finalizeRow("system", {
+      text: `usage limit detected — switched account ${active} -> ${other}`,
+    });
+    session?.requestFlush(true);
+  } catch (err) {
+    lastAccountSwitchAt = 0; // the switch didn't happen; don't throttle a retry
+    log(`account switch ${active} -> ${other} FAILED:`, String(err?.message ?? err));
   }
 }
 
@@ -71,6 +110,8 @@ function claimSession(env, sessions, row) {
     repo: row.repo,
     env,
     nextSeq: row.nextSeq,
+    mode: row.mode,
+    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
   });
   sessions.set(row.id, s);
   void (async () => {
@@ -123,9 +164,30 @@ function adoptSession(env, sessions, row) {
     repo: row.repo,
     env,
     nextSeq: row.nextSeq,
+    mode: row.mode,
+    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
   });
   sessions.set(row.id, s);
   s.sdkSessionId = row.sdkSessionId;
+  if (row.mode === "autonomous") {
+    // Park-idle-await-next-turn is an interactive invariant — an autonomous
+    // session has no Tom to send that turn, so an adopted one would sit live
+    // forever (counted against the fleet cap, its todo excluded). End it
+    // errored; the scheduler's backoff owns the retry. The outcome rides the
+    // ingest and never overwrites one the agent already recorded.
+    s.finalizeRow("system", {
+      text: "session-host restarted mid-mission; autonomous session ended",
+    });
+    s.outcomeToSend = {
+      outcome: "errored",
+      outcomeSummary: "daemon restarted mid-mission",
+    };
+    s.setStatus("ended");
+    s.endedReasonToSend = "daemon restarted mid-mission";
+    s.requestFlush(true);
+    s.cleanupWorkdir();
+    return;
+  }
   s.status = "idle";
   s.statusToSend = "idle";
   s.finalizeRow("system", {
@@ -187,6 +249,16 @@ async function main() {
         version: `session-host/${VERSION}`,
         daemonStartedAt: DAEMON_STARTED_AT,
         activeAccount: readActiveAccount(),
+        // Box load facts — the auto-session scheduler's admission signal
+        // (load-based, not a scalar session cap): loadavg + free RAM decide
+        // whether the box can take another session.
+        load: {
+          loadavg1: os.loadavg()[0],
+          cpus: os.cpus().length,
+          freeMemMb: Math.round(os.freemem() / 1048576),
+          totalMemMb: Math.round(os.totalmem() / 1048576),
+          liveSessions: sessions.size,
+        },
         ...(lastIngestError !== undefined ? { lastIngestError } : {}),
       });
       pollAttempt = 0;
@@ -250,11 +322,7 @@ async function main() {
     const now = Date.now();
     for (const s of sessions.values()) {
       if (s.dead) continue; // a dead session's lastActivityAt must not pin 1s
-      if (
-        s.status === "running" ||
-        s.status === "awaiting-permission" ||
-        now - s.lastActivityAt < HOT_WINDOW_MS
-      ) {
+      if (s.status === "running" || now - s.lastActivityAt < HOT_WINDOW_MS) {
         delay = POLL_HOT_MS;
         break;
       }

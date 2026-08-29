@@ -1,6 +1,6 @@
-# DTS worker box
+# TTS worker box
 
-The always-on home for DTS's scheduled headless-Claude jobs: a Hetzner CAX11
+The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
 (Ubuntu 24.04, ARM64) running two personal-todo jobs and three code-todo jobs
 on a schedule:
 
@@ -24,12 +24,12 @@ tom.quest UI in seconds:
 
 - **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
   OPEN todo entry whose YAML changed since its last brief (sha256 cursor in
-  `/var/lib/dts/brief-hashes.json`), has headless Claude write a ground-up
+  `/var/lib/tts/brief-hashes.json`), has headless Claude write a ground-up
   brief against the current tree and a recommendation — `propose-archive`
   (already done/moot, with evidence), `stale-replan` (intent live, plan
   stale), `needs-session` (open judgment call; all tier C), or `approve` —
   plus an exec class (`box` vs `needs-turing`). Briefs POST to Convex and are
-  also cached locally under `/var/cache/dts/briefs/`.
+  also cached locally under `/var/cache/tts/briefs/`.
 - Tom rules on each brief in the UI; Convex queues the rulings.
 - **apply-rulings** carries out the non-execution rulings: `defer` records
   it; `stale-replan` queues a re-brief that must propose a fresh plan;
@@ -38,14 +38,14 @@ tom.quest UI in seconds:
   CMT's own todos guard test — a red guard reverts and reports instead of
   pushing).
 - **execute-approved** takes ONE pending `approve` per hour, runs agentic
-  Claude in a throwaway full clone on a `dts/<id>` branch, verifies commits +
+  Claude in a throwaway full clone on a `tts/<id>` branch, verifies commits +
   the todos guard, pushes, and opens a PR. **Merging the PR is the human
   gate** — nothing lands on master autonomously.
 
 To start a `needs-session` working session, from any CMT checkout:
 
 ```
-claude "Run the DTS session in dev/handoff/dts-session-<id>.md"
+claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 ```
 
 ## The no-state rule
@@ -54,11 +54,11 @@ claude "Run the DTS session in dev/handoff/dts-session-<id>.md"
 (and, for code todos, in the CMT repo itself). The local files with memory
 are all harmless to lose:
 
-- `/var/lib/dts/dump-cursor` — Slack poll cursor; losing it re-captures up to
+- `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-captures up to
   24 hours of `#dump` messages as duplicates Tom can archive.
-- `/var/lib/dts/brief-hashes.json` — which todo version was last briefed;
+- `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
-- `/var/cache/dts/` — rebuildable caches: the shallow CMT clone, the local
+- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
   brief copies, the executor's throwaway clones.
 
 Losing the whole box loses nothing but a paused digest and some re-work.
@@ -71,11 +71,11 @@ Losing the whole box loses nothing but a paused digest and some re-work.
 git clone https://github.com/<owner>/tom.quest
 bash tom.quest/worker/setup.sh
 # 3. Fill the secrets (the file documents each key):
-nano /etc/dts/worker.env
+nano /etc/tts/worker.env
 # 4. Log in both Claude Max accounts (interactive), pick one:
-dts-account login gmail
-dts-account login wpi
-dts-account use gmail
+tts-account login gmail
+tts-account login wpi
+tts-account use gmail
 # Done. Cron is installed; the digest resumes tomorrow at 5.
 ```
 
@@ -87,19 +87,19 @@ rolled out after a `git pull`.
 Jobs run under `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`, a symlink:
 
 ```
-dts-account status       # which account is active
-dts-account use wpi      # switch; takes effect on the next job run
+tts-account status       # which account is active
+tts-account use wpi      # switch; takes effect on the next job run
 ```
 
 ## Testing jobs by hand
 
 ```
-node /opt/dts/poll-dump.mjs               # capture anything new in #dump now
-node /opt/dts/prepare-queue.mjs --force   # prep today's queue regardless of hour
-node /opt/dts/brief-code-todos.mjs        # brief changed CMT todos now
-node /opt/dts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
-node /opt/dts/apply-rulings.mjs           # apply pending rulings now
-node /opt/dts/execute-approved.mjs        # execute one approved plan now
+node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
+node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
+node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
+node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
+node /opt/tts/apply-rulings.mjs           # apply pending rulings now
+node /opt/tts/execute-approved.mjs        # execute one approved plan now
 ```
 
 `--force` skips the 4-a.m.-New-York hour guard (cron fires the prep at both
@@ -108,6 +108,6 @@ whichever side of daylight saving we're on).
 
 ## Logs
 
-Cron output: one `/var/log/dts/<job>.log` per job (poll-dump, prepare-queue,
+Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, prepare-queue,
 brief-code-todos, apply-rulings, execute-approved), truncated monthly by cron
 — they are convenience, not state.

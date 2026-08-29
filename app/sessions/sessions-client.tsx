@@ -1,6 +1,6 @@
 "use client";
 
-// DTS Sessions — a chat surface over headless Claude Code sessions running on
+// TTS Sessions — a chat surface over headless Claude Code sessions running on
 // the worker box. Convex is the stream: the daemon persists transcript rows,
 // this page subscribes. Phone-first: the list is the default view; opening a
 // session takes over the viewport with back-navigation (?session=<id>
@@ -86,7 +86,9 @@ export default function SessionsClient() {
     ) : null;
 
   const body = activeId ? (
-    <div className="h-[calc(100dvh-4rem)] flex flex-col max-w-3xl mx-auto w-full">
+    // Wider than the list: the open session carries the agent panel beside
+    // the transcript from sm up.
+    <div className="h-[calc(100dvh-4rem)] flex flex-col max-w-5xl mx-auto w-full">
       {banner}
       <SessionView
         sessionId={activeId}

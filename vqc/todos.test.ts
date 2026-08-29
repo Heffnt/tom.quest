@@ -23,8 +23,8 @@ const READINESS = ["unprepared", "preparing", "ready-for-tom"];
 const STATUS = ["active", "waiting", "archived", "done"];
 
 // The cite resolution set (vqc/adoption.md): constitution article ids,
-// dts-spec section refs, or open ledger entry ids.
-const ARTICLE_OR_SPEC = /^(A\d+|C[1-9]|D\d+|dts-spec:\d+(\.\d+)?)$/;
+// tts-spec section refs, or open ledger entry ids.
+const ARTICLE_OR_SPEC = /^(A\d+|C[1-9]|D\d+|tts-spec:\d+(\.\d+)?)$/;
 
 function openLedgerIds(): Set<string> {
   const raw = readFileSync(join(__dirname, "ledger.yaml"), "utf8");

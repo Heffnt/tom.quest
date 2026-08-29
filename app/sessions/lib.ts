@@ -1,11 +1,11 @@
-// Shared types + helpers for the DTS Sessions surface (headless Claude Code
+// Shared types + helpers for the TTS Sessions surface (headless Claude Code
 // sessions on the worker box; convex/claudeSessions.ts is the contract).
 // Copy rules: descriptive never evaluative, plain hyphenated vocabulary.
 
 import type { Doc } from "@/convex/_generated/dataModel";
 
 // Age text is shared with the Inventory surface — one definition.
-export { ageText } from "../dts/lib";
+export { ageText } from "../tts/lib";
 
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
@@ -71,6 +71,14 @@ export function shortAge(ms: number, now: number): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+// contentToText / previewLine below are the client-side twins of contentText
+// / previewText in convex/claudeSessions.ts. Deliberately named apart so a
+// reader is never unsure which side they are looking at: the server pair
+// flattens for stored previews (fixed PREVIEW_CHARS cap, no whitespace
+// collapsing), this pair renders for the screen (caller-chosen max, newlines
+// collapsed). Same job, different cut — keep the two comments in lockstep if
+// either behaviour moves.
+
 /**
  * Message content is v.any(). Render strings directly; anything else via
  * JSON.stringify (never String(x) — that gives "[object Object]").
@@ -109,6 +117,21 @@ export function toolNameOf(content: unknown): string {
   return "tool";
 }
 
+/**
+ * Best-effort tool-use id out of a tool-call content payload — the id a
+ * subagent row's parentToolUseId points back at. content is v.any(), so the
+ * same closed-list idiom as toolNameOf rather than one assumed field name.
+ */
+export function toolUseIdOf(content: unknown): string | undefined {
+  if (typeof content === "object" && content !== null) {
+    const c = content as Record<string, unknown>;
+    for (const key of ["toolUseId", "tool_use_id", "id"]) {
+      if (typeof c[key] === "string") return c[key] as string;
+    }
+  }
+  return undefined;
+}
+
 /** Best-effort tool input out of a tool-call content payload. */
 export function toolInputOf(content: unknown): unknown {
   if (typeof content === "object" && content !== null) {
@@ -116,6 +139,19 @@ export function toolInputOf(content: unknown): unknown {
     if ("input" in c) return c.input;
   }
   return content;
+}
+
+/**
+ * The subagent type of a Task tool-call. `subagent_type` is the SDK's own
+ * input field name and is quoted as-is — the surface never renames it.
+ */
+export function subagentTypeOf(content: unknown): string | undefined {
+  const input = toolInputOf(content);
+  if (typeof input === "object" && input !== null) {
+    const i = input as Record<string, unknown>;
+    if (typeof i.subagent_type === "string") return i.subagent_type;
+  }
+  return undefined;
 }
 
 /**

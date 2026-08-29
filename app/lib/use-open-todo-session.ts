@@ -14,7 +14,7 @@ import {
   buildTodoSessionPrompt,
   type BatchMemberContext,
   type LiveRulingContext,
-} from "@/app/lib/dts-session-prompt";
+} from "@/app/lib/tts-session-prompt";
 
 // Resolve a batch's members to live statements + statuses against the todos
 // and mirror the caller already subscribes to — a member whose mirror row is
