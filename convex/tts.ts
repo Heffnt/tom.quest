@@ -9,6 +9,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import {
+  DAY_MS,
   MAX_NEEDS,
   TTS_PREP_NY_HOUR,
   nyCalendarDayBoundsUtc,
@@ -104,6 +105,10 @@ const GRAPH_TASK = v.object({
   groundUpExplanation: v.optional(v.string()),
   evidence: v.optional(v.string()),
   status: v.optional(v.union(v.literal("active"), v.literal("done"))),
+  // The model tier this task needs (schema: dtsTodos.model). Absent means the
+  // default, which is Opus; the planner tags only the task whose difficulty
+  // warrants the stronger model.
+  model: v.optional(v.literal("fable")),
 });
 
 type Member = { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string };
@@ -1519,6 +1524,25 @@ export const internalPrepareTodo = internalMutation({
     importanceLevel: v.optional(IMPORTANCE_LEVEL),
     importanceRationale: v.optional(v.string()),
     plan: v.optional(v.array(PLAN_STEP)),
+    // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
+    // A worker session claims ONE ready todo inside a batch and advances it by
+    // one stable state, and this is the pen it writes that state with. It
+    // needs three things the plan-era pen did not have:
+    //   evidence             — the artifact that shows the work happened (a
+    //                          branch, a pull request, a written brief). The
+    //                          schema field of the same name, per row.
+    //   groundUpExplanation  — the self-contained "more" layer, written when a
+    //                          task turns out to need Tom's judgment and he has
+    //                          to be able to rule on it cold.
+    //   status: "done"       — closes the row, which is what makes every task
+    //                          that NEEDS it ready. Accepted only for a row
+    //                          inside a batch (batchId set): a standalone life
+    //                          todo is Tom's to close and no agent write may
+    //                          close one behind him. "done" is the only value —
+    //                          archiving and sleeping stay Tom's verdicts.
+    evidence: v.optional(v.string()),
+    groundUpExplanation: v.optional(v.string()),
+    status: v.optional(v.literal("done")),
     // The date the STATEMENT itself states ("pay rent sept 3"). The QuickAdd
     // date input is gone (2026-08-29), so this is how an explicit date Tom
     // wrote in his own words reaches the row. Statement text is Tom's, so this
@@ -1529,7 +1553,7 @@ export const internalPrepareTodo = internalMutation({
   },
   handler: async (
     ctx,
-    { id, brief, entryAction, workDescription, readiness, importanceLevel, importanceRationale, plan, dueAt, dateKind },
+    { id, brief, entryAction, workDescription, readiness, importanceLevel, importanceRationale, plan, dueAt, dateKind, evidence, groundUpExplanation, status },
   ) => {
     const normalized = ctx.db.normalizeId("dtsTodos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
@@ -1556,6 +1580,8 @@ export const internalPrepareTodo = internalMutation({
         readiness !== undefined && "readiness",
         importanceLevel !== undefined && "importance",
         dueAt !== undefined && "dueAt",
+        evidence !== undefined && "evidence",
+        groundUpExplanation !== undefined && "groundUpExplanation",
       ].filter(Boolean);
       if (skippedFields.length > 0) {
         await logEvent(ctx, "prepare-skipped-batch", normalized, {
@@ -1564,6 +1590,10 @@ export const internalPrepareTodo = internalMutation({
       }
     } else {
       if (brief !== undefined) patch.brief = brief;
+      if (evidence !== undefined) patch.evidence = evidence;
+      if (groundUpExplanation !== undefined) {
+        patch.groundUpExplanation = groundUpExplanation;
+      }
       if (entryAction !== undefined) patch.entryAction = entryAction;
       if (workDescription !== undefined) patch.workDescription = workDescription;
       if (readiness !== undefined) patch.readiness = readiness;
@@ -1613,8 +1643,32 @@ export const internalPrepareTodo = internalMutation({
         patch.importance !== undefined && "importance",
         patch.plan !== undefined && "plan",
         patch.dueAt !== undefined && "dueAt",
+        patch.evidence !== undefined && "evidence",
+        patch.groundUpExplanation !== undefined && "groundUpExplanation",
       ].filter(Boolean),
     });
+    // Completion runs LAST and through the ONE transition implementation
+    // (applyStatusChange): a raw status patch would skip the kept-dates
+    // resolution on a dated row and emit no status-changed event. It reads the
+    // row as it stands AFTER the patch above, so the evidence written in the
+    // same call is already on it.
+    if (status === "done") {
+      const fresh = await ctx.db.get(normalized);
+      if (!fresh) return;
+      if (fresh.batchId === undefined) {
+        // Named refusal rather than a silent skip: a worker that thinks it
+        // closed a todo and did not would report work as landed that is still
+        // open, and only this row would say otherwise.
+        await logEvent(ctx, "done-skipped", normalized, {
+          why: "only a todo inside a batch may be completed by the pen",
+        });
+      } else if (fresh.status !== "done") {
+        await applyStatusChange(ctx, fresh, {
+          status: "done",
+          note: "worker: task completed",
+        });
+      }
+    }
   },
 });
 
@@ -2233,6 +2287,10 @@ export const internalStorePlanGraph = internalMutation({
         groundUpExplanation:
           a.task.groundUpExplanation ?? prior?.groundUpExplanation,
         evidence: a.task.evidence ?? prior?.evidence,
+        // Preserve-on-absent like every field above: a re-post that omits the
+        // tier must not silently demote a task the planner already marked as
+        // needing the stronger model.
+        model: a.task.model ?? prior?.model,
       };
       const desired = a.task.status ?? prior?.status ?? ("active" as const);
       if (prior) {
@@ -2245,6 +2303,7 @@ export const internalStorePlanGraph = internalMutation({
           condition: prior.condition,
           groundUpExplanation: prior.groundUpExplanation,
           evidence: prior.evidence,
+          model: prior.model,
         };
         const fieldsChanged = JSON.stringify(fields) !== JSON.stringify(stored);
         const statusChanged = desired !== prior.status;
@@ -2481,6 +2540,44 @@ export const internalListMirror = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("dtsCodeTodoMirror").collect();
+  },
+});
+
+// Every batches row (schema v2), for the planner's context. A full collect,
+// like internalListTodos: this is a single-user table holding a few dozen rows
+// for years, and the planner needs the archived statements too (it must not
+// recreate a grouping Tom retired).
+export const internalListBatches = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db.query("batches").collect();
+  },
+});
+
+// PLAN REPAIRS — a worker that reached a task and found the graph wrong (a
+// `needs` edge that is not a real prerequisite, a missing one that blocked it)
+// records the finding as a dtsEvents row of kind "plan-repair"; that is the
+// only channel by which the doing of the work corrects the planning of it.
+// The planner reads these each run and fixes the structure.
+//
+// THE SCAN IS BOUNDED ON PURPOSE. dtsEvents is append-only instrumentation and
+// grows without limit, so this walks the by_at index BACKWARD from `sinceMs`
+// (a week by default) rather than filtering the whole table — a run in a week
+// with no repairs at all must not read every event ever written.
+const PLAN_REPAIR_KIND = "plan-repair";
+const PLAN_REPAIR_WINDOW_MS = 7 * DAY_MS;
+
+export const internalRecentPlanRepairs = internalQuery({
+  args: { limit: v.optional(v.number()), sinceMs: v.optional(v.number()) },
+  handler: async (ctx, { limit, sinceMs }) => {
+    const since = sinceMs ?? Date.now() - PLAN_REPAIR_WINDOW_MS;
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at", (q) => q.gte("at", since))
+      .order("desc")
+      .filter((q) => q.eq(q.field("kind"), PLAN_REPAIR_KIND))
+      .take(Math.min(limit ?? 20, 100));
+    return rows;
   },
 });
 

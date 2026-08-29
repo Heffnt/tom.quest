@@ -522,6 +522,14 @@ export default defineSchema({
     needs: v.optional(v.array(v.id("dtsTodos"))),
     // tasks: who does it. Same meaning as the plan-step actor it succeeds.
     actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
+    // The model tier an agent task needs. ABSENT IS THE DEFAULT AND THE NORM:
+    // workers run Opus, so nothing is written here for an ordinary task. The
+    // planner sets "fable" on the rare task whose difficulty warrants the
+    // stronger model, and the worker reads it as its --model flag. One literal
+    // rather than a free string: an unrecognized tier name would be a silent
+    // mis-dispatch, and the tiers below Opus are chosen per-call in-session,
+    // never stored on a task.
+    model: v.optional(v.literal("fable")),
     // Completion evidence — the artifact that shows the work happened (branch,
     // PR, brief). The plan-step field of the same name, per row.
     evidence: v.optional(v.string()),

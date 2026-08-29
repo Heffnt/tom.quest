@@ -125,11 +125,39 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Every 2nd hour at :37 (odd minute; no collision with the other jobs).
 37 */2 * * * root /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
 
-# Form batches (life + code todos grouped so one session with Tom advances
-# many) via headless Claude, every 6 hours at :07 (:07 collides with nothing;
+# ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
+# These two jobs are the OLD and the NEW way of doing the same thing, and they
+# run side by side on purpose until the cutover.
+#
+#   form-batches.mjs  — the v1 batcher. A batch is a todo row carrying a list
+#                       of `members` and an ordered plan.
+#   plan-graphs.mjs   — the v2 PLANNER. A batch is its own row holding a GRAPH:
+#                       goal todos (the end states it is for) and task todos
+#                       (the work), wired by `needs` edges, so the todos whose
+#                       needs are all done are the ready ones.
+#
+# They cannot collide: the server refuses a v1 batch that claims a row already
+# inside a v2 batch, and each job consumes only its own revise rulings (v1
+# takes rulings whose subject is a members-bearing todo, v2 takes rulings whose
+# subject is a batch row, which exist only in v2).
+#
+# AT CUTOVER: delete the form-batches line below, and nothing else here.
+# plan-graphs already sits in the slot that will be the only one left.
+
+# v1 — Form batches (life + code todos grouped so one session with Tom advances
+# many) via headless Claude, every 2 hours at :07 (:07 collides with nothing;
 # :17/:37/:45 are taken). An input-hash cursor in /var/lib/tts/ makes
 # unchanged-input runs no-ops, so most ticks cost no Claude call.
+# REPLACED BY plan-graphs.mjs — remove this line at cutover.
 7 */2 * * * root /usr/bin/node /opt/tts/form-batches.mjs >> /var/log/tts/form-batches.log 2>&1
+
+# v2 — Maintain the graph inside every batch (goals, tasks, needs edges, the
+# paths between batches) via headless Claude, every 2 hours at :27 (an odd
+# minute of its own; :07/:17/:37/:45 are taken, and the offset from
+# form-batches keeps the two Claude calls off the same tick). Its own
+# input-hash cursor (/var/lib/tts/plan-input-hash) makes unchanged-input runs
+# no-ops. This line REPLACES the form-batches line above at cutover.
+27 */2 * * * root /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
 
 # Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
 # propose-archive) every 10 minutes, so a ruling made in the UI takes effect

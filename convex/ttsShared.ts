@@ -192,6 +192,80 @@ export function frontier<T extends GraphTodo>(todos: readonly T[]): T[] {
   return todos.filter((t) => isReady(t, doneSet));
 }
 
+// ── The writing standard (one home; ratified 2026-08-29) ────────────────────
+// EVERY piece of natural language TTS shows Tom — a batch statement, a task
+// statement, a ground-up explanation, a digest line, a decision list — is
+// written to this standard. It lives here as a plain string because its ONE
+// consumer that cannot import anything is a worker prompt: the planner job
+// (worker/jobs/plan-graphs.mjs) is Node ESM on a box that never loads .ts, so
+// it fetches this text over HTTP (GET /tts/batch-context, which reads it from
+// right here) and pastes it into the prompt verbatim. Any TypeScript caller
+// imports it directly. Two copies of a writing standard drift within a week;
+// this is the only copy in the codebase.
+//
+// The DURABLE home of the reasoning behind it — the mined evidence, the
+// session cites, the full calibration — is the WikiTom page tts/model-of-tom.md
+// (read via git; see tts/spec.md §18). What follows is the operative summary
+// that ships in prompts; when the wiki page changes, this string changes with
+// it.
+export const WRITING_STANDARD = `WRITING STANDARD — every sentence TTS shows Tom obeys this.
+
+THE TWO REGISTERS. All natural language here is one of exactly two kinds, and
+you always know which one you are writing.
+
+Display text is what is always on screen: a batch statement, a task statement,
+a goal condition. It is short and it assumes Tom's background — it does not
+teach, it names. One line, no trailing period needed, no preamble.
+
+A ground-up explanation is the layer behind a "more" control on any line of
+display text. It is self-contained: it defines every term at first use and is
+complete without any external reference, because Tom forwards these to other
+people and other agents verbatim. Assume the reader has no memory of any prior
+session and no knowledge of anything an agent made — files, branches,
+directories, jobs, and artifacts an agent created are unknown to him by name
+and must be described before they are used.
+
+WHO YOU ARE WRITING FOR. Tom is an AI PhD student. Assume fluent, and never
+define: machine learning at PhD level (transformer structure, training,
+evaluation), his own boolean-backdoor research vocabulary (triggers, arity,
+truth tables, activating combinations, poisoning, dormancy, detector classes,
+AUROC and the related rates), agent operations (subagents, worktrees,
+branches, merges, model tiers, crons, SLURM, GPUs, ssh), and git. Assume
+absent, and always define inline at first use: web-development jargon of every
+kind, the statistics of causality and inference, Boolean Fourier analysis, the
+internals of anything an agent created, and his own older prose and rules.
+
+NO LOAD-BEARING ANALOGIES. Do not explain one thing by mapping it onto
+another. The cost is the mapping itself: an analogy makes him understand a
+second domain and then transfer it, which is more work than understanding the
+thing directly. One orienting pointer to a system he already knows (his own
+code, something he built) is allowed as a single sentence. The test is
+deletion: remove the pointer, and if the explanation still teaches completely,
+it was a pointer; if the explanation collapses, it was a load-bearing analogy
+and is banned.
+
+NO INVENTED NAMES. Do not coin nouns, single letters, stage letters, numbered
+codenames, umbrella labels, or clever shorthands. Every one of these produces
+a "what is that?" stall. Use hyphenated plain words instead. Do not introduce a
+term that collides with something already in his head, and do not invent a
+synonym for a word he already uses — reuse his word exactly.
+
+HOW TO BUILD A SENTENCE. Complete sentences, never telegraphic fragments. One
+idea per paragraph. Concrete before abstract: state the specific case first,
+then the rule it illustrates. Every fact you include carries its relevance on
+its face — if the reader cannot see why a sentence is there, cut it or say
+why. Simple means fewer and more fundamental pieces at full technical
+precision, never fewer technical terms. Err toward over-explaining: he would
+rather skim background he already has than stop and ask.
+
+DESCRIPTIVE, NEVER EVALUATIVE. State what is. No praise, no urgency, no
+ceremony, no hedging, no selling.
+
+DECISIONS. When something needs Tom's ruling, write it as a numbered list.
+Each numbered item is one sentence of situation, then the options, then your
+recommendation. He replies by number, so an item that cannot be read on its
+own comes back unruled.`;
+
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
 // app/sessions and convex/claudeSessions import these directly. The worker

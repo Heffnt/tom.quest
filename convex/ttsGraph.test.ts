@@ -1,9 +1,15 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { MAX_NEEDS, buildDoneSet, frontier, isReady } from "./ttsShared";
+import {
+  MAX_NEEDS,
+  WRITING_STANDARD,
+  buildDoneSet,
+  frontier,
+  isReady,
+} from "./ttsShared";
 
 // Schema v2 (ratified 2026-08-29): a batch is its own row holding HOW a set of
 // todos gets completed; its contents are dtsTodos rows pointing back at it as
@@ -29,6 +35,7 @@ const graphTask = (
     groundUpExplanation: string;
     evidence: string;
     status: "active" | "done";
+    model: "fable";
   }> = {},
 ) => ({ statement, actor: "agent" as const, ...over });
 
@@ -1101,5 +1108,306 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
     await t.run(async (ctx) => ctx.db.delete(member as Id<"dtsTodos">));
     const counts = await t.mutation(internal.tts.internalMigrateToGraph, {});
     expect(counts).toMatchObject({ batches: 1, goals: 0, missingMembers: 1 });
+  });
+});
+
+// ── The model tag ────────────────────────────────────────────────────────────
+// The planner marks the rare task whose difficulty warrants the stronger model.
+// Absent is the default and the norm (workers run Opus), so the tag only ever
+// has to survive: it is written once and must not evaporate on the next
+// unchanged re-post.
+
+describe("TTS plan graph: the model tag", () => {
+  it("persists the planner's tag and preserves it when a re-post omits it", async () => {
+    const t = convexTest({ schema, modules });
+    await storeGraph(t, {
+      tasks: [
+        graphTask("design the trigger sweep", { model: "fable" }),
+        graphTask("copy the config"),
+      ],
+    });
+    const batch = await oneBatch(t);
+    const first = await batchTodos(t, batch._id);
+    expect(byStatement(first, "design the trigger sweep")?.model).toBe("fable");
+    // The ordinary task carries nothing: the default is the absence of the
+    // field, not a stored "opus".
+    expect(byStatement(first, "copy the config")?.model).toBeUndefined();
+
+    // witness: write `model: a.task.model` straight through in
+    // internalStorePlanGraph — ctx.db.patch DELETES a field written as
+    // undefined, so this re-post would silently demote the task to the default
+    // model and the planner's judgment would be lost every two hours.
+    const res = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [
+        graphTask("design the trigger sweep"),
+        graphTask("copy the config"),
+      ],
+    });
+    const after = await batchTodos(t, batch._id);
+    expect(byStatement(after, "design the trigger sweep")?.model).toBe("fable");
+    // Nothing changed, so nothing was written.
+    expect(res.unchanged).toBe(2);
+    expect(res.updated).toBe(0);
+  });
+});
+
+// ── The planner's HTTP route (POST /tts/plan-graph) ──────────────────────────
+// The body is model-written JSON, so the route PROJECTS it to the known shape
+// before the mutation sees it. The one property that makes this sanitizer
+// different from the batch one: a task's `needs` may address an earlier task by
+// its POSITION in the payload, so positions are load-bearing and a malformed
+// task must keep its slot.
+
+describe("POST /tts/plan-graph", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const postGraph = (
+    t: ReturnType<typeof convexTest>,
+    body: unknown,
+    // null = send no key at all. NOT `undefined`: passing undefined to an
+    // optional parameter takes the default, which would send the real key.
+    key: string | null = "s3cret",
+  ): Promise<Response> => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (key !== null) headers["X-TTS-Key"] = key;
+    return t.fetch("/tts/plan-graph", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  };
+
+  const validBody = {
+    statement: "sign the lease",
+    tasks: [{ statement: "call the landlord", actor: "agent" }],
+  };
+
+  it("rejects a missing or wrong key with 401", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect((await postGraph(t, validBody, null)).status).toBe(401);
+    expect((await postGraph(t, validBody, "wrong")).status).toBe(401);
+    expect((await allBatches(t)).length).toBe(0);
+  });
+
+  it("requires a statement and a tasks array by name", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    // The statement IS the batch's identity when no id is echoed, so an absent
+    // one leaves nothing to store and nothing to name in a report.
+    const noStatement = await postGraph(t, { tasks: [] });
+    expect(noStatement.status).toBe(400);
+    expect((await noStatement.json()).error).toContain("statement");
+    const blank = await postGraph(t, { statement: "   ", tasks: [] });
+    expect(blank.status).toBe(400);
+    const noTasks = await postGraph(t, { statement: "sign the lease" });
+    expect(noTasks.status).toBe(400);
+    expect((await noTasks.json()).error).toContain("tasks");
+    expect((await allBatches(t)).length).toBe(0);
+  });
+
+  it("stores a whole graph and reports what landed", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await postGraph(t, {
+      statement: "  sign the lease  ",
+      groundUpExplanation: "what this is, from the ground up",
+      path: { name: "housing", index: 0, edge: "must" },
+      tasks: [
+        { statement: "read the lease", actor: "tom" },
+        { statement: "list the questions", actor: "agent", needs: [0] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ created: 2, skipped: [] });
+    const batch = await oneBatch(t);
+    expect(batch.statement).toBe("sign the lease");
+    expect(batch.path).toEqual({ name: "housing", index: 0, edge: "must" });
+    const todos = await batchTodos(t, batch._id);
+    expect(byStatement(todos, "read the lease")?.actor).toBe("tom");
+    expect(byStatement(todos, "list the questions")?.needs).toEqual([
+      byStatement(todos, "read the lease")?._id,
+    ]);
+  });
+
+  // witness: in sanitizeGraphTask, filter a malformed task OUT of the array
+  // instead of emptying its slot — every later index reference would shift by
+  // one and silently name a different task, so "publish" below would land
+  // needing "draft" instead of being skipped.
+  it("keeps a malformed task's slot so index refs still name the right task", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await postGraph(t, {
+      statement: "ship the paper",
+      tasks: [
+        { statement: "draft the section", actor: "agent" },
+        { statement: "review it", actor: "nobody" }, // malformed: bad actor
+        { statement: "publish", actor: "agent", needs: [1] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Slot 1 was emptied, not removed, so slot 2's ref still means slot 1 —
+    // and slot 1 was skipped, which takes its dependent with it.
+    expect(body.droppedTasks).toEqual([
+      {
+        index: 1,
+        statement: "review it",
+        why: 'actor must be "tom" or "agent"',
+      },
+    ]);
+    expect(body.created).toBe(1);
+    const whys = (body.skipped as { ref: string; why: string }[]).map(
+      (s) => s.why,
+    );
+    expect(whys).toContain("a task needs a statement");
+    expect(whys.some((w) => w.includes("which was skipped"))).toBe(true);
+    const todos = await batchTodos(t, (await oneBatch(t))._id);
+    expect(todos.map((todo) => todo.statement)).toEqual(["draft the section"]);
+    // The bad actor was never defaulted into a real row.
+    expect(byStatement(todos, "review it")).toBeUndefined();
+  });
+
+  // witness: drop a single bad element out of `needs` instead of dropping the
+  // task — the task would land missing an edge nobody asked to remove, and the
+  // graph would report work ready that is not.
+  it("drops the whole task when a need is neither an id nor an index", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await postGraph(t, {
+      statement: "ship the paper",
+      tasks: [
+        { statement: "draft the section", actor: "agent" },
+        { statement: "publish", actor: "agent", needs: [0, 1.5] },
+      ],
+    });
+    const body = await res.json();
+    expect(body.droppedTasks).toEqual([
+      {
+        index: 1,
+        statement: "publish",
+        why: "a need is a todo id or an earlier task's index",
+      },
+    ]);
+    expect(body.created).toBe(1);
+  });
+
+  // witness: accept any string as the model — an unrecognized tier name would
+  // reach the mutation's validator and cost the WHOLE call, so one hallucinated
+  // word would lose a batch's entire graph instead of one default.
+  it("carries the fable tag and silently ignores any other tier", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await postGraph(t, {
+      statement: "ship the paper",
+      tasks: [
+        { statement: "design the sweep", actor: "agent", model: "fable" },
+        { statement: "run it", actor: "agent", model: "gpt-9" },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).created).toBe(2);
+    const todos = await batchTodos(t, (await oneBatch(t))._id);
+    expect(byStatement(todos, "design the sweep")?.model).toBe("fable");
+    expect(byStatement(todos, "run it")?.model).toBeUndefined();
+  });
+
+  // witness: pass a half-formed path straight through — the mutation's
+  // validator would refuse the object and cost the whole call, when an absent
+  // path simply preserves whatever is stored.
+  it("drops a broken path whole rather than costing the call", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await postGraph(t, {
+      statement: "ship the paper",
+      path: { name: "research" }, // no index
+      tasks: [{ statement: "draft the section", actor: "agent" }],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).created).toBe(1);
+    expect((await oneBatch(t)).path).toBeUndefined();
+  });
+
+  it("binds goals, archives, and echoes a batch id", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const goalId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "the lease is signed",
+        readiness: "ready-for-tom",
+        status: "active",
+        timingClass: "whenever",
+        source: "manual",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    const first = await postGraph(t, {
+      statement: "sign the lease",
+      tasks: [{ statement: "call the landlord", actor: "agent" }],
+      goalIds: [goalId, 7], // the non-string is dropped, the real id binds
+    });
+    const batchId = (await first.json()).batchId as string;
+    expect(await t.run(async (ctx) => (await ctx.db.get(goalId))!.kind)).toBe(
+      "goal",
+    );
+    const second = await postGraph(t, {
+      batchId,
+      statement: "sign the lease",
+      tasks: [],
+      archive: true,
+    });
+    expect((await second.json()).archived).toBe(1);
+    expect((await oneBatch(t)).status).toBe("archived");
+  });
+});
+
+// ── GET /tts/batch-context ───────────────────────────────────────────────────
+
+describe("GET /tts/batch-context (planner half)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // witness: drop `writingStandard` from the payload — the planner (Node ESM on
+  // a box that never loads TypeScript) cannot import it, so the one home would
+  // silently become a second copy pasted into a worker prompt.
+  it("serves the batches, the plan repairs, and the writing standard", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await storeGraph(t, { statement: "sign the lease" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "plan-repair",
+        data: { report: "reading the lease does not block drafting questions" },
+      });
+      // Noise on the same index, and a repair too old for the window: neither
+      // reaches the planner.
+      await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "surfaced" });
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() - 30 * 86_400_000,
+        kind: "plan-repair",
+        data: { report: "ancient" },
+      });
+    });
+    const res = await t.fetch("/tts/batch-context", {
+      method: "GET",
+      headers: { "X-TTS-Key": "s3cret" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.writingStandard).toBe(WRITING_STANDARD);
+    expect(body.batches.map((b: Doc<"batches">) => b.statement)).toEqual([
+      "sign the lease",
+    ]);
+    expect(body.planRepairs.map((e: Doc<"dtsEvents">) => e.data.report)).toEqual(
+      ["reading the lease does not block drafting questions"],
+    );
   });
 });
