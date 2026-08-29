@@ -1,72 +1,101 @@
 "use client";
 
-// The batch card. Collapsed = exactly three things: statement, the plan bar
-// (amber = your steps, green = agents'), and the single next thing. Expanded
-// reads top-down: brief → actions → for you → plan → the todos it completes.
-// Every item opens a detail dialog on click; every action opens the ruling
-// dialog; nothing renders inline or shifts the page.
-import type { PlanStep } from "../lib";
-import PlanBar, { nextStep, planProgress } from "./plan-bar";
+// The batch card, graph model. A batch is not a todo: it is the container
+// holding how todos get completed. Its plan is a graph of task- and
+// goal-todos; a todo is ready when everything it needs is done.
+// Collapsed = statement · task progress (amber = Tom's, green = agents') ·
+// what's ready now. Expanded = display text (+ "more" → ground-up
+// explanation) → actions → ready now → blocked (visible, never hidden) →
+// done → goals. Every item opens a detail dialog; nothing shifts the page.
+import PlanBar from "./plan-bar";
 import type { RulingVerdict } from "./ruling-dialog";
 import type { DetailItem } from "./detail-dialog";
 
-export type MemberRef = { todoId?: string; repo?: string; externalId?: string };
-
-export type TodoLite = {
-  _id: string;
+export type GraphTask = {
+  id: string;
   statement: string;
-  brief?: string;
-  entryAction?: string;
-  workDescription?: string;
-  status?: string;
-  createdAt?: number;
-  updatedAt?: number;
-  dueAt?: number;
+  actor: "tom" | "agent";
+  status: "active" | "done";
+  needs: string[];
+  evidence?: string;
+  groundUp?: string;
 };
 
-export type BatchData = TodoLite & {
-  members?: MemberRef[];
-  plan?: PlanStep[];
+export type GraphGoal = {
+  id: string;
+  statement: string;
+  condition?: string;
+  met: boolean;
+  groundUp?: string;
+  code?: { repo: string; externalId: string };
 };
+
+export type BatchGraph = {
+  id: string;
+  statement: string;
+  groundUp?: string;
+  tasks: GraphTask[];
+  goals: GraphGoal[];
+};
+
+export function taskSets(tasks: GraphTask[]): {
+  done: GraphTask[];
+  ready: GraphTask[];
+  blocked: GraphTask[];
+} {
+  const doneIds = new Set(tasks.filter((t) => t.status === "done").map((t) => t.id));
+  const done: GraphTask[] = [];
+  const ready: GraphTask[] = [];
+  const blocked: GraphTask[] = [];
+  for (const t of tasks) {
+    if (t.status === "done") done.push(t);
+    else if (t.needs.every((n) => doneIds.has(n))) ready.push(t);
+    else blocked.push(t);
+  }
+  return { done, ready, blocked };
+}
+
+function needNames(t: GraphTask, all: GraphTask[]): string[] {
+  const doneIds = new Set(all.filter((x) => x.status === "done").map((x) => x.id));
+  const byId = new Map(all.map((x) => [x.id, x]));
+  return t.needs
+    .filter((n) => !doneIds.has(n))
+    .map((n) => byId.get(n)?.statement ?? n);
+}
 
 export default function BatchCard({
-  batch,
-  resolveTodo,
+  graph,
   expanded,
+  showDone,
   onToggle,
+  onToggleDone,
   onRule,
   onDetail,
   onOpenSession,
 }: {
-  batch: BatchData;
-  resolveTodo: (id: string) => TodoLite | undefined;
+  graph: BatchGraph;
   expanded: boolean;
+  showDone: boolean;
   onToggle: () => void;
+  onToggleDone: () => void;
   onRule: (verdict: RulingVerdict) => void;
   onDetail: (item: DetailItem) => void;
   onOpenSession: () => void;
 }) {
-  const { done, total } = planProgress(batch.plan);
-  const next = nextStep(batch.plan);
-  const steps = batch.plan ?? [];
-  const forYou = steps
-    .map((s, i) => ({ s, i }))
-    .filter(({ s }) => s.actor === "tom" && s.status === "open");
+  const { done, ready, blocked } = taskSets(graph.tasks);
+  const planForBar = graph.tasks.map((t) => ({
+    text: t.statement,
+    actor: t.actor,
+    status: t.status === "done" ? ("done" as const) : ("open" as const),
+  }));
+  const next = ready[0];
 
-  const stepDetail = (s: PlanStep): DetailItem => ({
-    kind: "step",
-    batchStatement: batch.statement,
-    step: s,
+  const taskDetail = (t: GraphTask): DetailItem => ({
+    kind: "task",
+    batchStatement: graph.statement,
+    task: t,
+    waitingOn: needNames(t, graph.tasks),
   });
-  const memberDetail = (m: MemberRef): DetailItem => {
-    if (m.todoId !== undefined) {
-      const t = resolveTodo(m.todoId);
-      return t
-        ? { kind: "todo", ...t }
-        : { kind: "todo", statement: m.todoId, status: "missing" };
-    }
-    return { kind: "code", repo: m.repo ?? "?", externalId: m.externalId ?? "?" };
-  };
 
   return (
     <div
@@ -77,30 +106,31 @@ export default function BatchCard({
         onClick={onToggle}
         className="grid w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-3 px-3 py-2 text-left"
       >
-        <span className="text-[11px] text-text-faint">
-          {expanded ? "▾" : "▸"}
-        </span>
+        <span className="text-[11px] text-text-faint">{expanded ? "▾" : "▸"}</span>
         <span className="min-w-0">
-          <span className="block truncate text-[15px] text-text">
-            {batch.statement}
-          </span>
-          {next && (
+          <span className="block truncate text-[15px] text-text">{graph.statement}</span>
+          {next ? (
             <span className="block truncate text-xs text-text-muted">
-              next:{" "}
-              <span
-                className={next.actor === "tom" ? "text-accent" : "text-text-faint"}
-              >
+              ready now:{" "}
+              <span className={next.actor === "tom" ? "text-accent" : "text-text-faint"}>
                 {next.actor === "tom" ? "you" : "agents"}
               </span>{" "}
-              — {next.text}
+              — {next.statement}
+              {ready.length > 1 && (
+                <span className="text-text-faint"> · +{ready.length - 1} more ready</span>
+              )}
             </span>
-          )}
+          ) : blocked.length > 0 ? (
+            <span className="block truncate text-xs text-text-faint">
+              nothing ready — {blocked.length} blocked
+            </span>
+          ) : null}
         </span>
-        {total > 0 && (
+        {graph.tasks.length > 0 && (
           <span className="text-right">
-            <PlanBar plan={batch.plan} />
+            <PlanBar plan={planForBar} />
             <span className="block text-[11px] text-text-faint">
-              {done} of {total} steps done
+              {done.length} of {graph.tasks.length} tasks done
             </span>
           </span>
         )}
@@ -108,17 +138,16 @@ export default function BatchCard({
 
       {expanded && (
         <div className="border-t border-border px-3 pb-3 pt-2.5">
-          {batch.brief !== undefined && (
+          {graph.groundUp !== undefined && (
             <p className="mb-2.5 text-[13px] text-text-muted">
-              {batch.brief}{" "}
+              {graph.groundUp.split(". ").slice(0, 2).join(". ")}
+              {". "}
               <button
                 type="button"
-                onClick={() =>
-                  onDetail({ kind: "todo", ...batch })
-                }
+                onClick={() => onDetail({ kind: "batch", graph })}
                 className="text-accent underline underline-offset-2"
               >
-                full detail
+                more
               </button>
             </p>
           )}
@@ -143,89 +172,115 @@ export default function BatchCard({
             ))}
           </div>
 
-          {forYou.length > 0 && (
-            <div className="mb-3 border-l-2 border-accent pl-2.5">
-              <div className="mb-1 text-[11px] uppercase tracking-wide text-accent">
-                for you · {forYou.length}
+          {ready.length > 0 && (
+            <>
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-text-faint">
+                ready now
               </div>
-              {forYou.map(({ s, i }) => (
+              {ready.map((t) => (
                 <button
-                  key={i}
+                  key={t.id}
                   type="button"
-                  onClick={() => onDetail(stepDetail(s))}
-                  className="block w-full truncate py-0.5 text-left text-[13px] text-text hover:text-accent"
+                  onClick={() => onDetail(taskDetail(t))}
+                  className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px]"
                 >
-                  ○ {s.text}
+                  <span className="text-text-faint">○</span>
+                  <span
+                    className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
+                      t.actor === "tom" ? "text-accent" : "text-text-faint"
+                    }`}
+                  >
+                    {t.actor === "tom" ? "you" : "agent"}
+                  </span>
+                  <span className="truncate text-text">{t.statement}</span>
                 </button>
               ))}
-            </div>
+            </>
           )}
 
-          <div className="mb-1 text-[11px] uppercase tracking-wide text-text-faint">
-            plan
-          </div>
-          {steps.map((s, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onDetail(stepDetail(s))}
-              className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px]"
-            >
-              <span
-                className={s.status === "done" ? "text-success" : "text-text-faint"}
-              >
-                {s.status === "done" ? "✓" : "○"}
-              </span>
-              <span
-                className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
-                  s.actor === "tom" ? "text-accent" : "text-text-faint"
-                }`}
-              >
-                {s.actor === "tom" ? "you" : "agent"}
-              </span>
-              <span
-                className={`truncate ${
-                  s.status === "done" ? "text-text-faint" : "text-text-muted"
-                }`}
-              >
-                {s.text}
-              </span>
-            </button>
-          ))}
-
-          {(batch.members ?? []).length > 0 && (
+          {blocked.length > 0 && (
             <>
-              <div className="mb-1 mt-3 text-[11px] uppercase tracking-wide text-text-faint">
-                todos this completes · {(batch.members ?? []).length}
+              <div className="mb-1 mt-2.5 text-[11px] uppercase tracking-wide text-text-faint">
+                blocked
               </div>
-              {(batch.members ?? []).map((m, i) => {
-                const t = m.todoId !== undefined ? resolveTodo(m.todoId) : undefined;
-                const label =
-                  m.todoId !== undefined
-                    ? (t?.statement ?? m.todoId)
-                    : `${m.repo} · ${m.externalId}`;
-                const st =
-                  m.todoId !== undefined ? (t?.status ?? "missing") : "code";
-                return (
+              {blocked.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onDetail(taskDetail(t))}
+                  className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px] opacity-60"
+                >
+                  <span className="text-text-faint">○</span>
+                  <span
+                    className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
+                      t.actor === "tom" ? "text-accent" : "text-text-faint"
+                    }`}
+                  >
+                    {t.actor === "tom" ? "you" : "agent"}
+                  </span>
+                  <span className="min-w-0 truncate">
+                    <span className="text-text-muted">{t.statement}</span>
+                    <span className="text-text-faint">
+                      {" "}
+                      · waiting on: {needNames(t, graph.tasks).join(", ")}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </>
+          )}
+
+          {done.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={onToggleDone}
+                className="mt-2.5 block text-[11px] uppercase tracking-wide text-accent underline underline-offset-2"
+              >
+                {showDone ? "hide" : "show"} {done.length} done
+              </button>
+              {showDone &&
+                done.map((t) => (
                   <button
-                    key={i}
+                    key={t.id}
                     type="button"
-                    onClick={() => onDetail(memberDetail(m))}
+                    onClick={() => onDetail(taskDetail(t))}
                     className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px]"
                   >
+                    <span className="text-success">✓</span>
                     <span
-                      className={`w-14 shrink-0 text-[11px] ${
-                        st === "done" || st === "archived"
-                          ? "text-success"
-                          : "text-text-faint"
+                      className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
+                        t.actor === "tom" ? "text-accent/70" : "text-text-faint"
                       }`}
                     >
-                      {st}
+                      {t.actor === "tom" ? "you" : "agent"}
                     </span>
-                    <span className="truncate text-text-muted">{label}</span>
+                    <span className="truncate text-text-faint">{t.statement}</span>
                   </button>
-                );
-              })}
+                ))}
+            </>
+          )}
+
+          {graph.goals.length > 0 && (
+            <>
+              <div className="mb-1 mt-3 text-[11px] uppercase tracking-wide text-text-faint">
+                goals · {graph.goals.filter((g) => g.met).length} of {graph.goals.length} met
+              </div>
+              {graph.goals.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
+                  className="flex w-full items-baseline gap-2 py-0.5 text-left text-[13px]"
+                >
+                  <span className={g.met ? "text-success" : "text-text-faint"}>
+                    {g.met ? "✓" : "◇"}
+                  </span>
+                  <span className={`truncate ${g.met ? "text-text-faint" : "text-text-muted"}`}>
+                    {g.statement}
+                  </span>
+                </button>
+              ))}
             </>
           )}
         </div>

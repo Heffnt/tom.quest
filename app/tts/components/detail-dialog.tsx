@@ -1,30 +1,19 @@
 "use client";
 
-// One click on any item — a plan step, a member todo, the batch itself —
-// opens this. Everything known about the item, in one fixed dialog, so
-// understanding never requires opening a session.
-import type { PlanStep } from "../lib";
-import { fmtDate } from "../lib";
+// One click on any item — a task, a goal, the batch itself — opens this:
+// everything known about the item, with its ground-up explanation, in one
+// fixed dialog. Understanding never requires opening a session.
+import type { BatchGraph, GraphGoal, GraphTask } from "./batch-card";
 
 export type DetailItem =
-  | { kind: "step"; batchStatement: string; step: PlanStep }
-  | {
-      kind: "todo";
-      statement: string;
-      status?: string;
-      brief?: string;
-      entryAction?: string;
-      workDescription?: string;
-      createdAt?: number;
-      updatedAt?: number;
-      dueAt?: number;
-    }
-  | { kind: "code"; repo: string; externalId: string };
+  | { kind: "task"; batchStatement: string; task: GraphTask; waitingOn: string[] }
+  | { kind: "goal"; batchStatement: string; goal: GraphGoal }
+  | { kind: "batch"; graph: BatchGraph };
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[88px_1fr] gap-2 text-[13px]">
-      <span className="text-[11px] uppercase tracking-wide text-text-faint pt-0.5">
+    <div className="grid grid-cols-[92px_1fr] gap-2 text-[13px]">
+      <span className="pt-0.5 text-[11px] uppercase tracking-wide text-text-faint">
         {label}
       </span>
       <span className="text-text-muted">{children}</span>
@@ -46,70 +35,72 @@ export default function DetailDialog({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-[480px] max-w-full max-h-[80vh] overflow-y-auto rounded-xl border border-[#3b4a66] bg-surface p-4">
-        {item.kind === "step" && (
+      <div className="max-h-[80vh] w-[500px] max-w-full overflow-y-auto rounded-xl border border-[#3b4a66] bg-surface p-4">
+        {item.kind === "task" && (
           <div className="flex flex-col gap-2">
-            <h3 className="text-[15px] font-semibold">{item.step.text}</h3>
+            <h3 className="text-[15px] font-semibold">{item.task.statement}</h3>
             <Row label="part of">{item.batchStatement}</Row>
             <Row label="who">
-              {item.step.actor === "tom" ? (
-                <span className="text-accent">you</span>
-              ) : (
-                "agents"
-              )}
+              {item.task.actor === "tom" ? <span className="text-accent">you</span> : "agents"}
             </Row>
             <Row label="status">
-              {item.step.status}
-              {item.step.doneAt !== undefined && ` · ${fmtDate(item.step.doneAt)}`}
+              {item.task.status === "done" ? "done" : item.waitingOn.length > 0 ? "blocked" : "ready"}
             </Row>
-            {item.step.evidence !== undefined && (
+            {item.waitingOn.length > 0 && (
+              <Row label="waiting on">{item.waitingOn.join(" · ")}</Row>
+            )}
+            {item.task.evidence !== undefined && (
               <Row label="evidence">
-                {item.step.evidence.startsWith("http") ? (
+                {item.task.evidence.startsWith("http") ? (
                   <a
-                    href={item.step.evidence}
+                    href={item.task.evidence}
                     target="_blank"
                     rel="noreferrer"
                     className="text-accent underline underline-offset-2"
                   >
-                    {item.step.evidence}
+                    {item.task.evidence}
                   </a>
                 ) : (
-                  item.step.evidence
+                  item.task.evidence
                 )}
               </Row>
             )}
-          </div>
-        )}
-
-        {item.kind === "todo" && (
-          <div className="flex flex-col gap-2">
-            <h3 className="text-[15px] font-semibold">{item.statement}</h3>
-            {item.status !== undefined && <Row label="status">{item.status}</Row>}
-            {item.brief !== undefined && <Row label="brief">{item.brief}</Row>}
-            {item.entryAction !== undefined && (
-              <Row label="first move">{item.entryAction}</Row>
-            )}
-            {item.workDescription !== undefined && (
-              <Row label="the work">{item.workDescription}</Row>
-            )}
-            {item.dueAt !== undefined && (
-              <Row label="due">{fmtDate(item.dueAt)}</Row>
-            )}
-            {item.createdAt !== undefined && (
-              <Row label="created">{fmtDate(item.createdAt)}</Row>
-            )}
-            {item.updatedAt !== undefined && (
-              <Row label="updated">{fmtDate(item.updatedAt)}</Row>
+            {item.task.groundUp !== undefined && (
+              <p className="mt-1 border-t border-border pt-2 text-[13px] text-text-muted">
+                {item.task.groundUp}
+              </p>
             )}
           </div>
         )}
 
-        {item.kind === "code" && (
+        {item.kind === "goal" && (
           <div className="flex flex-col gap-2">
-            <h3 className="text-[15px] font-semibold">
-              {item.repo} · {item.externalId}
-            </h3>
-            <Row label="lives in">{item.repo}&apos;s todo file</Row>
+            <h3 className="text-[15px] font-semibold">{item.goal.statement}</h3>
+            <Row label="part of">{item.batchStatement}</Row>
+            <Row label="kind">goal — a condition about the world this batch must make true</Row>
+            {item.goal.condition !== undefined && (
+              <Row label="condition">{item.goal.condition}</Row>
+            )}
+            <Row label="status">{item.goal.met ? "met" : "not yet met"}</Row>
+            {item.goal.code !== undefined && (
+              <Row label="lives in">
+                {item.goal.code.repo} · {item.goal.code.externalId}
+              </Row>
+            )}
+            {item.goal.groundUp !== undefined && (
+              <p className="mt-1 border-t border-border pt-2 text-[13px] text-text-muted">
+                {item.goal.groundUp}
+              </p>
+            )}
+          </div>
+        )}
+
+        {item.kind === "batch" && (
+          <div className="flex flex-col gap-2">
+            <h3 className="text-[15px] font-semibold">{item.graph.statement}</h3>
+            <p className="text-[13px] text-text-muted">{item.graph.groundUp}</p>
+            <Row label="tasks">{item.graph.tasks.length}</Row>
+            <Row label="goals">{item.graph.goals.length}</Row>
           </div>
         )}
 
