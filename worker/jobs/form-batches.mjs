@@ -40,7 +40,14 @@ import { createHash } from "node:crypto";
 import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/batch-input-hash";
-const CLAUDE_TIMEOUT_MS = 10 * 60 * 1000;
+const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
+// One run offers at most this many unbatched life todos (oldest first) and
+// clips each brief. An unbounded offer sank real runs: at 122+ todos with full
+// briefs the single full-set completion blew the 10-min timeout three runs in
+// a row (2026-08-29) and the backlog compounded. The 2h cron drains any
+// backlog in slices — todos batched this run drop out of the next run's offer.
+const MAX_LIFE_PER_RUN = 80;
+const MAX_BRIEF_CHARS = 400;
 
 function prompt(ctx) {
   return [
@@ -61,6 +68,13 @@ function prompt(ctx) {
     `category, importance, dueAt — dueAt is epoch ms or null):`,
     JSON.stringify(ctx.life, null, 2),
     ``,
+    ...(ctx.lifeHeldBack > 0
+      ? [
+          `${ctx.lifeHeldBack} more unbatched life todos are held back this run`,
+          `to bound the call. Batch what you see; the next run gets the rest.`,
+          ``,
+        ]
+      : []),
     `OPEN CODE TODOS with prepared briefs (JSON; each: repo, externalId,`,
     `statement, importance):`,
     JSON.stringify(ctx.code, null, 2),
@@ -122,7 +136,10 @@ function prompt(ctx) {
     `  "importanceRationale".`,
     `- "archiveIds" — ids of unfrozen batches whose members are all closed or`,
     `  terminal, or whose members this output regroups elsewhere.`,
-    `- Not every todo belongs in a batch — leave poor fits out.`,
+    `- COVERAGE: most active todos should land in some batch — a large`,
+    `  unbatched backlog is a failure state. Sweep the backlog into coherent`,
+    `  batches each run, creating as many batches as the material needs.`,
+    `  Leave out only genuine singletons that fit no grouping.`,
     ``,
     `Answer ONLY a JSON object, no prose, no code fences:`,
     `{"batches": [{"id": "...", "statement": "...", "brief": "...",`,
@@ -214,17 +231,21 @@ async function main() {
 
   // Compact projections — exactly the fields the model groups by, nothing
   // that tempts it to edit content.
-  const life = all
+  const lifeEligible = all
     .filter(
       (t) =>
         t.status === "active" &&
         t.members === undefined &&
         !claimed.has(`life ${t._id}`),
     )
+    .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+  const lifeHeldBack = Math.max(0, lifeEligible.length - MAX_LIFE_PER_RUN);
+  const life = lifeEligible
+    .slice(0, MAX_LIFE_PER_RUN)
     .map((t) => ({
       id: t._id,
       statement: t.statement,
-      brief: t.brief ?? null,
+      brief: t.brief ? t.brief.slice(0, MAX_BRIEF_CHARS) : null,
       category: t.category ?? null,
       importance: t.importance
         ? { level: t.importance.level, setBy: t.importance.setBy, rationale: t.importance.rationale ?? null }
@@ -285,12 +306,13 @@ async function main() {
 
   // --- One Claude call for the whole desired set ---------------------------
   console.log(
-    `[form-batches] ${life.length} life + ${code.length} code todos, ` +
+    `[form-batches] ${life.length} life (${lifeHeldBack} held back) + ${code.length} code todos, ` +
       `${batchRows.length} existing batch(es), ${revises.length} revise ruling(s) — asking Claude…`,
   );
   const answer = runClaude(
     prompt({
       life,
+      lifeHeldBack,
       code,
       batches: batchRows,
       archivedStatements,

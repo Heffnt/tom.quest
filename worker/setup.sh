@@ -129,7 +129,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # many) via headless Claude, every 6 hours at :07 (:07 collides with nothing;
 # :17/:37/:45 are taken). An input-hash cursor in /var/lib/tts/ makes
 # unchanged-input runs no-ops, so most ticks cost no Claude call.
-7 0,6,12,18 * * * root /usr/bin/node /opt/tts/form-batches.mjs >> /var/log/tts/form-batches.log 2>&1
+7 */2 * * * root /usr/bin/node /opt/tts/form-batches.mjs >> /var/log/tts/form-batches.log 2>&1
 
 # Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
 # propose-archive) every 10 minutes, so a ruling made in the UI takes effect
