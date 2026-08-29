@@ -57,6 +57,11 @@ export const IMPORTANCE_LEVEL = v.union(
   v.literal("medium"),
   v.literal("high"),
 );
+// The ONE server-side encoding of importance order: higher = more important,
+// unset ranks 0 (below "low"). Lockstep with app/dts/lib.ts IMPORTANCE_RANK —
+// the client bundle cannot import this server module, so it carries a copy of
+// the same values; change both together.
+export const IMPORTANCE_RANK = { low: 1, medium: 2, high: 3 } as const;
 // A batch member addresses exactly one subject, in the dtsRulings shape
 // (life by todoId, code by repo+externalId) — enforced in validateBatchMembers.
 const MEMBER = v.object({
@@ -975,9 +980,21 @@ export const internalPrepareTodo = internalMutation({
       }
     }
     if (plan !== undefined) {
-      // A plan on a Tom-touched row is his — preparation must not clobber it.
-      if (todo.tomTouchedAt !== undefined && todo.plan !== undefined) {
-        await logEvent(ctx, "plan-skipped", normalized, {});
+      // Tom's asks may never vanish from a plan by agent hand: the incoming
+      // plan is accepted iff every existing step with actor "tom" appears
+      // among the incoming steps' texts (exact text match). Agents may check
+      // off, reorder, and add steps freely. This replaces the old blanket
+      // "Tom-touched row with a plan" skip, which froze live batch sessions
+      // and autonomous plan work the moment Tom touched the row at all.
+      const incomingTexts = new Set(plan.map((s) => s.text));
+      const droppedTomStep = (todo.plan ?? []).find(
+        (s) => s.actor === "tom" && !incomingTexts.has(s.text),
+      );
+      if (droppedTomStep !== undefined) {
+        await logEvent(ctx, "plan-skipped", normalized, {
+          reason: "tom-step dropped",
+          step: droppedTomStep.text,
+        });
       } else {
         patch.plan = plan;
       }

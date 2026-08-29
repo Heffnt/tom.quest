@@ -31,4 +31,15 @@ crons.cron("dts digest (est)", "0 10 * * *", internal.dtsSync.sendDigest, {});
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("dts mirror refresh", { hours: 6 }, internal.dtsSync.refreshMirror, {});
 
+// ── TTS autonomous fleet (P3) ───────────────────────────────────────────────
+// Load-based admission of autonomous groundwork sessions. Off by default
+// (claudeAutoConfig.enabled, no row = false), so the interval is safe to ship
+// ahead of the enable pen.
+crons.interval(
+  "tts auto-session scheduler",
+  { minutes: 5 },
+  internal.claudeSessions.internalAutoSchedule,
+  {},
+);
+
 export default crons;

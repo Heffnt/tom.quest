@@ -97,8 +97,19 @@ export default function MessageRow({ message }: { message: Message }) {
       );
     }
     case "system": {
+      // source "sdk" = the SDK spoke on its own (background-task
+      // notifications), not the daemon narrating. The mark says which.
+      const fromSdk =
+        typeof content === "object" &&
+        content !== null &&
+        (content as Record<string, unknown>).source === "sdk";
       return (
         <div className="text-center text-xs text-text-faint px-1">
+          {fromSdk && (
+            <span className="font-mono text-[10px] text-text-faint/70 mr-1.5">
+              sdk
+            </span>
+          )}
           {previewLine(contentToText(content), 160)}
         </div>
       );

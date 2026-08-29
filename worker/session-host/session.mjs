@@ -14,7 +14,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -50,16 +49,33 @@ const BUF_SEGMENT_BYTES = 16 * 1024;
 // permission, status change, error) bypass it.
 const FLUSH_THROTTLE_MS = 400;
 
-// ── Permission posture (ratified by Tom) ─────────────────────────────────────
-// AUTO-ALLOW: pure reads, always safe anywhere.
-const AUTO_ALLOW_TOOLS = new Set(["Read", "Glob", "Grep"]);
-// File-editing tools: auto-allowed IFF the target resolves inside the session
-// workdir, auto-DENIED with a corrective message otherwise — this is the
-// handler for the observed gotcha where the model writes to hallucinated
-// absolute paths (/Users/…, /tmp/…) before checking cwd. MultiEdit is
-// included because it is the same class of tool as Edit in current CLIs.
+// ── Permission posture (ratified by Tom, 2026-08-28 revision) ────────────────
+// Unified auto mode, every session mode: no tool call parks on Tom. The
+// durable safety boundary is structural, not per-call — sessions work in
+// throwaway workdirs under /var/cache (deleted at end), pushes land only in
+// the session/<id> branch namespace, merging anything is Tom's gate (the
+// execute-approved PR-gate precedent), rulings can only come from Tom's
+// pens, and every allowed call still lands as a tool-call transcript row for
+// review. The ONE per-call check kept: file-editing tools must target the
+// session workdir — auto-DENIED with a corrective message otherwise (the
+// observed gotcha where the model writes to hallucinated absolute paths
+// before checking cwd). MultiEdit is included because it is the same class
+// of tool as Edit in current CLIs.
 const EDIT_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
-// Everything else (Bash, WebFetch/WebSearch, MCP, unrecognized) prompts Tom.
+
+// Autonomous sessions: SDK turn budget (matches the executor's agentic
+// budget) and the wall-clock cap per delivered turn — past it the turn is
+// interrupted and the session ends errored ("autonomous time cap").
+const AUTO_MAX_TURNS = 200;
+const AUTO_TURN_CAP_MS = 90 * 60 * 1000;
+
+// Usage-limit signals in SDK errors / error results — the session-host
+// reacts by switching the active Max account (see maybeSwitchAccount).
+// Deliberately NARROW: "overloaded" (a transient API 529) must not burn the
+// 3h switch throttle on a signal that resolves by itself. LOCKSTEP: the
+// scheduler's circuit breaker in convex/claudeSessions.ts (AUTO_USAGE_RE)
+// carries the same pattern — change both together.
+export const USAGE_LIMIT_RE = /usage.?limit|limit reached/i;
 
 // ── Small utilities ──────────────────────────────────────────────────────────
 
@@ -127,10 +143,18 @@ async function* promptStream(queue) {
 // ── The Session class ────────────────────────────────────────────────────────
 
 export class Session {
-  constructor({ id, repo, env, nextSeq }) {
+  constructor({ id, repo, env, nextSeq, mode, onUsageSignal }) {
     this.id = id;
     this.repo = repo;
     this.env = env;
+    // "interactive" (absent on old rows) or "autonomous" — drives maxTurns,
+    // the wall-clock cap, and the auto-end-after-result behavior. The
+    // permission posture is mode-independent (unified auto mode).
+    this.mode = mode ?? "interactive";
+    // Host-provided callback for usage-limit signals (account auto-switch
+    // lives in session-host.mjs — it is box-level, not per-session).
+    this.onUsageSignal = onUsageSignal;
+    this.autoTurnTimer = null; // wall-clock cap timer (autonomous only)
 
     // Daemon-owned counters. `turn` groups rows for rendering; it seeds from
     // nextSeq because any previous daemon's turn numbers are strictly less
@@ -141,7 +165,8 @@ export class Session {
     this.turn = nextSeq;
 
     // Local mirror of the daemon-reported status ("starting" | "idle" |
-    // "running" | "awaiting-permission" | "ended" | "failed").
+    // "running" | "ended" | "failed"; "awaiting-permission" is historical —
+    // the unified auto gate no longer produces it).
     this.status = "starting";
     this.sdkSessionId = undefined;
     this.workdir = undefined;
@@ -165,15 +190,19 @@ export class Session {
 
     // Outbox: everything awaiting ingest. Arrays are drained by flush and
     // re-prepended on failure (order matters for finalize: seq-ascending).
+    // permissionUpdates carries only ACKS of historical decided rows — the
+    // unified auto gate produces no new permission requests.
     this.outbox = {
       finalize: [],
       inboundUpdates: [],
-      permissionRequests: [],
       permissionUpdates: [],
     };
     this.statusToSend = undefined;
+    this.outcomeToSend = undefined; // { outcome, outcomeSummary } — daemon-stamped ending
     this.endedReasonToSend = undefined;
     this.sdkSessionIdToSend = undefined;
+    this.activeUserTurnText = ""; // for the SDK-echo dedupe (user text blocks)
+    this.lastTurnErrorText = undefined; // last SDK error — autonomous outcomeSummary
     this.cwdToSend = undefined;
     this.lastSdkEventAt = undefined;
     this.lastSdkEventAtDirty = false;
@@ -185,10 +214,9 @@ export class Session {
     this.flushImmediateAgain = false;
     this.ingestAttempt = 0;
 
-    // Command / permission bookkeeping.
+    // Command bookkeeping.
     this.processedInbound = new Set(); // inbound _ids already acted on locally
     this.activeUserTurnId = null; // delivered user-turn awaiting its result
-    this.permissionWaiters = new Map(); // requestId -> { resolve, input }
     this.serverInbound = []; // latest pending inbound rows from server
     // Synchronous in-flight guard for #deliverUserTurn (review fix: the
     // status gate in processCommands stays "idle" across the awaited
@@ -215,9 +243,18 @@ export class Session {
     if (status === "ended" || status === "failed") this.reportedTerminal = true;
   }
 
-  finalizeRow(kind, content) {
+  finalizeRow(kind, content, parentToolUseId) {
     const seq = this.nextSeq++;
-    this.outbox.finalize.push({ seq, turn: this.turn, kind, content });
+    this.outbox.finalize.push({
+      seq,
+      turn: this.turn,
+      kind,
+      content,
+      // Subagent parentage: the Task tool_use id this row was produced under
+      // (absent = top-level). The panel and transcript grouping derive from
+      // this — the daemon records the SDK's fact, nothing more.
+      ...(parentToolUseId ? { parentToolUseId } : {}),
+    });
     return seq;
   }
 
@@ -237,9 +274,9 @@ export class Session {
       !this.flushInFlight &&
       this.outbox.finalize.length === 0 &&
       this.outbox.inboundUpdates.length === 0 &&
-      this.outbox.permissionRequests.length === 0 &&
       this.outbox.permissionUpdates.length === 0 &&
       this.statusToSend === undefined &&
+      this.outcomeToSend === undefined &&
       !this.bufDirty
     );
   }
@@ -341,6 +378,27 @@ export class Session {
         abortController: this.abort,
         canUseTool: (toolName, input, opts) =>
           this.#canUseTool(toolName, input, opts),
+        // The pens are key-authed curls (POST /dts/prepare-todo,
+        // POST /sessions/outcome) — the session's shell must see the keys
+        // regardless of how this daemon was started (systemd EnvironmentFile
+        // vs manual run), so they are passed explicitly, on top of the full
+        // process env (the SDK child needs PATH, HOME, CLAUDE_CONFIG_DIR…).
+        // ONLY the DTS worker key enters a session's shell — its write
+        // surface (capture, prep, briefs, batches, ruling-applied,
+        // session-outcome) is the same one the cron jobs' agentic runs
+        // already expose to a model. SESSIONS_WORKER_KEY must never be here:
+        // it authorizes transcript ingest, and a model-reachable ingest key
+        // would let a confused session corrupt any transcript.
+        env: {
+          ...process.env,
+          CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
+          ...(this.env.DTS_WORKER_KEY
+            ? { DTS_WORKER_KEY: this.env.DTS_WORKER_KEY }
+            : {}),
+        },
+        // Autonomous missions are one long agentic turn — same budget as the
+        // executor's agentic runs.
+        ...(this.mode === "autonomous" ? { maxTurns: AUTO_MAX_TURNS } : {}),
         ...(resume ? { resume } : {}),
       },
     });
@@ -377,6 +435,12 @@ export class Session {
         const msg = truncated(String(err?.message ?? err), ERROR_TEXT_LIMIT).value;
         this.finalizeRow("error", { message: msg });
         log(`session ${this.id}: SDK error:`, msg);
+        // Kept for the autonomous outcomeSummary — usage-limit text reaching
+        // the outcome is what makes the scheduler's circuit breaker live.
+        this.lastTurnErrorText = msg;
+        if (USAGE_LIMIT_RE.test(msg)) {
+          this.onUsageSignal?.(msg.slice(0, 200), this);
+        }
       }
     } finally {
       if (this.q === q) {
@@ -393,34 +457,38 @@ export class Session {
   // streamed-but-unfinalized text (nothing-ever-lost), settle the delivered
   // inbound row, go idle, and see whether another command is already queued.
   #turnDied(wasError) {
+    this.#clearAutoTimer();
     if (this.bufText !== "") {
       this.finalizeRow("assistant-text", { text: this.bufText });
       this.bufText = "";
     }
     this.bufDirty = true; // clear the live tail server-side
-    // Settle any parked permission waiters (review fix: interrupt/stop/kill
-    // all supersede parked permissions but the iterator-error path did not —
-    // the canUseTool promise leaked and the server row stayed pending,
-    // pinning a dead Allow/Deny card in the UI).
-    for (const [requestId, waiter] of this.permissionWaiters) {
-      this.outbox.permissionUpdates.push({
-        requestId,
-        status: "expired",
-        decidedBy: "turn-died",
-        applied: true,
-      });
-      waiter.resolve({
-        behavior: "deny",
-        message: "the turn ended before a decision",
-      });
-    }
-    this.permissionWaiters.clear();
     if (this.activeUserTurnId) {
       this.outbox.inboundUpdates.push({
         id: this.activeUserTurnId,
         status: wasError ? "failed" : "interrupted",
       });
       this.activeUserTurnId = null;
+    }
+    if (this.mode === "autonomous" && wasError) {
+      // An autonomous session has no Tom to send the next turn — the
+      // interactive "park idle, resumable" recovery would leave it live
+      // forever: counted against the fleet cap, its todo excluded, workdir
+      // never cleaned. End it errored; the scheduler's backoff owns retry.
+      // The SDK error text rides the outcome so the usage circuit breaker
+      // can read it. (A Tom-sent interrupt — wasError false — parks idle
+      // like any session: interrupting IS taking the session over.)
+      this.queue?.close();
+      this.stopRequested = true;
+      this.outcomeToSend = {
+        outcome: "errored",
+        outcomeSummary: `autonomous turn failed: ${(this.lastTurnErrorText ?? "no error text").slice(0, 160)}`,
+      };
+      this.setStatus("ended");
+      this.endedReasonToSend = "autonomous turn failed";
+      this.requestFlush(true);
+      this.cleanupWorkdir();
+      return;
     }
     this.setStatus("idle");
     this.requestFlush(true);
@@ -444,6 +512,11 @@ export class Session {
         break;
       }
       case "stream_event": {
+        // Subagent deltas never touch the live tail — claudeStreamBuf belongs
+        // to the parent conversation, and interleaved subagent text would
+        // corrupt it mid-sentence. Subagent text lands via its complete
+        // assistant message below.
+        if (m.parent_tool_use_id != null) break;
         const ev = m.event;
         if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta") {
           this.bufText += ev.delta.text;
@@ -464,6 +537,43 @@ export class Session {
       case "assistant": {
         // A complete assistant message: thinking + text + tool_use blocks.
         const blocks = Array.isArray(m.message?.content) ? m.message.content : [];
+        const parent = m.parent_tool_use_id ?? undefined;
+        if (parent !== undefined) {
+          // SUBAGENT message: every row is stamped with its Task parent, and
+          // text finalizes from b.text directly — bufText belongs to the
+          // parent and must never be drained here.
+          for (const b of blocks) {
+            if (b.type === "thinking") {
+              const t = truncated(b.thinking);
+              this.finalizeRow(
+                "thinking",
+                { text: t.value, ...(t.note ? { truncationNote: t.note } : {}) },
+                parent,
+              );
+            } else if (b.type === "text" && b.text) {
+              const t = truncated(b.text);
+              this.finalizeRow(
+                "assistant-text",
+                { text: t.value, ...(t.note ? { truncationNote: t.note } : {}) },
+                parent,
+              );
+            } else if (b.type === "tool_use") {
+              const t = truncated(b.input);
+              this.finalizeRow(
+                "tool-call",
+                {
+                  toolName: b.name,
+                  toolUseId: b.id,
+                  input: t.value,
+                  ...(t.note ? { truncationNote: t.note } : {}),
+                },
+                parent,
+              );
+            }
+          }
+          this.requestFlush(true);
+          break;
+        }
         for (const b of blocks) {
           if (b.type === "thinking") {
             const t = truncated(b.thinking);
@@ -499,18 +609,49 @@ export class Session {
         break;
       }
       case "user": {
-        // Tool results fed back to the model.
+        // Tool results fed back to the model — plus SDK-emitted TEXT blocks,
+        // which is where background-task exit notifications arrive (they were
+        // silently dropped before the agent-panel round).
         const blocks = m.message?.content;
+        const parent = m.parent_tool_use_id ?? undefined;
         if (Array.isArray(blocks)) {
           for (const b of blocks) {
             if (b.type === "tool_result") {
               const t = truncated(b.content);
-              this.finalizeRow("tool-result", {
-                toolUseId: b.tool_use_id,
-                content: t.value,
-                ...(b.is_error ? { isError: true } : {}),
-                ...(t.note ? { truncationNote: t.note } : {}),
-              });
+              this.finalizeRow(
+                "tool-result",
+                {
+                  toolUseId: b.tool_use_id,
+                  content: t.value,
+                  ...(b.is_error ? { isError: true } : {}),
+                  ...(t.note ? { truncationNote: t.note } : {}),
+                },
+                parent,
+              );
+            } else if (
+              b.type === "text" &&
+              typeof b.text === "string" &&
+              b.text.trim() !== "" &&
+              !(
+                this.activeUserTurnText !== "" &&
+                b.text.includes(this.activeUserTurnText)
+              )
+            ) {
+              // The containment guard skips the SDK's echo of the turn we
+              // just delivered (echoes may arrive wrapped in added context,
+              // so equality alone re-records the whole prompt) — everything
+              // else here (task notifications, system nudges) is real
+              // transcript content, recorded as system rows.
+              const t = truncated(b.text);
+              this.finalizeRow(
+                "system",
+                {
+                  text: t.value,
+                  source: "sdk",
+                  ...(t.note ? { truncationNote: t.note } : {}),
+                },
+                parent,
+              );
             }
           }
           this.requestFlush(false);
@@ -534,6 +675,9 @@ export class Session {
             result: truncated(m.result ?? "").value,
             total_cost_usd: m.total_cost_usd,
           });
+          if (USAGE_LIMIT_RE.test(String(m.result ?? ""))) {
+            this.onUsageSignal?.(String(m.result ?? "").slice(0, 200), this);
+          }
         }
         if (this.activeUserTurnId) {
           this.outbox.inboundUpdates.push({
@@ -541,6 +685,17 @@ export class Session {
             status: "done",
           });
           this.activeUserTurnId = null;
+        }
+        this.#clearAutoTimer();
+        if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
+          // An autonomous session is ONE mission turn — nobody would ever
+          // send stop, so the daemon ends it itself. The agent's own outcome
+          // (recorded via the /dts/session-outcome pen) is already
+          // server-side; a session that recorded none reads as non-completed
+          // to the scheduler's backoff. Inbound rows still pending at this
+          // point are settled server-side when the terminal status lands.
+          this.#endAutonomous("autonomous run complete");
+          break;
         }
         if (!this.stopRequested) this.setStatus("idle");
         this.requestFlush(true);
@@ -554,10 +709,12 @@ export class Session {
 
   // ── the permission gate (canUseTool) ───────────────────────────────────────
 
-  async #canUseTool(toolName, input, opts = {}) {
-    if (AUTO_ALLOW_TOOLS.has(toolName)) {
-      return { behavior: "allow", updatedInput: input };
-    }
+  async #canUseTool(toolName, input) {
+    // Unified auto mode (ratified 2026-08-28): nothing parks on Tom, in any
+    // session mode. The safety boundary is structural — throwaway workdir,
+    // session/<id> branch namespace, Tom's merge gate, Tom-only ruling pens
+    // — and every allowed call still lands as a tool-call transcript row.
+    // The one kept per-call check: edit tools must target the workdir.
     if (EDIT_TOOLS.has(toolName)) {
       const target =
         typeof input?.file_path === "string"
@@ -570,119 +727,36 @@ export class Session {
         const inside =
           resolved === this.workdir ||
           resolved.startsWith(this.workdir + path.sep);
-        if (inside) return { behavior: "allow", updatedInput: input };
-        // The hallucinated-absolute-path gotcha: deny with a corrective
-        // message (no prompt) — the model reads it and retries in-tree.
-        return {
-          behavior: "deny",
-          message: `write inside the session directory ${this.workdir} — ${resolved} is outside this session's workspace`,
-        };
+        if (!inside) {
+          // The hallucinated-absolute-path gotcha: deny with a corrective
+          // message (no prompt) — the model reads it and retries in-tree.
+          return {
+            behavior: "deny",
+            message: `write inside the session directory ${this.workdir} — ${resolved} is outside this session's workspace`,
+          };
+        }
       }
-      // Unrecognized input shape for an edit tool — fall through to Tom.
     }
-
-    // Everything else (Bash, WebFetch/WebSearch, MCP, unknown): Tom decides.
-    // No park deadline — the SDK verifiably tolerates multi-hour awaits, and
-    // an auto-denial at 3 a.m. would make the model take a path Tom never
-    // chose. stop/interrupt supersede; daemon restart expires.
-    const requestId = crypto.randomUUID();
-    const t = truncated(input);
-    this.finalizeRow("permission", {
-      requestId,
-      toolName,
-      input: t.value,
-      ...(t.note ? { truncationNote: t.note } : {}),
-    });
-    this.outbox.permissionRequests.push({
-      requestId,
-      toolName,
-      input: t.value,
-    });
-    this.setStatus("awaiting-permission");
-    this.requestFlush(true);
-    return await new Promise((resolve) => {
-      this.permissionWaiters.set(requestId, { resolve, input });
-      if (opts.signal) {
-        opts.signal.addEventListener(
-          "abort",
-          () => {
-            // The SDK abandoned the call (turn aborted) — settle the row so
-            // it never lingers as pending.
-            if (this.permissionWaiters.delete(requestId)) {
-              this.outbox.permissionUpdates.push({
-                requestId,
-                status: "superseded",
-                decidedBy: "abort",
-                applied: true,
-              });
-              this.requestFlush(true);
-              resolve({
-                behavior: "deny",
-                message: "turn aborted before Tom decided",
-              });
-            }
-          },
-          { once: true },
-        );
-      }
-    });
+    return { behavior: "allow", updatedInput: input };
   }
+  // NOTE: applyDecisions below survives ack-only — this gate produces no
+  // pending cards, but historical decided rows can still arrive and must be
+  // acked so the server stops piggybacking them.
 
-  // Apply decided permission rows (from a poll row or an ingest piggyback).
+  // Ack decided permission rows (from a poll row or an ingest piggyback).
+  // The unified auto gate parks nothing, so no waiter can exist — a decided
+  // row is always historical (pre-unification, or a dead prompting turn);
+  // ack `applied` so the server stops piggybacking it.
   applyDecisions(rows = []) {
     for (const row of rows ?? []) {
       if (row.status !== "allowed" && row.status !== "denied") continue;
       if (row.appliedAt !== undefined && row.appliedAt !== null) continue;
-      const waiter = this.permissionWaiters.get(row.requestId);
-      if (waiter) {
-        this.permissionWaiters.delete(row.requestId);
-        if (row.status === "allowed") {
-          waiter.resolve({ behavior: "allow", updatedInput: waiter.input });
-        } else {
-          waiter.resolve({
-            behavior: "deny",
-            message: row.note || "denied by Tom",
-          });
-        }
-        this.outbox.permissionUpdates.push({
-          requestId: row.requestId,
-          applied: true,
-        });
-        if (
-          this.status === "awaiting-permission" &&
-          this.permissionWaiters.size === 0
-        ) {
-          this.setStatus("running");
-        }
-        this.requestFlush(true);
-      } else {
-        // Decided row with no local waiter — the prompting turn died (daemon
-        // restart). Ack `applied` anyway so the server stops piggybacking a
-        // decision nobody can consume.
-        this.outbox.permissionUpdates.push({
-          requestId: row.requestId,
-          applied: true,
-        });
-        this.requestFlush(false);
-      }
-    }
-  }
-
-  // Settle every locally-parked permission as superseded (interrupt/stop).
-  supersedePermissions(decidedBy) {
-    for (const [requestId, waiter] of this.permissionWaiters) {
       this.outbox.permissionUpdates.push({
-        requestId,
-        status: "superseded",
-        decidedBy,
+        requestId: row.requestId,
         applied: true,
       });
-      waiter.resolve({
-        behavior: "deny",
-        message: `superseded by ${decidedBy}`,
-      });
+      this.requestFlush(false);
     }
-    this.permissionWaiters.clear();
   }
 
   // ── inbound commands ───────────────────────────────────────────────────────
@@ -771,9 +845,20 @@ export class Session {
       this.finalizeRow("user", { text: row.text ?? "" });
       this.outbox.inboundUpdates.push({ id: row._id, status: "delivered" });
       this.activeUserTurnId = row._id;
+      // Kept for the SDK-echo dedupe in the "user" message handler.
+      this.activeUserTurnText = row.text ?? "";
       this.queue.push(row.text ?? "");
       this.setStatus("running");
       this.lastActivityAt = Date.now();
+      if (this.mode === "autonomous") {
+        // Wall-clock cap per autonomous turn: past it, interrupt and end
+        // errored — an unattended mission must never run open-ended.
+        this.#clearAutoTimer();
+        this.autoTurnTimer = setTimeout(() => {
+          this.autoTurnTimer = null;
+          void this.#autoTimeCap();
+        }, AUTO_TURN_CAP_MS);
+      }
       this.requestFlush(true);
     } catch (err) {
       // The stop path already settled everything; don't overwrite "ended".
@@ -794,11 +879,73 @@ export class Session {
     }
   }
 
+  // ── autonomous ending ──────────────────────────────────────────────────────
+
+  #clearAutoTimer() {
+    if (this.autoTurnTimer) {
+      clearTimeout(this.autoTurnTimer);
+      this.autoTurnTimer = null;
+    }
+  }
+
+  // The 90-minute wall-clock cap fired mid-turn: interrupt the live turn,
+  // then end errored. stopRequested is set BEFORE the interrupt so the
+  // iterator's throw reads as expected in #readLoop (no #turnDied re-entry).
+  // The outcome rides the ingest payload; the server applies it only when
+  // the agent recorded none (agent-recorded outcome wins).
+  async #autoTimeCap() {
+    if (this.dead || this.status === "ended" || this.status === "failed") return;
+    this.finalizeRow("error", {
+      message: "autonomous time cap — turn interrupted after 90 minutes",
+    });
+    this.stopRequested = true;
+    if (this.q && this.status === "running") {
+      this.interruptRequested = true;
+      try {
+        await this.q.interrupt();
+      } catch {
+        // expected-adjacent; the iterator throw is handled in #readLoop
+      }
+    }
+    this.#endAutonomous("autonomous time cap", {
+      outcome: "errored",
+      outcomeSummary: "autonomous time cap: interrupted after 90 minutes",
+    });
+  }
+
+  // End an autonomous session from the daemon side: the auto-end after the
+  // mission's result (no outcome arg — the agent's own /dts/session-outcome
+  // record is already server-side) or the time cap (outcome errored). Never
+  // interrupts — the result path's query has already finished its turn, and
+  // the time cap interrupts before calling here.
+  #endAutonomous(endedReason, outcome) {
+    if (this.dead || this.status === "ended" || this.status === "failed") return;
+    this.#clearAutoTimer();
+    this.stopRequested = true;
+    this.queue?.close();
+    if (this.bufText !== "") {
+      this.finalizeRow("assistant-text", { text: this.bufText });
+      this.bufText = "";
+    }
+    this.bufDirty = true;
+    if (this.activeUserTurnId) {
+      this.outbox.inboundUpdates.push({
+        id: this.activeUserTurnId,
+        status: outcome ? "interrupted" : "done",
+      });
+      this.activeUserTurnId = null;
+    }
+    if (outcome) this.outcomeToSend = outcome;
+    this.setStatus("ended");
+    this.endedReasonToSend = endedReason;
+    this.requestFlush(true);
+    this.cleanupWorkdir();
+  }
+
   async #doInterrupt(row) {
     this.outbox.inboundUpdates.push({ id: row._id, status: "done" });
-    if (this.q && (this.status === "running" || this.status === "awaiting-permission")) {
+    if (this.q && this.status === "running") {
       this.interruptRequested = true;
-      this.supersedePermissions("interrupt");
       try {
         await this.q.interrupt();
         // The iterator now throws; #readLoop's finally runs #turnDied →
@@ -813,11 +960,11 @@ export class Session {
   }
 
   async #doStop(row) {
+    this.#clearAutoTimer();
     this.stopRequested = true;
     this.outbox.inboundUpdates.push({ id: row._id, status: "done" });
-    this.supersedePermissions("stop");
     if (this.q) {
-      if (this.status === "running" || this.status === "awaiting-permission") {
+      if (this.status === "running") {
         this.interruptRequested = true;
         try {
           await this.q.interrupt();
@@ -857,16 +1004,13 @@ export class Session {
     if (this.dead) return;
     log(`session ${this.id}: force-kill (${reason})`);
     this.dead = true;
+    this.#clearAutoTimer();
     try {
       this.abort?.abort();
     } catch {
       // AbortController.abort() doesn't throw, but stay paranoid
     }
     this.queue?.close();
-    for (const [, waiter] of this.permissionWaiters) {
-      waiter.resolve({ behavior: "deny", message: "session closed" });
-    }
-    this.permissionWaiters.clear();
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
@@ -889,7 +1033,6 @@ export class Session {
     this.outbox = {
       finalize: [],
       inboundUpdates: [],
-      permissionRequests: [],
       permissionUpdates: [],
     };
     this.bufDirty = false;
@@ -1008,6 +1151,15 @@ export class Session {
       this.statusToSend = undefined;
       any = true;
     }
+    if (this.outcomeToSend !== undefined) {
+      // Daemon-stamped outcome (time cap) — the server ignores it when the
+      // agent already recorded one via the /sessions/outcome pen.
+      snap.outcome = this.outcomeToSend;
+      payload.outcome = this.outcomeToSend.outcome;
+      payload.outcomeSummary = this.outcomeToSend.outcomeSummary;
+      this.outcomeToSend = undefined;
+      any = true;
+    }
     if (this.endedReasonToSend !== undefined) {
       snap.endedReason = payload.endedReason = this.endedReasonToSend;
       this.endedReasonToSend = undefined;
@@ -1044,12 +1196,6 @@ export class Session {
       this.outbox.inboundUpdates = [];
       any = true;
     }
-    if (this.outbox.permissionRequests.length > 0) {
-      snap.permissionRequests = payload.permissionRequests =
-        this.outbox.permissionRequests;
-      this.outbox.permissionRequests = [];
-      any = true;
-    }
     if (this.outbox.permissionUpdates.length > 0) {
       snap.permissionUpdates = payload.permissionUpdates =
         this.outbox.permissionUpdates;
@@ -1072,6 +1218,9 @@ export class Session {
     if (snap.status !== undefined && this.statusToSend === undefined) {
       this.statusToSend = snap.status;
     }
+    if (snap.outcome !== undefined && this.outcomeToSend === undefined) {
+      this.outcomeToSend = snap.outcome;
+    }
     if (snap.endedReason !== undefined && this.endedReasonToSend === undefined) {
       this.endedReasonToSend = snap.endedReason;
     }
@@ -1088,11 +1237,6 @@ export class Session {
     if (snap.inboundUpdates) {
       this.outbox.inboundUpdates = snap.inboundUpdates.concat(
         this.outbox.inboundUpdates,
-      );
-    }
-    if (snap.permissionRequests) {
-      this.outbox.permissionRequests = snap.permissionRequests.concat(
-        this.outbox.permissionRequests,
       );
     }
     if (snap.permissionUpdates) {

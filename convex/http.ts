@@ -245,6 +245,12 @@ const dtsPrepareTodo = httpAction(async (ctx, request) => {
       entryAction: str(b.entryAction),
       workDescription: str(b.workDescription),
       readiness: b.readiness as "preparing" | "ready-for-tom" | undefined,
+      // The newer preparer args (importance + plan) ride through loose-shape;
+      // the mutation's arg validators are the final gate and a mismatch
+      // surfaces as a named 400 below.
+      importanceLevel: b.importanceLevel as never,
+      importanceRationale: str(b.importanceRationale),
+      plan: b.plan as never,
     });
     return jsonResponse(200, { ok: true });
   } catch (e) {
@@ -583,6 +589,51 @@ http.route({
   handler: dtsBatchContext,
 });
 
+// POST /dts/session-outcome — an autonomous session's outcome pen. Body:
+// { sessionId, outcome: "completed"|"errored", summary? }. It lives under the
+// DTS key ON PURPOSE: an autonomous session's environment carries ONLY
+// CONVEX_SITE_URL + DTS_WORKER_KEY — SESSIONS_WORKER_KEY never enters a
+// model-reachable shell (the auth-clobber lesson: the ingest key would let a
+// prompt-injected session forge poll/ingest traffic for every session), so
+// the one key the agent holds must be the one this pen accepts.
+const dtsSessionOutcome = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  if (b.outcome !== "completed" && b.outcome !== "errored") {
+    return jsonResponse(400, {
+      error: 'outcome must be "completed" or "errored"',
+    });
+  }
+  try {
+    await ctx.runMutation(internal.claudeSessions.internalRecordOutcome, {
+      id: b.sessionId,
+      outcome: b.outcome,
+      summary: typeof b.summary === "string" ? b.summary : "",
+    });
+    return jsonResponse(200, { ok: true });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/dts/session-outcome",
+  method: "POST",
+  handler: dtsSessionOutcome,
+});
+
 // ── Claude Code session-host endpoints ───────────────────────────────────────
 // The session-host daemon's channel (worker/session-host/). Its OWN key —
 // SESSIONS_WORKER_KEY shares nothing with the other keys (the auth-clobber
@@ -620,6 +671,12 @@ const sessionsPoll = httpAction(async (ctx, request) => {
     lastIngestError:
       typeof b.lastIngestError === "string"
         ? b.lastIngestError.slice(0, 2000)
+        : undefined,
+    // Box load snapshot, loose-shape: the mutation's arg validator is the
+    // final gate; a malformed report surfaces as a validator error.
+    load:
+      typeof b.load === "object" && b.load !== null
+        ? (b.load as never)
         : undefined,
   });
   return jsonResponse(200, result);

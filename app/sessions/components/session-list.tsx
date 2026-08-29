@@ -5,11 +5,183 @@
 // weekly sessions are created by the system with a todoId attached.
 
 import { useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import Info from "@/app/dts/components/info";
 import type { Session } from "../lib";
 import { REPO_OPTIONS, ageText, isLive, statusChipClass } from "../lib";
+
+const inputCls =
+  "bg-surface border border-border rounded-md px-2 py-1 text-xs text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
+const btnCls =
+  "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
+
+// ── Autonomous fleet: the scheduler's admission settings + the box load they
+// are compared against. Load-based admission is the primary throttle;
+// maxLiveAutonomous is a runaway failsafe and maxNewPerTick a clone-burst
+// bound, which is why the load line sits next to the switch ────────────────
+type Draft = {
+  enabled: boolean;
+  maxLoadPerCpu: string;
+  minFreeMemMb: string;
+  maxLiveAutonomous: string;
+  maxNewPerTick: string;
+};
+
+// The label IS the schema field name — the caption behind ⓘ names the call
+// (UI = code), so the fields need no prose of their own.
+function NumField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex items-baseline gap-1.5">
+      <span className="text-[10px] font-mono text-text-faint w-32 shrink-0">
+        {label}
+      </span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${inputCls} w-24`}
+      />
+    </label>
+  );
+}
+
+function AutoFleetStrip() {
+  const config = useQuery(api.claudeSessions.getAutoConfig, {});
+  const health = useQuery(api.claudeSessions.getDaemonHealth, {});
+  const setAutoConfig = useMutation(api.claudeSessions.setAutoConfig);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // getAutoConfig answers with the defaults when no row has been written, so
+  // a falsy value here means the query has not landed yet.
+  if (!config) return null;
+
+  // Opening seeds the editor from the stored config; a live update while a
+  // field is being typed must not clobber the draft.
+  const openEditor = () => {
+    setError(null);
+    setDraft({
+      enabled: config.enabled,
+      maxLoadPerCpu: String(config.maxLoadPerCpu),
+      minFreeMemMb: String(config.minFreeMemMb),
+      maxLiveAutonomous: String(config.maxLiveAutonomous),
+      maxNewPerTick: String(config.maxNewPerTick),
+    });
+  };
+
+  const save = async () => {
+    if (draft === null || busy) return;
+    const numbers = {
+      maxLoadPerCpu: Number(draft.maxLoadPerCpu),
+      minFreeMemMb: Number(draft.minFreeMemMb),
+      maxLiveAutonomous: Number(draft.maxLiveAutonomous),
+      maxNewPerTick: Number(draft.maxNewPerTick),
+    };
+    if (Object.values(numbers).some((n) => !Number.isFinite(n))) {
+      setError("numbers only");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await setAutoConfig({ enabled: draft.enabled, ...numbers });
+      setDraft(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const load = health?.load;
+
+  return (
+    <div className="border border-border rounded-lg bg-surface/40 px-3 py-2 space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span
+          className={`text-xs ${config.enabled ? "text-accent" : "text-text-muted"}`}
+        >
+          auto {config.enabled ? "on" : "off"}
+        </span>
+        {load && (
+          <span className="font-mono text-[10px] text-text-faint">
+            load {load.loadavg1.toFixed(2)}/{load.cpus} ·{" "}
+            {(load.freeMemMb / 1024).toFixed(1)} GB free · {load.liveSessions}{" "}
+            sessions
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={draft === null ? openEditor : () => setDraft(null)}
+          className="ml-auto text-[10px] text-text-faint hover:text-text-muted"
+        >
+          {draft === null ? "edit" : "close"}
+        </button>
+      </div>
+      {draft !== null && (
+        <div className="space-y-1.5 border-t border-border pt-1.5">
+          <label className="flex items-baseline gap-1.5">
+            <span className="text-[10px] font-mono text-text-faint w-32 shrink-0">
+              enabled
+            </span>
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(e) =>
+                setDraft({ ...draft, enabled: e.target.checked })
+              }
+              className="accent-accent"
+            />
+          </label>
+          <NumField
+            label="maxLoadPerCpu"
+            value={draft.maxLoadPerCpu}
+            onChange={(v) => setDraft({ ...draft, maxLoadPerCpu: v })}
+          />
+          <NumField
+            label="minFreeMemMb"
+            value={draft.minFreeMemMb}
+            onChange={(v) => setDraft({ ...draft, minFreeMemMb: v })}
+          />
+          <NumField
+            label="maxLiveAutonomous"
+            value={draft.maxLiveAutonomous}
+            onChange={(v) => setDraft({ ...draft, maxLiveAutonomous: v })}
+          />
+          <NumField
+            label="maxNewPerTick"
+            value={draft.maxNewPerTick}
+            onChange={(v) => setDraft({ ...draft, maxNewPerTick: v })}
+          />
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={busy}
+              className={btnCls}
+            >
+              Save
+            </button>
+            <Info label="claudeSessions.setAutoConfig({enabled, maxLoadPerCpu, minFreeMemMb, maxLiveAutonomous, maxNewPerTick})" />
+          </div>
+          {error && <div className="text-xs text-error">{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function NewSessionForm({
   onCreated,
@@ -109,6 +281,7 @@ export default function SessionList({
 
   return (
     <div className="space-y-4">
+      <AutoFleetStrip />
       <NewSessionForm onCreated={onOpen} />
       {ordered.length === 0 ? (
         <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
@@ -137,6 +310,11 @@ export default function SessionList({
                   <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
                     {s.kind}
                   </span>
+                  {s.mode === "autonomous" && (
+                    <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
+                      autonomous
+                    </span>
+                  )}
                   <span>{s.repo}</span>
                   <span>{ageText(s.statusChangedAt, now)}</span>
                 </div>

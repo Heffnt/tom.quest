@@ -86,7 +86,9 @@ export default function SessionsClient() {
     ) : null;
 
   const body = activeId ? (
-    <div className="h-[calc(100dvh-4rem)] flex flex-col max-w-3xl mx-auto w-full">
+    // Wider than the list: the open session carries the agent panel beside
+    // the transcript from sm up.
+    <div className="h-[calc(100dvh-4rem)] flex flex-col max-w-5xl mx-auto w-full">
       {banner}
       <SessionView
         sessionId={activeId}
