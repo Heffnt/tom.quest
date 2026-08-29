@@ -41,10 +41,32 @@ tom.Quest never needs to signal, drain, or inspect it — only to choose how man
 FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared tunnel
 `turing.tom.quest`. Refuses to start without `TURING_API_KEY`; CORS `*`; SIGHUP ignored.
 
-- **Auth:** a single shared `X-API-Key` header dependency (`verify_api_key`) on every
-  non-WS endpoint (`main.py:54`). The terminal WebSocket is *not* under that dependency;
-  it authenticates with a short-lived HMAC token signed with the **same** `API_KEY`
-  (`ws.py:27`, `ws.py:124`).
+- **Auth:** a single shared `X-API-Key` header dependency (`verify_api_key`, `main.py:58`)
+  on every non-WS endpoint **except two**, both deliberate:
+  - `/health` — the liveness probe the Convex cron polls (`internal.serverHealth.pollTuring`);
+    it returns a constant and reads nothing.
+  - `/transformer-trace/{path}` — the proxy to a per-job trace server. `/transformer` is a
+    **`public`** page and the browser calls `turing.tom.quest/transformer-trace` *directly*
+    (`app/transformer/state.ts:16`), not through the Next.js proxy that attaches the key.
+    Since the shared key never leaves Vercel, requiring it here would either 401 every
+    visitor or push the cluster-wide key into public browser JS. Guarded instead by the
+    trace server's own per-job `x-trace-token`, which the route forwards through.
+
+  So `X-API-Key` is **not** the whole auth story, and "is it under `verify_api_key`?" is the
+  wrong question to ask of a new endpoint. The rule the two exceptions actually follow: an
+  endpoint may drop `verify_api_key` only if it is reachable by a public page **and** carries
+  its own credential (or exposes nothing). Anything touching SLURM, the filesystem, or tmux
+  takes the dependency.
+
+  The terminal WebSocket is likewise *not* under the dependency; it authenticates with a
+  short-lived HMAC token signed with the **same** `API_KEY` (`ws.py:27`, `ws.py:124`).
+
+  **Consequence of the unauthenticated proxy (`main.py`, `TRACE_MAX_INFLIGHT`):** each
+  forward parks a threadpool worker for up to `TRACE_TIMEOUT_S`, and that threadpool
+  (anyio's default limiter, 40) is shared with every sync `def` endpoint. It is therefore
+  the one place an anonymous caller can reach the June 2026 starvation mode — and `/health`
+  is `async def`, so the liveness cron would report the API up while it served nothing.
+  In-flight forwards are capped at 8; excess requests get 503 rather than a worker.
 - **Allocation model:** `POST /allocate` loops `count` times, one **single-GPU**
   `salloc --no-shell --gres=gpu:<type>:1 --time=<mins> --mem=<mb> --job-name=<name>` per
   GPU (`slurm.py:123`). **No `--partition` is ever passed** → everything lands on the
@@ -65,10 +87,12 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
   gated, session-scoped.
 - **The async invariant (load-bearing):** every endpoint that shells out is plain `def`,
-  never `async def`; only `/health` is async. A blocking subprocess call inside `async def`
+  never `async def`. The two `async def` routes are `/health` (does no I/O) and
+  `/transformer-trace`. A blocking subprocess call inside `async def`
   freezes the event loop and starved `/health` during the **June 2026 outage**
-  (`main.py:117`). Any new endpoint that touches the filesystem or shells out is plain
-  `def`.
+  (`main.py:218`). Any new endpoint that touches the filesystem or shells out is plain
+  `def`. `/transformer-trace` complies without being one by handing its blocking call to
+  `run_in_threadpool` — and, being unauthenticated, by bounding its share of that pool.
 - **`boolback.py` (removed):** a legacy ~1840-line router under `/boolback` formerly served
   ComplexMultiTrigger progress data against the **legacy tree schema** (`claim.json` =
   `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`), which no longer

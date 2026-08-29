@@ -125,13 +125,43 @@ async def health() -> dict[str, str]:
 # The tom.quest/transformer page talks to a per-job trace server
 # (transformer_server.py) running on a compute node. Compute nodes are not
 # publicly reachable, so the server registers itself in ~/.tviz-server.json
-# (shared NFS home) and this route forwards to it. It is deliberately NOT
-# behind X-API-Key — the page is public; the trace server enforces its own
-# x-trace-token, which is forwarded through. The upstream call is blocking, so
-# it runs in the threadpool (liveness rule: never block the event loop).
+# (shared NFS home) and this route forwards to it.
+#
+# DO NOT add `Depends(verify_api_key)` here. This is the one non-WS route
+# without it, and that is a decision, not an oversight — re-deriving it costs
+# more than reading it, so it is written down:
+#   * /transformer is a `public` page (app/components/page-routes.ts), and the
+#     browser calls https://turing.tom.quest/transformer-trace *directly*
+#     (app/transformer/state.ts), not through the Next.js proxy that attaches
+#     X-API-Key.
+#   * The shared TURING_API_KEY never leaves Vercel (CLAUDE.md). Requiring it
+#     here would either 401 every visitor to a public page, or force the
+#     cluster-wide key into public browser JS. The second is strictly worse
+#     than the status quo.
+#   * The surface is not unguarded: the per-job trace server rejects every
+#     request lacking its own `x-trace-token` (transformer_server.py:163),
+#     which this route forwards through. That token is per-job and disposable;
+#     the API key is not.
+# The auth bullet in spec.md §1.1 records the same two exceptions (/health is
+# the other) so the doc and the code cannot drift back apart.
+#
+# The upstream call is blocking, so it runs in the threadpool (liveness rule:
+# never block the event loop).
 
 TRACE_REGISTRATION = os.path.expanduser("~/.tviz-server.json")
 TRACE_TIMEOUT_S = 180
+# Because this route is unauthenticated and each forward parks a threadpool
+# worker for up to TRACE_TIMEOUT_S, it is the one place an anonymous caller can
+# consume the threadpool that *every* sync `def` endpoint shares (anyio's
+# default limiter is 40). Enough concurrent traces against a hung trace server
+# would therefore starve the authenticated surface — the June 2026 outage
+# failure mode, minus the need for credentials — and /health is `async def`, so
+# the Convex liveness cron would keep reporting the API up throughout. Cap the
+# in-flight forwards well below the threadpool. A browser opens at most ~6
+# connections per host and the page issues its requests sequentially, so a real
+# user never reaches this bound.
+TRACE_MAX_INFLIGHT = 8
+_trace_inflight = 0
 
 
 def _trace_target() -> str | None:
@@ -171,7 +201,18 @@ async def transformer_trace(path: str, request: Request) -> Response:
         except OSError as e:
             return 503, _json.dumps({"detail": f"trace server unreachable: {e}"}).encode(), "application/json"
 
-    status, data, ctype = await run_in_threadpool(_forward)
+    # Counter, not asyncio.Semaphore: a Semaphore binds to the first event loop
+    # that awaits it and raises on any later one, which breaks a test file that
+    # calls asyncio.run() per case. The check-and-increment below runs with no
+    # await between the two statements, so on a single loop it cannot race.
+    global _trace_inflight
+    if _trace_inflight >= TRACE_MAX_INFLIGHT:
+        raise HTTPException(status_code=503, detail="trace proxy busy, retry shortly")
+    _trace_inflight += 1
+    try:
+        status, data, ctype = await run_in_threadpool(_forward)
+    finally:
+        _trace_inflight -= 1
     return Response(content=data, status_code=status, media_type=ctype)
 
 # Endpoints below run blocking subprocess calls (squeue, scontrol, tmux, ssh to

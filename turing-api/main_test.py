@@ -204,6 +204,132 @@ class ListJobsTest(unittest.TestCase):
         self.assertEqual(body[0]["job_name"], "gpupool:nvidia:deadbeef")
 
 
+class TransformerTraceAuthTest(unittest.TestCase):
+    """/transformer-trace is the one non-WS route with no `verify_api_key`, and
+    that is deliberate: /transformer is a public page whose browser calls this
+    host directly, and the shared API key never leaves Vercel. An audit that
+    "fixes" the asymmetry by adding the dependency would 401 every visitor to a
+    public page. These tests fail if that happens."""
+
+    def test_reachable_without_api_key_when_one_is_configured(self) -> None:
+        # API_KEY set + no X-API-Key header is precisely the anonymous-visitor
+        # case. Any status but 401 means the route stayed public.
+        with (
+            patch("main.API_KEY", "a-real-key"),
+            patch("main._trace_target", return_value=None),
+        ):
+            res = _request("GET", "/transformer-trace/config")
+        self.assertNotEqual(
+            res.status_code, 401,
+            "/transformer-trace went behind X-API-Key; that 401s the public "
+            "/transformer page, whose browser cannot hold the shared key",
+        )
+        self.assertEqual(res.status_code, 503)
+
+    def test_every_other_non_ws_route_still_requires_the_key(self) -> None:
+        # The flip side: the exception must stay an exception of exactly two.
+        with patch("main.API_KEY", "a-real-key"):
+            for path in ("/gpu-report", "/gpu-types", "/jobs", "/dirs"):
+                with self.subTest(path=path):
+                    self.assertEqual(_request("GET", path).status_code, 401)
+            self.assertEqual(_request("GET", "/health").status_code, 200)
+
+    def test_caller_token_is_forwarded_not_the_api_key(self) -> None:
+        # The route's whole security story is that it relays the trace server's
+        # own per-job credential. If it stopped forwarding x-trace-token, the
+        # upstream would 401 and the page would break with no auth gained.
+        seen: dict[str, str] = {}
+
+        def fake_urlopen(req, timeout=None):  # noqa: ANN001
+            seen["token"] = req.get_header("X-trace-token") or ""
+            seen["url"] = req.full_url
+            raise OSError("no upstream in test")
+
+        with (
+            patch("main.API_KEY", "a-real-key"),
+            patch("main._trace_target", return_value="http://node42:8899"),
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            _request("GET", "/transformer-trace/config",
+                     headers={"x-trace-token": "per-job-secret"})
+
+        self.assertEqual(seen["token"], "per-job-secret")
+        self.assertEqual(seen["url"], "http://node42:8899/config")
+        self.assertNotIn("a-real-key", seen["token"])
+
+
+class TransformerTraceBackpressureTest(unittest.TestCase):
+    """Each forward parks a threadpool worker for up to TRACE_TIMEOUT_S, and
+    that pool is shared with every sync `def` endpoint. Since this route is
+    unauthenticated, without a cap an anonymous caller could hold every worker
+    and starve the authenticated surface. Guard the cap and the sync endpoints
+    it protects."""
+
+    def test_excess_concurrent_forwards_are_shed_and_release_afterwards(self) -> None:
+        release = threading.Event()
+        in_upstream = threading.Semaphore(0)
+
+        def hanging_urlopen(req, timeout=None):  # noqa: ANN001
+            # Stands in for a trace server that accepts the connection and then
+            # never answers -- the case that pins a worker for TRACE_TIMEOUT_S.
+            in_upstream.release()
+            release.wait(10)
+            raise OSError("released")
+
+        async def scenario() -> tuple[list[int], int, int]:
+            transport = httpx.ASGITransport(app=main.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                hangers = [
+                    asyncio.create_task(client.get("/transformer-trace/generate"))
+                    for _ in range(main.TRACE_MAX_INFLIGHT)
+                ]
+                # Wait until every slot is genuinely occupied upstream, so the
+                # next request is rejected by the cap and not by a race.
+                for _ in range(main.TRACE_MAX_INFLIGHT):
+                    while not in_upstream.acquire(blocking=False):
+                        await asyncio.sleep(0.01)
+
+                shed = await client.get("/transformer-trace/generate")
+                # The authenticated surface must still be served while the
+                # unauthenticated route is saturated.
+                healthy = await client.get("/gpu-report")
+
+                release.set()
+                done = [r.status_code for r in await asyncio.gather(*hangers)]
+            return done, shed.status_code, healthy.status_code
+
+        with (
+            patch("main.API_KEY", ""),
+            patch("main._trace_target", return_value="http://node42:8899"),
+            patch("urllib.request.urlopen", side_effect=hanging_urlopen),
+            patch("main.format_gpu_report_v2",
+                  return_value={"nodes": [], "summary": {}, "gpu_jobs_by_node": {}}),
+        ):
+            done, shed, healthy = asyncio.run(scenario())
+
+        self.assertEqual(
+            shed, 503,
+            "an unauthenticated caller held every trace slot and the next request "
+            "was still admitted; the cap is what keeps this route off the shared "
+            "threadpool that all sync endpoints use",
+        )
+        self.assertEqual(healthy, 200, "a saturated /transformer-trace starved /gpu-report")
+        self.assertEqual(done, [503] * main.TRACE_MAX_INFLIGHT)
+        # The counter must unwind, or the route bricks itself after one burst.
+        self.assertEqual(main._trace_inflight, 0)
+
+    def test_a_failed_forward_releases_its_slot(self) -> None:
+        with (
+            patch("main.API_KEY", ""),
+            patch("main._trace_target", return_value="http://node42:8899"),
+            patch("urllib.request.urlopen", side_effect=OSError("boom")),
+        ):
+            for _ in range(main.TRACE_MAX_INFLIGHT + 2):
+                self.assertEqual(
+                    _request("GET", "/transformer-trace/config").status_code, 503)
+        self.assertEqual(main._trace_inflight, 0)
+
+
 class EventLoopIsolationTest(unittest.TestCase):
     def test_slow_gpu_report_does_not_delay_health(self) -> None:
         report_started = threading.Event()
