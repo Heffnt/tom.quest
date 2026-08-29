@@ -979,18 +979,25 @@ export const internalPrepareTodo = internalMutation({
         }
       }
     }
+    let planSkipReason: string | undefined;
     if (plan !== undefined) {
-      // Tom's asks may never vanish from a plan by agent hand: the incoming
-      // plan is accepted iff every existing step with actor "tom" appears
-      // among the incoming steps' texts (exact text match). Agents may check
-      // off, reorder, and add steps freely. This replaces the old blanket
-      // "Tom-touched row with a plan" skip, which froze live batch sessions
-      // and autonomous plan work the moment Tom touched the row at all.
+      // Tom's asks may never vanish from a plan by agent hand — but only
+      // once he HAS a hand in the row: on a Tom-touched row the incoming
+      // plan is accepted iff every existing actor-"tom" step's text appears
+      // verbatim among the incoming steps (agents may check off, reorder,
+      // and add freely). An untouched row's plan is wholly agent-authored
+      // (the batcher wrote it), so agents rewrite it freely — the first
+      // supervised fleet run showed the unconditional check refusing
+      // legitimate refinements of agent-authored tom-steps.
       const incomingTexts = new Set(plan.map((s) => s.text));
-      const droppedTomStep = (todo.plan ?? []).find(
-        (s) => s.actor === "tom" && !incomingTexts.has(s.text),
-      );
+      const droppedTomStep =
+        todo.tomTouchedAt === undefined
+          ? undefined
+          : (todo.plan ?? []).find(
+              (s) => s.actor === "tom" && !incomingTexts.has(s.text),
+            );
       if (droppedTomStep !== undefined) {
+        planSkipReason = `tom-step dropped: "${droppedTomStep.text}"`;
         await logEvent(ctx, "plan-skipped", normalized, {
           reason: "tom-step dropped",
           step: droppedTomStep.text,
@@ -1010,6 +1017,13 @@ export const internalPrepareTodo = internalMutation({
         patch.plan !== undefined && "plan",
       ].filter(Boolean),
     });
+    // The pen's answer: a skipped plan must be VISIBLE to the writing agent
+    // (the first fleet run had agents report refinements that were silently
+    // refused) — the /tts/prepare-todo route returns this verbatim.
+    return {
+      planApplied: plan !== undefined ? patch.plan !== undefined : undefined,
+      ...(planSkipReason !== undefined ? { planSkipReason } : {}),
+    };
   },
 });
 

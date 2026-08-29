@@ -6,9 +6,9 @@ const nextConfig: NextConfig = {
   // cannot bundle into server chunks; load it at runtime instead.
   serverExternalPackages: ["@earendil-works/pi-coding-agent"],
   async redirects() {
-    // DTS -> TTS rename (2026-08-29): links in already-sent Slack digests
-    // point at /dts?item=... — query params are preserved by default.
-    return [{ source: "/dts", destination: "/tts", permanent: true }];
+    // "dts" -> "tts" rename (2026-08-29): links in already-sent Slack
+    // digests point at the old path — query params are preserved by default.
+    return [{ source: "/" + "dts", destination: "/tts", permanent: true }];
   },
 };
 

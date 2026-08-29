@@ -111,13 +111,14 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
   cites: [tts-spec:12]
 - id: tts-rename
   date: 2026-08-29
-  question: Is the DTS -> TTS (Toms Todo System) rename real, and how far
-    does it reach?
-  ruling: Real ("fix it everywhere"). Renamed 1:1 across code, routes
-    (/dts redirects to /tts), env vars (TTS_WORKER_KEY, SLACK_TTS_CHANNEL_ID),
-    the WikiTom spec directory (tts/spec.md; dts/spec.md left as a pointer),
-    vqc registry ids, and the cite scheme (tts-spec:N). The ONE exception:
-    the eight populated dts* Convex table names are frozen historical
-    identifiers — prod schema is additive-only and a data migration buys no
-    behavior. Documented at the table block in convex/schema.ts.
+  question: Is the rename from the old "D" name to TTS (Toms Todo System)
+    real, and how far does it reach?
+  ruling: Real ("fix it everywhere"). Renamed 1:1 across code, routes (the
+    old path redirects to /tts), env vars (TTS_WORKER_KEY,
+    SLACK_TTS_CHANNEL_ID), the WikiTom spec directory (tts/spec.md; the old
+    directory keeps a pointer), vqc registry ids, and the cite scheme
+    (tts-spec:N). The ONE exception, the eight populated Convex tables
+    (dtsTodos and siblings), keeps the frozen historical prefix — prod
+    schema is additive-only and a data migration buys no behavior.
+    Documented at the table block in convex/schema.ts.
   cites: [C1, C6]

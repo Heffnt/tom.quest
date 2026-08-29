@@ -340,11 +340,11 @@ export default defineSchema({
   // Nothing is ever deleted (spec principle 2): terminal states are status
   // "done" or "archived", both kept and visible.
   //
-  // NAMING: the dts* table names below are FROZEN pre-rename identifiers
-  // (DTS -> TTS, Tom 2026-08-29, adoption.md `tts-rename`). Convex prod is
-  // additive-only; renaming a populated table is a data migration for zero
-  // behavioral value. Everything human-facing says TTS; only these table
-  // names keep the old prefix.
+  // NAMING: the dtsTodos-family table names below are FROZEN pre-rename
+  // identifiers (rename to TTS, Tom 2026-08-29, adoption.md `tts-rename`).
+  // Convex prod is additive-only; renaming a populated table is a data
+  // migration for zero behavioral value. Everything human-facing says TTS;
+  // only these table names keep the old prefix.
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
