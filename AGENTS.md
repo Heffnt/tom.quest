@@ -13,6 +13,14 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Prefer text inputs over number spinners for numeric intervals.
 - After code changes, provide a commit message the user can use.
 
+## UI Rules (ratified by Tom, 2026-08-29)
+
+- Clickable text not styled as a button is underlined at rest. Text that is not clickable is never underlined. Accent color alone never signals clickability — it also marks state.
+- One info mechanism: a tap-to-open popover (never hover-only, never native `title=` — both are dead on touch). Content is a plain-language explanation of what the control does on the backend, with the exact function call in small mono. New surfaces use it; existing surfaces migrate when otherwise touched.
+- No explainer text in product UI. Pages are data + actions and must be self-explanatory; ground-up explanations happen in conversation, not on the page.
+- Interactions never shift layout. No inline forms appearing between controls; anything composed (notes, rulings, scheduling) opens in a fixed dialog.
+- Actions sit near the top of an item's detail, and their labels name their exact backend effect.
+
 ## Tech Stack
 
 - **Framework:** Next.js 16 App Router + React 19.
