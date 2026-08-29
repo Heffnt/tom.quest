@@ -56,3 +56,7 @@ next-env.d.ts
 # Sentry Config File
 .env.sentry-build-plugin
 test-results/
+
+# Stray state when a tool runs with HOME set to the checkout (e.g. gh in a
+# sandboxed session).
+.local/
