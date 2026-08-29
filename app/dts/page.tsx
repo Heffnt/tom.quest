@@ -3,7 +3,7 @@ import DtsClient from "./dts-client";
 
 export const metadata: Metadata = {
   title: "TTS | tom.Quest",
-  description: "Toms Todo System.",
+  description: "Tom's Todo System.",
 };
 
 export default function DtsPage() {

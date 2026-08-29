@@ -353,19 +353,23 @@ describe("claude sessions", () => {
     const todoId = await tom.mutation(api.dts.createTodo, {
       statement: "just do it",
     });
+    // revise stays pending until the preparer consumes the sentence — the
+    // live non-session ruling createSession must NOT touch. (approve on a
+    // life todo applies instantly at record time, so it can't play this role.)
     await tom.mutation(api.dtsRulings.recordRuling, {
       todoId,
-      verdict: "approve",
+      verdict: "revise",
+      sentence: "shorter",
     });
     const firstSession = await tom.mutation(api.claudeSessions.createSession, {
-      title: "adhoc on an approved todo",
+      title: "adhoc on a revise-ruled todo",
       kind: "focus-item",
       repo: "none",
       todoId,
       initialPrompt: "poke at it",
     });
     const [ruling] = await tom.query(api.dtsRulings.listRulings, {});
-    expect(ruling.appliedAt).toBeUndefined(); // approve is the worker's to apply
+    expect(ruling.appliedAt).toBeUndefined(); // revise is the preparer's to apply
 
     // An already-applied session ruling is not re-stamped by a second session.
     const sessionRulingId = await tom.mutation(api.dtsRulings.recordRuling, {

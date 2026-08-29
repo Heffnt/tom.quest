@@ -21,7 +21,7 @@ export function buildBlockSessionPrompt(
   const lines: string[] = [
     CONTRACT,
     "",
-    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately (dts.internalTriage via \`npx convex run\` for status/date changes; dtsRulings.recordRuling for approve/revise/session/archive verdicts) — the session is his pen, and a ruling that lives only in chat is lost.`,
+    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately via \`npx convex run\`: dts:internalTriage for status/date changes, dtsRulings:internalRecordRuling for approve/revise/session/archive verdicts (both are internal mutations — the Tom-gated public mutations reject deploy credentials). The session is his pen, and a ruling that lives only in chat is lost.`,
     "",
   ];
   if (category === "code") {

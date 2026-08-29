@@ -105,7 +105,7 @@ function composeFallbackDigest(
     return todo && todo.dueAt === undefined ? [{ todo, reason: e.reason }] : [];
   });
   if (queueTodos.length > 0) {
-    lines.push("", "*Today's queue* (also on <https://tom.quest/focus|Focus>):");
+    lines.push("", "*Today's queue* (also on <https://tom.quest/dts|the calendar tab>):");
     for (const { todo, reason } of queueTodos) {
       // Every reminder carries its entry action (spec §9) and a direct link.
       const entry = todo.entryAction ? ` — ${todo.entryAction}` : "";
@@ -121,7 +121,7 @@ function composeFallbackDigest(
   if (atGate.length > 0) {
     lines.push(
       "",
-      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/inventory|Inventory>`,
+      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/dts|needs me>`,
     );
   }
   // Briefed code todos with no ruling yet sit next to the tom-gate line — the
@@ -129,7 +129,7 @@ function composeFallbackDigest(
   if (awaitingRulingCount > 0) {
     lines.push(
       "",
-      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/inventory|Inventory>`,
+      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/dts|needs me>`,
     );
   }
 

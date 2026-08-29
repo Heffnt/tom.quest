@@ -1,11 +1,16 @@
 "use client";
 
 // One code-todo mirror row: click-to-expand summary line + brief, evidence,
-// and the link out. Read-only here — ruling buttons live on the Needs me tab;
-// this row only SHOWS the live ruling state (api.dtsRulings.listRulings,
-// newest ruledAt per subject, derived by the tab and passed in).
+// the live ruling state (newest ruledAt per subject, derived by the tab and
+// passed in), and the link out. First rulings happen on the Needs me tab;
+// this row carries the SUPERSEDE path — "change ruling" appends a new ruling
+// row that replaces the live one (append-only, history kept).
 
+import { useState } from "react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
+import VerdictButtons from "./verdict-buttons";
 import { ageText, type MirrorRow } from "../lib";
 
 const chipCls =
@@ -49,6 +54,10 @@ export default function CodeTodoRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const recordRuling = useMutation(api.dtsRulings.recordRuling);
+  // First rulings happen on Needs me; here the buttons sit behind this
+  // disclosure — a new ruling supersedes the live one shown above.
+  const [changeOpen, setChangeOpen] = useState(false);
   return (
     <div className="border border-border rounded-lg bg-surface/40">
       <button
@@ -132,6 +141,31 @@ export default function CodeTodoRow({
               open in {row.repo}
             </a>
           </div>
+
+          {row.status === "open" &&
+            (changeOpen ? (
+              <div className="space-y-1">
+                <div className="text-xs text-text-faint">
+                  a new ruling supersedes the one above
+                </div>
+                <VerdictButtons
+                  record={(args) =>
+                    recordRuling({
+                      repo: row.repo,
+                      externalId: row.externalId,
+                      ...args,
+                    })
+                  }
+                />
+              </div>
+            ) : (
+              <button
+                onClick={() => setChangeOpen(true)}
+                className="text-xs text-text-faint hover:text-text-muted"
+              >
+                {ruling ? "change ruling" : "rule here"}
+              </button>
+            ))}
         </div>
       )}
     </div>

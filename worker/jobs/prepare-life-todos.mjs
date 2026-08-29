@@ -23,9 +23,9 @@
 // REVISE RULINGS: Tom can rule "revise" on a prepared life todo with one
 // written sentence that redirects the preparation (the server drops the
 // todo's readiness back to "preparing" when he does). This job reads the
-// unified rulings feed at /dts/code-rulings, takes the LIFE rows with verdict
+// unified rulings feed at /dts/rulings, takes the LIFE rows with verdict
 // "revise", re-prepares each such todo with Tom's sentence embedded in the
-// prompt, and POSTs /dts/code-ruling-applied so the ruling is consumed and
+// prompt, and POSTs /dts/ruling-applied so the ruling is consumed and
 // the UI shows the outcome.
 //
 // NO-STATE RULE: nothing local; Convex is read and written each run.
@@ -90,7 +90,7 @@ async function main() {
   // Pending revise rulings on LIFE todos, keyed by todoId. The feed already
   // filters to unapplied-and-not-superseded rows; code rows on the same feed
   // belong to apply-rulings.mjs / execute-approved.mjs.
-  const { pending } = await convexFetch(env, "/dts/code-rulings");
+  const { pending } = await convexFetch(env, "/dts/rulings");
   const reviseByTodo = new Map();
   for (const r of Array.isArray(pending) ? pending : []) {
     if (r.subjectType === "life" && r.verdict === "revise" && r.todoId) {
@@ -98,16 +98,19 @@ async function main() {
     }
   }
 
-  // Unprepared, active, life-side only — plus revise-ruled todos (a revise
-  // verdict drops readiness to "preparing" server-side, so the sentence is
-  // what pulls them back into the batch). --force also re-prepares
+  // Unprepared active todos — plus revise-ruled todos REGARDLESS of status
+  // (a revise verdict drops readiness to "preparing" server-side; the sentence
+  // is what pulls the todo back into the batch, and preparation only touches
+  // brief/entryAction/workDescription, so re-preparing a waiting or archived
+  // todo is safe — an active-only filter would strand the ruling pending
+  // forever if Tom changed the status after ruling). --force also re-prepares
   // "preparing" items (useful after improving this prompt).
   const targets = (state.todos ?? []).filter(
     (t) =>
-      t.status === "active" &&
-      (t.readiness === "unprepared" ||
-        reviseByTodo.has(t._id) ||
-        (force && t.readiness === "preparing")),
+      reviseByTodo.has(t._id) ||
+      (t.status === "active" &&
+        (t.readiness === "unprepared" ||
+          (force && t.readiness === "preparing"))),
   );
   if (targets.length === 0) return; // quiet when idle
 
@@ -143,7 +146,7 @@ async function main() {
       if (revise) {
         // The re-prep landed — consume the ruling so the UI shows the
         // outcome and the next run doesn't re-prepare on the same sentence.
-        await convexFetch(env, "/dts/code-ruling-applied", {
+        await convexFetch(env, "/dts/ruling-applied", {
           id: revise._id,
           result: "revised: brief re-prepared",
         });

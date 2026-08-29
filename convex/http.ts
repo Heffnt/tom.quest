@@ -383,6 +383,10 @@ const dtsCodeRulings = httpAction(async (ctx, request) => {
   return jsonResponse(200, { pending });
 });
 
+// Canonical path: /dts/rulings — the feed serves BOTH subject types, so the
+// old code-scoped name is kept only as an alias for not-yet-redeployed
+// workers (drop the alias in the dts→tts rename round).
+http.route({ path: "/dts/rulings", method: "GET", handler: dtsCodeRulings });
 http.route({ path: "/dts/code-rulings", method: "GET", handler: dtsCodeRulings });
 
 // POST /dts/code-ruling-applied — the worker's apply report. Body: { id,
@@ -416,6 +420,13 @@ const dtsCodeRulingApplied = httpAction(async (ctx, request) => {
   }
 });
 
+// Canonical path: /dts/ruling-applied (any subject type); old name aliased
+// for not-yet-redeployed workers.
+http.route({
+  path: "/dts/ruling-applied",
+  method: "POST",
+  handler: dtsCodeRulingApplied,
+});
 http.route({
   path: "/dts/code-ruling-applied",
   method: "POST",

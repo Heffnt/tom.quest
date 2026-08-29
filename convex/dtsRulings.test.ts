@@ -158,7 +158,7 @@ describe("DTS unified rulings", () => {
     expect(ruling.applyResult).toBe("status archived");
   });
 
-  it("approve and session leave appliedAt unset", async () => {
+  it("session (life) and approve (code) leave appliedAt unset", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.dts.createTodo, { statement: "talk" });
@@ -175,6 +175,78 @@ describe("DTS unified rulings", () => {
     expect(rulings).toHaveLength(2);
     expect(rulings.every((r) => r.appliedAt === undefined)).toBe(true);
     expect(rulings.every((r) => r.applyResult === undefined)).toBe(true);
+  });
+
+  // witness: drop the life-approve instant-apply branch from insertRuling in
+  // convex/dtsRulings.ts — the ruling would ride the pending feed forever
+  // (no worker consumes life approvals; Tom is the executor).
+  it("approve on a LIFE todo applies instantly as ratification", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "go" });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId,
+      verdict: "approve",
+    });
+    const [ruling] = await tom.query(api.dtsRulings.listRulings, {});
+    expect(ruling.appliedAt).toBeDefined();
+    expect(ruling.applyResult).toBe("plan ratified");
+    expect(
+      await t.query(internal.dtsRulings.internalPendingRulings, {}),
+    ).toHaveLength(0);
+  });
+
+  // witness: change briefAwaitsRuling back to "any ruling clears the item" in
+  // convex/dtsRulings.ts — a revise→re-brief cycle would never return the item.
+  it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.dtsCode.internalStoreBriefs, {
+      briefs: [brief({ externalId: "cycle" })],
+    });
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      repo: "ComplexMultiTrigger",
+      externalId: "cycle",
+      verdict: "revise",
+      sentence: "narrower scope",
+    });
+    expect(
+      await t.query(internal.dtsRulings.internalAwaitingRulingCount, {}),
+    ).toBe(0);
+    // The worker re-briefs after applying the revise — the fresh brief's
+    // preparedAt is newer than the ruling, so the item awaits a fresh ruling.
+    await t.mutation(internal.dtsCode.internalStoreBriefs, {
+      briefs: [brief({ externalId: "cycle", sourceHash: "hash-b" })],
+    });
+    expect(
+      await t.query(internal.dtsRulings.internalAwaitingRulingCount, {}),
+    ).toBe(1);
+  });
+
+  // witness: delete internalRecordRuling from convex/dtsRulings.ts — the
+  // block-session pen (npx convex run under deploy credentials) breaks.
+  it("internalRecordRuling is the session pen: same semantics, no identity", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "pen" });
+    await t.mutation(internal.dtsRulings.internalRecordRuling, {
+      todoId,
+      verdict: "revise",
+      sentence: "spoken in session",
+    });
+    const [ruling] = await tom.query(api.dtsRulings.listRulings, {});
+    expect(ruling.verdict).toBe("revise");
+    expect(ruling.sentence).toBe("spoken in session");
+    const todo = await t.run(async (ctx) =>
+      ctx.db.get((await ctx.db.query("dtsTodos").collect())[0]._id),
+    );
+    expect(todo?.readiness).toBe("preparing");
+    await expect(
+      t.mutation(internal.dtsRulings.internalRecordRuling, {
+        todoId: "not-a-real-id",
+        verdict: "approve",
+      }),
+    ).rejects.toThrow(/Unknown todo id/);
   });
 
   // witness: drop the `newest.get(...)?._id === row._id` clause from

@@ -13,6 +13,7 @@ import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/dts-session-prompt";
+import { errMessage, toDatetimeLocal } from "../lib";
 
 type Todo = Doc<"dtsTodos">;
 type Block = Doc<"dtsBlocks">;
@@ -22,10 +23,6 @@ const inputCls =
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 const capCls = "text-[10px] font-mono text-text-faint";
-
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 // ── Local-time week math ─────────────────────────────────────────────────────
 // All day boundaries via new Date(y, m, d) so DST transitions cannot shift a
@@ -65,13 +62,6 @@ function monthDay(ms: number): string {
 function dayHeading(ms: number): string {
   const d = new Date(ms);
   return `${d.toLocaleDateString("en-US", { weekday: "short" })} ${d.getDate()}`;
-}
-
-/** epoch ms → <input type="datetime-local"> value in LOCAL time. */
-function toDatetimeLocal(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** "HH:mm" on a given local day-start → epoch ms (local). */
@@ -380,16 +370,26 @@ function AddBlockForm({
 }
 
 // ── The tab ─────────────────────────────────────────────────────────────────
-export default function CalendarTab() {
+export default function CalendarTab({
+  onOpenItem,
+}: {
+  /** Queue-chip click-through: the shell jumps to the item on the everything tab. */
+  onOpenItem?: (todoId: string) => void;
+}) {
   const { isTom } = useAuth();
   const router = useRouter();
-  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
-  const blocks = useQuery(api.dts.listBlocks, isTom ? {} : "skip");
-  const today = useQuery(api.dts.getToday, isTom ? {} : "skip");
-  const createSession = useMutation(api.claudeSessions.createSession);
-
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
+  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
+  // Only the visible week's blocks ride the subscription (dtsBlocks grows
+  // forever; the by_start index serves the range).
+  const blocks = useQuery(
+    api.dts.listBlocks,
+    isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+  );
+  const today = useQuery(api.dts.getToday, isTom ? {} : "skip");
+  const createSession = useMutation(api.claudeSessions.createSession);
+  const recordEvent = useMutation(api.dts.recordEvent);
   const [addDay, setAddDay] = useState<number | null>(null); // dayStart ms
   const [sessionBusyId, setSessionBusyId] = useState<Id<"dtsBlocks"> | null>(
     null,
@@ -601,9 +601,18 @@ export default function CalendarTab() {
                 {queue.length > 0 && (
                   <div className="border-t border-border pt-1 mt-1 space-y-0.5">
                     {queue.map((t) => (
-                      <div
+                      <button
                         key={`q-${t._id}`}
-                        className="px-1 text-[11px] flex items-baseline gap-1"
+                        type="button"
+                        onClick={() => {
+                          void recordEvent({
+                            kind: "engaged",
+                            todoId: t._id,
+                            data: { via: "calendar-queue" },
+                          }).catch(() => {});
+                          onOpenItem?.(t._id);
+                        }}
+                        className="w-full text-left px-1 text-[11px] flex items-baseline gap-1 rounded hover:bg-surface/60"
                         title={t.statement}
                       >
                         <span className="text-text truncate">
@@ -614,7 +623,7 @@ export default function CalendarTab() {
                             {t.queueReason}
                           </span>
                         )}
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}

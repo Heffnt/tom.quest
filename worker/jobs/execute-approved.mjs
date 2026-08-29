@@ -6,7 +6,7 @@
 //
 // THE EXECUTION HALF of the ruling loop: when Tom's verdict is "approve" on a
 // briefed CMT todo, the plan attached to that todo is cleared for autonomous
-// execution. This job reads the unified /dts/code-rulings feed (rows carry
+// execution. This job reads the unified /dts/rulings feed (rows carry
 // subjectType "life"|"code"), takes the OLDEST pending CODE approval, runs AGENTIC
 // headless Claude inside a throwaway full clone, and turns the result into a
 // PR on github.com/Heffnt/ComplexMultiTrigger. MERGING THE PR IS THE HUMAN
@@ -102,7 +102,7 @@ async function main() {
   let execDir = null;
   try {
     env = loadEnv();
-    const { pending } = await convexFetch(env, "/dts/code-rulings");
+    const { pending } = await convexFetch(env, "/dts/rulings");
     const approvals = (Array.isArray(pending) ? pending : [])
       .filter(
         (r) =>
@@ -209,7 +209,7 @@ async function main() {
         .filter((l) => l !== "")
         .pop() ?? "(no URL in gh output)";
 
-    await convexFetch(env, "/dts/code-ruling-applied", {
+    await convexFetch(env, "/dts/ruling-applied", {
       id: ruling._id,
       result: `PR opened: ${prUrl}`,
     });
@@ -222,7 +222,7 @@ async function main() {
     console.error(`[execute-approved] FAILED: ${reason}`);
     if (ruling && env) {
       try {
-        await convexFetch(env, "/dts/code-ruling-applied", {
+        await convexFetch(env, "/dts/ruling-applied", {
           id: ruling._id,
           result: `EXECUTION FAILED: ${reason}`,
         });

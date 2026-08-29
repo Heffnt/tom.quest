@@ -11,9 +11,11 @@ import { countdownText } from "@/convex/dtsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import {
   ageText,
+  errMessage,
   fmtDate,
   isoDate,
   parseDateInput,
+  toDatetimeLocal,
   type LinkIntent,
   type Todo,
 } from "../lib";
@@ -27,24 +29,11 @@ const primaryBtnCls =
 const chipCls =
   "text-xs text-text-faint border border-border rounded px-1 py-px";
 
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 /** The tiny mono caption naming the mutation a control fires. */
 function Caption({ children }: { children: React.ReactNode }) {
   return (
     <div className="text-[10px] font-mono text-text-faint">{children}</div>
   );
-}
-
-/** "2026-08-30T09:00" local value for <input type="datetime-local">. */
-function toLocalDatetimeValue(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(
-    d.getHours(),
-  )}:${p(d.getMinutes())}`;
 }
 
 // ── Small inline field editor ───────────────────────────────────────────────
@@ -593,7 +582,7 @@ export default function TodoRow({
                 setBlockStartDraft(v);
                 const ms = v ? new Date(v).getTime() : NaN;
                 if (!Number.isNaN(ms)) {
-                  setBlockEndDraft(toLocalDatetimeValue(ms + 3_600_000));
+                  setBlockEndDraft(toDatetimeLocal(ms + 3_600_000));
                 }
               }}
               className={inputCls}

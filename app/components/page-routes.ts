@@ -17,7 +17,7 @@ export const PAGES: Page[] = [
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "sessions", title: "Sessions", blurb: "DTS — Claude Code session surface", priority: 9, visibility: "tom" },
-  { slug: "dts",    title: "TTS",    blurb: "Toms Todo System",             priority: 9, visibility: "tom" },
+  { slug: "dts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5, visibility: "tom" },
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },

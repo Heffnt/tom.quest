@@ -6,11 +6,11 @@
 //
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
 // open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
-// this job GETs /dts/code-rulings — a UNIFIED feed whose rows carry
+// this job GETs /dts/rulings — a UNIFIED feed whose rows carry
 // subjectType "life"|"code" and verdict "approve"|"revise"|"session"|
 // "archive" — takes only the CODE rows (life rows belong to
 // prepare-life-todos.mjs), applies each pending one, then POSTs
-// /dts/code-ruling-applied so the UI shows the outcome. The verdicts:
+// /dts/ruling-applied so the UI shows the outcome. The verdicts:
 //   revise   -> Tom's sentence redirects the plan: force a re-brief that
 //               proposes a fresh one
 //   session  -> push a session-agenda file to CMT master for Tom to open a
@@ -250,7 +250,7 @@ async function main() {
   }
   try {
     const env = loadEnv();
-    const { pending } = await convexFetch(env, "/dts/code-rulings");
+    const { pending } = await convexFetch(env, "/dts/rulings");
     if (!Array.isArray(pending) || pending.length === 0) return; // quiet when idle
 
     // Rulings we act on this run: CODE subjects only (life rows on the same
@@ -292,7 +292,7 @@ async function main() {
           // clog; the text tells Tom to update the worker.
           result = `unsupported verdict: ${ruling.verdict}`;
         }
-        await convexFetch(env, "/dts/code-ruling-applied", { id: ruling._id, result });
+        await convexFetch(env, "/dts/ruling-applied", { id: ruling._id, result });
         console.log(`[apply-rulings] ${label}: ${result.split("\n")[0]}`);
       } catch (err) {
         // Environmental failure (push race, network, git). Roll the cache

@@ -9,6 +9,7 @@ import {
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
+import { markLiveSessionRulingApplied } from "./dtsRulings";
 
 // Claude Code session surface — the Convex half of the web wrapper around
 // headless Claude Code sessions on the worker box. Design ratified 2026-08-28
@@ -196,30 +197,10 @@ export const createSession = mutation({
       nextSeq: 0,
       createdAt: now,
     });
-    // A "session" verdict is applied the moment its session exists: mark the
-    // live unapplied session-ruling on this todo applied with the session id
-    // (dtsRulings contract — see schema.ts dtsRulings).
+    // A "session" verdict is applied the moment its session exists — the
+    // supersession rule lives in dtsRulings.ts, not here.
     if (todoId !== undefined) {
-      const rulings = await ctx.db
-        .query("dtsRulings")
-        .withIndex("by_todo", (q) => q.eq("todoId", todoId))
-        .collect();
-      const live = rulings.reduce<(typeof rulings)[number] | null>(
-        (best, row) =>
-          !best ||
-          row.ruledAt > best.ruledAt ||
-          (row.ruledAt === best.ruledAt &&
-            row._creationTime > best._creationTime)
-            ? row
-            : best,
-        null,
-      );
-      if (live && live.verdict === "session" && live.appliedAt === undefined) {
-        await ctx.db.patch(live._id, {
-          appliedAt: now,
-          applyResult: `session ${sessionId}`,
-        });
-      }
+      await markLiveSessionRulingApplied(ctx, todoId, sessionId);
     }
     await ctx.db.insert("claudeInbound", {
       sessionId,

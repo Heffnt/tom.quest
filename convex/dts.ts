@@ -416,11 +416,22 @@ function requireOneBlockTarget(todoId: unknown, category: unknown) {
   }
 }
 
+// Optional [start, end) window: blocks overlapping it (block.start < end AND
+// block.end > start), served from the by_start index so the calendar's
+// subscription carries one week, not the whole ever-growing table. No args =
+// everything (small-table admin/test use).
 export const listBlocks = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { start: v.optional(v.number()), end: v.optional(v.number()) },
+  handler: async (ctx, { start, end }) => {
     await requireTomId(ctx);
-    return await ctx.db.query("dtsBlocks").collect();
+    const rows =
+      end === undefined
+        ? await ctx.db.query("dtsBlocks").collect()
+        : await ctx.db
+            .query("dtsBlocks")
+            .withIndex("by_start", (q) => q.lt("start", end))
+            .collect();
+    return start === undefined ? rows : rows.filter((b) => b.end > start);
   },
 });
 
