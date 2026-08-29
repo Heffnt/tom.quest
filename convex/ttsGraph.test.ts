@@ -393,6 +393,30 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     expect(after.every((x) => x.needs === undefined)).toBe(true);
   });
 
+  // witness: push `#${need}` instead of the target's node key — an index ref
+  // naming a task the payload addressed BY ID resolved to nothing at write
+  // time and stored the literal string "#0" in `needs`.
+  it("an index ref resolves to a rewritten task's real id", async () => {
+    const t = convexTest({ schema, modules });
+    await storeGraph(t, { tasks: [graphTask("first"), graphTask("second")] });
+    const batch = await oneBatch(t);
+    const rows = await batchTodos(t, batch._id);
+    const first = byStatement(rows, "first")!;
+    const second = byStatement(rows, "second")!;
+
+    const res = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [
+        graphTask("first", { id: first._id }),
+        graphTask("second", { id: second._id, needs: [0] }),
+      ],
+    });
+    expect(res.skipped).toEqual([]);
+    expect(
+      byStatement(await batchTodos(t, batch._id), "second")!.needs,
+    ).toEqual([first._id]);
+  });
+
   it("refuses a self-edge", async () => {
     const t = convexTest({ schema, modules });
     await storeGraph(t, { tasks: [graphTask("solo")] });
@@ -486,6 +510,226 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     expect(await batchTodos(t, res.batchId!)).toHaveLength(1);
   });
 
+  // witness: write the payload's condition/groundUpExplanation/evidence
+  // straight through in internalStorePlanGraph — ctx.db.patch DELETES a field
+  // written as undefined, so the next re-post that omits them would erase the
+  // evidence a session recorded and the "more" layer, exactly what the batch
+  // row's preserve-on-absent rule exists to prevent.
+  it("an omitted field PRESERVES the stored value", async () => {
+    const t = convexTest({ schema, modules });
+    await storeGraph(t, {
+      tasks: [
+        graphTask("first"),
+        graphTask("do it", {
+          needs: [0],
+          condition: "the landlord answers",
+          groundUpExplanation: "why this step, from the ground up",
+          evidence: "PR #4",
+        }),
+      ],
+    });
+    const batch = await oneBatch(t);
+    const before = await batchTodos(t, batch._id);
+    const task = byStatement(before, "do it")!;
+    expect(task.needs).toEqual([byStatement(before, "first")!._id]);
+
+    // The planner re-posts the same graph and mentions none of them.
+    const again = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("first"), graphTask("do it", { id: task._id })],
+    });
+    expect(again).toMatchObject({ created: 0, updated: 0, unchanged: 2 });
+    const after = byStatement(await batchTodos(t, batch._id), "do it")!;
+    expect(after.condition).toBe("the landlord answers");
+    expect(after.groundUpExplanation).toBe("why this step, from the ground up");
+    expect(after.evidence).toBe("PR #4");
+    expect(after.needs).toEqual(task.needs); // edges preserved too
+
+    // An EXPLICIT empty array is how a payload clears the edges.
+    const cleared = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("do it", { id: task._id, needs: [] })],
+    });
+    expect(cleared.updated).toBe(1);
+    expect(
+      byStatement(await batchTodos(t, batch._id), "do it")!.needs,
+    ).toBeUndefined();
+  });
+
+  // witness: drop notWritable from internalStorePlanGraph — the planner would
+  // reopen a task Tom closed, rewrite a life todo he wrote by hand, and claim
+  // a v1 batch row as a task (a row that renders as a batch AND lives in one).
+  it("refuses a Tom-touched, foreign-source, or v1-batch row as a task", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await storeGraph(t, { tasks: [graphTask("do it")] });
+    const batch = await oneBatch(t);
+    const [task] = await batchTodos(t, batch._id);
+    await tom.mutation(api.tts.setStatus, { id: task._id, status: "done" });
+
+    const frozen = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("reopened behind him", { id: task._id })],
+    });
+    expect(frozen).toMatchObject({ created: 0, updated: 0 });
+    expect(frozen.skipped).toEqual([
+      { ref: "reopened behind him", why: "Tom-touched (frozen)" },
+    ]);
+    const still = (await t.run(async (ctx) =>
+      ctx.db.get(task._id),
+    )) as Doc<"dtsTodos">;
+    expect(still.status).toBe("done");
+    expect(still.statement).toBe("do it");
+
+    // A todo Tom wrote by hand is not the planner's to rewrite.
+    const mine = await tom.mutation(api.tts.createTodo, { statement: "mine" });
+    await t.run(async (ctx) => ctx.db.patch(mine, { tomTouchedAt: undefined }));
+    const stolen = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("rewritten", { id: mine })],
+    });
+    expect(stolen.skipped).toEqual([
+      { ref: "rewritten", why: "source manual is not the planner's" },
+    ]);
+
+    // A v1 batch row is refused as a task AND as a goal (no batch-in-batch).
+    await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [{ statement: "v1", brief: "b", members: [{ todoId: mine }] }],
+    });
+    const v1 = (await t.run(async (ctx) =>
+      (await ctx.db.query("dtsTodos").collect()).find(
+        (x) => x.members !== undefined,
+      ),
+    )) as Doc<"dtsTodos">;
+    const nested = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("as a task", { id: v1._id })],
+      goalIds: [v1._id],
+    });
+    expect(nested.goalsBound).toBe(0);
+    expect(nested.skipped).toEqual([
+      { ref: "as a task", why: "is a v1 batch" },
+      { ref: v1._id, why: "is a v1 batch" },
+    ]);
+  });
+
+  // witness: patch `status` directly in internalStorePlanGraph — a reopened
+  // row would keep its terminal facts, a completion would slide its date away
+  // with no dateOutcomes entry, and no status-changed event would exist.
+  it("a status change goes through the one transition implementation", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await storeGraph(t, { tasks: [graphTask("do it")] });
+    const batch = await oneBatch(t);
+    const [task] = await batchTodos(t, batch._id);
+    // A dated task: the kept-dates rule says the date resolves, never vanishes.
+    await t.run(async (ctx) =>
+      ctx.db.patch(task._id, { dueAt: 5000, timingClass: "dated" }),
+    );
+
+    await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("do it", { id: task._id, status: "done" })],
+    });
+    const done = (await t.run(async (ctx) =>
+      ctx.db.get(task._id),
+    )) as Doc<"dtsTodos">;
+    expect(done.status).toBe("done");
+    expect(done.dueAt).toBeUndefined();
+    expect(done.dateOutcomes).toMatchObject([{ dueAt: 5000, outcome: "done" }]);
+
+    // Reopening clears the terminal facts rather than leaving them standing.
+    await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("do it", { id: task._id, status: "active" })],
+    });
+    const live = (await t.run(async (ctx) =>
+      ctx.db.get(task._id),
+    )) as Doc<"dtsTodos">;
+    expect(live.status).toBe("active");
+    expect(live.doneAt).toBeUndefined();
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(events.filter((e) => e.kind === "status-changed")).toHaveLength(2);
+  });
+
+  // witness: drop the statement-keyed lookups — a planner that re-posts a
+  // graph without echoing ids mints a whole duplicate graph on every run.
+  it("a re-post without ids rewrites, it does not duplicate", async () => {
+    const t = convexTest({ schema, modules });
+    await storeGraph(t, {
+      statement: "the move",
+      tasks: [graphTask("compare quotes"), graphTask("pick one", { needs: [0] })],
+    });
+    const again = await storeGraph(t, {
+      statement: "the move",
+      tasks: [graphTask("compare quotes"), graphTask("pick one", { needs: [0] })],
+    });
+    expect(again).toMatchObject({ created: 0, updated: 0, unchanged: 2 });
+    expect(await allBatches(t)).toHaveLength(1);
+    expect(await batchTodos(t, (await oneBatch(t))._id)).toHaveLength(2);
+  });
+
+  // witness: seed the acyclicity map from this batch's rows only — a cycle
+  // that runs through a batch-less todo reads as orderable, and both ends sit
+  // blocked forever with nothing saying why.
+  it("sees a cycle that closes through a todo outside the batch", async () => {
+    const t = convexTest({ schema, modules });
+    // A: a batch-less todo that already needs B (written by an earlier graph
+    // whose batch was archived; the row itself stayed batch-less).
+    await storeGraph(t, {
+      statement: "outside",
+      tasks: [graphTask("b"), graphTask("a", { needs: [0] })],
+    });
+    const first = await oneBatch(t);
+    const rows = await batchTodos(t, first._id);
+    const a = byStatement(rows, "a")!;
+    const b = byStatement(rows, "b")!;
+    await t.run(async (ctx) => {
+      await ctx.db.patch(a._id, { batchId: undefined });
+      await ctx.db.patch(b._id, { batchId: undefined });
+    });
+
+    const res = await storeGraph(t, {
+      statement: "new batch",
+      tasks: [graphTask("b again", { id: b._id, needs: [a._id] })],
+    });
+    expect(res).toMatchObject({ created: 0, updated: 0 });
+    expect(res.skipped).toEqual([{ ref: "b again", why: "needs form a cycle" }]);
+  });
+
+  it("caps the todos in one batch and the goals bound to it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await storeGraph(t, {
+      tasks: Array.from({ length: 40 }, (_, i) => graphTask(`step ${i}`)),
+    });
+    const batch = await oneBatch(t);
+    const full = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [graphTask("one too many")],
+    });
+    expect(full.created).toBe(0);
+    expect(full.skipped).toEqual([
+      { ref: "one too many", why: "a batch holds at most 40 todos" },
+    ]);
+
+    const goalIds: string[] = [];
+    for (let i = 0; i < 21; i++) {
+      goalIds.push(
+        await tom.mutation(api.tts.createTodo, { statement: `goal ${i}` }),
+      );
+    }
+    const goals = await storeGraph(t, {
+      batchId: batch._id,
+      tasks: [],
+      goalIds,
+    });
+    expect(goals.goalsBound).toBe(20);
+    expect(goals.skipped).toEqual([
+      { ref: goalIds[20], why: "a batch holds at most 20 goals" },
+    ]);
+  });
+
   it("caps the tasks in one payload", async () => {
     const t = convexTest({ schema, modules });
     const res = await storeGraph(t, {
@@ -570,9 +814,21 @@ describe("TTS rulings on a batch", () => {
     const archived = await oneBatch(t);
     expect(archived.status).toBe("archived");
     expect(archived.tomTouchedAt).toBeGreaterThan(0);
+    // witness: drop unarchiveCondition from the batch archive branch — the
+    // sentence IS the condition, and nothing could ever propose the batch back.
+    expect(archived.unarchiveCondition).toBe("if the landlord calls back");
     const rulings = await tom.query(api.ttsRulings.listRulings, {});
     const last = rulings.find((r) => r.verdict === "archive")!;
     expect(last.applyResult).toBe("batch archived");
+
+    // witness: leave a batch `revise` unapplied — every worker filters the
+    // pending feed to life/code, so it would sit in internalPendingRulings
+    // (and the page's "ruled, applying" strip) forever.
+    const revise = rulings.find((r) => r.verdict === "revise")!;
+    expect(revise.appliedAt).toBeGreaterThan(0);
+    expect(revise.applyResult).toBe("handed back to the planner");
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending).toEqual([]);
   });
 
   it("the internal pen rules on a batch too", async () => {
@@ -640,6 +896,7 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
       goals: 1,
       codeGoals: 1,
       missingMembers: 0,
+      alreadyBound: 0,
     });
 
     const batch = await oneBatch(t);
@@ -711,6 +968,7 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
       goals: 0,
       codeGoals: 0,
       missingMembers: 0,
+      alreadyBound: 0,
     });
     expect(await allBatches(t)).toHaveLength(1);
 
@@ -755,6 +1013,86 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
     )) as Doc<"dtsTodos">;
     expect(solo.kind).toBeUndefined(); // a legacy standalone todo, read as a task
     expect(solo.batchId).toBeUndefined();
+  });
+
+  // witness: patch batchId unconditionally in internalMigrateToGraph — a
+  // member the planner already bound as a goal of a v2 batch would silently
+  // leave it, and nothing anywhere would record the loss.
+  it("never steals a member the planner already bound to a v2 batch", async () => {
+    const t = convexTest({ schema, modules });
+    const { member } = await seedOldWorld(t);
+    const bound = await t.mutation(internal.tts.internalStorePlanGraph, {
+      statement: "already planned",
+      tasks: [],
+      goalIds: [member],
+    });
+    expect(bound.goalsBound).toBe(1);
+
+    const counts = await t.mutation(internal.tts.internalMigrateToGraph, {});
+    expect(counts).toMatchObject({ batches: 1, goals: 0, alreadyBound: 1 });
+    const goal = (await t.run(async (ctx) =>
+      ctx.db.get(member),
+    )) as Doc<"dtsTodos">;
+    expect(goal.batchId).toBe(bound.batchId); // still the planner's batch
+  });
+
+  // witness: drop the batchId guard from validateBatchMembers — the migration
+  // archives the v1 row, which frees its members from the batcher's occupied
+  // map, and the still-running v1 batcher re-groups the rows it just migrated
+  // (one todo in a v1 batch AND a v2 batch at once).
+  it("the v1 batcher can never claim a row that lives in a graph batch", async () => {
+    const t = convexTest({ schema, modules });
+    const { member } = await seedOldWorld(t);
+    await t.mutation(internal.tts.internalMigrateToGraph, {});
+
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [
+        { statement: "regrouped", brief: "b", members: [{ todoId: member }] },
+      ],
+    });
+    expect(res.created).toBe(0);
+    expect(res.skipped[0].why).toMatch(/belongs to a graph batch/);
+  });
+
+  // witness: drop the goal-closing sweep from internalReplaceMirror — every
+  // migrated code goal is an active todo nothing can ever complete, blocking
+  // each of its dependents forever.
+  it("a code goal closes when the mirror says the upstream todo closed", async () => {
+    const t = convexTest({ schema, modules });
+    await seedOldWorld(t);
+    await t.mutation(internal.tts.internalMigrateToGraph, {});
+    const codeGoal = (await t.run(async (ctx) =>
+      (await ctx.db.query("dtsTodos").collect()).find(
+        (x) => x.codeExternalId === "cmt-001",
+      ),
+    )) as Doc<"dtsTodos">;
+    expect(codeGoal.status).toBe("active");
+
+    const row = {
+      externalId: "cmt-001",
+      tier: "a",
+      statement: "the upstream todo",
+      url: "https://example.invalid",
+    };
+    // Still open upstream: the goal stays open too.
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: "ComplexMultiTrigger",
+      rows: [{ ...row, status: "open" }],
+    });
+    expect(
+      ((await t.run(async (ctx) => ctx.db.get(codeGoal._id))) as Doc<"dtsTodos">)
+        .status,
+    ).toBe("active");
+
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: "ComplexMultiTrigger",
+      rows: [{ ...row, status: "closed" }],
+    });
+    const closed = (await t.run(async (ctx) =>
+      ctx.db.get(codeGoal._id),
+    )) as Doc<"dtsTodos">;
+    expect(closed.status).toBe("done");
+    expect(closed.doneAt).toBeGreaterThan(0);
   });
 
   it("counts a member whose todo has vanished instead of failing the run", async () => {

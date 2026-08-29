@@ -1745,6 +1745,12 @@ export const internalAutoSchedule = internalMutation({
       if (t.category === "code") return true;
       // A member of a non-terminal batch is owned by the batch.
       if (batchOwned.has(t._id)) return true;
+      // Schema v2: a row carrying batchId is a task or goal INSIDE a batches
+      // row. batchOwned reads `members` only, so it grants no cover here. The
+      // batch is the unit of work Tom rules on, and a task's `needs` are not
+      // consulted anywhere in this walk — scheduling one directly would work a
+      // step that is still blocked, or a goal, which is not work at all.
+      if (t.batchId !== undefined) return true;
       // An existing live session already references this todo — checked
       // against the liveSessions array the failsafe (d) already collected,
       // not a per-candidate by_todo query.

@@ -148,9 +148,14 @@ async function main() {
   //
   // members === undefined on BOTH branches: a members-bearing todo is a batch,
   // and batches are prepared (and re-formed on revise) by form-batches.mjs.
+  // batchId === undefined for the same reason one schema version later: a
+  // schema-v2 row carrying batchId is a task or goal inside a batches row, and
+  // "unprepared" is this job's INBOX, not a resting state — briefing one would
+  // advance it to "ready-for-tom" and flood the needs-me feed with plan steps.
   const targets = (state.todos ?? []).filter(
     (t) =>
       t.members === undefined &&
+      t.batchId === undefined &&
       (reviseByTodo.has(t._id) ||
         (t.status === "active" &&
           (t.readiness === "unprepared" ||

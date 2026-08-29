@@ -231,11 +231,15 @@ async function main() {
 
   // Compact projections — exactly the fields the model groups by, nothing
   // that tempts it to edit content.
+  // batchId === undefined: a schema-v2 row already belongs to a graph batch
+  // (the server refuses it as a member anyway — tts.validateBatchMembers), so
+  // offering it here would only buy a dropped batch and a wasted Claude call.
   const lifeEligible = all
     .filter(
       (t) =>
         t.status === "active" &&
         t.members === undefined &&
+        t.batchId === undefined &&
         !claimed.has(`life ${t._id}`),
     )
     .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));

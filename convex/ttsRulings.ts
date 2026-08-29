@@ -172,7 +172,14 @@ async function insertRuling(
         await ctx.db.patch(batchId, { tomTouchedAt: now });
       }
       if (verdict === "archive") {
-        await ctx.db.patch(batchId, { status: "archived", updatedAt: now });
+        await ctx.db.patch(batchId, {
+          status: "archived",
+          // The sentence IS the unarchive condition, exactly as on a life
+          // subject — dropping it would leave a batch nothing can ever
+          // propose back.
+          unarchiveCondition: unarchiveCondition ?? trimmed,
+          updatedAt: now,
+        });
         appliedAt = now;
         applyResult = "batch archived";
       }
@@ -183,6 +190,22 @@ async function insertRuling(
         appliedAt = now;
         applyResult = "graph ratified";
       }
+      if (verdict === "revise") {
+        // The application of a batch revise IS the un-freeze above: the
+        // planner may rewrite the graph again, and it reads the sentence from
+        // the recent-rulings feed, never from the pending one. Every worker
+        // filters the pending feed to life/code subjects, so leaving this
+        // unapplied would pin it in internalPendingRulings — and in the
+        // page's "ruled, applying" strip — forever, with nothing on any side
+        // able to consume it.
+        appliedAt = now;
+        applyResult = "handed back to the planner";
+      }
+      // session: still applied when the session exists, exactly as for a life
+      // subject. NOTE (known gap, not a defect of this path): claudeSessions
+      // has no batch subject yet, so markLiveSessionRulingApplied cannot see
+      // this ruling — a batch "session" verdict stays pending until sessions
+      // can target a batch.
     }
 
     const id = await ctx.db.insert("dtsRulings", {

@@ -376,6 +376,10 @@ export default defineSchema({
       v.literal("done"),
       v.literal("archived"),
     ),
+    // archived: the condition under which the batch should be proposed back —
+    // the dtsTodos field of the same name, same meaning. On an archive ruling
+    // the sentence IS this condition, so a batch set aside can come back.
+    unarchiveCondition: v.optional(v.string()),
     // Stamped by the Tom doors (a ruling on the batch, the pens). Same freeze
     // semantics as dtsTodos.tomTouchedAt: a batch with this set is FROZEN —
     // the planner (tts.internalStorePlanGraph) may never rewrite it.
