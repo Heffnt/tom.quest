@@ -10,6 +10,7 @@ from unittest.mock import patch
 import httpx
 
 import boolback_snapshot
+import dirs
 import main
 
 
@@ -125,6 +126,9 @@ class BoolbackSnapshotTest(unittest.TestCase):
         self.assertIn("--parsable", argv)
         self.assertIn(str(self.out_dir.resolve()), argv)
         self.assertFalse(run.call_args.kwargs.get("shell", False))
+        # The build runs from the ONE named CMT checkout (dirs.CMT_REPO_DIR), the
+        # same one the Forge jobs use — not a second, separately-named copy.
+        self.assertEqual(run.call_args.kwargs["cwd"], dirs.CMT_REPO_DIR)
 
     def test_post_coalesces_when_job_active(self) -> None:
         (self.cache / f"submit-{boolback_snapshot._dir_hash(self.out_dir.resolve())}.jobid").write_text("555")

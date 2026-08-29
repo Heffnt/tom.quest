@@ -25,14 +25,13 @@ import os
 import subprocess
 from pathlib import Path
 
-from dirs import resolve_within_root
+from dirs import CMT_REPO_DIR, cmt_output_root, resolve_within_root
 
-# The conda env the CMT builder lives in + where it is checked out (overridable).
+# The conda env the CMT builder lives in. Where it is checked out is CMT_REPO_DIR,
+# imported from dirs — the same checkout the Forge jobs run from, read from
+# BOOLEAN_BACKDOOR_REPO at one site. Every env var below is declared in
+# secrets/turing-api.env.example.
 BUILDER_CONDA_ENV = os.environ.get("BOOLBACK_BUILDER_CONDA_ENV", "boolback")
-BUILDER_REPO_DIR = os.environ.get(
-    "BOOLBACK_BUILDER_REPO_DIR",
-    str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
-)
 # Built .gz snapshots + per-dir submit markers live here.
 CACHE_DIR = Path(
     os.environ.get("BOOLBACK_CACHE_DIR", str(Path.home() / ".cache" / "boolback-snapshots"))
@@ -46,10 +45,7 @@ BUILD_SBATCH = Path(
 def cmt_root() -> Path:
     """The pinned artifact-tree root for every snapshot path. Resolved at call
     time (not import) so a patched env var / test override is honored."""
-    raw = os.environ.get("BOOLEAN_BACKDOOR_OUTPUT", "")
-    if not raw:
-        raise RuntimeError("BOOLEAN_BACKDOOR_OUTPUT is not set")
-    return Path(raw).resolve()
+    return cmt_output_root()
 
 
 def resolve_dir(dir_param: str) -> Path:
@@ -235,7 +231,7 @@ def submit_build(resolved: Path) -> dict:
     try:
         proc = subprocess.run(
             ["sbatch", "--parsable", str(BUILD_SBATCH), str(resolved), str(out_path)],
-            cwd=BUILDER_REPO_DIR, shell=False, capture_output=True, text=True,
+            cwd=CMT_REPO_DIR, shell=False, capture_output=True, text=True,
             timeout=60, check=True,
         )
     except FileNotFoundError:

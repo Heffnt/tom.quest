@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import httpx
 
+import dirs
 import forge
 import main
 
@@ -177,10 +178,19 @@ class ForgeRouteTest(unittest.TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(body["job_id"], "33")
         self.assertFalse(body["ready"])
-        self.assertEqual(body["base_url"], f"http://gpu-node-7:{forge.SERVE_PORT}/v1")
+        # squeue returns a bare nodename; the login node can only route to the FQDN,
+        # so the stored base_url carries the FORGE_NODE_DOMAIN suffix (see
+        # ForgeNodeDomainTest for the rule itself).
+        self.assertEqual(
+            body["base_url"],
+            f"http://gpu-node-7{forge.NODE_DOMAIN}:{forge.SERVE_PORT}/v1",
+        )
         argv = run.call_args.args[0]
         self.assertEqual(argv[0], "sbatch")
         self.assertFalse(run.call_args.kwargs.get("shell", False))
+        # The serve job runs from the ONE named CMT checkout (dirs.CMT_REPO_DIR).
+        self.assertEqual(run.call_args.kwargs["cwd"], dirs.CMT_REPO_DIR)
+        self.assertIn(dirs.CMT_REPO_DIR, argv)
         # serve.json persisted with the heavy params passed via env, not argv.
         serve = json.loads((self.root / "forge" / "s1" / "serve.json").read_text())
         self.assertEqual(serve["job_id"], "33")
@@ -254,6 +264,39 @@ class ForgeRouteTest(unittest.TestCase):
         cancel.assert_called_once_with("88")
         serve = json.loads((run_dir / "serve.json").read_text())
         self.assertEqual(serve["status"], "stopped")
+
+
+class ForgeNodeDomainTest(unittest.TestCase):
+    """squeue %N returns a bare Slurm nodename ("gpu-5-43") that does not resolve
+    from the login node, so FORGE_NODE_DOMAIN is appended to reach the vLLM server
+    over the cluster LAN. The suffix is applied to bare names only, and setting the
+    var empty turns qualification off for a cluster whose squeue already returns
+    routable names."""
+
+    def _base_url(self, node: str | None, domain: str) -> str | None:
+        with patch("forge._job_node", return_value=node), \
+             patch("forge.NODE_DOMAIN", domain):
+            return forge._node_base_url("77", 8765)
+
+    def test_bare_nodename_is_qualified(self) -> None:
+        self.assertEqual(
+            self._base_url("gpu-5-43", ".int.turing.wpi.edu"),
+            "http://gpu-5-43.int.turing.wpi.edu:8765/v1",
+        )
+
+    def test_already_qualified_nodename_is_left_alone(self) -> None:
+        self.assertEqual(
+            self._base_url("gpu-5-43.int.turing.wpi.edu", ".int.turing.wpi.edu"),
+            "http://gpu-5-43.int.turing.wpi.edu:8765/v1",
+        )
+
+    def test_empty_domain_disables_qualification(self) -> None:
+        self.assertEqual(self._base_url("gpu-5-43", ""), "http://gpu-5-43:8765/v1")
+
+    def test_no_node_yet_has_no_base_url(self) -> None:
+        # A pending job has no nodename; the caller must get None, not a URL with
+        # the domain as its host.
+        self.assertIsNone(self._base_url(None, ".int.turing.wpi.edu"))
 
 
 if __name__ == "__main__":

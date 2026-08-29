@@ -55,6 +55,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Liveness is owned by a Convex cron (`internal.serverHealth.pollTuring`) that probes `/health` and writes to the `serverHealth` table; `useServer("turing").status` reads it.
 - The proxy detects HTML/non-JSON upstream responses and converts them to structured JSON errors.
 - The API binds `127.0.0.1` (only the co-located cloudflared reaches it; not the shared cluster LAN). `/file` and `/dirs` are confined to `TURING_FILE_ROOT` (default home) and refuse secret-bearing paths.
+- The API's whole configuration is one file on the login node (`~/tom.quest/turing-api/.env`), described by one template, `secrets/turing-api.env.example`. Each env name is read at exactly one site — the CMT roots (checkout and artifact tree) live in `turing-api/dirs.py` and are imported from there. `scripts/check-turing-env.mjs` (in `pnpm check:guardrails`) fails on a name read twice, a name read but not declared, and a second `*.env.example` under `turing-api/`.
 - Declarative GPU pool: desired state lives in the `gpuPool` table; the Convex cron `internal.gpuPool.reconcile` reconciles desired-vs-actual against the API, tracking its own jobs in `gpuPoolAllocation` so it only ever cancels pool-created jobs. Requires `TURING_API_KEY` in the Convex env (not just Vercel).
 
 ## Deployment

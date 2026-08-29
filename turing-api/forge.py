@@ -42,16 +42,14 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from dirs import resolve_within_root, PathNotAllowed
+from dirs import CMT_REPO_DIR, cmt_output_root, resolve_within_root, PathNotAllowed
 
 # --- configuration -------------------------------------------------------------
 
-# The CMT repo (boolean_backdoor package root) the launcher / vLLM env live in.
-# NEW env var for the Forge feature; documented in turing-api/forge.env.example.
-FORGE_REPO_DIR = os.environ.get(
-    "BOOLEAN_BACKDOOR_REPO",
-    str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
-)
+# The CMT repo (boolean_backdoor package root) the launcher / vLLM env live in is
+# CMT_REPO_DIR, imported from dirs — the same checkout the boolback build runs
+# from, read from BOOLEAN_BACKDOOR_REPO at one site. Every env var below is
+# declared in secrets/turing-api.env.example.
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent / "forge_scripts"
 TRAIN_SBATCH = Path(os.environ.get("FORGE_TRAIN_SBATCH", str(_SCRIPTS_DIR / "forge_train.sbatch")))
@@ -102,10 +100,7 @@ class ForgeChatRequest(BaseModel):
 def forge_root() -> Path:
     """$BOOLEAN_BACKDOOR_OUTPUT/forge — the pinned root for every run_dir. Resolved
     at call time (not import) so a patched env var / test override is honored."""
-    raw = os.environ.get("BOOLEAN_BACKDOOR_OUTPUT", "")
-    if not raw:
-        raise RuntimeError("BOOLEAN_BACKDOOR_OUTPUT is not set")
-    return (Path(raw).resolve() / "forge")
+    return cmt_output_root() / "forge"
 
 
 def _run_dir(run_id: str) -> Path:
@@ -206,9 +201,9 @@ def submit_train(config: dict[str, Any], job_name: str | None) -> dict[str, Any]
                 f"--job-name={clean_name}",
                 str(TRAIN_SBATCH),
                 str(run_dir),
-                FORGE_REPO_DIR,
+                CMT_REPO_DIR,
             ],
-            cwd=FORGE_REPO_DIR, shell=False, capture_output=True, text=True,
+            cwd=CMT_REPO_DIR, shell=False, capture_output=True, text=True,
             timeout=60, check=True,
         )
     except FileNotFoundError:
@@ -360,11 +355,11 @@ def submit_serve(run_id: str) -> dict[str, Any]:
                 f"--job-name={session}",
                 str(SERVE_SBATCH),
                 str(run_dir),
-                FORGE_REPO_DIR,
+                CMT_REPO_DIR,
                 host,
                 str(port),
             ],
-            cwd=FORGE_REPO_DIR, shell=False, capture_output=True, text=True,
+            cwd=CMT_REPO_DIR, shell=False, capture_output=True, text=True,
             timeout=60, check=True, env=env,
         )
     except FileNotFoundError:
