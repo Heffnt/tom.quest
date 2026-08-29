@@ -92,6 +92,16 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Poll the Slack #dump channel for new captures every 2 minutes.
 */2 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
 
+# Read Tom's freeform TIME NOTES (the only time input left on the /tts page)
+# and turn each into concrete date/block changes, every 2 minutes so a note he
+# types is acted on while he is still looking at the page. The queue is
+# normally empty and the job exits before spending a Claude call.
+# flock -n: a run that waits on Claude can outlast the 2-minute tick, and two
+# runs would read the same pending notes and apply them TWICE. The second one
+# exits immediately instead (no -w: there is nothing to wait for, the next tick
+# is 2 minutes away).
+*/2 * * * * root /usr/bin/flock -n /var/lock/tts-apply-time-notes.lock /usr/bin/node /opt/tts/apply-time-notes.mjs >> /var/log/tts/apply-time-notes.log 2>&1
+
 # Prepare today's queue + digest via headless Claude. Two UTC slots because of
 # US daylight saving; the script's NY-hour guard lets exactly one proceed
 # (08:30 UTC = 4:30 a.m. EDT in summer; 09:30 UTC = 4:30 a.m. EST in winter).

@@ -3,24 +3,30 @@
 // TTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
 // stacks, in time order: committed blocks (dtsBlocks), due marks (dueAt),
 // wake marks (waiting todos' wakeAt), and — on today only — the day's queue
-// from getToday. Blocks are calendar strokes: create / move / delete freely;
-// a category block can open a block session over its todos.
+// from getToday. A category block can open a block session over its todos.
+//
+// Blocks are created and moved by TIME NOTE, not by picker: the day's `+`
+// opens a note for that day ("sat 9–11 deep work"), a block's own note moves
+// it ("push this an hour"), and an agent applies them. Delete stays a
+// one-click button — it is an exact effect, not a time to parse.
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
+import { reserveSessionTab } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
-import { errMessage, toDatetimeLocal } from "../lib";
+import TimeNoteField, {
+  groupTimeNotes,
+  NO_NOTES,
+  type TimeNote,
+} from "./time-note-field";
+import { errMessage, isoDate } from "../lib";
 
-type Todo = Doc<"dtsTodos">;
 type Block = Doc<"dtsBlocks">;
 
-const inputCls =
-  "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 const capCls = "text-[10px] font-mono text-text-faint";
@@ -65,61 +71,29 @@ function dayHeading(ms: number): string {
   return `${d.toLocaleDateString("en-US", { weekday: "short" })} ${d.getDate()}`;
 }
 
-/** "HH:mm" on a given local day-start → epoch ms (local). */
-function timeOnDay(dayStart: number, time: string): number | null {
-  const [h, m] = time.split(":").map(Number);
-  if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  const d = new Date(dayStart);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m).getTime();
-}
-
-// ── One placed block chip: collapsed = time + target; expanded = note,
-// move (datetime-local), delete, and (category blocks) open-session ─────────
+// ── One placed block chip: collapsed = time + target; expanded = note, a
+// time note (moves it), delete, and (category blocks) open-session ──────────
 function BlockChip({
   block,
   label,
+  notes,
   onOpenSession,
   sessionBusy,
   sessionError,
 }: {
   block: Block;
   label: string;
+  /** This block's time notes (the tab holds the query). */
+  notes: readonly TimeNote[];
   onOpenSession: () => void;
   sessionBusy: boolean;
   sessionError: string | null;
 }) {
-  const updateBlock = useMutation(api.tts.updateBlock);
   const deleteBlock = useMutation(api.tts.deleteBlock);
   const isCategory = block.category !== undefined;
   const [open, setOpen] = useState(false);
-  const [startDraft, setStartDraft] = useState(toDatetimeLocal(block.start));
-  const [endDraft, setEndDraft] = useState(toDatetimeLocal(block.end));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setStartDraft(toDatetimeLocal(block.start));
-    setEndDraft(toDatetimeLocal(block.end));
-  }, [block.start, block.end]);
-
-  const dirty =
-    startDraft !== toDatetimeLocal(block.start) ||
-    endDraft !== toDatetimeLocal(block.end);
-
-  const move = async () => {
-    const start = new Date(startDraft).getTime();
-    const end = new Date(endDraft).getTime();
-    if (Number.isNaN(start) || Number.isNaN(end) || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await updateBlock({ id: block._id, start, end });
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const remove = async () => {
     if (busy) return;
@@ -161,26 +135,7 @@ function BlockChip({
           {block.note && (
             <div className="text-[11px] text-text-muted">{block.note}</div>
           )}
-          <input
-            type="datetime-local"
-            value={startDraft}
-            onChange={(e) => setStartDraft(e.target.value)}
-            className={`${inputCls} w-full text-xs`}
-          />
-          <input
-            type="datetime-local"
-            value={endDraft}
-            onChange={(e) => setEndDraft(e.target.value)}
-            className={`${inputCls} w-full text-xs`}
-          />
-          {dirty && (
-            <div className="flex items-center gap-1">
-              <button onClick={move} disabled={busy} className={btnCls}>
-                Move
-              </button>
-              <Info label="tts.updateBlock({start,end})" />
-            </div>
-          )}
+          <TimeNoteField blockId={block._id} notes={notes} />
           <div className="flex items-center gap-1">
             <button onClick={remove} disabled={busy} className={btnCls}>
               Delete
@@ -211,167 +166,6 @@ function BlockChip({
   );
 }
 
-// ── Inline per-day create form: start/end time, target = one todo OR one
-// category (datalist of existing categories + "code") ───────────────────────
-function AddBlockForm({
-  dayStart,
-  activeTodos,
-  categories,
-  onClose,
-}: {
-  dayStart: number;
-  activeTodos: Todo[];
-  categories: string[];
-  onClose: () => void;
-}) {
-  const createBlock = useMutation(api.tts.createBlock);
-  const [startTime, setStartTime] = useState("09:00");
-  const [endTime, setEndTime] = useState("10:00");
-  const [endTouched, setEndTouched] = useState(false);
-  const [mode, setMode] = useState<"todo" | "category">("todo");
-  const [filter, setFilter] = useState("");
-  const [todoId, setTodoId] = useState("");
-  const [category, setCategory] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // End follows start at +1h until end is touched by hand.
-  const onStartChange = (v: string) => {
-    setStartTime(v);
-    if (endTouched) return;
-    const [h, m] = v.split(":").map(Number);
-    if (Number.isNaN(h) || Number.isNaN(m)) return;
-    setEndTime(
-      `${String(Math.min(h + 1, 23)).padStart(2, "0")}:${String(m).padStart(2, "0")}`,
-    );
-  };
-
-  const filtered = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return activeTodos;
-    return activeTodos.filter((t) => t.statement.toLowerCase().includes(q));
-  }, [activeTodos, filter]);
-
-  const ready =
-    mode === "todo" ? todoId !== "" : category.trim() !== "";
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const start = timeOnDay(dayStart, startTime);
-    const end = timeOnDay(dayStart, endTime);
-    if (start === null || end === null || !ready || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await createBlock({
-        start,
-        end,
-        ...(mode === "todo"
-          ? { todoId: todoId as Id<"dtsTodos"> }
-          : { category: category.trim() }),
-      });
-      onClose();
-    } catch (e2) {
-      setError(errMessage(e2));
-      setBusy(false);
-    }
-  };
-
-  const listId = `tts-cats-${dayStart}`;
-
-  return (
-    <form
-      onSubmit={submit}
-      className="rounded border border-accent/40 bg-surface p-1.5 space-y-1.5"
-    >
-      <div className="flex items-center gap-1">
-        <input
-          type="time"
-          value={startTime}
-          onChange={(e) => onStartChange(e.target.value)}
-          className={`${inputCls} text-xs px-1 w-full`}
-        />
-        <span className="text-text-faint text-xs">–</span>
-        <input
-          type="time"
-          value={endTime}
-          onChange={(e) => {
-            setEndTouched(true);
-            setEndTime(e.target.value);
-          }}
-          className={`${inputCls} text-xs px-1 w-full`}
-        />
-      </div>
-      <div className="flex gap-1">
-        {(["todo", "category"] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => setMode(m)}
-            className={`${btnCls} ${
-              mode === m ? "text-accent border-accent/60" : ""
-            }`}
-          >
-            {m}
-          </button>
-        ))}
-      </div>
-      {mode === "todo" ? (
-        <div className="space-y-1">
-          <input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="filter…"
-            className={`${inputCls} w-full text-xs`}
-          />
-          <select
-            value={todoId}
-            onChange={(e) => setTodoId(e.target.value)}
-            className={`${inputCls} w-full text-xs`}
-          >
-            <option value="">— todo —</option>
-            {filtered.map((t) => (
-              <option key={t._id} value={t._id}>
-                {t.statement.length > 60
-                  ? `${t.statement.slice(0, 60)}…`
-                  : t.statement}
-              </option>
-            ))}
-          </select>
-        </div>
-      ) : (
-        <div>
-          <input
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            placeholder="category"
-            list={listId}
-            className={`${inputCls} w-full text-xs`}
-          />
-          <datalist id={listId}>
-            {categories.map((c) => (
-              <option key={c} value={c} />
-            ))}
-          </datalist>
-        </div>
-      )}
-      <div className="flex items-center gap-1">
-        <button type="submit" disabled={!ready || busy} className={btnCls}>
-          Add
-        </button>
-        <Info
-          label={
-            mode === "todo"
-              ? "tts.createBlock({start,end,todoId})"
-              : "tts.createBlock({start,end,category})"
-          }
-        />
-      </div>
-      {error && <div className="text-xs text-error">{error}</div>}
-    </form>
-  );
-}
-
 // ── The tab ─────────────────────────────────────────────────────────────────
 export default function CalendarTab({
   onOpenItem,
@@ -380,7 +174,6 @@ export default function CalendarTab({
   onOpenItem?: (todoId: string) => void;
 }) {
   const { isTom } = useAuth();
-  const router = useRouter();
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
   const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
@@ -391,9 +184,11 @@ export default function CalendarTab({
     isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
   const today = useQuery(api.tts.getToday, isTom ? {} : "skip");
+  // ONE time-note subscription for the whole tab; days and blocks slice it.
+  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
   const createSession = useMutation(api.claudeSessions.createSession);
   const recordEvent = useMutation(api.tts.recordEvent);
-  const [addDay, setAddDay] = useState<number | null>(null); // dayStart ms
+  const [addDay, setAddDay] = useState<string | null>(null); // "YYYY-MM-DD"
   const [sessionBusyId, setSessionBusyId] = useState<Id<"dtsBlocks"> | null>(
     null,
   );
@@ -413,26 +208,31 @@ export default function CalendarTab({
         .sort((a, b) => a.statement.localeCompare(b.statement)),
     [todos],
   );
-  const categories = useMemo(() => {
-    const set = new Set<string>(["code"]);
-    for (const t of todos ?? []) if (t.category) set.add(t.category);
-    return [...set].sort();
-  }, [todos]);
-
+  // `key` is the column's calendar-day label from its own local date parts
+  // (isoDate) — that string IS the day a note is filed against, so the note
+  // never carries an instant that a timezone could re-date.
   const days = useMemo(
     () =>
-      Array.from({ length: 7 }, (_, i) => ({
-        start: shiftDays(weekStart, i),
-        end: shiftDays(weekStart, i + 1),
-      })),
+      Array.from({ length: 7 }, (_, i) => {
+        const start = shiftDays(weekStart, i);
+        return { start, end: shiftDays(weekStart, i + 1), key: isoDate(start) };
+      }),
     [weekStart],
   );
 
-  // Same navigation/error idiom as use-open-todo-session: create, then push;
-  // failures land in state and render under the button that fired them.
+  // ONE bucketing pass over the subscription; days and blocks index into it.
+  const notesByContext = useMemo(
+    () => groupTimeNotes(timeNotes ?? []),
+    [timeNotes],
+  );
+
+  // Same idiom as use-open-todo-session: reserve the tab inside the click (no
+  // await before window.open), create, then point the tab at the session;
+  // failures close it again and land in state under the button that fired it.
   const openBlockSession = async (block: Block) => {
     const category = block.category;
     if (category === undefined || sessionBusyId !== null) return;
+    const tab = reserveSessionTab();
     setSessionBusyId(block._id);
     setSessionError(null);
     try {
@@ -444,8 +244,9 @@ export default function CalendarTab({
         blockCategory: category,
         initialPrompt: buildBlockSessionPrompt(category, matching),
       });
-      router.push(`/sessions?session=${id}`);
+      tab.goto(id);
     } catch (e) {
+      tab.close();
       setSessionError({ blockId: block._id, message: errMessage(e) });
     } finally {
       setSessionBusyId(null);
@@ -516,6 +317,7 @@ export default function CalendarTab({
               )
               .sort((a, b) => (a.wakeAt ?? 0) - (b.wakeAt ?? 0));
             const queue = isToday ? (today?.queue?.todos ?? []) : [];
+            const dayNotes = notesByContext.get(day.key) ?? NO_NOTES;
 
             return (
               <div
@@ -534,21 +336,21 @@ export default function CalendarTab({
                   </span>
                   <button
                     onClick={() =>
-                      setAddDay((d) => (d === day.start ? null : day.start))
+                      setAddDay((d) => (d === day.key ? null : day.key))
                     }
                     className="text-xs text-text-faint hover:text-text px-1"
-                    title="add block"
+                    title="time note for this day"
                   >
                     +
                   </button>
                 </div>
 
-                {addDay === day.start && (
-                  <AddBlockForm
-                    dayStart={day.start}
-                    activeTodos={activeTodos}
-                    categories={categories}
-                    onClose={() => setAddDay(null)}
+                {/* The day's time notes always show; `+` opens the input. */}
+                {(addDay === day.key || dayNotes.length > 0) && (
+                  <TimeNoteField
+                    day={day.key}
+                    notes={dayNotes}
+                    showInput={addDay === day.key}
                   />
                 )}
 
@@ -557,6 +359,7 @@ export default function CalendarTab({
                     key={b._id}
                     block={b}
                     label={blockLabel(b)}
+                    notes={notesByContext.get(b._id) ?? NO_NOTES}
                     onOpenSession={() => void openBlockSession(b)}
                     sessionBusy={sessionBusyId === b._id}
                     sessionError={

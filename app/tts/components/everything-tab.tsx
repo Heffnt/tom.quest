@@ -12,6 +12,7 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
+import { groupTimeNotes, NO_NOTES } from "./time-note-field";
 import {
   codeSubjectKey,
   liveRulingsByKey,
@@ -103,6 +104,8 @@ export default function EverythingTab({
   const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
   const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
   const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  // ONE time-note subscription for the whole tab; each row gets its own slice.
+  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
@@ -133,6 +136,12 @@ export default function EverythingTab({
   const liveRulingByKey = useMemo(
     () => liveRulingsByKey(rulings ?? []),
     [rulings],
+  );
+
+  // ONE bucketing pass over the subscription; each row indexes into it.
+  const notesByContext = useMemo(
+    () => groupTimeNotes(timeNotes ?? []),
+    [timeNotes],
   );
 
   const rows: Row[] = useMemo(() => {
@@ -366,6 +375,7 @@ export default function EverythingTab({
               onToggle={() => toggle(r)}
               intent={link && link.item === r.todo._id ? link.intent : null}
               onIntentCleared={onLinkCleared}
+              timeNotes={notesByContext.get(r.todo._id) ?? NO_NOTES}
             />
           ) : (
             <CodeTodoRow

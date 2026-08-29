@@ -36,6 +36,18 @@ enters a model-reachable shell) into every session's environment so those
 curls work. A daemon-stamped outcome (time cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an
 outcome already exists.
+
+An autonomous mission may carry a `repo` (the scheduler picks it from the
+batch's code members, or from a repo the item names outright). Nothing here
+is special-cased: the workdir is a fresh shallow clone on branch
+`session/<id>`, exactly as for an interactive session, and the mission
+prompt tells the agent to commit, push that branch, and open a PR with `gh
+pr create` when the work is merge-ready. Merging is Tom's gate; the branch
+namespace is the boundary. Missions with `repo: "none"` still get the empty
+scratch workdir. Ratified doctrine (2026-08-29): Tom's input gates what
+PERSISTS (merges, rulings, statuses), never what a session attempts — an
+agent that reaches a Tom decision implements its best-judgment option and
+surfaces the decision in the PR, rather than stopping to wait.
 - `session.mjs` — one live session: the SDK query and its streaming input
   queue, seq/turn assignment, the outbox + ~400ms flush machinery, subagent
   parentage stamping (`parentToolUseId` on rows produced under a Task call;

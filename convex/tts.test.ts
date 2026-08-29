@@ -5,6 +5,8 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   countdownText,
+  nyCalendarDayBoundsUtc,
+  nyCalendarDayKey,
   ttsDayBoundsUtc,
   ttsDayKey,
   ttsPrepDay,
@@ -63,6 +65,25 @@ describe("ttsShared time helpers", () => {
     expect(est.end).toBe(Date.UTC(2026, 0, 16, 10));
     // Fall-back day: starts in EDT, ends in EST — 25 wall-clock hours.
     const fall = ttsDayBoundsUtc("2026-10-31");
+    expect(fall.end - fall.start).toBe(25 * 3_600_000);
+  });
+
+  // witness: make nyCalendarDayBoundsUtc use the 5 a.m. TTS boundary (or
+  // hand-roll start + 86_400_000) — a day-scoped time note written on a
+  // calendar column would cover the wrong 24 hours.
+  it("computes calendar-day bounds (NY midnight to midnight)", () => {
+    const edt = nyCalendarDayBoundsUtc("2026-08-27");
+    expect(edt.start).toBe(Date.UTC(2026, 7, 27, 4)); // 00:00 EDT
+    expect(edt.end).toBe(Date.UTC(2026, 7, 28, 4));
+    const est = nyCalendarDayBoundsUtc("2026-01-15");
+    expect(est.start).toBe(Date.UTC(2026, 0, 15, 5)); // 00:00 EST
+    // Every instant inside the window reports that calendar date, and the
+    // instant one ms before the start reports the previous one.
+    expect(nyCalendarDayKey(edt.start)).toBe("2026-08-27");
+    expect(nyCalendarDayKey(edt.end - 1)).toBe("2026-08-27");
+    expect(nyCalendarDayKey(edt.start - 1)).toBe("2026-08-26");
+    // Fall-back day: 25 wall-clock hours, so a fixed +DAY_MS would truncate it.
+    const fall = nyCalendarDayBoundsUtc("2026-11-01");
     expect(fall.end - fall.start).toBe(25 * 3_600_000);
   });
 
@@ -1086,11 +1107,11 @@ describe("TTS batches and annotations", () => {
     expect(after.filter((e) => e.kind === "prepare-skipped-batch")).toHaveLength(1);
   });
 
-  // witness: restore the old blanket "Tom-touched row with a plan → skip" in
-  // internalPrepareTodo and this test goes red — the moment Tom wrote one step
-  // of his own, the batch's live autonomous session could no longer check its
-  // own steps off, which is the whole reason a batch gets a session.
-  it("a Tom-touched batch takes agent plan writes that keep Tom's steps", async () => {
+  // witness: restore any plan gate in internalPrepareTodo and this test goes
+  // red — the moment Tom wrote one step of his own, the batch's live session
+  // could no longer check its own steps off, which is the whole reason a
+  // batch gets a session.
+  it("a Tom-touched batch takes agent plan writes", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await storeBatch(t, { plan: [step("gather the sources")] });
@@ -1107,36 +1128,23 @@ describe("TTS batches and annotations", () => {
     });
     expect((await findBatch(t))?.tomTouchedAt).toBeDefined();
 
-    // The session agent checks its own step off and adds another. Tom's step
-    // is still there by text, so the whole plan lands.
+    // The session agent checks its own step off, adds another, and rewrites
+    // Tom's — the batch branch (members !== undefined) applies the plan just
+    // as the plain-row branch does.
     await t.mutation(internal.tts.internalPrepareTodo, {
       id: batch!._id,
       plan: [
         { ...step("gather the sources"), status: "done" as const, doneAt: 1 },
-        tomStep,
+        { ...tomStep, text: "tom picks the venue — three candidates now" },
         step("draft the summary"),
       ],
     });
-    let fresh = await findBatch(t);
+    const fresh = await findBatch(t);
     expect(fresh?.plan).toHaveLength(3);
     expect(fresh?.plan?.[0].status).toBe("done");
-
-    // A plan that drops Tom's step is refused WHOLE — never merged in part.
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: batch!._id,
-      plan: [step("gather the sources")],
-    });
-    fresh = await findBatch(t);
-    expect(fresh?.plan).toHaveLength(3);
+    expect(fresh?.plan?.[1].text).toBe("tom picks the venue — three candidates now");
     const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(
-      events.some(
-        (e) =>
-          e.kind === "plan-skipped" &&
-          (e.data as { reason?: string; step?: string } | undefined)?.step ===
-            "tom picks the venue",
-      ),
-    ).toBe(true);
+    expect(events.some((e) => e.kind === "plan-skipped")).toBe(false);
   });
 
   // witness: add updatedAt to setImportance's patch in convex/tts.ts — the
@@ -1225,7 +1233,11 @@ describe("TTS batches and annotations", () => {
     ).rejects.toThrow(/Unknown todo id/);
   });
 
-  it("preparer importance/plan defer to Tom's overrides", async () => {
+  // witness: drop the setBy-"tom" guard from agentImportancePatch in
+  // convex/dts.ts — importance is a RULING, so an agent estimate must never
+  // land on top of one Tom spoke. (Plan text is the neighbouring field with
+  // the opposite rule; the test below pins that half.)
+  it("preparer importance defers to Tom's override", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.mutation(internal.tts.internalCapture, {
@@ -1239,71 +1251,34 @@ describe("TTS batches and annotations", () => {
       id: captured._id,
       level: "high",
     });
-    const step = { text: "look it up", actor: "agent" as const, status: "open" as const };
-    // tomTouchedAt is set but there is no plan yet: the plan writes, the
-    // agent importance is ignored (Tom already ruled).
+    const step = {
+      text: "look it up",
+      actor: "agent" as const,
+      status: "open" as const,
+    };
+    // One call carries both: the agent importance is ignored, the plan lands.
     await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
       importanceLevel: "low",
       importanceRationale: "agent guess",
       plan: [step],
     });
-    let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.importance).toMatchObject({ level: "high", setBy: "tom" });
     expect(todo.plan).toHaveLength(1);
-    // Agent steps flow freely even on a Tom-touched row: the plan gate
-    // preserves TOM's steps, not the whole plan (the old blanket skip froze
-    // live batch sessions the moment Tom touched the row at all).
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: captured._id,
-      plan: [step, { ...step, text: "second draft" }],
-    });
-    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(2);
-    // Tom writes a step of his own; an incoming plan that DROPS its text is
-    // refused whole (Tom's asks never vanish by agent hand)…
-    const tomStep = {
-      text: "tom decides the venue",
-      actor: "tom" as const,
-      status: "open" as const,
-    };
-    await tom.mutation(api.tts.updateTodo, {
-      id: captured._id,
-      plan: [step, { ...step, text: "second draft" }, tomStep],
-    });
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: captured._id,
-      plan: [step], // tom's step vanished
-    });
-    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(3); // unchanged
-    // …while one that keeps his text lands: reordered, checked off, trimmed
-    // of agent steps.
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: captured._id,
-      plan: [tomStep, { ...step, status: "done" as const, doneAt: 1 }],
-    });
-    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan).toHaveLength(2);
-    expect(todo.plan?.[0].actor).toBe("tom");
     const events = await tom.query(api.tts.listRecentEvents, {});
     expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
-    expect(
-      events.some(
-        (e) =>
-          e.kind === "plan-skipped" &&
-          (e.data as { reason?: string } | undefined)?.reason ===
-            "tom-step dropped",
-      ),
-    ).toBe(true);
   });
 
-  // witness: the tomTouchedAt === undefined condition on the plan gate in
-  // internalPrepareTodo (convex/tts.ts) — the first fleet run showed the
-  // unconditional check refusing legitimate refinements of agent-authored
-  // tom-steps on untouched batcher rows.
-  it("untouched rows take plan rewrites freely; the pen reports planApplied", async () => {
+  // witness: reintroduce ANY plan gate in internalPrepareTodo (convex/dts.ts)
+  // — a tom-step check, a Tom-touched check, either one — and this test goes
+  // red. Ratified doctrine (Tom, 2026-08-29): his input gates what PERSISTS
+  // (rulings, merges, statuses), never the plan text an agent works from, and
+  // the first fleet run showed such a check refusing legitimate refinements of
+  // agent-authored tom-steps.
+  it("plans always land, on untouched and Tom-touched rows alike", async () => {
     const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
     await t.mutation(internal.tts.internalCapture, {
       statement: "captured",
       source: "slack-capture",
@@ -1311,26 +1286,48 @@ describe("TTS batches and annotations", () => {
     const [captured] = await t.run(async (ctx) =>
       ctx.db.query("dtsTodos").collect(),
     );
+    const step = {
+      text: "look it up",
+      actor: "agent" as const,
+      status: "open" as const,
+    };
     const tomStep = {
       text: "decide the venue",
       actor: "tom" as const,
       status: "open" as const,
     };
-    // Agent-authored plan with a tom-step, via the pen (no Tom door touched).
-    const first = await t.mutation(internal.tts.internalPrepareTodo, {
+
+    // (a) UNTOUCHED row: an agent-authored plan carrying a tom-step, then a
+    // reword of that very step — the refinement the old gate refused.
+    expect(captured.tomTouchedAt).toBeUndefined();
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
-      plan: [tomStep],
+      plan: [step, tomStep],
     });
-    expect(first.planApplied).toBe(true);
-    // Rewording the tom-step on the UNTOUCHED row lands — the plan is wholly
-    // agent-authored until Tom has a hand in the row.
-    const reworded = await t.mutation(internal.tts.internalPrepareTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
-      plan: [{ ...tomStep, text: "decide the venue — three-way now" }],
+      plan: [step, { ...tomStep, text: "decide the venue — three-way now" }],
     });
-    expect(reworded.planApplied).toBe(true);
-    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.plan?.[0].text).toBe("decide the venue — three-way now");
+    let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan?.[1].text).toBe("decide the venue — three-way now");
+
+    // (b) TOM-TOUCHED row: Tom writes the plan himself (updateTodo stamps
+    // tomTouchedAt), and the agent then DROPS his step. That lands too.
+    await tom.mutation(api.tts.updateTodo, {
+      id: captured._id,
+      plan: [step, tomStep],
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.tomTouchedAt).toBeDefined();
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: captured._id,
+      plan: [{ ...step, status: "done" as const, doneAt: 1 }],
+    });
+    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todo.plan).toHaveLength(1);
+    expect(todo.plan?.[0].status).toBe("done");
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(events.some((e) => e.kind === "plan-skipped")).toBe(false);
   });
 
   // witness: drop the one-live-batch collect from updateTodo's members branch
@@ -1398,6 +1395,73 @@ describe("TTS batches and annotations", () => {
     expect((await findBatch(t))?.tomTouchedAt).toBeDefined();
   });
 
+  // witness: drop the `todo.dueAt !== undefined` guard from internalPrepareTodo
+  // in convex/dts.ts — the preparer would overwrite a date Tom already set.
+  it("the preparer sets a FIRST date only, never over an existing one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const undatedId = await tom.mutation(api.tts.createTodo, {
+      statement: "pay rent sept 3",
+    });
+    const due = Date.UTC(2026, 8, 3, 16); // noon NY
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: undatedId,
+      brief: "rent",
+      dueAt: due,
+    });
+    let todos = await tom.query(api.tts.listTodos, {});
+    expect(todos[0].dueAt).toBe(due);
+    expect(todos[0].dateKind).toBe("self-imposed");
+    expect(todos[0].timingClass).toBe("dated");
+    // A second preparer date is refused (and named), leaving the stored one.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: undatedId,
+      dueAt: due + 5 * 86_400_000,
+    });
+    todos = await tom.query(api.tts.listTodos, {});
+    expect(todos[0].dueAt).toBe(due);
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
+    // A batch's dates are never the single-todo preparer's business either.
+    await storeBatch(t);
+    const batch = await findBatch(t);
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: batch!._id,
+      dueAt: due,
+    });
+    expect((await findBatch(t))?.dueAt).toBeUndefined();
+  });
+
+  // witness: drop `(todo.dateOutcomes ?? []).length > 0` from the dueAt branch
+  // of internalPrepareTodo in convex/dts.ts — a re-prep reading the same
+  // statement would hand back the very date Tom just recorded as missed.
+  it("the preparer never resurrects a date Tom already resolved", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const due = Date.UTC(2026, 8, 3, 16); // noon NY
+    const id = await tom.mutation(api.tts.createTodo, {
+      statement: "pay rent sept 3",
+      dueAt: due,
+    });
+    // Tom resolves it: missed, no replacement — the item goes back to whenever
+    // and the miss is on record.
+    await tom.mutation(api.tts.recordDateOutcome, { id, outcome: "missed" });
+    let [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.dueAt).toBeUndefined();
+    expect(todo.dateOutcomes).toHaveLength(1);
+    // The statement still says "sept 3", so the preparer offers it again.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id,
+      brief: "rent",
+      dueAt: due,
+    });
+    [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.dueAt).toBeUndefined();
+    expect(todo.timingClass).toBe("whenever");
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
+  });
+
   // witness: drop the members === undefined filter from
   // internalPrepareFallbackQueue in convex/tts.ts
   it("fallback prep never queues a members-bearing row", async () => {
@@ -1412,5 +1476,599 @@ describe("TTS batches and annotations", () => {
     );
     expect(queue.entries.some((e) => e.todoId === solo)).toBe(true);
     expect(queue.entries.some((e) => e.todoId === batch?._id)).toBe(false);
+  });
+});
+
+// The one time input on the /dts page: Tom writes a sentence, the worker job
+// proposes actions, and internalApplyTimeNote is the gate that decides whether
+// they are legal. These tests are about that gate — the agent's reading is
+// never the authority.
+describe("TTS time notes", () => {
+  const DAY = 86_400_000;
+
+  const apply = (
+    t: ReturnType<typeof convexTest>,
+    id: string,
+    actions: Record<string, unknown>[],
+    result = "did the thing",
+  ) =>
+    t.mutation(internal.tts.internalApplyTimeNote, {
+      id,
+      status: "applied",
+      result,
+      actions: actions as never,
+    });
+
+  it("gates every Tom-facing time-note function on the tom role", async () => {
+    const t = convexTest({ schema, modules });
+    await expect(t.query(api.tts.listTimeNotes, {})).rejects.toThrow();
+    await expect(
+      t.mutation(api.tts.createTimeNote, {
+        text: "tomorrow",
+        day: "2026-08-29",
+      }),
+    ).rejects.toThrow();
+  });
+
+  // witness: take `day` as a number again (or drop the YYYY-MM-DD check) — the
+  // browser's local start-of-day ms, the worker's day + 24h, and the server's
+  // New York wall clock were three different days before this contract.
+  it("a day-scoped note carries a YYYY-MM-DD calendar date", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    for (const day of ["2026-8-29", "tomorrow", "2026-08-29T00:00", ""]) {
+      await expect(
+        tom.mutation(api.tts.createTimeNote, { text: "sat 9-11", day }),
+      ).rejects.toThrow(/YYYY-MM-DD/);
+    }
+    await tom.mutation(api.tts.createTimeNote, {
+      text: "sat 9-11",
+      day: "2026-08-29",
+    });
+    const [note] = await tom.query(api.tts.listTimeNotes, {});
+    expect(note.day).toBe("2026-08-29");
+  });
+
+  // witness: drop requireOneTimeNoteContext from createTimeNote in
+  // convex/dts.ts — a note with no context (or two) has nothing to act on.
+  it("a time note has exactly one context and real text", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const blockId = await tom.mutation(api.tts.createBlock, {
+      start: Date.now(),
+      end: Date.now() + 3_600_000,
+      category: "chores",
+    });
+    await expect(
+      tom.mutation(api.tts.createTimeNote, { text: "next week" }),
+    ).rejects.toThrow(/exactly one context/);
+    await expect(
+      tom.mutation(api.tts.createTimeNote, { text: "next week", todoId, blockId }),
+    ).rejects.toThrow(/exactly one context/);
+    await expect(
+      tom.mutation(api.tts.createTimeNote, { text: "   ", todoId }),
+    ).rejects.toThrow(/needs text/);
+    const id = await tom.mutation(api.tts.createTimeNote, {
+      text: "  next wednesday  ",
+      todoId,
+    });
+    const [note] = await tom.query(api.tts.listTimeNotes, {});
+    expect(note._id).toBe(id);
+    expect(note.text).toBe("next wednesday");
+    expect(note.status).toBe("pending");
+  });
+
+  // witness: make listTimeNotes return every applied note — a month of
+  // resolved notes would pile up on the page forever.
+  it("lists unresolved notes plus the last 24h of applied ones", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const fresh = await tom.mutation(api.tts.createTimeNote, {
+      text: "fresh",
+      todoId,
+    });
+    const stale = await tom.mutation(api.tts.createTimeNote, {
+      text: "stale",
+      todoId,
+    });
+    const ambiguous = await tom.mutation(api.tts.createTimeNote, {
+      text: "sometime-ish",
+      todoId,
+    });
+    await apply(t, fresh, [], "noted");
+    await t.mutation(internal.tts.internalApplyTimeNote, {
+      id: ambiguous,
+      status: "needs-session",
+      result: "no anchor to read this against",
+    });
+    // Age the stale one past the window by hand (nothing deletes it — an
+    // applied note is kept forever as instrumentation).
+    await t.run(async (ctx) => {
+      const id = ctx.db.normalizeId("dtsTimeNotes", stale)!;
+      await ctx.db.patch(id, {
+        status: "applied",
+        result: "long ago",
+        resolvedAt: Date.now() - 2 * DAY,
+      });
+    });
+    const listed = await tom.query(api.tts.listTimeNotes, {});
+    expect(listed.map((n) => n.text).sort()).toEqual(["fresh", "sometime-ish"]);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect()),
+    ).toHaveLength(3);
+  });
+
+  // witness: let deleteTimeNote delete an applied note — the only record of
+  // what changed and why would be erasable.
+  it("deletes a pending or needs-session note, never an applied one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const pending = await tom.mutation(api.tts.createTimeNote, {
+      text: "a",
+      todoId,
+    });
+    const applied = await tom.mutation(api.tts.createTimeNote, {
+      text: "b",
+      todoId,
+    });
+    await apply(t, applied, [], "noted");
+    await tom.mutation(api.tts.deleteTimeNote, { id: pending });
+    await expect(
+      tom.mutation(api.tts.deleteTimeNote, { id: applied }),
+    ).rejects.toThrow(/history/);
+  });
+
+  // witness: drop the `todo.dueAt !== undefined` throw from the set-due branch
+  // of internalApplyTimeNote — a note could silently slide a date.
+  it("set-due gives a first date only; a second one is a renegotiation", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "rent" });
+    const first = await tom.mutation(api.tts.createTimeNote, {
+      text: "due sept 3",
+      todoId,
+    });
+    const due = Date.now() + 5 * DAY;
+    await apply(t, first, [{ kind: "set-due", dueAt: due }], "due set to Sep 3");
+    let [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.dueAt).toBe(due);
+    expect(todo.dateKind).toBe("self-imposed");
+    expect(todo.timingClass).toBe("dated");
+    // A time note is Tom's own instruction: it stamps tomTouchedAt exactly
+    // where updateTodo would.
+    expect(todo.tomTouchedAt).toBeDefined();
+    const second = await tom.mutation(api.tts.createTimeNote, {
+      text: "actually the 8th",
+      todoId,
+    });
+    await expect(
+      apply(t, second, [{ kind: "set-due", dueAt: due + DAY }]),
+    ).rejects.toThrow(/kept-dates/);
+    // The rejection rolled the whole thing back: date untouched, note still
+    // pending for the job to re-submit as needs-session.
+    [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.dueAt).toBe(due);
+    const notes = await tom.query(api.tts.listTimeNotes, {});
+    expect(notes.find((n) => n._id === second)?.status).toBe("pending");
+  });
+
+  // witness: drop the now < dueAt check from applyDateOutcome (or stop routing
+  // renegotiate through it) and a past date could be slid silently.
+  it("renegotiate is legal before the date and refused after it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const ahead = await tom.mutation(api.tts.createTodo, {
+      statement: "ahead",
+      dueAt: Date.now() + 3 * DAY,
+    });
+    const past = await tom.mutation(api.tts.createTodo, {
+      statement: "past",
+      dueAt: Date.now() - 3 * DAY,
+    });
+    const ok = await tom.mutation(api.tts.createTimeNote, {
+      text: "push to friday",
+      todoId: ahead,
+    });
+    const newDueAt = Date.now() + 9 * DAY;
+    await apply(t, ok, [{ kind: "renegotiate", newDueAt, note: "trip" }], "moved");
+    const todos = await tom.query(api.tts.listTodos, {});
+    const moved = todos.find((x) => x._id === ahead)!;
+    expect(moved.dueAt).toBe(newDueAt);
+    expect(moved.dateOutcomes).toHaveLength(1);
+    expect(moved.dateOutcomes?.[0].outcome).toBe("renegotiated");
+
+    const late = await tom.mutation(api.tts.createTimeNote, {
+      text: "push it back",
+      todoId: past,
+    });
+    await expect(
+      apply(t, late, [{ kind: "renegotiate", newDueAt }]),
+    ).rejects.toThrow(/only allowed before the date arrives/);
+    // …and the mirror rule: a date still ahead is not "missed".
+    const early = await tom.mutation(api.tts.createTimeNote, {
+      text: "I blew it",
+      todoId: ahead,
+    });
+    await expect(apply(t, early, [{ kind: "record-missed" }])).rejects.toThrow(
+      /has not arrived/,
+    );
+    const missed = await tom.mutation(api.tts.createTimeNote, {
+      text: "never happened",
+      todoId: past,
+    });
+    await apply(t, missed, [{ kind: "record-missed" }], "recorded as missed");
+    const after = (await tom.query(api.tts.listTodos, {})).find(
+      (x) => x._id === past,
+    )!;
+    expect(after.dueAt).toBeUndefined();
+    expect(after.timingClass).toBe("whenever");
+    expect(after.dateOutcomes?.[0].outcome).toBe("missed");
+  });
+
+  // witness: drop requireSubject from the todo-scoped branches — a note
+  // written on a calendar day would silently act on nothing (or worse).
+  it("todo-scoped actions need a note written on a todo", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const dayNote = await tom.mutation(api.tts.createTimeNote, {
+      text: "sat 9-11 chores",
+      day: nyCalendarDayKey(Date.now()),
+    });
+    await expect(
+      apply(t, dayNote, [{ kind: "set-due", dueAt: Date.now() + DAY }]),
+    ).rejects.toThrow(/written on a todo/);
+  });
+
+  // witness: stop routing set-waiting/set-active through applyStatusChange —
+  // the reopen cleanup (stale wake facts) would drift from setStatus.
+  it("set-waiting and set-active go through the one status implementation", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "later" });
+    const sleep = await tom.mutation(api.tts.createTimeNote, {
+      text: "wait until the lease renews",
+      todoId,
+    });
+    const wakeAt = Date.now() + 30 * DAY;
+    await apply(
+      t,
+      sleep,
+      [{ kind: "set-waiting", wakeAt, wakeCondition: "lease renews" }],
+      "asleep until the lease renews",
+    );
+    let [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.status).toBe("waiting");
+    expect(todo.wakeAt).toBe(wakeAt);
+    expect(todo.wakeCondition).toBe("lease renews");
+    const wake = await tom.mutation(api.tts.createTimeNote, {
+      text: "wake it now",
+      todoId,
+    });
+    await apply(t, wake, [{ kind: "set-active" }], "awake");
+    [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.status).toBe("active");
+    expect(todo.wakeAt).toBeUndefined();
+    expect(todo.wakeCondition).toBeUndefined();
+  });
+
+  // witness: stop routing the block actions through insertBlock/patchBlock —
+  // the exactly-one-target and ends-after-it-starts rules would not apply here.
+  it("block actions obey the same validation as the calendar mutations", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "gym" });
+    const start = Date.now() + DAY;
+    const end = start + 3_600_000;
+
+    // Two targets: refused, exactly as createBlock refuses it.
+    const bad = await tom.mutation(api.tts.createTimeNote, {
+      text: "an hour tomorrow",
+      todoId,
+    });
+    await expect(
+      apply(t, bad, [
+        { kind: "create-block", start, end, todoId, category: "chores" },
+      ]),
+    ).rejects.toThrow(/exactly one thing/);
+
+    // From a todo's own note, an untargeted block belongs to that todo.
+    const good = await tom.mutation(api.tts.createTimeNote, {
+      text: "an hour tomorrow",
+      todoId,
+    });
+    await apply(t, good, [{ kind: "create-block", start, end }], "placed 1h");
+    const [block] = await tom.query(api.tts.listBlocks, {});
+    expect(block.todoId).toBe(todoId);
+
+    // Move it, then refuse a backwards span, then delete it.
+    const move = await tom.mutation(api.tts.createTimeNote, {
+      text: "an hour earlier",
+      blockId: block._id,
+    });
+    await apply(
+      t,
+      move,
+      [
+        {
+          kind: "update-block",
+          blockId: block._id,
+          start: start - 3_600_000,
+          end: end - 3_600_000,
+        },
+      ],
+      "moved an hour earlier",
+    );
+    expect((await tom.query(api.tts.listBlocks, {}))[0].start).toBe(
+      start - 3_600_000,
+    );
+    const backwards = await tom.mutation(api.tts.createTimeNote, {
+      text: "make it end before it starts",
+      blockId: block._id,
+    });
+    await expect(
+      apply(t, backwards, [
+        { kind: "update-block", blockId: block._id, start: end, end: start },
+      ]),
+    ).rejects.toThrow(/ends after it starts/);
+    const drop = await tom.mutation(api.tts.createTimeNote, {
+      text: "cancel it",
+      blockId: block._id,
+    });
+    await apply(t, drop, [{ kind: "delete-block", blockId: block._id }], "gone");
+    expect(await tom.query(api.tts.listBlocks, {})).toHaveLength(0);
+  });
+
+  // witness: drop the note.status !== "pending" throw — a retried POST would
+  // apply the same actions twice.
+  it("a note is applied once, and needs-session carries no actions", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    const id = await tom.mutation(api.tts.createTimeNote, { text: "a", todoId });
+    await apply(t, id, [], "noted");
+    await expect(apply(t, id, [], "again")).rejects.toThrow(/already applied/);
+    const other = await tom.mutation(api.tts.createTimeNote, {
+      text: "b",
+      todoId,
+    });
+    await expect(
+      t.mutation(internal.tts.internalApplyTimeNote, {
+        id: other,
+        status: "needs-session",
+        result: "ambiguous",
+        actions: [{ kind: "set-active" }],
+      }),
+    ).rejects.toThrow(/carries no actions/);
+    await expect(
+      t.mutation(internal.tts.internalApplyTimeNote, {
+        id: other,
+        status: "applied",
+        result: "   ",
+      }),
+    ).rejects.toThrow(/result/);
+  });
+
+  // witness: return the raw notes from internalPendingTimeNotes without their
+  // context — the job would have to guess what "it" refers to.
+  it("the worker queue carries each note's own context", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "reserve UH 400",
+      dueAt: Date.now() + 2 * DAY,
+    });
+    await tom.mutation(api.tts.createTimeNote, { text: "push it", todoId });
+    // The day note names a NY calendar date; the block is placed inside that
+    // date's NY window, which is how the server finds it (not by ms arithmetic
+    // on a browser-local start-of-day).
+    const day = nyCalendarDayKey(Date.now());
+    const dayStart = nyCalendarDayBoundsUtc(day).start;
+    await tom.mutation(api.tts.createTimeNote, { text: "sat 9-11", day });
+    const blockId = await tom.mutation(api.tts.createBlock, {
+      start: dayStart + 9 * 3_600_000,
+      end: dayStart + 11 * 3_600_000,
+      category: "chores",
+    });
+    await tom.mutation(api.tts.createTimeNote, { text: "earlier", blockId });
+    // A block on the NEXT calendar day is NOT this day's business.
+    await tom.mutation(api.tts.createBlock, {
+      start: nyCalendarDayBoundsUtc(day).end + 3_600_000,
+      end: nyCalendarDayBoundsUtc(day).end + 7_200_000,
+      category: "chores",
+    });
+
+    const queue = await t.query(internal.tts.internalPendingTimeNotes, {});
+    expect(queue).toHaveLength(3);
+    const byKind = new Map(
+      queue.map((n) => [
+        (n.context as { kind: string } | null)?.kind,
+        n.context as Record<string, unknown>,
+      ]),
+    );
+    expect(
+      (byKind.get("todo") as { todo: { statement: string } }).todo.statement,
+    ).toBe("reserve UH 400");
+    expect((byKind.get("day") as { dayBlocks: unknown[] }).dayBlocks).toHaveLength(1);
+    expect(
+      (byKind.get("block") as { block: { category: string } }).block.category,
+    ).toBe("chores");
+    // Resolved notes leave the queue.
+    await apply(t, queue[0]._id, [], "noted");
+    expect(
+      await t.query(internal.tts.internalPendingTimeNotes, {}),
+    ).toHaveLength(2);
+  });
+
+  // witness: hoist `const subject = await ctx.db.get(note.todoId)` above the
+  // action loop in internalApplyTimeNote — action 2 would then validate against
+  // the world as it was BEFORE action 1, and one sentence carrying two steps
+  // ("I blew Tuesday, do it Friday") would be refused or written wrong.
+  it("each action validates against the previous action's result", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    // [record-missed, set-due]: the miss clears the date, so the set-due that
+    // follows is a FIRST date, not a kept-dates violation.
+    const past = await tom.mutation(api.tts.createTodo, {
+      statement: "call the bank",
+      dueAt: Date.now() - 3 * DAY,
+    });
+    const both = await tom.mutation(api.tts.createTimeNote, {
+      text: "blew it — do it friday instead",
+      todoId: past,
+    });
+    const replacement = Date.now() + 3 * DAY;
+    await apply(
+      t,
+      both,
+      [{ kind: "record-missed" }, { kind: "set-due", dueAt: replacement }],
+      "recorded the miss and set Friday",
+    );
+    let todo = (await tom.query(api.tts.listTodos, {})).find(
+      (x) => x._id === past,
+    )!;
+    expect(todo.dateOutcomes).toHaveLength(1);
+    expect(todo.dateOutcomes?.[0].outcome).toBe("missed");
+    expect(todo.dueAt).toBe(replacement);
+    expect(todo.timingClass).toBe("dated");
+
+    // [renegotiate, renegotiate]: each one records the date it actually moved,
+    // so BOTH outcome rows survive (a stale subject would overwrite the first).
+    const ahead = await tom.mutation(api.tts.createTodo, {
+      statement: "reserve the room",
+      dueAt: Date.now() + 2 * DAY,
+    });
+    const twice = await tom.mutation(api.tts.createTimeNote, {
+      text: "push to thursday, no — friday",
+      todoId: ahead,
+    });
+    const first = Date.now() + 4 * DAY;
+    const second = Date.now() + 5 * DAY;
+    await apply(
+      t,
+      twice,
+      [
+        { kind: "renegotiate", newDueAt: first },
+        { kind: "renegotiate", newDueAt: second },
+      ],
+      "moved to Friday",
+    );
+    todo = (await tom.query(api.tts.listTodos, {})).find((x) => x._id === ahead)!;
+    expect(todo.dueAt).toBe(second);
+    expect(todo.dateOutcomes).toHaveLength(2);
+    // The second row records the date the SECOND move replaced — the first
+    // move's result, not the original.
+    expect(todo.dateOutcomes?.[1].dueAt).toBe(first);
+  });
+
+  // witness: drop `newDueAt` from the record-missed branch — "I blew Tuesday,
+  // do it Friday" would drop the item to whenever and lose Friday.
+  it("record-missed may carry the replacement date", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the permit",
+      dueAt: Date.now() - DAY,
+    });
+    const note = await tom.mutation(api.tts.createTimeNote, {
+      text: "missed it, doing it friday",
+      todoId,
+    });
+    const newDueAt = Date.now() + 3 * DAY;
+    await apply(
+      t,
+      note,
+      [{ kind: "record-missed", newDueAt, note: "was travelling" }],
+      "recorded as missed, now due Friday",
+    );
+    const [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.dueAt).toBe(newDueAt);
+    expect(todo.timingClass).toBe("dated");
+    expect(todo.dateOutcomes).toHaveLength(1);
+    expect(todo.dateOutcomes?.[0].outcome).toBe("missed");
+    expect(todo.dateOutcomes?.[0].note).toBe("was travelling");
+  });
+
+  // witness: write `wakeAt: action.wakeAt` straight through — a note that only
+  // moves the wake DATE would erase the wake CONDITION Tom never mentioned
+  // (applyStatusChange writes both fields unconditionally).
+  it("set-waiting preserves the fields the note did not mention", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "lease" });
+    const asleep = await tom.mutation(api.tts.createTimeNote, {
+      text: "wait until the lease renews, check the 1st",
+      todoId,
+    });
+    const wakeAt = Date.now() + 30 * DAY;
+    await apply(
+      t,
+      asleep,
+      [{ kind: "set-waiting", wakeAt, wakeCondition: "lease renews" }],
+      "asleep",
+    );
+    // Only the date moves; the condition is not mentioned and must survive.
+    const later = await tom.mutation(api.tts.createTimeNote, {
+      text: "make that the 15th instead",
+      todoId,
+    });
+    const moved = wakeAt + 14 * DAY;
+    await apply(t, later, [{ kind: "set-waiting", wakeAt: moved }], "moved");
+    let [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.wakeAt).toBe(moved);
+    expect(todo.wakeCondition).toBe("lease renews");
+    // …and the mirror: a condition-only note keeps the date.
+    const reworded = await tom.mutation(api.tts.createTimeNote, {
+      text: "really it's when the landlord writes back",
+      todoId,
+    });
+    await apply(
+      t,
+      reworded,
+      [{ kind: "set-waiting", wakeCondition: "landlord writes back" }],
+      "reworded",
+    );
+    [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.wakeAt).toBe(moved);
+    expect(todo.wakeCondition).toBe("landlord writes back");
+  });
+
+  // witness: drop the set-date-kind branch (or its dueAt check) — "that's the
+  // landlord's deadline, not mine" would have nowhere to land, or would label a
+  // date that does not exist.
+  it("set-date-kind relabels an existing date and needs one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const dueAt = Date.now() + 4 * DAY;
+    const dated = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the lease",
+      dueAt,
+    });
+    const undated = await tom.mutation(api.tts.createTodo, {
+      statement: "someday",
+    });
+    const relabel = await tom.mutation(api.tts.createTimeNote, {
+      text: "that's the landlord's date, not mine",
+      todoId: dated,
+    });
+    await apply(
+      t,
+      relabel,
+      [{ kind: "set-date-kind", dateKind: "external" }],
+      "marked as someone else's deadline",
+    );
+    const todos = await tom.query(api.tts.listTodos, {});
+    const after = todos.find((x) => x._id === dated)!;
+    expect(after.dateKind).toBe("external");
+    expect(after.dueAt).toBe(dueAt); // the date itself never moved
+    const nothing = await tom.mutation(api.tts.createTimeNote, {
+      text: "external",
+      todoId: undated,
+    });
+    await expect(
+      apply(t, nothing, [{ kind: "set-date-kind", dateKind: "external" }]),
+    ).rejects.toThrow(/no date to describe/);
   });
 });

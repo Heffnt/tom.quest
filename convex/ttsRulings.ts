@@ -19,7 +19,12 @@ import { applyStatusChange, logEvent } from "./tts";
 //   session — this needs conversation
 //   archive — set aside
 // "defer" is not a verdict: not ruling IS deferring; timing changes are a
-// reschedule (dtsBlocks / recordDateOutcome), not a ruling.
+// reschedule (dtsBlocks / a time note), not a ruling.
+//
+// SENTENCE ON ANY VERDICT (2026-08-29): all four verdicts accept the optional
+// `sentence`. Required only on revise; on archive it is the unarchive
+// condition; on approve/session it is a free note that reaches the batcher
+// prompt, the preparer prompt, and the session's opening prompt.
 //
 // Life-subject verdicts take their immediate effect here (revise drops
 // readiness to "preparing"; archive archives). Code subjects are applied by
@@ -93,6 +98,11 @@ async function insertRuling(
     if (isCode && (repo === undefined || externalId === undefined)) {
       throw new Error("A code ruling requires both repo and externalId");
     }
+    // One optional written note on EVERY verdict (ratified 2026-08-29): the
+    // four verdicts are uniform, each taking an optional note. Its MEANING is
+    // per-verdict and unchanged — revise: the redirect (still required);
+    // archive: the condition to propose it back; approve/session: free
+    // steering the worker prompts and the session prompt read.
     const trimmed = sentence?.trim();
     if (verdict === "revise" && !trimmed) {
       throw new Error(
@@ -119,7 +129,10 @@ async function insertRuling(
       if (verdict === "archive") {
         await applyStatusChange(ctx, todo, {
           status: "archived",
-          unarchiveCondition,
+          // On archive the sentence IS the unarchive condition (the one
+          // option row now sends a single note per verdict); the older
+          // explicit arg still wins when a caller passes both.
+          unarchiveCondition: unarchiveCondition ?? trimmed,
           note: trimmed,
         });
         appliedAt = now;

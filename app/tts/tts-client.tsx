@@ -16,7 +16,7 @@ import CalendarTab from "./components/calendar-tab";
 import BatchesTab from "./components/batches-tab";
 import EverythingTab from "./components/everything-tab";
 import Info from "./components/info";
-import { parseDateInput, selectBatches, type LinkIntent } from "./lib";
+import { selectBatches, type LinkIntent } from "./lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
@@ -32,7 +32,6 @@ const TABS: Array<{ value: Tab; label: string }> = [
 function QuickAdd() {
   const createTodo = useMutation(api.tts.createTodo);
   const [statement, setStatement] = useState("");
-  const [date, setDate] = useState("");
   const [category, setCategory] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,11 +45,9 @@ function QuickAdd() {
     try {
       await createTodo({
         statement: trimmed,
-        dueAt: parseDateInput(date),
         category: category.trim() || undefined,
       });
       setStatement("");
-      setDate("");
       setCategory("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -67,13 +64,6 @@ function QuickAdd() {
           onChange={(e) => setStatement(e.target.value)}
           placeholder="Add a todo…"
           className={`${inputCls} flex-1 min-w-48`}
-        />
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          title="Optional date (a date set here is a self-imposed date)"
-          className={inputCls}
         />
         <input
           value={category}

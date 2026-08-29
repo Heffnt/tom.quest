@@ -61,11 +61,22 @@ export type BatchMemberContext = {
   status: string;
 };
 
+// The live (newest) ruling on this todo, when the caller holds one. Every
+// verdict may carry a sentence (ratified 2026-08-29) — the note Tom wrote when
+// he ruled — and the session that follows a "session" verdict is exactly where
+// that sentence has to arrive, or he has to repeat himself.
+export type LiveRulingContext = {
+  verdict: "approve" | "revise" | "session" | "archive";
+  sentence?: string;
+};
+
 export function buildTodoSessionPrompt(
   todo: Doc<"dtsTodos">,
   kind: "gate" | "focus-item",
   batch?: { members: BatchMemberContext[] },
+  ruling?: LiveRulingContext,
 ): string {
+  const rulingNote = ruling?.sentence?.trim();
   const lines = [
     CONTRACT,
     "",
@@ -73,6 +84,14 @@ export function buildTodoSessionPrompt(
       ? "This is a tom-gate session: the item below is ready-for-tom and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."
       : "This is a focus session: Tom chose to begin this item now. Open with the smallest concrete first step and work it with him.",
     "",
+    ...(ruling
+      ? [
+          rulingNote
+            ? `Tom's standing ruling on this item is "${ruling.verdict}", and he wrote: ${rulingNote}. That sentence is his instruction for this session and overrides any other reading of the item.`
+            : `Tom's standing ruling on this item is "${ruling.verdict}" (no note written).`,
+          "",
+        ]
+      : []),
     `The item ("${todo.statement}"):`,
     fact("timing", todo.timingClass),
     fact(
@@ -120,8 +139,8 @@ export function buildTodoSessionPrompt(
       "",
       "Walk-through contract:",
       '- Work the plan IN ORDER. Steps with actor "agent" you do yourself.',
-      '- At each OPEN step with actor "tom", STOP and put it to Tom as one concrete question — do not run ahead of him.',
-      `- Record plan progress the moment a step closes: \`npx convex run tts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff. The result carries planApplied; false means a tom-step's text was dropped (on a Tom-touched row every actor-"tom" step must keep its exact text) — resend with those texts verbatim; rewording a tom-step is itself a question for Tom.`,
+      '- At each OPEN step with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
+      `- Record plan progress the moment a step closes: \`npx convex run tts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff.`,
       "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any member) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
       "- Apply Tom's spoken en-masse property changes (importance, category) via tts:internalBulkUpdate.",
       "- All of these are pens for Tom's spoken word — use them only while Tom is present in the session.",
