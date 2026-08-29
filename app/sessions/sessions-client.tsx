@@ -1,6 +1,6 @@
 "use client";
 
-// DTS Sessions — a chat surface over headless Claude Code sessions running on
+// TTS Sessions — a chat surface over headless Claude Code sessions running on
 // the worker box. Convex is the stream: the daemon persists transcript rows,
 // this page subscribes. Phone-first: the list is the default view; opening a
 // session takes over the viewport with back-navigation (?session=<id>

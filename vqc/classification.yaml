@@ -31,4 +31,4 @@ derived:
   - "pnpm-lock.yaml"
 
 scratch:
-  - "dts/**" # design-history docs; the living spec is WikiTom dts/spec.md
+  - "tts/**" # design-history docs; the living spec is WikiTom tts/spec.md

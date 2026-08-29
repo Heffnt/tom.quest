@@ -1,9 +1,9 @@
 {
-  "name": "dts-session-host",
+  "name": "tts-session-host",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "DTS session-host daemon: runs Claude Code sessions via the Agent SDK and persists them to tom.quest's Convex backend. See README.md — including why this package carries the worker box's ONE sanctioned npm dependency.",
+  "description": "TTS session-host daemon: runs Claude Code sessions via the Agent SDK and persists them to tom.quest's Convex backend. See README.md — including why this package carries the worker box's ONE sanctioned npm dependency.",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.250"
   }

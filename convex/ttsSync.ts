@@ -5,16 +5,16 @@ import { load as loadYaml } from "js-yaml";
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
-  DTS_DIGEST_NY_HOUR,
+  TTS_DIGEST_NY_HOUR,
   countdownText,
-  dtsDayKey,
-  dtsItemLink,
+  ttsDayKey,
+  ttsItemLink,
   nyLocalHour,
-} from "./dtsShared";
+} from "./ttsShared";
 import type { Doc } from "./_generated/dataModel";
 
-// DTS actions that reach outside Convex: the 5 a.m. Slack digest and the
-// GitHub vqc/todos.yaml mirror refresh. Spec: WikiTom dts/spec.md §7, §5.3.
+// TTS actions that reach outside Convex: the 5 a.m. Slack digest and the
+// GitHub vqc/todos.yaml mirror refresh. Spec: WikiTom tts/spec.md §7, §5.3.
 
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 
@@ -28,15 +28,15 @@ export const sendDigest = internalAction({
   args: { force: v.optional(v.boolean()) },
   handler: async (ctx, { force }) => {
     const now = Date.now();
-    if (!force && nyLocalHour(now) !== DTS_DIGEST_NY_HOUR) return;
-    const day = dtsDayKey(now);
-    const row = await ctx.runQuery(internal.dts.internalGetDay, { day });
+    if (!force && nyLocalHour(now) !== TTS_DIGEST_NY_HOUR) return;
+    const day = ttsDayKey(now);
+    const row = await ctx.runQuery(internal.tts.internalGetDay, { day });
     if (row?.digestSentAt && !force) return;
 
     const token = process.env.SLACK_BOT_TOKEN;
-    const channel = process.env.SLACK_DTS_CHANNEL_ID;
+    const channel = process.env.SLACK_TTS_CHANNEL_ID;
     if (!token || !channel) {
-      console.error("DTS digest: SLACK_BOT_TOKEN / SLACK_DTS_CHANNEL_ID not configured");
+      console.error("TTS digest: SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured");
       return;
     }
 
@@ -49,9 +49,9 @@ export const sendDigest = internalAction({
       composeFallbackDigest(
         day,
         row ?? null,
-        await ctx.runQuery(internal.dts.internalListTodos, {}),
+        await ctx.runQuery(internal.tts.internalListTodos, {}),
         now,
-        await ctx.runQuery(internal.dtsRulings.internalAwaitingRulingCount, {}),
+        await ctx.runQuery(internal.ttsRulings.internalAwaitingRulingCount, {}),
       );
 
     const res = await fetch(SLACK_POST_URL, {
@@ -64,12 +64,12 @@ export const sendDigest = internalAction({
     });
     const result = (await res.json()) as { ok: boolean; error?: string };
     if (!result.ok) {
-      console.error(`DTS digest: Slack rejected the post: ${result.error}`);
+      console.error(`TTS digest: Slack rejected the post: ${result.error}`);
       return;
     }
     // Entry ids are validated at intake (internalStoreWorkerPrep) and nothing
     // is ever deleted, so the queue's ids are surfaced as-is.
-    await ctx.runMutation(internal.dts.internalMarkDigestSent, {
+    await ctx.runMutation(internal.tts.internalMarkDigestSent, {
       day,
       surfacedTodoIds: (row?.entries ?? []).map((e) => e.todoId),
     });
@@ -84,7 +84,7 @@ function composeFallbackDigest(
   awaitingRulingCount: number,
 ): string {
   const byId = new Map(todos.map((t) => [t._id, t]));
-  const lines: string[] = [`*DTS digest — ${day}*`];
+  const lines: string[] = [`*TTS digest — ${day}*`];
 
   const active = todos.filter((t) => t.status === "active");
   const dated = active
@@ -94,7 +94,7 @@ function composeFallbackDigest(
     lines.push("", "*Dated:*");
     for (const t of dated) {
       lines.push(
-        `• <${dtsItemLink(t._id)}|${t.statement}> — ${countdownText(t.dueAt ?? now, now)}`,
+        `• <${ttsItemLink(t._id)}|${t.statement}> — ${countdownText(t.dueAt ?? now, now)}`,
       );
     }
   }
@@ -105,21 +105,21 @@ function composeFallbackDigest(
     return todo && todo.dueAt === undefined ? [{ todo, reason: e.reason }] : [];
   });
   if (queueTodos.length > 0) {
-    // Explicit ?tab=calendar — bare /dts lands on the batches tab (default).
+    // Explicit ?tab=calendar — bare /tts lands on the batches tab (default).
     lines.push(
       "",
-      "*Today's queue* (also on <https://tom.quest/dts?tab=calendar|the calendar tab>):",
+      "*Today's queue* (also on <https://tom.quest/tts?tab=calendar|the calendar tab>):",
     );
     for (const { todo, reason } of queueTodos) {
       // Every reminder carries its entry action (spec §9) and a direct link.
       const entry = todo.entryAction ? ` — ${todo.entryAction}` : "";
       lines.push(
-        `• <${dtsItemLink(todo._id)}|${todo.statement}>${entry}${reason ? ` _(${reason})_` : ""}`,
+        `• <${ttsItemLink(todo._id)}|${todo.statement}>${entry}${reason ? ` _(${reason})_` : ""}`,
       );
     }
   }
 
-  // Tom-gate items surface on the batches tab (the /dts default tab), where
+  // Tom-gate items surface on the batches tab (the /tts default tab), where
   // they sit as batches awaiting a ruling or as unbatched singletons.
   // A todo claimed as a member of a non-terminal batch does not count on its
   // own — the batch row is the unit awaiting the ruling (mirrors selectBatches
@@ -141,16 +141,16 @@ function composeFallbackDigest(
   if (atGate.length > 0) {
     lines.push(
       "",
-      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/dts|the batches tab>`,
+      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/tts|the batches tab>`,
     );
   }
   // Briefed code todos with no ruling yet sit next to the tom-gate line — the
   // same "waiting on you" area, descriptive, no verdicts; same batches-tab
-  // landing (bare /dts defaults there).
+  // landing (bare /tts defaults there).
   if (awaitingRulingCount > 0) {
     lines.push(
       "",
-      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/dts|the batches tab>`,
+      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/tts|the batches tab>`,
     );
   }
 
@@ -205,18 +205,18 @@ export const refreshMirror = internalAction({
             headers: {
               Authorization: `Bearer ${token}`,
               Accept: "application/vnd.github.raw+json",
-              "User-Agent": "dts-mirror",
+              "User-Agent": "tts-mirror",
             },
           },
         );
         if (res.status === 404) continue; // repo has no vqc file (yet)
         if (!res.ok) {
-          console.error(`DTS mirror: ${repo} fetch failed (${res.status})`);
+          console.error(`TTS mirror: ${repo} fetch failed (${res.status})`);
           continue;
         }
         const parsed = loadYaml(await res.text());
         if (!Array.isArray(parsed)) {
-          console.error(`DTS mirror: ${repo} vqc/todos.yaml is not a list`);
+          console.error(`TTS mirror: ${repo} vqc/todos.yaml is not a list`);
           continue;
         }
         const url = `https://github.com/Heffnt/${repo}/blob/${branch}/vqc/todos.yaml`;
@@ -244,14 +244,14 @@ export const refreshMirror = internalAction({
         // mirror and complain instead.
         if (parsed.length > 0 && rows.length === 0) {
           console.error(
-            `DTS mirror: ${repo} vqc/todos.yaml parsed to 0 entries from ${parsed.length} list items — format change? Mirror left untouched.`,
+            `TTS mirror: ${repo} vqc/todos.yaml parsed to 0 entries from ${parsed.length} list items — format change? Mirror left untouched.`,
           );
           continue;
         }
-        await ctx.runMutation(internal.dts.internalReplaceMirror, { repo, rows });
+        await ctx.runMutation(internal.tts.internalReplaceMirror, { repo, rows });
       } catch (err) {
         console.error(
-          `DTS mirror: ${repo} refresh error: ${err instanceof Error ? err.message : String(err)}`,
+          `TTS mirror: ${repo} refresh error: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }

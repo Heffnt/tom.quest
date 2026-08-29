@@ -99,11 +99,11 @@ export default function EverythingTab({
   onLinkCleared: () => void;
 }) {
   const { isTom } = useAuth();
-  const todos = useQuery(api.dts.listTodos, isTom ? {} : "skip");
-  const mirror = useQuery(api.dts.listMirror, isTom ? {} : "skip");
-  const codeBriefs = useQuery(api.dtsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.dtsRulings.listRulings, isTom ? {} : "skip");
-  const recordEvent = useMutation(api.dts.recordEvent);
+  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
+  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
 
@@ -128,7 +128,7 @@ export default function EverythingTab({
     return map;
   }, [codeBriefs]);
 
-  // Live ruling per subject — the shared derivation (app/dts/lib.ts), same
+  // Live ruling per subject — the shared derivation (app/tts/lib.ts), same
   // rule the server and the needs-me selector use.
   const liveRulingByKey = useMemo(
     () => liveRulingsByKey(rulings ?? []),

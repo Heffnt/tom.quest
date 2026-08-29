@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // poll-dump.mjs — poll the Slack #dump channel and submit every new human
-// message to Convex as an unprepared DTS capture.
+// message to Convex as an unprepared TTS capture.
 //
-// Run by cron every 2 minutes (see /etc/cron.d/dts). Also runnable by hand:
-//   node /opt/dts/poll-dump.mjs
+// Run by cron every 2 minutes (see /etc/cron.d/tts). Also runnable by hand:
+//   node /opt/tts/poll-dump.mjs
 //
 // STATE: the ONLY local state on this box is the cursor file
-// /var/lib/dts/dump-cursor, holding the Slack ts of the last captured
+// /var/lib/tts/dump-cursor, holding the Slack ts of the last captured
 // message. Everything durable lives in Convex (the no-state rule). Losing
 // the cursor is harmless-by-design: on the next run with no cursor we only
 // look back 24 hours, so at worst the last day of #dump messages is captured
@@ -18,9 +18,9 @@
 // end), so a crash mid-batch re-captures at most one message.
 
 import fs from "node:fs";
-import { loadEnv, convexFetch } from "./dts-lib.mjs";
+import { loadEnv, convexFetch } from "./tts-lib.mjs";
 
-const CURSOR_FILE = "/var/lib/dts/dump-cursor";
+const CURSOR_FILE = "/var/lib/tts/dump-cursor";
 const FIRST_RUN_LOOKBACK_SECONDS = 24 * 3600; // no cursor -> only last 24h
 const MAX_PAGES = 10; // safety bound; 10 pages x 200 msgs is far beyond a day of #dump
 
@@ -106,7 +106,7 @@ async function main() {
       console.log(`[poll-dump] permalink failed for ts=${m.ts}: ${err.message}`);
     }
 
-    const result = await convexFetch(env, "/dts/capture", {
+    const result = await convexFetch(env, "/tts/capture", {
       statement: m.text,
       source: "slack-capture",
       provenance,

@@ -58,8 +58,8 @@ export default function CodeTodoRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const recordRuling = useMutation(api.dtsRulings.recordRuling);
-  const setCodeImportance = useMutation(api.dtsCode.setCodeImportance);
+  const recordRuling = useMutation(api.ttsRulings.recordRuling);
+  const setCodeImportance = useMutation(api.ttsCode.setCodeImportance);
   // First rulings happen on the batches tab; here the buttons sit behind this
   // disclosure — a new ruling supersedes the live one shown below.
   const [changeOpen, setChangeOpen] = useState(false);
@@ -170,7 +170,7 @@ export default function CodeTodoRow({
                     clear
                   </button>
                 )}
-                <Info label="dtsCode.setCodeImportance({repo, externalId, level})" />
+                <Info label="ttsCode.setCodeImportance({repo, externalId, level})" />
                 {brief.importance && (
                   <span className="text-xs text-text-faint">
                     · {brief.importance.setBy}

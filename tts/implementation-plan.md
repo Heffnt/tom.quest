@@ -1,7 +1,7 @@
-# DTS Implementation Plan
+# TTS Implementation Plan
 
 **Status:** **RATIFIED by Tom, 2026-08-27.** Phase 0 underway.
-**Spec:** WikiTom `dts/spec.md` (canonical home per Tom's ruling — the spec is private to humans; this public repo holds code and engineering docs only, and life-todo *data* lives in Convex, never in git). This plan says *how and in what order* the spec gets built; where they conflict, the spec wins.
+**Spec:** WikiTom `tts/spec.md` (canonical home per Tom's ruling — the spec is private to humans; this public repo holds code and engineering docs only, and life-todo *data* lives in Convex, never in git). This plan says *how and in what order* the spec gets built; where they conflict, the spec wins.
 **Builder:** Claude Code (this session and successors), orchestrating subagents and workflows per phase.
 
 ---
@@ -10,16 +10,16 @@
 
 | # | What | Who | Notes |
 |---|---|---|---|
-| 0.1 | Slack app in the dedicated DTS workspace | **DONE** (2026-08-27; capture channel named `#dump`, not `#inbox`; token needs one re-copy — rotated on install) | One app, one bot token with read + post permissions, invited to `#dump` (capture) and `#dts` (digest/events). A webhook alone cannot read messages; the bot is the mechanism. Token goes into the `pnpm secrets:sync` flow. |
+| 0.1 | Slack app in the dedicated TTS workspace | **DONE** (2026-08-27; capture channel named `#dump`, not `#inbox`; token needs one re-copy — rotated on install) | One app, one bot token with read + post permissions, invited to `#dump` (capture) and `#tts` (digest/events). A webhook alone cannot read messages; the bot is the mechanism. Token goes into the `pnpm secrets:sync` flow. |
 | 0.2 | Worker box | Tom purchases; Claude authors setup | Hetzner CAX11 (~€4/mo), Ubuntu LTS, Tom drops Claude's SSH key. Setup is one idempotent script; the box owns no state (spec §16). Decide which Max account it runs headless Claude Code under. |
 | 0.3 | GitHub token for the mirror | Tom | Fine-grained, read-only, scoped to ComplexMultiTrigger + tom.quest (+ WikiTom later for the triage profile). Goes into Convex env via secrets flow. |
-| 0.4 | Spec-home ruling | ~~Tom~~ **DONE** | Ruled: spec lives in WikiTom (`dts/spec.md`, committed 45386636); this public repo holds code + engineering docs only. |
+| 0.4 | Spec-home ruling | ~~Tom~~ **DONE** | Ruled: spec lives in WikiTom (`tts/spec.md`, committed 45386636); this public repo holds code + engineering docs only. |
 
 ## Phase 1 — MVP build
 
 Built on a branch; nothing merges or deploys before the persist-tom-gate. Orchestrated as a workflow: independent streams fan out to parallel subagents (isolated worktrees where they touch code), then an integration pass, adversarial review, and the gate.
 
-**Stream A — backend (Convex).** Schema additions (all-new tables, so no migration risk): `dtsTodos` (full data model, spec §5 — statement, readiness tier, status, timing class + data, wake condition, source, provenance, work description, body, timestamps), `dtsEvents` (instrumentation, spec §10 — every surfacing/engagement/session/date-outcome, recorded from the first hour), `dtsDailyQueues` (the 5 a.m. queue per day), `dtsCodeTodoMirror` (read-only VQC mirror rows). A `convex/dts.ts` module with Tom-gated queries/mutations (forge-pattern `requireTomId`), tests included in the CI-run script. Crons: 5 a.m. digest send; mirror refresh a few times daily. A key-authed HTTP endpoint (copy of the `/pool` pattern) for the worker box to submit captures and prepared content.
+**Stream A — backend (Convex).** Schema additions (all-new tables, so no migration risk): `dtsTodos` (full data model, spec §5 — statement, readiness tier, status, timing class + data, wake condition, source, provenance, work description, body, timestamps), `dtsEvents` (instrumentation, spec §10 — every surfacing/engagement/session/date-outcome, recorded from the first hour), `dtsDailyQueues` (the 5 a.m. queue per day), `dtsCodeTodoMirror` (read-only VQC mirror rows). A `convex/tts.ts` module with Tom-gated queries/mutations (forge-pattern `requireTomId`), tests included in the CI-run script. Crons: 5 a.m. digest send; mirror refresh a few times daily. A key-authed HTTP endpoint (copy of the `/pool` pattern) for the worker box to submit captures and prepared content.
 
 **Stream B — Inventory page.** Registered `visibility: "tom"`; shows everything always: active, waiting (with wake conditions), the archive, mirrored code todos, ages and counts, descriptively.
 
@@ -33,7 +33,7 @@ Built on a branch; nothing merges or deploys before the persist-tom-gate. Orches
 
 **Gate:** integration pass → `/code-review` + fixes → ground-up change report → **persist-tom-gate** (an interactive session; Tom shapes, then rules) → merge to `main` (which deploys site + Convex together).
 
-**Verification before the gate:** Convex tests + typecheck + the page-visibility e2e; live smoke test end-to-end — a message in `#dump` becomes an Inventory item, the digest lands in `#dts`, a queue cycle records events, an action link round-trips safely.
+**Verification before the gate:** Convex tests + typecheck + the page-visibility e2e; live smoke test end-to-end — a message in `#dump` becomes an Inventory item, the digest lands in `#tts`, a queue cycle records events, an action link round-trips safely.
 
 ## Phase 2 — week 1 operations (the great consolidation)
 
@@ -42,9 +42,9 @@ Built on a branch; nothing merges or deploys before the persist-tom-gate. Orches
 - **First Friday session:** triage the consolidated inventory — keep-active / timing class (dates set together, against Tom's real schedule) / wake condition / archive-with-dignity. Run as an ordinary Claude Code session from materials Claude prepares.
 - **Success bar (kill-criteria seed, spec §17):** thoughts captured that would otherwise be lost; digest arrived daily with zero maintenance; the first session produced real rulings.
 
-## Phase 3+ — DTS builds DTS
+## Phase 3+ — TTS builds TTS
 
-Every remaining feature is already a `vqc/todos.yaml` entry and flows through DTS's own pipeline: preparation → plan-tom-gate → execution → persist-tom-gate → change report. Ratified order:
+Every remaining feature is already a `vqc/todos.yaml` entry and flows through TTS's own pipeline: preparation → plan-tom-gate → execution → persist-tom-gate → change report. Ratified order:
 
 1. **Email + Canvas ingestion** (first step: the 5-minute WPI tenant consent probe, which decides the Outlook mechanism)
 2. **Weekly reflective session** as a built feature (prepared materials + reflective agent, spec §11)

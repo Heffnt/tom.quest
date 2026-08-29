@@ -13,7 +13,7 @@
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { countdownText } from "@/convex/dtsShared";
+import { countdownText } from "@/convex/ttsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
 import VerdictButtons from "./verdict-buttons";
@@ -127,11 +127,11 @@ export default function TodoRow({
   intent: LinkIntent | null;
   onIntentCleared: () => void;
 }) {
-  const updateTodo = useMutation(api.dts.updateTodo);
-  const setStatus = useMutation(api.dts.setStatus);
-  const recordDateOutcome = useMutation(api.dts.recordDateOutcome);
-  const recordEvent = useMutation(api.dts.recordEvent);
-  const recordRuling = useMutation(api.dtsRulings.recordRuling);
+  const updateTodo = useMutation(api.tts.updateTodo);
+  const setStatus = useMutation(api.tts.setStatus);
+  const recordDateOutcome = useMutation(api.tts.recordDateOutcome);
+  const recordEvent = useMutation(api.tts.recordEvent);
+  const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const {
     open: openTodoSession,
     busy: sessionBusy,
@@ -168,10 +168,10 @@ export default function TodoRow({
 
   const intentCaption =
     intent === "done"
-      ? 'dts.setStatus({status:"done"})'
+      ? 'tts.setStatus({status:"done"})'
       : intent === "archive"
-        ? 'dts.setStatus({status:"archived"})'
-        : 'dts.recordEvent({kind:"engaged"})';
+        ? 'tts.setStatus({status:"archived"})'
+        : 'tts.recordEvent({kind:"engaged"})';
 
   const confirmIntent = () =>
     run(async () => {
@@ -413,7 +413,7 @@ export default function TodoRow({
                   >
                     Set date
                   </button>
-                  <Caption>{"dts.updateTodo({dueAt})"}</Caption>
+                  <Caption>{"tts.updateTodo({dueAt})"}</Caption>
                 </div>
               ) : (
                 <>
@@ -426,7 +426,7 @@ export default function TodoRow({
                       Renegotiate
                     </button>
                     <Caption>
-                      {'dts.recordDateOutcome({outcome:"renegotiated", newDueAt})'}
+                      {'tts.recordDateOutcome({outcome:"renegotiated", newDueAt})'}
                     </Caption>
                   </div>
                   <div className="flex items-center gap-1">
@@ -438,7 +438,7 @@ export default function TodoRow({
                       Record missed
                     </button>
                     <Caption>
-                      {`dts.recordDateOutcome({outcome:"missed"${
+                      {`tts.recordDateOutcome({outcome:"missed"${
                         dateDraft ? ", newDueAt" : ""
                       }})`}
                     </Caption>
@@ -461,7 +461,7 @@ export default function TodoRow({
                       <option value="external">external</option>
                       <option value="self-imposed">self-imposed</option>
                     </select>
-                    <Caption>{"dts.updateTodo({dateKind})"}</Caption>
+                    <Caption>{"tts.updateTodo({dateKind})"}</Caption>
                   </div>
                 </>
               )}
@@ -494,7 +494,7 @@ export default function TodoRow({
                   >
                     Set latest safe
                   </button>
-                  <Caption>{"dts.updateTodo({latestSafeAt})"}</Caption>
+                  <Caption>{"tts.updateTodo({latestSafeAt})"}</Caption>
                 </div>
                 {todo.latestSafeAt !== undefined && (
                   <div className="flex items-center gap-1">
@@ -509,7 +509,7 @@ export default function TodoRow({
                     >
                       Clear latest safe
                     </button>
-                    <Caption>{"dts.updateTodo({latestSafeAt:null})"}</Caption>
+                    <Caption>{"tts.updateTodo({latestSafeAt:null})"}</Caption>
                   </div>
                 )}
               </div>
@@ -539,26 +539,26 @@ export default function TodoRow({
               <div className="grid sm:grid-cols-2 gap-3">
                 <FieldEditor
                   label="statement"
-                  caption="dts.updateTodo({statement})"
+                  caption="tts.updateTodo({statement})"
                   value={todo.statement}
                   onSave={(v) => updateTodo({ id: todo._id, statement: v })}
                 />
                 <FieldEditor
                   label="entry action"
-                  caption="dts.updateTodo({entryAction})"
+                  caption="tts.updateTodo({entryAction})"
                   value={todo.entryAction}
                   onSave={(v) => updateTodo({ id: todo._id, entryAction: v })}
                 />
                 <FieldEditor
                   label="body"
-                  caption="dts.updateTodo({body})"
+                  caption="tts.updateTodo({body})"
                   value={todo.body}
                   multiline
                   onSave={(v) => updateTodo({ id: todo._id, body: v })}
                 />
                 <FieldEditor
                   label="work description"
-                  caption="dts.updateTodo({workDescription})"
+                  caption="tts.updateTodo({workDescription})"
                   value={todo.workDescription}
                   multiline
                   onSave={(v) =>
@@ -567,7 +567,7 @@ export default function TodoRow({
                 />
                 <FieldEditor
                   label="category"
-                  caption="dts.updateTodo({category})"
+                  caption="tts.updateTodo({category})"
                   value={todo.category}
                   onSave={(v) =>
                     updateTodo({ id: todo._id, category: v.trim() || null })
@@ -576,7 +576,7 @@ export default function TodoRow({
                 <div className="space-y-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-text-faint">readiness</span>
-                    <Caption>{"dts.updateTodo({readiness})"}</Caption>
+                    <Caption>{"tts.updateTodo({readiness})"}</Caption>
                   </div>
                   <select
                     value={todo.readiness}
@@ -629,7 +629,7 @@ export default function TodoRow({
                     >
                       Set waiting
                     </button>
-                    <Caption>{'dts.setStatus({status:"waiting"})'}</Caption>
+                    <Caption>{'tts.setStatus({status:"waiting"})'}</Caption>
                   </div>
                 </div>
               )}
@@ -647,7 +647,7 @@ export default function TodoRow({
                   >
                     Set active
                   </button>
-                  <Caption>{'dts.setStatus({status:"active"})'}</Caption>
+                  <Caption>{'tts.setStatus({status:"active"})'}</Caption>
                 </div>
               )}
 

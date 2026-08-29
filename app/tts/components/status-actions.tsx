@@ -28,8 +28,8 @@ const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 
 export function StatusActions({ todo }: { todo: Todo }) {
-  const setStatus = useMutation(api.dts.setStatus);
-  const createBlock = useMutation(api.dts.createBlock);
+  const setStatus = useMutation(api.tts.setStatus);
+  const createBlock = useMutation(api.tts.createBlock);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +94,7 @@ export function StatusActions({ todo }: { todo: Todo }) {
               placeholder="note (optional)"
               className={`${inputCls} w-40`}
             />
-            <Info label='dts.setStatus({status:"done"})' />
+            <Info label='tts.setStatus({status:"done"})' />
           </div>
         )}
 
@@ -121,7 +121,7 @@ export function StatusActions({ todo }: { todo: Todo }) {
               placeholder="propose back when (optional)"
               className={`${inputCls} w-52`}
             />
-            <Info label='dts.setStatus({status:"archived"})' />
+            <Info label='tts.setStatus({status:"archived"})' />
           </div>
         )}
 
@@ -149,7 +149,7 @@ export function StatusActions({ todo }: { todo: Todo }) {
           <button onClick={commitBlock} disabled={busy} className={btnCls}>
             Commit time
           </button>
-          <Info label="dts.createBlock({todoId})" />
+          <Info label="tts.createBlock({todoId})" />
         </div>
       </div>
 
@@ -164,7 +164,7 @@ export function StatusActions({ todo }: { todo: Todo }) {
  * shown next to an agent rationale.
  */
 export function ImportanceButtons({ todo }: { todo: Todo }) {
-  const setImportance = useMutation(api.dts.setImportance);
+  const setImportance = useMutation(api.tts.setImportance);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -206,7 +206,7 @@ export function ImportanceButtons({ todo }: { todo: Todo }) {
             clear
           </button>
         )}
-        <Info label="dts.setImportance({level})" />
+        <Info label="tts.setImportance({level})" />
         {todo.importance && (
           <span className="text-xs text-text-faint">
             · {todo.importance.setBy}

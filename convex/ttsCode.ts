@@ -6,14 +6,14 @@ import {
   query,
 } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { IMPORTANCE_LEVEL, agentImportancePatch, logEvent } from "./dts";
+import { IMPORTANCE_LEVEL, agentImportancePatch, logEvent } from "./tts";
 
-// DTS code-todo BRIEFS — the worker box writes ground-up briefs for each open
+// TTS code-todo BRIEFS — the worker box writes ground-up briefs for each open
 // code todo (from the dtsCodeTodoMirror's repos); Tom's rulings on them live in
-// the unified dtsRulings table (dtsRulings.ts, ratified 2026-08-28), and worker
+// the unified ttsRulings table (ttsRulings.ts, ratified 2026-08-28), and worker
 // jobs read pending rulings back from there to apply/execute them. Tom-facing
-// functions are Tom-gated (dts.ts pattern); everything the worker touches goes
-// through internal functions behind the key-authed /dts/code-* routes in http.ts.
+// functions are Tom-gated (tts.ts pattern); everything the worker touches goes
+// through internal functions behind the key-authed /tts/code-* routes in http.ts.
 
 const RECOMMENDATION = v.union(
   v.literal("approve"),
@@ -30,7 +30,7 @@ const EXEC_CLASS = v.union(v.literal("box"), v.literal("needs-turing"));
 export const listCodeBriefs = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, "DTS");
+    await requireTom(ctx, "TTS");
     return await ctx.db.query("dtsCodeBriefs").collect();
   },
 });
@@ -45,7 +45,7 @@ export const setCodeImportance = mutation({
     level: v.union(IMPORTANCE_LEVEL, v.null()),
   },
   handler: async (ctx, { repo, externalId, level }) => {
-    await requireTom(ctx, "DTS");
+    await requireTom(ctx, "TTS");
     const brief = await ctx.db
       .query("dtsCodeBriefs")
       .withIndex("by_repo_external", (q) =>
@@ -66,7 +66,7 @@ export const setCodeImportance = mutation({
   },
 });
 
-// ── Internal: worker paths (via key-authed http.ts /dts/code-* routes) ───────
+// ── Internal: worker paths (via key-authed http.ts /tts/code-* routes) ───────
 
 // Upsert by (repo, externalId): the brief table holds the CURRENT brief per
 // item, not history (the ruling table is the append-only side). One
@@ -102,7 +102,7 @@ export const internalStoreBriefs = internalMutation({
       let importance: ReturnType<typeof agentImportancePatch>;
       if (importanceLevel !== undefined) {
         // Agent importance never overwrites Tom's — the ONE guard
-        // implementation (dts.agentImportancePatch) decides.
+        // implementation (tts.agentImportancePatch) decides.
         importance = agentImportancePatch(
           existing?.importance,
           importanceLevel,

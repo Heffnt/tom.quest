@@ -13,8 +13,8 @@ import {
   liveRulings,
   markLiveSessionRulingApplied,
   subjectKey,
-} from "./dtsRulings";
-import { IMPORTANCE_RANK, logEvent } from "./dts";
+} from "./ttsRulings";
+import { IMPORTANCE_RANK, logEvent } from "./tts";
 
 // Claude Code session surface — the Convex half of the web wrapper around
 // headless Claude Code sessions on the worker box. Design ratified 2026-08-28
@@ -89,7 +89,7 @@ export const listSessions = query({
   handler: async (ctx) => {
     await requireTomId(ctx);
     // Newest first; the session list is human-scale (take, not collect —
-    // ledger dts-collect-pagination discipline).
+    // ledger tts-collect-pagination discipline).
     return await ctx.db.query("claudeSessions").order("desc").take(100);
   },
 });
@@ -203,7 +203,7 @@ export const createSession = mutation({
       createdAt: now,
     });
     // A "session" verdict is applied the moment its session exists — the
-    // supersession rule lives in dtsRulings.ts, not here.
+    // supersession rule lives in ttsRulings.ts, not here.
     if (todoId !== undefined) {
       await markLiveSessionRulingApplied(ctx, todoId, sessionId);
     }
@@ -722,7 +722,7 @@ export const internalIngest = internalMutation({
 // or "errored". A session with neither is in progress (resumable via
 // sdkSessionId). Internal so the session agent itself can write it via
 // `npx convex run claudeSessions:internalRecordOutcome` at wrap-up — the same
-// pen pattern as dts.internalTriage; the daemon may also stamp "errored" on
+// pen pattern as tts.internalTriage; the daemon may also stamp "errored" on
 // failures it observes.
 export const internalRecordOutcome = internalMutation({
   args: {
@@ -1111,11 +1111,11 @@ function pickMissionRepo(todo: Doc<"dtsTodos">): string {
 }
 
 // Opening prompt for an AUTONOMOUS session (house voice: the ground-up
-// contract of app/lib/dts-session-prompt.ts, adapted for a session no one is
+// contract of app/lib/tts-session-prompt.ts, adapted for a session no one is
 // watching live). The sessionId rides in so the outcome pen can name this
 // session — the agent has no other way to learn its own id.
 //
-// Lockstep: app/lib/dts-session-prompt.ts is the interactive twin (its
+// Lockstep: app/lib/tts-session-prompt.ts is the interactive twin (its
 // CONTRACT opening, buildTodoSessionPrompt's item facts block, and the batch
 // members/plan blocks) — both files carry a note naming the other, and the
 // facts-block wording ('The item ("…"):', "The plan (N steps, in order):",
@@ -1176,18 +1176,18 @@ function buildAutoMissionPrompt(
     // The env contract: the daemon injects ONLY these two variables into an
     // autonomous session's shell — SESSIONS_WORKER_KEY (the ingest key) never
     // enters a model-reachable environment (the auth-clobber lesson), which
-    // is why the outcome pen below rides the DTS key.
-    "The pens (shell commands; CONVEX_SITE_URL and DTS_WORKER_KEY are already set in this session's environment):",
+    // is why the outcome pen below rides the TTS key.
+    "The pens (shell commands; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment):",
     "",
     "1. Write your work into the item:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/dts/prepare-todo" -H "X-DTS-Key: $DTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "importanceLevel": "medium", "importanceRationale": "...", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "importanceLevel": "medium", "importanceRationale": "...", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
     "```",
     'Every field except "id" is optional — send only what you produced. On a batch only "plan" lands (the server skips the other fields by design).',
     "",
     "2. Record this session's outcome when the mission is done:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/dts/session-outcome" -H "X-DTS-Key: $DTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what landed where"}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what landed where"}'`,
     "```",
     '"completed" means the mission produced its artifact; otherwise record "errored" with a summary saying what blocked you.',
     "",
@@ -1204,7 +1204,7 @@ function buildAutoMissionPrompt(
           `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
     "",
-    "Ending: record the outcome via the /dts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
+    "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -1447,7 +1447,7 @@ export const internalAutoSchedule = internalMutation({
     }
 
     // (2) Active batches with open agent plan steps, importance desc —
-    // IMPORTANCE_RANK from ./dts is the ONE server encoding (higher = more
+    // IMPORTANCE_RANK from ./tts is the ONE server encoding (higher = more
     // important, unset ranks 0 and lands last).
     const rank = (t: Doc<"dtsTodos">): number =>
       t.importance === undefined ? 0 : IMPORTANCE_RANK[t.importance.level];

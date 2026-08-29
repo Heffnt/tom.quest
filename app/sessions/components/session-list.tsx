@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import Info from "@/app/dts/components/info";
+import Info from "@/app/tts/components/info";
 import type { Session } from "../lib";
 import { REPO_OPTIONS, ageText, isLive, statusChipClass } from "../lib";
 

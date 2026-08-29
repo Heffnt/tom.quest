@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // prepare-life-todos.mjs — advance unprepared LIFE todos toward ready-for-tom.
 //
-// Run by cron every 2nd hour at :37 (see /etc/cron.d/dts). Manual run:
-//   node /opt/dts/prepare-life-todos.mjs [--force]
+// Run by cron every 2nd hour at :37 (see /etc/cron.d/tts). Manual run:
+//   node /opt/tts/prepare-life-todos.mjs [--force]
 //
 // WHY: a thought Tom dumps into #dump (or a consolidation candidate) lands as
-// a raw one-line statement with readiness "unprepared". The DTS principle is
+// a raw one-line statement with readiness "unprepared". The TTS principle is
 // that volume reaches Tom PRE-CHEWED — the swarm prepares, Tom rules. This is
 // the swarm's smallest member: per unprepared life todo, headless Claude
 // writes a short ground-up brief, the smallest entry action, and a
@@ -23,22 +23,22 @@
 // REVISE RULINGS: Tom can rule "revise" on a prepared life todo with one
 // written sentence that redirects the preparation (the server drops the
 // todo's readiness back to "preparing" when he does). This job reads the
-// unified rulings feed at /dts/rulings, takes the LIFE rows with verdict
+// unified rulings feed at /tts/rulings, takes the LIFE rows with verdict
 // "revise", re-prepares each such todo with Tom's sentence embedded in the
-// prompt, and POSTs /dts/ruling-applied so the ruling is consumed and
+// prompt, and POSTs /tts/ruling-applied so the ruling is consumed and
 // the UI shows the outcome. Batches (members-bearing life todos) are skipped
 // everywhere here — form-batches.mjs owns their briefs and their rulings.
 //
 // NO-STATE RULE: nothing local; Convex is read and written each run.
 
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./dts-lib.mjs";
+import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 
 const BATCH_MAX = 10;
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 
 function prompt(todo, reviseSentence) {
   return [
-    `You are preparing one item in DTS, Tom's personal todo system. It was`,
+    `You are preparing one item in TTS, Tom's personal todo system. It was`,
     `captured as a raw thought; your job is to make it arrive pre-chewed.`,
     ``,
     `The item (JSON):`,
@@ -86,7 +86,7 @@ function prompt(todo, reviseSentence) {
 async function main() {
   const force = process.argv.includes("--force");
   const env = loadEnv();
-  const state = await convexFetch(env, "/dts/state");
+  const state = await convexFetch(env, "/tts/state");
 
   // Pending revise rulings on LIFE todos, keyed by todoId. The feed already
   // filters to unapplied-and-not-superseded rows; code rows on the same feed
@@ -98,7 +98,7 @@ async function main() {
   // refuses batch brief writes — this filter keeps the job from burning a
   // Claude call and stealing the ruling before that refusal.)
   const todoById = new Map((state.todos ?? []).map((t) => [t._id, t]));
-  const { pending } = await convexFetch(env, "/dts/rulings");
+  const { pending } = await convexFetch(env, "/tts/rulings");
   const reviseByTodo = new Map();
   for (const r of Array.isArray(pending) ? pending : []) {
     if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
@@ -149,7 +149,7 @@ async function main() {
       ) {
         throw new Error(`bad shape: ${JSON.stringify(parsed).slice(0, 120)}`);
       }
-      await convexFetch(env, "/dts/prepare-todo", {
+      await convexFetch(env, "/tts/prepare-todo", {
         id: todo._id,
         brief: parsed.brief,
         entryAction: parsed.entryAction,
@@ -159,7 +159,7 @@ async function main() {
       if (revise) {
         // The re-prep landed — consume the ruling so the UI shows the
         // outcome and the next run doesn't re-prepare on the same sentence.
-        await convexFetch(env, "/dts/ruling-applied", {
+        await convexFetch(env, "/tts/ruling-applied", {
           id: revise._id,
           result: "revised: brief re-prepared",
         });
