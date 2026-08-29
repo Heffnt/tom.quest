@@ -433,6 +433,76 @@ http.route({
   handler: dtsCodeRulingApplied,
 });
 
+// ── DTS batches (ratified 2026-08-28) ────────────────────────────────────────
+// Same DTS_WORKER_KEY path: the batcher job reads context, then posts its
+// desired batch set. It can only touch source-"batcher" rows that Tom has
+// never touched — the freeze/skip gates live in internalStoreBatches.
+
+// POST /dts/batches — the batcher's desired batch set. Body: { batches:
+// [{ id?, statement, brief, members, plan?, importanceLevel?,
+// importanceRationale? }], archiveIds? }. Shape is validated loosely here —
+// the mutation's arg validators are the real gate — and the mutation's
+// per-batch skip report is the response.
+const dtsBatches = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(b.batches)) {
+    return jsonResponse(400, { error: "batches (array) required" });
+  }
+  if (
+    b.archiveIds !== undefined &&
+    (!Array.isArray(b.archiveIds) ||
+      b.archiveIds.some((x) => typeof x !== "string"))
+  ) {
+    return jsonResponse(400, {
+      error: "archiveIds must be string[] when present",
+    });
+  }
+  try {
+    const result = await ctx.runMutation(internal.dts.internalStoreBatches, {
+      batches: b.batches as never,
+      archiveIds: b.archiveIds as string[] | undefined,
+    });
+    return jsonResponse(200, result);
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/dts/batches", method: "POST", handler: dtsBatches });
+
+// GET /dts/batch-context — everything the batcher groups from: all life
+// todos (batches included), the code-todo mirror, the code briefs, and Tom's
+// recent rulings (grouping signal).
+const dtsBatchContext = httpAction(async (ctx, request) => {
+  const denied = dtsAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, {
+    todos: await ctx.runQuery(internal.dts.internalListTodos, {}),
+    mirror: await ctx.runQuery(internal.dts.internalListMirror, {}),
+    briefs: await ctx.runQuery(internal.dtsCode.internalListBriefs, {}),
+    recentRulings: await ctx.runQuery(
+      internal.dtsRulings.internalRecentRulings,
+      { limit: 200 },
+    ),
+  });
+});
+
+http.route({
+  path: "/dts/batch-context",
+  method: "GET",
+  handler: dtsBatchContext,
+});
+
 // ── Claude Code session-host endpoints ───────────────────────────────────────
 // The session-host daemon's channel (worker/session-host/). Its OWN key —
 // SESSIONS_WORKER_KEY shares nothing with the other keys (the auth-clobber

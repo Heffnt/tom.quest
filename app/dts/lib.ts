@@ -8,6 +8,12 @@ export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
 export type Ruling = Doc<"dtsRulings">;
 
+export type Importance = NonNullable<Todo["importance"]>;
+export type PlanStep = NonNullable<Todo["plan"]>[number];
+export type Member = NonNullable<Todo["members"]>[number];
+
+export const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
+
 // The closed verdict set — convex/dtsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
@@ -36,6 +42,61 @@ export function rulingSubjectKey(r: {
 
 export function codeSubjectKey(repo: string, externalId: string): string {
   return `code ${repo} ${externalId}`;
+}
+
+// ── Batches ──────────────────────────────────────────────────────────────────
+// A row with `members` IS a batch — that one field is the whole discrimination
+// (convex/schema.ts dtsTodos).
+
+export function isBatch(t: Todo): boolean {
+  return t.members !== undefined;
+}
+
+// Client mirror of convex/dts.ts memberKey — same key format as
+// rulingSubjectKey, so member identity and ruling identity share one
+// vocabulary.
+export function clientMemberKey(m: Member): string {
+  return m.todoId !== undefined
+    ? `life ${m.todoId}`
+    : `code ${m.repo} ${m.externalId}`;
+}
+
+/** Open actor-"tom" steps — the card's "needs you" strip. */
+export function planNeedsYou(plan: PlanStep[] | undefined): {
+  count: number;
+  steps: PlanStep[];
+} {
+  const steps = (plan ?? []).filter(
+    (s) => s.actor === "tom" && s.status === "open",
+  );
+  return { count: steps.length, steps };
+}
+
+/**
+ * Member completion: a life member is done when its todo is done|archived; a
+ * code member when its mirror row is missing (rows are deleted on upstream
+ * close) or closed.
+ */
+export function memberProgress(
+  members: Member[],
+  todos: Todo[],
+  mirror: MirrorRow[],
+): { done: number; total: number } {
+  const todoById = new Map(todos.map((t) => [t._id as string, t]));
+  const mirrorByKey = new Map(
+    mirror.map((r) => [codeSubjectKey(r.repo, r.externalId), r]),
+  );
+  let done = 0;
+  for (const m of members) {
+    if (m.todoId !== undefined) {
+      const t = todoById.get(m.todoId);
+      if (t && (t.status === "done" || t.status === "archived")) done += 1;
+    } else {
+      const row = mirrorByKey.get(codeSubjectKey(m.repo!, m.externalId!));
+      if (!row || row.status === "closed") done += 1;
+    }
+  }
+  return { done, total: members.length };
 }
 
 export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
@@ -104,6 +165,74 @@ export function selectNeedsMe(
   const pending = [...live.values()].filter((r) => r.appliedAt === undefined);
 
   return { lifeRows, codeRows, pending };
+}
+
+// ── The batches selector (ONE definition; the batches tab renders it, the
+// badge counts it) ───────────────────────────────────────────────────────────
+// batches: non-terminal (active|waiting) batch rows; awaitingRuling is
+//   selectNeedsMe lifeRows membership — a batch IS a life todo, so the same
+//   live-ruling predicate decides when it needs a ruling.
+// unbatchedLife/unbatchedCode: the selectNeedsMe rows minus subjects claimed
+//   by any non-terminal batch (and minus the batch rows themselves).
+// pending: passed through from selectNeedsMe.
+
+const IMPORTANCE_RANK = { low: 1, medium: 2, high: 3 } as const;
+
+export type BatchesSelection = {
+  batches: { todo: Todo; awaitingRuling: boolean }[];
+  unbatchedLife: Todo[];
+  unbatchedCode: { row: MirrorRow; brief: CodeBrief }[];
+  pending: Ruling[];
+};
+
+export function selectBatches(
+  todos: Todo[],
+  mirror: MirrorRow[],
+  briefs: CodeBrief[],
+  rulings: Ruling[],
+): BatchesSelection {
+  const { lifeRows, codeRows, pending } = selectNeedsMe(
+    todos,
+    mirror,
+    briefs,
+    rulings,
+  );
+
+  const batchTodos = todos.filter(
+    (t) => isBatch(t) && (t.status === "active" || t.status === "waiting"),
+  );
+
+  const claimed = new Set<string>();
+  for (const b of batchTodos) {
+    for (const m of b.members ?? []) claimed.add(clientMemberKey(m));
+  }
+  const batchIds = new Set<string>(batchTodos.map((t) => t._id as string));
+  const lifeIds = new Set<string>(lifeRows.map((t) => t._id as string));
+
+  // Importance desc (unset last), tie createdAt asc.
+  const batches = batchTodos
+    .map((todo) => ({ todo, awaitingRuling: lifeIds.has(todo._id as string) }))
+    .sort((a, b) => {
+      const ra = a.todo.importance
+        ? IMPORTANCE_RANK[a.todo.importance.level]
+        : 0;
+      const rb = b.todo.importance
+        ? IMPORTANCE_RANK[b.todo.importance.level]
+        : 0;
+      if (ra !== rb) return rb - ra;
+      return a.todo.createdAt - b.todo.createdAt;
+    });
+
+  const unbatchedLife = lifeRows.filter(
+    (t) =>
+      !batchIds.has(t._id as string) &&
+      !claimed.has(clientMemberKey({ todoId: t._id })),
+  );
+  const unbatchedCode = codeRows.filter(
+    ({ row }) => !claimed.has(codeSubjectKey(row.repo, row.externalId)),
+  );
+
+  return { batches, unbatchedLife, unbatchedCode, pending };
 }
 
 /** e.message for Errors, String(e) otherwise — the error line under a control. */

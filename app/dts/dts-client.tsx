@@ -1,10 +1,10 @@
 "use client";
 
 // TTS (dts) — the one todo page: QuickAdd capture bar, three tabs
-// (calendar · needs me · everything), the active tab below. Tab state rides
-// ?tab=; ?item= (produced by dtsItemLink) forces the everything tab and is
+// (calendar · batches · by individual), the active tab below. Tab state rides
+// ?tab=; ?item= (produced by dtsItemLink) forces the by-individual tab and is
 // handed to it as the link prop. Each tab fetches its own data with useQuery —
-// Convex dedupes subscriptions, so the shell's needs-me count queries are free.
+// Convex dedupes subscriptions, so the shell's badge-count queries are free.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -13,19 +13,20 @@ import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import CalendarTab from "./components/calendar-tab";
-import NeedsMeTab from "./components/needs-me-tab";
+import BatchesTab from "./components/batches-tab";
 import EverythingTab from "./components/everything-tab";
-import { parseDateInput, selectNeedsMe, type LinkIntent } from "./lib";
+import Info from "./components/info";
+import { parseDateInput, selectBatches, type LinkIntent } from "./lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 
-type Tab = "calendar" | "needs-me" | "everything";
+type Tab = "calendar" | "batches" | "by-individual";
 
 const TABS: Array<{ value: Tab; label: string }> = [
   { value: "calendar", label: "calendar" },
-  { value: "needs-me", label: "needs me" },
-  { value: "everything", label: "everything" },
+  { value: "batches", label: "batches" },
+  { value: "by-individual", label: "by individual" },
 ];
 
 function QuickAdd() {
@@ -87,9 +88,7 @@ function QuickAdd() {
         >
           Add
         </button>
-        <span className="text-[10px] font-mono text-text-faint">
-          dts.createTodo
-        </span>
+        <Info label="dts.createTodo" />
       </form>
       {error && <div className="text-xs text-error mt-1">{error}</div>}
     </div>
@@ -102,7 +101,7 @@ export default function DtsClient() {
   const router = useRouter();
   const recordEvent = useMutation(api.dts.recordEvent);
 
-  const [tab, setTab] = useState<Tab>("needs-me");
+  const [tab, setTab] = useState<Tab>("batches");
   const [link, setLink] = useState<{
     item: string;
     intent: LinkIntent | null;
@@ -119,11 +118,15 @@ export default function DtsClient() {
       const intent =
         raw === "done" || raw === "archive" || raw === "engage" ? raw : null;
       setLink({ item, intent });
-      setTab("everything"); // an item link always lands on the everything tab
+      setTab("by-individual"); // an item link always lands on the by-individual tab
       return;
     }
+    // Legacy names still map (old Slack links must land somewhere sensible):
+    // needs-me → batches, everything → by-individual.
     const t = sp.get("tab");
-    if (t === "calendar" || t === "needs-me" || t === "everything") setTab(t);
+    if (t === "calendar") setTab("calendar");
+    else if (t === "batches" || t === "needs-me") setTab("batches");
+    else if (t === "by-individual" || t === "everything") setTab("by-individual");
   }, []);
 
   // Tab state stays local: user-facing quest URLs avoid query params
@@ -146,21 +149,25 @@ export default function DtsClient() {
     void recordEvent({ kind: "dts-opened" }).catch(() => {});
   }, [todos, recordEvent]);
 
-  // Needs-me badge: the SAME selector the tab renders (app/dts/lib.ts
-  // selectNeedsMe) so the count and the rows cannot drift. Same subscriptions
+  // Batches badge: the SAME selector the tab renders (app/dts/lib.ts
+  // selectBatches) so the count and the rows cannot drift. Same subscriptions
   // the tabs hold — Convex dedupes.
   const mirror = useQuery(api.dts.listMirror, isTom ? {} : "skip");
   const codeBriefs = useQuery(api.dtsCode.listCodeBriefs, isTom ? {} : "skip");
   const rulings = useQuery(api.dtsRulings.listRulings, isTom ? {} : "skip");
 
-  const needsMeCount = useMemo(() => {
-    const { lifeRows, codeRows } = selectNeedsMe(
+  const batchesCount = useMemo(() => {
+    const { batches, unbatchedLife, unbatchedCode } = selectBatches(
       todos ?? [],
       mirror ?? [],
       codeBriefs ?? [],
       rulings ?? [],
     );
-    return lifeRows.length + codeRows.length;
+    return (
+      batches.filter((b) => b.awaitingRuling).length +
+      unbatchedLife.length +
+      unbatchedCode.length
+    );
   }, [todos, mirror, codeBriefs, rulings]);
 
   return (
@@ -181,9 +188,9 @@ export default function DtsClient() {
               }`}
             >
               {label}
-              {value === "needs-me" && needsMeCount > 0 && (
+              {value === "batches" && batchesCount > 0 && (
                 <span className="ml-1.5 text-xs text-text-faint border border-border rounded px-1 py-px">
-                  {needsMeCount}
+                  {batchesCount}
                 </span>
               )}
             </button>
@@ -195,12 +202,19 @@ export default function DtsClient() {
             <CalendarTab
               onOpenItem={(id) => {
                 setLink({ item: id, intent: null });
-                setTab("everything");
+                setTab("by-individual");
               }}
             />
           )}
-          {tab === "needs-me" && <NeedsMeTab />}
-          {tab === "everything" && (
+          {tab === "batches" && (
+            <BatchesTab
+              onOpenItem={(id) => {
+                setLink({ item: id, intent: null });
+                setTab("by-individual");
+              }}
+            />
+          )}
+          {tab === "by-individual" && (
             <EverythingTab link={link} onLinkCleared={clearLink} />
           )}
         </div>

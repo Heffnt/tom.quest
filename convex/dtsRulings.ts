@@ -106,6 +106,10 @@ async function insertRuling(
     if (isLife) {
       const todo = await ctx.db.get(todoId);
       if (!todo) throw new Error("DTS todo not found");
+      // A ruling is a Tom touch: tomTouchedAt freezes the row to the batcher
+      // (internalStoreBatches never rewrites or retires it). One stamp covers
+      // every verdict — approve/session carry no other patch.
+      await ctx.db.patch(todoId, { tomTouchedAt: now });
       if (verdict === "revise") {
         await ctx.db.patch(todoId, { readiness: "preparing", updatedAt: now });
       }
@@ -296,6 +300,19 @@ export function briefAwaitsRuling(
   );
   return ruling === undefined || ruling.ruledAt < brief.preparedAt;
 }
+
+// Batcher context (GET /dts/batch-context): what Tom ruled lately, newest
+// first — a grouping signal, not a work feed (that is internalPendingRulings).
+export const internalRecentRulings = internalQuery({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, { limit }) => {
+    return await ctx.db
+      .query("dtsRulings")
+      .withIndex("by_ruled")
+      .order("desc")
+      .take(Math.min(limit ?? 200, 1000));
+  },
+});
 
 export const internalAwaitingRulingCount = internalQuery({
   args: {},

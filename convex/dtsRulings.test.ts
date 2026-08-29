@@ -196,6 +196,22 @@ describe("DTS unified rulings", () => {
     ).toHaveLength(0);
   });
 
+  // witness: drop the tomTouchedAt patch from insertRuling's life path in
+  // convex/dtsRulings.ts — the batcher could rewrite a batch Tom just ruled on.
+  it("a life ruling stamps tomTouchedAt (row frozen to the batcher)", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "rule" });
+    let todo = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(todo?.tomTouchedAt).toBeUndefined();
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId,
+      verdict: "session",
+    });
+    todo = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(todo?.tomTouchedAt).toBeDefined();
+  });
+
   // witness: change briefAwaitsRuling back to "any ruling clears the item" in
   // convex/dtsRulings.ts — a revise→re-brief cycle would never return the item.
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {

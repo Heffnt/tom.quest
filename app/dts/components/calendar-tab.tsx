@@ -13,6 +13,7 @@ import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/dts-session-prompt";
+import Info from "./info";
 import { errMessage, toDatetimeLocal } from "../lib";
 
 type Todo = Doc<"dtsTodos">;
@@ -173,30 +174,30 @@ function BlockChip({
             className={`${inputCls} w-full text-xs`}
           />
           {dirty && (
-            <div>
+            <div className="flex items-center gap-1">
               <button onClick={move} disabled={busy} className={btnCls}>
                 Move
               </button>
-              <div className={capCls}>{"dts.updateBlock({start,end})"}</div>
+              <Info label="dts.updateBlock({start,end})" />
             </div>
           )}
-          <div>
+          <div className="flex items-center gap-1">
             <button onClick={remove} disabled={busy} className={btnCls}>
               Delete
             </button>
-            <div className={capCls}>{"dts.deleteBlock({id})"}</div>
+            <Info label="dts.deleteBlock({id})" />
           </div>
           {isCategory && (
             <div>
-              <button
-                onClick={onOpenSession}
-                disabled={sessionBusy}
-                className={btnCls}
-              >
-                {sessionBusy ? "Opening…" : "Open block session"}
-              </button>
-              <div className={capCls}>
-                {'claudeSessions.createSession({kind:"block"})'}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={onOpenSession}
+                  disabled={sessionBusy}
+                  className={btnCls}
+                >
+                  {sessionBusy ? "Opening…" : "Open block session"}
+                </button>
+                <Info label='claudeSessions.createSession({kind:"block"})' />
               </div>
               {sessionError && (
                 <div className="text-xs text-error">{sessionError}</div>
@@ -354,15 +355,17 @@ function AddBlockForm({
           </datalist>
         </div>
       )}
-      <div>
+      <div className="flex items-center gap-1">
         <button type="submit" disabled={!ready || busy} className={btnCls}>
           Add
         </button>
-        <div className={capCls}>
-          {mode === "todo"
-            ? "dts.createBlock({start,end,todoId})"
-            : "dts.createBlock({start,end,category})"}
-        </div>
+        <Info
+          label={
+            mode === "todo"
+              ? "dts.createBlock({start,end,todoId})"
+              : "dts.createBlock({start,end,category})"
+          }
+        />
       </div>
       {error && <div className="text-xs text-error">{error}</div>}
     </form>

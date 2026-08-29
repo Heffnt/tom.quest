@@ -67,6 +67,64 @@ describe("DTS code-todo briefs", () => {
     expect(briefed.some((e) => (e.data as { count: number }).count === 2)).toBe(true);
   });
 
+  // witness: drop the setBy-"tom" guard from internalStoreBriefs in
+  // convex/dtsCode.ts — a re-brief would overwrite Tom's ruling on importance.
+  it("briefs carry agent importance; Tom's override survives a re-brief", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.dtsCode.internalStoreBriefs, {
+      briefs: [
+        { ...brief(), importanceLevel: "medium", importanceRationale: "blocks the campaign" },
+      ],
+    });
+    let [row] = await tom.query(api.dtsCode.listCodeBriefs, {});
+    expect(row.importance).toMatchObject({
+      level: "medium",
+      setBy: "agent",
+      rationale: "blocks the campaign",
+    });
+    await tom.mutation(api.dtsCode.setCodeImportance, {
+      repo: "ComplexMultiTrigger",
+      externalId: "cmt-001",
+      level: "high",
+    });
+    await t.mutation(internal.dtsCode.internalStoreBriefs, {
+      briefs: [{ ...brief({ sourceHash: "hash-b" }), importanceLevel: "low" }],
+    });
+    [row] = await tom.query(api.dtsCode.listCodeBriefs, {});
+    expect(row.sourceHash).toBe("hash-b"); // the re-brief itself landed
+    expect(row.importance).toMatchObject({ level: "high", setBy: "tom" });
+    const events = await tom.query(api.dts.listRecentEvents, {});
+    expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
+  });
+
+  it("setCodeImportance writes setBy tom, clears on null, names a missing brief", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.dtsCode.internalStoreBriefs, { briefs: [brief()] });
+    await tom.mutation(api.dtsCode.setCodeImportance, {
+      repo: "ComplexMultiTrigger",
+      externalId: "cmt-001",
+      level: "low",
+    });
+    let [row] = await tom.query(api.dtsCode.listCodeBriefs, {});
+    expect(row.importance).toMatchObject({ level: "low", setBy: "tom" });
+    await tom.mutation(api.dtsCode.setCodeImportance, {
+      repo: "ComplexMultiTrigger",
+      externalId: "cmt-001",
+      level: null,
+    });
+    [row] = await tom.query(api.dtsCode.listCodeBriefs, {});
+    expect(row.importance).toBeUndefined();
+    await expect(
+      tom.mutation(api.dtsCode.setCodeImportance, {
+        repo: "ComplexMultiTrigger",
+        externalId: "no-such-item",
+        level: "low",
+      }),
+    ).rejects.toThrow(/not found/);
+  });
+
   it("internalListBriefs returns every stored brief for the worker", async () => {
     const t = convexTest({ schema, modules });
     await t.mutation(internal.dtsCode.internalStoreBriefs, {

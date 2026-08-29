@@ -105,7 +105,11 @@ function composeFallbackDigest(
     return todo && todo.dueAt === undefined ? [{ todo, reason: e.reason }] : [];
   });
   if (queueTodos.length > 0) {
-    lines.push("", "*Today's queue* (also on <https://tom.quest/dts|the calendar tab>):");
+    // Explicit ?tab=calendar — bare /dts lands on the batches tab (default).
+    lines.push(
+      "",
+      "*Today's queue* (also on <https://tom.quest/dts?tab=calendar|the calendar tab>):",
+    );
     for (const { todo, reason } of queueTodos) {
       // Every reminder carries its entry action (spec §9) and a direct link.
       const entry = todo.entryAction ? ` — ${todo.entryAction}` : "";
@@ -115,21 +119,24 @@ function composeFallbackDigest(
     }
   }
 
+  // Tom-gate items surface on the batches tab (the /dts default tab), where
+  // they sit as batches awaiting a ruling or as unbatched singletons.
   const atGate = todos.filter(
     (t) => t.status === "active" && t.readiness === "ready-for-tom",
   );
   if (atGate.length > 0) {
     lines.push(
       "",
-      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/dts|needs me>`,
+      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/dts|the batches tab>`,
     );
   }
   // Briefed code todos with no ruling yet sit next to the tom-gate line — the
-  // same "waiting on you" area, descriptive, no verdicts.
+  // same "waiting on you" area, descriptive, no verdicts; same batches-tab
+  // landing (bare /dts defaults there).
   if (awaitingRulingCount > 0) {
     lines.push(
       "",
-      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/dts|needs me>`,
+      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/dts|the batches tab>`,
     );
   }
 

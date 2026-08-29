@@ -115,6 +115,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Every 2nd hour at :37 (odd minute; no collision with the other jobs).
 37 */2 * * * root /usr/bin/node /opt/dts/prepare-life-todos.mjs >> /var/log/dts/prepare-life-todos.log 2>&1
 
+# Form batches (life + code todos grouped so one session with Tom advances
+# many) via headless Claude, every 6 hours at :07 (:07 collides with nothing;
+# :17/:37/:45 are taken). An input-hash cursor in /var/lib/dts/ makes
+# unchanged-input runs no-ops, so most ticks cost no Claude call.
+7 0,6,12,18 * * * root /usr/bin/node /opt/dts/form-batches.mjs >> /var/log/dts/form-batches.log 2>&1
+
 # Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
 # propose-archive) every 10 minutes, so a ruling made in the UI takes effect
 # within minutes. The job serializes itself via /var/lib/dts/apply.lock —

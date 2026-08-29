@@ -5,13 +5,13 @@
 // approve · revise (sentence required) · session · archive.
 
 import { useState } from "react";
+import Info from "./info";
 import { errMessage, VERDICTS, type RulingVerdict } from "../lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
-const captionCls = "text-[10px] font-mono text-text-faint";
 
 export default function VerdictButtons({
   record,
@@ -67,21 +67,18 @@ export default function VerdictButtons({
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
         {VERDICTS.map((v) => (
-          <div key={v} className="flex flex-col items-start gap-0.5">
-            <button
-              onClick={() => click(v)}
-              disabled={busy}
-              className={`${btnCls} ${mode === v ? "border-accent/60 text-text" : ""}`}
-            >
-              {v}
-            </button>
-            <span className={captionCls}>
-              {`dtsRulings.recordRuling({verdict:"${v}"})`}
-            </span>
-          </div>
+          <button
+            key={v}
+            onClick={() => click(v)}
+            disabled={busy}
+            className={`${btnCls} ${mode === v ? "border-accent/60 text-text" : ""}`}
+          >
+            {v}
+          </button>
         ))}
+        <Info label='dtsRulings.recordRuling({verdict:"…"})' />
       </div>
 
       {mode === "revise" && (

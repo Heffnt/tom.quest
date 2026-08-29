@@ -1,19 +1,22 @@
 "use client";
 
 // One life-todo row: click-to-expand summary line + detail panel.
-// Panel order: intent banner → brief → action row → "edit" disclosure
-// (field editors, full fact grid, date history).
+// Panel order: intent banner → action row → importance → date controls →
+// commit time → brief → "edit" disclosure (field editors, full fact grid,
+// date history). Actions sit at the top everywhere.
 
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { countdownText } from "@/convex/dtsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
+import Info from "./info";
 import {
   ageText,
   errMessage,
   fmtDate,
   isoDate,
+  IMPORTANCE_LEVELS,
   parseDateInput,
   toDatetimeLocal,
   type LinkIntent,
@@ -29,11 +32,9 @@ const primaryBtnCls =
 const chipCls =
   "text-xs text-text-faint border border-border rounded px-1 py-px";
 
-/** The tiny mono caption naming the mutation a control fires. */
-function Caption({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-[10px] font-mono text-text-faint">{children}</div>
-  );
+/** The mono caption naming the mutation a control fires — behind an ⓘ. */
+function Caption({ children }: { children: string }) {
+  return <Info label={children} />;
 }
 
 // ── Small inline field editor ───────────────────────────────────────────────
@@ -123,6 +124,7 @@ export default function TodoRow({
 }) {
   const updateTodo = useMutation(api.dts.updateTodo);
   const setStatus = useMutation(api.dts.setStatus);
+  const setImportance = useMutation(api.dts.setImportance);
   const recordDateOutcome = useMutation(api.dts.recordDateOutcome);
   const recordEvent = useMutation(api.dts.recordEvent);
   const createBlock = useMutation(api.dts.createBlock);
@@ -312,7 +314,7 @@ export default function TodoRow({
     >
       <button
         onClick={onToggle}
-        className="w-full text-left px-3 py-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
+        className="w-full text-left px-3 py-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
       >
         <span className="text-sm text-text">{todo.statement}</span>
         <span className={chipCls}>{todo.readiness}</span>
@@ -320,18 +322,32 @@ export default function TodoRow({
           <span className={chipCls}>{todo.status}</span>
         )}
         {todo.category && <span className={chipCls}>{todo.category}</span>}
+        {todo.importance && (
+          <span className="text-xs">
+            <span
+              className={
+                todo.importance.level === "high"
+                  ? "text-accent"
+                  : "text-text-muted"
+              }
+            >
+              {todo.importance.level}
+            </span>
+            <span className="text-text-faint"> · {todo.importance.setBy}</span>
+          </span>
+        )}
         <span className="text-xs flex flex-wrap gap-x-3 gap-y-0.5 ml-auto">
           {facts}
         </span>
       </button>
 
       {expanded && (
-        <div className="border-t border-border px-3 py-3 space-y-4">
+        <div className="border-t border-border px-3 py-2 space-y-3">
           {/* 1 — intent banner */}
           {intent && (
-            <div className="border border-accent bg-accent-dim rounded-md px-3 py-2 flex flex-wrap items-center gap-3">
+            <div className="border border-accent bg-accent-dim rounded-md px-3 py-1.5 flex flex-wrap items-center gap-3">
               <span className="text-sm text-text">intent: {intent}</span>
-              <div className="space-y-0.5">
+              <div className="flex items-center gap-1">
                 <button
                   onClick={confirmIntent}
                   disabled={busy}
@@ -350,101 +366,133 @@ export default function TodoRow({
             </div>
           )}
 
-          {/* 2 — brief */}
-          {todo.brief && (
-            <div className="space-y-1">
-              <div className="text-xs text-text-faint">brief</div>
-              <div className="text-xs text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
-                {todo.brief}
-              </div>
-            </div>
-          )}
-
-          {/* 3 — action row */}
-          <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+          {/* 2 — action row */}
+          <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
             <div className="space-y-0.5">
-              <button
-                onClick={() => void openTodoSession(todo)}
-                disabled={busy || sessionBusy}
-                className={btnCls}
-              >
-                Open session
-              </button>
-              <Caption>
-                claudeSessions.createSession(&#123;kind:&quot;
-                {todo.readiness === "ready-for-tom" ? "gate" : "focus-item"}
-                &quot;&#125;)
-              </Caption>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => void openTodoSession(todo)}
+                  disabled={busy || sessionBusy}
+                  className={btnCls}
+                >
+                  Open session
+                </button>
+                <Caption>
+                  {`claudeSessions.createSession({kind:"${
+                    todo.readiness === "ready-for-tom" ? "gate" : "focus-item"
+                  }"})`}
+                </Caption>
+              </div>
               {sessionError && (
                 <div className="text-xs text-error">{sessionError}</div>
               )}
             </div>
 
             {todo.status !== "done" && (
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      void run(() =>
-                        setStatus({
-                          id: todo._id,
-                          status: "done",
-                          note: doneNoteDraft.trim() || undefined,
-                        }),
-                      )
-                    }
-                    disabled={busy}
-                    className={btnCls}
-                  >
-                    Done
-                  </button>
-                  <input
-                    value={doneNoteDraft}
-                    onChange={(e) => setDoneNoteDraft(e.target.value)}
-                    placeholder="note (optional)"
-                    className={`${inputCls} w-40`}
-                  />
-                </div>
-                <Caption>dts.setStatus(&#123;status:&quot;done&quot;&#125;)</Caption>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() =>
+                    void run(() =>
+                      setStatus({
+                        id: todo._id,
+                        status: "done",
+                        note: doneNoteDraft.trim() || undefined,
+                      }),
+                    )
+                  }
+                  disabled={busy}
+                  className={btnCls}
+                >
+                  Done
+                </button>
+                <input
+                  value={doneNoteDraft}
+                  onChange={(e) => setDoneNoteDraft(e.target.value)}
+                  placeholder="note (optional)"
+                  className={`${inputCls} w-40`}
+                />
+                <Caption>{'dts.setStatus({status:"done"})'}</Caption>
               </div>
             )}
 
             {todo.status !== "archived" && (
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      void run(() =>
-                        setStatus({
-                          id: todo._id,
-                          status: "archived",
-                          unarchiveCondition:
-                            unarchiveDraft.trim() || undefined,
-                        }),
-                      )
-                    }
-                    disabled={busy}
-                    className={btnCls}
-                  >
-                    Archive
-                  </button>
-                  <input
-                    value={unarchiveDraft}
-                    onChange={(e) => setUnarchiveDraft(e.target.value)}
-                    placeholder="propose back when (optional)"
-                    className={`${inputCls} w-52`}
-                  />
-                </div>
-                <Caption>
-                  dts.setStatus(&#123;status:&quot;archived&quot;&#125;)
-                </Caption>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() =>
+                    void run(() =>
+                      setStatus({
+                        id: todo._id,
+                        status: "archived",
+                        unarchiveCondition:
+                          unarchiveDraft.trim() || undefined,
+                      }),
+                    )
+                  }
+                  disabled={busy}
+                  className={btnCls}
+                >
+                  Archive
+                </button>
+                <input
+                  value={unarchiveDraft}
+                  onChange={(e) => setUnarchiveDraft(e.target.value)}
+                  placeholder="propose back when (optional)"
+                  className={`${inputCls} w-52`}
+                />
+                <Caption>{'dts.setStatus({status:"archived"})'}</Caption>
               </div>
             )}
           </div>
 
+          {/* importance override — three levels, current highlighted; agent
+              writes are ignored server-side once Tom has set one */}
+          <div className="space-y-0.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-text-faint">importance</span>
+              {IMPORTANCE_LEVELS.map((lvl) => (
+                <button
+                  key={lvl}
+                  onClick={() =>
+                    void run(() =>
+                      setImportance({ id: todo._id, level: lvl }),
+                    )
+                  }
+                  disabled={busy}
+                  className={`${btnCls} ${
+                    todo.importance?.level === lvl
+                      ? "border-accent/60 text-text"
+                      : ""
+                  }`}
+                >
+                  {lvl}
+                </button>
+              ))}
+              {todo.importance && (
+                <button
+                  onClick={() =>
+                    void run(() =>
+                      setImportance({ id: todo._id, level: null }),
+                    )
+                  }
+                  disabled={busy}
+                  className="text-xs text-text-faint hover:text-text-muted"
+                >
+                  clear
+                </button>
+              )}
+              <Caption>{"dts.setImportance({level})"}</Caption>
+            </div>
+            {todo.importance?.setBy === "agent" &&
+              todo.importance.rationale && (
+                <div className="text-xs text-text-faint">
+                  {todo.importance.rationale}
+                </div>
+              )}
+          </div>
+
           {/* date controls */}
           <div className="space-y-2">
-            <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <input
                 type="date"
                 value={dateDraft}
@@ -452,7 +500,7 @@ export default function TodoRow({
                 className={inputCls}
               />
               {todo.dueAt === undefined ? (
-                <div className="space-y-0.5">
+                <div className="flex items-center gap-1">
                   <button
                     onClick={() => {
                       const dueAt = parseDateInput(dateDraft);
@@ -467,11 +515,11 @@ export default function TodoRow({
                   >
                     Set date
                   </button>
-                  <Caption>dts.updateTodo(&#123;dueAt&#125;)</Caption>
+                  <Caption>{"dts.updateTodo({dueAt})"}</Caption>
                 </div>
               ) : (
                 <>
-                  <div className="space-y-0.5">
+                  <div className="flex items-center gap-1">
                     <button
                       onClick={renegotiate}
                       disabled={busy}
@@ -480,11 +528,10 @@ export default function TodoRow({
                       Renegotiate
                     </button>
                     <Caption>
-                      dts.recordDateOutcome(&#123;outcome:&quot;renegotiated&quot;,
-                      newDueAt&#125;)
+                      {'dts.recordDateOutcome({outcome:"renegotiated", newDueAt})'}
                     </Caption>
                   </div>
-                  <div className="space-y-0.5">
+                  <div className="flex items-center gap-1">
                     <button
                       onClick={recordMissed}
                       disabled={busy}
@@ -493,11 +540,12 @@ export default function TodoRow({
                       Record missed
                     </button>
                     <Caption>
-                      dts.recordDateOutcome(&#123;outcome:&quot;missed&quot;
-                      {dateDraft ? ", newDueAt" : ""}&#125;)
+                      {`dts.recordDateOutcome({outcome:"missed"${
+                        dateDraft ? ", newDueAt" : ""
+                      }})`}
                     </Caption>
                   </div>
-                  <div className="space-y-0.5">
+                  <div className="flex items-center gap-1">
                     <select
                       value={todo.dateKind ?? "self-imposed"}
                       onChange={(e) =>
@@ -515,13 +563,13 @@ export default function TodoRow({
                       <option value="external">external</option>
                       <option value="self-imposed">self-imposed</option>
                     </select>
-                    <Caption>dts.updateTodo(&#123;dateKind&#125;)</Caption>
+                    <Caption>{"dts.updateTodo({dateKind})"}</Caption>
                   </div>
                 </>
               )}
             </div>
             {todo.timingClass === "condition-bound" && (
-              <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <span className="text-xs text-text-faint self-center">
                   latest safe:
                 </span>
@@ -531,7 +579,7 @@ export default function TodoRow({
                   onChange={(e) => setLatestSafeDraft(e.target.value)}
                   className={inputCls}
                 />
-                <div className="space-y-0.5">
+                <div className="flex items-center gap-1">
                   <button
                     onClick={() => {
                       const latestSafeAt = parseDateInput(latestSafeDraft);
@@ -548,10 +596,10 @@ export default function TodoRow({
                   >
                     Set latest safe
                   </button>
-                  <Caption>dts.updateTodo(&#123;latestSafeAt&#125;)</Caption>
+                  <Caption>{"dts.updateTodo({latestSafeAt})"}</Caption>
                 </div>
                 {todo.latestSafeAt !== undefined && (
-                  <div className="space-y-0.5">
+                  <div className="flex items-center gap-1">
                     <button
                       onClick={() =>
                         void run(() =>
@@ -563,9 +611,7 @@ export default function TodoRow({
                     >
                       Clear latest safe
                     </button>
-                    <Caption>
-                      dts.updateTodo(&#123;latestSafeAt:null&#125;)
-                    </Caption>
+                    <Caption>{"dts.updateTodo({latestSafeAt:null})"}</Caption>
                   </div>
                 )}
               </div>
@@ -573,7 +619,7 @@ export default function TodoRow({
           </div>
 
           {/* commit time */}
-          <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <input
               type="datetime-local"
               value={blockStartDraft}
@@ -593,13 +639,23 @@ export default function TodoRow({
               onChange={(e) => setBlockEndDraft(e.target.value)}
               className={inputCls}
             />
-            <div className="space-y-0.5">
+            <div className="flex items-center gap-1">
               <button onClick={commitBlock} disabled={busy} className={btnCls}>
                 Commit time
               </button>
-              <Caption>dts.createBlock(&#123;todoId&#125;)</Caption>
+              <Caption>{"dts.createBlock({todoId})"}</Caption>
             </div>
           </div>
+
+          {/* 3 — brief */}
+          {todo.brief && (
+            <div className="space-y-1">
+              <div className="text-xs text-text-faint">brief</div>
+              <div className="text-xs text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
+                {todo.brief}
+              </div>
+            </div>
+          )}
 
           {/* 4 — edit disclosure */}
           <button
@@ -651,7 +707,7 @@ export default function TodoRow({
                 <div className="space-y-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-text-faint">readiness</span>
-                    <Caption>dts.updateTodo(&#123;readiness&#125;)</Caption>
+                    <Caption>{"dts.updateTodo({readiness})"}</Caption>
                   </div>
                   <select
                     value={todo.readiness}
@@ -673,7 +729,7 @@ export default function TodoRow({
               </div>
 
               {todo.status !== "waiting" && (
-                <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                   <input
                     value={wakeConditionDraft}
                     onChange={(e) => setWakeConditionDraft(e.target.value)}
@@ -686,7 +742,7 @@ export default function TodoRow({
                     onChange={(e) => setWakeAtDraft(e.target.value)}
                     className={inputCls}
                   />
-                  <div className="space-y-0.5">
+                  <div className="flex items-center gap-1">
                     <button
                       onClick={() =>
                         void run(() =>
@@ -704,15 +760,13 @@ export default function TodoRow({
                     >
                       Set waiting
                     </button>
-                    <Caption>
-                      dts.setStatus(&#123;status:&quot;waiting&quot;&#125;)
-                    </Caption>
+                    <Caption>{'dts.setStatus({status:"waiting"})'}</Caption>
                   </div>
                 </div>
               )}
 
               {todo.status !== "active" && (
-                <div className="space-y-0.5">
+                <div className="flex items-center gap-1">
                   <button
                     onClick={() =>
                       void run(() =>
@@ -724,9 +778,7 @@ export default function TodoRow({
                   >
                     Set active
                   </button>
-                  <Caption>
-                    dts.setStatus(&#123;status:&quot;active&quot;&#125;)
-                  </Caption>
+                  <Caption>{'dts.setStatus({status:"active"})'}</Caption>
                 </div>
               )}
 
@@ -737,6 +789,11 @@ export default function TodoRow({
                 <Fact label="timingClass">{todo.timingClass}</Fact>
                 {todo.category && (
                   <Fact label="category">{todo.category}</Fact>
+                )}
+                {todo.importance && (
+                  <Fact label="importance">
+                    {todo.importance.level} · {todo.importance.setBy}
+                  </Fact>
                 )}
                 <Fact label="source">
                   {todo.source}

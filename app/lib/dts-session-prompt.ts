@@ -50,9 +50,21 @@ export function buildBlockSessionPrompt(
   return lines.join("\n");
 }
 
+// Live context for one batch member, resolved by the caller against the
+// todos/mirror it already holds (this module never fetches). `label` names
+// the subject the way the system does: a life member is just its statement,
+// a code member carries "repo externalId".
+export type BatchMemberContext = {
+  kind: "life" | "code";
+  label?: string;
+  statement: string;
+  status: string;
+};
+
 export function buildTodoSessionPrompt(
   todo: Doc<"dtsTodos">,
   kind: "gate" | "focus-item",
+  batch?: { members: BatchMemberContext[] },
 ): string {
   const lines = [
     CONTRACT,
@@ -74,5 +86,46 @@ export function buildTodoSessionPrompt(
     fact("body", todo.body),
     fact("brief", todo.brief),
   ].filter((l): l is string => l !== null);
+
+  // A batch (a todo with `members`) is worked as a walk-through of its plan:
+  // one session advances every member, and the pens record what lands.
+  if (todo.members !== undefined) {
+    lines.push(
+      "",
+      "This item is a BATCH: one grouping of several todos, so one session's worth of shared context advances all of them. Its plan is the working order.",
+    );
+    const plan = todo.plan ?? [];
+    if (plan.length > 0) {
+      lines.push("", `The plan (${plan.length} steps, in order):`);
+      plan.forEach((step, i) => {
+        lines.push(
+          `${i + 1}. [${step.actor}, ${step.status}] ${step.text}${step.evidence ? ` (evidence: ${step.evidence})` : ""}`,
+        );
+      });
+    } else {
+      lines.push("", "The batch has no plan yet — building one with Tom is the first step.");
+    }
+    const members = batch?.members ?? [];
+    if (members.length > 0) {
+      lines.push("", `The members (${members.length}, live statuses):`);
+      for (const m of members) {
+        lines.push(
+          `- [${m.kind}${m.label ? ` ${m.label}` : ""}, ${m.status}] "${m.statement}"`,
+        );
+      }
+    } else {
+      lines.push("", `The batch lists ${todo.members.length} members; their live statuses were not resolved for this prompt.`);
+    }
+    lines.push(
+      "",
+      "Walk-through contract:",
+      '- Work the plan IN ORDER. Steps with actor "agent" you do yourself.',
+      '- At each OPEN step with actor "tom", STOP and put it to Tom as one concrete question — do not run ahead of him.',
+      `- Record plan progress the moment a step closes: \`npx convex run dts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff.`,
+      "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any member) via dtsRulings:internalRecordRuling; status/date changes via dts:internalTriage.",
+      "- Apply Tom's spoken en-masse property changes (importance, category) via dts:internalBulkUpdate.",
+      "- All of these are pens for Tom's spoken word — use them only while Tom is present in the session.",
+    );
+  }
   return lines.join("\n");
 }

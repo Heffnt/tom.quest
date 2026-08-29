@@ -390,6 +390,58 @@ export default defineSchema({
     // Category tag: lets one scheduled dtsBlocks row cover a set of todos
     // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
     category: v.optional(v.string()),
+    // ── Batches (ratified 2026-08-28) ────────────────────────────────────────
+    // A row with `members` IS a batch — that one field is the whole
+    // discrimination. Because a batch is a real dtsTodos row, every action
+    // (rulings, blocks, sessions, done/archive) works on it with no new code.
+    // Each member addresses exactly one subject in the dtsRulings shape:
+    // { todoId } for a life todo, { repo, externalId } for a code todo
+    // (mirror-row _ids are unstable — rows are deleted on upstream close).
+    // Enforced in dts.ts: no batch-in-batch; a subject is in at most one
+    // non-terminal batch.
+    members: v.optional(
+      v.array(
+        v.object({
+          todoId: v.optional(v.id("dtsTodos")),
+          repo: v.optional(v.string()),
+          externalId: v.optional(v.string()),
+        }),
+      ),
+    ),
+    // The completion plan (batches mostly; legal on any todo): ordered steps,
+    // each done by an agent or by Tom. The card's "needs you" strip = the open
+    // steps with actor "tom". `evidence` on a done agent step names the
+    // artifact (branch, PR, brief).
+    plan: v.optional(
+      v.array(
+        v.object({
+          text: v.string(),
+          actor: v.union(v.literal("tom"), v.literal("agent")),
+          status: v.union(v.literal("open"), v.literal("done")),
+          doneAt: v.optional(v.number()),
+          evidence: v.optional(v.string()),
+        }),
+      ),
+    ),
+    // Agent-estimated importance from the (interim, inferred) model of Tom;
+    // Tom can override. THE GUARD lives in the internal mutations: an agent
+    // write is ignored whenever the stored value has setBy "tom".
+    importance: v.optional(
+      v.object({
+        level: v.union(
+          v.literal("low"),
+          v.literal("medium"),
+          v.literal("high"),
+        ),
+        setBy: v.union(v.literal("agent"), v.literal("tom")),
+        setAt: v.number(),
+        rationale: v.optional(v.string()), // the agent's one-line justification
+      }),
+    ),
+    // Stamped by the Tom doors (updateTodo, setStatus, setImportance,
+    // setPlanStep, ruling life path, the pens). A batch with this set is
+    // FROZEN: the batcher job may never rewrite or retire it.
+    tomTouchedAt: v.optional(v.number()),
     source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
     provenance: v.optional(v.string()), // link/descriptor of where it came from
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
@@ -521,6 +573,21 @@ export default defineSchema({
     ),
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),
     evidence: v.optional(v.string()),
+    // Importance for CODE todos lives on the brief (its stable home — mirror
+    // rows are deleted on upstream close). Same shape + same setBy-"tom"
+    // agent-write guard as dtsTodos.importance.
+    importance: v.optional(
+      v.object({
+        level: v.union(
+          v.literal("low"),
+          v.literal("medium"),
+          v.literal("high"),
+        ),
+        setBy: v.union(v.literal("agent"), v.literal("tom")),
+        setAt: v.number(),
+        rationale: v.optional(v.string()),
+      }),
+    ),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
