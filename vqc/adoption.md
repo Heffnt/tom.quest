@@ -81,3 +81,27 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
     digest itself the loud failure signal; throwing inside a cron adds no
     louder channel. Scope: convex/dtsSync.ts sendDigest only.
   cites: [C3, dts-spec:7]
+- id: agent-created-todos
+  date: 2026-08-29
+  question: Must todo creation wait for Tom's ruling (todo = Tom's choice)?
+  ruling: No — any agent may create vqc/todos.yaml entries freely and is
+    encouraged to whenever it finds an issue worth working. A todo still
+    records decided intent (not a stray fact — those stay in the ledger),
+    but the deciding agent may be the one who found it. Tom's gates sit at
+    plans (ready-for-tom) and persistence, not at creation.
+  cites: [D28, dts-spec:5]
+- id: session-permission-posture
+  date: 2026-08-29
+  question: Keep the indefinite-park permission model for the session surface?
+  ruling: No — replace prompt-parking with classifier-driven auto mode - a
+    classifier rules each gated tool call instead of interrupting Tom. Any
+    residual permission card must be small and unobtrusive, never crowd the
+    transcript, span the full window width, and approve on Enter.
+  cites: [dts-spec:15]
+- id: session-surface-rendering
+  date: 2026-08-29
+  question: What does Tom want rendered in a session transcript?
+  ruling: All natural language from the agent — assistant text AND thinking —
+    rendered in full by default. Tool calls visible but compact by default
+    (one line, expand on demand). The page uses the full window width.
+  cites: [dts-spec:12]
