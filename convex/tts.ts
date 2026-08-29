@@ -255,6 +255,18 @@ export const listMirror = query({
   },
 });
 
+// Every batches row (schema v2), for the page's batches tab. The Tom-facing
+// twin of internalListBatches: a full collect, because the table holds a few
+// dozen rows for years and the client picks its own grouping (paths) and
+// filtering (status) out of the whole set.
+export const listBatches = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTomId(ctx);
+    return await ctx.db.query("batches").collect();
+  },
+});
+
 // Focus: today's queue row (entries joined with their todos) — null when no
 // prep has happened yet today.
 export const getToday = query({

@@ -108,7 +108,7 @@ export default function DetailDialog({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-border px-3 py-1 text-[13px] text-text-muted"
+            className="rounded-md border border-border px-3 py-1 text-[13px] text-text-muted hover:text-text"
           >
             close
           </button>

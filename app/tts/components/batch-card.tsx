@@ -153,7 +153,7 @@ export default function BatchCard({
             <button
               type="button"
               onClick={onOpenSession}
-              className="rounded-md border border-accent/50 bg-accent-dim px-2.5 py-1 text-xs text-accent"
+              className="rounded-md border border-accent/50 bg-accent-dim px-2.5 py-1 text-xs text-accent hover:border-accent hover:opacity-80"
             >
               open batch session
             </button>
@@ -162,7 +162,7 @@ export default function BatchCard({
                 key={v}
                 type="button"
                 onClick={() => onRule(v)}
-                className="rounded-md border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-muted hover:text-text"
+                className="rounded-md border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-muted hover:border-text-faint hover:text-text"
               >
                 {v}
               </button>

@@ -1,27 +1,41 @@
 "use client";
 
-// BATCHES — the default tab. Batch cards (importance desc), then the
-// selectNeedsMe rows no batch claims, then the ruled-but-not-yet-applied
-// pipeline strip. selectBatches (app/tts/lib.ts) is the ONE selector — the
-// shell's tab badge counts the same selection, so count and rows cannot drift.
+// BATCHES — the default tab. The paths bar over the batch cards (the ratified
+// graph design), then the selectNeedsMe rows no batch claims, then the
+// ruled-but-not-yet-applied pipeline strip.
 //
-// A card is read at a glance: the statement large, the member progress as a
-// segmented bar, importance as a mark. Words that a visual already says
-// ("plan", "members", "3 of 7 done") are not printed.
+// A BATCH IS NOT A TODO (schema v2): it is its own row (the `batches` table)
+// holding how a set of todos gets completed. Its contents are dtsTodos rows
+// pointing back at it — kind "task" (work someone does) and kind "goal" (a
+// state of the world the batch is for). A todo is READY when every todo it
+// NEEDS is done; the card shows ready, blocked and done, and one click on any
+// item opens everything known about it.
+//
+// selectBatches (app/tts/lib.ts) still owns the OTHER two sections: the
+// unbatched strip and the applying strip, so the shell's tab badge counts the
+// same selection those render.
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { countdownText } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import {
+  useOpenBatchSession,
   useOpenTodoSession,
-  type ReservedTab,
 } from "@/app/lib/use-open-todo-session";
-import type { LiveRulingContext } from "@/app/lib/tts-session-prompt";
+import type { BatchSessionContext } from "@/app/lib/tts-session-prompt";
 import CodeTodoRow from "./code-todo-row";
-import OptionsRow, { ImportanceBars } from "./options-row";
-import Info from "./info";
+import OptionsRow from "./options-row";
+import PathsBar, { type PathChip } from "./paths-bar";
+import BatchCard, {
+  taskSets,
+  type BatchGraph,
+  type GraphTask,
+} from "./batch-card";
+import RulingDialog, { type RulingVerdict } from "./ruling-dialog";
+import DetailDialog, { type DetailItem } from "./detail-dialog";
 import TimeNoteField, {
   groupTimeNotes,
   NO_NOTES,
@@ -29,26 +43,22 @@ import TimeNoteField, {
 } from "./time-note-field";
 import {
   ageText,
-  clientMemberKey,
+  batchSubjectKey,
   codeSubjectKey,
-  errMessage,
   fmtDate,
   liveRulingsByKey,
-  memberProgress,
-  planNeedsYou,
   rulingSubjectKey,
   selectBatches,
-  type Member,
-  type MirrorRow,
-  type PlanStep,
+  type Batch,
   type Todo,
 } from "@/app/tts/lib";
 
-const primaryBtnCls =
-  "bg-accent text-bg rounded-md px-3 py-1 text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none";
 const chipCls =
   "text-xs text-text-faint border border-border rounded px-1 py-px";
-const actorCls = "font-mono text-[11px]";
+
+// The chip a batch with no path groups under. A real path name could collide
+// with it only if Tom named a path this, which the planner never does.
+const UNPATHED = "unpathed";
 
 function SectionHeader({ title, count }: { title: string; count: number }) {
   return (
@@ -58,358 +68,81 @@ function SectionHeader({ title, count }: { title: string; count: number }) {
   );
 }
 
-/** evidence/text as a link when it is a URL, plain text otherwise. */
-function Linkified({ text }: { text: string }) {
-  if (text.startsWith("http")) {
-    return (
-      <a
-        href={text}
-        target="_blank"
-        rel="noreferrer"
-        className="text-accent hover:underline break-all"
-      >
-        {text}
-      </a>
-    );
-  }
-  return <span className="break-words">{text}</span>;
-}
-
-// ── Member progress ─────────────────────────────────────────────────────────
-// One segment per member, filled left to right — the bar IS the count, so the
-// count is not also written out (it stays in the native title).
-function MemberBar({ done, total }: { done: number; total: number }) {
-  return (
-    <span
-      title={`${done} of ${total} done`}
-      className="w-24 h-1.5 rounded-full overflow-hidden flex gap-px bg-border/40"
-    >
-      {Array.from({ length: total }, (_, i) => (
-        <span
-          key={i}
-          className={`flex-1 ${i < done ? "bg-success/70" : "bg-border"}`}
-        />
-      ))}
-    </span>
-  );
-}
-
-// ── Plan step line (full checklist) ─────────────────────────────────────────
-function PlanStepLine({
-  step,
-  busy,
-  dense,
-  onToggle,
-}: {
-  step: PlanStep;
-  busy: boolean;
-  /** The collapsed done group renders small; live steps read at text-sm. */
-  dense?: boolean;
-  onToggle: () => void;
-}) {
-  const done = step.status === "done";
-  return (
-    <div
-      className={`flex items-baseline gap-2 ${dense ? "text-xs" : "text-sm"}`}
-    >
-      <button
-        onClick={onToggle}
-        disabled={busy}
-        className={`${done ? "text-success" : "text-text-faint"} hover:text-text disabled:opacity-50`}
-      >
-        {done ? "✓" : "○"}
-      </button>
-      <span
-        className={`${actorCls} ${step.actor === "tom" ? "text-warning" : "text-text-faint"}`}
-      >
-        {step.actor === "tom" ? "you" : "agent"}
-      </span>
-      <span
-        className={done ? "text-text-faint line-through" : "text-text-muted"}
-      >
-        {step.text}
-      </span>
-      {step.evidence && (
-        <span className="text-xs text-text-faint">
-          <Linkified text={step.evidence} />
-        </span>
-      )}
-    </div>
-  );
-}
-
-// ── Member line ─────────────────────────────────────────────────────────────
-function MemberLine({
-  member,
-  todoById,
-  mirrorByKey,
-  onOpenItem,
-}: {
-  member: Member;
-  todoById: Map<string, Todo>;
-  mirrorByKey: Map<string, MirrorRow>;
-  onOpenItem: (id: string) => void;
-}) {
-  if (member.todoId !== undefined) {
-    const t = todoById.get(member.todoId);
-    return (
-      <div className="flex items-baseline gap-2 text-xs">
-        <span className="font-mono text-[11px] text-text-faint">
-          {t?.status ?? "missing"}
-        </span>
-        <span className="text-text-muted">
-          {t?.statement ?? member.todoId}
-        </span>
-        {t && (
-          <button
-            onClick={() => onOpenItem(member.todoId as string)}
-            className="text-accent hover:underline"
-          >
-            open
-          </button>
-        )}
-      </div>
-    );
-  }
-  // No mirror row: the item may be closed upstream (rows are deleted on close)
-  // or the member id may never have matched one. Say only what is known.
-  const row = mirrorByKey.get(codeSubjectKey(member.repo!, member.externalId!));
-  return (
-    <div className="flex items-baseline gap-2 text-xs">
-      <span className="font-mono text-[11px] text-text-faint">
-        {row ? row.status : "not in mirror"}
-      </span>
-      <span className="text-text-muted">
-        {row?.statement ?? `${member.repo} ${member.externalId}`}
-      </span>
-      {row && (
-        <a
-          href={row.url}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:underline"
-        >
-          open in {row.repo}
-        </a>
-      )}
-    </div>
-  );
-}
-
-// ── Batch card ──────────────────────────────────────────────────────────────
-function BatchCard({
-  todo,
-  awaitingRuling,
-  todoById,
-  mirrorByKey,
-  todos,
-  mirror,
-  notes,
-  expanded,
-  onToggle,
-  onOpenItem,
-}: {
-  todo: Todo;
-  awaitingRuling: boolean;
-  /** The tab's prebuilt lookups — member progress and the member lines. */
-  todoById: Map<string, Todo>;
-  mirrorByKey: Map<string, MirrorRow>;
-  /** The raw arrays, for the batch session prompt's member resolution. */
-  todos: Todo[];
-  mirror: MirrorRow[];
-  /** This batch's time notes (the tab holds the query). */
-  notes: readonly TimeNote[];
-  expanded: boolean;
-  onToggle: () => void;
-  onOpenItem: (id: string) => void;
-}) {
-  const setPlanStep = useMutation(api.tts.setPlanStep);
-  const {
-    open: openSession,
-    busy: sessionBusy,
-    error: sessionError,
-  } = useOpenTodoSession();
-
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [showDone, setShowDone] = useState(false);
-
-  const run = async (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await fn();
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setBusy(false);
+// ── Live data → the card's graph model ──────────────────────────────────────
+// tasks: every non-goal todo pointing at the batch. A row with no `kind` is a
+// legacy standalone todo read as a task (schema comment), which is exactly the
+// `kind !== "goal"` test. done and archived both read as done — the same rule
+// ttsShared.buildDoneSet uses for the frontier, so what the card calls ready is
+// what the scheduler calls ready.
+function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
+  const tasks: GraphTask[] = [];
+  const goals: BatchGraph["goals"] = [];
+  for (const t of contents) {
+    const done = t.status === "done" || t.status === "archived";
+    if (t.kind === "goal") {
+      goals.push({
+        id: t._id,
+        statement: t.statement,
+        condition: t.condition,
+        met: done,
+        groundUp: t.groundUpExplanation ?? t.brief,
+        code:
+          t.codeRepo !== undefined && t.codeExternalId !== undefined
+            ? { repo: t.codeRepo, externalId: t.codeExternalId }
+            : undefined,
+      });
+    } else {
+      tasks.push({
+        id: t._id,
+        statement: t.statement,
+        actor: t.actor ?? "agent",
+        status: done ? "done" : "active",
+        needs: t.needs ?? [],
+        evidence: t.evidence,
+        groundUp: t.groundUpExplanation,
+      });
     }
+  }
+  return {
+    id: batch._id,
+    statement: batch.statement,
+    groundUp: batch.groundUpExplanation,
+    tasks,
+    goals,
   };
+}
 
-  const members = todo.members ?? [];
-  const progress = memberProgress(members, todoById, mirrorByKey);
-  const needsYou = planNeedsYou(todo.plan);
-  const stepAt = (i: number, status: "open" | "done") =>
-    void run(() => setPlanStep({ id: todo._id, index: i, status }));
-
-  const plan = todo.plan ?? [];
-  const openSteps = plan
-    .map((step, index) => ({ step, index }))
-    .filter(({ step }) => step.status !== "done");
-  const doneSteps = plan
-    .map((step, index) => ({ step, index }))
-    .filter(({ step }) => step.status === "done");
-
-  // The batch session prompt carries live member statements + statuses, which
-  // useOpenTodoSession resolves from the todos + mirror this card already
-  // holds — so every batch open, button or verdict, passes that context.
-  // `tab`/`ruling` come from the session verdict's own click when fired there.
-  const openBatchSession = (tab?: ReservedTab, ruling?: LiveRulingContext) =>
-    openSession(todo, { batch: { todos, mirror }, tab, ruling });
-
-  return (
-    <div className="border border-border rounded-lg bg-surface/40">
-      <button
-        onClick={onToggle}
-        className="w-full text-left px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 hover:bg-surface/60 rounded-lg"
-      >
-        <span className="text-text-faint text-xs">{expanded ? "▾" : "▸"}</span>
-        {todo.importance && (
-          <span
-            title={`${todo.importance.level} · ${todo.importance.setBy}${
-              todo.importance.rationale ? ` — ${todo.importance.rationale}` : ""
-            }`}
-            className="inline-flex"
-          >
-            <ImportanceBars
-              level={todo.importance.level}
-              fillCls="bg-warning"
-            />
-          </span>
-        )}
-        <span className="text-base text-text">{todo.statement}</span>
-        {awaitingRuling && (
-          <span className="text-xs text-accent">awaiting ruling</span>
-        )}
-        <span className="ml-auto flex items-center gap-2">
-          {needsYou.count > 0 && (
-            <span className="text-xs text-accent">
-              {needsYou.count} for you
-            </span>
-          )}
-          {members.length > 0 && (
-            <MemberBar done={progress.done} total={progress.total} />
-          )}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-border px-3 py-2 space-y-3">
-          {/* options first — the session button and every verdict on one line */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <button
-              onClick={() => void openBatchSession()}
-              disabled={busy || sessionBusy}
-              className={primaryBtnCls}
-            >
-              Open batch session
-            </button>
-            <Info
-              label={`claudeSessions.createSession({kind:"${
-                todo.readiness === "ready-for-tom" ? "gate" : "focus-item"
-              }"})`}
-            />
-            <OptionsRow
-              todo={todo}
-              rulable
-              afterSession={(tab, ruling) => void openBatchSession(tab, ruling)}
-            />
-          </div>
-          {sessionError && (
-            <div className="text-xs text-error">{sessionError}</div>
-          )}
-
-          {/* the batch's only timing INPUT — an agent reads the note */}
-          <TimeNoteField todoId={todo._id} notes={notes} />
-
-          {/* needs you */}
-          {needsYou.count > 0 && (
-            <div className="border-l-2 border-accent pl-2 space-y-1">
-              <Info label='tts.setPlanStep({index, status:"done"})' />
-              {/* the SAME line the full plan renders — evidence link and all;
-                  planNeedsYou keeps each step's plan index, which is what
-                  setPlanStep addresses */}
-              {needsYou.steps.map(({ step, index }) => (
-                <PlanStepLine
-                  key={index}
-                  step={step}
-                  busy={busy}
-                  onToggle={() => stepAt(index, "done")}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* brief */}
-          {todo.brief && (
-            <div className="text-sm text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
-              {todo.brief}
-            </div>
-          )}
-
-          {/* full plan — open steps, then the done ones behind one faint line */}
-          {plan.length > 0 && (
-            <div className="space-y-1">
-              <Info label="tts.setPlanStep({index, status})" />
-              {openSteps.map(({ step, index }) => (
-                <PlanStepLine
-                  key={index}
-                  step={step}
-                  busy={busy}
-                  onToggle={() => stepAt(index, "done")}
-                />
-              ))}
-              {doneSteps.length > 0 && (
-                <button
-                  onClick={() => setShowDone((v) => !v)}
-                  className="text-xs text-text-faint hover:text-text-muted"
-                >
-                  ✓ {doneSteps.length} done
-                </button>
-              )}
-              {showDone &&
-                doneSteps.map(({ step, index }) => (
-                  <PlanStepLine
-                    key={index}
-                    step={step}
-                    busy={busy}
-                    dense
-                    onToggle={() => stepAt(index, "open")}
-                  />
-                ))}
-            </div>
-          )}
-
-          {/* members */}
-          {members.length > 0 && (
-            <div className="space-y-1">
-              {members.map((m) => (
-                <MemberLine
-                  key={clientMemberKey(m)}
-                  member={m}
-                  todoById={todoById}
-                  mirrorByKey={mirrorByKey}
-                  onOpenItem={onOpenItem}
-                />
-              ))}
-            </div>
-          )}
-
-          {error && <div className="text-xs text-error">{error}</div>}
-        </div>
-      )}
-    </div>
-  );
+/** The graph as the session prompt reads it — the card's own three sets. */
+function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
+  const { done, ready, blocked } = taskSets(graph.tasks);
+  const byId = new Map(graph.tasks.map((t) => [t.id, t]));
+  const doneIds = new Set(done.map((t) => t.id));
+  const shape = (t: GraphTask, state: "done" | "ready" | "blocked") => ({
+    statement: t.statement,
+    actor: t.actor,
+    state,
+    waitingOn: t.needs
+      .filter((n) => !doneIds.has(n))
+      .map((n) => byId.get(n)?.statement ?? n),
+    evidence: t.evidence,
+  });
+  return {
+    statement: batch.statement,
+    groundUp: batch.groundUpExplanation,
+    path: batch.path
+      ? { name: batch.path.name, index: batch.path.index }
+      : undefined,
+    tasks: [
+      ...ready.map((t) => shape(t, "ready")),
+      ...blocked.map((t) => shape(t, "blocked")),
+      ...done.map((t) => shape(t, "done")),
+    ],
+    goals: graph.goals.map((g) => ({
+      statement: g.statement,
+      condition: g.condition,
+      met: g.met,
+    })),
+  };
 }
 
 // ── Unbatched life row (active · ready-for-tom, in no batch) ────────────────
@@ -491,30 +224,44 @@ function LifeRow({
 // tab.
 
 // ── The tab ─────────────────────────────────────────────────────────────────
-export default function BatchesTab({
-  onOpenItem,
-}: {
-  onOpenItem: (id: string) => void;
-}) {
+// No onOpenItem: on this tab every item — a task, a goal, the batch itself —
+// opens the detail dialog, which holds everything known about it. Nothing here
+// hands an item off to the by-individual tab any more.
+export default function BatchesTab() {
   const { isTom } = useAuth();
   const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  const batches = useQuery(api.tts.listBatches, isTom ? {} : "skip");
   const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
   const briefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
   const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
   // ONE time-note subscription for the whole tab; each row slices it.
   const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
+  const recordRuling = useMutation(api.ttsRulings.recordRuling);
+  const { open: openBatchSession, error: batchSessionError } =
+    useOpenBatchSession();
 
   const now = Date.now();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const toggle = (key: string, engage: () => void) => {
-    const opening = !expanded.has(key);
-    setExpanded((prev) => {
+  const [doneShown, setDoneShown] = useState<Set<string>>(new Set());
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [ruling, setRuling] = useState<{
+    batchId: Id<"batches">;
+    graph: BatchGraph;
+    verdict: RulingVerdict;
+  } | null>(null);
+  const [detail, setDetail] = useState<DetailItem | null>(null);
+
+  const flip = (id: string, set: (fn: (p: Set<string>) => Set<string>) => void) =>
+    set((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
+  const toggle = (key: string, engage: () => void) => {
+    const opening = !expanded.has(key);
+    flip(key, setExpanded);
     if (opening) engage();
   };
 
@@ -526,17 +273,43 @@ export default function BatchesTab({
     [todos, mirror, briefs, rulings],
   );
 
-  const todoById = useMemo(
-    () => new Map((todos ?? []).map((t) => [t._id as string, t])),
-    [todos],
-  );
-  const mirrorByKey = useMemo(
-    () =>
-      new Map(
-        (mirror ?? []).map((r) => [codeSubjectKey(r.repo, r.externalId), r]),
-      ),
-    [mirror],
-  );
+  // The graph cards, grouped by path. Within a path: path order (`index`).
+  // The batches on no path group under one "unpathed" chip, listed last and
+  // ordered by recency, which is the only order they have.
+  const { chips, byPath } = useMemo(() => {
+    const contents = new Map<string, Todo[]>();
+    for (const t of todos ?? []) {
+      if (t.batchId === undefined) continue;
+      const list = contents.get(t.batchId) ?? [];
+      list.push(t);
+      contents.set(t.batchId, list);
+    }
+    const byPath = new Map<string, { batch: Batch; graph: BatchGraph }[]>();
+    for (const batch of batches ?? []) {
+      if (batch.status !== "active") continue;
+      const name = batch.path?.name ?? UNPATHED;
+      const list = byPath.get(name) ?? [];
+      list.push({ batch, graph: toGraph(batch, contents.get(batch._id) ?? []) });
+      byPath.set(name, list);
+    }
+    for (const [name, list] of byPath) {
+      list.sort((a, b) =>
+        name === UNPATHED
+          ? b.batch.updatedAt - a.batch.updatedAt
+          : (a.batch.path?.index ?? 0) - (b.batch.path?.index ?? 0),
+      );
+    }
+    const chips: PathChip[] = [...byPath.keys()]
+      .filter((n) => n !== UNPATHED)
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name, count: (byPath.get(name) ?? []).length }));
+    if (byPath.has(UNPATHED))
+      chips.push({
+        name: UNPATHED,
+        count: (byPath.get(UNPATHED) ?? []).length,
+      });
+    return { chips, byPath };
+  }, [batches, todos]);
 
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
   // one the by-individual tab feeds CodeTodoRow.
@@ -578,10 +351,11 @@ export default function BatchesTab({
         rulingSubjectKey({ subjectType: "life", todoId: t._id }),
         t.statement,
       );
+    for (const b of batches ?? []) map.set(batchSubjectKey(b._id), b.statement);
     for (const r of mirror ?? [])
       map.set(codeSubjectKey(r.repo, r.externalId), r.statement);
     return map;
-  }, [todos, mirror]);
+  }, [todos, batches, mirror]);
 
   const applying = useMemo(
     () => [...selection.pending].sort((a, b) => b.ruledAt - a.ruledAt),
@@ -590,6 +364,7 @@ export default function BatchesTab({
 
   if (
     todos === undefined ||
+    batches === undefined ||
     mirror === undefined ||
     briefs === undefined ||
     rulings === undefined
@@ -597,39 +372,56 @@ export default function BatchesTab({
     return <div className="text-sm text-text-faint py-8">Loading…</div>;
   }
 
+  const shownPath =
+    selectedPath !== null && byPath.has(selectedPath)
+      ? selectedPath
+      : (chips[0]?.name ?? UNPATHED);
+  const list = byPath.get(shownPath) ?? [];
+
   return (
     <div className="space-y-6">
       <section className="space-y-2">
-        <SectionHeader
-          title="batches · importance desc"
-          count={selection.batches.length}
+        <PathsBar
+          paths={chips}
+          selected={shownPath}
+          onSelect={setSelectedPath}
         />
-        {selection.batches.length > 0 && (
-          <div className="space-y-1.5">
-            {selection.batches.map(({ todo, awaitingRuling }) => (
+        <div className="flex flex-col">
+          {list.map(({ batch, graph }, i) => (
+            <div key={graph.id}>
+              {/* The connector is the path's own sequencing; the unpathed
+                  group has no order to draw. */}
+              {i > 0 && shownPath !== UNPATHED && (
+                <div className="flex justify-center py-0.5">
+                  <div className="h-3 w-px bg-[#2c3a52]" />
+                </div>
+              )}
               <BatchCard
-                key={todo._id}
-                todo={todo}
-                awaitingRuling={awaitingRuling}
-                todoById={todoById}
-                mirrorByKey={mirrorByKey}
-                todos={todos}
-                mirror={mirror}
-                notes={notesByContext.get(todo._id) ?? NO_NOTES}
-                expanded={expanded.has(todo._id)}
+                graph={graph}
+                expanded={expanded.has(graph.id)}
+                showDone={doneShown.has(graph.id)}
                 onToggle={() =>
-                  toggle(todo._id, () => {
+                  toggle(graph.id, () => {
                     void recordEvent({
                       kind: "engaged",
-                      todoId: todo._id,
-                      data: { via: "batches" },
+                      data: { via: "batches", batchId: graph.id },
                     }).catch(() => {});
                   })
                 }
-                onOpenItem={onOpenItem}
+                onToggleDone={() => flip(graph.id, setDoneShown)}
+                onRule={(verdict) =>
+                  setRuling({ batchId: batch._id, graph, verdict })
+                }
+                onDetail={setDetail}
+                onOpenSession={() =>
+                  void openBatchSession(sessionContext(batch, graph))
+                }
               />
-            ))}
-          </div>
+            </div>
+          ))}
+        </div>
+        {batchSessionError && (
+          <div className="text-xs text-error">{batchSessionError}</div>
         )}
       </section>
 
@@ -707,6 +499,30 @@ export default function BatchesTab({
           </div>
         ))}
       </section>
+
+      {ruling && (
+        <RulingDialog
+          verdict={ruling.verdict}
+          statement={ruling.graph.statement}
+          brief={ruling.graph.groundUp}
+          plan={ruling.graph.tasks.map((t) => ({
+            text: t.statement,
+            actor: t.actor,
+            status: t.status === "done" ? ("done" as const) : ("open" as const),
+          }))}
+          onConfirm={(sentence) =>
+            recordRuling({
+              batchId: ruling.batchId,
+              // The chip says "edit" (Tom's word for it); the stored verdict
+              // is still named "revise".
+              verdict: ruling.verdict === "edit" ? "revise" : ruling.verdict,
+              sentence: sentence || undefined,
+            })
+          }
+          onClose={() => setRuling(null)}
+        />
+      )}
+      {detail && <DetailDialog item={detail} onClose={() => setDetail(null)} />}
     </div>
   );
 }

@@ -196,14 +196,7 @@ export default function TtsClient() {
               }}
             />
           )}
-          {tab === "batches" && (
-            <BatchesTab
-              onOpenItem={(id) => {
-                setLink({ item: id, intent: null });
-                setTab("by-individual");
-              }}
-            />
-          )}
+          {tab === "batches" && <BatchesTab />}
           {tab === "by-individual" && (
             <EverythingTab link={link} onLinkCleared={clearLink} />
           )}

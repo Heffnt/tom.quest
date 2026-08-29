@@ -11,8 +11,10 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import {
+  buildBatchSessionPrompt,
   buildTodoSessionPrompt,
   type BatchMemberContext,
+  type BatchSessionContext,
   type LiveRulingContext,
 } from "@/app/lib/tts-session-prompt";
 
@@ -69,6 +71,41 @@ export function reserveSessionTab(): ReservedTab {
       if (tab && !tab.closed) tab.close();
     },
   };
+}
+
+// The batch twin of useOpenTodoSession (schema v2). A batch is its own row, not
+// a dtsTodos row, so it cannot go through `open` above: createSession's todoId
+// names a todo, and claudeSessions has no batch subject yet. The session is
+// therefore opened WITHOUT a subject id — its whole subject is the graph, which
+// rides in the prompt. Everything else (reserve the tab in the click, fail into
+// state) is identical, so the two entry points cannot drift.
+export function useOpenBatchSession() {
+  const createSession = useMutation(api.claudeSessions.createSession);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const open = async (batch: BatchSessionContext) => {
+    if (busy) return;
+    const tab = reserveSessionTab();
+    setBusy(true);
+    setError(null);
+    try {
+      const id = await createSession({
+        title: batch.statement,
+        kind: "focus-item",
+        repo: "none",
+        initialPrompt: buildBatchSessionPrompt(batch),
+      });
+      tab.goto(id);
+    } catch (e) {
+      tab.close();
+      setError(e instanceof Error ? e.message : "the session did not open");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return { open, busy, error };
 }
 
 export function useOpenTodoSession() {

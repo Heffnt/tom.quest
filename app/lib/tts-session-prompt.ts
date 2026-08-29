@@ -70,6 +70,76 @@ export type LiveRulingContext = {
   sentence?: string;
 };
 
+// ── Batch sessions (schema v2) ───────────────────────────────────────────────
+// A BATCH IS NO LONGER A TODO: it is its own row holding a graph of task- and
+// goal-todos, so a batch session cannot be built by buildTodoSessionPrompt
+// (which describes one dtsTodos row). Same contract, same pens; the item it
+// opens on is the graph.
+export type BatchSessionContext = {
+  statement: string;
+  groundUp?: string;
+  path?: { name: string; index: number };
+  tasks: {
+    statement: string;
+    actor: "tom" | "agent";
+    /** Done, ready (every need done) or blocked — the card's own three sets. */
+    state: "done" | "ready" | "blocked";
+    waitingOn: string[];
+    evidence?: string;
+  }[];
+  goals: { statement: string; condition?: string; met: boolean }[];
+};
+
+export function buildBatchSessionPrompt(batch: BatchSessionContext): string {
+  const lines: (string | null)[] = [
+    CONTRACT,
+    "",
+    "This is a batch session. A BATCH holds how a set of todos gets completed: it is not itself a todo and is never worked directly. Its contents are TASKS (work someone does) and GOALS (a state of the world the batch is for, written as a condition that is either true yet or not). A todo is READY when every todo it NEEDS is done. Work the ready tasks with Tom, smallest concrete first step first.",
+    "",
+    `THE BATCH ("${batch.statement}"):`,
+    fact("ground-up explanation", batch.groundUp),
+    batch.path
+      ? `path: "${batch.path.name}", position ${batch.path.index}`
+      : null,
+  ];
+
+  const say = (t: BatchSessionContext["tasks"][number]) =>
+    `- [${t.actor}, ${t.state}] "${t.statement}"${
+      t.waitingOn.length > 0 ? ` — waiting on: ${t.waitingOn.join("; ")}` : ""
+    }${t.evidence ? ` (evidence: ${t.evidence})` : ""}`;
+
+  if (batch.tasks.length === 0) {
+    lines.push("", "The batch has no tasks yet — building the graph with Tom is the first step.");
+  } else {
+    lines.push("", `The tasks (${batch.tasks.length}):`);
+    for (const state of ["ready", "blocked", "done"] as const) {
+      for (const t of batch.tasks.filter((x) => x.state === state))
+        lines.push(say(t));
+    }
+  }
+
+  if (batch.goals.length > 0) {
+    lines.push("", `The goals (${batch.goals.length}):`);
+    for (const g of batch.goals) {
+      lines.push(
+        `- [${g.met ? "met" : "not yet met"}] "${g.statement}"${
+          g.condition ? ` — condition: ${g.condition}` : ""
+        }`,
+      );
+    }
+  }
+
+  lines.push(
+    "",
+    "Walk-through contract:",
+    '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
+    '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
+    "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any todo in it) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
+    "- These are pens for Tom's spoken word — use them only while Tom is present in the session. A ruling that lives only in chat is lost.",
+  );
+  return lines.filter((l): l is string => l !== null).join("\n");
+}
+
 export function buildTodoSessionPrompt(
   todo: Doc<"dtsTodos">,
   kind: "gate" | "focus-item",
