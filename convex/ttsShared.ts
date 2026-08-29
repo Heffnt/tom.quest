@@ -142,6 +142,56 @@ export function countdownText(dueAt: number, now: number): string {
   return `${-dayDiff} days overdue`;
 }
 
+// ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
+// THE ONE HOME for the graph rules — convex/ and app/ both import from here,
+// so the server's frontier and the page's frontier cannot drift. Structural
+// types (not Doc<"dtsTodos">) so this module stays importable from both sides
+// without dragging in the generated data model; Id<"dtsTodos"> is a string at
+// runtime and assignable to these.
+
+/** The bounded fan-in of one todo's `needs` (Convex unbounded-array rule). */
+export const MAX_NEEDS = 10;
+
+/** The slice of a todo the graph rules read. */
+export type GraphTodo = {
+  _id: string;
+  status: "active" | "waiting" | "archived" | "done";
+  needs?: readonly string[];
+};
+
+/**
+ * The ids that count as DONE for readiness. "archived" counts alongside "done":
+ * a need that was set aside is not going to happen, and leaving it blocking
+ * would strand the whole rest of the graph forever. Same rule memberProgress
+ * (app/tts/lib.ts) already reads a batch member's completion by.
+ */
+export function buildDoneSet(todos: readonly GraphTodo[]): Set<string> {
+  const done = new Set<string>();
+  for (const t of todos) {
+    if (t.status === "done" || t.status === "archived") done.add(t._id);
+  }
+  return done;
+}
+
+/**
+ * READY — Tom's word for the frontier: this todo is active and every id in its
+ * `needs` is done. `waiting` is excluded on purpose (a sleeping todo is not
+ * ready no matter what its needs say), as are done/archived rows. No needs at
+ * all = ready the moment it is active.
+ */
+export function isReady(todo: GraphTodo, doneSet: ReadonlySet<string>): boolean {
+  return (
+    todo.status === "active" &&
+    (todo.needs ?? []).every((id) => doneSet.has(id))
+  );
+}
+
+/** The ready list, in the order given. */
+export function frontier<T extends GraphTodo>(todos: readonly T[]): T[] {
+  const doneSet = buildDoneSet(todos);
+  return todos.filter((t) => isReady(t, doneSet));
+}
+
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
 // app/sessions and convex/claudeSessions import these directly. The worker

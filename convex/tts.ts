@@ -9,6 +9,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import {
+  MAX_NEEDS,
   TTS_PREP_NY_HOUR,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
@@ -79,6 +80,31 @@ const PLAN_STEP = v.object({
   doneAt: v.optional(v.number()),
   evidence: v.optional(v.string()),
 });
+// ── Schema v2 graph shapes (ratified 2026-08-29) ─────────────────────────────
+const ACTOR = v.union(v.literal("tom"), v.literal("agent"));
+// Sequencing between batches; `edge` describes the link to the PREVIOUS batch
+// in the path. "must" / "helps" are Tom's words and the whole vocabulary.
+const BATCH_PATH = v.object({
+  name: v.string(),
+  index: v.number(),
+  edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
+});
+// A `needs` reference inside a plan-graph payload: a STRING is an existing
+// dtsTodos id; a NUMBER is the index of a task EARLIER in the same payload, so
+// a model can lay down a small graph in one call. The two are unambiguous (a
+// Convex id is never a bare integer) and the backward-only index rule keeps
+// in-payload edges acyclic by construction.
+const NEED_REF = v.union(v.string(), v.number());
+const GRAPH_TASK = v.object({
+  id: v.optional(v.string()), // absent = create
+  statement: v.string(),
+  actor: ACTOR,
+  needs: v.optional(v.array(NEED_REF)),
+  condition: v.optional(v.string()),
+  groundUpExplanation: v.optional(v.string()),
+  evidence: v.optional(v.string()),
+  status: v.optional(v.union(v.literal("active"), v.literal("done"))),
+});
 
 type Member = { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string };
 
@@ -92,9 +118,11 @@ export function memberKey(m: Member): string {
 
 // Array caps (Convex guideline: array fields on a document must be bounded —
 // an unbounded array grows a single row without limit). A batch groups 1..20
-// subjects; a plan holds at most 40 steps.
+// subjects; a plan holds at most 40 steps; one plan-graph payload carries at
+// most as many tasks as a plan had steps (the graph succeeds the plan).
 const MAX_BATCH_MEMBERS = 20;
 const MAX_PLAN_STEPS = 40;
+const MAX_GRAPH_TASKS = MAX_PLAN_STEPS;
 
 type Importance = {
   level: "low" | "medium" | "high";
@@ -1809,6 +1837,474 @@ export const internalStoreBatches = internalMutation({
       skipped: skipped.length > 0 ? skipped : undefined,
     });
     return { created, updated, unchanged, archived, skipped };
+  },
+});
+
+// ── The plan graph (schema v2, ratified 2026-08-29) ──────────────────────────
+// A BATCH IS NO LONGER A TODO: it is a `batches` row holding HOW a set of
+// todos gets completed, and its contents are dtsTodos rows pointing back at it
+// (batchId) as kind "task" (work) or kind "goal" (a checkable state of the
+// world). Dependencies between them are `needs`; the todos whose needs are all
+// done are "ready" (the frontier — ttsShared owns that rule).
+
+/**
+ * The nodes that cannot be ordered: everything still standing after repeatedly
+ * removing nodes whose needs are all resolved (Kahn's algorithm, run to a
+ * fixed point). That set is exactly the cycles PLUS everything downstream of
+ * one — which is what makes dropping all of them a safe repair: no surviving
+ * task is left needing a dropped one.
+ */
+function cycleBoundNodes(edges: Map<string, string[]>): Set<string> {
+  const remaining = new Set(edges.keys());
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const node of [...remaining]) {
+      if ((edges.get(node) ?? []).every((dep) => !remaining.has(dep))) {
+        remaining.delete(node);
+        progressed = true;
+      }
+    }
+  }
+  return remaining;
+}
+
+// The planner's pen (the internalStoreBatches pattern, one batch per call):
+// upserts ONE batch's graph — the batch row, its tasks, and the goals bound to
+// it. Drop-don't-reject: a task that fails validation is SKIPPED with a named
+// reason and the rest of the graph still lands; only a batch that is unknown
+// or FROZEN (Tom-touched, or terminal) costs the whole call.
+export const internalStorePlanGraph = internalMutation({
+  args: {
+    batchId: v.optional(v.string()), // absent = create the batch
+    statement: v.string(),
+    groundUpExplanation: v.optional(v.string()),
+    path: v.optional(BATCH_PATH),
+    tasks: v.array(GRAPH_TASK),
+    goalIds: v.optional(v.array(v.string())), // existing todos to bind as goals
+    archive: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const statement = args.statement.trim();
+    const result = {
+      batchId: null as Id<"batches"> | null,
+      created: 0,
+      updated: 0,
+      unchanged: 0,
+      goalsBound: 0,
+      archived: 0,
+      skipped: [] as { ref: string; why: string }[],
+    };
+
+    // ── The batch row ────────────────────────────────────────────────────────
+    let batch: Doc<"batches"> | null = null;
+    if (args.batchId !== undefined) {
+      const normalized = ctx.db.normalizeId("batches", args.batchId);
+      batch = normalized ? await ctx.db.get(normalized) : null;
+      if (!batch) {
+        result.skipped.push({
+          ref: statement,
+          why: `unknown batch id: ${args.batchId}`,
+        });
+        return result;
+      }
+      result.batchId = batch._id;
+      // The freeze, verbatim from internalStoreBatches: a Tom-touched batch is
+      // never rewritten by an agent, and a terminal one is not rewritten at all.
+      const frozen =
+        batch.tomTouchedAt !== undefined
+          ? "Tom-touched (frozen)"
+          : batch.status !== "active"
+            ? `status ${batch.status}`
+            : null;
+      if (frozen) {
+        result.skipped.push({ ref: statement, why: frozen });
+        return result;
+      }
+    }
+    const currentBatchId = batch?._id;
+
+    // The batch's existing contents — the other half of the graph a payload
+    // edge may point into (by_batch, not a full collect).
+    const existingRows = currentBatchId
+      ? await ctx.db
+          .query("dtsTodos")
+          .withIndex("by_batch", (q) => q.eq("batchId", currentBatchId))
+          .collect()
+      : [];
+
+    // ── Validate every task BEFORE anything is written ───────────────────────
+    // A todo is addressable by this graph while it is in THIS batch or in none
+    // (claiming another batch's todo is the cross-batch edge Tom ruled out).
+    const addressable = (todo: Doc<"dtsTodos">) =>
+      todo.batchId === undefined ||
+      (currentBatchId !== undefined && todo.batchId === currentBatchId);
+
+    type Accepted = {
+      key: string; // "#<index>" for a create, the todo id for a rewrite
+      existing: Doc<"dtsTodos"> | null;
+      task: (typeof args.tasks)[number];
+      deps: string[]; // node keys, resolved to ids at write time
+    };
+    const accepted: Accepted[] = [];
+    const acceptedIndices = new Set<number>();
+    const claimedIds = new Set<string>();
+
+    for (let i = 0; i < args.tasks.length; i++) {
+      const task = args.tasks[i];
+      const ref = task.statement.trim() || `task ${i}`;
+      const skip = (why: string) => result.skipped.push({ ref, why });
+      if (i >= MAX_GRAPH_TASKS) {
+        skip(`a graph holds at most ${MAX_GRAPH_TASKS} tasks`);
+        continue;
+      }
+      if (task.statement.trim() === "") {
+        skip("a task needs a statement");
+        continue;
+      }
+      let existing: Doc<"dtsTodos"> | null = null;
+      if (task.id !== undefined) {
+        const normalized = ctx.db.normalizeId("dtsTodos", task.id);
+        existing = normalized ? await ctx.db.get(normalized) : null;
+        if (!existing) {
+          skip(`unknown todo id: ${task.id}`);
+          continue;
+        }
+        if (!addressable(existing)) {
+          skip(`${task.id} belongs to another batch`);
+          continue;
+        }
+        if (existing.kind === "goal") {
+          skip(`${task.id} is a goal, not a task`);
+          continue;
+        }
+        if (claimedIds.has(existing._id)) {
+          skip(`duplicate task id: ${task.id}`);
+          continue;
+        }
+      }
+      const refs = task.needs ?? [];
+      if (refs.length > MAX_NEEDS) {
+        skip(`a todo needs at most ${MAX_NEEDS} others — got ${refs.length}`);
+        continue;
+      }
+      // Resolve each need to a node key. A number addresses an EARLIER task in
+      // this payload (backward-only, so in-payload edges cannot cycle); a
+      // string addresses an existing todo, which must be addressable too.
+      const deps: string[] = [];
+      let bad: string | null = null;
+      for (const need of refs) {
+        if (typeof need === "number") {
+          if (!Number.isInteger(need) || need < 0 || need >= i) {
+            bad = `needs ${need}: an index must name an EARLIER task in this payload`;
+            break;
+          }
+          // A skipped task takes its dependents with it — landing a task whose
+          // need was dropped would silently write a graph that is missing an
+          // edge the planner asked for.
+          if (!acceptedIndices.has(need)) {
+            bad = `needs task ${need}, which was skipped`;
+            break;
+          }
+          deps.push(`#${need}`);
+        } else {
+          const normalized = ctx.db.normalizeId("dtsTodos", need);
+          const target = normalized ? await ctx.db.get(normalized) : null;
+          if (!target) {
+            bad = `needs an unknown todo id: ${need}`;
+            break;
+          }
+          if (!addressable(target)) {
+            bad = `needs ${need}, which belongs to another batch`;
+            break;
+          }
+          deps.push(target._id);
+        }
+      }
+      if (bad) {
+        skip(bad);
+        continue;
+      }
+      if (existing) claimedIds.add(existing._id);
+      acceptedIndices.add(i);
+      accepted.push({
+        key: existing ? existing._id : `#${i}`,
+        existing,
+        task,
+        deps: [...new Set(deps)],
+      });
+    }
+
+    // Acyclicity across the WHOLE batch: the payload's projected edges plus
+    // the stored edges of every row the payload does not rewrite. Anything
+    // still unorderable is dropped (cycle-bound or downstream of one); the
+    // stored rows were validated on their own write, so a cycle always
+    // involves this payload.
+    const edges = new Map<string, string[]>();
+    for (const row of existingRows) {
+      if (claimedIds.has(row._id)) continue;
+      edges.set(
+        row._id,
+        (row.needs ?? []).map((id) => id as string),
+      );
+    }
+    for (const a of accepted) edges.set(a.key, a.deps);
+    const cyclic = cycleBoundNodes(edges);
+    const landing = accepted.filter((a) => {
+      if (!cyclic.has(a.key)) return true;
+      result.skipped.push({
+        ref: a.task.statement.trim(),
+        why: "needs form a cycle",
+      });
+      return false;
+    });
+
+    // ── Write: the batch row, then its tasks in payload order ────────────────
+    if (batch) {
+      // An ABSENT field PRESERVES the stored value (internalStoreBriefs
+      // semantics: an LLM omission must not delete state), and an unchanged
+      // re-post writes nothing — a repeated run must not bump updatedAt and
+      // re-push every open client.
+      const projected = {
+        statement,
+        groundUpExplanation:
+          args.groundUpExplanation ?? batch.groundUpExplanation,
+        path: args.path ?? batch.path,
+      };
+      const stored = {
+        statement: batch.statement,
+        groundUpExplanation: batch.groundUpExplanation,
+        path: batch.path,
+      };
+      if (JSON.stringify(projected) !== JSON.stringify(stored)) {
+        await ctx.db.patch(batch._id, { ...projected, updatedAt: now });
+      }
+    } else {
+      result.batchId = await ctx.db.insert("batches", {
+        statement,
+        groundUpExplanation: args.groundUpExplanation,
+        path: args.path,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent(ctx, "graph-batch-formed", undefined, {
+        batchId: result.batchId,
+        statement,
+      });
+    }
+    const batchId = result.batchId!;
+
+    // Payload order + backward-only index refs mean every dep already has its
+    // id by the time it is read.
+    const idByKey = new Map<string, Id<"dtsTodos">>();
+    for (const a of landing) {
+      const needs = a.deps.map(
+        (dep) => idByKey.get(dep) ?? (dep as Id<"dtsTodos">),
+      );
+      const done = (a.task.status ?? a.existing?.status) === "done";
+      const fields = {
+        statement: a.task.statement.trim(),
+        kind: "task" as const,
+        actor: a.task.actor,
+        batchId,
+        needs: needs.length > 0 ? needs : undefined,
+        condition: a.task.condition,
+        groundUpExplanation: a.task.groundUpExplanation,
+        evidence: a.task.evidence,
+        status: a.task.status ?? a.existing?.status ?? ("active" as const),
+        doneAt: done ? (a.existing?.doneAt ?? now) : undefined,
+      };
+      if (a.existing) {
+        const stored = {
+          statement: a.existing.statement,
+          kind: a.existing.kind,
+          actor: a.existing.actor,
+          batchId: a.existing.batchId,
+          needs: a.existing.needs,
+          condition: a.existing.condition,
+          groundUpExplanation: a.existing.groundUpExplanation,
+          evidence: a.existing.evidence,
+          status: a.existing.status,
+          doneAt: a.existing.doneAt,
+        };
+        if (JSON.stringify(fields) === JSON.stringify(stored)) {
+          result.unchanged++;
+        } else {
+          await ctx.db.patch(a.existing._id, { ...fields, updatedAt: now });
+          result.updated++;
+        }
+        idByKey.set(a.key, a.existing._id);
+      } else {
+        const id = await ctx.db.insert("dtsTodos", {
+          ...fields,
+          // A task is work inside a batch, not a gate: the BATCH is what Tom
+          // rules on, so a fresh task is "unprepared" rather than
+          // "ready-for-tom" (which would flood the needs-me feed).
+          readiness: "unprepared",
+          timingClass: "whenever",
+          source: "planner",
+          createdAt: now,
+          updatedAt: now,
+        });
+        idByKey.set(a.key, id);
+        result.created++;
+      }
+    }
+
+    // ── Goals: existing todos bound to this batch ────────────────────────────
+    // No updatedAt bump — binding is a structural annotation, and bumping it
+    // would resurface already-ruled gates (the needs-me ruledAt<updatedAt
+    // predicate), exactly as importance-only writes must not.
+    for (const raw of args.goalIds ?? []) {
+      const normalized = ctx.db.normalizeId("dtsTodos", raw);
+      const todo = normalized ? await ctx.db.get(normalized) : null;
+      if (!todo) {
+        result.skipped.push({ ref: raw, why: `unknown todo id: ${raw}` });
+        continue;
+      }
+      if (claimedIds.has(todo._id)) {
+        result.skipped.push({
+          ref: raw,
+          why: "already addressed as a task in this graph",
+        });
+        continue;
+      }
+      if (!addressable(todo)) {
+        result.skipped.push({ ref: raw, why: `${raw} belongs to another batch` });
+        continue;
+      }
+      if (todo.batchId === batchId && todo.kind === "goal") continue; // already bound
+      await ctx.db.patch(todo._id, { batchId, kind: "goal" });
+      result.goalsBound++;
+    }
+
+    if (args.archive) {
+      await ctx.db.patch(batchId, { status: "archived", updatedAt: now });
+      result.archived = 1;
+    }
+
+    await logEvent(ctx, "graph-stored", undefined, {
+      batchId,
+      created: result.created,
+      updated: result.updated,
+      unchanged: result.unchanged,
+      goalsBound: result.goalsBound,
+      archived: result.archived,
+      skipped: result.skipped.length > 0 ? result.skipped : undefined,
+    });
+    return result;
+  },
+});
+
+// ── The v1 → v2 migration (built, tested, NOT wired to any cron) ─────────────
+// Turns every ACTIVE v1 batch (a dtsTodos row carrying `members`) into the new
+// world: a batches row, its plan steps as task todos chained by `needs`, its
+// members bound as goals. NOTHING IS EVER DELETED — the old row is archived
+// with a pointer to its successor, which is also the idempotence key.
+const GRAPH_SUPERSEDED = "superseded by graph batch ";
+
+export const internalMigrateToGraph = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const all = await ctx.db.query("dtsTodos").collect();
+    const oldBatches = all.filter(
+      (t) =>
+        t.members !== undefined &&
+        t.status === "active" &&
+        !(t.unarchiveCondition ?? "").startsWith(GRAPH_SUPERSEDED),
+    );
+    const counts = {
+      batches: 0,
+      tasks: 0,
+      goals: 0,
+      codeGoals: 0,
+      missingMembers: 0,
+    };
+    for (const row of oldBatches) {
+      const batchId = await ctx.db.insert("batches", {
+        statement: row.statement,
+        // The v1 grouping brief IS the ground-up explanation — same text, same
+        // job (why these belong together), now under its ratified name.
+        groundUpExplanation: row.brief,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+      counts.batches++;
+
+      // Plan steps become tasks in a LINEAR CHAIN (each needs the one before
+      // it): the v1 plan was an ordered list, so the chain is the only reading
+      // that is certainly true. The planner parallelizes it later by dropping
+      // edges — inventing that parallelism here would be a guess.
+      let previous: Id<"dtsTodos"> | undefined;
+      for (const step of row.plan ?? []) {
+        const done = step.status === "done";
+        const id = await ctx.db.insert("dtsTodos", {
+          statement: step.text,
+          kind: "task",
+          actor: step.actor,
+          status: done ? "done" : "active",
+          doneAt: done ? (step.doneAt ?? now) : undefined,
+          evidence: step.evidence,
+          batchId,
+          needs: previous ? [previous] : undefined,
+          readiness: "unprepared",
+          timingClass: "whenever",
+          source: "migration",
+          createdAt: now,
+          updatedAt: now,
+        });
+        previous = id;
+        counts.tasks++;
+      }
+
+      for (const member of row.members ?? []) {
+        if (member.todoId !== undefined) {
+          const todo = await ctx.db.get(member.todoId);
+          if (!todo) {
+            counts.missingMembers++;
+            continue;
+          }
+          // The accumulated todos ARE the batch's goals (Tom): the statement
+          // is untouched, and updatedAt is NOT bumped — a migration must not
+          // resurface gates Tom already ruled on.
+          await ctx.db.patch(member.todoId, { batchId, kind: "goal" });
+          counts.goals++;
+        } else {
+          // A code member becomes a goal ABOUT the upstream todo: the repo
+          // stays the system of record, so the goal is "it is closed there",
+          // checkable by (codeRepo, codeExternalId) — the same addressing the
+          // member used.
+          const sentence = `${member.repo} ${member.externalId} closed upstream`;
+          await ctx.db.insert("dtsTodos", {
+            statement: sentence,
+            kind: "goal",
+            condition: sentence,
+            codeRepo: member.repo,
+            codeExternalId: member.externalId,
+            batchId,
+            readiness: "unprepared",
+            status: "active",
+            timingClass: "whenever",
+            source: "migration",
+            createdAt: now,
+            updatedAt: now,
+          });
+          counts.codeGoals++;
+        }
+      }
+
+      await applyStatusChange(ctx, row, {
+        status: "archived",
+        unarchiveCondition: `${GRAPH_SUPERSEDED}${batchId}`,
+        note: "schema v2 migration",
+      });
+    }
+    await logEvent(ctx, "graph-migrated", undefined, counts);
+    return counts;
   },
 });
 

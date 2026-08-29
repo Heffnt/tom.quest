@@ -345,6 +345,45 @@ export default defineSchema({
   // Convex prod is additive-only; renaming a populated table is a data
   // migration for zero behavioral value. Everything human-facing says TTS;
   // only these table names keep the old prefix.
+
+  // ── Batches, schema v2 (ratified 2026-08-29) ─────────────────────────────
+  // A BATCH IS NO LONGER A TODO. In v1 a batch was a dtsTodos row carrying
+  // `members`; here it is its own row and means one thing: the infrastructure
+  // holding HOW a set of todos gets completed. Its contents are dtsTodos rows
+  // pointing back at it (batchId) in two kinds — `task` (work to do) and
+  // `goal` (a checkable state of the world the batch is for).
+  //
+  // Vocabulary is Tom's and closed (UI = code): "needs" for dependencies
+  // between todos, "ready" for the todos whose needs are all done (the
+  // frontier — convex/ttsShared.ts owns the ONE implementation), "must"/"helps"
+  // for the edges between batches along a path, kind "task"/"goal".
+  batches: defineTable({
+    statement: v.string(), // display text
+    groundUpExplanation: v.optional(v.string()), // the "more" layer
+    // Sequencing BETWEEN batches: a named path this batch sits on, at
+    // `index`. `edge` describes the link to the PREVIOUS batch in the path —
+    // "must" (that one has to land first) or "helps" (it only makes this
+    // easier). The first batch of a path has no edge.
+    path: v.optional(
+      v.object({
+        name: v.string(),
+        index: v.number(),
+        edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
+      }),
+    ),
+    status: v.union(
+      v.literal("active"),
+      v.literal("done"),
+      v.literal("archived"),
+    ),
+    // Stamped by the Tom doors (a ruling on the batch, the pens). Same freeze
+    // semantics as dtsTodos.tomTouchedAt: a batch with this set is FROZEN —
+    // the planner (tts.internalStorePlanGraph) may never rewrite it.
+    tomTouchedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_status", ["status", "updatedAt"]),
+
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
@@ -384,7 +423,13 @@ export default defineSchema({
         }),
       ),
     ),
-    // condition-bound: the trigger condition + conservative latest-safe estimate.
+    // Two readings, one field. (a) condition-bound timing: the trigger
+    // condition, alongside the conservative latest-safe estimate below.
+    // (b) schema v2: THE GOAL CONDITION — on a `kind: "goal"` row this is the
+    // checkable sentence about the world that says the goal is met ("the
+    // lease is signed", "cmt-014 is closed upstream"). One field, because the
+    // two readings are the same sentence: a statement about the world that is
+    // either true yet or not.
     condition: v.optional(v.string()),
     latestSafeAt: v.optional(v.number()),
     // waiting: wake condition (prose) and/or a concrete wake time the daily
@@ -396,8 +441,9 @@ export default defineSchema({
     // Category tag: lets one scheduled dtsBlocks row cover a set of todos
     // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
     category: v.optional(v.string()),
-    // ── Batches (ratified 2026-08-28) ────────────────────────────────────────
-    // A row with `members` IS a batch — that one field is the whole
+    // ── Batches v1 (ratified 2026-08-28; SUPERSEDED by the batches table) ────
+    // The v1 world, kept live until cutover (nothing is destructive): a row
+    // with `members` IS a batch — that one field is the whole
     // discrimination. Because a batch is a real dtsTodos row, every action
     // (rulings, blocks, sessions, done/archive) works on it with no new code.
     // Each member addresses exactly one subject in the ttsRulings shape:
@@ -453,13 +499,44 @@ export default defineSchema({
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
+    // ── Schema v2 graph fields (ratified 2026-08-29) ─────────────────────────
+    // ALL OPTIONAL, ALL ADDITIVE: prod is one deployment and nothing is ever
+    // destructive, so every v1 row stays legal exactly as written. A row with
+    // none of these is a legacy standalone todo and is treated as a task.
+    //
+    // What a row IS inside a batch. Absent = legacy standalone todo, read as
+    // a task. "task" = work someone does; "goal" = a state of the world the
+    // batch is for, checkable via `condition` above.
+    kind: v.optional(v.union(v.literal("task"), v.literal("goal"))),
+    // The batch this row belongs to (batches table). Absent = batch-less.
+    batchId: v.optional(v.id("batches")),
+    // Dependency edges: this todo is READY only once every id here is done
+    // (done or archived both count — ttsShared.buildDoneSet). Bounded at
+    // MAX_NEEDS (ttsShared); every id must name a todo in the SAME batch (or a
+    // batch-less one), and the graph within a batch must stay acyclic — both
+    // enforced on write (tts.internalStorePlanGraph).
+    needs: v.optional(v.array(v.id("dtsTodos"))),
+    // tasks: who does it. Same meaning as the plan-step actor it succeeds.
+    actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
+    // Completion evidence — the artifact that shows the work happened (branch,
+    // PR, brief). The plan-step field of the same name, per row.
+    evidence: v.optional(v.string()),
+    // The "more" layer, same as batches.groundUpExplanation.
+    groundUpExplanation: v.optional(v.string()),
+    // A goal may bind a CODE subject: "that upstream code todo is closed".
+    // Addressed exactly as a ruling/batch-member code subject is — by
+    // (repo, externalId), never by mirror-row _id (mirror rows are deleted on
+    // upstream close). Set together or not at all.
+    codeRepo: v.optional(v.string()),
+    codeExternalId: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
     doneAt: v.optional(v.number()),
     archivedAt: v.optional(v.number()),
   })
     .index("by_status", ["status", "updatedAt"])
-    .index("by_readiness", ["readiness"]),
+    .index("by_readiness", ["readiness"])
+    .index("by_batch", ["batchId"]),
 
   // Committed time (ratified 2026-08-28): one row = one placed span of time on
   // Tom's calendar, targeting EITHER a single todo (a per-todo commitment —
@@ -522,10 +599,18 @@ export default defineSchema({
   // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
   // reschedule, not a ruling.)
   dtsRulings: defineTable({
-    subjectType: v.union(v.literal("life"), v.literal("code")),
+    subjectType: v.union(
+      v.literal("life"),
+      v.literal("code"),
+      v.literal("batch"),
+    ),
     todoId: v.optional(v.id("dtsTodos")), // life subjects
     repo: v.optional(v.string()), // code subjects…
     externalId: v.optional(v.string()), // …(repo, externalId)
+    // batch subjects (schema v2): a batch is its own row now, so Tom rules on
+    // the batch itself — exactly one of todoId / repo+externalId / batchId is
+    // set (enforced in ttsRulings.ts).
+    batchId: v.optional(v.id("batches")),
     verdict: v.union(
       v.literal("approve"),
       v.literal("revise"),

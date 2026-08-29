@@ -31,6 +31,13 @@ import { applyStatusChange, logEvent } from "./tts";
 // the worker's apply job (repo is the system of record). appliedAt/applyResult
 // record the application either way; a newer ruling on the same subject
 // supersedes an older unapplied one (append-only, history kept).
+//
+// THREE SUBJECT TYPES since schema v2 (2026-08-29): life (a dtsTodos row),
+// code (repo + externalId), and BATCH (a batches row — a batch is its own row
+// now, so Tom rules on the batch itself). A batch verdict lands like a life
+// verdict: approve ratifies the graph, archive archives the batch, revise
+// hands it back to the planner (and, alone among the four, does NOT stamp
+// tomTouchedAt — the planner must stay allowed to re-form it).
 
 const VERDICT = v.union(
   v.literal("approve"),
@@ -42,17 +49,19 @@ const VERDICT = v.union(
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life and code keys disjoint). Client code
-// derives live rulings with the same rule via app/tts/lib.ts.
+// spaces; the type prefix keeps life, code, and batch keys disjoint). Client
+// code derives live rulings with the same rule via app/tts/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code";
+  subjectType: "life" | "code" | "batch";
   todoId?: string;
   repo?: string;
   externalId?: string;
-}) =>
-  row.subjectType === "life"
-    ? `life ${row.todoId}`
-    : `code ${row.repo} ${row.externalId}`;
+  batchId?: string;
+}) => {
+  if (row.subjectType === "life") return `life ${row.todoId}`;
+  if (row.subjectType === "batch") return `batch ${row.batchId}`;
+  return `code ${row.repo} ${row.externalId}`;
+};
 
 // ── Tom-facing ───────────────────────────────────────────────────────────────
 
@@ -76,6 +85,7 @@ async function insertRuling(
     todoId,
     repo,
     externalId,
+    batchId,
     verdict,
     sentence,
     unarchiveCondition,
@@ -83,6 +93,7 @@ async function insertRuling(
     todoId?: Id<"dtsTodos">;
     repo?: string;
     externalId?: string;
+    batchId?: Id<"batches">;
     verdict: RulingVerdict;
     sentence?: string;
     unarchiveCondition?: string;
@@ -90,9 +101,10 @@ async function insertRuling(
 ) {
   const isLife = todoId !== undefined;
     const isCode = repo !== undefined || externalId !== undefined;
-    if (isLife === isCode) {
+    const isBatch = batchId !== undefined;
+    if ([isLife, isCode, isBatch].filter(Boolean).length !== 1) {
       throw new Error(
-        "A ruling has exactly one subject: todoId (life) OR repo+externalId (code)",
+        "A ruling has exactly one subject: todoId (life) OR repo+externalId (code) OR batchId (batch)",
       );
     }
     if (isCode && (repo === undefined || externalId === undefined)) {
@@ -150,11 +162,35 @@ async function insertRuling(
       // session: applied when the session is created (claudeSessions.createSession marks).
     }
 
+    if (isBatch) {
+      const batch = await ctx.db.get(batchId);
+      if (!batch) throw new Error("TTS batch not found");
+      // Same freeze rule as a life subject: every verdict but revise is a Tom
+      // touch, which frozen-blocks the planner (tts.internalStorePlanGraph).
+      // revise is precisely the verdict that hands the graph BACK to it.
+      if (verdict !== "revise") {
+        await ctx.db.patch(batchId, { tomTouchedAt: now });
+      }
+      if (verdict === "archive") {
+        await ctx.db.patch(batchId, { status: "archived", updatedAt: now });
+        appliedAt = now;
+        applyResult = "batch archived";
+      }
+      if (verdict === "approve") {
+        // Nothing executes a batch on its own — approving is ratification of
+        // the graph, applied the moment it is recorded (the life-approve
+        // reasoning: leaving it pending would strand it forever).
+        appliedAt = now;
+        applyResult = "graph ratified";
+      }
+    }
+
     const id = await ctx.db.insert("dtsRulings", {
-      subjectType: isLife ? "life" : "code",
+      subjectType: isLife ? "life" : isBatch ? "batch" : "code",
       todoId,
       repo,
       externalId,
+      batchId,
       verdict,
       sentence: trimmed || undefined,
       ruledAt: now,
@@ -165,6 +201,7 @@ async function insertRuling(
       verdict,
       repo,
       externalId,
+      batchId,
       sentence: trimmed || undefined,
     });
     return id;
@@ -175,6 +212,7 @@ export const recordRuling = mutation({
     todoId: v.optional(v.id("dtsTodos")),
     repo: v.optional(v.string()),
     externalId: v.optional(v.string()),
+    batchId: v.optional(v.id("batches")),
     verdict: VERDICT,
     sentence: v.optional(v.string()),
     // archive on a life todo only: the condition under which it should be
@@ -197,18 +235,29 @@ export const internalRecordRuling = internalMutation({
     todoId: v.optional(v.string()),
     repo: v.optional(v.string()),
     externalId: v.optional(v.string()),
+    batchId: v.optional(v.string()),
     verdict: VERDICT,
     sentence: v.optional(v.string()),
     unarchiveCondition: v.optional(v.string()),
   },
-  handler: async (ctx, { todoId, ...rest }) => {
+  handler: async (ctx, { todoId, batchId, ...rest }) => {
     let normalized: Id<"dtsTodos"> | undefined;
     if (todoId !== undefined) {
       const id = ctx.db.normalizeId("dtsTodos", todoId);
       if (!id) throw new Error(`Unknown todo id: ${todoId}`);
       normalized = id;
     }
-    return await insertRuling(ctx, { todoId: normalized, ...rest });
+    let normalizedBatch: Id<"batches"> | undefined;
+    if (batchId !== undefined) {
+      const id = ctx.db.normalizeId("batches", batchId);
+      if (!id) throw new Error(`Unknown batch id: ${batchId}`);
+      normalizedBatch = id;
+    }
+    return await insertRuling(ctx, {
+      todoId: normalized,
+      batchId: normalizedBatch,
+      ...rest,
+    });
   },
 });
 

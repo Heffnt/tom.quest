@@ -4,6 +4,7 @@
 import type { Doc } from "@/convex/_generated/dataModel";
 
 export type Todo = Doc<"dtsTodos">;
+export type Batch = Doc<"batches">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
 export type Ruling = Doc<"dtsRulings">;
@@ -30,27 +31,45 @@ export const VERDICTS: RulingVerdict[] = [
 // the worker feed always agree on which ruling is live.
 
 export function rulingSubjectKey(r: {
-  subjectType: "life" | "code";
+  subjectType: "life" | "code" | "batch";
   todoId?: string;
   repo?: string;
   externalId?: string;
+  batchId?: string;
 }): string {
-  return r.subjectType === "life"
-    ? `life ${r.todoId}`
-    : `code ${r.repo} ${r.externalId}`;
+  if (r.subjectType === "life") return `life ${r.todoId}`;
+  if (r.subjectType === "batch") return `batch ${r.batchId}`;
+  return `code ${r.repo} ${r.externalId}`;
 }
 
 export function codeSubjectKey(repo: string, externalId: string): string {
   return `code ${repo} ${externalId}`;
 }
 
-// ── Batches ──────────────────────────────────────────────────────────────────
+/** A schema-v2 batch subject (a `batches` row is its own ruling subject). */
+export function batchSubjectKey(batchId: string): string {
+  return `batch ${batchId}`;
+}
+
+// ── Batches v1 ───────────────────────────────────────────────────────────────
 // A row with `members` IS a batch — that one field is the whole discrimination
-// (convex/schema.ts dtsTodos).
+// (convex/schema.ts dtsTodos). Superseded by the schema-v2 `batches` table
+// (its own row) and kept live until cutover.
 
 export function isBatch(t: Todo): boolean {
   return t.members !== undefined;
 }
+
+// ── The todo graph (schema v2) ───────────────────────────────────────────────
+// NOT redefined here: convex/ttsShared.ts is the ONE home for the graph rules,
+// so the server's frontier and the page's frontier cannot drift. This is only
+// the client's local name for them.
+export {
+  MAX_NEEDS,
+  buildDoneSet,
+  isReady,
+  frontier,
+} from "@/convex/ttsShared";
 
 // Client mirror of convex/tts.ts memberKey — one definition of the key format,
 // delegated to rulingSubjectKey/codeSubjectKey above, so member identity and
