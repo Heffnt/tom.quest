@@ -26,7 +26,8 @@
 // unified rulings feed at /dts/rulings, takes the LIFE rows with verdict
 // "revise", re-prepares each such todo with Tom's sentence embedded in the
 // prompt, and POSTs /dts/ruling-applied so the ruling is consumed and
-// the UI shows the outcome.
+// the UI shows the outcome. Batches (members-bearing life todos) are skipped
+// everywhere here — form-batches.mjs owns their briefs and their rulings.
 //
 // NO-STATE RULE: nothing local; Convex is read and written each run.
 
@@ -90,12 +91,20 @@ async function main() {
   // Pending revise rulings on LIFE todos, keyed by todoId. The feed already
   // filters to unapplied-and-not-superseded rows; code rows on the same feed
   // belong to apply-rulings.mjs / execute-approved.mjs.
+  //
+  // A members-bearing todo is a BATCH: its revise rulings belong to
+  // form-batches.mjs. This job's single-todo prompt would overwrite a grouping
+  // brief and consume the ruling the batcher needs. (The server now also
+  // refuses batch brief writes — this filter keeps the job from burning a
+  // Claude call and stealing the ruling before that refusal.)
+  const todoById = new Map((state.todos ?? []).map((t) => [t._id, t]));
   const { pending } = await convexFetch(env, "/dts/rulings");
   const reviseByTodo = new Map();
   for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType === "life" && r.verdict === "revise" && r.todoId) {
-      reviseByTodo.set(r.todoId, r);
-    }
+    if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
+    const subject = todoById.get(r.todoId);
+    if (subject && subject.members !== undefined) continue; // batch — not ours
+    reviseByTodo.set(r.todoId, r);
   }
 
   // Unprepared active todos — plus revise-ruled todos REGARDLESS of status
@@ -105,12 +114,16 @@ async function main() {
   // todo is safe — an active-only filter would strand the ruling pending
   // forever if Tom changed the status after ruling). --force also re-prepares
   // "preparing" items (useful after improving this prompt).
+  //
+  // members === undefined on BOTH branches: a members-bearing todo is a batch,
+  // and batches are prepared (and re-formed on revise) by form-batches.mjs.
   const targets = (state.todos ?? []).filter(
     (t) =>
-      reviseByTodo.has(t._id) ||
-      (t.status === "active" &&
-        (t.readiness === "unprepared" ||
-          (force && t.readiness === "preparing"))),
+      t.members === undefined &&
+      (reviseByTodo.has(t._id) ||
+        (t.status === "active" &&
+          (t.readiness === "unprepared" ||
+            (force && t.readiness === "preparing")))),
   );
   if (targets.length === 0) return; // quiet when idle
 

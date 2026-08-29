@@ -121,8 +121,22 @@ function composeFallbackDigest(
 
   // Tom-gate items surface on the batches tab (the /dts default tab), where
   // they sit as batches awaiting a ruling or as unbatched singletons.
+  // A todo claimed as a member of a non-terminal batch does not count on its
+  // own — the batch row is the unit awaiting the ruling (mirrors selectBatches
+  // client-side); the batch row itself still counts.
+  const claimed = new Set<string>();
+  for (const t of todos) {
+    if (t.members === undefined) continue;
+    if (t.status !== "active" && t.status !== "waiting") continue;
+    for (const m of t.members) {
+      if (m.todoId !== undefined) claimed.add(m.todoId);
+    }
+  }
   const atGate = todos.filter(
-    (t) => t.status === "active" && t.readiness === "ready-for-tom",
+    (t) =>
+      t.status === "active" &&
+      t.readiness === "ready-for-tom" &&
+      !claimed.has(t._id),
   );
   if (atGate.length > 0) {
     lines.push(

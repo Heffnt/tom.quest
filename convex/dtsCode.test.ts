@@ -98,6 +98,48 @@ describe("DTS code-todo briefs", () => {
     expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
   });
 
+  // witness: make dts.agentImportancePatch return undefined for an existing
+  // AGENT value too — the shared guard blocks only Tom's, so a re-brief must
+  // still be able to revise the agent's own estimate.
+  it("a re-brief revises the agent's OWN importance (and clears when Tom clears)", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.dtsCode.internalStoreBriefs, {
+      briefs: [{ ...brief(), importanceLevel: "low" }],
+    });
+    await t.mutation(internal.dtsCode.internalStoreBriefs, {
+      briefs: [
+        {
+          ...brief({ sourceHash: "hash-b" }),
+          importanceLevel: "high",
+          importanceRationale: "now blocks the campaign",
+        },
+      ],
+    });
+    let [row] = await tom.query(api.dtsCode.listCodeBriefs, {});
+    expect(row.importance).toMatchObject({
+      level: "high",
+      setBy: "agent",
+      rationale: "now blocks the campaign",
+    });
+    // Tom rules, then clears: the agent may write again.
+    await tom.mutation(api.dtsCode.setCodeImportance, {
+      repo: "ComplexMultiTrigger",
+      externalId: "cmt-001",
+      level: "low",
+    });
+    await tom.mutation(api.dtsCode.setCodeImportance, {
+      repo: "ComplexMultiTrigger",
+      externalId: "cmt-001",
+      level: null,
+    });
+    await t.mutation(internal.dtsCode.internalStoreBriefs, {
+      briefs: [{ ...brief({ sourceHash: "hash-c" }), importanceLevel: "medium" }],
+    });
+    [row] = await tom.query(api.dtsCode.listCodeBriefs, {});
+    expect(row.importance).toMatchObject({ level: "medium", setBy: "agent" });
+  });
+
   it("setCodeImportance writes setBy tom, clears on null, names a missing brief", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);

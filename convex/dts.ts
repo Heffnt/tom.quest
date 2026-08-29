@@ -82,6 +82,34 @@ export function memberKey(m: Member): string {
     : `code ${m.repo} ${m.externalId}`;
 }
 
+// Array caps (Convex guideline: array fields on a document must be bounded —
+// an unbounded array grows a single row without limit). A batch groups 1..20
+// subjects; a plan holds at most 40 steps.
+const MAX_BATCH_MEMBERS = 20;
+const MAX_PLAN_STEPS = 40;
+
+type Importance = {
+  level: "low" | "medium" | "high";
+  setBy: "tom" | "agent";
+  setAt: number;
+  rationale?: string;
+};
+
+// The ONE implementation of the agent-importance guard (used by
+// internalPrepareTodo, internalStoreBatches, and dtsCode.internalStoreBriefs):
+// an agent write never overwrites Tom's — returns undefined when the stored
+// value has setBy "tom" (the caller logs importance-skipped), else the new
+// importance object.
+export function agentImportancePatch(
+  existing: Importance | undefined,
+  level: "low" | "medium" | "high",
+  rationale: string | undefined,
+  now: number,
+): Importance | undefined {
+  if (existing?.setBy === "tom") return undefined;
+  return { level, setBy: "agent", setAt: now, rationale };
+}
+
 // Shared membership gate (updateTodo + internalStoreBatches): every member
 // addresses exactly one subject, no duplicates, no batch-in-batch, no batch
 // containing itself. Code members are NOT checked against the mirror — mirror
@@ -90,8 +118,23 @@ export function memberKey(m: Member): string {
 async function validateBatchMembers(
   ctx: QueryCtx | MutationCtx,
   members: Member[],
-  opts: { selfId?: Id<"dtsTodos"> } = {},
+  opts: {
+    selfId?: Id<"dtsTodos">;
+    // Callers that already hold a full collect (internalStoreBatches) pass it
+    // here so member lookups reuse it instead of per-member ctx.db.get.
+    todoById?: Map<Id<"dtsTodos">, Doc<"dtsTodos">>;
+  } = {},
 ) {
+  // Bounded arrays (Convex unbounded-array-field guideline): an empty batch
+  // is not a grouping, and a batch never exceeds MAX_BATCH_MEMBERS subjects.
+  if (members.length === 0) {
+    throw new Error("A batch needs at least one member");
+  }
+  if (members.length > MAX_BATCH_MEMBERS) {
+    throw new Error(
+      `A batch holds at most ${MAX_BATCH_MEMBERS} members — got ${members.length}`,
+    );
+  }
   const seen = new Set<string>();
   for (const m of members) {
     const isLife = m.todoId !== undefined;
@@ -113,7 +156,9 @@ async function validateBatchMembers(
       if (m.todoId === opts.selfId) {
         throw new Error("A batch cannot contain itself");
       }
-      const todo = await ctx.db.get(m.todoId);
+      const todo = opts.todoById
+        ? opts.todoById.get(m.todoId)
+        : await ctx.db.get(m.todoId);
       if (!todo) throw new Error(`Member todo not found: ${m.todoId}`);
       if (todo.members !== undefined) {
         throw new Error(
@@ -275,12 +320,24 @@ export const updateTodo = mutation({
         "A date is never cleared silently — resolve it via recordDateOutcome (renegotiated before the date, or missed)",
       );
     }
+    // Bounded arrays (Convex unbounded-array-field guideline): a plan never
+    // exceeds MAX_PLAN_STEPS steps.
+    if (
+      fields.plan !== undefined &&
+      fields.plan !== null &&
+      fields.plan.length > MAX_PLAN_STEPS
+    ) {
+      throw new Error(
+        `A plan holds at most ${MAX_PLAN_STEPS} steps — got ${fields.plan.length}`,
+      );
+    }
     // Batch membership: validated per member, then against every OTHER
     // non-terminal batch — a subject lives in at most one (full collect:
     // single-user table).
     if (fields.members !== undefined && fields.members !== null) {
       await validateBatchMembers(ctx, fields.members, { selfId: id });
       const keys = new Set(fields.members.map(memberKey));
+      const selfKey = memberKey({ todoId: id });
       const all = await ctx.db.query("dtsTodos").collect();
       for (const other of all) {
         if (other._id === id || other.members === undefined) continue;
@@ -289,6 +346,14 @@ export const updateTodo = mutation({
           if (keys.has(memberKey(m))) {
             throw new Error(
               `${memberKey(m)} is already in batch "${other.statement}"`,
+            );
+          }
+          // The other direction of validateBatchMembers' no-batch-in-batch
+          // rule: promoting a row to a batch while it is itself a member of a
+          // non-terminal batch would nest batches through the back door.
+          if (memberKey(m) === selfKey) {
+            throw new Error(
+              `"${todo.statement}" is a member of batch "${other.statement}" — no batch-in-batch`,
             );
           }
         }
@@ -449,8 +514,12 @@ export const internalTriage = internalMutation({
       const fresh = await ctx.db.get(normalized);
       if (fresh) await applyStatusChange(ctx, fresh, { status, ...rest });
     }
-    // Triage is Tom's pen: a Tom touch, so the row is frozen to the batcher.
-    await ctx.db.patch(normalized, { tomTouchedAt: Date.now() });
+    // Triage is Tom's pen: a Tom touch, so the row is frozen to the batcher —
+    // but only when the call actually did something. A no-op/retry pen call
+    // must not freeze a batch.
+    if (status !== undefined || dueAt !== undefined) {
+      await ctx.db.patch(normalized, { tomTouchedAt: Date.now() });
+    }
   },
 });
 
@@ -857,25 +926,52 @@ export const internalPrepareTodo = internalMutation({
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
     const todo = await ctx.db.get(normalized);
     if (!todo) throw new Error(`Unknown todo id: ${id}`);
+    // Bounded arrays (Convex unbounded-array-field guideline): a plan never
+    // exceeds MAX_PLAN_STEPS steps.
+    if (plan !== undefined && plan.length > MAX_PLAN_STEPS) {
+      throw new Error(
+        `A plan holds at most ${MAX_PLAN_STEPS} steps — got ${plan.length}`,
+      );
+    }
     const now = Date.now();
     const patch: Record<string, unknown> = { updatedAt: now };
-    if (brief !== undefined) patch.brief = brief;
-    if (entryAction !== undefined) patch.entryAction = entryAction;
-    if (workDescription !== undefined) patch.workDescription = workDescription;
-    if (readiness !== undefined) patch.readiness = readiness;
-    if (importanceLevel !== undefined) {
-      // Agent importance never overwrites Tom's (setBy-"tom" guard).
-      if (todo.importance?.setBy === "tom") {
-        await logEvent(ctx, "importance-skipped", normalized, {
-          level: importanceLevel,
+    if (todo.members !== undefined) {
+      // Batch gate: the batcher (internalStoreBatches) owns batch briefs —
+      // the single-todo preparer must never rewrite a grouping brief. ONLY the
+      // plan field may land here (session agents update plans through this
+      // pen); everything else is skipped with one named event.
+      const skippedFields = [
+        brief !== undefined && "brief",
+        entryAction !== undefined && "entryAction",
+        workDescription !== undefined && "workDescription",
+        readiness !== undefined && "readiness",
+        importanceLevel !== undefined && "importance",
+      ].filter(Boolean);
+      if (skippedFields.length > 0) {
+        await logEvent(ctx, "prepare-skipped-batch", normalized, {
+          fields: skippedFields,
         });
-      } else {
-        patch.importance = {
-          level: importanceLevel,
-          setBy: "agent",
-          setAt: now,
-          rationale: importanceRationale,
-        };
+      }
+    } else {
+      if (brief !== undefined) patch.brief = brief;
+      if (entryAction !== undefined) patch.entryAction = entryAction;
+      if (workDescription !== undefined) patch.workDescription = workDescription;
+      if (readiness !== undefined) patch.readiness = readiness;
+      if (importanceLevel !== undefined) {
+        // Agent importance never overwrites Tom's (setBy-"tom" guard).
+        const importance = agentImportancePatch(
+          todo.importance,
+          importanceLevel,
+          importanceRationale,
+          now,
+        );
+        if (importance === undefined) {
+          await logEvent(ctx, "importance-skipped", normalized, {
+            level: importanceLevel,
+          });
+        } else {
+          patch.importance = importance;
+        }
       }
     }
     if (plan !== undefined) {
@@ -888,11 +984,11 @@ export const internalPrepareTodo = internalMutation({
     }
     await ctx.db.patch(normalized, patch);
     await logEvent(ctx, "prepared", normalized, {
-      readiness,
+      readiness: patch.readiness,
       fields: [
-        brief && "brief",
-        entryAction && "entryAction",
-        workDescription && "workDescription",
+        patch.brief !== undefined && "brief",
+        patch.entryAction !== undefined && "entryAction",
+        patch.workDescription !== undefined && "workDescription",
         patch.importance !== undefined && "importance",
         patch.plan !== undefined && "plan",
       ].filter(Boolean),
@@ -925,6 +1021,7 @@ export const internalStoreBatches = internalMutation({
     const skipped: { ref: string; why: string }[] = [];
     let created = 0;
     let updated = 0;
+    let unchanged = 0;
     let archived = 0;
 
     // null = writable; otherwise the plain-language reason it is not.
@@ -958,23 +1055,29 @@ export const internalStoreBatches = internalMutation({
       archived++;
     }
 
-    // Occupied-member map: db state minus the batches this call rewrites —
-    // order-independence: the DESIRED set is what must be conflict-free.
-    // Only rows the batcher can actually rewrite are excluded (a frozen
-    // batch's members stay occupied even when its id is in the call), and
-    // each landed batch extends the map so in-call batches conflict pairwise.
-    const rewriting = new Set<string>();
-    for (const b of batches) {
-      if (b.id === undefined) continue;
-      const normalized = ctx.db.normalizeId("dtsTodos", b.id);
-      const todo = normalized && (await ctx.db.get(normalized));
-      if (todo && notWritable(todo) === null) rewriting.add(todo._id);
-    }
-    const occupied = new Map<string, string>(); // member key → batch statement
-    for (const todo of await ctx.db.query("dtsTodos").collect()) {
-      if (todo.members === undefined || rewriting.has(todo._id)) continue;
+    // Occupied-member map from ALL non-terminal members-bearing rows, each
+    // entry tagged with its owner batch id: a desired batch's member conflicts
+    // UNLESS the occupying owner is that batch itself (a rewrite may keep its
+    // own members). Consequence, on purpose: moving a member from existing
+    // batch X to a new batch takes two runs (run 1: X's rewrite drops it;
+    // run 2: the new batch claims it) — conservative, so a skipped rewrite can
+    // never leave a subject claimable twice. Each landed batch extends the map
+    // so in-call batches conflict pairwise. One collect feeds this map, the
+    // rewrite lookups, and validateBatchMembers (opts.todoById).
+    const all = await ctx.db.query("dtsTodos").collect();
+    const todoById = new Map<Id<"dtsTodos">, Doc<"dtsTodos">>(
+      all.map((t) => [t._id, t]),
+    );
+    const occupied = new Map<
+      string,
+      { id: Id<"dtsTodos">; statement: string }
+    >();
+    for (const todo of all) {
+      if (todo.members === undefined) continue;
       if (todo.status !== "active" && todo.status !== "waiting") continue;
-      for (const m of todo.members) occupied.set(memberKey(m), todo.statement);
+      for (const m of todo.members) {
+        occupied.set(memberKey(m), { id: todo._id, statement: todo.statement });
+      }
     }
 
     const now = Date.now();
@@ -985,9 +1088,19 @@ export const internalStoreBatches = internalMutation({
         skipped.push({ ref: b.statement, why: `unknown todo id: ${b.id}` });
         continue;
       }
+      // Bounded arrays (Convex unbounded-array-field guideline) — a per-batch
+      // skip like the other validation failures.
+      if (b.plan !== undefined && b.plan.length > MAX_PLAN_STEPS) {
+        skipped.push({
+          ref: b.statement,
+          why: `a plan holds at most ${MAX_PLAN_STEPS} steps — got ${b.plan.length}`,
+        });
+        continue;
+      }
       try {
         await validateBatchMembers(ctx, b.members, {
           selfId: normalized ?? undefined,
+          todoById,
         });
       } catch (e) {
         skipped.push({
@@ -996,16 +1109,19 @@ export const internalStoreBatches = internalMutation({
         });
         continue;
       }
-      const conflict = b.members.find((m) => occupied.has(memberKey(m)));
+      const conflict = b.members.find((m) => {
+        const owner = occupied.get(memberKey(m));
+        return owner !== undefined && owner.id !== normalized;
+      });
       if (conflict) {
         skipped.push({
           ref: b.statement,
-          why: `${memberKey(conflict)} is already in batch "${occupied.get(memberKey(conflict))}"`,
+          why: `${memberKey(conflict)} is already in batch "${occupied.get(memberKey(conflict))!.statement}"`,
         });
         continue;
       }
       if (normalized) {
-        const todo = await ctx.db.get(normalized);
+        const todo = todoById.get(normalized);
         if (!todo) {
           skipped.push({ ref: b.statement, why: `unknown todo id: ${b.id}` });
           continue;
@@ -1015,45 +1131,77 @@ export const internalStoreBatches = internalMutation({
           skipped.push({ ref: b.statement, why: frozen });
           continue;
         }
-        // Full rewrite: the batcher owns the whole grouping, so an omitted
-        // plan/importance clears — except Tom's importance, which is kept.
-        const patch: Record<string, unknown> = {
+        // Rewrite of what the batcher owns — but an ABSENT plan or importance
+        // PRESERVES the stored value (internalStoreBriefs semantics: an LLM
+        // omission must not delete state); only explicit values overwrite,
+        // and Tom's importance is never overwritten (agentImportancePatch).
+        let importance = todo.importance;
+        if (b.importanceLevel !== undefined) {
+          const next = agentImportancePatch(
+            todo.importance,
+            b.importanceLevel,
+            b.importanceRationale,
+            now,
+          );
+          if (next === undefined) {
+            await logEvent(ctx, "importance-skipped", normalized, {
+              level: b.importanceLevel,
+            });
+          } else if (
+            todo.importance?.setBy === "agent" &&
+            todo.importance.level === next.level &&
+            todo.importance.rationale === next.rationale
+          ) {
+            // Same agent value re-posted: keep the stored object (its setAt)
+            // so the unchanged check below can recognize a no-op run.
+          } else {
+            importance = next;
+          }
+        }
+        const projected = {
           statement: b.statement.trim(),
           brief: b.brief,
           members: b.members,
-          plan: b.plan,
-          updatedAt: now,
+          plan: b.plan ?? todo.plan,
+          importance,
         };
-        if (todo.importance?.setBy === "tom") {
-          await logEvent(ctx, "importance-skipped", normalized, {
-            level: b.importanceLevel,
-          });
+        const stored = {
+          statement: todo.statement,
+          brief: todo.brief,
+          members: todo.members,
+          plan: todo.plan,
+          importance: todo.importance,
+        };
+        // No-op rewrite: nothing changed, so skip the patch entirely — a
+        // 6-hourly re-post must not bump updatedAt and re-push every open
+        // client. Counted as "unchanged", neither updated nor skipped.
+        if (JSON.stringify(projected) === JSON.stringify(stored)) {
+          unchanged++;
         } else {
-          patch.importance = b.importanceLevel
-            ? {
-                level: b.importanceLevel,
-                setBy: "agent",
-                setAt: now,
-                rationale: b.importanceRationale,
-              }
-            : undefined;
+          await ctx.db.patch(normalized, { ...projected, updatedAt: now });
+          updated++;
         }
-        await ctx.db.patch(normalized, patch);
-        updated++;
+        for (const m of b.members) {
+          occupied.set(memberKey(m), {
+            id: normalized,
+            statement: projected.statement,
+          });
+        }
       } else {
         const id = await ctx.db.insert("dtsTodos", {
           statement: b.statement.trim(),
           brief: b.brief,
           members: b.members,
           plan: b.plan,
-          importance: b.importanceLevel
-            ? {
-                level: b.importanceLevel,
-                setBy: "agent",
-                setAt: now,
-                rationale: b.importanceRationale,
-              }
-            : undefined,
+          importance:
+            b.importanceLevel !== undefined
+              ? agentImportancePatch(
+                  undefined,
+                  b.importanceLevel,
+                  b.importanceRationale,
+                  now,
+                )
+              : undefined,
           readiness: "ready-for-tom",
           status: "active",
           timingClass: "whenever",
@@ -1063,17 +1211,20 @@ export const internalStoreBatches = internalMutation({
         });
         await logEvent(ctx, "batch-formed", id, { members: b.members.length });
         created++;
+        for (const m of b.members) {
+          occupied.set(memberKey(m), { id, statement: b.statement.trim() });
+        }
       }
-      for (const m of b.members) occupied.set(memberKey(m), b.statement);
     }
 
     await logEvent(ctx, "batches-stored", undefined, {
       created,
       updated,
+      unchanged,
       archived,
       skipped: skipped.length > 0 ? skipped : undefined,
     });
-    return { created, updated, archived, skipped };
+    return { created, updated, unchanged, archived, skipped };
   },
 });
 

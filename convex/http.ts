@@ -438,11 +438,91 @@ http.route({
 // desired batch set. It can only touch source-"batcher" rows that Tom has
 // never touched — the freeze/skip gates live in internalStoreBatches.
 
+// The sanitizers for POST /dts/batches: the body is model-written JSON, so
+// each batch is PROJECTED to exactly the known shape — unknown keys and
+// shape-invalid scalars are dropped, never rejected, because one stray LLM
+// key must not abort the whole POST. The mutation's arg validators stay the
+// final gate (anything still malformed lands in its per-batch skip report).
+const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
+const PLAN_ACTORS = ["tom", "agent"] as const;
+const PLAN_STATUSES = ["open", "done"] as const;
+
+function sanitizeString(x: unknown): string | undefined {
+  return typeof x === "string" ? x : undefined;
+}
+
+function sanitizeMember(m: unknown): Record<string, unknown> {
+  // A non-object or key-less member survives as {} — validateBatchMembers
+  // then names it in the skip report (better than dropping it silently).
+  if (typeof m !== "object" || m === null) return {};
+  const r = m as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof r.todoId === "string") out.todoId = r.todoId;
+  if (typeof r.repo === "string") out.repo = r.repo;
+  if (typeof r.externalId === "string") out.externalId = r.externalId;
+  return out;
+}
+
+// A plan step with a broken required field poisons the whole plan (undefined
+// = absent, which the mutation treats as "preserve stored plan") — dropping
+// single steps would silently reorder someone's plan.
+function sanitizePlan(plan: unknown): Record<string, unknown>[] | undefined {
+  if (!Array.isArray(plan)) return undefined;
+  const out: Record<string, unknown>[] = [];
+  for (const step of plan) {
+    if (typeof step !== "object" || step === null) return undefined;
+    const s = step as Record<string, unknown>;
+    if (
+      typeof s.text !== "string" ||
+      !PLAN_ACTORS.includes(s.actor as (typeof PLAN_ACTORS)[number]) ||
+      !PLAN_STATUSES.includes(s.status as (typeof PLAN_STATUSES)[number])
+    ) {
+      return undefined;
+    }
+    const clean: Record<string, unknown> = {
+      text: s.text,
+      actor: s.actor,
+      status: s.status,
+    };
+    if (typeof s.doneAt === "number") clean.doneAt = s.doneAt;
+    if (typeof s.evidence === "string") clean.evidence = s.evidence;
+    out.push(clean);
+  }
+  return out;
+}
+
+function sanitizeBatch(item: unknown): Record<string, unknown> | undefined {
+  if (typeof item !== "object" || item === null) return undefined;
+  const r = item as Record<string, unknown>;
+  // statement and brief are the mutation's required strings — without them
+  // the row cannot even be named in a skip report, so the batch is dropped.
+  if (typeof r.statement !== "string" || typeof r.brief !== "string") {
+    return undefined;
+  }
+  const out: Record<string, unknown> = {
+    statement: r.statement,
+    brief: r.brief,
+    members: Array.isArray(r.members) ? r.members.map(sanitizeMember) : [],
+  };
+  if (typeof r.id === "string") out.id = r.id;
+  const plan = sanitizePlan(r.plan);
+  if (plan !== undefined) out.plan = plan;
+  if (
+    IMPORTANCE_LEVELS.includes(
+      r.importanceLevel as (typeof IMPORTANCE_LEVELS)[number],
+    )
+  ) {
+    out.importanceLevel = r.importanceLevel;
+    const rationale = sanitizeString(r.importanceRationale);
+    if (rationale !== undefined) out.importanceRationale = rationale;
+  }
+  return out;
+}
+
 // POST /dts/batches — the batcher's desired batch set. Body: { batches:
 // [{ id?, statement, brief, members, plan?, importanceLevel?,
-// importanceRationale? }], archiveIds? }. Shape is validated loosely here —
-// the mutation's arg validators are the real gate — and the mutation's
-// per-batch skip report is the response.
+// importanceRationale? }], archiveIds? }. Sanitized (drop-don't-reject)
+// before the mutation; the mutation's per-batch skip report is the response.
 const dtsBatches = httpAction(async (ctx, request) => {
   const denied = dtsAuth(request);
   if (denied) return denied;
@@ -456,21 +536,22 @@ const dtsBatches = httpAction(async (ctx, request) => {
   if (!Array.isArray(b.batches)) {
     return jsonResponse(400, { error: "batches (array) required" });
   }
-  if (
-    b.archiveIds !== undefined &&
-    (!Array.isArray(b.archiveIds) ||
-      b.archiveIds.some((x) => typeof x !== "string"))
-  ) {
-    return jsonResponse(400, {
-      error: "archiveIds must be string[] when present",
-    });
-  }
+  const batches = b.batches
+    .map(sanitizeBatch)
+    .filter((x): x is Record<string, unknown> => x !== undefined);
+  const droppedBatches = b.batches.length - batches.length;
+  const archiveIds = Array.isArray(b.archiveIds)
+    ? b.archiveIds.filter((x): x is string => typeof x === "string")
+    : undefined;
   try {
     const result = await ctx.runMutation(internal.dts.internalStoreBatches, {
-      batches: b.batches as never,
-      archiveIds: b.archiveIds as string[] | undefined,
+      batches: batches as never,
+      archiveIds,
     });
-    return jsonResponse(200, result);
+    return jsonResponse(200, {
+      ...result,
+      droppedBatches: droppedBatches > 0 ? droppedBatches : undefined,
+    });
   } catch (e) {
     return jsonResponse(400, {
       error: e instanceof Error ? e.message : String(e),
@@ -486,15 +567,14 @@ http.route({ path: "/dts/batches", method: "POST", handler: dtsBatches });
 const dtsBatchContext = httpAction(async (ctx, request) => {
   const denied = dtsAuth(request);
   if (denied) return denied;
-  return jsonResponse(200, {
-    todos: await ctx.runQuery(internal.dts.internalListTodos, {}),
-    mirror: await ctx.runQuery(internal.dts.internalListMirror, {}),
-    briefs: await ctx.runQuery(internal.dtsCode.internalListBriefs, {}),
-    recentRulings: await ctx.runQuery(
-      internal.dtsRulings.internalRecentRulings,
-      { limit: 200 },
-    ),
-  });
+  // Four independent reads — issued in parallel, not awaited one by one.
+  const [todos, mirror, briefs, recentRulings] = await Promise.all([
+    ctx.runQuery(internal.dts.internalListTodos, {}),
+    ctx.runQuery(internal.dts.internalListMirror, {}),
+    ctx.runQuery(internal.dtsCode.internalListBriefs, {}),
+    ctx.runQuery(internal.dtsRulings.internalRecentRulings, { limit: 200 }),
+  ]);
+  return jsonResponse(200, { todos, mirror, briefs, recentRulings });
 });
 
 http.route({

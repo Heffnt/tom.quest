@@ -12,6 +12,8 @@ import { countdownText } from "@/convex/dtsShared";
 import { useAuth } from "@/app/lib/auth";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import VerdictButtons from "./verdict-buttons";
+import CodeTodoRow from "./code-todo-row";
+import { ImportanceButtons, StatusActions } from "./status-actions";
 import Info from "./info";
 import {
   ageText,
@@ -19,23 +21,17 @@ import {
   codeSubjectKey,
   errMessage,
   fmtDate,
-  IMPORTANCE_LEVELS,
+  liveRulingsByKey,
   memberProgress,
   planNeedsYou,
   rulingSubjectKey,
   selectBatches,
-  toDatetimeLocal,
-  type CodeBrief,
   type Member,
   type MirrorRow,
   type PlanStep,
   type Todo,
 } from "@/app/dts/lib";
 
-const inputCls =
-  "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
-const btnCls =
-  "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 const primaryBtnCls =
   "bg-accent text-bg rounded-md px-3 py-1 text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none";
 const chipCls =
@@ -139,11 +135,13 @@ function MemberLine({
       </div>
     );
   }
+  // No mirror row: the item may be closed upstream (rows are deleted on close)
+  // or the member id may never have matched one. Say only what is known.
   const row = mirrorByKey.get(codeSubjectKey(member.repo!, member.externalId!));
   return (
     <div className="flex items-baseline gap-2 text-xs">
       <span className="font-mono text-[11px] text-text-faint">
-        {row ? row.status : "closed upstream"}
+        {row ? row.status : "not in mirror"}
       </span>
       <span className="text-text-muted">
         {row?.statement ?? `${member.repo} ${member.externalId}`}
@@ -176,8 +174,10 @@ function BatchCard({
 }: {
   todo: Todo;
   awaitingRuling: boolean;
+  /** The tab's prebuilt lookups — member progress and the member lines. */
   todoById: Map<string, Todo>;
   mirrorByKey: Map<string, MirrorRow>;
+  /** The raw arrays, for the batch session prompt's member resolution. */
   todos: Todo[];
   mirror: MirrorRow[];
   expanded: boolean;
@@ -185,9 +185,6 @@ function BatchCard({
   onOpenItem: (id: string) => void;
 }) {
   const recordRuling = useMutation(api.dtsRulings.recordRuling);
-  const setStatus = useMutation(api.dts.setStatus);
-  const createBlock = useMutation(api.dts.createBlock);
-  const setImportance = useMutation(api.dts.setImportance);
   const setPlanStep = useMutation(api.dts.setPlanStep);
   const {
     open: openSession,
@@ -197,10 +194,6 @@ function BatchCard({
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [doneNoteDraft, setDoneNoteDraft] = useState("");
-  const [unarchiveDraft, setUnarchiveDraft] = useState("");
-  const [blockStartDraft, setBlockStartDraft] = useState("");
-  const [blockEndDraft, setBlockEndDraft] = useState("");
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -215,28 +208,15 @@ function BatchCard({
   };
 
   const members = todo.members ?? [];
-  const progress = memberProgress(members, todos, mirror);
+  const progress = memberProgress(members, todoById, mirrorByKey);
   const needsYou = planNeedsYou(todo.plan);
   const stepAt = (i: number, status: "open" | "done") =>
     void run(() => setPlanStep({ id: todo._id, index: i, status }));
 
-  const commitBlock = () => {
-    const start = blockStartDraft ? new Date(blockStartDraft).getTime() : NaN;
-    const end = blockEndDraft ? new Date(blockEndDraft).getTime() : NaN;
-    if (Number.isNaN(start) || Number.isNaN(end)) {
-      setError("pick start and end");
-      return;
-    }
-    if (end <= start) {
-      setError("end must be after start");
-      return;
-    }
-    void run(async () => {
-      await createBlock({ start, end, todoId: todo._id });
-      setBlockStartDraft("");
-      setBlockEndDraft("");
-    });
-  };
+  // The batch session prompt carries live member statements + statuses, which
+  // useOpenTodoSession resolves from the todos + mirror this card already
+  // holds — so every batch open, button or verdict, passes that context.
+  const openBatchSession = () => openSession(todo, { batch: { todos, mirror } });
 
   return (
     <div className="border border-border rounded-lg bg-surface/40">
@@ -269,7 +249,7 @@ function BatchCard({
           <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
             <div className="space-y-0.5">
               <button
-                onClick={() => void openSession(todo)}
+                onClick={() => void openBatchSession()}
                 disabled={busy || sessionBusy}
                 className={primaryBtnCls}
               >
@@ -288,99 +268,11 @@ function BatchCard({
 
           <VerdictButtons
             record={(args) => recordRuling({ todoId: todo._id, ...args })}
-            afterSession={() => openSession(todo)}
+            afterSession={openBatchSession}
           />
 
-          <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-            {todo.status !== "done" && (
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      void run(() =>
-                        setStatus({
-                          id: todo._id,
-                          status: "done",
-                          note: doneNoteDraft.trim() || undefined,
-                        }),
-                      )
-                    }
-                    disabled={busy}
-                    className={btnCls}
-                  >
-                    Done
-                  </button>
-                  <input
-                    value={doneNoteDraft}
-                    onChange={(e) => setDoneNoteDraft(e.target.value)}
-                    placeholder="note (optional)"
-                    className={`${inputCls} w-36`}
-                  />
-                </div>
-                <Info label='dts.setStatus({status:"done"})' />
-              </div>
-            )}
-            {todo.status !== "archived" && (
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      void run(() =>
-                        setStatus({
-                          id: todo._id,
-                          status: "archived",
-                          unarchiveCondition:
-                            unarchiveDraft.trim() || undefined,
-                        }),
-                      )
-                    }
-                    disabled={busy}
-                    className={btnCls}
-                  >
-                    Archive
-                  </button>
-                  <input
-                    value={unarchiveDraft}
-                    onChange={(e) => setUnarchiveDraft(e.target.value)}
-                    placeholder="propose back when (optional)"
-                    className={`${inputCls} w-44`}
-                  />
-                </div>
-                <Info label='dts.setStatus({status:"archived"})' />
-              </div>
-            )}
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <input
-                  type="datetime-local"
-                  value={blockStartDraft}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setBlockStartDraft(v);
-                    const ms = v ? new Date(v).getTime() : NaN;
-                    if (!Number.isNaN(ms)) {
-                      setBlockEndDraft(toDatetimeLocal(ms + 3_600_000));
-                    }
-                  }}
-                  className={inputCls}
-                />
-                <input
-                  type="datetime-local"
-                  value={blockEndDraft}
-                  onChange={(e) => setBlockEndDraft(e.target.value)}
-                  className={inputCls}
-                />
-                <button
-                  onClick={commitBlock}
-                  disabled={busy}
-                  className={btnCls}
-                >
-                  Commit time
-                </button>
-              </div>
-              <Info label="dts.createBlock({todoId})" />
-            </div>
-          </div>
+          {/* status strip — same component the generic todo row renders */}
+          <StatusActions todo={todo} />
 
           {/* brief */}
           {todo.brief && (
@@ -396,20 +288,17 @@ function BatchCard({
                 <span className="text-xs text-text">needs you</span>
                 <Info label='dts.setPlanStep({index, status:"done"})' />
               </div>
-              {(todo.plan ?? []).map((step, i) =>
-                step.actor === "tom" && step.status === "open" ? (
-                  <div key={i} className="flex items-baseline gap-2 text-xs">
-                    <button
-                      onClick={() => stepAt(i, "done")}
-                      disabled={busy}
-                      className="text-text-faint hover:text-text disabled:opacity-50"
-                    >
-                      ○
-                    </button>
-                    <span className="text-text-muted">{step.text}</span>
-                  </div>
-                ) : null,
-              )}
+              {/* the SAME line the full plan renders — evidence link and all;
+                  planNeedsYou keeps each step's plan index, which is what
+                  setPlanStep addresses */}
+              {needsYou.steps.map(({ step, index }) => (
+                <PlanStepLine
+                  key={index}
+                  step={step}
+                  busy={busy}
+                  onToggle={() => stepAt(index, "done")}
+                />
+              ))}
             </div>
           )}
 
@@ -449,47 +338,8 @@ function BatchCard({
             </div>
           )}
 
-          {/* importance override */}
-          <div className="space-y-0.5">
-            <div className="flex flex-wrap items-center gap-2">
-              {IMPORTANCE_LEVELS.map((level) => (
-                <button
-                  key={level}
-                  onClick={() =>
-                    void run(() => setImportance({ id: todo._id, level }))
-                  }
-                  disabled={busy}
-                  className={`${btnCls} ${
-                    todo.importance?.level === level
-                      ? "border-accent/60 text-text"
-                      : ""
-                  }`}
-                >
-                  {level}
-                </button>
-              ))}
-              {todo.importance && (
-                <button
-                  onClick={() =>
-                    void run(() =>
-                      setImportance({ id: todo._id, level: null }),
-                    )
-                  }
-                  disabled={busy}
-                  className="text-xs text-text-faint hover:text-text-muted"
-                >
-                  clear
-                </button>
-              )}
-              {todo.importance?.setBy === "agent" &&
-                todo.importance.rationale && (
-                  <span className="text-xs text-text-faint">
-                    {todo.importance.rationale}
-                  </span>
-                )}
-            </div>
-            <Info label="dts.setImportance({level})" />
-          </div>
+          {/* importance override — same component the generic todo row renders */}
+          <ImportanceButtons todo={todo} />
 
           {error && <div className="text-xs text-error">{error}</div>}
         </div>
@@ -567,72 +417,10 @@ function LifeRow({
   );
 }
 
-// ── Unbatched code row (open · briefed · no live ruling, in no batch) ───────
-function CodeRow({
-  row,
-  brief,
-  expanded,
-  onToggle,
-}: {
-  row: MirrorRow;
-  brief: CodeBrief;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const recordRuling = useMutation(api.dtsRulings.recordRuling);
-
-  return (
-    <div className="border border-border rounded-lg bg-surface/40">
-      <button
-        onClick={onToggle}
-        className="w-full text-left px-3 py-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
-      >
-        <span className="text-sm text-text">{row.statement}</span>
-        <span className="text-xs text-text-faint">{row.repo}</span>
-        <span className={chipCls}>{row.tier}</span>
-        <span className={chipCls}>recommends: {brief.recommendation}</span>
-        {brief.execClass === "needs-turing" && (
-          <span className={chipCls}>needs-turing</span>
-        )}
-      </button>
-
-      {expanded && (
-        <div className="border-t border-border px-3 py-2 space-y-2">
-          <VerdictButtons
-            record={(args) =>
-              recordRuling({
-                repo: row.repo,
-                externalId: row.externalId,
-                ...args,
-              })
-            }
-          />
-          <div className="text-xs text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
-            {brief.brief}
-          </div>
-          {brief.evidence && (
-            <div className="text-xs">
-              <span className="text-text-faint">evidence: </span>
-              <span className="text-text-muted break-words">
-                {brief.evidence}
-              </span>
-            </div>
-          )}
-          <div className="text-xs">
-            <a
-              href={row.url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent hover:underline"
-            >
-              open in {row.repo}
-            </a>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+// Unbatched code rows are the shared CodeTodoRow (./code-todo-row) — brief,
+// evidence, importance, the live ruling and the verdict buttons behind "rule
+// here" all come from that one row, so a code item looks and behaves the same
+// on this tab and on the by-individual tab.
 
 // ── The tab ─────────────────────────────────────────────────────────────────
 export default function BatchesTab({
@@ -678,6 +466,13 @@ export default function BatchesTab({
         (mirror ?? []).map((r) => [codeSubjectKey(r.repo, r.externalId), r]),
       ),
     [mirror],
+  );
+
+  // Live ruling per subject — the shared derivation (app/dts/lib.ts), the same
+  // one the by-individual tab feeds CodeTodoRow.
+  const liveRulingByKey = useMemo(
+    () => liveRulingsByKey(rulings ?? []),
+    [rulings],
   );
 
   const unbatchedLife = useMemo(
@@ -788,10 +583,12 @@ export default function BatchesTab({
             {unbatchedCode.map(({ row, brief }) => {
               const key = codeSubjectKey(row.repo, row.externalId);
               return (
-                <CodeRow
+                <CodeTodoRow
                   key={row._id}
                   row={row}
                   brief={brief}
+                  ruling={liveRulingByKey.get(key)}
+                  now={now}
                   expanded={expanded.has(key)}
                   onToggle={() =>
                     toggle(key, () => {

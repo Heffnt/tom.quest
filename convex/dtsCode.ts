@@ -6,7 +6,7 @@ import {
   query,
 } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { IMPORTANCE_LEVEL, logEvent } from "./dts";
+import { IMPORTANCE_LEVEL, agentImportancePatch, logEvent } from "./dts";
 
 // DTS code-todo BRIEFS — the worker box writes ground-up briefs for each open
 // code todo (from the dtsCodeTodoMirror's repos); Tom's rulings on them live in
@@ -99,21 +99,17 @@ export const internalStoreBriefs = internalMutation({
           q.eq("repo", brief.repo).eq("externalId", brief.externalId),
         )
         .first();
-      let importance:
-        | { level: "low" | "medium" | "high"; setBy: "agent"; setAt: number; rationale?: string }
-        | undefined;
+      let importance: ReturnType<typeof agentImportancePatch>;
       if (importanceLevel !== undefined) {
-        // Agent importance never overwrites Tom's (setBy-"tom" guard).
-        if (existing?.importance?.setBy === "tom") {
-          importanceSkipped++;
-        } else {
-          importance = {
-            level: importanceLevel,
-            setBy: "agent",
-            setAt: now,
-            rationale: importanceRationale,
-          };
-        }
+        // Agent importance never overwrites Tom's — the ONE guard
+        // implementation (dts.agentImportancePatch) decides.
+        importance = agentImportancePatch(
+          existing?.importance,
+          importanceLevel,
+          importanceRationale,
+          now,
+        );
+        if (importance === undefined) importanceSkipped++;
       }
       if (existing) {
         await ctx.db.patch(

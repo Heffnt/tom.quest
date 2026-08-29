@@ -1,9 +1,14 @@
 "use client";
 
 // One life-todo row: click-to-expand summary line + detail panel.
-// Panel order: intent banner → action row → importance → date controls →
-// commit time → brief → "edit" disclosure (field editors, full fact grid,
-// date history). Actions sit at the top everywhere.
+// Panel order: intent banner → action row (session + verdicts) → status strip
+// → importance → date controls → brief → "edit" disclosure (field editors,
+// full fact grid, date history). Actions sit at the top everywhere.
+//
+// A batch is a life todo with members, so it reaches this row too (the by-
+// individual tab lists every todo): the header marks it and the fact grid
+// carries the member count — the members and the plan are worked on the
+// batches tab.
 
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
@@ -11,14 +16,14 @@ import { api } from "@/convex/_generated/api";
 import { countdownText } from "@/convex/dtsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
+import VerdictButtons from "./verdict-buttons";
+import { ImportanceButtons, StatusActions } from "./status-actions";
 import {
   ageText,
   errMessage,
   fmtDate,
   isoDate,
-  IMPORTANCE_LEVELS,
   parseDateInput,
-  toDatetimeLocal,
   type LinkIntent,
   type Todo,
 } from "../lib";
@@ -124,10 +129,9 @@ export default function TodoRow({
 }) {
   const updateTodo = useMutation(api.dts.updateTodo);
   const setStatus = useMutation(api.dts.setStatus);
-  const setImportance = useMutation(api.dts.setImportance);
   const recordDateOutcome = useMutation(api.dts.recordDateOutcome);
   const recordEvent = useMutation(api.dts.recordEvent);
-  const createBlock = useMutation(api.dts.createBlock);
+  const recordRuling = useMutation(api.dtsRulings.recordRuling);
   const {
     open: openTodoSession,
     busy: sessionBusy,
@@ -138,13 +142,9 @@ export default function TodoRow({
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
-  // Action-row drafts
-  const [doneNoteDraft, setDoneNoteDraft] = useState("");
-  const [unarchiveDraft, setUnarchiveDraft] = useState("");
+  // Date-control drafts (Done/Archive/commit-time drafts live in StatusActions)
   const [dateDraft, setDateDraft] = useState("");
   const [latestSafeDraft, setLatestSafeDraft] = useState("");
-  const [blockStartDraft, setBlockStartDraft] = useState("");
-  const [blockEndDraft, setBlockEndDraft] = useState("");
   // Edit-disclosure drafts
   const [wakeAtDraft, setWakeAtDraft] = useState("");
   const [wakeConditionDraft, setWakeConditionDraft] = useState("");
@@ -209,24 +209,6 @@ export default function TodoRow({
     void run(() =>
       recordDateOutcome({ id: todo._id, outcome: "missed", newDueAt }),
     );
-  };
-
-  const commitBlock = () => {
-    const start = blockStartDraft ? new Date(blockStartDraft).getTime() : NaN;
-    const end = blockEndDraft ? new Date(blockEndDraft).getTime() : NaN;
-    if (Number.isNaN(start) || Number.isNaN(end)) {
-      setError("pick start and end");
-      return;
-    }
-    if (end <= start) {
-      setError("end must be after start");
-      return;
-    }
-    void run(async () => {
-      await createBlock({ start, end, todoId: todo._id });
-      setBlockStartDraft("");
-      setBlockEndDraft("");
-    });
   };
 
   // Summary-line facts, per status/timing.
@@ -317,6 +299,9 @@ export default function TodoRow({
         className="w-full text-left px-3 py-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
       >
         <span className="text-sm text-text">{todo.statement}</span>
+        {todo.members !== undefined && (
+          <span className={chipCls}>batch · {todo.members.length} members</span>
+        )}
         <span className={chipCls}>{todo.readiness}</span>
         {todo.status !== "active" && (
           <span className={chipCls}>{todo.status}</span>
@@ -387,108 +372,21 @@ export default function TodoRow({
                 <div className="text-xs text-error">{sessionError}</div>
               )}
             </div>
-
-            {todo.status !== "done" && (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() =>
-                    void run(() =>
-                      setStatus({
-                        id: todo._id,
-                        status: "done",
-                        note: doneNoteDraft.trim() || undefined,
-                      }),
-                    )
-                  }
-                  disabled={busy}
-                  className={btnCls}
-                >
-                  Done
-                </button>
-                <input
-                  value={doneNoteDraft}
-                  onChange={(e) => setDoneNoteDraft(e.target.value)}
-                  placeholder="note (optional)"
-                  className={`${inputCls} w-40`}
-                />
-                <Caption>{'dts.setStatus({status:"done"})'}</Caption>
-              </div>
-            )}
-
-            {todo.status !== "archived" && (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() =>
-                    void run(() =>
-                      setStatus({
-                        id: todo._id,
-                        status: "archived",
-                        unarchiveCondition:
-                          unarchiveDraft.trim() || undefined,
-                      }),
-                    )
-                  }
-                  disabled={busy}
-                  className={btnCls}
-                >
-                  Archive
-                </button>
-                <input
-                  value={unarchiveDraft}
-                  onChange={(e) => setUnarchiveDraft(e.target.value)}
-                  placeholder="propose back when (optional)"
-                  className={`${inputCls} w-52`}
-                />
-                <Caption>{'dts.setStatus({status:"archived"})'}</Caption>
-              </div>
-            )}
           </div>
 
-          {/* importance override — three levels, current highlighted; agent
-              writes are ignored server-side once Tom has set one */}
-          <div className="space-y-0.5">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-text-faint">importance</span>
-              {IMPORTANCE_LEVELS.map((lvl) => (
-                <button
-                  key={lvl}
-                  onClick={() =>
-                    void run(() =>
-                      setImportance({ id: todo._id, level: lvl }),
-                    )
-                  }
-                  disabled={busy}
-                  className={`${btnCls} ${
-                    todo.importance?.level === lvl
-                      ? "border-accent/60 text-text"
-                      : ""
-                  }`}
-                >
-                  {lvl}
-                </button>
-              ))}
-              {todo.importance && (
-                <button
-                  onClick={() =>
-                    void run(() =>
-                      setImportance({ id: todo._id, level: null }),
-                    )
-                  }
-                  disabled={busy}
-                  className="text-xs text-text-faint hover:text-text-muted"
-                >
-                  clear
-                </button>
-              )}
-              <Caption>{"dts.setImportance({level})"}</Caption>
-            </div>
-            {todo.importance?.setBy === "agent" &&
-              todo.importance.rationale && (
-                <div className="text-xs text-text-faint">
-                  {todo.importance.rationale}
-                </div>
-              )}
-          </div>
+          {/* verdicts — a gate item is ruled from wherever it is seen, not
+              only from the batches tab (batched members lose that strip) */}
+          {todo.status === "active" && todo.readiness === "ready-for-tom" && (
+            <VerdictButtons
+              record={(args) => recordRuling({ todoId: todo._id, ...args })}
+              afterSession={() => openTodoSession(todo)}
+            />
+          )}
+
+          {/* status strip — same component the batch card renders */}
+          <StatusActions todo={todo} />
+
+          <ImportanceButtons todo={todo} />
 
           {/* date controls */}
           <div className="space-y-2">
@@ -616,35 +514,6 @@ export default function TodoRow({
                 )}
               </div>
             )}
-          </div>
-
-          {/* commit time */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <input
-              type="datetime-local"
-              value={blockStartDraft}
-              onChange={(e) => {
-                const v = e.target.value;
-                setBlockStartDraft(v);
-                const ms = v ? new Date(v).getTime() : NaN;
-                if (!Number.isNaN(ms)) {
-                  setBlockEndDraft(toDatetimeLocal(ms + 3_600_000));
-                }
-              }}
-              className={inputCls}
-            />
-            <input
-              type="datetime-local"
-              value={blockEndDraft}
-              onChange={(e) => setBlockEndDraft(e.target.value)}
-              className={inputCls}
-            />
-            <div className="flex items-center gap-1">
-              <button onClick={commitBlock} disabled={busy} className={btnCls}>
-                Commit time
-              </button>
-              <Caption>{"dts.createBlock({todoId})"}</Caption>
-            </div>
           </div>
 
           {/* 3 — brief */}
@@ -789,6 +658,9 @@ export default function TodoRow({
                 <Fact label="timingClass">{todo.timingClass}</Fact>
                 {todo.category && (
                   <Fact label="category">{todo.category}</Fact>
+                )}
+                {todo.members !== undefined && (
+                  <Fact label="members">{todo.members.length}</Fact>
                 )}
                 {todo.importance && (
                   <Fact label="importance">

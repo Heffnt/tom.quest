@@ -52,40 +52,42 @@ export function isBatch(t: Todo): boolean {
   return t.members !== undefined;
 }
 
-// Client mirror of convex/dts.ts memberKey — same key format as
-// rulingSubjectKey, so member identity and ruling identity share one
-// vocabulary.
+// Client mirror of convex/dts.ts memberKey — one definition of the key format,
+// delegated to rulingSubjectKey/codeSubjectKey above, so member identity and
+// ruling identity cannot drift apart.
 export function clientMemberKey(m: Member): string {
   return m.todoId !== undefined
-    ? `life ${m.todoId}`
-    : `code ${m.repo} ${m.externalId}`;
+    ? rulingSubjectKey({ subjectType: "life", todoId: m.todoId })
+    : codeSubjectKey(m.repo!, m.externalId!);
 }
 
-/** Open actor-"tom" steps — the card's "needs you" strip. */
+/**
+ * Open actor-"tom" steps — the card's "needs you" strip. Each step keeps its
+ * index in the todo's plan array, because that index is what
+ * dts.setPlanStep({index}) addresses.
+ */
 export function planNeedsYou(plan: PlanStep[] | undefined): {
   count: number;
-  steps: PlanStep[];
+  steps: { step: PlanStep; index: number }[];
 } {
-  const steps = (plan ?? []).filter(
-    (s) => s.actor === "tom" && s.status === "open",
-  );
+  const steps = (plan ?? [])
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step.actor === "tom" && step.status === "open");
   return { count: steps.length, steps };
 }
 
 /**
- * Member completion: a life member is done when its todo is done|archived; a
- * code member when its mirror row is missing (rows are deleted on upstream
- * close) or closed.
+ * Member completion against the maps the caller already builds (the batches
+ * tab holds both in a useMemo): a life member is done when its todo is
+ * done|archived; a code member ONLY when its mirror row exists and is closed.
+ * A missing mirror row is not evidence of completion — it may be closed
+ * upstream or it may be an id that never matched a row — so it does not count.
  */
 export function memberProgress(
   members: Member[],
-  todos: Todo[],
-  mirror: MirrorRow[],
+  todoById: Map<string, Todo>,
+  mirrorByKey: Map<string, MirrorRow>,
 ): { done: number; total: number } {
-  const todoById = new Map(todos.map((t) => [t._id as string, t]));
-  const mirrorByKey = new Map(
-    mirror.map((r) => [codeSubjectKey(r.repo, r.externalId), r]),
-  );
   let done = 0;
   for (const m of members) {
     if (m.todoId !== undefined) {
@@ -93,7 +95,7 @@ export function memberProgress(
       if (t && (t.status === "done" || t.status === "archived")) done += 1;
     } else {
       const row = mirrorByKey.get(codeSubjectKey(m.repo!, m.externalId!));
-      if (!row || row.status === "closed") done += 1;
+      if (row && row.status === "closed") done += 1;
     }
   }
   return { done, total: members.length };

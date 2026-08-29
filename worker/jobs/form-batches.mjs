@@ -16,8 +16,12 @@
 // REVISE RULINGS: Tom can rule "revise" on a batch with one written sentence.
 // This job collects the pending life-revise rulings whose subject is a
 // members-bearing todo, embeds the sentences in the prompt (they override any
-// other reading), and consumes each via /dts/ruling-applied after the
-// re-formed set lands.
+// other reading), and consumes each via /dts/ruling-applied only once the
+// server reports that batch as stored — a skipped batch leaves its ruling
+// pending for the next run. A revise verdict no longer freezes the batch
+// (server-side fix): it must stay rewritable for the re-form to land, so the
+// "frozen" flag in the prompt reflects only Tom's OTHER touches (edits,
+// status changes, importance he set himself).
 //
 // NO-STATE RULE: Convex is read and written each run. The only local file is
 // the input-hash cursor in /var/lib/dts/ — losing it merely costs one extra
@@ -138,10 +142,41 @@ async function main() {
     }
   }
 
+  const batchRows = [...batchById.values()]
+    .filter((t) => t.status === "active" || t.status === "waiting")
+    .map((t) => ({
+      id: t._id,
+      statement: t.statement,
+      status: t.status,
+      frozen: t.tomTouchedAt !== undefined,
+      members: t.members,
+      plan: t.plan ?? null,
+    }));
+  const archivedStatements = [...batchById.values()]
+    .filter((t) => t.status === "archived" || t.status === "done")
+    .map((t) => t.statement);
+
+  // Every member already claimed by a non-terminal batch, frozen ones
+  // included. The prompt promises the todo lists hold only todos "not in any
+  // batch", so the projections below must honour it: offering a claimed
+  // subject invites the model to regroup it, and the server then drops the
+  // whole offending batch (a member may live in at most one batch, and a
+  // frozen batch's members are off limits) — a wasted Claude call either way.
+  const memberKey = (m) =>
+    m.todoId !== undefined ? `life ${m.todoId}` : `code ${m.repo} ${m.externalId}`;
+  const claimed = new Set(
+    batchRows.flatMap((b) => (Array.isArray(b.members) ? b.members.map(memberKey) : [])),
+  );
+
   // Compact projections — exactly the fields the model groups by, nothing
   // that tempts it to edit content.
   const life = all
-    .filter((t) => t.status === "active" && t.members === undefined)
+    .filter(
+      (t) =>
+        t.status === "active" &&
+        t.members === undefined &&
+        !claimed.has(`life ${t._id}`),
+    )
     .map((t) => ({
       id: t._id,
       statement: t.statement,
@@ -159,8 +194,10 @@ async function main() {
   const code = (Array.isArray(mirror) ? mirror : []).flatMap((m) => {
     const brief = briefByKey.get(`${m.repo} ${m.externalId}`);
     // Only open AND briefed code todos are batchable — an unbriefed entry has
-    // nothing a session could amortize yet.
+    // nothing a session could amortize yet. Claimed ones are already in a
+    // batch, so they are not on offer here either.
     if (m.status !== "open" || !brief) return [];
+    if (claimed.has(`code ${m.repo} ${m.externalId}`)) return [];
     return [
       {
         repo: m.repo,
@@ -172,20 +209,6 @@ async function main() {
       },
     ];
   });
-
-  const batchRows = [...batchById.values()]
-    .filter((t) => t.status === "active" || t.status === "waiting")
-    .map((t) => ({
-      id: t._id,
-      statement: t.statement,
-      status: t.status,
-      frozen: t.tomTouchedAt !== undefined,
-      members: t.members,
-      plan: t.plan ?? null,
-    }));
-  const archivedStatements = [...batchById.values()]
-    .filter((t) => t.status === "archived" || t.status === "done")
-    .map((t) => t.statement);
 
   if (life.length === 0 && code.length === 0 && batchRows.length === 0) {
     return; // nothing to group, nothing to retire — quiet when idle
@@ -239,10 +262,21 @@ async function main() {
   }
 
   // --- Ship it; the server's skip report is the real validator -------------
-  const result = await convexFetch(env, "/dts/batches", {
-    batches: parsed.batches,
-    ...(Array.isArray(parsed.archiveIds) ? { archiveIds: parsed.archiveIds } : {}),
-  });
+  let result;
+  try {
+    result = await convexFetch(env, "/dts/batches", {
+      batches: parsed.batches,
+      ...(Array.isArray(parsed.archiveIds) ? { archiveIds: parsed.archiveIds } : {}),
+    });
+  } catch (err) {
+    // Nothing landed, so nothing is consumed: every revise ruling stays
+    // pending and the next run re-forms on the same sentences. No cursor is
+    // written either (see the ordering note below).
+    console.error(
+      `[form-batches] store FAILED — ${revises.length} revise ruling(s) left pending: ${err.message}`,
+    );
+    throw err;
+  }
   console.log(
     `[form-batches] stored: ${result.created} created, ${result.updated} updated, ` +
       `${result.archived} archived, ${(result.skipped ?? []).length} skipped`,
@@ -251,9 +285,22 @@ async function main() {
     console.log(`[form-batches] skipped ${s.ref}: ${s.why}`);
   }
 
-  // The re-formed set landed — consume each batch-revise ruling so the UI
-  // shows the outcome and the next run doesn't re-form on the same sentence.
+  // Consume a batch-revise ruling ONLY when its re-form actually landed. The
+  // server DROPS a batch that fails validation instead of rejecting the whole
+  // POST, so a skip means Tom's sentence was never served: consuming the
+  // ruling there would retire it silently and the grouping would stay wrong.
+  // Left pending, it forces the next run (the hash check is bypassed while a
+  // revise is pending) to try again. A skip's `ref` is the batch id when the
+  // model reused one, its statement otherwise — match on both.
+  const skippedRefs = new Set((result.skipped ?? []).map((s) => s.ref));
   for (const r of revises) {
+    if (skippedRefs.has(r.ruling.todoId) || skippedRefs.has(r.statement)) {
+      console.log(
+        `[form-batches] revise ruling for "${r.statement}" left pending: ` +
+          `the re-formed batch was skipped by the server`,
+      );
+      continue;
+    }
     await convexFetch(env, "/dts/ruling-applied", {
       id: r.ruling._id,
       result: "revised: batches re-formed",

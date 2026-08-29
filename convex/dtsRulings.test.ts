@@ -198,18 +198,92 @@ describe("DTS unified rulings", () => {
 
   // witness: drop the tomTouchedAt patch from insertRuling's life path in
   // convex/dtsRulings.ts — the batcher could rewrite a batch Tom just ruled on.
-  it("a life ruling stamps tomTouchedAt (row frozen to the batcher)", async () => {
+  it("approve, session, and archive each stamp tomTouchedAt (row frozen)", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const todoId = await tom.mutation(api.dts.createTodo, { statement: "rule" });
-    let todo = await t.run(async (ctx) => ctx.db.get(todoId));
-    expect(todo?.tomTouchedAt).toBeUndefined();
+    for (const verdict of ["approve", "session", "archive"] as const) {
+      const todoId = await tom.mutation(api.dts.createTodo, {
+        statement: `rule ${verdict}`,
+      });
+      let todo = await t.run(async (ctx) => ctx.db.get(todoId));
+      expect(todo?.tomTouchedAt).toBeUndefined();
+      await tom.mutation(api.dtsRulings.recordRuling, { todoId, verdict });
+      todo = await t.run(async (ctx) => ctx.db.get(todoId));
+      expect(todo?.tomTouchedAt).toBeDefined();
+    }
+  });
+
+  // witness: drop the `verdict !== "revise"` guard from insertRuling's
+  // tomTouchedAt patch in convex/dtsRulings.ts — revise hands the subject BACK
+  // to the preparing agent, so freezing the row would strand every batch Tom
+  // ever asked the batcher to redo.
+  it("revise does NOT stamp tomTouchedAt — the row goes back to the agent", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.dts.createTodo, { statement: "redo" });
     await tom.mutation(api.dtsRulings.recordRuling, {
       todoId,
-      verdict: "session",
+      verdict: "revise",
+      sentence: "split the travel bits out",
     });
-    todo = await t.run(async (ctx) => ctx.db.get(todoId));
-    expect(todo?.tomTouchedAt).toBeDefined();
+    const todo = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(todo?.tomTouchedAt).toBeUndefined();
+    expect(todo?.readiness).toBe("preparing"); // the revise effect still landed
+  });
+
+  // witness: same guard — a revised batch must stay rewritable, which is the
+  // whole point of the verdict.
+  it("a revised batcher batch is still rewritable by the batcher", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.dts.internalStoreBatches, {
+      batches: [
+        {
+          statement: "trip logistics",
+          brief: "one errand, three tickets",
+          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
+        },
+      ],
+    });
+    const batch = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsTodos").collect()).find(
+        (x) => x.members !== undefined,
+      ),
+    );
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: batch!._id,
+      verdict: "revise",
+      sentence: "the flights do not belong with the visa",
+    });
+    const res = await t.mutation(internal.dts.internalStoreBatches, {
+      batches: [
+        {
+          id: batch!._id,
+          statement: "visa paperwork",
+          brief: "regrouped per Tom's sentence",
+          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
+        },
+      ],
+    });
+    expect(res).toMatchObject({ created: 0, updated: 1, skipped: [] });
+    const fresh = await t.run(async (ctx) => ctx.db.get(batch!._id));
+    expect(fresh?.statement).toBe("visa paperwork");
+    // An approve on the same batch DOES freeze it against the next run.
+    await tom.mutation(api.dtsRulings.recordRuling, {
+      todoId: batch!._id,
+      verdict: "approve",
+    });
+    const after = await t.mutation(internal.dts.internalStoreBatches, {
+      batches: [
+        {
+          id: batch!._id,
+          statement: "rewrite attempt",
+          brief: "x",
+          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
+        },
+      ],
+    });
+    expect(after.skipped.map((s) => s.why)).toEqual(["Tom-touched (frozen)"]);
   });
 
   // witness: change briefAwaitsRuling back to "any ruling clears the item" in

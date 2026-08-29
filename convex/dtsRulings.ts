@@ -107,9 +107,12 @@ async function insertRuling(
       const todo = await ctx.db.get(todoId);
       if (!todo) throw new Error("DTS todo not found");
       // A ruling is a Tom touch: tomTouchedAt freezes the row to the batcher
-      // (internalStoreBatches never rewrites or retires it). One stamp covers
-      // every verdict — approve/session carry no other patch.
-      await ctx.db.patch(todoId, { tomTouchedAt: now });
+      // (internalStoreBatches never rewrites or retires it) — EXCEPT revise,
+      // the one verdict that hands the subject BACK to the preparing agent
+      // (for a batch, the batcher must stay allowed to re-form it).
+      if (verdict !== "revise") {
+        await ctx.db.patch(todoId, { tomTouchedAt: now });
+      }
       if (verdict === "revise") {
         await ctx.db.patch(todoId, { readiness: "preparing", updatedAt: now });
       }
