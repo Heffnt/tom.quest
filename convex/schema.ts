@@ -828,6 +828,14 @@ export default defineSchema({
     // resumable via sdkSessionId; leaving is not an ending.
     outcome: v.optional(v.union(v.literal("completed"), v.literal("errored"))),
     outcomeSummary: v.optional(v.string()), // agent-authored one-liner + rulings recorded
+    // The model tier this session runs on, carried from the task the scheduler
+    // claimed (dtsTodos.model). ABSENT IS THE DEFAULT AND THE NORM: a worker
+    // runs Opus unless the planner marked the task "fable", so nothing is
+    // written here for an ordinary session. The daemon reads it off the poll
+    // payload and passes it to the SDK; one literal rather than a free string,
+    // for the same reason the task field is (an unrecognized tier name would be
+    // a silent mis-dispatch).
+    model: v.optional(v.literal("fable")),
     sdkSessionId: v.optional(v.string()), // set once the SDK reports it; resume key
     cwd: v.optional(v.string()), // daemon-reported working dir on the box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
