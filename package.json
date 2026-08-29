@@ -25,7 +25,8 @@
     "check:auth-boundary": "node scripts/check-auth-boundary.mjs",
     "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
     "check:secrets": "gitleaks detect --source . --no-banner --redact",
-    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs"
+    "check:turing-env": "node scripts/check-turing-env.mjs",
+    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs && node scripts/check-turing-env.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.92",

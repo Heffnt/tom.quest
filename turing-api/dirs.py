@@ -1,3 +1,15 @@
+"""Filesystem roots, and the one confinement primitive.
+
+Every root the API derives from the environment is read HERE, once, and imported
+by the modules that need it. A root read in two places is a root that can hold
+two different values: until 2026-08-29 the CMT checkout was read as
+BOOLEAN_BACKDOOR_REPO in forge.py and as BOOLBACK_BUILDER_REPO_DIR in
+boolback_snapshot.py, so setting one and not the other pointed the two surfaces
+at different checkouts with no error. `scripts/check-turing-env.mjs` keeps this
+property: it fails if an env name is read at more than one site under
+turing-api/, or if a name read there is missing from
+secrets/turing-api.env.example.
+"""
 import os
 import re
 from pathlib import Path
@@ -13,6 +25,32 @@ _DENIED_NAME_PATTERNS = [
     re.compile(r".*\.(pem|key)$", re.IGNORECASE),    # private keys / certs
 ]
 _DENIED_PATH_PARTS = {".ssh", ".aws", ".gnupg"}
+
+# --- the ComplexMultiTrigger (CMT) roots on the cluster ------------------------
+#
+# Two roots, one each side of the research repo: where the code is checked out,
+# and where its artifact tree is written. Both the boolback snapshot surface and
+# the Forge surface run CMT jobs, so both need both — hence one read site here
+# rather than one per consumer.
+
+# The CMT repo (boolean_backdoor package root) the sbatch jobs cd into. A string,
+# not a Path, because both consumers hand it straight to subprocess (cwd= and an
+# sbatch argv element).
+CMT_REPO_DIR = os.environ.get(
+    "BOOLEAN_BACKDOOR_REPO",
+    str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
+)
+
+
+def cmt_output_root() -> Path:
+    """$BOOLEAN_BACKDOOR_OUTPUT — the artifact-tree root every served path is
+    pinned under. Resolved at call time (not import) so a patched env var / test
+    override is honored, and raising rather than defaulting because a wrong
+    artifact root serves the wrong campaign's data."""
+    raw = os.environ.get("BOOLEAN_BACKDOOR_OUTPUT", "")
+    if not raw:
+        raise RuntimeError("BOOLEAN_BACKDOOR_OUTPUT is not set")
+    return Path(raw).resolve()
 
 
 class PathNotAllowed(Exception):

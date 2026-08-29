@@ -64,6 +64,16 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   `.env`/`.pem`/`.key`). This is the **only** confined file primitive in the app.
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
   gated, session-scoped.
+- **Configuration:** one `.env` on the login node (`~/tom.quest/turing-api/.env`), described
+  by one template (`secrets/turing-api.env.example`) — 15 names read by the service plus
+  `FORGE_SERVE_CONDA_ENV`, read by the serve wrapper on the compute node. Each name is read
+  at **exactly one site**; the two CMT roots — the checkout `BOOLEAN_BACKDOOR_REPO` and the
+  artifact tree `BOOLEAN_BACKDOOR_OUTPUT` — live in `dirs.py` and are imported by both the
+  boolback and Forge surfaces, so the two can never run against different checkouts or trees.
+  Both properties are enforced by `scripts/check-turing-env.mjs` in `pnpm check:guardrails`.
+  (Before 2026-08-29 the checkout had two names — `BOOLEAN_BACKDOOR_REPO` in `forge.py`,
+  `BOOLBACK_BUILDER_REPO_DIR` in `boolback_snapshot.py` — with the same default, so setting
+  one left the other surface on the default path with no error.)
 - **The async invariant (load-bearing):** every endpoint that shells out is plain `def`,
   never `async def`; only `/health` is async. A blocking subprocess call inside `async def`
   freezes the event loop and starved `/health` during the **June 2026 outage**
