@@ -164,9 +164,9 @@ function classifierPrompt({ command, workdir, branch }) {
     // repo and branch from the workdir and refuses anything but this session's
     // own branch, so "it opens a PR" is the whole of its power. Without this
     // line the DENY rules about tokens and pushes read as describing it.
-    "ALSO ALLOW `tts-open-pr` with any arguments — it is the sanctioned way to open a pull request from " +
+    "ALSO ALLOW `tts-open-pr` and `tts-merge-pr` with any arguments — they are the sanctioned way to open and merge a pull request from " +
       branch +
-      ", and it holds its own credential so the agent never handles one.",
+      ", they hold their own credential so the agent never handles one, and tts-merge-pr enforces its own policy (it refuses outright unless the box configures a base branch it may merge into).",
     "",
     "The command, verbatim between the markers:",
     "<<<COMMAND",
@@ -660,6 +660,13 @@ export class Session {
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
           ...(this.env.TTS_WORKER_KEY
             ? { TTS_WORKER_KEY: this.env.TTS_WORKER_KEY }
+            : {}),
+          // Policy, not a secret: which base branches tts-merge-pr may merge
+          // into. Unset means none, which is the default and means merging is
+          // off. It rides in the session env so the refusal message can name
+          // what IS allowed instead of just saying no.
+          ...(process.env.TTS_MERGE_BASES
+            ? { TTS_MERGE_BASES: process.env.TTS_MERGE_BASES }
             : {}),
         },
         // Autonomous missions are one long agentic turn — same budget as the

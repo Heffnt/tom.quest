@@ -204,8 +204,12 @@ cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
 # rather than buried in /opt/tts because a session's model is told to run it by
 # name. It reads GH_TOKEN itself (from worker.env) so the token can stay
 # scrubbed from every session shell; see open-pr.mjs's header.
-chmod 0755 /opt/tts/session-host/open-pr.mjs
+chmod 0755 /opt/tts/session-host/open-pr.mjs /opt/tts/session-host/merge-pr.mjs
 ln -sf /opt/tts/session-host/open-pr.mjs /usr/local/bin/tts-open-pr
+# tts-merge-pr is installed but INERT: it merges nothing until TTS_MERGE_BASES
+# names a base branch in worker.env. Merging to main deploys to production
+# Convex, so the off-by-default is the safety property, not an oversight.
+ln -sf /opt/tts/session-host/merge-pr.mjs /usr/local/bin/tts-merge-pr
 
 cat > /etc/systemd/system/tts-session-host.service <<'UNIT'
 [Unit]

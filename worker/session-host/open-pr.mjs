@@ -24,37 +24,29 @@
 // Exit 0 prints the PR url on stdout and nothing else. Re-running when a PR
 // already exists is not an error: it prints the existing url.
 
-import { execFile as execFileCb } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { REPO_GITHUB, SESSIONS_ROOT } from "./repos.mjs";
+import {
+  die as bareDie,
+  execFile,
+  git,
+  parseSlug,
+  readToken as bareReadToken,
+  redact,
+  resolveSessionRepo,
+} from "./gh-lib.mjs";
 
-const execFile = promisify(execFileCb);
+const TOOL = "tts-open-pr";
+const die = (message) => bareDie(TOOL, message);
+const readToken = () => bareReadToken(TOOL);
 
-const WORKER_ENV = "/etc/tts/worker.env";
+// Re-exported so open-pr.test.mjs keeps testing the parser through the tool
+// that depends on it, not just through the library.
+export { parseSlug };
+
 const PUSH_TIMEOUT_MS = 60_000;
 const PR_TIMEOUT_MS = 60_000;
-
-/** Every failure path lands here, so no branch can accidentally print a token. */
-function die(message) {
-  process.stderr.write(`tts-open-pr: ${message}\n`);
-  process.exit(1);
-}
-
-/**
- * Scrub anything token-shaped out of text bound for a log or the session's
- * transcript. git and gh both echo the remote URL in their errors, and the
- * whole point of this script is that the session never sees the credential —
- * an error path that leaks it would defeat the script's only real job.
- */
-function redact(text, token) {
-  let out = String(text ?? "");
-  if (token) out = out.split(token).join("«redacted»");
-  return out.replace(/x-access-token:[^@\s]+@/g, "x-access-token:«redacted»@");
-}
 
 function parseArgs(argv) {
   const args = { base: "main" };
@@ -71,46 +63,6 @@ function parseArgs(argv) {
   return args;
 }
 
-/**
- * The token, from the daemon's env when the daemon runs this, else from the
- * root-only worker.env. Reading worker.env is why this script exists as its
- * own process: a session's shell is denied /etc/ by the classifier.
- */
-function readToken() {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  let raw;
-  try {
-    raw = fs.readFileSync(WORKER_ENV, "utf8");
-  } catch {
-    die(`cannot read ${WORKER_ENV} — run this on the session-host box`);
-  }
-  const line = raw.split("\n").find((l) => /^\s*GH_TOKEN\s*=/.test(l));
-  if (!line) die(`GH_TOKEN is not set in ${WORKER_ENV}`);
-  return line.replace(/^\s*GH_TOKEN\s*=\s*/, "").replace(/^["']|["']$/g, "").trim();
-}
-
-/**
- * owner/repo out of a git remote URL, or null if it is not GitHub.
- *
- * Exported for the test because the obvious version of this regex is wrong in
- * this repo specifically: it excluded "." from the repo name, which reads
- * every other repo correctly and then fails on tom.quest. Handles the https,
- * ssh and credential-bearing forms, since the daemon clones with the last one.
- */
-export function parseSlug(originUrl) {
-  const m = String(originUrl)
-    .trim()
-    .replace(/\/+$/, "")
-    .match(/github\.com[/:]([^/]+\/.+?)(?:\.git)?$/);
-  return m ? m[1] : null;
-}
-
-async function git(cwd, ...args) {
-  const { stdout } = await execFile("git", ["-C", cwd, ...args], {
-    maxBuffer: 8 * 1024 * 1024,
-  });
-  return stdout.trim();
-}
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -125,33 +77,7 @@ async function main() {
     }
   }
 
-  // ── the workdir must be a session workdir ────────────────────────────────
-  // Not decoration: it is what stops this from being a general-purpose
-  // "open a PR anywhere" tool that happens to hold a token.
-  const cwd = process.cwd();
-  const root = await git(cwd, "rev-parse", "--show-toplevel").catch(() =>
-    die("not inside a git repository"),
-  );
-  if (!path.resolve(root).startsWith(SESSIONS_ROOT + path.sep)) {
-    die(`refusing to act outside ${SESSIONS_ROOT} (this is ${root})`);
-  }
-
-  // ── the branch must be this session's own ────────────────────────────────
-  const branch = await git(root, "rev-parse", "--abbrev-ref", "HEAD");
-  if (!/^session\/[A-Za-z0-9_-]+$/.test(branch)) {
-    die(
-      `refusing to open a PR from "${branch}" — a session may only PR its own session/<id> branch`,
-    );
-  }
-
-  // ── the repo must be one the daemon is allowed to clone ──────────────────
-  const originUrl = await git(root, "remote", "get-url", "origin");
-  const slug = parseSlug(originUrl);
-  if (!slug) die("origin does not look like a GitHub remote");
-  const allowed = Object.values(REPO_GITHUB);
-  if (!allowed.includes(slug)) {
-    die(`refusing: ${slug} is not one of ${allowed.join(", ")}`);
-  }
+  const { root, branch, slug } = await resolveSessionRepo(TOOL);
 
   // NOTE: there is deliberately no local "are there commits?" check. The
   // daemon clones --depth 1, so the base branch's history is not present and
