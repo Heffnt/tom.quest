@@ -15,10 +15,10 @@ import {
   markLiveSessionRulingApplied,
   subjectKey,
 } from "./ttsRulings";
-import { IMPORTANCE_RANK, logEvent } from "./tts";
+import { logEvent } from "./tts";
 
 // Claude Code session surface — the Convex half of the web wrapper around
-// headless Claude Code sessions on the worker box. CANONICAL DESIGN HOME:
+// headless Claude Code sessions on the Jarvis Box. CANONICAL DESIGN HOME:
 // WikiTom tts/spec.md §20 (ratified 2026-08-28; first-principles, canvas
 // explicitly NOT a precedent — steering gotcha canvas-code-unvalidated).
 // Convex IS the stream: the daemon persists SDK events via key-authed
@@ -34,11 +34,15 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 
 // The staleness threshold lives in ttsShared (one home; the worker daemon's
 // literal mirror is fenced by scripts/check-session-mirrors.mjs), and so do
-// the graph rules the frontier walk below reads (buildDoneSet / isReady) and
-// the writing standard the worker mission pastes into its prompt — the page,
-// the planner, and the scheduler must all mean the same thing by "ready".
+// the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
+// page, the planner, and the scheduler must all mean the same thing by
+// "ready". The writing standard the worker mission pastes into its prompt is
+// the synced WikiTom skill (ttsSkills.skillText), with WRITING_STANDARD as its
+// fallback.
+import { skillText } from "./ttsSkills";
 import {
   DAEMON_STALE_MS,
+  WRITING_SKILL,
   WRITING_STANDARD,
   buildDoneSet,
   goalCheckable,
@@ -506,7 +510,7 @@ export const internalPoll = internalMutation({
     // (review finding: a dropped write must be visible on the surface, not
     // only in journald).
     lastIngestError: v.optional(v.string()),
-    // Box load snapshot — the scheduler's load-based admission input.
+    // Jarvis Box load snapshot — the scheduler's load-based admission input.
     // Stored on the same throttled heartbeat writes (no extra patch cadence).
     load: v.optional(
       v.object({
@@ -1290,7 +1294,7 @@ export const setAutoConfig = mutation({
 
 // The CLI pen for supervised enable at deploy:
 // `npx convex run claudeSessions:internalSetAutoConfig '{"enabled": true, ...}'`
-// — same upsert as setAutoConfig (which needs Tom's browser identity the box
+// — same upsert as setAutoConfig (which needs Tom's browser identity the Jarvis Box
 // does not hold). Use only while supervising the first ticks.
 export const internalSetAutoConfig = internalMutation({
   args: AUTO_CONFIG_FIELDS,
@@ -1429,7 +1433,7 @@ function buildAutoMissionPrompt(
     "",
     "1. Write your work into the item:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "importanceLevel": "medium", "importanceRationale": "...", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
     "```",
     'Every field except "id" is optional — send only what you produced. On a batch only "plan" lands (the server skips the other fields by design).',
     "",
@@ -1490,8 +1494,19 @@ function buildWorkerPrompt(args: {
   needs: GraphNeighbor[];
   dependents: GraphNeighbor[];
   siblings: GraphNeighbor[];
+  /** The writing skill's text, resolved by the caller (synced or fallback). */
+  writingStandard: string;
 }): string {
-  const { todo, batch, sessionId, repo, needs, dependents, siblings } = args;
+  const {
+    todo,
+    batch,
+    sessionId,
+    repo,
+    needs,
+    dependents,
+    siblings,
+    writingStandard,
+  } = args;
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
     "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
@@ -1508,7 +1523,7 @@ function buildWorkerPrompt(args: {
     "",
     "Everything you write into TTS obeys this standard, verbatim:",
     "",
-    WRITING_STANDARD,
+    writingStandard,
     "",
     `THE BATCH ("${batch.statement}"):`,
     promptFact("ground-up explanation", batch.groundUpExplanation),
@@ -1640,7 +1655,7 @@ function buildWorkerPrompt(args: {
 // works no todo: it reads one repo's fresh checkout, looks for concrete issues,
 // and captures each new one as an unprepared item.
 //
-// PARALLEL, NOT LAST RESORT (Tom's amendment the same night: keeping the box at
+// PARALLEL, NOT LAST RESORT (Tom's amendment the same night: keeping the Jarvis Box at
 // FULL CAPACITY overnight is the top priority, and "six hours is insane"). Real
 // todo work takes the per-tick budget FIRST; prospecting spends whatever is
 // left over on the same tick. So a tick that admits one real mission out of a
@@ -1841,7 +1856,7 @@ async function admitProspectMission(
 
 // ── Autonomous-session scheduler (P3, cron every 5 min) ──────────────────────
 // Walks Tom's committed and pending work and admits up to a handful of
-// autonomous groundwork sessions when — and only when — the box has headroom.
+// autonomous groundwork sessions when — and only when — the Jarvis Box has headroom.
 // Load-based admission is the PRIMARY throttle (Tom's ruling: no scalar cap as
 // primary); a heavy session with many subagents raises loadavg and blocks new
 // admissions naturally. maxLiveAutonomous is a runaway failsafe only,
@@ -2288,15 +2303,13 @@ export const internalAutoSchedule = internalMutation({
       }
     }
 
-    // (2) Active batches with open agent plan steps, importance desc —
-    // IMPORTANCE_RANK from ./tts is the ONE server encoding (higher = more
-    // important, unset ranks 0 and lands last).
-    const rank = (t: Doc<"dtsTodos">): number =>
-      t.importance === undefined ? 0 : IMPORTANCE_RANK[t.importance.level];
+    // (2) Active batches with open agent plan steps, stalest first — the same
+    // updatedAt ordering the whenever lane below uses. Ordering comes from
+    // paths and dates, never a rating (Tom's ruling 2026-08-29).
     const v1Batches = active.filter(
       (t) => t.members !== undefined && legacy(t) && hasOpenAgentStep(t),
     );
-    v1Batches.sort((a, b) => rank(b) - rank(a));
+    v1Batches.sort((a, b) => a.updatedAt - b.updatedAt);
     for (const t of v1Batches) candidates.push({ todo: t, lane: "batch" });
 
     // (3) Dated actives still unprepared, soonest due first.
@@ -2337,6 +2350,9 @@ export const internalAutoSchedule = internalMutation({
     for (const t of whenever) candidates.push({ todo: t, lane: "whenever" });
 
     // ── Admit up to `capacity` picks ─────────────────────────────────────────
+    // One read for the whole tick: every worker prompt this tick writes carries
+    // the same standard, and re-reading it per admission would say otherwise.
+    const writingStandard = await skillText(ctx, WRITING_SKILL, WRITING_STANDARD);
     const picked = new Set<string>();
     const counts: Record<string, number> = {};
     const admit = async (c: Candidate): Promise<void> => {
@@ -2407,6 +2423,7 @@ export const internalAutoSchedule = internalMutation({
             needs,
             dependents,
             siblings,
+            writingStandard,
           }),
           status: "pending",
           createdAt: now,

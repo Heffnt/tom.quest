@@ -6,6 +6,7 @@ import { auth } from "./auth";
 import { nowContext } from "./tts";
 import {
   DAY_MS,
+  WRITING_SKILL,
   WRITING_STANDARD,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
@@ -144,7 +145,7 @@ const poolRead = httpAction(async (ctx, request) => {
 http.route({ path: "/pool", method: "GET", handler: poolRead });
 
 // ── TTS worker endpoints (spec: WikiTom tts/spec.md) ─────────────────────────
-// The worker box's narrow, key-authed path into TTS, mirroring the /pool
+// The Jarvis Box's narrow, key-authed path into TTS, mirroring the /pool
 // pattern: TTS_WORKER_KEY lives only in the Convex env and shares nothing with
 // the other keys. The worker may capture items, post the day's prepared
 // queue+digest, and read state to prepare from — never rule, archive, or
@@ -223,7 +224,7 @@ http.route({ path: "/tts/prep", method: "POST", handler: ttsPrep });
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
 // Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, importanceLevel?, importanceRationale?, plan? }.
+// dateKind?, plan? }.
 const ttsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -276,11 +277,8 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       // the real gate: a first date only, never over an existing one.
       dueAt: b.dueAt as number | undefined,
       dateKind: b.dateKind as "external" | "self-imposed" | undefined,
-      // The newer preparer args (importance + plan) ride through loose-shape;
-      // the mutation's arg validators are the final gate and a mismatch
-      // surfaces as a named 400 below.
-      importanceLevel: b.importanceLevel as never,
-      importanceRationale: str(b.importanceRationale),
+      // The plan rides through loose-shape; the mutation's arg validators are
+      // the final gate and a mismatch surfaces as a named 400 below.
       plan: b.plan as never,
       // The graph worker's three: the artifact that shows the work happened,
       // the self-contained "more" layer, and the completion itself.
@@ -594,13 +592,8 @@ http.route({
 // shape-invalid scalars are dropped, never rejected, because one stray LLM
 // key must not abort the whole POST. The mutation's arg validators stay the
 // final gate (anything still malformed lands in its per-batch skip report).
-const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
 const PLAN_ACTORS = ["tom", "agent"] as const;
 const PLAN_STATUSES = ["open", "done"] as const;
-
-function sanitizeString(x: unknown): string | undefined {
-  return typeof x === "string" ? x : undefined;
-}
 
 function sanitizeMember(m: unknown): Record<string, unknown> {
   // A non-object or key-less member survives as {} — validateBatchMembers
@@ -658,21 +651,12 @@ function sanitizeBatch(item: unknown): Record<string, unknown> | undefined {
   if (typeof r.id === "string") out.id = r.id;
   const plan = sanitizePlan(r.plan);
   if (plan !== undefined) out.plan = plan;
-  if (
-    IMPORTANCE_LEVELS.includes(
-      r.importanceLevel as (typeof IMPORTANCE_LEVELS)[number],
-    )
-  ) {
-    out.importanceLevel = r.importanceLevel;
-    const rationale = sanitizeString(r.importanceRationale);
-    if (rationale !== undefined) out.importanceRationale = rationale;
-  }
   return out;
 }
 
 // POST /tts/batches — the batcher's desired batch set. Body: { batches:
-// [{ id?, statement, brief, members, plan?, importanceLevel?,
-// importanceRationale? }], archiveIds? }. Sanitized (drop-don't-reject)
+// [{ id?, statement, brief, members, plan? }], archiveIds? }.
+// Sanitized (drop-don't-reject)
 // before the mutation; the mutation's per-batch skip report is the response.
 const ttsBatches = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -722,16 +706,21 @@ http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
 // plan-repair events (a worker found an edge wrong; the planner fixes the
 // structure), and `writingStandard`.
 //
-// WHY THE WRITING STANDARD RIDES THIS PAYLOAD: it has exactly ONE home,
-// ttsShared.WRITING_STANDARD, and the planner is Node ESM on a box that never
-// loads TypeScript — it cannot import it. Serving it here is what keeps the
-// text the planner pastes into its prompt the same text every TypeScript
-// caller imports.
+// WHY THE WRITING STANDARD RIDES THIS PAYLOAD: the planner is Node ESM on a box
+// that never loads TypeScript — it cannot import the text and it cannot read a
+// git checkout of WikiTom. Serving it here is what keeps the text the planner
+// pastes into its prompt the same text every TypeScript caller reads.
+//
+// ITS SOURCE is the synced WikiTom skill (ttsSkills, name "writing-to-tom"),
+// with ttsShared.WRITING_STANDARD as the fallback until the sync has run. The
+// field name and type do not change: worker/jobs/plan-graphs.mjs treats a
+// missing `writingStandard` as fatal and form-batches.mjs reads the same
+// payload.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  // Six independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, batches, planRepairs] =
+  // Seven independent reads — issued in parallel, not awaited one by one.
+  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingSkill] =
     await Promise.all([
       ctx.runQuery(internal.tts.internalListTodos, {}),
       ctx.runQuery(internal.tts.internalListMirror, {}),
@@ -739,7 +728,9 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
       ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
+      ctx.runQuery(internal.ttsSkills.internalGetSkill, { name: WRITING_SKILL }),
     ]);
+  const synced = writingSkill?.body.trim() ?? "";
   return jsonResponse(200, {
     todos,
     mirror,
@@ -747,7 +738,7 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     recentRulings,
     batches,
     planRepairs,
-    writingStandard: WRITING_STANDARD,
+    writingStandard: synced === "" ? WRITING_STANDARD : synced,
   });
 });
 
@@ -1031,7 +1022,7 @@ const sessionsPoll = httpAction(async (ctx, request) => {
       typeof b.lastIngestError === "string"
         ? b.lastIngestError.slice(0, 2000)
         : undefined,
-    // Box load snapshot, loose-shape: the mutation's arg validator is the
+    // Jarvis Box load snapshot, loose-shape: the mutation's arg validator is the
     // final gate; a malformed report surfaces as a validator error.
     load:
       typeof b.load === "object" && b.load !== null

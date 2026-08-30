@@ -37,6 +37,11 @@ crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFal
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});
 
+// Model-of-tom skill refresh from WikiTom's default branch (quiet no-op while
+// GITHUB_MIRROR_TOKEN cannot see WikiTom — consumers fall back to the
+// hardcoded copies). Same 6-hour cadence as the mirror above.
+crons.interval("tts skills refresh", { hours: 6 }, internal.ttsSkills.refreshSkills, {});
+
 // Calendar mirror refresh from the ICS feeds in TTS_ICS_FEEDS (quiet no-op
 // until the env var is set). Hourly: calendars move on human timescales.
 crons.interval(

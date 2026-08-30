@@ -944,7 +944,7 @@ describe("claude sessions", () => {
     ).rejects.toThrow(/empty/);
   });
 
-  it("poll stores the box load and names each live session's posture", async () => {
+  it("poll stores the Jarvis Box load and names each live session's posture", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
@@ -1678,7 +1678,7 @@ describe("autonomous session scheduler", () => {
 
   // witness: remove the load-admission guard and this test goes red — load is
   // the PRIMARY throttle, not the scalar caps.
-  it("stands down when per-cpu load or free memory says the box is busy", async () => {
+  it("stands down when per-cpu load or free memory says the Jarvis Box is busy", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await eligibleTodo(tom);
@@ -1704,7 +1704,7 @@ describe("autonomous session scheduler", () => {
     await eligibleTodo(tom);
     await enableAuto(t);
 
-    // No heartbeat at all: nothing on the box could start a session.
+    // No heartbeat at all: nothing on the Jarvis Box could start a session.
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(await autoSessions(t)).toHaveLength(0);
 
@@ -2014,10 +2014,11 @@ describe("autonomous session scheduler", () => {
     expect(sessions[0].blockCategory).toBe("chores");
   });
 
-  // witness: sort the batch lane `rank(a) - rank(b)`, or invert
-  // IMPORTANCE_RANK in convex/tts.ts, and this test goes red — the tick's one
-  // admission would go to the least important batch.
-  it("walks the most important batch first", async () => {
+  // Ordering comes from dates, never a rating (Tom's ruling 2026-08-29).
+  // witness: sort the batch lane `b.updatedAt - a.updatedAt` in
+  // convex/claudeSessions.ts and this test goes red — the tick's one admission
+  // would go to the freshest batch instead of the stalest.
+  it("walks the stalest batch first", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await enableAuto(t, { maxNewPerTick: 1 });
@@ -2029,29 +2030,30 @@ describe("autonomous session scheduler", () => {
         status: "open" as const,
       },
     ];
-    const lowMember = await eligibleTodo(tom, "low member");
-    const highMember = await eligibleTodo(tom, "high member");
-    // The low batch is created FIRST, so a stable sort leaves it in front
-    // unless the importance comparator actually moves it.
-    const low = await eligibleTodo(tom, "low batch");
-    const high = await eligibleTodo(tom, "high batch");
+    const staleMember = await eligibleTodo(tom, "stale member");
+    const freshMember = await eligibleTodo(tom, "fresh member");
+    // The FRESH batch is created first, so a stable sort leaves it in front
+    // unless the updatedAt comparator actually moves the stale one up.
+    const fresh = await eligibleTodo(tom, "fresh batch");
+    const stale = await eligibleTodo(tom, "stale batch");
     await tom.mutation(api.tts.updateTodo, {
-      id: low,
-      members: [{ todoId: lowMember }],
+      id: fresh,
+      members: [{ todoId: freshMember }],
       plan: openStep,
     });
     await tom.mutation(api.tts.updateTodo, {
-      id: high,
-      members: [{ todoId: highMember }],
+      id: stale,
+      members: [{ todoId: staleMember }],
       plan: openStep,
     });
-    await tom.mutation(api.tts.setImportance, { id: low, level: "low" });
-    await tom.mutation(api.tts.setImportance, { id: high, level: "high" });
+    await t.run(async (ctx) =>
+      ctx.db.patch(stale, { updatedAt: Date.now() - 60 * 60 * 1000 }),
+    );
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const sessions = await autoSessions(t);
     expect(sessions).toHaveLength(1);
-    expect(sessions[0].todoId).toBe(high);
+    expect(sessions[0].todoId).toBe(stale);
   });
 
   // witness: move the batch lane below the dated lane and this test goes red.
@@ -2214,7 +2216,7 @@ describe("autonomous session scheduler", () => {
 //
 // The rule these tests pin is Tom's amendment the same night: prospecting runs
 // IN PARALLEL with real todo work, spending whatever per-tick budget the work
-// walk left unspent, because keeping the box at full capacity overnight is the
+// walk left unspent, because keeping the Jarvis Box at full capacity overnight is the
 // top priority. It is NOT the last resort it was first built as.
 describe("prospecting lane", () => {
   // The two repos the lane may prospect. WikiTom is deliberately absent: it is
@@ -2327,7 +2329,7 @@ describe("prospecting lane", () => {
   // Two witnesses, one per half. Delete the cooldown skip and the first half
   // goes red — a third prospector would re-read a tree read moments ago. Widen
   // PROSPECT_COOLDOWN_MS back to six hours ("six hours is insane") and the
-  // second half goes red — the box would idle the night out on a repo it read
+  // second half goes red — the Jarvis Box would idle the night out on a repo it read
   // once. The last assertion is the fairness comparator's own: invert
   // `lastAt < repoLastAt` and the newest-read repo would win instead.
   it("declines while both repos are inside the cooldown, then takes the stalest", async () => {

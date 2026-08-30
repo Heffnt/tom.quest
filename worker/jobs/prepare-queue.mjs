@@ -17,7 +17,7 @@
 //
 // NO-STATE RULE: this script keeps nothing on disk. Everything it needs comes
 // from Convex (/tts/state) and everything it produces goes to Convex
-// (/tts/prep). The box can vanish at 4:31 and today is still covered.
+// (/tts/prep). The Jarvis Box can vanish at 4:31 and today is still covered.
 
 import {
   loadEnv,
@@ -49,7 +49,7 @@ async function main() {
 
   // --- Fetch state; THE SERVER OWNS THE DAY KEY ----------------------------
   // /tts/state returns `prepDay`: the day the coming 5 a.m. digest belongs
-  // to, computed by Convex. This box deliberately does NOT compute day keys —
+  // to, computed by Convex. The Jarvis Box deliberately does NOT compute day keys —
   // a second hand-rolled copy of the 5 a.m./DST math diverged from Convex's
   // on DST-transition Sundays (review-caught), so the day is now a
   // server-owned fact and this job just repeats it back.

@@ -479,9 +479,9 @@ export default defineSchema({
         }),
       ),
     ),
-    // Agent-estimated importance from the (interim, inferred) model of Tom;
-    // Tom can override. THE GUARD lives in the internal mutations: an agent
-    // write is ignored whenever the stored value has setBy "tom".
+    // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept
+    // only because production rows exist and prod is additive-only; nothing
+    // reads or writes it.
     importance: v.optional(
       v.object({
         level: v.union(
@@ -494,8 +494,8 @@ export default defineSchema({
         rationale: v.optional(v.string()), // the agent's one-line justification
       }),
     ),
-    // Stamped by the Tom doors (updateTodo, setStatus, setImportance,
-    // setPlanStep, ruling life path, the pens). A batch with this set is
+    // Stamped by the Tom doors (updateTodo, setStatus, setPlanStep, ruling
+    // life path, the pens). A batch with this set is
     // FROZEN: the batcher job may never rewrite or retire it.
     tomTouchedAt: v.optional(v.number()),
     source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
@@ -736,7 +736,7 @@ export default defineSchema({
     .index("by_todo", ["todoId", "at"]),
 
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
-  // The worker box posts a Claude-prepared queue + digest text before 5;
+  // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
   // a fallback cron builds a simple-rules queue if none arrived. The digest
   // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
   // and marks digestSentAt — so a missing digest means Convex/Slack breakage,
@@ -770,7 +770,7 @@ export default defineSchema({
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_status", ["status"]),
 
-  // Ground-up briefs the worker box prepares for open code todos, one live row
+  // Ground-up briefs the Jarvis Box prepares for open code todos, one live row
   // per (repo, externalId) — upserted by internalStoreBriefs, so a re-brief
   // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
   // when the entry changes upstream, the hash mismatch marks the brief stale
@@ -791,9 +791,9 @@ export default defineSchema({
     ),
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),
     evidence: v.optional(v.string()),
-    // Importance for CODE todos lives on the brief (its stable home — mirror
-    // rows are deleted on upstream close). Same shape + same setBy-"tom"
-    // agent-write guard as dtsTodos.importance.
+    // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept
+    // only because production rows exist and prod is additive-only; nothing
+    // reads or writes it.
     importance: v.optional(
       v.object({
         level: v.union(
@@ -832,10 +832,23 @@ export default defineSchema({
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_ruled", ["ruledAt"]),
 
+  // Mirror of WikiTom model-of-tom/skills/*/SKILL.md, refreshed by cron;
+  // WikiTom is the system of record. A row exists so prompt-building code can
+  // read a skill without a git checkout: Convex has no filesystem, and the
+  // planner on the Jarvis Box is Node ESM that cannot import TypeScript, so it
+  // takes the text over HTTP (GET /tts/batch-context). Rows are a copy — the
+  // sync replaces them wholesale, the way dtsCodeTodoMirror replaces per repo.
+  ttsSkills: defineTable({
+    name: v.string(), // the skill directory's name, e.g. "writing-to-tom"
+    body: v.string(), // the SKILL.md file verbatim, YAML frontmatter included
+    sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
+    syncedAt: v.number(),
+  }).index("by_name", ["name"]),
+
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;
   // rendering + permission rulings 2026-08-29). These comments carry only what
-  // the schema itself needs: Convex IS the stream (the box's session-host
+  // the schema itself needs: Convex IS the stream (the Jarvis Box's session-host
   // daemon persists SDK events via key-authed /sessions/* routes,
   // SESSIONS_WORKER_KEY; the browser renders reactively); the two-tier
   // transcript (claudeMessages rows are FINALIZED, written once, seq-ordered;
@@ -916,7 +929,7 @@ export default defineSchema({
     // a silent mis-dispatch).
     model: v.optional(v.literal("fable")),
     sdkSessionId: v.optional(v.string()), // set once the SDK reports it; resume key
-    cwd: v.optional(v.string()), // daemon-reported working dir on the box
+    cwd: v.optional(v.string()), // daemon-reported working dir on the Jarvis Box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
     // Daemon-owned idempotency floor: an ingest carrying seqs below this is a
     // network retry and is dropped. Monotonic per session.
@@ -1028,7 +1041,7 @@ export default defineSchema({
     version: v.string(),
     activeAccount: v.optional(v.string()), // "gmail" | "wpi"
     lastIngestError: v.optional(v.string()),
-    // Box load snapshot, reported with each heartbeat — the input to the
+    // Jarvis Box load snapshot, reported with each heartbeat — the input to the
     // scheduler's load-based admission (the primary throttle of P3).
     load: v.optional(
       v.object({

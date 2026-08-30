@@ -1,9 +1,9 @@
 "use client";
 
 // One life-todo row: click-to-expand summary line + detail panel.
-// Panel order: intent banner → session + options (verdicts, done/archive,
-// importance) → time note → brief → "edit" disclosure (field editors, full
-// fact grid, date history). Actions sit at the top everywhere.
+// Panel order: intent banner → session + options (verdicts, done/archive) →
+// time note → brief → "edit" disclosure (field editors, full fact grid, date
+// history). Actions sit at the top everywhere.
 //
 // Timing FACTS are displayed all over this row (countdown, dueAt, dateKind,
 // latest safe, wake, date history); timing INPUT is one time note — the row
@@ -286,20 +286,6 @@ export default function TodoRow({
           <span className={chipCls}>{todo.status}</span>
         )}
         {todo.category && <span className={chipCls}>{todo.category}</span>}
-        {todo.importance && (
-          <span className="text-xs">
-            <span
-              className={
-                todo.importance.level === "high"
-                  ? "text-accent"
-                  : "text-text-muted"
-              }
-            >
-              {todo.importance.level}
-            </span>
-            <span className="text-text-faint"> · {todo.importance.setBy}</span>
-          </span>
-        )}
         <span className="text-xs flex flex-wrap gap-x-3 gap-y-0.5 ml-auto">
           {facts}
         </span>
@@ -331,7 +317,7 @@ export default function TodoRow({
           )}
 
           {/* 2 — session + options (the one options surface: verdicts when
-              this is a gate item, done/archive, importance). A gate item is
+              this is a gate item, done/archive). A gate item is
               ruled from wherever it is seen, not only from the batches tab —
               batched members lose that strip. */}
           <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
@@ -510,11 +496,6 @@ export default function TodoRow({
                 )}
                 {todo.members !== undefined && (
                   <Fact label="members">{todo.members.length}</Fact>
-                )}
-                {todo.importance && (
-                  <Fact label="importance">
-                    {todo.importance.level} · {todo.importance.setBy}
-                  </Fact>
                 )}
                 <Fact label="source">
                   {todo.source}
