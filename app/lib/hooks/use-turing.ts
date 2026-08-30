@@ -20,6 +20,14 @@ interface UseTuringMutationResult<TBody, TResponse> {
   error: string | null;
 }
 
+export type TuringMethod = "GET" | "POST" | "DELETE";
+
+export interface TuringRequestOptions {
+  method?: TuringMethod;
+  /** Omit entirely to send no request body. `{}` sends an empty JSON object. */
+  body?: unknown;
+}
+
 function truncateMessage(value: string, maxChars = 120): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars - 1)}…`;
@@ -29,36 +37,75 @@ function authHeaders(token: string | null): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function fetchJson<T>(url: string, token: string | null): Promise<T> {
+/**
+ * Turn a non-OK response from /api/turing into the message the UI shows.
+ * The proxy route reports upstream failures as JSON `{ error }`, so that field
+ * wins when present; anything else falls back to the raw body. Every path is
+ * truncated, because these messages land in narrow dialogs.
+ */
+async function errorFromResponse(res: Response): Promise<Error> {
+  const contentType = res.headers.get("content-type") ?? "";
+  const text = await res.text();
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = JSON.parse(text) as { error?: unknown };
+      if (typeof payload.error === "string") {
+        return new Error(truncateMessage(payload.error));
+      }
+    } catch {
+      // Not JSON after all; fall back to the response text.
+    }
+  }
+  return new Error(truncateMessage(text || `Request failed: ${res.status}`));
+}
+
+/**
+ * The single way this app talks to /api/turing. Every caller — the read hook,
+ * the mutation hook, and loops that vary the path per iteration — goes through
+ * here, so error parsing and truncation are spelled exactly once. Rejects with
+ * an Error whose message is already display-ready.
+ */
+export async function turingRequest<TResponse>(
+  path: string,
+  token: string | null,
+  options: TuringRequestOptions = {},
+): Promise<TResponse> {
+  const { method = "GET", body } = options;
+  const headers: Record<string, string> = authHeaders(token);
+  const init: RequestInit = { method, headers, cache: "no-store" };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
   let res: Response;
   try {
-    res = await fetch(url, { headers: authHeaders(token), cache: "no-store" });
+    res = await fetch("/api/turing" + path, init);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Network error";
-    throw new Error(message);
+    throw new Error(error instanceof Error ? error.message : "Network error");
   }
-  if (!res.ok) {
-    const contentType = res.headers.get("content-type") ?? "";
-    const text = await res.text();
-    if (contentType.includes("application/json")) {
-      let payload: { error?: unknown } | null = null;
-      try {
-        payload = JSON.parse(text) as { error?: unknown };
-      } catch {
-        payload = null;
-      }
-      if (typeof payload?.error === "string") {
-        throw new Error(truncateMessage(payload.error));
-      }
-    }
-    throw new Error(truncateMessage(text || `Request failed: ${res.status}`));
-  }
+  if (!res.ok) throw await errorFromResponse(res);
   try {
-    return (await res.json()) as T;
+    return (await res.json()) as TResponse;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid JSON response";
-    throw new Error(message);
+    throw new Error(error instanceof Error ? error.message : "Invalid JSON response");
   }
+}
+
+/**
+ * `turingRequest` with the signed-in user's token already bound. Use this when
+ * the path is not fixed for the lifetime of the component — cancelling a list
+ * of jobs, for instance — since a hook cannot be called once per list entry.
+ */
+export function useTuringRequest(): <TResponse>(
+  path: string,
+  options?: TuringRequestOptions,
+) => Promise<TResponse> {
+  const { token } = useAuth();
+  return useCallback(
+    <TResponse,>(path: string, options?: TuringRequestOptions) =>
+      turingRequest<TResponse>(path, token, options),
+    [token],
+  );
 }
 
 export function useTuring<T>(path: string, options?: UseTuringOptions): UseTuringResult<T> {
@@ -72,7 +119,7 @@ export function useTuring<T>(path: string, options?: UseTuringOptions): UseTurin
   const load = useCallback(async () => {
     setLoading(!hasLoaded.current);
     try {
-      const payload = await fetchJson<T>("/api/turing" + path, token);
+      const payload = await turingRequest<T>(path, token);
       if (!mounted.current) return;
       setData(payload);
       setError(null);
@@ -121,32 +168,8 @@ export function useTuringMutation<TBody, TResponse>(
   const trigger = useCallback(async (body: TBody): Promise<TResponse | null> => {
     setLoading(true);
     setError(null);
-    const url = "/api/turing" + path;
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json", ...authHeaders(token) };
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const contentType = res.headers.get("content-type") ?? "";
-        const text = await res.text();
-        let message = truncateMessage(text || `Request failed: ${res.status}`);
-        if (contentType.includes("application/json")) {
-          try {
-            const payload = JSON.parse(text) as { error?: unknown };
-            if (typeof payload.error === "string") {
-              message = truncateMessage(payload.error);
-            }
-          } catch {
-            // Fall back to the response text.
-          }
-        }
-        throw new Error(message);
-      }
-      const payload = (await res.json()) as TResponse;
-      return payload;
+      return await turingRequest<TResponse>(path, token, { method, body });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown error";
       setError(message);

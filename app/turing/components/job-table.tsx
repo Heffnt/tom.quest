@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { useAuth } from "@/app/lib/auth";
-import { useTuringMutation } from "@/app/lib/hooks/use-turing";
+import { useTuringRequest } from "@/app/lib/hooks/use-turing";
 import { Job, gpuTypeLabel } from "../types";
 
 interface JobTableProps {
@@ -112,7 +111,6 @@ function ConfirmModal({
 }
 
 export default function JobTable({ data, loading, error, isTom, onRefresh }: JobTableProps) {
-  const { token } = useAuth();
   const [cancelJobId, setCancelJobId] = useState<string | null>(null);
   const [cancelAllOpen, setCancelAllOpen] = useState(false);
   const [terminalSession, setTerminalSession] = useState<string | null>(null);
@@ -124,51 +122,47 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
     [data],
   );
 
-  const cancelOne = useTuringMutation<Record<string, never>, { success: boolean }>(
-    cancelJobId ? `/jobs/${cancelJobId}` : "/jobs/_", "DELETE",
-  );
+  const turing = useTuringRequest();
 
-  useEffect(() => {
-    if (cancelOne.error) setCancelError(cancelOne.error);
-  }, [cancelOne.error]);
+  /**
+   * The one place this file cancels jobs. Both the per-row ✕ and Cancel all
+   * call it, so both get the same request path and the same parsed, truncated
+   * failure message. Stops at the first failure and returns that message;
+   * returns null when every job in the list was cancelled.
+   */
+  const cancelJobs = useCallback(async (jobIds: string[]): Promise<string | null> => {
+    for (const jobId of jobIds) {
+      try {
+        const res = await turing<{ success: boolean }>(`/jobs/${jobId}`, {
+          method: "DELETE",
+          body: {},
+        });
+        if (!res?.success) return `Job ${jobId}: cancel failed`;
+      } catch (e) {
+        return e instanceof Error ? e.message : "Cancel failed";
+      }
+    }
+    return null;
+  }, [turing]);
+
+  const runCancel = async (jobIds: string[], onSuccess: () => void) => {
+    setCancelLoading(true);
+    setCancelError(null);
+    const failure = await cancelJobs(jobIds);
+    setCancelLoading(false);
+    if (failure) setCancelError(failure);
+    else onSuccess();
+    onRefresh();
+  };
 
   const doSingleCancel = async () => {
     if (!cancelJobId) return;
-    setCancelLoading(true);
-    setCancelError(null);
-    const res = await cancelOne.trigger({});
-    setCancelLoading(false);
-    if (res?.success) {
-      setCancelJobId(null);
-      onRefresh();
-    } else {
-      setCancelError("Cancel failed");
-    }
+    await runCancel([cancelJobId], () => setCancelJobId(null));
   };
 
   const doCancelAll = async () => {
     if (!data) return;
-    setCancelLoading(true);
-    setCancelError(null);
-    for (const job of data) {
-      try {
-        const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-        const res = await fetch(`/api/turing/jobs/${job.job_id}`, { method: "DELETE", headers });
-        if (!res.ok) {
-          const text = await res.text();
-          const message = text || `Job ${job.job_id}: ${res.status}`;
-          throw new Error(message);
-        }
-      } catch (e) {
-        setCancelError(e instanceof Error ? e.message : "Cancel failed");
-        setCancelLoading(false);
-        onRefresh();
-        return;
-      }
-    }
-    setCancelLoading(false);
-    setCancelAllOpen(false);
-    onRefresh();
+    await runCancel(data.map(job => job.job_id), () => setCancelAllOpen(false));
   };
 
   return (
