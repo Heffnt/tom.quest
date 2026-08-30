@@ -264,6 +264,11 @@ export const getToday = query({
   },
 });
 
+// Newest-first, Tom-gated. Its un-gated internal twin is
+// `internalEventsInRange` (below, beside internalRecentPlanRepairs): a
+// scheduled job cannot call THIS one, because requireTomId needs a signed-in
+// browser identity and a cron has none. Read a window from a cron there rather
+// than writing a second reader here.
 export const listRecentEvents = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
@@ -2627,6 +2632,41 @@ export const internalRecentPlanRepairs = internalQuery({
       )
       .take(Math.min(limit ?? 20, 100));
     return rows;
+  },
+});
+
+// Every dtsEvents row in the half-open window [start, end), oldest first — the
+// read a SCHEDULED job makes to answer "what happened since last time".
+// listRecentEvents is its Tom-facing twin and is unreachable from a cron:
+// requireTomId needs a browser identity and a cron has none.
+//
+// HALF-OPEN IS THE POINT. Consecutive windows [t0,t1) and [t1,t2) partition
+// time exactly, so an hourly reader that passes its previous `end` as this
+// `start` neither reports an event twice nor drops one that landed on the
+// boundary millisecond. Two rows written in one transaction share an `at`
+// (logEvent stamps Date.now()), so a CLOSED interval would re-report a whole
+// boundary transaction in the next hour.
+//
+// No `kinds` filter argument: the caller holds the whole window and filters in
+// JS. A kinds array would need an OR chain in the Convex filter for no gain at
+// this size.
+export const internalEventsInRange = internalQuery({
+  args: {
+    start: v.number(),
+    end: v.number(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, { start, end, limit }) => {
+    const cap = Math.min(limit ?? 500, 2000);
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at", (q) => q.gte("at", start).lt("at", end))
+      .order("asc")
+      .take(cap + 1);
+    // The caller is TOLD when it holds a prefix rather than the window: a
+    // burst hour must not silently read as "that is all that happened", which
+    // is the one failure mode an hourly report cannot have.
+    return { events: rows.slice(0, cap), truncated: rows.length > cap };
   },
 });
 

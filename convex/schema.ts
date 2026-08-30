@@ -719,6 +719,32 @@ export default defineSchema({
   // hour. Tom-visible. `kind` is a free string by convention ("created",
   // "surfaced", "engaged", "queue-cycled", "status-changed", "date-outcome",
   // "woke", "captured", ...).
+  //
+  // SESSION LIFECYCLE (spec §10 "session start/end", §20.4). A session's own
+  // row is mutable state — `status` and `outcome` are overwritten in place, so
+  // it says what a session came to but never WHEN it crossed. These kinds are
+  // the record of the crossings, written by logSessionEvent in
+  // claudeSessions.ts and carrying { sessionId, title, mode } plus their own
+  // fields:
+  //   "session-created"  — Tom created a session by hand (createSession).
+  //   "session-ended"    — a session crossed live → ended|failed, once per
+  //                        crossing. ONE kind carrying `status`, because the
+  //                        code has one live→terminal edge; `via` says
+  //                        "daemon" or "force-close".
+  //   "session-outcome"  — an outcome was written, by the agent's pen (`via`
+  //                        "agent") or the daemon's stamp (`via` "daemon").
+  //                        Written on every record, not only the first;
+  //                        `firstRecord` distinguishes them, so a correction
+  //                        from completed to errored survives in the record.
+  // A reader counting sessions STARTED in a window must read the union
+  // { "session-created", "auto-session-created", "prospect-mission-created" }.
+  // The two autonomous insert sites keep their own kinds because
+  // "prospect-mission-created" is load-bearing — admitProspectMission reads
+  // those rows back as its per-repo cooldown clock — and a duplicate row per
+  // autonomous session would double-count for any reader not told to dedupe.
+  //
+  // Read a window from a cron with tts.internalEventsInRange (half-open
+  // [start, end)); tts.listRecentEvents is Tom-gated and cron-unreachable.
   dtsEvents: defineTable({
     at: v.number(),
     kind: v.string(),

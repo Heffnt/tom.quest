@@ -132,6 +132,35 @@ function outcomeEventText(
   }`;
 }
 
+// The dtsEvents twin of notifySessionEvent above. A session edge writes BOTH:
+// a Slack line (a PUSH — once sent it is gone, and it is currently a no-op,
+// ttsSync.OUTBOUND_SLACK_ENABLED = false) and an append-only dtsEvents row (a
+// RECORD — readable later, over any window, by anything, via the by_at index).
+// The record half is what a scheduled "what happened since last time" report
+// reads; the session row itself cannot answer it, because `status` and
+// `outcome` are overwritten in place and say only what a session came to, not
+// when it crossed.
+//
+// ONE helper so the two writers of an outcome (the daemon's stamp, the agent's
+// pen) and the four writers of an ending (ended / failed via internalIngest,
+// force-close, and any later one) cannot describe the same fact four ways.
+async function logSessionEvent(
+  ctx: MutationCtx,
+  kind: "session-created" | "session-ended" | "session-outcome",
+  session: Pick<Doc<"claudeSessions">, "_id" | "title" | "todoId" | "mode">,
+  data: Record<string, unknown>,
+) {
+  await logEvent(ctx, kind, session.todoId, {
+    sessionId: session._id,
+    title: session.title,
+    // Absent `mode` IS "interactive" (schema.ts, claudeSessions.mode); the
+    // event states it rather than making every later reader re-learn the
+    // absence rule.
+    mode: session.mode ?? "interactive",
+    ...data,
+  });
+}
+
 // ── Tom-facing queries ───────────────────────────────────────────────────────
 
 export const listSessions = query({
@@ -241,8 +270,10 @@ export const createSession = mutation({
     await requireTomId(ctx);
     if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
     const now = Date.now();
+    // Hoisted so the row and its event agree on one title.
+    const finalTitle = title.trim() || "Untitled session";
     const sessionId = await ctx.db.insert("claudeSessions", {
-      title: title.trim() || "Untitled session",
+      title: finalTitle,
       kind,
       repo,
       todoId,
@@ -257,6 +288,20 @@ export const createSession = mutation({
     if (todoId !== undefined) {
       await markLiveSessionRulingApplied(ctx, todoId, sessionId);
     }
+    // The record of Tom starting a session by hand. `sessionKind`, not `kind`:
+    // `kind` is already the dtsEvents row's own column, and a nested second
+    // meaning of the word inside `data` is a trap for every later reader.
+    //
+    // A reader counting sessions STARTED in a window must read the union
+    // { session-created, auto-session-created, prospect-mission-created } —
+    // the two autonomous insert sites keep their own kinds (see the dtsEvents
+    // comment in schema.ts).
+    await logSessionEvent(
+      ctx,
+      "session-created",
+      { _id: sessionId, title: finalTitle, todoId, mode: undefined },
+      { sessionKind: kind, repo },
+    );
     // The ratified rule is "every session ends with a written outcome
     // record". The autonomous mission prompt (buildAutoMissionPrompt below)
     // already hands its agent both halves of what that needs — the session's
@@ -458,6 +503,17 @@ export const forceClose = mutation({
       status: "ended",
       statusChangedAt: now,
       endedReason: "force-closed by Tom; worker unconfirmed",
+    });
+    // THE FOURTH ENDING, and the reason it must be recorded here rather than
+    // left to internalIngest: force-close is allowed ONLY when the worker has
+    // gone stale, so no daemon flush is ever coming for this session. Without
+    // this row, exactly the endings that happened BECAUSE the box died are the
+    // ones the record misses. The `isLive` guard above makes it once-only.
+    await logSessionEvent(ctx, "session-ended", session, {
+      status: "ended",
+      endedReason: "force-closed by Tom; worker unconfirmed",
+      durationMs: now - session.createdAt,
+      via: "force-close",
     });
     // Settle the orphans (review finding): nothing else ever will — a
     // force-closed session drops out of the daemon's live scan, so pending
@@ -825,6 +881,15 @@ export const internalIngest = internalMutation({
         args.sessionId,
         outcomeEventText(session.title, args.outcome, args.outcomeSummary),
       );
+      // The record half of the same edge. `session` is the PRE-patch doc read
+      // at the top of this handler; title / todoId / mode are untouched by the
+      // patch, so it is the right source for the event's identity fields.
+      await logSessionEvent(ctx, "session-outcome", session, {
+        outcome: args.outcome,
+        summary: args.outcomeSummary,
+        via: "daemon",
+        firstRecord: true,
+      });
     }
 
     for (const upd of args.inboundUpdates ?? []) {
@@ -856,6 +921,23 @@ export const internalIngest = internalMutation({
       for (const row of orphanedInbound) {
         await ctx.db.patch(row._id, { status: "interrupted" });
       }
+      // ONE row for both terminal statuses, carrying which one it was. The
+      // code has ONE live→terminal edge, and a consumer that wants only
+      // failures reads one field of a window it already holds. (Passed over:
+      // separate "session-ended" / "session-failed" kinds, which would make
+      // failures filterable by the `kind` column alone — worth revisiting only
+      // if a consumer ever needs a failures-only index scan.)
+      //
+      // `becameTerminal` already requires `!noState`, which excludes both a
+      // late flush at an already-terminal row and a pre-reopen replay, so this
+      // fires exactly once per real crossing. A session Tom reopens and that
+      // ends again writes a SECOND row, correctly: that is two endings.
+      await logSessionEvent(ctx, "session-ended", session, {
+        status: args.status,
+        endedReason: args.endedReason ?? session.endedReason,
+        durationMs: now - session.createdAt,
+        via: "daemon",
+      });
     }
 
     // EDGE: a failure is reported once, on the live→terminal crossing.
@@ -969,6 +1051,18 @@ export const internalRecordOutcome = internalMutation({
         outcomeEventText(session.title, outcome, summary),
       );
     }
+    // The record, written on EVERY record — outside the firstRecord guard
+    // above, unlike Slack. A re-record is usually a sharpening of the same
+    // ending, but it is also how "completed" becomes "errored" after a late
+    // failure, and that correction is precisely a thing that happened in an
+    // hour. `firstRecord` says which kind this row is, so a reader counting
+    // sessions that finished counts the first ones only.
+    await logSessionEvent(ctx, "session-outcome", session, {
+      outcome,
+      summary: summary.trim(),
+      via: "agent",
+      firstRecord,
+    });
     // The plan-repair event, written whenever the worker sent one — including
     // on a re-record, because a second wording of the same ending may be where
     // the wrong edge was finally named. It carries the batch as well as the
