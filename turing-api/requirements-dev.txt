@@ -1,0 +1,10 @@
+# Test-only dependencies for the turing-api suite (*_test.py).
+#
+# Not needed to run the service. main_test.py, forge_test.py and
+# boolback_snapshot_test.py drive the app through httpx.ASGITransport, so the
+# suite cannot even be collected without httpx.
+#
+#     pip install -r requirements.txt -r requirements-dev.txt
+#     python -m unittest discover -p '*_test.py'
+
+httpx>=0.27.0

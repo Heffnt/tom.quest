@@ -1,4 +1,23 @@
+# Runtime dependencies of the turing-api service itself (login node).
+# README's first-time setup is `pip install -r requirements.txt`, so anything
+# main.py reaches at import or request time has to be declared here.
+#
+# The trace server (transformer_server.py) runs on a GPU compute node as a
+# separate process and is NOT installed by this file -- see requirements-trace.txt.
+# Test-only dependencies live in requirements-dev.txt.
+#
+# requirements_test.py fails if a third-party import in this directory is
+# declared in none of the three files.
+
 fastapi>=0.109.0
 uvicorn>=0.27.0
 python-dotenv>=1.0.0
 requests>=2.31.0
+
+# Serves the browser terminal (ws.py). uvicorn ships NO WebSocket implementation
+# of its own: without this, uvicorn logs "No supported WebSocket library
+# detected" and answers every terminal connection with 404 Not Found, while
+# /health keeps returning 200 and the liveness poller keeps reporting the API
+# up. Declared directly rather than via uvicorn[standard] so the login-node
+# install does not also pull uvloop and httptools, which build from source.
+websockets>=12.0

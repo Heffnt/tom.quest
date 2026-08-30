@@ -121,6 +121,28 @@ cd ~/tom.quest/turing-api
 pip install -r requirements.txt
 ```
 
+That file is the whole login-node install, and it must stay that way — the
+terminal is a WebSocket, and uvicorn ships no WebSocket implementation of its
+own, so an install missing one answers `/health` with 200 (keeping the Convex
+liveness poller green) while returning **404 Not Found** to every terminal
+connection. Two dependency sets are deliberately *not* in it:
+
+| File | Installed where | Why it is separate |
+| --- | --- | --- |
+| `requirements.txt` | Turing login node | The service itself. Includes `websockets`, without which the terminal 404s. |
+| `requirements-trace.txt` | GPU compute node | `transformer_server.py` only. Keeps a multi-gigabyte CUDA `torch` wheel off the login node, which never runs that process. |
+| `requirements-dev.txt` | Anywhere tests run | `httpx`, which the `*_test.py` suite needs and the service does not. |
+
+`turing-api/requirements_test.py` fails if a third-party import in that
+directory is declared in none of the three. To confirm an install can really
+serve a terminal — not just answer `/health` — run the end-to-end check, which
+builds a throwaway virtualenv from `requirements.txt` alone, boots the service
+out of it, and opens one real terminal session:
+
+```bash
+python3 turing-api/clean_install_check.py
+```
+
 Create a `.env` file (or scp `secrets/turing-api.env` from your dev machine):
 
 ```

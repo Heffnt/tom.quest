@@ -1,0 +1,24 @@
+# Dependencies of transformer_server.py, the trace server behind tom.quest/transformer.
+#
+# Deliberately NOT in requirements.txt. transformer_server.py does not run on
+# the login node and is never imported by main.py -- it is launched by hand on a
+# GPU compute node, registers itself in ~/.tviz-server.json, and the login-node
+# service only proxies to it (main.py:/transformer-trace). Folding torch into
+# the login-node install would put a multi-gigabyte CUDA wheel into the home
+# quota of a box that never runs it.
+#
+# On a compute node this is usually unnecessary: the `boolback` conda env the
+# forge sbatch scripts activate already carries all three. Use this file when
+# building a standalone environment for the trace server alone.
+#
+#     pip install -r requirements-trace.txt
+#
+# torch is left unpinned because the correct wheel depends on the node's CUDA
+# toolkit; install it from the appropriate PyTorch index if the default wheel
+# does not match.
+
+fastapi>=0.109.0
+uvicorn>=0.27.0
+numpy>=1.24.0
+torch>=2.0.0
+transformers>=4.40.0

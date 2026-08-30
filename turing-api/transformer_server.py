@@ -8,6 +8,12 @@ DataSource seam the frontend consumes (app/transformer/lib/turing-source.ts):
     GET  /weights/{tensor}          strided window of a weight matrix
     GET  /weights/{tensor}/stats    mean / std / absMax for the color scale
 
+Its dependencies (numpy, torch, transformers) are declared in
+requirements-trace.txt, NOT in requirements.txt: this process runs on a GPU
+compute node and the login-node service only proxies to it, so the login node
+never needs a torch wheel. The `boolback` conda env the forge sbatch scripts
+activate already carries all three.
+
 Launch on a compute node (see the allocate-form / salloc), then expose with a
 cloudflared quick tunnel:
 
