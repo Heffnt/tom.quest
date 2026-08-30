@@ -47,6 +47,34 @@ describe("vqc/ledger.yaml", () => {
   });
 });
 
+// The article roster's one home is the constitution's ARTICLES registry
+// (ComplexMultiTrigger/vqc/constitution.md), which this repo does not vendor.
+// Restating its EXTENT here — "D1-D28", "C1-C9" — is a second spelling of a
+// fact that grows without telling us: all three cite-set descriptions said
+// "D1-D28" while the constitution had already reached D31. Describe the id
+// SHAPE (A*/C*/D*), never the count.
+//
+// witness: change any `A*/C*/D*` in vqc/adoption.md, vqc/ledger.yaml, or
+// vqc/todos.yaml back to `A*/C1-C9/D1-D28` and this test goes red.
+describe("vqc cite-set descriptions", () => {
+  const FILES = ["adoption.md", "ledger.yaml", "todos.yaml"];
+  // A bounded upper end on the D range — "D1-D28", "D1–D31", "`D1`–`D28`".
+  const PINNED_RANGE = /D\s*1\s*`?\s*[-–—]\s*`?\s*D\s*\d+/i;
+
+  it("describe article ids by shape, never by a pinned range", () => {
+    for (const file of FILES) {
+      const text = readFileSync(join(__dirname, file), "utf8");
+      const match = text.match(PINNED_RANGE);
+      expect(
+        match,
+        `${file}: pins the article roster's extent ("${match?.[0]}"). The ` +
+          `roster lives in the constitution's ARTICLES registry and grows; ` +
+          `describe the id shape (A*/C*/D*) instead.`,
+      ).toBeNull();
+    }
+  });
+});
+
 // witness: change a steering entry's `kind` to "rule" in vqc/steering.yaml
 // and this test goes red.
 describe("vqc/steering.yaml", () => {

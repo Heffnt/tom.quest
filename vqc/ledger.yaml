@@ -11,7 +11,9 @@
 #   id              stable kebab-case id, never reused
 #   kind            descent | alignment | pending-fence | steering-graduation | scratch-graduation
 #   created         YYYY-MM-DD
-#   cites           constitution article ids (A*/C1-C9/D1-D28) or tts-spec:<section>
+#   cites           constitution article ids (A*/C*/D*) or tts-spec:<section>
+#                   (the article roster's one home is the constitution's
+#                   ARTICLES registry — never restate its extent here)
 #   statement       the discovered fact, one short paragraph
 #   graduates_when  the checkable condition under which the entry is deleted
 #

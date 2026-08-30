@@ -21,7 +21,9 @@
 #   readiness             unprepared | preparing | ready-for-tom
 #   status                active | waiting | archived | done
 #   created               YYYY-MM-DD
-#   cites                 non-empty; constitution article ids (A*/C1-C9/D1-D28),
+#   cites                 non-empty; constitution article ids (A*/C*/D* — the
+#                         roster's one home is the constitution's ARTICLES
+#                         registry; never restate its extent here),
 #                         tts-spec:<section> (WikiTom tts/spec.md), or open
 #                         vqc/ledger.yaml entry ids — a todo CITES a debt
 #                         entry, never duplicates its content
