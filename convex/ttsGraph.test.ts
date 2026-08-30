@@ -628,7 +628,7 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
   // witness: infer "did the batch store?" from the skip report (the pre-fix
   // rule) and this goes red — a TASK's skip carries the task's statement as
   // its ref, so a task whose statement happens to equal the batch's reads as a
-  // refused batch, and the planner silently drops Tom's revise ruling.
+  // refused batch, and the planner silently drops Tom's edit ruling.
   it("says whether the batch itself stored, separately from its tasks", async () => {
     const t = convexTest({ schema, modules });
     const stored = await storeGraph(t, {
@@ -1033,20 +1033,20 @@ describe("TTS rulings on a batch", () => {
     ).rejects.toThrow(/exactly one subject/);
   });
 
-  it("archive archives the batch; revise leaves it writable", async () => {
+  it("archive archives the batch; edit leaves it writable", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const batch = await newBatch(t);
     await tom.mutation(api.ttsRulings.recordRuling, {
       batchId: batch._id,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "split the second half out",
     });
-    // revise hands the graph BACK to the planner: no freeze, so a rewrite lands.
+    // edit hands the graph BACK to the planner: no freeze, so a rewrite lands.
     expect((await oneBatch(t)).tomTouchedAt).toBeUndefined();
     const rewrite = await storeGraph(t, {
       batchId: batch._id,
-      statement: "revised",
+      statement: "edited",
       tasks: [graphTask("smaller")],
     });
     expect(rewrite.skipped).toEqual([]);
@@ -1075,12 +1075,12 @@ describe("TTS rulings on a batch", () => {
       (await batchTodos(t, batch._id)).every((r) => r.status === "archived"),
     ).toBe(true);
 
-    // witness: leave a batch `revise` unapplied — every worker filters the
+    // witness: leave a batch `edit` unapplied — every worker filters the
     // pending feed to life/code, so it would sit in internalPendingRulings
     // (and the page's "ruled, applying" strip) forever.
-    const revise = rulings.find((r) => r.verdict === "revise")!;
-    expect(revise.appliedAt).toBeGreaterThan(0);
-    expect(revise.applyResult).toBe("handed back to the planner");
+    const edit = rulings.find((r) => r.verdict === "edit")!;
+    expect(edit.appliedAt).toBeGreaterThan(0);
+    expect(edit.applyResult).toBe("handed back to the planner");
     const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
     expect(pending).toEqual([]);
   });

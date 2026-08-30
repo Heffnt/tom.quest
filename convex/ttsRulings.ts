@@ -15,18 +15,18 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // verdict set (see schema.ts ttsRulings) is the ONLY vocabulary any ruling
 // button anywhere may use:
 //   approve — execute as briefed
-//   revise  — one written sentence redirects the preparing agent, no session
+//   edit  — one written sentence redirects the preparing agent, no session
 //   session — this needs conversation
 //   archive — set aside
 // "defer" is not a verdict: not ruling IS deferring; timing changes are a
 // reschedule (dtsBlocks / a time note), not a ruling.
 //
 // SENTENCE ON ANY VERDICT (2026-08-29): all four verdicts accept the optional
-// `sentence`. Required only on revise; on archive it is the unarchive
+// `sentence`. Required only on edit; on archive it is the unarchive
 // condition; on approve/session it is a free note that reaches the batcher
 // prompt, the preparer prompt, and the session's opening prompt.
 //
-// Life-subject verdicts take their immediate effect here (revise drops
+// Life-subject verdicts take their immediate effect here (edit drops
 // readiness to "preparing"; archive archives). Code subjects are applied by
 // the worker's apply job (repo is the system of record). appliedAt/applyResult
 // record the application either way; a newer ruling on the same subject
@@ -35,18 +35,18 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // THREE SUBJECT TYPES since schema v2 (2026-08-29): life (a dtsTodos row),
 // code (repo + externalId), and BATCH (a batches row — a batch is its own row
 // now, so Tom rules on the batch itself). A batch verdict lands like a life
-// verdict: approve ratifies the graph, archive archives the batch, revise
+// verdict: approve ratifies the graph, archive archives the batch, edit
 // hands it back to the planner (and, alone among the four, does NOT stamp
 // tomTouchedAt — the planner must stay allowed to re-form it).
 
 const VERDICT = v.union(
   v.literal("approve"),
-  v.literal("revise"),
+  v.literal("edit"),
   v.literal("session"),
   v.literal("archive"),
 );
 
-export type RulingVerdict = "approve" | "revise" | "session" | "archive";
+export type RulingVerdict = "approve" | "edit" | "session" | "archive";
 
 // The ONE definition of a ruling subject's identity (repo names carry no
 // spaces; the type prefix keeps life, code, and batch keys disjoint). Client
@@ -112,13 +112,13 @@ async function insertRuling(
     }
     // One optional written note on EVERY verdict (ratified 2026-08-29): the
     // four verdicts are uniform, each taking an optional note. Its MEANING is
-    // per-verdict and unchanged — revise: the redirect (still required);
+    // per-verdict and unchanged — edit: the redirect (still required);
     // archive: the condition to propose it back; approve/session: free
     // steering the worker prompts and the session prompt read.
     const trimmed = sentence?.trim();
-    if (verdict === "revise" && !trimmed) {
+    if (verdict === "edit" && !trimmed) {
       throw new Error(
-        "revise is the sentence verdict — write the sentence that redirects the agent",
+        "edit is the sentence verdict — write the sentence that redirects the agent",
       );
     }
     const now = Date.now();
@@ -129,13 +129,13 @@ async function insertRuling(
       const todo = await ctx.db.get(todoId);
       if (!todo) throw new Error("TTS todo not found");
       // A ruling is a Tom touch: tomTouchedAt freezes the row to the batcher
-      // (internalStoreBatches never rewrites or retires it) — EXCEPT revise,
+      // (internalStoreBatches never rewrites or retires it) — EXCEPT edit,
       // the one verdict that hands the subject BACK to the preparing agent
       // (for a batch, the batcher must stay allowed to re-form it).
-      if (verdict !== "revise") {
+      if (verdict !== "edit") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
       }
-      if (verdict === "revise") {
+      if (verdict === "edit") {
         await ctx.db.patch(todoId, { readiness: "preparing", updatedAt: now });
       }
       if (verdict === "archive") {
@@ -154,7 +154,7 @@ async function insertRuling(
         // No agent executes life todos yet — Tom is the executor. Approving a
         // life plan is pure ratification, so it applies the moment it is
         // recorded (leaving it "pending" would strand it forever: every
-        // worker filters life rows to revise). When a life executor exists,
+        // worker filters life rows to edit). When a life executor exists,
         // this is the line that changes.
         appliedAt = now;
         applyResult = "plan ratified";
@@ -165,10 +165,10 @@ async function insertRuling(
     if (isBatch) {
       const batch = await ctx.db.get(batchId);
       if (!batch) throw new Error("TTS batch not found");
-      // Same freeze rule as a life subject: every verdict but revise is a Tom
+      // Same freeze rule as a life subject: every verdict but edit is a Tom
       // touch, which frozen-blocks the planner (tts.internalStorePlanGraph).
-      // revise is precisely the verdict that hands the graph BACK to it.
-      if (verdict !== "revise") {
+      // edit is precisely the verdict that hands the graph BACK to it.
+      if (verdict !== "edit") {
         await ctx.db.patch(batchId, { tomTouchedAt: now });
       }
       if (verdict === "archive") {
@@ -203,8 +203,8 @@ async function insertRuling(
         appliedAt = now;
         applyResult = "graph ratified";
       }
-      if (verdict === "revise") {
-        // The application of a batch revise IS the un-freeze above: the
+      if (verdict === "edit") {
+        // The application of a batch edit IS the un-freeze above: the
         // planner may rewrite the graph again, and it reads the sentence from
         // the recent-rulings feed, never from the pending one. Every worker
         // filters the pending feed to life/code subjects, so leaving this
@@ -351,7 +351,7 @@ export async function markLiveSessionRulingApplied(
 // The rulings a worker job should act on: appliedAt unset AND not superseded
 // (a newer ruling on the same subject makes the older one dead history). Both
 // subject types ride the same feed — the worker filters by subjectType (code →
-// apply job; life revise → the preparer consumes the sentence).
+// apply job; life edit → the preparer consumes the sentence).
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {
@@ -389,7 +389,7 @@ export const internalMarkRulingApplied = internalMutation({
 
 // Digest input: how many briefed code todos await a ruling. A brief awaits
 // when its live ruling is missing OR OLDER than the brief — a re-brief after
-// a revise ruling puts the item back on Tom's plate (the fresh plan needs a
+// an edit ruling puts the item back on Tom's plate (the fresh plan needs a
 // fresh ruling). The client-side needs-me selector (app/tts/lib.ts) mirrors
 // this predicate.
 export function briefAwaitsRuling(
@@ -428,56 +428,3 @@ export const internalAwaitingRulingCount = internalQuery({
   },
 });
 
-// One-time migration (run at deploy: `npx convex run ttsRulings:internalMigrateCodeRulings`):
-// copy dtsCodeRulings history into the unified table under the ratified
-// verdict mapping. "defer" rows are NOT copied — defer is no longer a verdict
-// (not ruling is deferring); they stay in the deprecated table as history.
-// Idempotent: a row whose (repo, externalId, ruledAt) already exists is skipped.
-export const internalMigrateCodeRulings = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const MAP: Record<string, RulingVerdict | undefined> = {
-      approve: "approve",
-      "stale-replan": "revise",
-      "needs-session": "session",
-      "propose-archive": "archive",
-      defer: undefined,
-    };
-    const old = await ctx.db.query("dtsCodeRulings").collect();
-    const existing = await ctx.db.query("dtsRulings").collect();
-    const seen = new Set(
-      existing
-        .filter((r) => r.subjectType === "code")
-        .map((r) => `${r.repo} ${r.externalId} ${r.ruledAt}`),
-    );
-    let copied = 0;
-    let skippedDefer = 0;
-    for (const row of old) {
-      const verdict = MAP[row.ruling];
-      if (verdict === undefined) {
-        skippedDefer++;
-        continue;
-      }
-      const key = `${row.repo} ${row.externalId} ${row.ruledAt}`;
-      if (seen.has(key)) continue;
-      await ctx.db.insert("dtsRulings", {
-        subjectType: "code",
-        repo: row.repo,
-        externalId: row.externalId,
-        verdict,
-        // revise requires a sentence (recordRuling invariant) — a note-less
-        // stale-replan row gets an honest placeholder rather than minting a
-        // sentence-less revise ruling.
-        sentence:
-          verdict === "revise" && !row.note
-            ? "(migrated stale-replan ruling — no note was recorded)"
-            : row.note,
-        ruledAt: row.ruledAt,
-        appliedAt: row.appliedAt,
-        applyResult: row.applyResult,
-      });
-      copied++;
-    }
-    return { copied, skippedDefer, total: old.length };
-  },
-});

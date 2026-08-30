@@ -2046,7 +2046,7 @@ export const internalStorePlanGraph = internalMutation({
     const statement = args.statement.trim();
     const result = {
       batchId: null as Id<"batches"> | null,
-      // Did THIS BATCH's graph store? The caller consumes Tom's revise ruling
+      // Did THIS BATCH's graph store? The caller consumes Tom's edit ruling
       // on exactly this fact, and it cannot be read off `skipped`: a task's
       // skip carries the task's statement as its ref, and a task whose
       // statement happens to equal the batch's would read as a refused batch.

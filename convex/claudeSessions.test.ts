@@ -491,23 +491,23 @@ describe("claude sessions", () => {
     const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "just do it",
     });
-    // revise stays pending until the preparer consumes the sentence — the
+    // edit stays pending until the preparer consumes the sentence — the
     // live non-session ruling createSession must NOT touch. (approve on a
     // life todo applies instantly at record time, so it can't play this role.)
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "shorter",
     });
     const firstSession = await tom.mutation(api.claudeSessions.createSession, {
-      title: "adhoc on a revise-ruled todo",
+      title: "adhoc on an edit-ruled todo",
       kind: "focus-item",
       repo: "none",
       todoId,
       initialPrompt: "poke at it",
     });
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
-    expect(ruling.appliedAt).toBeUndefined(); // revise is the preparer's to apply
+    expect(ruling.appliedAt).toBeUndefined(); // edit is the preparer's to apply
 
     // An already-applied session ruling is not re-stamped by a second session.
     const sessionRulingId = await tom.mutation(api.ttsRulings.recordRuling, {
@@ -1760,10 +1760,10 @@ describe("autonomous session scheduler", () => {
       members: [{ todoId: memberId }],
     });
     // A live unapplied ruling means Tom already spoke — do not race it.
-    const ruledId = await eligibleTodo(tom, "revise this one");
+    const ruledId = await eligibleTodo(tom, "edit this one");
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: ruledId,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "shorter",
     });
     // A live session already references this todo.
@@ -1989,7 +1989,7 @@ describe("autonomous session scheduler", () => {
     // Tom already spoke on the stalest one — the fleet must not race it.
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: stalest,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "shorter",
     });
     // Staleness stated outright: the ruling above bumped the stalest row's

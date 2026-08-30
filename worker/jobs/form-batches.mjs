@@ -13,12 +13,12 @@
 // only rewrites source-"batcher" rows Tom has never touched, and drops (not
 // rejects) any batch that fails validation, reporting each skip back.
 //
-// REVISE RULINGS: Tom can rule "revise" on a batch with one written sentence.
-// This job collects the pending life-revise rulings whose subject is a
+// EDIT RULINGS: Tom can rule "edit" on a batch with one written sentence.
+// This job collects the pending life-edit rulings whose subject is a
 // members-bearing todo, embeds the sentences in the prompt (they override any
 // other reading), and consumes each via /tts/ruling-applied only once the
 // server reports that batch as stored — a skipped batch leaves its ruling
-// pending for the next run. A revise verdict no longer freezes the batch
+// pending for the next run. An edit verdict no longer freezes the batch
 // (server-side fix): it must stay rewritable for the re-form to land, so the
 // "frozen" flag in the prompt reflects only Tom's OTHER touches (edits,
 // status changes, importance he set himself).
@@ -95,11 +95,11 @@ function prompt(ctx) {
           ``,
         ]
       : []),
-    ...(ctx.revises.length > 0
+    ...(ctx.edits.length > 0
       ? [
-          `Tom ruled "revise" on these batches — each sentence redirects the`,
+          `Tom ruled "edit" on these batches — each sentence redirects the`,
           `re-forming and overrides any other reading of the inputs:`,
-          ...ctx.revises.map((r) => `- batch "${r.statement}": ${r.sentence}`),
+          ...ctx.edits.map((r) => `- batch "${r.statement}": ${r.sentence}`),
           ``,
         ]
       : []),
@@ -113,7 +113,7 @@ function prompt(ctx) {
         ]
       : []),
     `TOM'S RECENT RULINGS, newest first (behavioral evidence: what he`,
-    `approves, revises, sends to a session, archives — use it to infer what`,
+    `approves, edits, sends to a session, archives — use it to infer what`,
     `he cares about, not as items to act on):`,
     JSON.stringify(ctx.recentRulings, null, 2),
     ``,
@@ -165,19 +165,19 @@ async function main() {
     all.filter((t) => t.members !== undefined).map((t) => [t._id, t]),
   );
 
-  // Pending revise rulings ON BATCHES only — a revise on a plain life todo
+  // Pending edit rulings ON BATCHES only — an edit on a plain life todo
   // belongs to prepare-life-todos.mjs, which reads the same feed.
-  const revises = [];
+  const edits = [];
   for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
+    if (r.subjectType !== "life" || r.verdict !== "edit" || !r.todoId) continue;
     const batch = batchById.get(r.todoId);
     if (batch) {
-      revises.push({ ruling: r, statement: batch.statement, sentence: r.sentence ?? "" });
+      edits.push({ ruling: r, statement: batch.statement, sentence: r.sentence ?? "" });
     }
   }
 
   // Notes Tom wrote with his APPROVE and SESSION verdicts (2026-08-29: every
-  // verdict may carry a sentence). Unlike a revise sentence — which commands a
+  // verdict may carry a sentence). Unlike an edit sentence — which commands a
   // re-form and is consumed — these are standing steering context: what he
   // approved and why, what he wants talked through. Newest first, bounded.
   //
@@ -284,10 +284,10 @@ async function main() {
   }
 
   // --- Input hash: skip the Claude call when nothing changed ----------------
-  // The hash covers everything the model sees; a pending batch-revise forces
+  // The hash covers everything the model sees; a pending batch-edit forces
   // a run regardless (the sentence must be consumed even if re-ruled
   // identically). The cursor file is harmless to lose — one wasted run.
-  const reviseSentences = revises.map((r) => r.sentence);
+  const editSentences = edits.map((r) => r.sentence);
   const inputHash = createHash("sha256")
     .update(
       JSON.stringify({
@@ -295,7 +295,7 @@ async function main() {
         code,
         batches: batchRows,
         archivedStatements,
-        reviseSentences,
+        editSentences,
         notes,
       }),
     )
@@ -306,12 +306,12 @@ async function main() {
   } catch {
     // no cursor yet — first run, or the box was rebuilt
   }
-  if (inputHash === storedHash && revises.length === 0) return; // quiet when idle
+  if (inputHash === storedHash && edits.length === 0) return; // quiet when idle
 
   // --- One Claude call for the whole desired set ---------------------------
   console.log(
     `[form-batches] ${life.length} life (${lifeHeldBack} held back) + ${code.length} code todos, ` +
-      `${batchRows.length} existing batch(es), ${revises.length} revise ruling(s) — asking Claude…`,
+      `${batchRows.length} existing batch(es), ${edits.length} edit ruling(s) — asking Claude…`,
   );
   const answer = runClaude(
     prompt({
@@ -320,7 +320,7 @@ async function main() {
       code,
       batches: batchRows,
       archivedStatements,
-      revises,
+      edits,
       notes,
       recentRulings: recent.map((r) => ({
         subjectType: r.subjectType,
@@ -347,11 +347,11 @@ async function main() {
       ...(Array.isArray(parsed.archiveIds) ? { archiveIds: parsed.archiveIds } : {}),
     });
   } catch (err) {
-    // Nothing landed, so nothing is consumed: every revise ruling stays
+    // Nothing landed, so nothing is consumed: every edit ruling stays
     // pending and the next run re-forms on the same sentences. No cursor is
     // written either (see the ordering note below).
     console.error(
-      `[form-batches] store FAILED — ${revises.length} revise ruling(s) left pending: ${err.message}`,
+      `[form-batches] store FAILED — ${edits.length} edit ruling(s) left pending: ${err.message}`,
     );
     throw err;
   }
@@ -363,25 +363,25 @@ async function main() {
     console.log(`[form-batches] skipped ${s.ref}: ${s.why}`);
   }
 
-  // Consume a batch-revise ruling ONLY when its re-form actually landed. The
+  // Consume a batch-edit ruling ONLY when its re-form actually landed. The
   // server DROPS a batch that fails validation instead of rejecting the whole
   // POST, so a skip means Tom's sentence was never served: consuming the
   // ruling there would retire it silently and the grouping would stay wrong.
   // Left pending, it forces the next run (the hash check is bypassed while a
-  // revise is pending) to try again. A skip's `ref` is the batch id when the
+  // edit is pending) to try again. A skip's `ref` is the batch id when the
   // model reused one, its statement otherwise — match on both.
   const skippedRefs = new Set((result.skipped ?? []).map((s) => s.ref));
-  for (const r of revises) {
+  for (const r of edits) {
     if (skippedRefs.has(r.ruling.todoId) || skippedRefs.has(r.statement)) {
       console.log(
-        `[form-batches] revise ruling for "${r.statement}" left pending: ` +
+        `[form-batches] edit ruling for "${r.statement}" left pending: ` +
           `the re-formed batch was skipped by the server`,
       );
       continue;
     }
     await convexFetch(env, "/tts/ruling-applied", {
       id: r.ruling._id,
-      result: "revised: batches re-formed",
+      result: "edited: batches re-formed",
     });
   }
 

@@ -39,7 +39,7 @@ export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
 
 // Cursor-value sentinel prefix: apply-rulings sets an entry's cursor value to
 // "replan-requested[: <Tom's sentence>]" instead of a real hash when Tom's
-// verdict is "revise". Any non-hash value forces a re-brief (it never equals
+// verdict is "edit". Any non-hash value forces a re-brief (it never equals
 // the recomputed hash), and the PREFIX tells the briefing job to ask for a
 // fresh plan — a plain deletion couldn't be told apart from "never briefed".
 // (The sentinel string predates the verdict rename and stays as-is: it is a

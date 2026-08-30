@@ -3,7 +3,7 @@
 // The one dialog every action chip opens. Fixed overlay — nothing on the
 // page moves. Three input shapes, one per option kind:
 //   approve / archive — a choice, with an optional note
-//   edit              — a short answer an agent applies (absorbs revise,
+//   edit              — a short answer an agent applies (absorbs rewording,
 //                       schedule, reshaping, re-pathing, anything sayable)
 //   (session is its own thing and opens directly, not through this dialog)
 // The dialog always states where the batch stands before asking for input.
@@ -31,9 +31,7 @@ const COPY: Record<
   },
   edit: {
     does: "Say anything about this batch — reschedule it, reorder or drop steps, split it, reword it, move it to another path. An agent reads your words and applies them; the result shows here when it lands.",
-    // The chip says "edit" (Tom's word); the stored verdict is still named
-    // "revise" — the mono line shows the CALL, so it shows the true name.
-    call: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
+    call: 'ttsRulings.recordRuling({verdict:"edit", sentence})',
     placeholder: "e.g. after the paper batch · drop step 3 · not until saturday · split the turing items out",
     confirm: "send edit",
   },
@@ -117,7 +115,7 @@ export default function RulingDialog({
           </button>
           <button
             type="button"
-            // "edit" stores the revise verdict, which REQUIRES its sentence —
+            // the "edit" verdict REQUIRES its sentence —
             // the server refuses an empty one, so the button is not offered.
             disabled={busy || (verdict === "edit" && text.trim() === "")}
             onClick={() => {

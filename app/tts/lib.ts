@@ -17,10 +17,10 @@ export const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
-export type RulingVerdict = "approve" | "revise" | "session" | "archive";
+export type RulingVerdict = "approve" | "edit" | "session" | "archive";
 export const VERDICTS: RulingVerdict[] = [
   "approve",
-  "revise",
+  "edit",
   "session",
   "archive",
 ];
@@ -30,16 +30,9 @@ export const VERDICTS: RulingVerdict[] = [
 // format, same newest-ruledAt/_creationTime rule, so the tabs, the badge, and
 // the worker feed always agree on which ruling is live.
 
-export function rulingSubjectKey(r: {
-  subjectType: "life" | "code" | "batch";
-  todoId?: string;
-  repo?: string;
-  externalId?: string;
-  batchId?: string;
-}): string {
-  if (r.subjectType === "life") return `life ${r.todoId}`;
-  if (r.subjectType === "batch") return `batch ${r.batchId}`;
-  return `code ${r.repo} ${r.externalId}`;
+/** A life subject (a `dtsTodos` row). */
+export function lifeSubjectKey(todoId: string): string {
+  return `life ${todoId}`;
 }
 
 export function codeSubjectKey(repo: string, externalId: string): string {
@@ -49,6 +42,20 @@ export function codeSubjectKey(repo: string, externalId: string): string {
 /** A schema-v2 batch subject (a `batches` row is its own ruling subject). */
 export function batchSubjectKey(batchId: string): string {
   return `batch ${batchId}`;
+}
+
+// One spelling per subject type: this dispatches to the three builders above
+// rather than repeating their string formats.
+export function rulingSubjectKey(r: {
+  subjectType: "life" | "code" | "batch";
+  todoId?: string;
+  repo?: string;
+  externalId?: string;
+  batchId?: string;
+}): string {
+  if (r.subjectType === "life") return lifeSubjectKey(r.todoId!);
+  if (r.subjectType === "batch") return batchSubjectKey(r.batchId!);
+  return codeSubjectKey(r.repo!, r.externalId!);
 }
 
 // ── Batches v1 ───────────────────────────────────────────────────────────────
@@ -142,7 +149,7 @@ export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
 //   as new as the todo's last update — a ruled gate is answered until the
 //   preparer touches the todo again (re-prep bumps updatedAt past ruledAt).
 // code: open + briefed, where the live ruling is missing or OLDER than the
-//   brief — a re-brief after a revise ruling returns the item for a fresh
+//   brief — a re-brief after an edit ruling returns the item for a fresh
 //   ruling (mirror of convex/ttsRulings.ts briefAwaitsRuling).
 // pending: live rulings not yet applied (the "ruled, applying" strip).
 

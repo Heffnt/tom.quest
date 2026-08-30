@@ -7,7 +7,7 @@
 //
 // The four verdicts are uniform (ratified 2026-08-29): clicking a chip selects
 // it and reveals ONE note input; confirming records the verdict with that note
-// as `sentence`. Only revise requires it. On archive the sentence IS the
+// as `sentence`. Only edit requires it. On archive the sentence IS the
 // unarchive condition (convex/ttsRulings.ts maps it), so one input serves all
 // four.
 //
@@ -136,7 +136,7 @@ type Mode = RulingVerdict | "done" | "set-archived";
 
 const PLACEHOLDER: Record<Mode, string> = {
   approve: "note (optional)",
-  revise: "sentence (required)",
+  edit: "sentence (required)",
   session: "note (optional)",
   archive: "unarchive when (optional)",
   done: "note (optional)",
@@ -145,7 +145,7 @@ const PLACEHOLDER: Record<Mode, string> = {
 
 const INFO: Record<Mode, string> = {
   approve: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
-  revise: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
+  edit: 'ttsRulings.recordRuling({verdict:"edit", sentence})',
   session: 'ttsRulings.recordRuling({verdict:"session", sentence})',
   archive: 'ttsRulings.recordRuling({verdict:"archive", sentence})',
   done: 'tts.setStatus({status:"done", note})',
@@ -224,7 +224,7 @@ export default function OptionsRow({
     // browser tab before run() would bail, and a bailed run would strand it.
     if (!mode || busy) return;
     const text = note.trim();
-    if (mode === "revise" && !text) return;
+    if (mode === "edit" && !text) return;
 
     if (mode === "done" || mode === "set-archived") {
       if (!todo) return;
@@ -353,7 +353,7 @@ export default function OptionsRow({
           />
           <button
             type="submit"
-            disabled={busy || (mode === "revise" && !note.trim())}
+            disabled={busy || (mode === "edit" && !note.trim())}
             className={btnCls}
           >
             {mode === "set-archived" ? "archive" : mode}

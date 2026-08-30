@@ -40,11 +40,11 @@
 // dtsTodos row carrying `members`); this one maintains v2 graphs. They run
 // side by side until cutover, and they cannot collide: the server refuses a v1
 // batch that claims a row already inside a v2 batch, and the two consume
-// different ruling feeds (form-batches takes `life` revise rulings whose
-// subject is a members-bearing todo; this job takes `batch` revise rulings,
+// different ruling feeds (form-batches takes `life` edit rulings whose
+// subject is a members-bearing todo; this job takes `batch` edit rulings,
 // which only exist in v2).
 //
-// REVISE RULINGS: Tom can rule "revise" on a batch with one written sentence.
+// EDIT RULINGS: Tom can rule "edit" on a batch with one written sentence.
 // This job embeds those sentences in the prompt (they override any other
 // reading of the inputs) and consumes each via /tts/ruling-applied only once
 // the server reports that batch as stored — a skipped batch leaves its ruling
@@ -54,7 +54,7 @@
 // edge that is not a real prerequisite, a missing one that blocked it) records
 // a "plan-repair" event. That is the only channel by which doing the work
 // corrects the planning of it, so those reports are injected as instructions
-// to FIX THE STRUCTURE, not as commentary. Like a revise ruling they are
+// to FIX THE STRUCTURE, not as commentary. Like an edit ruling they are
 // CONSUMED once the batch they are about has been re-planned
 // (/tts/plan-repairs-consumed): an instruction re-asserted every two hours
 // after it has been carried out is an instruction to change something else.
@@ -223,11 +223,11 @@ function prompt(ctx) {
           ``,
         ]
       : []),
-    ...(ctx.revises.length > 0
+    ...(ctx.edits.length > 0
       ? [
-          `Tom ruled "revise" on these batches — each sentence redirects the`,
+          `Tom ruled "edit" on these batches — each sentence redirects the`,
           `re-planning and overrides any other reading of the inputs:`,
-          ...ctx.revises.map((r) => `- batch "${r.statement}": ${r.sentence}`),
+          ...ctx.edits.map((r) => `- batch "${r.statement}": ${r.sentence}`),
           ``,
         ]
       : []),
@@ -241,7 +241,7 @@ function prompt(ctx) {
         ]
       : []),
     `TOM'S RECENT RULINGS, newest first (behavioral evidence: what he`,
-    `approves, revises, sends to a session, archives — use it to infer what he`,
+    `approves, edits, sends to a session, archives — use it to infer what he`,
     `cares about, not as items to act on):`,
     JSON.stringify(ctx.recentRulings, null, 2),
     ``,
@@ -366,19 +366,19 @@ async function main() {
     .map((b) => b.statement);
   const activeStatements = activeBatches.map((b) => b.statement);
 
-  // Pending revise rulings ON BATCHES only. A revise on a plain life todo
-  // belongs to prepare-life-todos.mjs, and a revise on a v1 batch (a
+  // Pending edit rulings ON BATCHES only. An edit on a plain life todo
+  // belongs to prepare-life-todos.mjs, and an edit on a v1 batch (a
   // members-bearing todo, subjectType "life") belongs to form-batches.mjs —
   // both read the same feed, and each consumes only its own kind.
   const batchById = new Map(activeBatches.map((b) => [b._id, b]));
-  const revises = [];
+  const edits = [];
   for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType !== "batch" || r.verdict !== "revise" || !r.batchId) {
+    if (r.subjectType !== "batch" || r.verdict !== "edit" || !r.batchId) {
       continue;
     }
     const batch = batchById.get(r.batchId);
     if (batch) {
-      revises.push({
+      edits.push({
         ruling: r,
         batchId: batch._id,
         statement: batch.statement,
@@ -565,10 +565,10 @@ async function main() {
   }
 
   // --- Input hash: skip the Claude call when nothing changed ----------------
-  // The hash covers everything the model sees; a pending batch-revise forces a
+  // The hash covers everything the model sees; a pending batch-edit forces a
   // run regardless (the sentence must be consumed even if re-ruled
   // identically). The cursor file is harmless to lose — one wasted run.
-  const reviseSentences = revises.map((r) => r.sentence);
+  const editSentences = edits.map((r) => r.sentence);
   const inputHash = createHash("sha256")
     .update(
       JSON.stringify({
@@ -578,7 +578,7 @@ async function main() {
         code,
         archivedStatements,
         repairs,
-        reviseSentences,
+        editSentences,
         notes,
         writingStandard,
       }),
@@ -590,13 +590,13 @@ async function main() {
   } catch {
     // no cursor yet — first run, or the box was rebuilt
   }
-  if (inputHash === storedHash && revises.length === 0) return; // quiet when idle
+  if (inputHash === storedHash && edits.length === 0) return; // quiet when idle
 
   // --- One Claude call for every graph this run ----------------------------
   console.log(
     `[plan-graphs] ${graphs.length} graph(s) (${graphsHeldBack} held back), ` +
       `${candidates.length} goal candidate(s) (${candidatesHeldBack} held back), ` +
-      `${repairs.length} plan repair(s), ${revises.length} revise ruling(s) — asking Claude…`,
+      `${repairs.length} plan repair(s), ${edits.length} edit ruling(s) — asking Claude…`,
   );
   const answer = runClaude(
     prompt({
@@ -609,7 +609,7 @@ async function main() {
       code,
       archivedStatements,
       repairs,
-      revises,
+      edits,
       notes,
       recentRulings: recent.map((r) => ({
         subjectType: r.subjectType,
@@ -634,7 +634,7 @@ async function main() {
   // --- Ship it, ONE BATCH PER CALL -----------------------------------------
   // The pen takes one batch's graph at a time, so a batch the server refuses
   // costs only itself: the rest of the run still lands. `served` records the
-  // BATCH IDS that actually stored, which is what decides whether a revise
+  // BATCH IDS that actually stored, which is what decides whether an edit
   // ruling and a plan repair are consumed below.
   const totals = {
     created: 0,
@@ -678,7 +678,7 @@ async function main() {
     try {
       result = await convexFetch(env, "/tts/plan-graph", batch);
     } catch (err) {
-      // One batch refused is one batch lost, not a failed run — its revise
+      // One batch refused is one batch lost, not a failed run — its edit
       // ruling (if any) stays pending and the next run retries it.
       console.error(`[plan-graphs] "${statement}" FAILED: ${err.message}`);
       failed++;
@@ -718,7 +718,7 @@ async function main() {
   // found at all (nothing will ever be able to act on those, and re-asserting
   // them for a week only invites the planner to restructure something else).
   // A repair about a batch that was held back or refused stays unconsumed and
-  // is shown again next run — the same discipline as a revise ruling.
+  // is shown again next run — the same discipline as an edit ruling.
   const consumable = repairRows
     .filter((r) => r.batchId === null || served.has(r.batchId))
     .map((r) => r.id)
@@ -728,30 +728,30 @@ async function main() {
     console.log(`[plan-graphs] consumed ${consumable.length} plan repair(s)`);
   }
 
-  // Consume a batch-revise ruling ONLY when its re-plan actually landed. The
+  // Consume a batch-edit ruling ONLY when its re-plan actually landed. The
   // server DROPS what fails validation instead of rejecting the call, so a
   // skipped batch means Tom's sentence was never served: consuming the ruling
   // there would retire it silently and the graph would stay wrong. Left
-  // pending, it forces the next run (the hash check is bypassed while a revise
+  // pending, it forces the next run (the hash check is bypassed while an edit
   // is pending) to try again.
-  for (const r of revises) {
-    // Keyed by BATCH ID, not by statement: the whole point of many a revise
+  for (const r of edits) {
+    // Keyed by BATCH ID, not by statement: the whole point of many an edit
     // sentence is a rename ("call this batch something clearer"), and the
     // planner then stores the batch under a new statement. Keying on the
     // stored statement leaves such a ruling pending forever — and a pending
-    // revise bypasses the input-hash short-circuit, so the job would make a
+    // edit bypasses the input-hash short-circuit, so the job would make a
     // full Claude call every two hours forever, re-applying an instruction
     // that already landed. The server always returns the batch id.
     if (!served.has(r.batchId)) {
       console.log(
-        `[plan-graphs] revise ruling for "${r.statement}" left pending: ` +
+        `[plan-graphs] edit ruling for "${r.statement}" left pending: ` +
           `the re-planned batch did not store`,
       );
       continue;
     }
     await convexFetch(env, "/tts/ruling-applied", {
       id: r.ruling._id,
-      result: "revised: graph re-planned",
+      result: "edited: graph re-planned",
     });
   }
 

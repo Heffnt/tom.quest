@@ -518,9 +518,7 @@ export default function BatchesTab() {
           onConfirm={(sentence) =>
             recordRuling({
               batchId: ruling.batchId,
-              // The chip says "edit" (Tom's word for it); the stored verdict
-              // is still named "revise".
-              verdict: ruling.verdict === "edit" ? "revise" : ruling.verdict,
+              verdict: ruling.verdict,
               sentence: sentence || undefined,
             })
           }

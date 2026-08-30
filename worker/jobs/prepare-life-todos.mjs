@@ -31,11 +31,11 @@
 //                    before Tom's attention is well spent. Still gets the
 //                    fields; deeper preparation is a later swarm feature.
 //
-// REVISE RULINGS: Tom can rule "revise" on a prepared life todo with one
+// EDIT RULINGS: Tom can rule "edit" on a prepared life todo with one
 // written sentence that redirects the preparation (the server drops the
 // todo's readiness back to "preparing" when he does). This job reads the
 // unified rulings feed at /tts/rulings, takes the LIFE rows with verdict
-// "revise", re-prepares each such todo with Tom's sentence embedded in the
+// "edit", re-prepares each such todo with Tom's sentence embedded in the
 // prompt, and POSTs /tts/ruling-applied so the ruling is consumed and
 // the UI shows the outcome. Batches (members-bearing life todos) are skipped
 // everywhere here — form-batches.mjs owns their briefs and their rulings.
@@ -53,7 +53,7 @@ import {
 const BATCH_MAX = 10;
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 
-function prompt(todo, reviseSentence, today) {
+function prompt(todo, editSentence, today) {
   return [
     `You are preparing one item in TTS, Tom's personal todo system. It was`,
     `captured as a raw thought; your job is to make it arrive pre-chewed.`,
@@ -70,13 +70,13 @@ function prompt(todo, reviseSentence, today) {
       2,
     ),
     ``,
-    ...(reviseSentence
+    ...(editSentence
       ? [
-          `Tom reviewed an earlier preparation of this item and ruled "revise" —`,
+          `Tom reviewed an earlier preparation of this item and ruled "edit" —`,
           `his one written sentence below redirects this re-preparation and`,
           `overrides any other reading of the item:`,
           ``,
-          `Tom's revise ruling: ${reviseSentence}`,
+          `Tom's edit ruling: ${editSentence}`,
           ``,
         ]
       : []),
@@ -119,27 +119,27 @@ async function main() {
   const env = loadEnv();
   const state = await convexFetch(env, "/tts/state");
 
-  // Pending revise rulings on LIFE todos, keyed by todoId. The feed already
+  // Pending edit rulings on LIFE todos, keyed by todoId. The feed already
   // filters to unapplied-and-not-superseded rows; code rows on the same feed
   // belong to apply-rulings.mjs / execute-approved.mjs.
   //
-  // A members-bearing todo is a BATCH: its revise rulings belong to
+  // A members-bearing todo is a BATCH: its edit rulings belong to
   // form-batches.mjs. This job's single-todo prompt would overwrite a grouping
   // brief and consume the ruling the batcher needs. (The server now also
   // refuses batch brief writes — this filter keeps the job from burning a
   // Claude call and stealing the ruling before that refusal.)
   const todoById = new Map((state.todos ?? []).map((t) => [t._id, t]));
   const { pending } = await convexFetch(env, "/tts/rulings");
-  const reviseByTodo = new Map();
+  const editByTodo = new Map();
   for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
+    if (r.subjectType !== "life" || r.verdict !== "edit" || !r.todoId) continue;
     const subject = todoById.get(r.todoId);
     if (subject && subject.members !== undefined) continue; // batch — not ours
-    reviseByTodo.set(r.todoId, r);
+    editByTodo.set(r.todoId, r);
   }
 
-  // Unprepared active todos — plus revise-ruled todos REGARDLESS of status
-  // (a revise verdict drops readiness to "preparing" server-side; the sentence
+  // Unprepared active todos — plus edit-ruled todos REGARDLESS of status
+  // (an edit verdict drops readiness to "preparing" server-side; the sentence
   // is what pulls the todo back into the batch, and preparation only touches
   // brief/entryAction/workDescription, so re-preparing a waiting or archived
   // todo is safe — an active-only filter would strand the ruling pending
@@ -147,7 +147,7 @@ async function main() {
   // "preparing" items (useful after improving this prompt).
   //
   // members === undefined on BOTH branches: a members-bearing todo is a batch,
-  // and batches are prepared (and re-formed on revise) by form-batches.mjs.
+  // and batches are prepared (and re-formed on edit) by form-batches.mjs.
   // A schema-v2 TASK (a row carrying batchId whose kind is not "goal") is
   // excluded for the same reason one schema version later: it is a step inside
   // a batches row, "unprepared" is this job's INBOX rather than a resting
@@ -164,7 +164,7 @@ async function main() {
     (t) =>
       t.members === undefined &&
       !isGraphTask(t) &&
-      (reviseByTodo.has(t._id) ||
+      (editByTodo.has(t._id) ||
         (t.status === "active" &&
           (t.readiness === "unprepared" ||
             (force && t.readiness === "preparing")))),
@@ -174,15 +174,15 @@ async function main() {
   const batch = targets.slice(0, BATCH_MAX);
   console.log(
     `[prepare-life-todos] ${targets.length} to prepare ` +
-      `(${reviseByTodo.size} revise ruling(s) pending), processing ${batch.length}`,
+      `(${editByTodo.size} edit ruling(s) pending), processing ${batch.length}`,
   );
 
   let failures = 0;
   for (const todo of batch) {
-    const revise = reviseByTodo.get(todo._id) ?? null;
+    const edit = editByTodo.get(todo._id) ?? null;
     try {
       const answer = runClaude(
-        prompt(todo, revise?.sentence ?? null, state.nyCalendarDay),
+        prompt(todo, edit?.sentence ?? null, state.nyCalendarDay),
         { timeoutMs: CLAUDE_TIMEOUT_MS },
       );
       const parsed = extractJsonObject(answer);
@@ -224,22 +224,22 @@ async function main() {
         readiness: parsed.readiness,
         ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
       });
-      if (revise) {
+      if (edit) {
         // The re-prep landed — consume the ruling so the UI shows the
         // outcome and the next run doesn't re-prepare on the same sentence.
         await convexFetch(env, "/tts/ruling-applied", {
-          id: revise._id,
-          result: "revised: brief re-prepared",
+          id: edit._id,
+          result: "edited: brief re-prepared",
         });
       }
       console.log(
         `[prepare-life-todos] prepared ${todo._id} -> ${parsed.readiness}` +
-          `${revise ? " (revise ruling applied)" : ""} ` +
+          `${edit ? " (edit ruling applied)" : ""} ` +
           `"${todo.statement.slice(0, 50).replace(/\s+/g, " ")}"`,
       );
     } catch (err) {
       // Per-item failure: log and continue — the item stays unprepared (or
-      // its revise ruling stays pending) and the next run retries it. One
+      // its edit ruling stays pending) and the next run retries it. One
       // bad item must not starve the batch.
       failures++;
       console.error(

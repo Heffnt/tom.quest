@@ -670,12 +670,12 @@ export default defineSchema({
     resolvedAt: v.optional(v.number()),
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
-  // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
-  // supersedes dtsCodeRulings below). APPEND-ONLY: a new ruling on the same
+  // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
+  // APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
   // verdict set — every ruling button anywhere is one of these four:
   //   approve — execute as briefed (applied by worker/agent, appliedAt then set)
-  //   revise  — `sentence` goes back to the preparing agent; life todos drop
+  //   edit  — `sentence` goes back to the preparing agent; life todos drop
   //             to readiness "preparing" immediately
   //   session — this needs conversation; applied when the session is created
   //   archive — set aside; life todos archive immediately (appliedAt = now),
@@ -697,12 +697,12 @@ export default defineSchema({
     batchId: v.optional(v.id("batches")),
     verdict: v.union(
       v.literal("approve"),
-      v.literal("revise"),
+      v.literal("edit"),
       v.literal("session"),
       v.literal("archive"),
     ),
     // One optional written note, accepted on EVERY verdict (2026-08-29): the
-    // redirect for revise (required there, enforced in ttsRulings.ts), the
+    // redirect for edit (required there, enforced in ttsRulings.ts), the
     // unarchive condition for archive, a free steering note for
     // approve/session — the worker prompts inject all four as context.
     sentence: v.optional(v.string()),
@@ -775,7 +775,7 @@ export default defineSchema({
   // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
   // when the entry changes upstream, the hash mismatch marks the brief stale
   // and the worker rewrites it. `recommendation` is the worker's read, never a
-  // verdict — Tom rules (dtsCodeRulings); `execClass` says where an approved
+  // verdict — Tom rules (ttsRulings); `execClass` says where an approved
   // item can run; `evidence` carries the commits/files that justify a
   // propose-archive.
   dtsCodeBriefs: defineTable({
@@ -808,29 +808,6 @@ export default defineSchema({
     ),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
-
-  // DEPRECATED (2026-08-28): superseded by the unified ttsRulings table above.
-  // Kept as read-only history — non-defer rows are copied into ttsRulings by
-  // ttsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
-  // stay here only (defer is no longer a verdict: not ruling IS deferring).
-  // No new writes. Remove in the tts→tts rename round.
-  dtsCodeRulings: defineTable({
-    repo: v.string(),
-    externalId: v.string(),
-    ruling: v.union(
-      v.literal("approve"),
-      v.literal("needs-session"),
-      v.literal("propose-archive"),
-      v.literal("stale-replan"),
-      v.literal("defer"),
-    ),
-    note: v.optional(v.string()),
-    ruledAt: v.number(),
-    appliedAt: v.optional(v.number()),
-    applyResult: v.optional(v.string()),
-  })
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_ruled", ["ruledAt"]),
 
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;

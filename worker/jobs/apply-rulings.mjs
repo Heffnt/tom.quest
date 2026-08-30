@@ -7,11 +7,11 @@
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
 // open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
 // this job GETs /tts/rulings — a UNIFIED feed whose rows carry
-// subjectType "life"|"code" and verdict "approve"|"revise"|"session"|
+// subjectType "life"|"code" and verdict "approve"|"edit"|"session"|
 // "archive" — takes only the CODE rows (life rows belong to
 // prepare-life-todos.mjs), applies each pending one, then POSTs
 // /tts/ruling-applied so the UI shows the outcome. The verdicts:
-//   revise   -> Tom's sentence redirects the plan: force a re-brief that
+//   edit   -> Tom's sentence redirects the plan: force a re-brief that
 //               proposes a fresh one
 //   session  -> push a session-agenda file to CMT master for Tom to open a
 //               live Claude session from
@@ -114,12 +114,12 @@ function readBriefCache(externalId) {
 
 // --- the per-verdict handlers (each returns the applied-result string) -----
 
-// revise: poke the briefing cursor. Setting the cursor value to the replan
+// edit: poke the briefing cursor. Setting the cursor value to the replan
 // sentinel (instead of deleting the key) both forces a re-brief (a sentinel
 // never equals a recomputed hash) and carries Tom's sentence into the
 // re-brief prompt — a bare deletion would be indistinguishable from "never
 // briefed" and the redirect would be lost.
-function applyRevise(ruling) {
+function applyEdit(ruling) {
   const hashes = readBriefHashes();
   hashes[`${CMT_REPO}:${ruling.externalId}`] =
     REPLAN_SENTINEL + (ruling.sentence ? `: ${ruling.sentence}` : "");
@@ -281,8 +281,8 @@ async function main() {
           // Only CMT is wired up today. Mark applied rather than leaving it
           // pending forever — Tom sees "unsupported repo" instead of silence.
           result = `unsupported repo: ${ruling.repo}`;
-        } else if (ruling.verdict === "revise") {
-          result = applyRevise(ruling);
+        } else if (ruling.verdict === "edit") {
+          result = applyEdit(ruling);
         } else if (ruling.verdict === "session") {
           result = applySession(env, repoDir, ruling);
         } else if (ruling.verdict === "archive") {

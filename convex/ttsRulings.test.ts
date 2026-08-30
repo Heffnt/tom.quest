@@ -84,16 +84,16 @@ describe("TTS unified rulings", () => {
     ).rejects.toThrow(/both repo and externalId/);
   });
 
-  // witness: drop the `verdict === "revise" && !trimmed` throw in
+  // witness: drop the `verdict === "edit" && !trimmed` throw in
   // convex/ttsRulings.ts
-  it("revise requires the sentence", async () => {
+  it("edit requires the sentence", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
         repo: "ComplexMultiTrigger",
         externalId: "cmt-001",
-        verdict: "revise",
+        verdict: "edit",
       }),
     ).rejects.toThrow(/sentence/);
     // A whitespace-only sentence is no sentence.
@@ -101,15 +101,15 @@ describe("TTS unified rulings", () => {
       tom.mutation(api.ttsRulings.recordRuling, {
         repo: "ComplexMultiTrigger",
         externalId: "cmt-001",
-        verdict: "revise",
+        verdict: "edit",
         sentence: "   ",
       }),
     ).rejects.toThrow(/sentence/);
   });
 
-  // witness: drop the readiness patch from recordRuling's revise branch in
+  // witness: drop the readiness patch from recordRuling's edit branch in
   // convex/ttsRulings.ts
-  it("revise on a life todo drops readiness to preparing", async () => {
+  it("edit on a life todo drops readiness to preparing", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
@@ -121,7 +121,7 @@ describe("TTS unified rulings", () => {
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "  ask about the Friday slot instead  ",
     });
     const [todo] = await tom.query(api.tts.listTodos, {});
@@ -213,27 +213,27 @@ describe("TTS unified rulings", () => {
     }
   });
 
-  // witness: drop the `verdict !== "revise"` guard from insertRuling's
-  // tomTouchedAt patch in convex/ttsRulings.ts — revise hands the subject BACK
+  // witness: drop the `verdict !== "edit"` guard from insertRuling's
+  // tomTouchedAt patch in convex/ttsRulings.ts — edit hands the subject BACK
   // to the preparing agent, so freezing the row would strand every batch Tom
   // ever asked the batcher to redo.
-  it("revise does NOT stamp tomTouchedAt — the row goes back to the agent", async () => {
+  it("edit does NOT stamp tomTouchedAt — the row goes back to the agent", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "redo" });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "split the travel bits out",
     });
     const todo = await t.run(async (ctx) => ctx.db.get(todoId));
     expect(todo?.tomTouchedAt).toBeUndefined();
-    expect(todo?.readiness).toBe("preparing"); // the revise effect still landed
+    expect(todo?.readiness).toBe("preparing"); // the edit effect still landed
   });
 
-  // witness: same guard — a revised batch must stay rewritable, which is the
+  // witness: same guard — an edited batch must stay rewritable, which is the
   // whole point of the verdict.
-  it("a revised batcher batch is still rewritable by the batcher", async () => {
+  it("an edited batcher batch is still rewritable by the batcher", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.mutation(internal.tts.internalStoreBatches, {
@@ -252,7 +252,7 @@ describe("TTS unified rulings", () => {
     );
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: batch!._id,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "the flights do not belong with the visa",
     });
     const res = await t.mutation(internal.tts.internalStoreBatches, {
@@ -287,7 +287,7 @@ describe("TTS unified rulings", () => {
   });
 
   // witness: change briefAwaitsRuling back to "any ruling clears the item" in
-  // convex/ttsRulings.ts — a revise→re-brief cycle would never return the item.
+  // convex/ttsRulings.ts — an edit→re-brief cycle would never return the item.
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -297,13 +297,13 @@ describe("TTS unified rulings", () => {
     await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "ComplexMultiTrigger",
       externalId: "cycle",
-      verdict: "revise",
+      verdict: "edit",
       sentence: "narrower scope",
     });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(0);
-    // The worker re-briefs after applying the revise — the fresh brief's
+    // The worker re-briefs after applying the edit — the fresh brief's
     // preparedAt is newer than the ruling, so the item awaits a fresh ruling.
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: [brief({ externalId: "cycle", sourceHash: "hash-b" })],
@@ -321,11 +321,11 @@ describe("TTS unified rulings", () => {
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "pen" });
     await t.mutation(internal.ttsRulings.internalRecordRuling, {
       todoId,
-      verdict: "revise",
+      verdict: "edit",
       sentence: "spoken in session",
     });
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
-    expect(ruling.verdict).toBe("revise");
+    expect(ruling.verdict).toBe("edit");
     expect(ruling.sentence).toBe("spoken in session");
     const todo = await t.run(async (ctx) =>
       ctx.db.get((await ctx.db.query("dtsTodos").collect())[0]._id),
@@ -465,89 +465,9 @@ describe("TTS unified rulings", () => {
     ).toBe(2);
   });
 
-  // witness: copy "defer" rows too (map defer to some verdict) in
-  // internalMigrateCodeRulings in convex/ttsRulings.ts
-  it("migrates dtsCodeRulings under the verdict map, skipping defer, idempotently", async () => {
-    const t = convexTest({ schema, modules });
-    const base = Date.now();
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsCodeRulings", {
-        repo: "ComplexMultiTrigger",
-        externalId: "m-approve",
-        ruling: "approve",
-        ruledAt: base - 400,
-        appliedAt: base - 300,
-        applyResult: "sha deadbeef",
-      });
-      await ctx.db.insert("dtsCodeRulings", {
-        repo: "ComplexMultiTrigger",
-        externalId: "m-replan",
-        ruling: "stale-replan",
-        note: "replan against the new judge",
-        ruledAt: base - 350,
-      });
-      await ctx.db.insert("dtsCodeRulings", {
-        repo: "ComplexMultiTrigger",
-        externalId: "m-session",
-        ruling: "needs-session",
-        ruledAt: base - 300,
-      });
-      await ctx.db.insert("dtsCodeRulings", {
-        repo: "tom.quest",
-        externalId: "m-archive",
-        ruling: "propose-archive",
-        ruledAt: base - 250,
-      });
-      await ctx.db.insert("dtsCodeRulings", {
-        repo: "ComplexMultiTrigger",
-        externalId: "m-defer",
-        ruling: "defer",
-        ruledAt: base - 200,
-      });
-    });
-    const first = await t.mutation(
-      internal.ttsRulings.internalMigrateCodeRulings,
-      {},
-    );
-    expect(first).toEqual({ copied: 4, skippedDefer: 1, total: 5 });
-    const rows = await t.run(async (ctx) => ctx.db.query("dtsRulings").collect());
-    expect(rows).toHaveLength(4);
-    const byExt = new Map(rows.map((r) => [r.externalId, r]));
-    expect(byExt.get("m-approve")).toMatchObject({
-      subjectType: "code",
-      repo: "ComplexMultiTrigger",
-      verdict: "approve",
-      ruledAt: base - 400,
-      appliedAt: base - 300,
-      applyResult: "sha deadbeef",
-    });
-    expect(byExt.get("m-replan")).toMatchObject({
-      verdict: "revise",
-      sentence: "replan against the new judge",
-    });
-    expect(byExt.get("m-session")?.verdict).toBe("session");
-    expect(byExt.get("m-archive")).toMatchObject({
-      verdict: "archive",
-      repo: "tom.quest",
-    });
-    expect(byExt.get("m-defer")).toBeUndefined(); // defer stays history-only
-    // Second run copies nothing (idempotent), the old table is untouched.
-    const second = await t.mutation(
-      internal.ttsRulings.internalMigrateCodeRulings,
-      {},
-    );
-    expect(second).toEqual({ copied: 0, skippedDefer: 1, total: 5 });
-    expect(
-      await t.run(async (ctx) => ctx.db.query("dtsRulings").collect()),
-    ).toHaveLength(4);
-    expect(
-      await t.run(async (ctx) => ctx.db.query("dtsCodeRulings").collect()),
-    ).toHaveLength(5);
-  });
-
-  // witness: reject `sentence` on any verdict but revise in insertRuling
+  // witness: reject `sentence` on any verdict but edit in insertRuling
   // (convex/dtsRulings.ts) and the approve/session assertions below go red.
-  it("accepts a sentence on every verdict; revise still requires one", async () => {
+  it("accepts a sentence on every verdict; edit still requires one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const a = await tom.mutation(api.tts.createTodo, { statement: "approve me" });
@@ -581,10 +501,10 @@ describe("TTS unified rulings", () => {
         (r) => r.todoId === b,
       )?.sentence,
     ).toBeUndefined();
-    // revise is still the one verdict that cannot go without one.
+    // edit is still the one verdict that cannot go without one.
     const r = await tom.mutation(api.tts.createTodo, { statement: "redo" });
     await expect(
-      tom.mutation(api.ttsRulings.recordRuling, { todoId: r, verdict: "revise" }),
+      tom.mutation(api.ttsRulings.recordRuling, { todoId: r, verdict: "edit" }),
     ).rejects.toThrow(/sentence verdict/);
   });
 
