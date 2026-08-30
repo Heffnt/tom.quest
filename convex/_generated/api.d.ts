@@ -26,6 +26,7 @@ import type * as ttsCalendarExpand from "../ttsCalendarExpand.js";
 import type * as ttsCalendarFetch from "../ttsCalendarFetch.js";
 import type * as ttsCanvas from "../ttsCanvas.js";
 import type * as ttsCode from "../ttsCode.js";
+import type * as ttsCounts from "../ttsCounts.js";
 import type * as ttsRepeats from "../ttsRepeats.js";
 import type * as ttsRulings from "../ttsRulings.js";
 import type * as ttsShared from "../ttsShared.js";
@@ -58,6 +59,7 @@ declare const fullApi: ApiFromModules<{
   ttsCalendarFetch: typeof ttsCalendarFetch;
   ttsCanvas: typeof ttsCanvas;
   ttsCode: typeof ttsCode;
+  ttsCounts: typeof ttsCounts;
   ttsRepeats: typeof ttsRepeats;
   ttsRulings: typeof ttsRulings;
   ttsShared: typeof ttsShared;

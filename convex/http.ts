@@ -754,6 +754,25 @@ http.route({
   handler: ttsBatchContext,
 });
 
+// ── GET /tts/counts — row counts and enum breakdowns ─────────────────────────
+// Same TTS_WORKER_KEY path. A session holds no Convex credential and no
+// dashboard, so before this the only way to check a claim about the data was
+// /tts/batch-context's newest-200 window — which answers "how many rulings
+// carry this verdict" correctly right up until it quietly does not. Counts
+// only: no statements, no sentences, no ids. Optional ?table=dtsRulings
+// narrows it.
+const ttsCounts = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const table = new URL(request.url).searchParams.get("table") ?? undefined;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsCounts.internalTableCounts, { table }),
+  );
+});
+
+http.route({ path: "/tts/counts", method: "GET", handler: ttsCounts });
+
 // ── POST /tts/plan-graph — the planner's pen (schema v2) ─────────────────────
 // ONE batch's graph per call, the successor to POST /tts/batches. Body:
 // { batchId?, statement, groundUpExplanation?, path?, tasks: [...], goalIds?,
