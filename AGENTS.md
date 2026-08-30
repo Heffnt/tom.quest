@@ -38,7 +38,8 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 - `user` is the default sign-up role and sees public quests.
 - `admin` has elevated quest access and may be granted to trusted friends or colleagues.
-- `tom` is Tom's account. It extends admin access with Jarvis config, the diagnostic panel, and terminal access.
+- `tom` is Tom's account. It extends admin access with Jarvis config and the diagnostic panel.
+- `/turing`, including the cluster terminal, is admin-level: the page is registered `visibility: "admin"`, and both the proxy route and the terminal's WebSocket credential route call `requireAdmin`. Do not narrow these to `isTom`.
 - Use `isTom` for Tom-only features and `isAdmin` for elevated features. `isAdmin` is true for both `admin` and `tom`.
 
 ## State Management

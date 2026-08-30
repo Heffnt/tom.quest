@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSeePage, rankPages, type Page, type PageRole } from "./page-routes";
+import { PAGES, canSeePage, rankPages, type Page, type PageRole } from "./page-routes";
 
 const page = (visibility: Page["visibility"]): Page => ({
   slug: visibility,
@@ -32,6 +32,14 @@ describe("page registry", () => {
   it("ranks visible pages by priority when query is empty", () => {
     expect(rankPages("", "guest").map((entry) => entry.slug)).toEqual(["transformer", "thmm", "clouds", "perfume", "game", "bio", "boolback", "help"]);
     expect(rankPages("", "tom")[0]?.slug).toBe("turing");
+  });
+
+  // /turing (and the cluster terminal it links to) is admin-level, not Tom-only.
+  // If this entry is ever narrowed to "tom", every non-Tom admin loses the terminal.
+  it("keeps /turing visible to a plain admin", () => {
+    const turing = PAGES.find((entry) => entry.slug === "turing");
+    expect(turing?.visibility).toBe("admin");
+    expect(canSeePage("admin", turing!)).toBe(true);
   });
 
   it("prefers prefix matches before substring matches", () => {
