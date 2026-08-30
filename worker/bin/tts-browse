@@ -36,34 +36,11 @@
 //
 // ZERO-DEPS NOTE: the worker box's job scripts take no npm dependencies, but
 // Playwright is installed GLOBALLY by worker/setup.sh (step 4) precisely so
-// this file can require it without a per-session install. If the require
-// below fails, setup.sh has not been re-run on this box.
+// this file can load it without a per-session install. Browser loading and the
+// tom.quest sign-in both live in tts-auth-lib.mjs, shared with tts-turing, so
+// the login sequence is written once.
 
-const { execSync } = require("node:child_process");
-
-function loadPlaywright() {
-  const candidates = ["playwright"];
-  try {
-    candidates.push(
-      require("node:path").join(execSync("npm root -g", { encoding: "utf8" }).trim(), "playwright"),
-    );
-  } catch {
-    /* npm missing; fall through to the plain require */
-  }
-  candidates.push("/usr/lib/node_modules/playwright");
-  for (const c of candidates) {
-    try {
-      return require(c);
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  console.error(
-    "tts-browse: cannot load playwright. Run `bash worker/setup.sh` on this box " +
-      "(step 4 installs it globally and downloads Chromium).",
-  );
-  process.exit(3);
-}
+import { loadPlaywright, signIn } from "/usr/local/bin/tts-auth-lib.mjs";
 
 function parseArgs(argv) {
   const opts = {
@@ -124,65 +101,6 @@ function parseArgs(argv) {
   }
   if (!/^https?:\/\//.test(opts.url)) opts.url = "https://" + opts.url;
   return opts;
-}
-
-// Sign in through the same widget a person uses, rather than forging a session
-// cookie: the login path is itself something a session may have broken, and a
-// forged cookie would hide that.
-//
-// `origin` MUST be the origin the target URL actually lands on, not the one
-// that was typed. tom.quest 307-redirects the apex to www, and the auth token
-// is origin-scoped — so signing in at https://tom.quest and then opening
-// https://www.tom.quest/turing produces the worst possible result: a page that
-// looks signed in, with the username in the corner, whose every data call is
-// 401. The caller resolves the landing origin by navigating first.
-async function signIn(page, origin) {
-  const username = process.env.TOMQUEST_AGENT_USERNAME;
-  const password = process.env.TOMQUEST_AGENT_PASSWORD;
-  if (!username || !password) {
-    console.error(
-      "tts-browse: --login needs TOMQUEST_AGENT_USERNAME and TOMQUEST_AGENT_PASSWORD " +
-        "in the environment (add them to /etc/tts/worker.env).",
-    );
-    process.exit(4);
-  }
-  await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 30000 });
-  // `domcontentloaded` fires before React hydrates, and a click that lands in
-  // that window is swallowed with no error — the button is in the DOM, it just
-  // has no handler yet. Measured: 2 failures in 5 runs when clicking straight
-  // away, 0 in 6 when something delayed the click. So click, wait briefly for
-  // the field, and click again — up to four times — instead of trusting one.
-  const loginButton = page.getByRole("button", { name: "Log in" });
-  await loginButton.waitFor({ timeout: 30000 });
-  for (let attempt = 1; ; attempt++) {
-    await loginButton.click();
-    try {
-      await page.getByLabel("Username").waitFor({ timeout: 5000 });
-      break;
-    } catch (e) {
-      if (attempt >= 4) throw e;
-      await page.waitForTimeout(1000);
-    }
-  }
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign In" }).click();
-  // The header button carrying the username is the human-visible proof of a
-  // completed sign-in, and it is what we wait for. But on a slow sign-in the
-  // auth token lands in localStorage before React repaints the header, and a
-  // run that failed here would be reported as "login broken" when the session
-  // is in fact authenticated. So the token is accepted as the fallback proof —
-  // and only as a fallback, so a genuinely broken header still gets noticed
-  // by anything reading the screenshot.
-  try {
-    await page.getByRole("button", { name: username }).waitFor({ timeout: 30000 });
-  } catch (e) {
-    const authed = await page.evaluate(() =>
-      Object.keys(window.localStorage).some((k) => k.startsWith("__convexAuthJWT")),
-    );
-    if (!authed) throw e;
-  }
-  return username;
 }
 
 async function main() {
