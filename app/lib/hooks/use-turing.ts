@@ -108,7 +108,16 @@ export function useTuringRequest(): <TResponse>(
   );
 }
 
-export function useTuring<T>(path: string, options?: UseTuringOptions): UseTuringResult<T> {
+/**
+ * Fetch a Turing API path through the /api/turing proxy.
+ *
+ * Pass `null` as the path to skip: the hook issues no request and reports
+ * `{ data: null, error: null, loading: false }`. Use this whenever part of the
+ * path is still resolving (an id coming from a Convex query, a route param).
+ * Never substitute a placeholder segment for a missing id — the API answers 404
+ * for it, the proxy rewraps that as a 502, and the caller paints a phantom error.
+ */
+export function useTuring<T>(path: string | null, options?: UseTuringOptions): UseTuringResult<T> {
   const { token } = useAuth();
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -116,7 +125,10 @@ export function useTuring<T>(path: string, options?: UseTuringOptions): UseTurin
   const mounted = useRef(true);
   const hasLoaded = useRef(false);
 
+  const skipped = path === null;
+
   const load = useCallback(async () => {
+    if (path === null) return;
     setLoading(!hasLoaded.current);
     try {
       const payload = await turingRequest<T>(path, token);
@@ -136,6 +148,9 @@ export function useTuring<T>(path: string, options?: UseTuringOptions): UseTurin
 
   useEffect(() => {
     mounted.current = true;
+    if (skipped) {
+      return () => { mounted.current = false; };
+    }
     void load();
     if (!options?.refreshInterval) {
       return () => { mounted.current = false; };
@@ -147,12 +162,14 @@ export function useTuring<T>(path: string, options?: UseTuringOptions): UseTurin
       mounted.current = false;
       window.clearInterval(interval);
     };
-  }, [load, options?.refreshInterval]);
+  }, [load, skipped, options?.refreshInterval]);
 
+  // While skipped, report the idle state rather than whatever a previous path
+  // left behind, so a caller cannot render a stale error for an unasked request.
   return {
-    data,
-    error,
-    loading,
+    data: skipped ? null : data,
+    error: skipped ? null : error,
+    loading: skipped ? false : loading,
     refresh: () => { void load(); },
   };
 }
