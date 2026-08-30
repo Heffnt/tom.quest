@@ -102,10 +102,10 @@ chmod 600 /etc/tts/worker.env
 # Because an existing env file is never overwritten, a box provisioned before
 # a key was ADDED to the template simply does not have that key — and every
 # such gap is silent: the feature reading it stays off, and nothing says why.
-# (Lived case: TOMQUEST_AGENT_USERNAME/PASSWORD, added to the template after
-# this box was built, so `nano /etc/tts/worker.env` showed no such lines to
-# fill in.) So every run names the drift. Only key NAMES are read; no value is
-# read or printed.
+# (The case that prompted this: TOMQUEST_AGENT_USERNAME/PASSWORD entered the
+# template on 2026-08-30, so on any box seeded before that date the file has
+# no such lines to fill in.) So every run names the drift. Only key NAMES are
+# read; no value is read or printed.
 env_drift=""
 for key in $(grep -Eo '^[A-Z0-9_]+=' "$WORKER_DIR/worker.env.example" | tr -d '='); do
   grep -Eq "^(export[[:space:]]+)?${key}=" /etc/tts/worker.env || env_drift="$env_drift $key"
