@@ -27,6 +27,10 @@
 // the rest of the graph still lands, cycles are dropped, and the per-batch
 // skip report comes back here to be logged.
 //
+// WHAT SETS THAT FREEZE (2026-08-30): tts.setBatchFrozen, Tom's own pen, or a
+// non-revise ruling on the batch. It is no longer set by an "approve" verdict
+// — a batch cannot be given one, because nothing executes a batch.
+//
 // GROUND-UP EXPLANATIONS ARE HTML DOCUMENTS (Tom, 2026-08-29: rendered as
 // prose they are "an incomprehensible wall of text"). Every explanation this
 // job writes — the batch's and each task's — is a complete self-contained HTML
@@ -404,7 +408,9 @@ async function main() {
   // Notes Tom wrote with his APPROVE and SESSION verdicts: standing steering
   // context, never consumed. ARCHIVE sentences are excluded on purpose — an
   // archive note is the UNARCHIVE CONDITION for one retired item, not
-  // steering about what to plan.
+  // steering about what to plan. The verdict word is matched, not the
+  // subject: approve became a CODE-only verdict on 2026-08-30, and the
+  // life/batch approves already on record are still steering worth reading.
   const recent = Array.isArray(recentRulings) ? recentRulings : [];
   const statementOfSubject = (r) => {
     if (r.subjectType === "batch") {

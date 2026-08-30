@@ -13,14 +13,22 @@ export type PlanStep = NonNullable<Todo["plan"]>[number];
 export type Member = NonNullable<Todo["members"]>[number];
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
-// client's iterable of the same four values.
+// client's copy of the same four values.
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
-export const VERDICTS: RulingVerdict[] = [
-  "approve",
-  "revise",
-  "session",
-  "archive",
-];
+
+// Which verdicts a subject may be given. approve is offered on CODE subjects
+// alone (ruled 2026-08-30: "a verdict should not appear where nothing
+// happens") — worker/jobs/execute-approved.mjs executes an approved code
+// brief, and nothing executes a life todo or a batch; Tom is the executor.
+// insertRuling throws on the other two, so a button that offered approve
+// there would only produce an error.
+export function verdictsFor(
+  subjectType: "life" | "code" | "batch",
+): RulingVerdict[] {
+  return subjectType === "code"
+    ? ["approve", "revise", "session", "archive"]
+    : ["revise", "session", "archive"];
+}
 
 // ── Ruling subject identity + live-ruling derivation ─────────────────────────
 // Client mirror of convex/ttsRulings.ts subjectKey/liveRulings — same key

@@ -28,6 +28,9 @@
 // to re-form anything and are never consumed — they are standing steering
 // context (what he approved and why, what he wants talked through), injected
 // alongside the ruling history so the groupings track what he actually wants.
+// The approve notes are all CODE-subject ones since 2026-08-30 (Convex refuses
+// approve on a life todo or a batch), which is history this prompt still reads
+// exactly as before: the filter below matches the word, not the subject.
 // ARCHIVE notes are left out: an archive sentence is the unarchive CONDITION
 // for one retired item, not steering about what to group.
 //

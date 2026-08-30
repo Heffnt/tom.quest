@@ -2,14 +2,20 @@
 
 // THE options surface for every /tts subject — a life todo, a batch (a batch
 // IS a life todo) or a code item. One compact wrap row at the top of an
-// expanded panel: the four verdict chips and the status chips a life todo
-// carries (done · archive).
+// expanded panel: the verdict chips this subject may be given and the status
+// chips a life todo carries (done · archive).
 //
-// The four verdicts are uniform (ratified 2026-08-29): clicking a chip selects
-// it and reveals ONE note input; confirming records the verdict with that note
+// WHICH CHIPS (app/tts/lib.ts verdictsFor, mirroring convex/ttsRulings.ts): a
+// code subject gets all four; a life todo gets revise · session · archive.
+// approve executes a briefed code todo and nothing else — offering it on a
+// life row would only produce the error insertRuling throws (ruled
+// 2026-08-30: a verdict should not appear where nothing happens).
+//
+// The verdicts are uniform (ratified 2026-08-29): clicking a chip selects it
+// and reveals ONE note input; confirming records the verdict with that note
 // as `sentence`. Only revise requires it. On archive the sentence IS the
-// unarchive condition (convex/ttsRulings.ts maps it), so one input serves all
-// four.
+// unarchive condition (convex/ttsRulings.ts maps it), so one input serves them
+// all.
 //
 // This one component replaces VerdictButtons and StatusActions, so a control
 // cannot drift between the batch card, the generic todo row and the code row.
@@ -27,7 +33,7 @@ import {
   type ReservedTab,
 } from "@/app/lib/use-open-todo-session";
 import type { LiveRulingContext } from "@/app/lib/tts-session-prompt";
-import { errMessage, VERDICTS, type RulingVerdict, type Todo } from "../lib";
+import { errMessage, verdictsFor, type RulingVerdict, type Todo } from "../lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
@@ -47,6 +53,8 @@ const PLACEHOLDER: Record<Mode, string> = {
   "set-archived": "propose back when (optional)",
 };
 
+// Both maps keep all four verdict keys: a code subject still offers approve,
+// so the entry is reachable — it is just never in a life row's chip list.
 const INFO: Record<Mode, string> = {
   approve: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
   revise: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
@@ -160,7 +168,13 @@ export default function OptionsRow({
   if (!todo && !code) return null;
 
   const chips: { mode: Mode; label: string }[] = [];
-  if (rulable) for (const v of VERDICTS) chips.push({ mode: v, label: v });
+  // The subject decides the list: this row is given either a todo (a life
+  // subject, batch or not) or a code pair, never both — see the guard above.
+  if (rulable) {
+    for (const v of verdictsFor(code ? "code" : "life")) {
+      chips.push({ mode: v, label: v });
+    }
+  }
   // Done is available wherever the row is not already done — a waiting todo is
   // finished the same way an active one is.
   if (todo && todo.status !== "done") {

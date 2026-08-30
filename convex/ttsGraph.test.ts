@@ -225,15 +225,19 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
   });
 
   // witness: drop the tomTouchedAt check from internalStorePlanGraph — the
-  // planner would clobber a graph Tom just ruled on.
+  // planner would clobber a graph Tom just froze.
+  // (Frozen by tts.setBatchFrozen since 2026-08-30. It used to be an approve
+  // ruling on the batch, which is refused now: nothing executes a batch, so
+  // the verdict named an execution that never happened. The pen is what
+  // replaced it.)
   it("refuses to rewrite a Tom-touched (frozen) batch", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await storeGraph(t, { tasks: [graphTask("original")] });
     const batch = await oneBatch(t);
-    await tom.mutation(api.ttsRulings.recordRuling, {
+    await tom.mutation(api.tts.setBatchFrozen, {
       batchId: batch._id,
-      verdict: "approve",
+      frozen: true,
     });
 
     const res = await storeGraph(t, {
@@ -1003,7 +1007,7 @@ describe("TTS rulings on a batch", () => {
     const batch = await newBatch(t);
     await tom.mutation(api.ttsRulings.recordRuling, {
       batchId: batch._id,
-      verdict: "approve",
+      verdict: "session",
       sentence: "go",
     });
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
@@ -1011,10 +1015,75 @@ describe("TTS rulings on a batch", () => {
     expect(ruling.batchId).toBe(batch._id);
     expect(ruling.todoId).toBeUndefined();
     expect(ruling.sentence).toBe("go");
-    // Approving a graph is ratification — applied the moment it is recorded.
-    expect(ruling.appliedAt).toBeGreaterThan(0);
-    expect(ruling.applyResult).toBe("graph ratified");
     expect((await oneBatch(t)).tomTouchedAt).toBeGreaterThan(0);
+  });
+
+  // witness: drop the `verdict === "approve" && !isCode` throw from
+  // insertRuling in convex/ttsRulings.ts — a batch would take a verdict that
+  // wrote "graph ratified" and did nothing else (ruled 2026-08-30: a verdict
+  // should not appear where nothing happens).
+  it("approve is refused on a batch, and nothing is written", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batch = await newBatch(t);
+    await expect(
+      tom.mutation(api.ttsRulings.recordRuling, {
+        batchId: batch._id,
+        verdict: "approve",
+      }),
+    ).rejects.toThrow(/code-todo verdict/);
+    await expect(
+      t.mutation(internal.ttsRulings.internalRecordRuling, {
+        batchId: batch._id,
+        verdict: "approve",
+      }),
+    ).rejects.toThrow(/code-todo verdict/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toEqual([]);
+    expect((await oneBatch(t)).tomTouchedAt).toBeUndefined();
+  });
+
+  // witness: delete tts.setBatchFrozen (or make it one-way) — the freeze
+  // approve used to carry is the ONLY thing that path really did, and the
+  // ruling side never had an un-freeze at all: revise skips the stamp but
+  // never clears an existing one, so a held batch stayed held forever.
+  it("the freeze pen holds a graph still, and lets it go again", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batch = await newBatch(t);
+    await tom.mutation(api.tts.setBatchFrozen, {
+      batchId: batch._id,
+      frozen: true,
+    });
+    expect((await oneBatch(t)).tomTouchedAt).toBeGreaterThan(0);
+    const blocked = await storeGraph(t, {
+      batchId: batch._id,
+      statement: "rewritten while held",
+      tasks: [graphTask("new plan")],
+    });
+    expect(blocked.skipped).toEqual([
+      { ref: "rewritten while held", why: "Tom-touched (frozen)" },
+    ]);
+
+    await tom.mutation(api.tts.setBatchFrozen, {
+      batchId: batch._id,
+      frozen: false,
+    });
+    expect((await oneBatch(t)).tomTouchedAt).toBeUndefined();
+    const allowed = await storeGraph(t, {
+      batchId: batch._id,
+      statement: "rewritten after release",
+      tasks: [graphTask("new plan")],
+    });
+    expect(allowed.skipped).toEqual([]);
+    expect((await oneBatch(t)).statement).toBe("rewritten after release");
+
+    // Tom's pen, Tom's alone: a signed-out caller and a plain user are both
+    // refused, and the freeze has its own event kind so it leaves a history.
+    await expect(
+      t.mutation(api.tts.setBatchFrozen, { batchId: batch._id, frozen: true }),
+    ).rejects.toThrow();
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(events.filter((e) => e.kind === "batch-frozen")).toHaveLength(2);
   });
 
   // witness: drop batchId from the exactly-one-subject count in
@@ -1028,7 +1097,7 @@ describe("TTS rulings on a batch", () => {
       tom.mutation(api.ttsRulings.recordRuling, {
         batchId: batch._id,
         todoId,
-        verdict: "approve",
+        verdict: "session",
       }),
     ).rejects.toThrow(/exactly one subject/);
   });
@@ -1099,7 +1168,7 @@ describe("TTS rulings on a batch", () => {
     await expect(
       t.mutation(internal.ttsRulings.internalRecordRuling, {
         batchId: "not-an-id",
-        verdict: "approve",
+        verdict: "archive",
       }),
     ).rejects.toThrow(/Unknown batch id/);
   });

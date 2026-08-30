@@ -492,8 +492,10 @@ describe("claude sessions", () => {
       statement: "just do it",
     });
     // revise stays pending until the preparer consumes the sentence — the
-    // live non-session ruling createSession must NOT touch. (approve on a
-    // life todo applies instantly at record time, so it can't play this role.)
+    // live non-session ruling createSession must NOT touch. It is also the
+    // only one left that can play this role: archive applies at record time,
+    // and approve is refused on a life todo entirely (2026-08-30 — nothing
+    // executes one; Tom is the executor).
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
       verdict: "revise",
