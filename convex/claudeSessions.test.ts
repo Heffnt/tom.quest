@@ -2085,16 +2085,18 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].text).toContain("batch member");
   });
 
-  // ── Which repo the mission's workspace holds (pickMissionRepo) ─────────────
+  // ── Which repos the mission's workspace holds (pickMissionRepos) ───────────
   // Ratified doctrine (Tom, 2026-08-29): autonomous missions IMPLEMENT rather
   // than stop at a Tom decision, so a mission whose work lives in a repo gets
-  // a real checkout. These three pin the whole rule: code members vote, an
-  // unfamiliar winner is refused, and words decide when nothing votes.
+  // a real checkout. Extended (Tom, 2026-08-30): a session may hold MORE THAN
+  // ONE repo, so a batch spanning two of them is one session, not two. These
+  // pin the whole rule: code members vote and EVERY voted repo is checked out,
+  // an unfamiliar name is refused, and words decide when nothing votes.
 
-  // witness: drop the tally in pickMissionRepo (convex/claudeSessions.ts) and
+  // witness: drop the tally in pickMissionRepos (convex/claudeSessions.ts) and
   // this test goes red — a code batch would open in an empty scratch dir with
   // nothing to edit.
-  it("a batch's code members vote for the mission's repo", async () => {
+  it("a batch's code members vote for the mission's repos", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await enableAuto(t, { maxNewPerTick: 1 });
@@ -2104,8 +2106,10 @@ describe("autonomous session scheduler", () => {
         {
           statement: "the triggering rework",
           brief: "three mirror rows, one seam",
-          // Two votes for ComplexMultiTrigger, one for WikiTom: most
-          // frequent wins, and the loser's repo is not what gets cloned.
+          // Two votes for ComplexMultiTrigger, one for WikiTom. BOTH get
+          // cloned — the batch is one piece of work spanning two repos, and
+          // splitting it across two sessions is what Tom's ruling removes.
+          // The vote count only orders them, most-voted first.
           members: [
             { repo: "ComplexMultiTrigger", externalId: "cmt-001" },
             { repo: "WikiTom", externalId: "wt-009" },
@@ -2121,14 +2125,22 @@ describe("autonomous session scheduler", () => {
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const sessions = await autoSessions(t);
     expect(sessions).toHaveLength(1);
+    // `repo` stays the FIRST checkout (every pre-existing reader depends on
+    // it); `repos` carries the whole set the daemon clones.
     expect(sessions[0].repo).toBe("ComplexMultiTrigger");
+    expect(sessions[0].repos).toEqual(["ComplexMultiTrigger", "WikiTom"]);
 
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId: sessions[0]._id,
     });
-    // The repo variant of the workspace block: a named checkout, the session's
-    // own branch, and the one gate the doctrine keeps for Tom.
-    expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
+    // The multi-repo workspace block: both checkouts named, the parent-dir
+    // layout stated, the session's own branch, and the one gate the doctrine
+    // keeps for Tom.
+    expect(inbound[0].text).toContain(
+      "this session holds 2 repositories — ComplexMultiTrigger, WikiTom",
+    );
+    expect(inbound[0].text).toContain("./ComplexMultiTrigger, ./WikiTom");
+    expect(inbound[0].text).toContain("their PARENT");
     expect(inbound[0].text).toContain(`session/${sessions[0]._id}`);
     expect(inbound[0].text).toContain("NEVER merge");
     expect(inbound[0].text).not.toContain("EMPTY scratch directory");
@@ -2136,7 +2148,122 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].text).not.toContain("planApplied");
   });
 
-  // witness: drop the AUTO_REPOS membership check from pickMissionRepo — the
+  // The single-repo shape is the one every existing mission runs in, and it is
+  // deliberately UNCHANGED by the multi-repo work: the working directory is
+  // the checkout itself, not its parent. Witness: make workspaceBlock use the
+  // parent-dir wording for one repo too and this goes red — every single-repo
+  // session would be told to cd into a subdirectory that is also its own cwd.
+  it("one repo keeps the working-directory-is-the-checkout shape", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [
+        {
+          statement: "the triggering rework",
+          brief: "one seam, one repo",
+          members: [
+            { repo: "ComplexMultiTrigger", externalId: "cmt-001" },
+            { repo: "ComplexMultiTrigger", externalId: "cmt-002" },
+          ],
+          plan: [{ text: "gather the sources", actor: "agent", status: "open" }],
+        },
+      ],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await autoSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].repo).toBe("ComplexMultiTrigger");
+    // One repo writes NO `repos` array: the single field already says it all,
+    // and sessionRepoList reads the pair the same way either way.
+    expect(sessions[0].repos).toBeUndefined();
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: sessions[0]._id,
+    });
+    expect(inbound[0].text).toContain(
+      "your working directory is a fresh checkout of ComplexMultiTrigger",
+    );
+    expect(inbound[0].text).not.toContain("their PARENT");
+  });
+
+  // Tom created the session by hand and named a repo the daemon cannot clone.
+  // Witness: delete the SESSION_REPO_NAMES check in createSession and this
+  // goes red — the row would be written and the session would die on its first
+  // turn, minutes later and far from the typo.
+  it("createSession refuses a repo name the daemon cannot clone", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await expect(
+      tom.mutation(api.claudeSessions.createSession, {
+        title: "typo",
+        kind: "adhoc",
+        repo: "tom.qeust",
+        initialPrompt: "hello",
+      }),
+    ).rejects.toThrow(/unknown repo tom\.qeust/);
+  });
+
+  // Tom picks two repos in the browser. Witness: drop `repos` from
+  // createSession's args and this goes red — the second checkout would be
+  // silently discarded at the door, which is the exact loss the ruling names.
+  it("createSession keeps every repo Tom picked, first one in `repo`", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.claudeSessions.createSession, {
+      title: "spanning session",
+      kind: "adhoc",
+      repo: "tom.quest",
+      // "none" is the ABSENCE of a repo, so it drops out of a list that names
+      // real ones; a duplicate is one checkout, not two.
+      repos: ["tom.quest", "WikiTom", "tom.quest", "none"],
+      initialPrompt: "hello",
+    });
+    const row = await t.run(async (ctx) => await ctx.db.get(id));
+    expect(row?.repo).toBe("tom.quest");
+    expect(row?.repos).toEqual(["tom.quest", "WikiTom"]);
+  });
+
+  // What the daemon is actually handed. Witness: drop `repos` from the poll
+  // payload and this goes red — the daemon would fall back to the single
+  // `repo` and clone one of the two repos the session was given.
+  it("the daemon poll resolves repo + repos into one list", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const both = await tom.mutation(api.claudeSessions.createSession, {
+      title: "spanning session",
+      kind: "adhoc",
+      repo: "tom.quest",
+      repos: ["tom.quest", "WikiTom"],
+      initialPrompt: "hello",
+    });
+    const one = await tom.mutation(api.claudeSessions.createSession, {
+      title: "single session",
+      kind: "adhoc",
+      repo: "tom.quest",
+      initialPrompt: "hello",
+    });
+    const scratch = await tom.mutation(api.claudeSessions.createSession, {
+      title: "scratch session",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: "hello",
+    });
+    const polled = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+    });
+    const rows = polled.sessions as { id: string; repos: string[] }[];
+    const byId = new Map(rows.map((s) => [s.id, s.repos]));
+    expect(byId.get(both)).toEqual(["tom.quest", "WikiTom"]);
+    expect(byId.get(one)).toEqual(["tom.quest"]);
+    // No checkout at all is the EMPTY list, never ["none"] — "none" is not a
+    // repo and the daemon would try to clone it.
+    expect(byId.get(scratch)).toEqual([]);
+  });
+
+  // witness: drop the normalizeRepoList filter from pickMissionRepos — the
   // daemon's REPO_GITHUB map throws on a repo it cannot clone, so the session
   // would die on its first turn instead of doing groundwork.
   it("an unclonable repo among the code members falls back to empty scratch", async () => {
@@ -2169,7 +2296,7 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].text).not.toContain("NEVER merge");
   });
 
-  // witness: drop the statement/brief substring fallback from pickMissionRepo
+  // witness: drop the statement/brief substring fallback from pickMissionRepos
   // and the named item below goes to "none" — a life-shaped todo that is
   // plainly about a repo would have nothing to edit.
   it("with nothing voting, the item's own words pick the repo or nothing does", async () => {
@@ -2313,8 +2440,12 @@ describe("prospecting lane", () => {
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const first = await prospectSessions(t);
     expect(first).toHaveLength(1);
-    // Never prospected beats never prospected on the order in the source.
-    expect(first[0].repo).toBe("ComplexMultiTrigger");
+    // Never prospected beats never prospected on the order in the source —
+    // and the source is now the ONE home: PROSPECT_REPOS is derived from
+    // SESSION_REPOS declaration order in convex/ttsShared.ts, where tom.quest
+    // is declared first. Which repo wins a tie between two never-read trees is
+    // arbitrary; that a tie resolves the same way every tick is not.
+    expect(first[0].repo).toBe("tom.quest");
     await endSession(t, first[0]._id);
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});

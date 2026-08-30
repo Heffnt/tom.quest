@@ -19,8 +19,12 @@ export type SessionStatus = Session["status"];
 // One home for the session constants: convex/ttsShared.ts (client-safe, no
 // server imports). The worker daemon's literal mirrors are fenced by
 // scripts/check-session-mirrors.mjs.
-export { DAEMON_STALE_MS } from "@/convex/ttsShared";
-import { SESSION_REPOS } from "@/convex/ttsShared";
+export {
+  DAEMON_STALE_MS,
+  NO_REPO,
+  SESSION_REPO_NAMES,
+  sessionRepoLabel,
+} from "@/convex/ttsShared";
 
 export const LIVE_STATUSES: readonly SessionStatus[] = [
   "requested",
@@ -34,7 +38,11 @@ export function isLive(status: SessionStatus): boolean {
   return LIVE_STATUSES.includes(status);
 }
 
-export const REPO_OPTIONS = [...Object.keys(SESSION_REPOS), "none"] as const;
+// The repo picker is SESSION_REPO_NAMES (re-exported above, straight from the
+// one home) rendered as toggles: a session may hold MORE THAN ONE repo since
+// Tom's 2026-08-30 ruling, so there is no single-choice list any more. Picking
+// nothing IS the "none" posture — an empty scratch workspace — which is why no
+// separate "none" entry appears in the picker.
 
 /** Token classes for the status chip — dark tokens only. */
 export function statusChipClass(status: SessionStatus): string {

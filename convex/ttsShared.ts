@@ -399,6 +399,85 @@ export const SESSION_REPOS = {
 } as const;
 
 /**
+ * The repo names alone, in declaration order. Every list of "which repos may a
+ * session hold" derives from this — the browser's picker, the autonomous
+ * scheduler's substring scan, the daemon's clone loop. Adding a repo is one
+ * line in SESSION_REPOS above plus its mirror in worker/session-host/
+ * session.mjs (fenced by scripts/check-session-mirrors.mjs), and nothing else.
+ */
+export const SESSION_REPO_NAMES: readonly string[] = Object.keys(SESSION_REPOS);
+
+/**
+ * The value claudeSessions.repo carries when a session gets an EMPTY scratch
+ * workspace instead of a checkout. Not a repo name and never in SESSION_REPOS.
+ */
+export const NO_REPO = "none";
+
+/**
+ * Repos that hold no code, so a prospecting mission (a session that reads a
+ * checkout looking for issues worth capturing) has nothing to find in them.
+ * WikiTom is prose — a wiki, not a source of code issues.
+ */
+export const NON_CODE_REPOS: readonly string[] = ["WikiTom"];
+
+/**
+ * The repos a prospecting mission may be pointed at: every session repo that
+ * is not in NON_CODE_REPOS. Derived, so a repo added above is prospectable the
+ * same day unless it is named non-code.
+ */
+export const PROSPECT_REPOS: readonly string[] = SESSION_REPO_NAMES.filter(
+  (r) => !NON_CODE_REPOS.includes(r),
+);
+
+/**
+ * The repos ONE session holds, normalized from a claudeSessions row.
+ *
+ * The row carries two fields for a historical reason: `repo` is the original
+ * single string (every row ever written has one), and `repos` is the array
+ * added when Tom ruled a session must be able to hold more than one (schema is
+ * additive-only, so `repo` could not simply become an array). `repos` wins when
+ * present; otherwise the single `repo` is the whole list, and "none" is the
+ * empty list. Every reader — Convex, browser, and the daemon's own plain-JS
+ * twin in session.mjs — asks this question the same way.
+ */
+export function sessionRepoList(row: {
+  repo: string;
+  repos?: string[];
+}): string[] {
+  if (row.repos !== undefined && row.repos.length > 0) return row.repos;
+  return row.repo === NO_REPO ? [] : [row.repo];
+}
+
+/**
+ * The repo list a session row should be WRITTEN with: known names only, in the
+ * caller's order, no duplicates, and "none" dropped (it is the absence of a
+ * repo, not a repo). An empty result means an empty scratch workspace.
+ *
+ * Unknown names are dropped rather than kept, because the daemon throws on a
+ * repo it cannot clone and a session that dies on its first turn helps nobody.
+ * Callers that want a typo to be LOUD (createSession, which Tom drives by hand)
+ * check against SESSION_REPO_NAMES themselves before calling this.
+ */
+export function normalizeRepoList(input: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const r of input) {
+    if (r === NO_REPO || out.includes(r)) continue;
+    if (!SESSION_REPO_NAMES.includes(r)) continue;
+    out.push(r);
+  }
+  return out;
+}
+
+/**
+ * The label for a session's workspace in a UI row: the repo names joined, or
+ * "none" when the session holds no checkout at all.
+ */
+export function sessionRepoLabel(row: { repo: string; repos?: string[] }): string {
+  const repos = sessionRepoList(row);
+  return repos.length === 0 ? NO_REPO : repos.join(" + ");
+}
+
+/**
  * The browser treats the session daemon as unreachable past this heartbeat
  * age; forceClose is allowed only past it. 90s = 3 missed 30s idle polls.
  */

@@ -9,7 +9,13 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { ageText, isLive, shortAge, statusChipClass } from "../lib";
+import {
+  ageText,
+  isLive,
+  sessionRepoLabel,
+  shortAge,
+  statusChipClass,
+} from "../lib";
 import Transcript from "./transcript";
 import AgentPanel from "./agent-panel";
 import PermissionCard from "./permission-card";
@@ -147,7 +153,7 @@ export default function SessionView({
           </span>
         </div>
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs text-text-faint pl-9">
-          <span>{session.repo}</span>
+          <span>{sessionRepoLabel(session)}</span>
           <span>{ageText(session.statusChangedAt, now)}</span>
           {session.todoId !== undefined && (
             <Link

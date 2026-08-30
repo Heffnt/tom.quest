@@ -39,10 +39,15 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // the planner, and the scheduler must all mean the same thing by "ready".
 import {
   DAEMON_STALE_MS,
+  NO_REPO,
+  PROSPECT_REPOS,
+  SESSION_REPO_NAMES,
   WRITING_STANDARD,
   buildDoneSet,
   goalCheckable,
   isReady,
+  normalizeRepoList,
+  sessionRepoList,
 } from "./ttsShared";
 export { DAEMON_STALE_MS };
 
@@ -226,21 +231,41 @@ export const createSession = mutation({
       v.literal("block"),
     ),
     repo: v.string(),
+    // More than one checkout in one session (Tom, 2026-08-30). Optional and
+    // additive: a caller sending only `repo` keeps the old single-repo
+    // behaviour exactly. When both arrive, `repos` is the truth and `repo` is
+    // set from its first entry so every pre-existing reader still works.
+    repos: v.optional(v.array(v.string())),
     todoId: v.optional(v.id("dtsTodos")),
     blockCategory: v.optional(v.string()),
     initialPrompt: v.string(),
   },
   handler: async (
     ctx,
-    { title, kind, repo, todoId, blockCategory, initialPrompt },
+    { title, kind, repo, repos, todoId, blockCategory, initialPrompt },
   ) => {
     await requireTomId(ctx);
     if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
+    // Tom drives this mutation by hand, so a name the daemon cannot clone is a
+    // typo and should say so NOW rather than as a session that fails on its
+    // first turn minutes later. (The scheduler's path is the opposite posture:
+    // pickMissionRepos drops what it cannot clone and works in scratch.)
+    const named = repos ?? [repo];
+    const unknown = named.filter(
+      (r) => r !== NO_REPO && !SESSION_REPO_NAMES.includes(r),
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `unknown repo ${unknown.join(", ")} — expected ${SESSION_REPO_NAMES.join(", ")}, or "${NO_REPO}"`,
+      );
+    }
     const now = Date.now();
+    const resolved = normalizeRepoList(named);
     const sessionId = await ctx.db.insert("claudeSessions", {
       title: title.trim() || "Untitled session",
       kind,
-      repo,
+      repo: resolved[0] ?? NO_REPO,
+      repos: resolved.length > 1 ? resolved : undefined,
       todoId,
       blockCategory: kind === "block" ? blockCategory : undefined,
       status: "requested",
@@ -584,6 +609,10 @@ export const internalPoll = internalMutation({
           kind: s.kind,
           title: s.title,
           repo: s.repo,
+          // The full workspace, resolved once here so the daemon never has to
+          // know that `repo` and `repos` are two fields for one question. A
+          // single-repo session sends a one-entry list; "none" sends [].
+          repos: sessionRepoList(s),
           // Posture + subject: the daemon needs mode at claim/adopt (an
           // autonomous session gets the auto-end + wall-clock-cap path) and
           // todoId/blockCategory to name what it is working on.
@@ -1314,26 +1343,33 @@ function promptFact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
 }
 
-// The repos a session can be checked out into. The AUTHORITY is the daemon's
-// REPO_GITHUB map in worker/session-host/session.mjs — it is what actually
-// clones, and it throws on a repo it does not know. Anything outside this
-// list becomes "none" (an empty scratch workspace) rather than a session that
-// dies on its first turn.
-const AUTO_REPOS = ["tom.quest", "ComplexMultiTrigger", "WikiTom"] as const;
-
-// Which repo should this mission's workspace hold?
+// Which repos should this mission's workspace hold?
+//
+// Tom ruled on 2026-08-30 that a session must be able to hold MORE THAN ONE
+// repo: a batch whose members live in tom.quest and in WikiTom is one piece of
+// work and must be workable in one session. So this returns a LIST, not a
+// winner — an empty list is the empty-scratch posture ("none").
 //
 // A batch votes with its code members: each {repo, externalId} member is one
-// tally mark for its repo and the most frequent wins (a tie keeps the first
-// one seen, since the Map preserves insertion order and the comparison below
-// is strict >). A batch with no code members — and any plain life todo — gets
-// "none" UNLESS the item's own words name a known repo verbatim. That last
-// check is a plain substring test on purpose: cheap and honest, and the worst
-// a wrong hit costs is one scratch checkout nobody touches.
+// tally mark for its repo, and EVERY repo with at least one vote is checked
+// out, ordered by vote count (a tie keeps the first one seen, since the Map
+// preserves insertion order and the sort below is stable). The old rule kept
+// only the most-voted repo and discarded the rest — that discard is exactly
+// what the ruling removes.
+//
+// A batch with no code members — and any plain life todo — gets the empty list
+// UNLESS the item's own words name known repos verbatim, in which case every
+// repo named is checked out. That check is a plain substring test on purpose:
+// cheap and honest, and the worst a wrong hit costs is one scratch checkout
+// nobody touches.
+//
 // `extraText` is the graph world's half of the same question: a task inside a
 // batch carries no members to vote with, so the batch's own words (its
 // statement and ground-up explanation) join the item's in the substring check.
-function pickMissionRepo(todo: Doc<"dtsTodos">, extraText = ""): string {
+//
+// Repos the daemon cannot clone are dropped by normalizeRepoList rather than
+// carried, because a name it does not know fails the session on its first turn.
+function pickMissionRepos(todo: Doc<"dtsTodos">, extraText = ""): string[] {
   const tally = new Map<string, number>();
   for (const m of todo.members ?? []) {
     // A code member is the {repo, externalId} pair; a life member carries
@@ -1341,21 +1377,65 @@ function pickMissionRepo(todo: Doc<"dtsTodos">, extraText = ""): string {
     if (m.repo === undefined || m.externalId === undefined) continue;
     tally.set(m.repo, (tally.get(m.repo) ?? 0) + 1);
   }
-  let winner: string | undefined;
-  let winnerCount = 0;
-  for (const [repo, count] of tally) {
-    if (count > winnerCount) {
-      winner = repo;
-      winnerCount = count;
-    }
-  }
-  if (winner !== undefined) {
-    return (AUTO_REPOS as readonly string[]).includes(winner) ? winner : "none";
+  if (tally.size > 0) {
+    const voted = [...tally.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([repo]) => repo);
+    const known = normalizeRepoList(voted);
+    // Members voted, but for nothing the daemon can clone. Fall through to the
+    // words rather than returning empty: the item may still name a real repo.
+    if (known.length > 0) return known;
   }
   const text = `${todo.statement} ${todo.brief ?? ""} ${
     todo.groundUpExplanation ?? ""
   } ${extraText}`;
-  return AUTO_REPOS.find((repo) => text.includes(repo)) ?? "none";
+  return normalizeRepoList(SESSION_REPO_NAMES.filter((r) => text.includes(r)));
+}
+
+// The workspace paragraph both autonomous prompts end with, in the three
+// shapes a session's checkout can take. ONE home, because the shapes must stay
+// in lockstep: the daemon's ensureWorkdir (worker/session-host/session.mjs)
+// builds exactly what these sentences promise, and a session told the wrong
+// layout wastes its first turns hunting for files.
+//
+//   0 repos — an empty scratch directory; the session may not touch code.
+//   1 repo  — the working directory IS the checkout (unchanged since the first
+//             repo-equipped mission; every existing prompt reads this way).
+//   2+      — the working directory is the PARENT, one subdirectory per repo,
+//             each on its own session/<id> branch pushed separately.
+//
+// The three strings the two callers word differently: what to implement, and
+// the prohibition paragraph in each posture (a prepare mission guards "a
+// status"; a worker guards "anything but the one todo you claimed").
+function workspaceBlock(
+  repos: string[],
+  sessionId: Id<"claudeSessions">,
+  {
+    implementSentence,
+    noRepoProhibition,
+    repoProhibition,
+  }: {
+    implementSentence: string;
+    noRepoProhibition: string;
+    repoProhibition: (branch: string) => string;
+  },
+): string[] {
+  if (repos.length === 0) return [noRepoProhibition];
+  const branch = `session/${sessionId}`;
+  const prohibition = repoProhibition(branch);
+  if (repos.length === 1) {
+    return [
+      `The workspace: your working directory is a fresh checkout of ${repos[0]} on branch ${branch}. ${implementSentence} Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary.`,
+      "",
+      prohibition,
+    ];
+  }
+  const dirs = repos.map((r) => `./${r}`).join(", ");
+  return [
+    `The workspace: this session holds ${repos.length} repositories — ${repos.join(", ")}. Your working directory is their PARENT: each repo is a fresh checkout in its own subdirectory (${dirs}), each already on branch ${branch} with its remote configured. Run git inside the repo you mean, never in the parent (the parent is not a git repository). ${implementSentence} Commit as you go in every repo you touch and push each one's ${branch}. Open a pull request per repo you changed with \`gh pr create\` ONLY when that repo's work is merge-ready, and name each one in the outcome summary.`,
+    "",
+    prohibition,
+  ];
 }
 
 // Opening prompt for an AUTONOMOUS session (house voice: the ground-up
@@ -1372,7 +1452,7 @@ function pickMissionRepo(todo: Doc<"dtsTodos">, extraText = ""): string {
 function buildAutoMissionPrompt(
   todo: Doc<"dtsTodos">,
   sessionId: Id<"claudeSessions">,
-  repo: string,
+  repos: string[],
   members?: AutoMemberContext[],
 ): string {
   const lines: (string | null)[] = [
@@ -1439,18 +1519,16 @@ function buildAutoMissionPrompt(
     "```",
     '"completed" means the mission produced its artifact; otherwise record "errored" with a summary saying what blocked you.',
     "",
-    // Two workspace variants. "none" is the groundwork posture (unchanged);
-    // a repo-equipped mission implements the code itself and stops exactly at
+    // The workspace: no repo is the groundwork posture (unchanged); a
+    // repo-equipped mission implements the code itself and stops exactly at
     // the merge — the one gate the doctrine keeps for Tom.
-    ...(repo === "none"
-      ? [
-          "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
-        ]
-      : [
-          `The workspace: your working directory is a fresh checkout of ${repo} on branch session/${sessionId}. Implement the agent steps INCLUDING the code ones. Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary.`,
-          "",
-          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
-        ]),
+    ...workspaceBlock(repos, sessionId, {
+      implementSentence: "Implement the agent steps INCLUDING the code ones.",
+      noRepoProhibition:
+        "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
+      repoProhibition: (branch) =>
+        `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than ${branch} — merging is Tom's gate.`,
+    }),
     "",
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
@@ -1486,12 +1564,12 @@ function buildWorkerPrompt(args: {
   todo: Doc<"dtsTodos">;
   batch: Doc<"batches">;
   sessionId: Id<"claudeSessions">;
-  repo: string;
+  repos: string[];
   needs: GraphNeighbor[];
   dependents: GraphNeighbor[];
   siblings: GraphNeighbor[];
 }): string {
-  const { todo, batch, sessionId, repo, needs, dependents, siblings } = args;
+  const { todo, batch, sessionId, repos, needs, dependents, siblings } = args;
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
     "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
@@ -1619,15 +1697,14 @@ function buildWorkerPrompt(args: {
     '- FAILED — the work was yours and it did not land. Send outcome "errored" with a summary starting "failed: ". This todo then waits a day before the fleet tries it again, so say what would have to be different.',
     '- ABANDONED — the todo should not be done at all any more. Send outcome "errored" with a summary starting "abandoned: " and the reason. You are reporting that judgment, not acting on it: only Tom retires a todo.',
     "",
-    ...(repo === "none"
-      ? [
-          "Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never touch code: this session has an EMPTY scratch directory and no repository, so anything needing code goes to Tom as a prepared task instead.",
-        ]
-      : [
-          `The workspace: your working directory is a fresh checkout of ${repo} on branch session/${sessionId}. Implement the code your todo needs. Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, name it in your evidence, and say so in the outcome summary.`,
-          "",
-          `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
-        ]),
+    ...workspaceBlock(repos, sessionId, {
+      implementSentence:
+        "Implement the code your todo needs, and name every pull request you open in your evidence.",
+      noRepoProhibition:
+        "Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never touch code: this session has an EMPTY scratch directory and no repository, so anything needing code goes to Tom as a prepared task instead.",
+      repoProhibition: (branch) =>
+        `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than ${branch} — merging is Tom's gate.`,
+    }),
     "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
   );
@@ -1653,13 +1730,15 @@ function buildWorkerPrompt(args: {
 // findings are welcome — Tom reviews everything, and a review he declines costs
 // him one glance.
 
-// WikiTom is deliberately absent: it is a wiki, not a source of code issues.
-const PROSPECT_REPOS = ["ComplexMultiTrigger", "tom.quest"] as const;
+// Which repos a prospector may read is decided in the one home
+// (convex/ttsShared.ts): every session repo that is not named non-code. WikiTom
+// is the non-code one — a wiki, not a source of code issues.
 
-// How many prospecting missions may be LIVE at once. Two, so both repos can be
-// under review at the same time while real work keeps its own slots; every
-// prospector still counts against maxLiveAutonomous like any other session.
-const PROSPECT_MAX_LIVE = 2;
+// How many prospecting missions may be LIVE at once: one per prospectable repo,
+// so every repo can be under review at the same time while real work keeps its
+// own slots. Every prospector still counts against maxLiveAutonomous like any
+// other session.
+const PROSPECT_MAX_LIVE = PROSPECT_REPOS.length;
 
 // At most one prospecting mission per repo per 30 minutes. Not a backoff and
 // not a rationing device — just enough to stop a repo being re-scanned in
@@ -2343,10 +2422,12 @@ export const internalAutoSchedule = internalMutation({
       picked.add(c.todo._id);
       counts[c.lane] = (counts[c.lane] ?? 0) + 1;
 
-      // Missions are repo-equipped when the work has a repo (pickMissionRepo);
-      // "none" keeps the empty-scratch groundwork posture. A graph task adds
-      // its batch's words to the question — the task itself is one line.
-      const repo = pickMissionRepo(
+      // Missions are repo-equipped when the work has repos (pickMissionRepos);
+      // an empty list keeps the empty-scratch groundwork posture. A batch whose
+      // members span two repos gets BOTH — Tom's 2026-08-30 ruling. A graph
+      // task adds its batch's words to the question, since the task itself is
+      // one line and carries no members of its own.
+      const repos = pickMissionRepos(
         c.todo,
         c.batch
           ? `${c.batch.statement} ${c.batch.groundUpExplanation ?? ""}`
@@ -2359,7 +2440,11 @@ export const internalAutoSchedule = internalMutation({
         kind: c.blockCategory !== undefined ? "block" : "focus-item",
         blockCategory: c.blockCategory,
         todoId: c.todo._id,
-        repo,
+        // `repo` stays the first checkout so every pre-existing reader (the
+        // session list, the daemon's log line) keeps working; `repos` carries
+        // the rest and is absent when there is nothing more to carry.
+        repo: repos[0] ?? NO_REPO,
+        repos: repos.length > 1 ? repos : undefined,
         mode: "autonomous",
         // The model tier, carried from the task the planner tagged. Absent is
         // the default and the norm: a worker runs Opus, and only a task marked
@@ -2403,7 +2488,7 @@ export const internalAutoSchedule = internalMutation({
             todo: c.todo,
             batch: c.batch,
             sessionId,
-            repo,
+            repos,
             needs,
             dependents,
             siblings,
@@ -2451,7 +2536,7 @@ export const internalAutoSchedule = internalMutation({
       await ctx.db.insert("claudeInbound", {
         sessionId,
         kind: "user-turn",
-        text: buildAutoMissionPrompt(c.todo, sessionId, repo, members),
+        text: buildAutoMissionPrompt(c.todo, sessionId, repos, members),
         status: "pending",
         createdAt: now,
       });

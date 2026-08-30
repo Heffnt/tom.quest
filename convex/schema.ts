@@ -854,7 +854,15 @@ export default defineSchema({
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
+    // The workspace this session's daemon builds. Two fields for one question,
+    // because the schema is additive-only: `repo` is the original single string
+    // (every row ever written has one) and `repos` is the array Tom ruled for
+    // on 2026-08-30 — a batch spanning tom.quest and WikiTom must be workable
+    // in ONE session. Never read either directly: sessionRepoList() in
+    // convex/ttsShared.ts is the one place that resolves them (repos wins when
+    // present; "none" means an empty scratch workspace).
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    repos: v.optional(v.array(v.string())),
     // Session posture (P3, ratified 2026-08-28): absent = "interactive" (a
     // Tom-driven chat). "autonomous" = fleet-scheduled groundwork with no one
     // watching — the daemon auto-ends it after its final turn and a wall-clock

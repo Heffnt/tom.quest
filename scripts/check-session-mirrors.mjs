@@ -64,6 +64,45 @@ if (sharedBlock && daemonBlock) {
   }
 }
 
+// 3. No SECOND repo list. The daemon's REPO_GITHUB above is the one mirror the
+// system tolerates, because worker/ cannot import a .ts file. Everything else
+// derives from SESSION_REPOS: the browser's picker, the autonomous scheduler's
+// candidate list, the prospecting lane's. Three hand-written copies had drifted
+// apart before this check existed (AUTO_REPOS, PROSPECT_REPOS, REPO_OPTIONS),
+// so a fourth is caught here rather than the next time someone adds a repo and
+// wonders why only some surfaces see it.
+//
+// The test: any array literal in a NON-mirror file naming two or more known
+// repos. Test files are exempt — a test naming two repos is stating a case, not
+// keeping a list.
+const repoNames = sharedBlock
+  ? [...sharedBlock[1].matchAll(entryRe)].map((m) => m[1])
+  : [];
+const NON_MIRROR_FILES = [
+  "convex/claudeSessions.ts",
+  "convex/tts.ts",
+  "app/sessions/lib.ts",
+  "app/sessions/components/session-list.tsx",
+];
+if (repoNames.length >= 2) {
+  // "a", "b" with any whitespace between, inside an array literal.
+  const quoted = repoNames.map((n) => `"${n}"`).join("|");
+  const listRe = new RegExp(`\\[[^\\]]*(${quoted})[^\\]]*(${quoted})`, "s");
+  for (const file of NON_MIRROR_FILES) {
+    let text;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      continue; // file moved or renamed; sections 1-2 still fence the mirror
+    }
+    if (listRe.test(text)) {
+      failures.push(
+        `${file}: an array literal names two or more session repos — derive it from SESSION_REPOS in convex/ttsShared.ts instead of writing a second list`,
+      );
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error("Session-mirror check FAILED:");
   for (const f of failures) console.error("  - " + f);

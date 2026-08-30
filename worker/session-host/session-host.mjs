@@ -109,6 +109,10 @@ function claimSession(env, sessions, row) {
   const s = new Session({
     id: row.id,
     repo: row.repo,
+    // The full workspace the server resolved (sessionRepoList in
+    // convex/ttsShared.ts). A server older than the multi-repo ruling sends
+    // only `repo`; the Session constructor falls back to it.
+    repos: row.repos,
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
@@ -171,6 +175,10 @@ function adoptSession(env, sessions, row) {
   const s = new Session({
     id: row.id,
     repo: row.repo,
+    // The full workspace the server resolved (sessionRepoList in
+    // convex/ttsShared.ts). A server older than the multi-repo ruling sends
+    // only `repo`; the Session constructor falls back to it.
+    repos: row.repos,
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
@@ -323,7 +331,9 @@ async function main() {
       ) {
         // Fresh session — or one a previous daemon died on before the SDK
         // ever reported an id (nothing to resume; start over cleanly).
-        log(`claiming session ${row.id} (repo: ${row.repo})`);
+        log(
+          `claiming session ${row.id} (repos: ${(row.repos ?? [row.repo]).join(", ")})`,
+        );
         claimSession(env, sessions, row);
       } else {
         log(

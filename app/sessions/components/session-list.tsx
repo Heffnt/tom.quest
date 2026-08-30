@@ -11,10 +11,12 @@ import type { Id } from "@/convex/_generated/dataModel";
 import Info from "@/app/tts/components/info";
 import type { Session, SessionStatus } from "../lib";
 import {
-  REPO_OPTIONS,
+  NO_REPO,
+  SESSION_REPO_NAMES,
   ageText,
   isLive,
   previewLine,
+  sessionRepoLabel,
   statusChipClass,
 } from "../lib";
 
@@ -196,7 +198,13 @@ function NewSessionForm({
 }) {
   const createSession = useMutation(api.claudeSessions.createSession);
   const [title, setTitle] = useState("");
-  const [repo, setRepo] = useState<string>("tom.quest");
+  // A session may hold more than one checkout (Tom, 2026-08-30), so the picker
+  // is a set, not a choice. The empty set is the "none" posture.
+  const [repos, setRepos] = useState<string[]>(["tom.quest"]);
+  const toggleRepo = (r: string) =>
+    setRepos((prev) =>
+      prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r],
+    );
   const [kind, setKind] = useState<"adhoc" | "weekly">("adhoc");
   const [prompt, setPrompt] = useState("");
   const [creating, setCreating] = useState(false);
@@ -210,7 +218,10 @@ function NewSessionForm({
       const id = await createSession({
         title,
         kind,
-        repo,
+        // `repo` is the pre-existing single field the server still writes;
+        // `repos` is the full set. Sending both keeps every older reader honest.
+        repo: repos[0] ?? NO_REPO,
+        repos,
         initialPrompt: prompt,
       });
       setTitle("");
@@ -233,17 +244,30 @@ function NewSessionForm({
           placeholder="title"
           className="flex-1 min-w-0 bg-surface-alt border border-border rounded px-3 py-2 text-sm placeholder:text-text-faint focus:outline-none focus:border-accent"
         />
-        <select
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          className="bg-surface-alt border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-        >
-          {REPO_OPTIONS.map((r) => (
-            <option key={r} value={r}>
+        {/* Repo toggles, not a dropdown: a session may hold more than one
+            checkout. Every chip is always rendered at a fixed size, so
+            toggling changes colour only and never moves the row. Picking
+            nothing is the empty-scratch posture, which the label states. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {SESSION_REPO_NAMES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => toggleRepo(r)}
+              aria-pressed={repos.includes(r)}
+              className={`border rounded px-2.5 py-2 text-sm transition-colors ${
+                repos.includes(r)
+                  ? "border-accent text-accent bg-accent-dim hover:brightness-125"
+                  : "border-border text-text-muted hover:bg-surface-alt hover:text-text"
+              }`}
+            >
               {r}
-            </option>
+            </button>
           ))}
-        </select>
+          <span className="text-xs text-text-faint">
+            {repos.length === 0 ? NO_REPO : `${repos.length} checked out`}
+          </span>
+        </div>
         <select
           value={kind}
           onChange={(e) => setKind(e.target.value as "adhoc" | "weekly")}
@@ -402,7 +426,7 @@ export default function SessionList({
                       autonomous
                     </span>
                   )}
-                  <span>{s.repo}</span>
+                  <span>{sessionRepoLabel(s)}</span>
                   <span>{ageText(s.statusChangedAt, now)}</span>
                 </div>
                 {/* What an ended session came to, in the row itself. */}
