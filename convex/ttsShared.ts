@@ -403,6 +403,41 @@ export const SESSION_REPOS = {
   WikiTom: "Heffnt/WikiTom",
 } as const;
 
+/** The sentinel repo value meaning "no checkout, an empty scratch workspace".
+ * Written into claudeSessions.repo when a session holds no repos at all. */
+export const NO_REPO = "none";
+
+/** Every repo name a session may hold, in declaration order. THE list — the
+ * auto-scheduler, the prospecting lane and the browser's picker all read it
+ * rather than keeping hand-written copies (VQC C1: one home). */
+export const SESSION_REPO_NAMES = Object.keys(
+  SESSION_REPOS,
+) as (keyof typeof SESSION_REPOS)[];
+
+export function isSessionRepo(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
+}
+
+/**
+ * The ONE normalizer for a session's repo list. Everything a caller might hand
+ * us — a single legacy string, "none", an array with duplicates, a repo the
+ * daemon does not know — collapses here into the canonical form: known repos
+ * only, deduped, in SESSION_REPOS declaration order so two sessions asking for
+ * the same set get byte-identical rows.
+ *
+ * An unknown name is DROPPED rather than thrown on: the daemon throws on a repo
+ * it cannot clone, and a session that dies on its first turn is worse than a
+ * session that starts with an empty scratch workspace.
+ */
+export function normalizeSessionRepos(
+  input: readonly string[] | string | undefined,
+): string[] {
+  const raw =
+    input === undefined ? [] : typeof input === "string" ? [input] : input;
+  const wanted = new Set(raw.map((r) => r.trim()).filter(isSessionRepo));
+  return SESSION_REPO_NAMES.filter((name) => wanted.has(name));
+}
+
 /**
  * The browser treats the session daemon as unreachable past this heartbeat
  * age; forceClose is allowed only past it. 90s = 3 missed 30s idle polls.

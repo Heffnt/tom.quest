@@ -380,6 +380,15 @@ export default defineSchema({
     // the dtsTodos field of the same name, same meaning. On an archive ruling
     // the sentence IS this condition, so a batch set aside can come back.
     unarchiveCondition: v.optional(v.string()),
+    // The repos this batch's work lives in — names from SESSION_REPOS
+    // (convex/ttsShared.ts). Tom's ruling 2026-08-30: A BATCH DECLARES ITS
+    // REPOS, set at batch formation, instead of the scheduler guessing them
+    // from a case-sensitive substring search over the batch's and todo's
+    // words. Every session opened for this batch or for a todo inside it
+    // checks out exactly this set. Absent (not empty) = never declared, and
+    // the resolver falls back to the legacy guess; an explicit [] means the
+    // batch genuinely needs no checkout.
+    repos: v.optional(v.array(v.string())),
     // Stamped by the Tom doors (a ruling on the batch, the pens). Same freeze
     // semantics as dtsTodos.tomTouchedAt: a batch with this set is FROZEN —
     // the planner (tts.internalStorePlanGraph) may never rewrite it.
@@ -867,6 +876,15 @@ export default defineSchema({
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
+    // ── The repos this session works in ──────────────────────────────────────
+    // `repos` is the LIVE field (Tom's ruling 2026-08-30: a session must be
+    // able to hold more than one repo — a batch spanning tom.quest and WikiTom
+    // cannot be worked in one session otherwise). `repo` is the pre-ruling
+    // single-string field, KEPT because prod schema is additive-only: every
+    // existing row has it and nothing backfills. Both are written on every new
+    // row by buildSessionRow (convex/claudeSessions.ts — the one insert path),
+    // with repo = repos[0] ?? "none"; readers prefer `repos ?? [repo]`.
+    repos: v.optional(v.array(v.string())),
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
     // Session posture (P3, ratified 2026-08-28): absent = "interactive" (a
     // Tom-driven chat). "autonomous" = fleet-scheduled groundwork with no one

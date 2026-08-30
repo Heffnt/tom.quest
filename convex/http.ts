@@ -6,6 +6,7 @@ import { auth } from "./auth";
 import { nowContext } from "./tts";
 import {
   DAY_MS,
+  SESSION_REPO_NAMES,
   WRITING_SKILL,
   WRITING_STANDARD,
   nyCalendarDayBoundsUtc,
@@ -739,6 +740,12 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     batches,
     planRepairs,
     writingStandard: synced === "" ? WRITING_STANDARD : synced,
+    // The repo names a batch may declare. Served for the SAME reason as
+    // writingStandard above: the planner is Node ESM on a box that never loads
+    // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's
+    // value is what stops a fourth hand-written copy of the repo list
+    // appearing in worker/ (VQC C1).
+    sessionRepos: SESSION_REPO_NAMES,
   });
 });
 
@@ -878,6 +885,14 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
           ? b.groundUpExplanation
           : undefined,
       path: path as never,
+      // The batch's declared repos (Tom 2026-08-30). Absent PRESERVES the
+      // stored value, the same rule every other field on this pen follows —
+      // so a planner run that says nothing about repos never erases a
+      // declaration. A non-array is treated as absent rather than rejected:
+      // one malformed field must not cost the whole graph.
+      repos: Array.isArray(b.repos)
+        ? b.repos.filter((x): x is string => typeof x === "string")
+        : undefined,
       tasks: tasks as never,
       goalIds: Array.isArray(b.goalIds)
         ? b.goalIds.filter((x): x is string => typeof x === "string")

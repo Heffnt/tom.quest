@@ -9,14 +9,10 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import Info from "@/app/tts/components/info";
+import { useOpenSession } from "@/app/lib/use-open-todo-session";
+import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 import type { Session, SessionStatus } from "../lib";
-import {
-  REPO_OPTIONS,
-  ageText,
-  isLive,
-  previewLine,
-  statusChipClass,
-} from "../lib";
+import { ageText, isLive, previewLine, statusChipClass } from "../lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-xs text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
@@ -194,33 +190,31 @@ function NewSessionForm({
 }: {
   onCreated: (id: Id<"claudeSessions">) => void;
 }) {
-  const createSession = useMutation(api.claudeSessions.createSession);
+  // The one launch hook (VQC C1) — the same one the TTS buttons use. This is
+  // the surface that genuinely knows its repos (Tom picked them), so it is the
+  // one that passes them explicitly; everywhere else the server resolves them.
+  const { open: openSession, busy: creating, error } = useOpenSession();
   const [title, setTitle] = useState("");
-  const [repo, setRepo] = useState<string>("tom.quest");
+  const [repos, setRepos] = useState<string[]>(["tom.quest"]);
   const [kind, setKind] = useState<"adhoc" | "weekly">("adhoc");
   const [prompt, setPrompt] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const create = async () => {
     if (prompt.trim() === "" || creating) return;
-    setCreating(true);
-    setError(null);
-    try {
-      const id = await createSession({
-        title,
-        kind,
-        repo,
-        initialPrompt: prompt,
-      });
-      setTitle("");
-      setPrompt("");
-      onCreated(id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "create failed");
-    } finally {
-      setCreating(false);
-    }
+    const text = prompt;
+    await openSession({
+      title,
+      kind,
+      // "none" is Tom's way of asking for an empty scratch workspace, and the
+      // server reads the empty list as exactly that.
+      repos: repos.filter((r) => r !== NO_REPO),
+      initialPrompt: text,
+      // The form navigates in place (onCreated) rather than into a new tab, so
+      // it hands the hook a no-op reservation instead of letting it open one.
+      tab: { goto: (id) => onCreated(id as Id<"claudeSessions">), close: () => {} },
+    });
+    setTitle("");
+    setPrompt("");
   };
 
   return (
@@ -233,17 +227,40 @@ function NewSessionForm({
           placeholder="title"
           className="flex-1 min-w-0 bg-surface-alt border border-border rounded px-3 py-2 text-sm placeholder:text-text-faint focus:outline-none focus:border-accent"
         />
-        <select
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          className="bg-surface-alt border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-        >
-          {REPO_OPTIONS.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
+        {/* A session may hold MORE THAN ONE repo (Tom, 2026-08-30), so the
+            picker is a toggle set rather than a dropdown: selecting none is
+            the empty-scratch workspace. Each chip changes on hover and states
+            its selected state with the accent fill, per the ratified UI
+            rules. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {SESSION_REPO_NAMES.map((r) => {
+            const on = repos.includes(r);
+            return (
+              <button
+                key={r}
+                type="button"
+                aria-pressed={on}
+                onClick={() =>
+                  setRepos((prev) =>
+                    prev.includes(r)
+                      ? prev.filter((x) => x !== r)
+                      : [...prev, r],
+                  )
+                }
+                className={`rounded border px-2.5 py-2 text-sm transition-colors ${
+                  on
+                    ? "border-accent bg-accent-dim text-accent hover:brightness-125"
+                    : "border-border bg-surface-alt text-text-muted hover:text-text hover:border-accent/60"
+                }`}
+              >
+                {r}
+              </button>
+            );
+          })}
+          <span className="text-xs text-text-faint">
+            {repos.length === 0 ? NO_REPO : `${repos.length} checked out`}
+          </span>
+        </div>
         <select
           value={kind}
           onChange={(e) => setKind(e.target.value as "adhoc" | "weekly")}

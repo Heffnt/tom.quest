@@ -15,6 +15,7 @@ import {
   goalCheckable,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
+  normalizeSessionRepos,
   nyLocalHour,
   nyOffsetHours,
   ttsDayBoundsUtc,
@@ -1908,6 +1909,12 @@ export const internalStorePlanGraph = internalMutation({
     statement: v.string(),
     groundUpExplanation: v.optional(v.string()),
     path: v.optional(BATCH_PATH),
+    // The repos this batch's work lives in (Tom's ruling 2026-08-30: a batch
+    // DECLARES its repos; the session scheduler no longer guesses them from a
+    // substring search). Normalized here — an unknown name is dropped rather
+    // than stored, so nothing downstream has to re-check it, and the planner
+    // naming a repo that does not exist costs a checkout, not a dead session.
+    repos: v.optional(v.array(v.string())),
     tasks: v.array(GRAPH_TASK),
     goalIds: v.optional(v.array(v.string())), // existing todos to bind as goals
     archive: v.optional(v.boolean()),
@@ -2208,11 +2215,16 @@ export const internalStorePlanGraph = internalMutation({
         groundUpExplanation:
           args.groundUpExplanation ?? batch.groundUpExplanation,
         path: args.path ?? batch.path,
+        repos:
+          args.repos === undefined
+            ? batch.repos
+            : normalizeSessionRepos(args.repos),
       };
       const stored = {
         statement: batch.statement,
         groundUpExplanation: batch.groundUpExplanation,
         path: batch.path,
+        repos: batch.repos,
       };
       if (JSON.stringify(projected) !== JSON.stringify(stored)) {
         await ctx.db.patch(batch._id, { ...projected, updatedAt: now });
@@ -2222,6 +2234,10 @@ export const internalStorePlanGraph = internalMutation({
         statement,
         groundUpExplanation: args.groundUpExplanation,
         path: args.path,
+        repos:
+          args.repos === undefined
+            ? undefined
+            : normalizeSessionRepos(args.repos),
         status: "active",
         createdAt: now,
         updatedAt: now,

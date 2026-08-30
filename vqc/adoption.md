@@ -122,3 +122,79 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
     schema is additive-only and a data migration buys no behavior.
     Documented at the table block in convex/schema.ts.
   cites: [C1, C6]
+- id: one-session-creation-path
+  date: 2026-08-30
+  question: Six places built a claudeSessions row (four client call sites, two
+    server db.inserts bypassing the createSession mutation). Unify them?
+  ruling: Yes — unify every session-creation path into ONE method. One
+    row-builder every insert passes through, one repo-resolver inside it, one
+    client hook the launch surfaces call. Recorded because the drift was not
+    hypothetical: three of the four client sites passed repo "none" (the only
+    value a caller with no picker could name) and every session opened from a
+    TTS button therefore arrived unable to clone or push.
+  cites: [C1]
+- id: session-holds-many-repos
+  date: 2026-08-30
+  question: May a session hold more than one repo?
+  ruling: Yes. claudeSessions gains repos (an array); the single `repo` string
+    stays, because prod schema is additive-only, and readers take
+    `repos ?? [repo]`. The daemon clones each into
+    /var/cache/tts/sessions/<id>/<repo> and pushes each session/<id> branch at
+    the end, and the opening prompt names every clone. Scope note: the working
+    directory is the PARENT only when there is more than one checkout — with
+    exactly one it stays the checkout itself, because `gh pr create` fails
+    outside a work tree and every prompt written before this ruling says the
+    cwd is the repo.
+  cites: [C1, tts-spec:20]
+- id: batch-declares-its-repos
+  date: 2026-08-30
+  question: How does a session learn which repos its work needs?
+  ruling: The BATCH declares them, explicitly, at batch formation — the
+    scheduler no longer guesses. `repos` on the batches table, written by the
+    planner's pen, read by the unified creator. This replaces pickMissionRepo,
+    a case-sensitive substring search over todo and batch text, which is the
+    whole reason the "Every surface TTS shows Tom" batch's session arrived with
+    no checkout. An explicitly empty declaration is an answer (no checkout),
+    not an absence.
+  cites: [C1]
+- id: brief-rewrite-remainder-is-ledger-debt
+  date: 2026-08-30
+  question: The brief rewrite fixes the major failures now — what happens to
+    the minor ones?
+  ruling: Carry the remainder as a dated ledger entry whose graduates_when is
+    "no stored brief or groundUpExplanation fails WRITING_STANDARD", with a
+    check script reporting the current failing count so the number can only go
+    down. Never a silent cutoff and never a frozen exemption — this is the
+    constitution's ratchet-adoption rule applied to prose.
+  cites: [A1, D28]
+- id: outbound-slack-shape
+  date: 2026-08-30
+  question: What does TTS say outbound on Slack?
+  ruling: Two things and no more. (1) An HOURLY update with three parts — what
+    Tom is scheduled to be doing at that moment, every agent currently working
+    on TTS, and what has happened since the last update. (2) Exactly ONE
+    threaded reply per #dump message, saying how TTS processed that message.
+    The hourly update sends even when empty, on the digest-env-missing-is-quiet
+    reasoning: the ABSENT message is the alarm.
+  cites: [tts-spec:7]
+- id: dump-prepared-immediately
+  date: 2026-08-30
+  question: May a #dump capture wait up to two hours for the preparation cron?
+  ruling: No — prepare immediately, so the Slack reply can state how TTS
+    interpreted the message. prepare-life-todos moves off its 2-hourly slot to
+    a flock-guarded every-2-minutes tick, and poll-dump spawns it directly
+    after a successful capture. Consequence accepted explicitly: the :37 slot
+    existed so Claude-calling jobs never shared a tick, and this job can now
+    overlap the others. Honesty requirement: the end-to-end latency is one
+    poll tick plus one Claude call, not "immediate", and any doc says so.
+  cites: [tts-spec:7]
+- id: slack-pushes-to-tts
+  date: 2026-08-30
+  question: Polling #dump every two minutes, or a Slack Events push?
+  ruling: Slack pushes. POST /slack/events subscribed to message.channels,
+    answering the url_verification handshake, verifying every request's
+    signature, and returning 200 within 3 seconds. poll-dump.mjs STAYS as the
+    reconciliation backstop (Slack delivery is best-effort, not guaranteed),
+    dropped to hourly; its cursor file is what makes a missed event
+    recoverable. This removes only the Slack→TTS leg.
+  cites: [C3, tts-spec:7]

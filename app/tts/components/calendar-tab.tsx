@@ -17,7 +17,7 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { WRITING_SKILL } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
-import { reserveSessionTab } from "@/app/lib/use-open-todo-session";
+import { useOpenSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
 import RepeatsStrip from "./repeats-strip";
 import TimeNoteField, {
@@ -200,16 +200,17 @@ export default function CalendarTab({
     api.ttsSkills.getSkill,
     isTom ? { name: WRITING_SKILL } : "skip",
   );
-  const createSession = useMutation(api.claudeSessions.createSession);
   const recordEvent = useMutation(api.tts.recordEvent);
+  // The one launch hook owns the createSession arguments and the failure text;
+  // this surface only remembers WHICH block the last attempt was for, so the
+  // error renders under the chip that fired it.
+  const { open: openSession, error: sessionError } = useOpenSession();
   const [addDay, setAddDay] = useState<string | null>(null); // "YYYY-MM-DD"
   const [sessionBusyId, setSessionBusyId] = useState<Id<"dtsBlocks"> | null>(
     null,
   );
-  const [sessionError, setSessionError] = useState<{
-    blockId: Id<"dtsBlocks">;
-    message: string;
-  } | null>(null);
+  const [sessionErrorBlockId, setSessionErrorBlockId] =
+    useState<Id<"dtsBlocks"> | null>(null);
 
   const todosById = useMemo(
     () => new Map((todos ?? []).map((t) => [t._id as string, t])),
@@ -240,35 +241,26 @@ export default function CalendarTab({
     [timeNotes],
   );
 
-  // Same idiom as use-open-todo-session: reserve the tab inside the click (no
-  // await before window.open), create, then point the tab at the session;
-  // failures close it again and land in state under the button that fired it.
+  // The one launch hook (useOpenSession) owns the tab reservation, the
+  // createSession arguments and the repo question; this surface only says WHAT
+  // it is opening and where its per-block error text goes.
   const openBlockSession = async (block: Block) => {
     const category = block.category;
     if (category === undefined || sessionBusyId !== null) return;
-    const tab = reserveSessionTab();
     setSessionBusyId(block._id);
-    setSessionError(null);
-    try {
-      const matching = activeTodos.filter((t) => t.category === category);
-      const id = await createSession({
-        title: `Block: ${category}`,
-        kind: "block",
-        repo: "none",
-        blockCategory: category,
-        initialPrompt: buildBlockSessionPrompt(
-          category,
-          matching,
-          writingSkill?.body,
-        ),
-      });
-      tab.goto(id);
-    } catch (e) {
-      tab.close();
-      setSessionError({ blockId: block._id, message: errMessage(e) });
-    } finally {
-      setSessionBusyId(null);
-    }
+    setSessionErrorBlockId(block._id);
+    const matching = activeTodos.filter((t) => t.category === category);
+    await openSession({
+      title: `Block: ${category}`,
+      kind: "block",
+      blockCategory: category,
+      initialPrompt: buildBlockSessionPrompt(
+        category,
+        matching,
+        writingSkill?.body,
+      ),
+    });
+    setSessionBusyId(null);
   };
 
   if (todos === undefined || blocks === undefined) {
@@ -405,9 +397,7 @@ export default function CalendarTab({
                     onOpenSession={() => void openBlockSession(b)}
                     sessionBusy={sessionBusyId === b._id}
                     sessionError={
-                      sessionError && sessionError.blockId === b._id
-                        ? sessionError.message
-                        : null
+                      sessionErrorBlockId === b._id ? sessionError : null
                     }
                   />
                 ))}
