@@ -678,16 +678,28 @@ export class Session {
     // write for the whole account. Neither is reachable through the
     // sanctioned pens, so nothing legitimate needs them.
     //
-    // TURING_READ_KEY is deliberately NOT in this drop list. It is turing-api's
-    // read-only credential (turing-api/main.py, verify_read_key): it opens
-    // GET /gpu-report, GET /jobs and GET /sessions/{name}/output and is refused
-    // everywhere else, so a session holding it can look at the cluster and
-    // cannot change it. The full TURING_API_KEY — which also authorizes
-    // POST /sessions/{name}/run, arbitrary shell on the cluster — is not on this
-    // box at all, and putting it in worker.env would defeat the split.
+    // TURING_API_KEY joins them, and this one is not hypothetical either: a
+    // session's shell was OBSERVED holding a 64-character TURING_API_KEY
+    // (2026-08-30) inherited from this process. It happened to be stale — the
+    // live API answered 401 to it — but staleness is not a control. That key
+    // authorizes POST /sessions/{name}/run, which types an arbitrary command
+    // into a tmux session on the WPI cluster under Tom's account, and a cluster
+    // side effect is not confined to the throwaway clone the whole sandbox is
+    // built around. DANGER: refreshing that value anywhere upstream (worker.env,
+    // a systemd drop-in) silently hands every autonomous session cluster shell,
+    // and nothing else in this file would notice. There is no test standing
+    // under this line — the scrub is a property of a spawned process's env — so
+    // the comment is the guard.
+    //
+    // TURING_READ_KEY is deliberately NOT dropped. It is turing-api's read-only
+    // credential (turing-api/main.py, verify_read_key): it opens GET /gpu-report,
+    // GET /jobs and GET /sessions/{name}/output and is refused everywhere else,
+    // so a session holding it can look at the cluster and cannot change it.
+    // That split is the whole reason a session may hold a Turing key at all.
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
+      TURING_API_KEY: _turingFullKey,
       ...inheritedEnv
     } = process.env;
     this.queue = new TurnQueue();
@@ -1153,8 +1165,8 @@ export class Session {
         // which survives the scrub. The classifier's PROMPT embeds a
         // model-authored command, so this process is model-influenced — the
         // same reason the SDK child env is scrubbed applies here: neither
-        // the ingest key nor the GitHub token may sit in a process a model
-        // can steer.
+        // the ingest key, the GitHub token, nor the full Turing key may sit in
+        // a process a model can steer.
         // The prompt rides in argv rather than stdin — unlike tts-lib's
         // runClaude — because it is one command, not a ledger dump; a command
         // big enough to blow the ~128KiB argv cap fails the spawn and lands
@@ -1165,6 +1177,7 @@ export class Session {
               SESSIONS_WORKER_KEY: _ingest,
               GH_TOKEN: _gh,
               TTS_WORKER_KEY: _tts,
+              TURING_API_KEY: _turingFull,
               ...rest
             } = process.env;
             return rest;

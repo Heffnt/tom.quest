@@ -108,7 +108,10 @@ tts-turing output <session> --lines 100
 carries two credentials. `TURING_API_KEY` opens everything — including
 `POST /sessions/{name}/run`, arbitrary shell on the cluster under Tom's
 account — and is **never** written to `worker.env`; it lives in Vercel's and
-Convex's env, where no model's shell reaches it. `TURING_READ_KEY`, the one in
+Convex's env, where no model's shell reaches it. A session's shell was found
+holding one anyway on 2026-08-30 (a stale value the live API refused), so
+`session.mjs` now drops `TURING_API_KEY` from every session the way it drops
+`GH_TOKEN`. `TURING_READ_KEY`, the one in
 `worker.env`, is accepted by exactly three endpoints: `GET /gpu-report`,
 `GET /jobs`, `GET /sessions/{name}/output`. Everything else answers 401 to it
 (`turing-api/main.py`, `verify_read_key`; the split is covered by
