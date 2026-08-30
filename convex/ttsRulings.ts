@@ -14,7 +14,7 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
 // verdict set (see schema.ts ttsRulings) is the ONLY vocabulary any ruling
 // button anywhere may use:
-//   approve — execute as briefed
+//   execute — run the plan as briefed
 //   edit  — one written sentence redirects the preparing agent, no session
 //   session — this needs conversation
 //   archive — set aside
@@ -23,7 +23,7 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 //
 // SENTENCE ON ANY VERDICT (2026-08-29): all four verdicts accept the optional
 // `sentence`. Required only on edit; on archive it is the unarchive
-// condition; on approve/session it is a free note that reaches the batcher
+// condition; on execute/session it is a free note that reaches the batcher
 // prompt, the preparer prompt, and the session's opening prompt.
 //
 // Life-subject verdicts take their immediate effect here (edit drops
@@ -35,18 +35,18 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // THREE SUBJECT TYPES since schema v2 (2026-08-29): life (a dtsTodos row),
 // code (repo + externalId), and BATCH (a batches row — a batch is its own row
 // now, so Tom rules on the batch itself). A batch verdict lands like a life
-// verdict: approve ratifies the graph, archive archives the batch, edit
+// verdict: execute ratifies the graph, archive archives the batch, edit
 // hands it back to the planner (and, alone among the four, does NOT stamp
 // tomTouchedAt — the planner must stay allowed to re-form it).
 
 const VERDICT = v.union(
-  v.literal("approve"),
+  v.literal("execute"),
   v.literal("edit"),
   v.literal("session"),
   v.literal("archive"),
 );
 
-export type RulingVerdict = "approve" | "edit" | "session" | "archive";
+export type RulingVerdict = "execute" | "edit" | "session" | "archive";
 
 // The ONE definition of a ruling subject's identity (repo names carry no
 // spaces; the type prefix keeps life, code, and batch keys disjoint). Client
@@ -113,7 +113,7 @@ async function insertRuling(
     // One optional written note on EVERY verdict (ratified 2026-08-29): the
     // four verdicts are uniform, each taking an optional note. Its MEANING is
     // per-verdict and unchanged — edit: the redirect (still required);
-    // archive: the condition to propose it back; approve/session: free
+    // archive: the condition to propose it back; execute/session: free
     // steering the worker prompts and the session prompt read.
     const trimmed = sentence?.trim();
     if (verdict === "edit" && !trimmed) {
@@ -150,7 +150,7 @@ async function insertRuling(
         appliedAt = now;
         applyResult = "status archived";
       }
-      if (verdict === "approve") {
+      if (verdict === "execute") {
         // No agent executes life todos yet — Tom is the executor. Approving a
         // life plan is pure ratification, so it applies the moment it is
         // recorded (leaving it "pending" would strand it forever: every
@@ -196,9 +196,9 @@ async function insertRuling(
           `batch archived (${emptied.archivedTasks} task(s) archived, ` +
           `${emptied.unboundGoals} goal(s) returned)`;
       }
-      if (verdict === "approve") {
+      if (verdict === "execute") {
         // Nothing executes a batch on its own — approving is ratification of
-        // the graph, applied the moment it is recorded (the life-approve
+        // the graph, applied the moment it is recorded (the life-execute
         // reasoning: leaving it pending would strand it forever).
         appliedAt = now;
         applyResult = "graph ratified";

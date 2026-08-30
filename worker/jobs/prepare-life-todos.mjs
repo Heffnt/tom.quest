@@ -121,7 +121,7 @@ async function main() {
 
   // Pending edit rulings on LIFE todos, keyed by todoId. The feed already
   // filters to unapplied-and-not-superseded rows; code rows on the same feed
-  // belong to apply-rulings.mjs / execute-approved.mjs.
+  // belong to apply-rulings.mjs / execute-plans.mjs.
   //
   // A members-bearing todo is a BATCH: its edit rulings belong to
   // form-batches.mjs. This job's single-todo prompt would overwrite a grouping

@@ -171,7 +171,7 @@ export default function BatchCard({
             >
               open batch session
             </button>
-            {(["approve", "archive", "edit"] as const).map((v) => (
+            {(["execute", "archive", "edit"] as const).map((v) => (
               <button
                 key={v}
                 type="button"

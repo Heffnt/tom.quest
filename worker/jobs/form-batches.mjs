@@ -23,10 +23,10 @@
 // "frozen" flag in the prompt reflects only Tom's OTHER touches (edits,
 // status changes, importance he set himself).
 //
-// NOTES ON THE OTHER VERDICTS (2026-08-29): approve / session / archive may
-// each carry a written note too. The approve and session ones are NOT commands
+// NOTES ON THE OTHER VERDICTS (2026-08-29): execute / session / archive may
+// each carry a written note too. The execute and session ones are NOT commands
 // to re-form anything and are never consumed — they are standing steering
-// context (what he approved and why, what he wants talked through), injected
+// context (what he ruled execute on and why, what he wants talked through), injected
 // alongside the ruling history so the groupings track what he actually wants.
 // ARCHIVE notes are left out: an archive sentence is the unarchive CONDITION
 // for one retired item, not steering about what to group.
@@ -105,7 +105,7 @@ function prompt(ctx) {
       : []),
     ...(ctx.notes.length > 0
       ? [
-          `NOTES TOM WROTE WITH HIS APPROVE AND SESSION RULINGS. These are`,
+          `NOTES TOM WROTE WITH HIS EXECUTE AND SESSION RULINGS. These are`,
           `steering context about what he wants, not instructions to re-form a`,
           `specific batch and not items to act on:`,
           ...ctx.notes.map((n) => `- [${n.verdict}] ${n.subject}: ${n.sentence}`),
@@ -113,7 +113,7 @@ function prompt(ctx) {
         ]
       : []),
     `TOM'S RECENT RULINGS, newest first (behavioral evidence: what he`,
-    `approves, edits, sends to a session, archives — use it to infer what`,
+    `executes, edits, sends to a session, archives — use it to infer what`,
     `he cares about, not as items to act on):`,
     JSON.stringify(ctx.recentRulings, null, 2),
     ``,
@@ -176,10 +176,10 @@ async function main() {
     }
   }
 
-  // Notes Tom wrote with his APPROVE and SESSION verdicts (2026-08-29: every
+  // Notes Tom wrote with his EXECUTE and SESSION verdicts (2026-08-29: every
   // verdict may carry a sentence). Unlike an edit sentence — which commands a
   // re-form and is consumed — these are standing steering context: what he
-  // approved and why, what he wants talked through. Newest first, bounded.
+  // ruled execute on and why, what he wants talked through. Newest first, bounded.
   //
   // ARCHIVE sentences are excluded on purpose: an archive note is the
   // UNARCHIVE CONDITION ("when the lease is up"), a fact about one retired
@@ -190,7 +190,7 @@ async function main() {
   const notes = recent
     .filter(
       (r) =>
-        (r.verdict === "approve" || r.verdict === "session") &&
+        (r.verdict === "execute" || r.verdict === "session") &&
         (r.sentence ?? "").trim() !== "",
     )
     .slice(0, NOTE_MAX)

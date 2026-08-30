@@ -39,7 +39,7 @@ describe("TTS unified rulings", () => {
       t.mutation(api.ttsRulings.recordRuling, {
         repo: "r",
         externalId: "x",
-        verdict: "approve",
+        verdict: "execute",
       }),
     ).rejects.toThrow();
     const userId = await t.run(async (ctx) =>
@@ -51,7 +51,7 @@ describe("TTS unified rulings", () => {
       user.mutation(api.ttsRulings.recordRuling, {
         repo: "r",
         externalId: "x",
-        verdict: "approve",
+        verdict: "execute",
       }),
     ).rejects.toThrow();
   });
@@ -64,7 +64,7 @@ describe("TTS unified rulings", () => {
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
     // Zero subjects.
     await expect(
-      tom.mutation(api.ttsRulings.recordRuling, { verdict: "approve" }),
+      tom.mutation(api.ttsRulings.recordRuling, { verdict: "execute" }),
     ).rejects.toThrow(/exactly one subject/);
     // Two subjects.
     await expect(
@@ -72,14 +72,14 @@ describe("TTS unified rulings", () => {
         todoId,
         repo: "ComplexMultiTrigger",
         externalId: "cmt-001",
-        verdict: "approve",
+        verdict: "execute",
       }),
     ).rejects.toThrow(/exactly one subject/);
     // Half a code subject.
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
         repo: "ComplexMultiTrigger",
-        verdict: "approve",
+        verdict: "execute",
       }),
     ).rejects.toThrow(/both repo and externalId/);
   });
@@ -158,7 +158,7 @@ describe("TTS unified rulings", () => {
     expect(ruling.applyResult).toBe("status archived");
   });
 
-  it("session (life) and approve (code) leave appliedAt unset", async () => {
+  it("session (life) and execute (code) leave appliedAt unset", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "talk" });
@@ -169,7 +169,7 @@ describe("TTS unified rulings", () => {
     await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "ComplexMultiTrigger",
       externalId: "cmt-001",
-      verdict: "approve",
+      verdict: "execute",
     });
     const rulings = await tom.query(api.ttsRulings.listRulings, {});
     expect(rulings).toHaveLength(2);
@@ -177,16 +177,16 @@ describe("TTS unified rulings", () => {
     expect(rulings.every((r) => r.applyResult === undefined)).toBe(true);
   });
 
-  // witness: drop the life-approve instant-apply branch from insertRuling in
+  // witness: drop the life-execute instant-apply branch from insertRuling in
   // convex/ttsRulings.ts — the ruling would ride the pending feed forever
-  // (no worker consumes life approvals; Tom is the executor).
-  it("approve on a LIFE todo applies instantly as ratification", async () => {
+  // (no worker consumes life execute rulings; Tom is the executor).
+  it("execute on a LIFE todo applies instantly as ratification", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "go" });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "approve",
+      verdict: "execute",
     });
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling.appliedAt).toBeDefined();
@@ -198,10 +198,10 @@ describe("TTS unified rulings", () => {
 
   // witness: drop the tomTouchedAt patch from insertRuling's life path in
   // convex/ttsRulings.ts — the batcher could rewrite a batch Tom just ruled on.
-  it("approve, session, and archive each stamp tomTouchedAt (row frozen)", async () => {
+  it("execute, session, and archive each stamp tomTouchedAt (row frozen)", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    for (const verdict of ["approve", "session", "archive"] as const) {
+    for (const verdict of ["execute", "session", "archive"] as const) {
       const todoId = await tom.mutation(api.tts.createTodo, {
         statement: `rule ${verdict}`,
       });
@@ -268,10 +268,10 @@ describe("TTS unified rulings", () => {
     expect(res).toMatchObject({ created: 0, updated: 1, skipped: [] });
     const fresh = await t.run(async (ctx) => ctx.db.get(batch!._id));
     expect(fresh?.statement).toBe("visa paperwork");
-    // An approve on the same batch DOES freeze it against the next run.
+    // An execute on the same batch DOES freeze it against the next run.
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: batch!._id,
-      verdict: "approve",
+      verdict: "execute",
     });
     const after = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
@@ -334,7 +334,7 @@ describe("TTS unified rulings", () => {
     await expect(
       t.mutation(internal.ttsRulings.internalRecordRuling, {
         todoId: "not-a-real-id",
-        verdict: "approve",
+        verdict: "execute",
       }),
     ).rejects.toThrow(/Unknown todo id/);
   });
@@ -356,7 +356,7 @@ describe("TTS unified rulings", () => {
       applyResult?: string;
     }) =>
       t.run(async (ctx) =>
-        ctx.db.insert("dtsRulings", { verdict: "approve", ...row }),
+        ctx.db.insert("dtsRulings", { verdict: "execute", ...row }),
       );
     // Life subject: older ruling superseded by a newer sibling.
     await insert({ subjectType: "life", todoId, ruledAt: base - 1000 });
@@ -404,7 +404,7 @@ describe("TTS unified rulings", () => {
     const id = await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "tom.quest",
       externalId: "tq-004",
-      verdict: "approve",
+      verdict: "execute",
     });
     await t.mutation(internal.ttsRulings.internalMarkRulingApplied, {
       id,
@@ -452,7 +452,7 @@ describe("TTS unified rulings", () => {
     await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "tom.quest",
       externalId: "unruled-1",
-      verdict: "approve",
+      verdict: "execute",
     });
     // ...and neither does a life ruling.
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
@@ -466,15 +466,15 @@ describe("TTS unified rulings", () => {
   });
 
   // witness: reject `sentence` on any verdict but edit in insertRuling
-  // (convex/dtsRulings.ts) and the approve/session assertions below go red.
+  // (convex/dtsRulings.ts) and the execute/session assertions below go red.
   it("accepts a sentence on every verdict; edit still requires one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const a = await tom.mutation(api.tts.createTodo, { statement: "approve me" });
+    const a = await tom.mutation(api.tts.createTodo, { statement: "execute me" });
     const s = await tom.mutation(api.tts.createTodo, { statement: "talk to me" });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: a,
-      verdict: "approve",
+      verdict: "execute",
       sentence: "yes, and keep the scope to the kitchen",
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -493,7 +493,7 @@ describe("TTS unified rulings", () => {
     const b = await tom.mutation(api.tts.createTodo, { statement: "no note" });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: b,
-      verdict: "approve",
+      verdict: "execute",
       sentence: "   ",
     });
     expect(

@@ -1,5 +1,5 @@
 // tts-code-lib.mjs — shared helpers for the TTS CODE-TODO jobs
-// (brief-code-todos.mjs, apply-rulings.mjs, execute-approved.mjs). Plain Node
+// (brief-code-todos.mjs, apply-rulings.mjs, execute-plans.mjs). Plain Node
 // ESM, ZERO npm dependencies — same rules as tts-lib.mjs.
 //
 // The code-todo loop in one breath: CMT (github.com/Heffnt/ComplexMultiTrigger)

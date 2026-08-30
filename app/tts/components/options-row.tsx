@@ -135,7 +135,7 @@ function ImportanceSetter({
 type Mode = RulingVerdict | "done" | "set-archived";
 
 const PLACEHOLDER: Record<Mode, string> = {
-  approve: "note (optional)",
+  execute: "note (optional)",
   edit: "sentence (required)",
   session: "note (optional)",
   archive: "unarchive when (optional)",
@@ -144,7 +144,7 @@ const PLACEHOLDER: Record<Mode, string> = {
 };
 
 const INFO: Record<Mode, string> = {
-  approve: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
+  execute: 'ttsRulings.recordRuling({verdict:"execute", sentence})',
   edit: 'ttsRulings.recordRuling({verdict:"edit", sentence})',
   session: 'ttsRulings.recordRuling({verdict:"session", sentence})',
   archive: 'ttsRulings.recordRuling({verdict:"archive", sentence})',

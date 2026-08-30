@@ -22,7 +22,7 @@ on a schedule:
    is broken. That split is the whole monitoring story.
 4. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
 5. **apply-rulings** (every 10 min) — see the ruling loop below.
-6. **execute-approved** (hourly at :45) — see the ruling loop below.
+6. **execute-plans** (hourly at :45) — see the ruling loop below.
 
 ## The code-todo ruling loop
 
@@ -35,7 +35,7 @@ tom.quest UI in seconds:
   `/var/lib/tts/brief-hashes.json`), has headless Claude write a ground-up
   brief against the current tree and a recommendation — `propose-archive`
   (already done/moot, with evidence), `stale-replan` (intent live, plan
-  stale), `needs-session` (open judgment call; all tier C), or `approve` —
+  stale), `needs-session` (open judgment call; all tier C), or `execute` —
   plus an exec class (`box` vs `needs-turing`). Briefs POST to Convex and are
   also cached locally under `/var/cache/tts/briefs/`.
 - Tom rules on each brief in the UI; Convex queues the rulings.
@@ -45,7 +45,7 @@ tom.quest UI in seconds:
   `propose-archive` closes the entry in `vqc/todos.yaml` (text surgery, then
   CMT's own todos guard test — a red guard reverts and reports instead of
   pushing).
-- **execute-approved** takes ONE pending `approve` per hour, runs agentic
+- **execute-plans** takes ONE pending `execute` per hour, runs agentic
   Claude in a throwaway full clone on a `tts/<id>` branch, verifies commits +
   the todos guard, pushes, and opens a PR. **Merging the PR is the human
   gate** — nothing lands on master autonomously.
@@ -109,7 +109,7 @@ node worker/jobs/gmail-auth.mjs <client_id> <client_secret>
 ```
 
 It prints a Google URL, and after read-only Gmail access (`gmail.readonly`) is
-approved it prints all three lines ready to paste into `worker.env`. The token
+granted it prints all three lines ready to paste into `worker.env`. The token
 lasts until it is revoked at `myaccount.google.com/permissions`. The script's
 own header carries the ten-minute console walkthrough.
 
@@ -131,7 +131,7 @@ node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hou
 node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
 node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
 node /opt/tts/apply-rulings.mjs           # apply pending rulings now
-node /opt/tts/execute-approved.mjs        # execute one approved plan now
+node /opt/tts/execute-plans.mjs        # execute one ruled plan now
 ```
 
 `--force` skips the 4-a.m.-New-York hour guard (cron fires the prep at both
@@ -141,5 +141,5 @@ whichever side of daylight saving we're on).
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-prepare-queue, brief-code-todos, apply-rulings, execute-approved), truncated
+prepare-queue, brief-code-todos, apply-rulings, execute-plans), truncated
 monthly by cron — they are convenience, not state.

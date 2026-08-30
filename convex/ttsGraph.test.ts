@@ -233,7 +233,7 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     const batch = await oneBatch(t);
     await tom.mutation(api.ttsRulings.recordRuling, {
       batchId: batch._id,
-      verdict: "approve",
+      verdict: "execute",
     });
 
     const res = await storeGraph(t, {
@@ -1003,7 +1003,7 @@ describe("TTS rulings on a batch", () => {
     const batch = await newBatch(t);
     await tom.mutation(api.ttsRulings.recordRuling, {
       batchId: batch._id,
-      verdict: "approve",
+      verdict: "execute",
       sentence: "go",
     });
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
@@ -1028,7 +1028,7 @@ describe("TTS rulings on a batch", () => {
       tom.mutation(api.ttsRulings.recordRuling, {
         batchId: batch._id,
         todoId,
-        verdict: "approve",
+        verdict: "execute",
       }),
     ).rejects.toThrow(/exactly one subject/);
   });
@@ -1099,7 +1099,7 @@ describe("TTS rulings on a batch", () => {
     await expect(
       t.mutation(internal.ttsRulings.internalRecordRuling, {
         batchId: "not-an-id",
-        verdict: "approve",
+        verdict: "execute",
       }),
     ).rejects.toThrow(/Unknown batch id/);
   });

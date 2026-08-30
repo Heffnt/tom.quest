@@ -1,6 +1,6 @@
 // tts-lib.mjs — shared helpers for the TTS worker jobs (poll-dump.mjs,
 // prepare-queue.mjs, and the code-todo jobs brief-code-todos.mjs /
-// apply-rulings.mjs / execute-approved.mjs). Plain Node ESM, ZERO npm
+// apply-rulings.mjs / execute-plans.mjs). Plain Node ESM, ZERO npm
 // dependencies: node:fs, node:child_process and the global fetch (Node >= 18,
 // this box runs Node 22) are all we use.
 //

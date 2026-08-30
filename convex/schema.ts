@@ -674,7 +674,7 @@ export default defineSchema({
   // APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
   // verdict set — every ruling button anywhere is one of these four:
-  //   approve — execute as briefed (applied by worker/agent, appliedAt then set)
+  //   execute — run the plan as briefed (applied by worker/agent, appliedAt then set)
   //   edit  — `sentence` goes back to the preparing agent; life todos drop
   //             to readiness "preparing" immediately
   //   session — this needs conversation; applied when the session is created
@@ -696,7 +696,7 @@ export default defineSchema({
     // set (enforced in ttsRulings.ts).
     batchId: v.optional(v.id("batches")),
     verdict: v.union(
-      v.literal("approve"),
+      v.literal("execute"),
       v.literal("edit"),
       v.literal("session"),
       v.literal("archive"),
@@ -704,7 +704,7 @@ export default defineSchema({
     // One optional written note, accepted on EVERY verdict (2026-08-29): the
     // redirect for edit (required there, enforced in ttsRulings.ts), the
     // unarchive condition for archive, a free steering note for
-    // approve/session — the worker prompts inject all four as context.
+    // execute/session — the worker prompts inject all four as context.
     sentence: v.optional(v.string()),
     ruledAt: v.number(),
     appliedAt: v.optional(v.number()),
@@ -775,7 +775,7 @@ export default defineSchema({
   // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
   // when the entry changes upstream, the hash mismatch marks the brief stale
   // and the worker rewrites it. `recommendation` is the worker's read, never a
-  // verdict — Tom rules (ttsRulings); `execClass` says where an approved
+  // verdict — Tom rules (ttsRulings); `execClass` says where an execute-ruled
   // item can run; `evidence` carries the commits/files that justify a
   // propose-archive.
   dtsCodeBriefs: defineTable({

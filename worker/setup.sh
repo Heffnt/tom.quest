@@ -174,11 +174,11 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # overlapping cron ticks exit immediately instead of double-applying.
 */10 * * * * root /usr/bin/node /opt/tts/apply-rulings.mjs >> /var/log/tts/apply-rulings.log 2>&1
 
-# Execute ONE approved plan per hour at :45 (agentic Claude in a throwaway
+# Execute ONE execute-ruled plan per hour at :45 (agentic Claude in a throwaway
 # clone, 45-min cap, PR as output — merging the PR is the human gate). One
 # per hour bounds Claude usage and keeps PRs reviewable in series;
 # /var/lib/tts/execute.lock (stale after 3h) stops overlap.
-45 * * * * root /usr/bin/node /opt/tts/execute-approved.mjs >> /var/log/tts/execute-approved.log 2>&1
+45 * * * * root /usr/bin/node /opt/tts/execute-plans.mjs >> /var/log/tts/execute-plans.log 2>&1
 
 # Log hygiene: truncate the TTS logs on the 1st of each month. Deliberately
 # crude — these logs are debugging convenience, not state, and this box keeps

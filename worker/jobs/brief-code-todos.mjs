@@ -11,7 +11,7 @@
 // entry, has headless Claude write a ground-up explanation of it against the
 // CURRENT tree, and posts brief + recommendation to Convex, where the
 // tom.quest UI shows them for Tom to rule on. Rulings come back through
-// apply-rulings.mjs / execute-approved.mjs — this job never acts on one.
+// apply-rulings.mjs / execute-plans.mjs — this job never acts on one.
 //
 // INCREMENTALITY: an entry is re-briefed only when its YAML changed since the
 // last posted brief, tracked by a sha256 source hash in the local cursor file
@@ -51,7 +51,7 @@ const PER_ENTRY_TIMEOUT_MS = 10 * 60 * 1000;
 // plan still matches the tree, and each file read is a turn.
 const BRIEF_MAX_TURNS = 40;
 
-const RECOMMENDATIONS = new Set(["propose-archive", "stale-replan", "needs-session", "approve"]);
+const RECOMMENDATIONS = new Set(["propose-archive", "stale-replan", "needs-session", "execute"]);
 const EXEC_CLASSES = new Set(["needs-turing", "box"]);
 
 // Build the per-entry prompt. `entryYaml` is the entry's RAW block from
@@ -94,7 +94,7 @@ function briefPrompt(entryYaml, replanNote) {
     `2. The intent is live but the plan is stale against the tree -> "stale-replan".`,
     `3. The plan is live but embeds an open judgment call Tom has not made —`,
     `   ALL tier-C entries land here by definition -> "needs-session".`,
-    `4. All clean -> "approve".`,
+    `4. All clean -> "execute".`,
     ``,
     `Also classify execClass: "needs-turing" if executing the plan requires the`,
     `SLURM cluster / GPUs, else "box" (runnable on an ordinary Linux box).`,

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// execute-approved.mjs — execute ONE approved code-todo plan as a PR.
+// execute-plans.mjs — execute ONE execute-ruled code-todo plan as a PR.
 //
 // Run by cron at 45 past each hour (see /etc/cron.d/tts). Manual run:
-//   node /opt/tts/execute-approved.mjs
+//   node /opt/tts/execute-plans.mjs
 //
-// THE EXECUTION HALF of the ruling loop: when Tom's verdict is "approve" on a
+// THE EXECUTION HALF of the ruling loop: when Tom's verdict is "execute" on a
 // briefed CMT todo, the plan attached to that todo is cleared for autonomous
 // execution. This job reads the unified /tts/rulings feed (rows carry
 // subjectType "life"|"code"), takes the OLDEST pending CODE approval, runs AGENTIC
@@ -25,7 +25,7 @@
 // clone stays pristine for the briefing/apply jobs.
 //
 // FAILURE POLICY: once a ruling is selected, ANY failure marks it applied
-// with "EXECUTION FAILED: …" — Tom sees it in the UI and re-rules "approve"
+// with "EXECUTION FAILED: …" — Tom sees it in the UI and re-rules "execute"
 // to retry. Leaving it pending would make a deterministic failure retry
 // hourly forever.
 
@@ -52,7 +52,7 @@ const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000;
 function execPrompt(externalId, entryYaml, briefText) {
   return [
     `You are executing an APPROVED plan in the ComplexMultiTrigger repo. Tom has`,
-    `ruled "approve" on the code todo below through TTS (his delegated todo`,
+    `ruled "execute" on the code todo below through TTS (his delegated todo`,
     `system); your job is to implement the todo's attached plan faithfully — the`,
     `plan is the ratified decision, not a suggestion. Follow the repo's AGENTS.md.`,
     ``,
@@ -62,7 +62,7 @@ function execPrompt(externalId, entryYaml, briefText) {
     entryYaml,
     "```",
     ``,
-    `The brief that was shown to Tom when he approved:`,
+    `The brief that was shown to Tom when he ruled execute:`,
     ``,
     briefText ?? `(no brief available — work from the entry above alone)`,
     ``,
@@ -94,7 +94,7 @@ function git(dir, ...args) {
 
 async function main() {
   if (!acquireLock(LOCK_DIR, LOCK_STALE_MS)) {
-    console.log("[execute-approved] another run holds the lock — exiting");
+    console.log("[execute-plans] another run holds the lock — exiting");
     return;
   }
   let env;
@@ -103,19 +103,19 @@ async function main() {
   try {
     env = loadEnv();
     const { pending } = await convexFetch(env, "/tts/rulings");
-    const approvals = (Array.isArray(pending) ? pending : [])
+    const executions = (Array.isArray(pending) ? pending : [])
       .filter(
         (r) =>
-          r.subjectType === "code" && r.repo === CMT_REPO && r.verdict === "approve",
+          r.subjectType === "code" && r.repo === CMT_REPO && r.verdict === "execute",
       )
       .sort((a, b) => (a.ruledAt ?? 0) - (b.ruledAt ?? 0));
-    if (approvals.length === 0) return; // quiet when idle
+    if (executions.length === 0) return; // quiet when idle
 
-    ruling = approvals[0]; // exactly ONE per run — see the header
+    ruling = executions[0]; // exactly ONE per run — see the header
     const id = ruling.externalId;
     const branch = `tts/${id}`;
     execDir = `/var/cache/tts/exec-${id}`;
-    console.log(`[execute-approved] executing ${id} (${approvals.length} approved pending)`);
+    console.log(`[execute-plans] executing ${id} (${executions.length} execute-ruled pending)`);
 
     // Fresh FULL clone; delete any corpse from a crashed prior attempt.
     fs.rmSync(execDir, { recursive: true, force: true });
@@ -172,7 +172,7 @@ async function main() {
     });
 
     // Force: the tts/<id> branch namespace is owned by this executor alone,
-    // and a retry (Tom re-ruled approve after a failure) must overwrite the
+    // and a retry (Tom re-ruled execute after a failure) must overwrite the
     // failed attempt's leftover remote branch rather than reject.
     git(execDir, "push", "--force", "origin", branch);
 
@@ -213,13 +213,13 @@ async function main() {
       id: ruling._id,
       result: `PR opened: ${prUrl}`,
     });
-    console.log(`[execute-approved] ${id}: ${prUrl} (${commitCount} commit(s))`);
+    console.log(`[execute-plans] ${id}: ${prUrl} (${commitCount} commit(s))`);
   } catch (err) {
     // Selected-but-failed: mark applied so Tom sees the failure and the
-    // queue moves on (re-ruling "approve" is the retry). Failures BEFORE
+    // queue moves on (re-ruling "execute" is the retry). Failures BEFORE
     // selection (env, Convex down) just log-and-exit like every other job.
     const reason = String(err.message ?? err).slice(-400);
-    console.error(`[execute-approved] FAILED: ${reason}`);
+    console.error(`[execute-plans] FAILED: ${reason}`);
     if (ruling && env) {
       try {
         await convexFetch(env, "/tts/ruling-applied", {
@@ -227,7 +227,7 @@ async function main() {
           result: `EXECUTION FAILED: ${reason}`,
         });
       } catch (markErr) {
-        console.error(`[execute-approved] could not mark failure: ${markErr.message}`);
+        console.error(`[execute-plans] could not mark failure: ${markErr.message}`);
       }
     }
     process.exitCode = 1;
@@ -240,6 +240,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`[execute-approved] FAILED: ${err.message}`);
+  console.error(`[execute-plans] FAILED: ${err.message}`);
   process.exit(1);
 });

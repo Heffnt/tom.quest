@@ -492,7 +492,7 @@ describe("claude sessions", () => {
       statement: "just do it",
     });
     // edit stays pending until the preparer consumes the sentence — the
-    // live non-session ruling createSession must NOT touch. (approve on a
+    // live non-session ruling createSession must NOT touch. (execute on a
     // life todo applies instantly at record time, so it can't play this role.)
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,

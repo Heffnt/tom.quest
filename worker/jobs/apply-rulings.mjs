@@ -7,7 +7,7 @@
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
 // open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
 // this job GETs /tts/rulings — a UNIFIED feed whose rows carry
-// subjectType "life"|"code" and verdict "approve"|"edit"|"session"|
+// subjectType "life"|"code" and verdict "execute"|"edit"|"session"|
 // "archive" — takes only the CODE rows (life rows belong to
 // prepare-life-todos.mjs), applies each pending one, then POSTs
 // /tts/ruling-applied so the UI shows the outcome. The verdicts:
@@ -17,7 +17,7 @@
 //               live Claude session from
 //   archive  -> close the todo in vqc/todos.yaml (guard-checked, never
 //               pushed red)
-//   approve  -> NOT ours. execute-approved.mjs owns approvals; we skip them
+//   execute  -> NOT ours. execute-plans.mjs owns executions; we skip them
 //               entirely (not even mark-applied).
 // There is NO "defer" verdict — not ruling IS deferring.
 //
@@ -254,11 +254,11 @@ async function main() {
     if (!Array.isArray(pending) || pending.length === 0) return; // quiet when idle
 
     // Rulings we act on this run: CODE subjects only (life rows on the same
-    // feed belong to prepare-life-todos.mjs), and not approve — approve is
+    // feed belong to prepare-life-todos.mjs), and not execute — execute is
     // the executor's, so it neither acts nor marks; it must STAY pending for
-    // execute-approved.mjs.
+    // execute-plans.mjs.
     const actionable = pending.filter(
-      (r) => r.subjectType === "code" && r.verdict !== "approve",
+      (r) => r.subjectType === "code" && r.verdict !== "execute",
     );
     if (actionable.length === 0) return;
 

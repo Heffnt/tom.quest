@@ -233,7 +233,7 @@ function prompt(ctx) {
       : []),
     ...(ctx.notes.length > 0
       ? [
-          `NOTES TOM WROTE WITH HIS APPROVE AND SESSION RULINGS. These are`,
+          `NOTES TOM WROTE WITH HIS EXECUTE AND SESSION RULINGS. These are`,
           `steering context about what he wants, not instructions to re-plan a`,
           `specific batch and not items to act on:`,
           ...ctx.notes.map((n) => `- [${n.verdict}] ${n.subject}: ${n.sentence}`),
@@ -241,7 +241,7 @@ function prompt(ctx) {
         ]
       : []),
     `TOM'S RECENT RULINGS, newest first (behavioral evidence: what he`,
-    `approves, edits, sends to a session, archives — use it to infer what he`,
+    `executes, edits, sends to a session, archives — use it to infer what he`,
     `cares about, not as items to act on):`,
     JSON.stringify(ctx.recentRulings, null, 2),
     ``,
@@ -387,7 +387,7 @@ async function main() {
     }
   }
 
-  // Notes Tom wrote with his APPROVE and SESSION verdicts: standing steering
+  // Notes Tom wrote with his EXECUTE and SESSION verdicts: standing steering
   // context, never consumed. ARCHIVE sentences are excluded on purpose — an
   // archive note is the UNARCHIVE CONDITION for one retired item, not
   // steering about what to plan.
@@ -404,7 +404,7 @@ async function main() {
   const notes = recent
     .filter(
       (r) =>
-        (r.verdict === "approve" || r.verdict === "session") &&
+        (r.verdict === "execute" || r.verdict === "session") &&
         (r.sentence ?? "").trim() !== "",
     )
     .slice(0, NOTE_MAX)

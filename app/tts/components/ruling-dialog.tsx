@@ -2,7 +2,7 @@
 
 // The one dialog every action chip opens. Fixed overlay — nothing on the
 // page moves. Three input shapes, one per option kind:
-//   approve / archive — a choice, with an optional note
+//   execute / archive — a choice, with an optional note
 //   edit              — a short answer an agent applies (absorbs rewording,
 //                       schedule, reshaping, re-pathing, anything sayable)
 //   (session is its own thing and opens directly, not through this dialog)
@@ -11,17 +11,17 @@ import { useState } from "react";
 import type { PlanStep } from "../lib";
 import { nextStep, planProgress } from "./plan-bar";
 
-export type RulingVerdict = "approve" | "archive" | "edit";
+export type RulingVerdict = "execute" | "archive" | "edit";
 
 const COPY: Record<
   RulingVerdict,
   { does: string; call: string; placeholder: string; confirm: string }
 > = {
-  approve: {
+  execute: {
     does: "Records your go-ahead as a ruling. Agents work through the remaining agent steps; once nothing is open, the batch is marked done.",
-    call: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
+    call: 'ttsRulings.recordRuling({verdict:"execute", sentence})',
     placeholder: "anything to add (optional)",
-    confirm: "record approve",
+    confirm: "record execute",
   },
   archive: {
     does: "Puts the batch away — nothing is deleted. It is proposed back when the condition you write here is met.",

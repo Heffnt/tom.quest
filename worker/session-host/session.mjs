@@ -58,7 +58,7 @@ const FLUSH_THROTTLE_MS = 400;
 // durable safety boundary is structural, not per-call — sessions work in
 // throwaway workdirs under /var/cache (deleted at end), pushes land only in
 // the session/<id> branch namespace, merging anything is Tom's gate (the
-// execute-approved PR-gate precedent), rulings can only come from Tom's
+// execute-plans PR-gate precedent), rulings can only come from Tom's
 // pens, and every allowed call still lands as a tool-call transcript row for
 // review. The ONE per-call check kept: file-editing tools must target the
 // session workdir — auto-DENIED with a corrective message otherwise (the
