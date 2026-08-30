@@ -380,9 +380,12 @@ export default defineSchema({
     // the dtsTodos field of the same name, same meaning. On an archive ruling
     // the sentence IS this condition, so a batch set aside can come back.
     unarchiveCondition: v.optional(v.string()),
-    // Stamped by the Tom doors (a ruling on the batch, the pens). Same freeze
+    // Stamped by the Tom doors: tts.setBatchFrozen (the pen that exists for
+    // exactly this) and a non-revise ruling on the batch. Same freeze
     // semantics as dtsTodos.tomTouchedAt: a batch with this set is FROZEN —
-    // the planner (tts.internalStorePlanGraph) may never rewrite it.
+    // the planner (tts.internalStorePlanGraph) may never rewrite it. Unlike a
+    // dtsTodos row, which a dozen ordinary Tom edits stamp, those two are the
+    // only writers a batch has.
     tomTouchedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -673,8 +676,13 @@ export default defineSchema({
   // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
   // supersedes dtsCodeRulings below). APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
-  // verdict set — every ruling button anywhere is one of these four:
-  //   approve — execute as briefed (applied by worker/agent, appliedAt then set)
+  // verdict set — every ruling button anywhere is one of these four, each
+  // offered only on the subjects where it does something:
+  //   approve — CODE SUBJECTS ONLY: execute as briefed (worker/jobs/
+  //             execute-approved.mjs runs it and opens a PR; appliedAt is set
+  //             when it lands). Refused on life and batch subjects since
+  //             2026-08-30 — nothing executes those, so the verdict named an
+  //             execution that never happened. Enforced in ttsRulings.ts.
   //   revise  — `sentence` goes back to the preparing agent; life todos drop
   //             to readiness "preparing" immediately
   //   session — this needs conversation; applied when the session is created
@@ -682,6 +690,8 @@ export default defineSchema({
   //             code todos are archived upstream by the worker
   // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
   // reschedule, not a ruling.)
+  // The STORED union below still admits approve on any subjectType: it must
+  // stay able to represent the history already written before the scoping.
   dtsRulings: defineTable({
     subjectType: v.union(
       v.literal("life"),
@@ -703,8 +713,8 @@ export default defineSchema({
     ),
     // One optional written note, accepted on EVERY verdict (2026-08-29): the
     // redirect for revise (required there, enforced in ttsRulings.ts), the
-    // unarchive condition for archive, a free steering note for
-    // approve/session — the worker prompts inject all four as context.
+    // unarchive condition for archive, a free steering note for a code
+    // approve or a session — the worker prompts inject them all as context.
     sentence: v.optional(v.string()),
     ruledAt: v.number(),
     appliedAt: v.optional(v.number()),

@@ -1,28 +1,29 @@
 "use client";
 
-// The one dialog every action chip opens. Fixed overlay — nothing on the
-// page moves. Three input shapes, one per option kind:
-//   approve / archive — a choice, with an optional note
-//   edit              — a short answer an agent applies (absorbs revise,
-//                       schedule, reshaping, re-pathing, anything sayable)
-//   (session is its own thing and opens directly, not through this dialog)
+// The one dialog every batch action chip opens. Fixed overlay — nothing on
+// the page moves. Two input shapes, one per option kind:
+//   archive — a choice, with an optional note
+//   edit    — a short answer an agent applies (absorbs revise, schedule,
+//             reshaping, re-pathing, anything sayable)
+//   (session is its own thing and opens directly, not through this dialog;
+//    holding the graph still is a pen, not a ruling — tts.setBatchFrozen,
+//    fired straight from the batch card)
 // The dialog always states where the batch stands before asking for input.
+//
+// NO APPROVE (ruled 2026-08-30): approving a batch wrote "graph ratified" and
+// froze the row, and nothing ever executed it — nothing executes a batch. The
+// verdict is refused on batch subjects in convex/ttsRulings.ts now, so the
+// dialog has no shape for it.
 import { useState } from "react";
 import type { PlanStep } from "../lib";
 import { nextStep, planProgress } from "./plan-bar";
 
-export type RulingVerdict = "approve" | "archive" | "edit";
+export type RulingVerdict = "archive" | "edit";
 
 const COPY: Record<
   RulingVerdict,
   { does: string; call: string; placeholder: string; confirm: string }
 > = {
-  approve: {
-    does: "Records your go-ahead as a ruling. Agents work through the remaining agent steps; once nothing is open, the batch is marked done.",
-    call: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
-    placeholder: "anything to add (optional)",
-    confirm: "record approve",
-  },
   archive: {
     does: "Puts the batch away — nothing is deleted. It is proposed back when the condition you write here is met.",
     call: 'ttsRulings.recordRuling({verdict:"archive", sentence})',

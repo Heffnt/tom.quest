@@ -111,6 +111,9 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
     groundUp: batch.groundUpExplanation,
     tasks,
     goals,
+    // The same flag internalStorePlanGraph reads, so the button's label and
+    // the planner's behavior cannot disagree.
+    frozen: batch.tomTouchedAt !== undefined,
   };
 }
 
@@ -240,6 +243,7 @@ export default function BatchesTab() {
   const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
+  const setBatchFrozen = useMutation(api.tts.setBatchFrozen);
   const { open: openBatchSession, error: batchSessionError } =
     useOpenBatchSession();
 
@@ -411,6 +415,11 @@ export default function BatchesTab() {
                 }
                 onRule={(verdict) =>
                   setRuling({ batchId: batch._id, graph, verdict })
+                }
+                onSetFrozen={(frozen) =>
+                  void setBatchFrozen({ batchId: batch._id, frozen }).catch(
+                    () => {},
+                  )
                 }
                 onDetail={setDetail}
                 onGroundUp={(title, content) => setGroundUp({ title, content })}

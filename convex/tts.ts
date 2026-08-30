@@ -700,6 +700,40 @@ export const setPlanStep = mutation({
   },
 });
 
+// Tom holds a batch's graph still, or lets it move again. tomTouchedAt is the
+// freeze flag internalStorePlanGraph reads ("Tom-touched (frozen)") and
+// plan-graphs.mjs sends the planner as `frozen: true`; this is the pen that
+// sets it as a STATE rather than as the side effect of a verdict.
+//
+// WHY IT EXISTS (2026-08-30): the approve verdict used to stamp it, and on a
+// batch that stamp was the only thing approve actually did — nothing executes
+// a batch. Approve is scoped to code subjects now (convex/ttsRulings.ts), so
+// without this pen a batch whose graph Tom had just read would have no way to
+// be held still short of archiving it, and the hourly planner would rewrite
+// it underneath him.
+//
+// A BOOLEAN, not a one-way freeze(): the ruling path never cleared the flag
+// (revise skips the stamp but does not remove an existing one), so a frozen
+// batch stayed frozen forever. An undefined object field is stored as absent,
+// the same way setPlanStep clears doneAt, so `frozen: false` genuinely
+// un-freezes.
+export const setBatchFrozen = mutation({
+  args: { batchId: v.id("batches"), frozen: v.boolean() },
+  handler: async (ctx, { batchId, frozen }) => {
+    await requireTomId(ctx);
+    const batch = await ctx.db.get(batchId);
+    if (!batch) throw new Error("TTS batch not found");
+    const now = Date.now();
+    await ctx.db.patch(batchId, {
+      tomTouchedAt: frozen ? now : undefined,
+    });
+    // Its own event kind, so the freeze has a history the way every other Tom
+    // door does. todoId is absent — the subject is a batch, which lives in
+    // its own table; the id rides in `data`.
+    await logEvent(ctx, "batch-frozen", undefined, { batchId, frozen });
+  },
+});
+
 // ── Blocks: committed time (ratified 2026-08-28) ─────────────────────────────
 // One row = one placed span on Tom's calendar, targeting exactly one todo
 // (per-todo commitment) or one category ("chores"; "code" = the code-todo

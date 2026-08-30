@@ -12,16 +12,29 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
-// verdict set (see schema.ts ttsRulings) is the ONLY vocabulary any ruling
-// button anywhere may use:
-//   approve — execute as briefed
-//   revise  — one written sentence redirects the preparing agent, no session
-//   session — this needs conversation
-//   archive — set aside
+// verdict set (see schema.ts dtsRulings) is the ONLY vocabulary any ruling
+// button anywhere may use, and each word is offered on the subjects where it
+// actually does something:
+//   approve — CODE SUBJECTS ONLY: execute as briefed. The one verdict that
+//             runs something: worker/jobs/execute-approved.mjs takes the
+//             oldest pending code approval, runs an agent in a checkout of
+//             the repo, and opens a pull request.
+//   revise  — any subject: one written sentence redirects the preparing agent
+//   session — any subject: this needs conversation
+//   archive — any subject: set aside
 // "defer" is not a verdict: not ruling IS deferring; timing changes are a
 // reschedule (dtsBlocks / a time note), not a ruling.
 //
-// SENTENCE ON ANY VERDICT (2026-08-29): all four verdicts accept the optional
+// APPROVE IS SCOPED TO CODE (ruled 2026-08-30: "a verdict should not appear
+// where nothing happens"). Approving a life todo or a batch used to write
+// appliedAt = now with applyResult "plan ratified" / "graph ratified" and
+// stop. Nothing consumed either row — there is no life executor; Tom is the
+// executor — so the verdict named an execution that never occurred.
+// insertRuling now REJECTS approve on a life or batch subject. The one real
+// effect that path had was a side effect, the batch freeze; it is now its own
+// pen (tts.setBatchFrozen) rather than a consequence of a verdict.
+//
+// SENTENCE ON ANY VERDICT (2026-08-29): every verdict accepts the optional
 // `sentence`. Required only on revise; on archive it is the unarchive
 // condition; on approve/session it is a free note that reaches the batcher
 // prompt, the preparer prompt, and the session's opening prompt.
@@ -35,9 +48,9 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // THREE SUBJECT TYPES since schema v2 (2026-08-29): life (a dtsTodos row),
 // code (repo + externalId), and BATCH (a batches row — a batch is its own row
 // now, so Tom rules on the batch itself). A batch verdict lands like a life
-// verdict: approve ratifies the graph, archive archives the batch, revise
-// hands it back to the planner (and, alone among the four, does NOT stamp
-// tomTouchedAt — the planner must stay allowed to re-form it).
+// verdict: archive archives the batch, revise hands it back to the planner
+// (and, alone among the three, does NOT stamp tomTouchedAt — the planner must
+// stay allowed to re-form it), session opens a conversation about it.
 
 const VERDICT = v.union(
   v.literal("approve"),
@@ -110,6 +123,19 @@ async function insertRuling(
     if (isCode && (repo === undefined || externalId === undefined)) {
       throw new Error("A code ruling requires both repo and externalId");
     }
+    // approve is the CODE verdict (ruled 2026-08-30). Nothing executes a life
+    // todo or a batch — Tom is the executor — so approving one wrote a row,
+    // stamped it applied with "plan ratified"/"graph ratified", and did
+    // nothing else. Refused HERE rather than in the buttons because
+    // internalRecordRuling (a live session's pen, deploy-credentialed) enters
+    // through this same function; a UI-only narrowing would not hold.
+    if (verdict === "approve" && !isCode) {
+      throw new Error(
+        "approve is a code-todo verdict — nothing executes a life todo or a " +
+          "batch; Tom is the executor. Use revise, session, or archive; to " +
+          "hold a batch's graph still, call tts.setBatchFrozen",
+      );
+    }
     // One optional written note on EVERY verdict (ratified 2026-08-29): the
     // four verdicts are uniform, each taking an optional note. Its MEANING is
     // per-verdict and unchanged — revise: the redirect (still required);
@@ -131,7 +157,10 @@ async function insertRuling(
       // A ruling is a Tom touch: tomTouchedAt freezes the row to the batcher
       // (internalStoreBatches never rewrites or retires it) — EXCEPT revise,
       // the one verdict that hands the subject BACK to the preparing agent
-      // (for a batch, the batcher must stay allowed to re-form it).
+      // (for a batch, the batcher must stay allowed to re-form it). On a life
+      // row this is one of twelve doors that stamp the flag (the ordinary Tom
+      // edits in tts.ts stamp it too), so scoping approve away costs the life
+      // freeze nothing.
       if (verdict !== "revise") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
       }
@@ -150,15 +179,8 @@ async function insertRuling(
         appliedAt = now;
         applyResult = "status archived";
       }
-      if (verdict === "approve") {
-        // No agent executes life todos yet — Tom is the executor. Approving a
-        // life plan is pure ratification, so it applies the moment it is
-        // recorded (leaving it "pending" would strand it forever: every
-        // worker filters life rows to revise). When a life executor exists,
-        // this is the line that changes.
-        appliedAt = now;
-        applyResult = "plan ratified";
-      }
+      // approve: rejected above — no agent executes life todos, Tom is the
+      // executor, so there is no verdict here for it to be.
       // session: applied when the session is created (claudeSessions.createSession marks).
     }
 
@@ -168,6 +190,12 @@ async function insertRuling(
       // Same freeze rule as a life subject: every verdict but revise is a Tom
       // touch, which frozen-blocks the planner (tts.internalStorePlanGraph).
       // revise is precisely the verdict that hands the graph BACK to it.
+      // DANGER (2026-08-30): unlike dtsTodos, a batch has exactly two writers
+      // of tomTouchedAt — this line and tts.setBatchFrozen. Both remaining
+      // verdicts that reach it are terminal-ish (archive puts the batch away,
+      // session pauses it), so setBatchFrozen is the ONLY way to hold a live
+      // batch's graph still. Deleting that pen silently hands every read
+      // graph back to the hourly planner.
       if (verdict !== "revise") {
         await ctx.db.patch(batchId, { tomTouchedAt: now });
       }
@@ -196,13 +224,9 @@ async function insertRuling(
           `batch archived (${emptied.archivedTasks} task(s) archived, ` +
           `${emptied.unboundGoals} goal(s) returned)`;
       }
-      if (verdict === "approve") {
-        // Nothing executes a batch on its own — approving is ratification of
-        // the graph, applied the moment it is recorded (the life-approve
-        // reasoning: leaving it pending would strand it forever).
-        appliedAt = now;
-        applyResult = "graph ratified";
-      }
+      // approve: rejected above. Nothing executes a batch on its own, so the
+      // verdict only ever wrote "graph ratified" and froze the row; the
+      // freeze is tts.setBatchFrozen now.
       if (verdict === "revise") {
         // The application of a batch revise IS the un-freeze above: the
         // planner may rewrite the graph again, and it reads the sentence from

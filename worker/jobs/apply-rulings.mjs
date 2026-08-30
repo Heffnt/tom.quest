@@ -7,8 +7,8 @@
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
 // open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
 // this job GETs /tts/rulings — a UNIFIED feed whose rows carry
-// subjectType "life"|"code" and verdict "approve"|"revise"|"session"|
-// "archive" — takes only the CODE rows (life rows belong to
+// subjectType "life"|"code"|"batch" and verdict "approve"|"revise"|
+// "session"|"archive" — takes only the CODE rows (life rows belong to
 // prepare-life-todos.mjs), applies each pending one, then POSTs
 // /tts/ruling-applied so the UI shows the outcome. The verdicts:
 //   revise   -> Tom's sentence redirects the plan: force a re-brief that
@@ -18,7 +18,10 @@
 //   archive  -> close the todo in vqc/todos.yaml (guard-checked, never
 //               pushed red)
 //   approve  -> NOT ours. execute-approved.mjs owns approvals; we skip them
-//               entirely (not even mark-applied).
+//               entirely (not even mark-applied). Since 2026-08-30 approve is
+//               a CODE-only verdict (Convex refuses it on a life todo or a
+//               batch, because nothing executes those), so every approve that
+//               reaches this feed is one execute-approved.mjs can run.
 // There is NO "defer" verdict — not ruling IS deferring.
 //
 // SERIALIZATION: a 10-minute cron plus pushes that can take minutes means

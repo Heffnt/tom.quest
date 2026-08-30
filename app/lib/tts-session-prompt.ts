@@ -37,7 +37,7 @@ export function buildBlockSessionPrompt(
   const lines: string[] = [
     opening(writingSkill),
     "",
-    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately via \`npx convex run\`: tts:internalTriage for status/date changes, ttsRulings:internalRecordRuling for approve/revise/session/archive verdicts (both are internal mutations — the Tom-gated public mutations reject deploy credentials). The session is his pen, and a ruling that lives only in chat is lost.`,
+    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately via \`npx convex run\`: tts:internalTriage for status/date changes, ttsRulings:internalRecordRuling for verdicts (both are internal mutations — the Tom-gated public mutations reject deploy credentials). The verdicts on a life todo or a batch are revise, session, and archive; approve is the CODE-todo verdict and is refused on the other two, because nothing executes a life todo — Tom is the executor. The session is his pen, and a ruling that lives only in chat is lost.`,
     "",
   ];
   if (category === "code") {
@@ -81,6 +81,9 @@ export type BatchMemberContext = {
 // verdict may carry a sentence (ratified 2026-08-29) — the note Tom wrote when
 // he ruled — and the session that follows a "session" verdict is exactly where
 // that sentence has to arrive, or he has to repeat himself.
+// All four words stay in the union: this type also carries a CODE subject's
+// live ruling, where approve is exactly the verdict that runs. Only life and
+// batch subjects are narrowed (convex/ttsRulings.ts refuses approve there).
 export type LiveRulingContext = {
   verdict: "approve" | "revise" | "session" | "archive";
   sentence?: string;
@@ -153,7 +156,7 @@ export function buildBatchSessionPrompt(
     "Walk-through contract:",
     '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
     '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-    "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any todo in it) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
+    "- Record Tom's spoken verdicts on the batch or any todo in it (revise, session, archive) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage. approve is the CODE-todo verdict only — the mutation refuses it on a batch or a life todo, because nothing executes those; Tom is the executor. If Tom says to hold the graph still so the planner stops rewriting it, that is tts:setBatchFrozen, not a ruling.",
     "- These are pens for Tom's spoken word — use them only while Tom is present in the session. A ruling that lives only in chat is lost.",
   );
   return lines.filter((l): l is string => l !== null).join("\n");
@@ -231,7 +234,7 @@ export function buildTodoSessionPrompt(
       '- Work the plan IN ORDER. Steps with actor "agent" you do yourself.',
       '- At each OPEN step with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
       `- Record plan progress the moment a step closes: \`npx convex run tts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff.`,
-      "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any member) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
+      "- Record Tom's spoken verdicts on the batch or any member (revise, session, archive) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage. approve is the CODE-todo verdict only — the mutation refuses it on a life todo or a batch, because nothing executes those; Tom is the executor.",
       "- Apply Tom's spoken en-masse property changes (category, entry action, work description) via tts:internalBulkUpdate.",
       "- All of these are pens for Tom's spoken word — use them only while Tom is present in the session.",
     );

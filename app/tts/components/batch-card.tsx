@@ -10,6 +10,7 @@
 // the page, and everything clickable changes on hover.
 import PlanBar from "./plan-bar";
 import GraphView from "./graph-view";
+import Info from "./info";
 import { groundUpTeaser } from "../lib";
 import type { RulingVerdict } from "./ruling-dialog";
 import type { DetailItem } from "./detail-dialog";
@@ -39,6 +40,8 @@ export type BatchGraph = {
   groundUp?: string;
   tasks: GraphTask[];
   goals: GraphGoal[];
+  /** batches.tomTouchedAt is set: the hourly planner may not rewrite this graph. */
+  frozen?: boolean;
 };
 
 export function taskSets(tasks: GraphTask[]): {
@@ -71,6 +74,7 @@ export default function BatchCard({
   expanded,
   onToggle,
   onRule,
+  onSetFrozen,
   onDetail,
   onGroundUp,
   onOpenSession,
@@ -79,6 +83,8 @@ export default function BatchCard({
   expanded: boolean;
   onToggle: () => void;
   onRule: (verdict: RulingVerdict) => void;
+  /** Fires tts.setBatchFrozen. Absent = the button is not rendered (the mockup route). */
+  onSetFrozen?: (frozen: boolean) => void;
   onDetail: (item: DetailItem) => void;
   onGroundUp: (title: string, content: string) => void;
   onOpenSession: () => void;
@@ -168,7 +174,11 @@ export default function BatchCard({
             >
               open batch session
             </button>
-            {(["approve", "archive", "edit"] as const).map((v) => (
+            {/* No "approve": nothing executes a batch, so the verdict wrote
+                "graph ratified" and stopped (ruled 2026-08-30). Holding the
+                graph still — the only thing it really did — is the freeze
+                button beside these. */}
+            {(["archive", "edit"] as const).map((v) => (
               <button
                 key={v}
                 type="button"
@@ -178,6 +188,24 @@ export default function BatchCard({
                 {v}
               </button>
             ))}
+            {onSetFrozen && (
+              <span className="inline-flex items-baseline gap-1">
+                <button
+                  type="button"
+                  onClick={() => onSetFrozen(!graph.frozen)}
+                  className={`rounded-md border px-2.5 py-1 text-xs ${
+                    graph.frozen
+                      ? "border-accent/50 bg-accent-dim text-accent hover:border-accent hover:opacity-80"
+                      : "border-border bg-surface-alt text-text-muted hover:border-text-faint hover:text-text"
+                  }`}
+                >
+                  {graph.frozen ? "let the planner rewrite" : "freeze this graph"}
+                </button>
+                <Info
+                  label={`tts.setBatchFrozen({frozen:${graph.frozen ? "false" : "true"}})`}
+                />
+              </span>
+            )}
           </div>
 
           {ready.length > 0 && (
