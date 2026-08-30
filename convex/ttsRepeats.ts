@@ -146,6 +146,33 @@ export const deleteRepeat = mutation({
   },
 });
 
+// Tom's pen for repeats (the internalTriage pattern): an internal mutation so
+// a session agent can record his SPOKEN repeat rulings via `npx convex run
+// ttsRepeats:internalCreateRepeat` with the deploy credentials Tom's machine
+// holds. Only ever run while Tom is present and ruling — it is his pen, not a
+// policy actor. Same validation as createRepeat, one implementation.
+export const internalCreateRepeat = internalMutation({
+  args: RULE_FIELDS,
+  handler: async (ctx, args) => {
+    validateRule(args);
+    const now = Date.now();
+    const id = await ctx.db.insert("ttsRepeats", {
+      ...args,
+      statement: args.statement.trim(),
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await logEvent(ctx, "repeat-created", undefined, {
+      repeatId: id,
+      statement: args.statement.trim(),
+      daysOfWeek: args.daysOfWeek,
+      via: "pen",
+    });
+    return id;
+  },
+});
+
 // ── The generator ───────────────────────────────────────────────────────────
 
 export const internalGenerateRepeats = internalMutation({

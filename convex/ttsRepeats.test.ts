@@ -382,4 +382,26 @@ describe("internalGenerateRepeats", () => {
       expect(await repeatingTodos(t)).toHaveLength(0);
     }
   });
+
+  it("internalCreateRepeat (the pen) validates like createRepeat and logs via:pen", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.mutation(internal.ttsRepeats.internalCreateRepeat, {
+        statement: "no days",
+        daysOfWeek: [],
+      }),
+    ).rejects.toThrow(/at least one weekday/);
+    const id = await t.mutation(internal.ttsRepeats.internalCreateRepeat, {
+      statement: "  finger + pulling strength  ",
+      daysOfWeek: ["saturday"],
+      timeOfDay: "11:00",
+      skipWhenCalendarHas: "climb",
+    });
+    const rule = await t.run(async (ctx) => ctx.db.get(id));
+    expect(rule?.statement).toBe("finger + pulling strength");
+    expect(rule?.active).toBe(true);
+    const created = await events(t, "repeat-created");
+    expect(created).toHaveLength(1);
+    expect((created[0].data as { via?: string }).via).toBe("pen");
+  });
 });
