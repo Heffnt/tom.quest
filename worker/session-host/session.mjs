@@ -1021,6 +1021,22 @@ export class Session {
     // Bash alone gets one).
     if (toolName === "Bash" && typeof input?.command === "string") {
       const command = input.command;
+      // Tier 0 — self-destruction: a session RUNS UNDER tts-session-host, so
+      // restarting or stopping that service (or killing this daemon) ends
+      // every live mission including the one asking. A worker on 2026-08-30
+      // followed setup.sh's restart line and took the whole cohort down.
+      // Hard deny with the corrective, no classifier.
+      if (
+        /systemctl\s+(?:restart|stop|kill)\s+\S*tts-session-host|service\s+tts-session-host\s+(?:restart|stop)|pkill\s+[^|;&]*session-host/.test(
+          command,
+        )
+      ) {
+        return {
+          behavior: "deny",
+          message:
+            "denied: this session runs under tts-session-host — restarting or stopping it kills every live mission, including yours. Record the needed change in your outcome instead; the supervisor restarts the daemon.",
+        };
+      }
       // Tier 1 — the system's own write pens: allow, no classifier, no row.
       // Only a LONE pen qualifies. The single-quoted -d '{…}' body is
       // stripped first so its JSON can't trip the check; anything with shell
