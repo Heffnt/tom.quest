@@ -110,6 +110,35 @@ export function ttsDayBoundsUtc(day: string): { start: number; end: number } {
 }
 
 /**
+ * The UTC instant of a NY wall-clock time on a YYYY-MM-DD calendar date —
+ * minute precision. Same one-correction DST logic as nyHourUtcMs. The
+ * repeating-todo generator uses this to place an instance's dueAt at the
+ * rule's timeOfDay ("18:30") on the day it is generating.
+ */
+export function nyTimeUtcMs(day: string, hour: number, minute = 0): number {
+  const naive = Date.parse(day) + hour * HOUR_MS + minute * 60_000;
+  const guess = naive - nyOffsetHours(naive) * HOUR_MS;
+  return naive - nyOffsetHours(guess) * HOUR_MS;
+}
+
+/** Plain lowercase weekday word ("monday"…"sunday") of a YYYY-MM-DD date. */
+export const WEEKDAY_WORDS = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+] as const;
+export type WeekdayWord = (typeof WEEKDAY_WORDS)[number];
+export function weekdayWordOf(day: string): WeekdayWord {
+  // Date.parse("YYYY-MM-DD") is UTC midnight of that calendar date; its UTC
+  // weekday IS the calendar date's weekday — no timezone shift involved.
+  return WEEKDAY_WORDS[new Date(Date.parse(day)).getUTCDay()];
+}
+
+/**
  * UTC bounds [start, end) of a CALENDAR day in New York: local midnight to the
  * next local midnight. This is the window a /tts calendar COLUMN covers — the
  * day-scoped time note carries that column's YYYY-MM-DD label (schema:

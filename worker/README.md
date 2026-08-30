@@ -1,20 +1,28 @@
 # TTS worker box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
-(Ubuntu 24.04, ARM64) running two personal-todo jobs and three code-todo jobs
+(Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
 on a schedule:
 
 1. **poll-dump** (every 2 min) — reads new human messages from the Slack
    `#dump` channel and submits each one to Convex as an unprepared todo.
-2. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
+2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
+   Claude call per batch deciding which messages imply an action by Tom, then
+   submits each of those to Convex as an unprepared todo with source `email`
+   (linked back to the thread). Judged from headers plus Gmail's ~100-character
+   snippet only — v1 never downloads bodies — and the prompt leans toward
+   capturing when unsure, because a wrong capture costs one archive click while
+   a wrong skip loses the thread. Until the Gmail credentials exist it is a
+   quiet no-op; see below.
+3. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
    Convex. If it fails, the Convex-side fallback prep (4:45) and the
    always-sends 5 a.m. digest cover the day — a digest that reports missing
    prep is the "worker is broken" signal; no digest at all means Convex/Slack
    is broken. That split is the whole monitoring story.
-3. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-4. **apply-rulings** (every 10 min) — see the ruling loop below.
-5. **execute-approved** (hourly at :45) — see the ruling loop below.
+4. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
+5. **apply-rulings** (every 10 min) — see the ruling loop below.
+6. **execute-approved** (hourly at :45) — see the ruling loop below.
 
 ## The code-todo ruling loop
 
@@ -56,6 +64,9 @@ are all harmless to lose:
 
 - `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-captures up to
   24 hours of `#dump` messages as duplicates Tom can archive.
+- `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
+  processed (captured or skipped); losing it re-examines the last 24 hours,
+  at worst re-capturing a few emails as duplicates Tom can archive.
 - `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
@@ -82,6 +93,26 @@ tts-account use gmail
 `setup.sh` is idempotent — re-running it is also how updated job scripts are
 rolled out after a `git pull`.
 
+## Gmail credentials (one-time)
+
+poll-gmail needs three keys in `/etc/tts/worker.env` — `GMAIL_CLIENT_ID`,
+`GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` — and skips every run until all
+three are there, so the job ships and runs harmlessly ahead of them.
+
+The client id and secret come from a "Desktop app" OAuth client in Tom's
+Google Cloud console (any project, with the Gmail API enabled). The refresh
+token is minted ONCE, on Tom's own machine rather than the box, because
+approving it needs a browser:
+
+```
+node worker/jobs/gmail-auth.mjs <client_id> <client_secret>
+```
+
+It prints a Google URL, and after read-only Gmail access (`gmail.readonly`) is
+approved it prints all three lines ready to paste into `worker.env`. The token
+lasts until it is revoked at `myaccount.google.com/permissions`. The script's
+own header carries the ten-minute console walkthrough.
+
 ## Switching Claude accounts
 
 Jobs run under `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`, a symlink:
@@ -95,6 +126,7 @@ tts-account use wpi      # switch; takes effect on the next job run
 
 ```
 node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
+node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
 node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
 node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
@@ -108,6 +140,6 @@ whichever side of daylight saving we're on).
 
 ## Logs
 
-Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, prepare-queue,
-brief-code-todos, apply-rulings, execute-approved), truncated monthly by cron
-— they are convenience, not state.
+Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
+prepare-queue, brief-code-todos, apply-rulings, execute-approved), truncated
+monthly by cron — they are convenience, not state.

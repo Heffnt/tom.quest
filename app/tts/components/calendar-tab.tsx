@@ -18,6 +18,7 @@ import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
 import { reserveSessionTab } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
+import RepeatsStrip from "./repeats-strip";
 import TimeNoteField, {
   groupTimeNotes,
   NO_NOTES,
@@ -184,6 +185,12 @@ export default function CalendarTab({
     isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
   const today = useQuery(api.tts.getToday, isTom ? {} : "skip");
+  // External-calendar mirror rows (Google/Outlook/Canvas ICS feeds) for the
+  // visible week — read-only schedule knowledge next to the blocks.
+  const calendarEvents = useQuery(
+    api.ttsCalendar.listCalendarEvents,
+    isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+  );
   // ONE time-note subscription for the whole tab; days and blocks slice it.
   const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
   const createSession = useMutation(api.claudeSessions.createSession);
@@ -299,6 +306,15 @@ export default function CalendarTab({
             const dayBlocks = blocks
               .filter((b) => b.start < day.end && b.end > day.start)
               .sort((a, b) => a.start - b.start);
+            const dayEvents = (calendarEvents ?? [])
+              .filter((e) => e.start < day.end && e.end > day.start)
+              .sort((a, b) =>
+                a.allDay === b.allDay
+                  ? a.start - b.start
+                  : a.allDay
+                    ? -1
+                    : 1,
+              );
             const dueMarks = (todos ?? [])
               .filter(
                 (t) =>
@@ -353,6 +369,21 @@ export default function CalendarTab({
                     showInput={addDay === day.key}
                   />
                 )}
+
+                {dayEvents.map((e) => (
+                  <div
+                    key={e._id}
+                    className="px-1.5 py-0.5 rounded border border-dashed border-border text-[11px] truncate"
+                    title={`${e.feed}: ${e.title}${e.location ? ` @ ${e.location}` : ""}`}
+                  >
+                    <span className={capCls}>
+                      {e.allDay
+                        ? "all day"
+                        : `${fmtTime(e.start)}–${fmtTime(e.end)}`}
+                    </span>{" "}
+                    <span className="text-text-muted">{e.title}</span>
+                  </div>
+                ))}
 
                 {dayBlocks.map((b) => (
                   <BlockChip
@@ -438,6 +469,8 @@ export default function CalendarTab({
           })}
         </div>
       </div>
+
+      <RepeatsStrip />
     </div>
   );
 }
