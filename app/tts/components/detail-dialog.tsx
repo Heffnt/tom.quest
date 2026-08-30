@@ -24,9 +24,11 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export default function DetailDialog({
   item,
   onClose,
+  onGroundUp,
 }: {
   item: DetailItem;
   onClose: () => void;
+  onGroundUp: (title: string, content: string) => void;
 }) {
   return (
     <div
@@ -66,9 +68,13 @@ export default function DetailDialog({
               </Row>
             )}
             {item.task.groundUp !== undefined && (
-              <p className="mt-1 border-t border-border pt-2 text-[13px] text-text-muted">
-                {item.task.groundUp}
-              </p>
+              <button
+                type="button"
+                onClick={() => onGroundUp(item.task.statement, item.task.groundUp ?? "")}
+                className="mt-1 self-start text-[13px] text-accent underline underline-offset-2 hover:text-text"
+              >
+                ground-up explanation
+              </button>
             )}
           </div>
         )}
@@ -88,9 +94,13 @@ export default function DetailDialog({
               </Row>
             )}
             {item.goal.groundUp !== undefined && (
-              <p className="mt-1 border-t border-border pt-2 text-[13px] text-text-muted">
-                {item.goal.groundUp}
-              </p>
+              <button
+                type="button"
+                onClick={() => onGroundUp(item.goal.statement, item.goal.groundUp ?? "")}
+                className="mt-1 self-start text-[13px] text-accent underline underline-offset-2 hover:text-text"
+              >
+                ground-up explanation
+              </button>
             )}
           </div>
         )}
