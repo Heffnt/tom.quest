@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 // prepare-life-todos.mjs — advance unprepared LIFE todos toward ready-for-tom.
 //
-// Run by cron every 2nd hour at :37 (see /etc/cron.d/tts). Manual run:
+// Run by cron EVERY 2 MINUTES under flock (see /etc/cron.d/tts), and kicked
+// off directly by poll-dump.mjs the moment it captures, so a #dump message is
+// normally prepared on the same tick it is read. Manual run:
 //   node /opt/tts/prepare-life-todos.mjs [--force]
+//
+// The 2-minute schedule is affordable because this job returns before spending
+// a Claude call when nothing is unprepared (see the `targets.length === 0`
+// line below) — an idle tick costs one HTTP GET.
 //
 // WHY: a thought Tom dumps into #dump (or a consolidation candidate) lands as
 // a raw one-line statement with readiness "unprepared". The TTS principle is
@@ -48,10 +54,88 @@ import {
   runClaude,
   extractJsonObject,
   nyNoonUtcMs,
+  slackPost,
 } from "./tts-lib.mjs";
 
 const BATCH_MAX = 10;
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
+
+// ── The threaded Slack reply (Tom's ruling 2026-08-30) ──────────────────────
+// A thought dumped into #dump gets ONE reply in its own thread, saying how TTS
+// read it: the brief, the smallest entry action, where the readiness landed,
+// and a link to the item. This is what makes the capture a conversation rather
+// than a hole Tom types into.
+//
+// SCOPE NOTE: convex/ttsSync.ts holds OUTBOUND_SLACK_ENABLED = false, Tom's
+// 2026-08-29 switch that silenced the daily digest and the session messages.
+// This reply is not covered by that switch and is not a re-opening of it: it
+// is a reply inside the thread of a message Tom just wrote, in the channel he
+// wrote it in, one per capture — the shape he ruled for on 2026-08-30. The
+// broadcast messages that switch turned off stay off.
+
+// The item's page on tom.quest. Mirrors convex/ttsShared.ts ttsItemLink; the
+// worker shares no code with Convex (it is dependency-free plain Node), so the
+// URL shape is written twice on purpose. If the /tts page's link parameter
+// ever changes, both must change.
+function itemLink(todoId) {
+  return `https://tom.quest/tts?item=${todoId}`;
+}
+
+// The reply text. Slack mrkdwn: *bold*, and <url|label> for a link.
+// Plain and descriptive — it reports what TTS did, it does not sell it.
+function replyText(todo, parsed) {
+  const readiness =
+    parsed.readiness === "ready-for-tom"
+      ? "ready for you — the only thing missing is you acting or deciding"
+      : "still preparing — an agent can usefully do more groundwork first";
+  return [
+    `Filed. Here is how TTS read that:`,
+    ``,
+    parsed.brief,
+    ``,
+    `*First action:* ${parsed.entryAction}`,
+    `*Work:* ${parsed.workDescription}`,
+    `*Readiness:* ${readiness}`,
+    ``,
+    `<${itemLink(todo._id)}|Open it on tom.Quest>`,
+  ].join("\n");
+}
+
+// Post that reply, at most once per todo, ever.
+//
+// THE ORDER IS THE POINT. The claim (/tts/slack-replied) is taken BEFORE the
+// Slack call, not after. This job re-prepares a todo on --force and on every
+// "revise" ruling Tom writes, so without a durable claim one capture would be
+// answered again on each re-preparation. Claiming first means a crash, a
+// timeout or an overlapping run between the two steps can only ever LOSE a
+// reply — never duplicate one — and Tom's rule is the absolute "must never
+// reply twice".
+//
+// The named cost: if Slack refuses the post, that todo gets no reply at all.
+// The failure is logged with the todo id; the item itself is prepared and
+// visible on tom.quest regardless, which is the surface that matters.
+//
+// Failure NEVER propagates: preparation already succeeded and been stored, and
+// an unsendable message must not turn a prepared todo into a failed one.
+async function replyInThread(env, todo, parsed) {
+  if (!todo.slackChannel || !todo.slackTs) return; // not a Slack capture
+  if (todo.slackRepliedAt !== undefined) return; // already answered
+  try {
+    const claim = await convexFetch(env, "/tts/slack-replied", { id: todo._id });
+    if (!claim.stamped) return; // someone else already holds the reply
+    await slackPost(env, "chat.postMessage", {
+      channel: todo.slackChannel,
+      thread_ts: todo.slackTs,
+      text: replyText(todo, parsed),
+      unfurl_links: false,
+    });
+    console.log(`[prepare-life-todos] replied in thread ts=${todo.slackTs}`);
+  } catch (err) {
+    console.error(
+      `[prepare-life-todos] ${todo._id} slack reply FAILED: ${err.message}`,
+    );
+  }
+}
 
 function prompt(todo, reviseSentence, today) {
   return [
@@ -224,6 +308,9 @@ async function main() {
         readiness: parsed.readiness,
         ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
       });
+      // The preparation is stored. Answer the #dump message in its own thread
+      // with what TTS made of it — at most once per capture, ever.
+      await replyInThread(env, todo, parsed);
       if (revise) {
         // The re-prep landed — consume the ruling so the UI shows the
         // outcome and the next run doesn't re-prepare on the same sentence.

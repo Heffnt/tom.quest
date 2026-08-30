@@ -174,6 +174,63 @@ export function serverErrorMessage(err) {
 }
 
 // ---------------------------------------------------------------------------
+// Slack Web API
+// ---------------------------------------------------------------------------
+//
+// ONE HOME for talking to Slack (VQC C1). Two jobs need it now:
+// poll-dump.mjs reads #dump (GET methods) and prepare-life-todos.mjs answers a
+// capture in its own thread (a POST method). These lived as a private helper
+// inside poll-dump.mjs until Tom's ruling of 2026-08-30 added the reply.
+//
+// In BOTH directions the bot token goes in the Authorization header and never
+// into a URL or a body: a URL is logged by proxies and Slack itself, a header
+// is not.
+//
+// Both throw on transport failure (`res.ok` false) AND on Slack's own
+// application-level failure (`data.ok` false) — Slack answers HTTP 200 with
+// {"ok": false, "error": "channel_not_found"}, so checking only the status
+// code would read every such refusal as a success.
+
+const SLACK_API_BASE = "https://slack.com/api";
+
+// GET a Slack Web API method with query params, e.g.
+//   slackGet(env, "conversations.history", { channel, limit: 200 })
+// Undefined params are omitted, so a caller can pass an optional cursor
+// straight through without building the object conditionally.
+export async function slackGet(env, method, params) {
+  const url = new URL(`${SLACK_API_BASE}/${method}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) url.searchParams.set(k, String(v));
+  }
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` },
+  });
+  if (!res.ok) throw new Error(`slack ${method} -> HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(`slack ${method} -> ${data.error}`);
+  return data;
+}
+
+// POST a Slack Web API method with a JSON body, e.g.
+//   slackPost(env, "chat.postMessage", { channel, thread_ts: ts, text })
+// The write twin of slackGet. Slack requires the charset on the content type
+// for these methods; without it it rejects non-ASCII bodies.
+export async function slackPost(env, method, body) {
+  const res = await fetch(`${SLACK_API_BASE}/${method}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`slack ${method} -> HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(`slack ${method} -> ${data.error}`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
 // Headless Claude Code
 // ---------------------------------------------------------------------------
 

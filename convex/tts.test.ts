@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -266,6 +266,85 @@ describe("TTS todos", () => {
     expect(todos).toHaveLength(1);
     expect(todos[0].readiness).toBe("unprepared");
     expect(todos[0].source).toBe("slack-capture");
+  });
+
+  // The Slack reply coordinates (Tom's ruling 2026-08-30). A #dump capture
+  // carries the channel and message ts so the preparer can answer in that
+  // message's own thread.
+  // witness: drop the `slackChannel && slackTs` pairing in internalCapture and
+  // the half-pair assertion below goes red.
+  it("stores Slack reply coordinates only as a whole pair", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.tts.internalCapture, {
+      statement: "book the ferry",
+      source: "slack-capture",
+      provenance: "https://slack.com/archives/C1/p1788058865123456",
+      slackChannel: "C1DUMP",
+      slackTs: "1788058865.123456",
+    });
+    // A channel with no ts addresses no thread: neither half is stored, so the
+    // preparer's "is this a Slack capture" guard reads false rather than
+    // reading true and having nowhere to post.
+    await t.mutation(internal.tts.internalCapture, {
+      statement: "half a pair",
+      source: "slack-capture",
+      slackChannel: "C1DUMP",
+    });
+    const todos = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    const whole = todos.find((x) => x.statement === "book the ferry")!;
+    expect(whole.slackChannel).toBe("C1DUMP");
+    expect(whole.slackTs).toBe("1788058865.123456");
+    expect(whole.slackRepliedAt).toBeUndefined(); // unanswered until replied
+    // Provenance stays the human-readable line — coordinates are NOT in it.
+    expect(whole.provenance).toBe(
+      "https://slack.com/archives/C1/p1788058865123456",
+    );
+    const half = todos.find((x) => x.statement === "half a pair")!;
+    expect(half.slackChannel).toBeUndefined();
+    expect(half.slackTs).toBeUndefined();
+  });
+
+  // The once-only claim on a capture's threaded reply. prepare-life-todos.mjs
+  // re-prepares a todo on --force and on every "revise" ruling, so this stamp
+  // is the whole reason one #dump message is never answered twice.
+  // witness: remove the `slackRepliedAt !== undefined` early return in
+  // internalMarkSlackReplied and the second-stamp assertions go red.
+  it("claims a capture's threaded Slack reply exactly once", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.tts.internalCapture, {
+      statement: "book the ferry",
+      source: "slack-capture",
+      slackChannel: "C1DUMP",
+      slackTs: "1788058865.123456",
+    });
+    const [captured] = await t.run(async (ctx) =>
+      ctx.db.query("dtsTodos").collect(),
+    );
+    const before = captured.updatedAt;
+    const first = await t.mutation(internal.tts.internalMarkSlackReplied, {
+      id: captured._id,
+    });
+    expect(first.stamped).toBe(true);
+    const [stamped] = await t.run(async (ctx) =>
+      ctx.db.query("dtsTodos").collect(),
+    );
+    expect(typeof stamped.slackRepliedAt).toBe("number");
+    // Sending a message is not a change to the todo Tom reads, and the
+    // Inventory sorts by updatedAt — a reply must not reorder his list.
+    expect(stamped.updatedAt).toBe(before);
+
+    // A second claim is a refusal, not a failure: an overlapping run learns
+    // "already answered" and simply does not post.
+    const second = await t.mutation(internal.tts.internalMarkSlackReplied, {
+      id: captured._id,
+    });
+    expect(second.stamped).toBe(false);
+    const [after] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(after.slackRepliedAt).toBe(stamped.slackRepliedAt); // never moved
+
+    await expect(
+      t.mutation(internal.tts.internalMarkSlackReplied, { id: "bogus" }),
+    ).rejects.toThrow(/Unknown todo id/);
   });
 
   // witness: make internalPrepareTodo patch `statement` too, and the
@@ -2014,5 +2093,93 @@ describe("TTS time notes", () => {
     await expect(
       apply(t, nothing, [{ kind: "set-date-kind", dateKind: "external" }]),
     ).rejects.toThrow(/no date to describe/);
+  });
+});
+
+// ── The worker's Slack reply routes (Tom's ruling 2026-08-30) ────────────────
+// worker/jobs/poll-dump.mjs sends the coordinates through /tts/capture and
+// worker/jobs/prepare-life-todos.mjs claims the reply through
+// /tts/slack-replied. Both are key-authed and both refuse by NAME, because the
+// worker logs the server's own words when a call is rejected.
+describe("TTS Slack reply routes", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function post(t: ReturnType<typeof convexTest>, path: string, body: unknown) {
+    return t.fetch(path, {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // witness: drop the both-or-neither check in the /tts/capture route and this
+  // goes red — a channel with no ts would be accepted and stored as nothing,
+  // silently, which is exactly the failure that is hard to see later.
+  it("refuses half a pair of Slack coordinates by name", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await post(t, "/tts/capture", {
+      statement: "book the ferry",
+      slackChannel: "C1DUMP",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/together or not at all/);
+    const res2 = await post(t, "/tts/capture", {
+      statement: "book the ferry",
+      slackTs: "1788058865.123456",
+    });
+    expect(res2.status).toBe(400);
+  });
+
+  it("stores a whole pair and hands the reply out exactly once", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const captured = await post(t, "/tts/capture", {
+      statement: "book the ferry",
+      slackChannel: "C1DUMP",
+      slackTs: "1788058865.123456",
+    });
+    expect(captured.status).toBe(200);
+    const { id } = await captured.json();
+
+    // The worker reads its targets from /tts/state, so the coordinates and the
+    // reply stamp have to arrive THERE — the projection is the whole row today
+    // and this is the assertion that notices if someone narrows it.
+    const state = await t.fetch("/tts/state", {
+      method: "GET",
+      headers: { "X-TTS-Key": "s3cret" },
+    });
+    const todo = (await state.json()).todos.find(
+      (x: { _id: string }) => x._id === id,
+    );
+    expect(todo.slackChannel).toBe("C1DUMP");
+    expect(todo.slackTs).toBe("1788058865.123456");
+    expect(todo.slackRepliedAt).toBeUndefined();
+
+    const first = await post(t, "/tts/slack-replied", { id });
+    expect(first.status).toBe(200);
+    expect((await first.json()).stamped).toBe(true);
+    // Claim-before-post means the SECOND claim is what stops a second reply.
+    const second = await post(t, "/tts/slack-replied", { id });
+    expect(second.status).toBe(200);
+    expect((await second.json()).stamped).toBe(false);
+  });
+
+  it("refuses an unauthenticated or unnamed claim", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const noKey = await t.fetch("/tts/slack-replied", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "whatever" }),
+    });
+    expect(noKey.status).toBe(401);
+    const noId = await post(t, "/tts/slack-replied", {});
+    expect(noId.status).toBe(400);
+    const badId = await post(t, "/tts/slack-replied", { id: "not-an-id" });
+    expect(badId.status).toBe(400);
+    expect((await badId.json()).error).toMatch(/Unknown todo id/);
   });
 });

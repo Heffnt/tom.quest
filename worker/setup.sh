@@ -120,7 +120,10 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> apply/execute):
 
 # Brief open CMT code todos via headless Claude, every 2nd hour at :17 (an
-# odd minute so it never collides with the other jobs' slots). Incremental —
+# odd minute so it never collides with the other 2-HOURLY jobs' slots — it does
+# share ticks with prepare-life-todos below, which runs every 2 minutes since
+# 2026-08-30 and is no longer part of this no-two-Claude-jobs-per-tick
+# arrangement). Incremental —
 # only entries whose YAML changed since their last brief are re-briefed
 # (hash cursor in /var/lib/tts/brief-hashes.json), so most runs are no-ops.
 17 */2 * * * root /usr/bin/node /opt/tts/brief-code-todos.mjs >> /var/log/tts/brief-code-todos.log 2>&1
@@ -128,8 +131,28 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Prepare unprepared LIFE todos (#dump captures, consolidation candidates)
 # via headless Claude: ground-up brief + smallest entry action + work
 # description, readiness advanced — so raw captures reach Tom pre-chewed.
-# Every 2nd hour at :37 (odd minute; no collision with the other jobs).
-37 */2 * * * root /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
+#
+# EVERY 2 MINUTES since Tom's ruling of 2026-08-30 (it was "37 */2 * * *"):
+# a #dump message is now answered in its own Slack thread with how TTS read it,
+# and a reply that arrives up to two hours later is not an answer to anything.
+# Cheap, because the job reads /tts/state and RETURNS on an empty target list
+# before it spends a single Claude call, so an idle tick costs one HTTP GET.
+# poll-dump.mjs also kicks this job off directly the moment it captures, taking
+# the same lock — so the usual path is "captured, prepared, replied" inside one
+# poll tick rather than waiting for the next one here.
+#
+# flock -n, exactly as apply-time-notes above: a run waiting on Claude outlasts
+# the 2-minute tick, and two overlapping runs would prepare the same todos
+# twice and post two Slack replies to one message. The second run exits
+# immediately (no -w: the next tick is 2 minutes away, there is nothing to
+# wait for). The lock path is shared with poll-dump.mjs's spawn — one lock,
+# one preparer at a time, whoever started it.
+#
+# THE COST TOM ACCEPTED: :37 was picked so no two Claude jobs ever shared a
+# tick. At */2 this job can now land on the same minute as brief-code-todos
+# (:17), form-batches (:07) and plan-graphs (:27), and flock only guards it
+# against ITSELF, not against them.
+*/2 * * * * root /usr/bin/flock -n /var/lock/tts-prepare-life-todos.lock /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
 
 # ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
 # These two jobs are the OLD and the NEW way of doing the same thing, and they
@@ -154,15 +177,16 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # plan-graphs already sits in the slot that will be the only one left.
 
 # v1 — Form batches (life + code todos grouped so one session with Tom advances
-# many) via headless Claude, every 2 hours at :07 (:07 collides with nothing;
-# :17/:37/:45 are taken). An input-hash cursor in /var/lib/tts/ makes
+# many) via headless Claude, every 2 hours at :07 (:07 collides with no other
+# 2-hourly slot; :17/:27/:45 are taken, and prepare-life-todos now runs every
+# 2 minutes so it shares this tick too). An input-hash cursor in /var/lib/tts/ makes
 # unchanged-input runs no-ops, so most ticks cost no Claude call.
 # REPLACED BY plan-graphs.mjs — remove this line at cutover.
 7 */2 * * * root /usr/bin/node /opt/tts/form-batches.mjs >> /var/log/tts/form-batches.log 2>&1
 
 # v2 — Maintain the graph inside every batch (goals, tasks, needs edges, the
 # paths between batches) via headless Claude, every 2 hours at :27 (an odd
-# minute of its own; :07/:17/:37/:45 are taken, and the offset from
+# minute of its own; :07/:17/:45 are taken, and the offset from
 # form-batches keeps the two Claude calls off the same tick). Its own
 # input-hash cursor (/var/lib/tts/plan-input-hash) makes unchanged-input runs
 # no-ops. This line REPLACES the form-batches line above at cutover.

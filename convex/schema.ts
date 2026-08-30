@@ -500,6 +500,29 @@ export default defineSchema({
     tomTouchedAt: v.optional(v.number()),
     source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
     provenance: v.optional(v.string()), // link/descriptor of where it came from
+    // ── Slack #dump reply coordinates (Tom's ruling 2026-08-30) ──────────────
+    // A #dump capture is answered IN ITS OWN THREAD once it has been prepared,
+    // so the reply can state how TTS read the message. Replying in a thread
+    // needs two machine facts about the original message: which channel it is
+    // in and its Slack `ts` (Slack's message identifier, a string like
+    // "1788058865.123456" — it is also the thread_ts of a reply to it).
+    //
+    // THEIR OWN FIELDS, NOT `provenance`. Provenance above is a sentence Tom
+    // READS ("slack:#dump ts=…", or the permalink); packing coordinates into it
+    // would make a human-facing line double as a parse target, and every future
+    // change to its wording would silently break the reply path.
+    //
+    // Written together at capture or not at all (a channel without a ts cannot
+    // address a thread), by tts.internalCapture only.
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
+    // The CLAIM on the one threaded reply this todo gets: epoch ms, stamped by
+    // tts.internalMarkSlackReplied, never overwritten. prepare-life-todos.mjs
+    // re-prepares a todo on --force and on every revise ruling, so without a
+    // once-only claim the same capture would be answered again on each re-prep.
+    // The stamp is taken BEFORE the Slack call, not after — see that job for
+    // why that order is the one that cannot double-post.
+    slackRepliedAt: v.optional(v.number()),
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown

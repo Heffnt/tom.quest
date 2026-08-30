@@ -1367,9 +1367,24 @@ export const internalCapture = internalMutation({
     statement: v.string(),
     source: v.string(),
     provenance: v.optional(v.string()),
+    // The Slack coordinates of the message this capture came from (schema:
+    // dtsTodos.slackChannel / .slackTs), so the preparer can answer IN THE
+    // THREAD once it has prepared the todo. Optional because captures reach
+    // this pen from places that have no Slack message behind them (the Gmail
+    // poller, consolidation, a session sweep).
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
   },
-  handler: async (ctx, { statement, source, provenance }) => {
+  handler: async (ctx, { statement, source, provenance, slackChannel, slackTs }) => {
     const now = Date.now();
+    // BOTH OR NEITHER. A channel with no ts addresses no thread and a ts with
+    // no channel addresses no message, so a half pair is not "partial
+    // coordinates", it is a row that would make the preparer's reply guard
+    // read true and then have nothing to post to. Store the pair only when it
+    // is whole; the route above rejects a half pair by name, and this is the
+    // same rule enforced where the row is actually written.
+    const coordinates =
+      slackChannel && slackTs ? { slackChannel, slackTs } : {};
     const id = await ctx.db.insert("dtsTodos", {
       statement: statement.trim(),
       readiness: "unprepared",
@@ -1377,11 +1392,39 @@ export const internalCapture = internalMutation({
       timingClass: "whenever",
       source,
       provenance,
+      ...coordinates,
       createdAt: now,
       updatedAt: now,
     });
     await logEvent(ctx, "captured", id, { source });
     return id;
+  },
+});
+
+// The claim on a #dump capture's ONE threaded Slack reply (Tom's ruling
+// 2026-08-30). prepare-life-todos.mjs calls this BEFORE it posts to Slack, not
+// after: the job re-prepares a todo whenever Tom rules "revise" and whenever it
+// is run with --force, so the stamp is what stops the same capture being
+// answered a second, third and fourth time.
+//
+// FIRST STAMP WINS, and a second call is NOT an error — it returns
+// { stamped: false } so the caller learns "someone already claimed this" and
+// simply doesn't post. Throwing would turn a lost race (two runs of the job
+// overlapping despite flock) into a failed preparation, which is a worse
+// outcome than a missing duplicate reply.
+export const internalMarkSlackReplied = internalMutation({
+  args: { id: v.string() },
+  handler: async (ctx, { id }) => {
+    const normalized = ctx.db.normalizeId("dtsTodos", id);
+    if (!normalized) throw new Error(`Unknown todo id: ${id}`);
+    const todo = await ctx.db.get(normalized);
+    if (!todo) throw new Error(`Unknown todo id: ${id}`);
+    if (todo.slackRepliedAt !== undefined) return { stamped: false };
+    // updatedAt is deliberately NOT touched. This stamp records an outbound
+    // message, not a change to the todo Tom reads, and the Inventory sorts by
+    // updatedAt — a reply must not shuffle his list.
+    await ctx.db.patch(normalized, { slackRepliedAt: Date.now() });
+    return { stamped: true };
   },
 });
 

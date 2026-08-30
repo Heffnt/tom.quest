@@ -156,7 +156,14 @@ function ttsAuth(request: Request): Response | null {
 }
 
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
-// item. Body: { statement, source?, provenance? }.
+// item. Body: { statement, source?, provenance?, slackChannel?, slackTs? }.
+//
+// slackChannel + slackTs are the Slack coordinates of the message behind the
+// capture (Tom's ruling 2026-08-30): the channel id and the message's Slack
+// `ts`, which is also the thread_ts of a reply to it. poll-dump.mjs sends them
+// so prepare-life-todos.mjs can answer in that message's own thread once the
+// todo is prepared. They are stored as their own dtsTodos fields and are
+// deliberately NOT folded into `provenance` — provenance is a line Tom reads.
 const ttsCapture = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -170,15 +177,60 @@ const ttsCapture = httpAction(async (ctx, request) => {
   if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
     return jsonResponse(400, { error: "statement (non-empty string) required" });
   }
+  // Both or neither: one half of a pair of coordinates addresses nothing, and a
+  // caller that sent only one meant to send both. Say so instead of storing a
+  // row whose reply can never be delivered.
+  const slackChannel = typeof b.slackChannel === "string" ? b.slackChannel : undefined;
+  const slackTs = typeof b.slackTs === "string" ? b.slackTs : undefined;
+  if ((slackChannel === undefined) !== (slackTs === undefined)) {
+    return jsonResponse(400, {
+      error: "slackChannel and slackTs must be sent together or not at all",
+    });
+  }
   const id = await ctx.runMutation(internal.tts.internalCapture, {
     statement: b.statement,
     source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
+    slackChannel,
+    slackTs,
   });
   return jsonResponse(200, { ok: true, id });
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
+
+// POST /tts/slack-replied — claim the ONE threaded Slack reply a #dump capture
+// gets. Body: { id }. Answers { ok: true, stamped: boolean }.
+//
+// prepare-life-todos.mjs calls this BEFORE it posts to Slack. `stamped: false`
+// means some earlier run already claimed the reply, and the caller must not
+// post. It is a success, not an error — see tts.internalMarkSlackReplied.
+const ttsSlackReplied = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.id !== "string" || b.id.trim().length === 0) {
+    return jsonResponse(400, { error: "id (non-empty string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.tts.internalMarkSlackReplied, {
+      id: b.id,
+    });
+    return jsonResponse(200, { ok: true, stamped: result.stamped });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/tts/slack-replied", method: "POST", handler: ttsSlackReplied });
 
 // POST /tts/prep — the worker's Claude-prepared daily queue + digest text.
 // Body: { day, todoIds: string[], reasons?: string[], digestText? }.
@@ -301,6 +353,11 @@ http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo 
 // arithmetic (5 a.m. boundary + DST) so the worker never computes a day key —
 // two hand-rolled implementations of that math diverged on DST Sundays before
 // this was centralized (review finding). An explicit ?day= overrides.
+//
+// `todos` is internalListTodos, which returns WHOLE ROWS — so the Slack reply
+// fields (slackChannel, slackTs, slackRepliedAt) reach the worker here with no
+// projection to maintain. Anyone narrowing this to a field list later must
+// carry those three, or prepare-life-todos.mjs silently stops replying.
 const ttsState = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
