@@ -68,6 +68,9 @@ import { createHash } from "node:crypto";
 import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
+// Bump when the prompt changes semantics: it joins the input hash, so a new
+// prompt re-plans even inputs that have not changed.
+const PROMPT_VERSION = 2;
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
 
 // One run offers at most this many unbatched life todos as goal candidates
@@ -270,6 +273,16 @@ function prompt(ctx) {
     `chain through everything is almost always wrong — it is the shape you get`,
     `by listing steps in the order you thought of them, and it makes the ready`,
     `set one task wide when the real frontier is four.`,
+    ``,
+    `DE-CHAIN EVERY MIGRATED GRAPH YOU TOUCH. The graphs migrated from the`,
+    `old system are single chains BY CONSTRUCTION — their edges record the`,
+    `order steps were once written down, not real prerequisites. When a batch`,
+    `you output has OPEN tasks forming one straight line, that structure is`,
+    `presumed wrong: re-emit every open task (by id, statement verbatim) with`,
+    `its needs REBUILT from actual dependencies. Most batches should come out`,
+    `with several parallel branches; keep a chain only where each task truly`,
+    `consumes the previous one's output. Preserve-by-omission does not apply`,
+    `to this audit — an untouched chain is a chain you are asserting is real.`,
     ``,
     `CARRY DONE TASKS FORWARD UNTOUCHED. A task with "status": "done" already`,
     `happened. Re-emit it with its id, its statement verbatim, and its needs`,
@@ -572,6 +585,7 @@ async function main() {
   const inputHash = createHash("sha256")
     .update(
       JSON.stringify({
+        promptVersion: PROMPT_VERSION,
         graphs,
         activeStatements,
         candidates,

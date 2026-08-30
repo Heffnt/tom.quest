@@ -130,9 +130,6 @@ export default function BatchCard({
         {graph.tasks.length > 0 && (
           <span className="text-right">
             <PlanBar plan={planForBar} />
-            <span className="block text-[11px] text-text-faint">
-              {done.length} of {graph.tasks.length} tasks done
-            </span>
           </span>
         )}
       </button>
