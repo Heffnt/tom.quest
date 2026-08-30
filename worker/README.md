@@ -93,28 +93,34 @@ role is a captured TTS todo.
 
 Not by SSH. `ssh` exists on the box, but `turing.wpi.edu` does not answer from
 here and the session sandbox's own command policy refuses to open a remote
-shell. The one door is the FastAPI service behind the named cloudflared
-tunnel — the same door tom.quest's `/api/turing` proxy uses:
+shell. `tts-turing` is the door:
 
 ```
-tts-turing /health                       # works with no key configured
+tts-turing /health                       # is the cluster tunnel up
 tts-turing /gpu-report
 tts-turing /jobs
 tts-turing /jobs/12345 --method DELETE
 tts-turing /allocate --method POST --data '{"gpu":"A100","count":1}'
 ```
 
-`TURING_API_KEY` in `worker.env` is what makes everything past `/health` work.
-**That key grants everything** — `turing-api` has exactly one, and `/gpu-report`
-and `POST /sessions/{name}/run` (arbitrary commands in a tmux session on the
-cluster) sit behind the same header.
+**It needs no cluster key.** The default route calls tom.quest's own
+`/api/turing/*` proxy as the agent account, with a Convex bearer token lifted
+from a real sign-in; Vercel attaches the cluster key server-side exactly as it
+does for the `/turing` page. So the key stays where CLAUDE.md says it belongs —
+on Vercel — and the only credential on this box is the login `tts-browse`
+already needs. The token is cached under `/var/cache/tts/tomquest-token` and
+re-minted a minute before expiry, since obtaining one costs a browser launch.
 
-Ratified by Tom, 2026-08-30, and worth being clear-eyed about what it changed:
-not much. Sessions already reach the same power through the browser, signed in
-as Tom, via the `/turing` page's own Allocate and Cancel controls. This makes
-it scriptable rather than newly possible. The two levers that would actually
-narrow session reach — a session-owned tom.quest account, and a scoped second
-API key — are captured TTS todos, and neither is blocked by this.
+`--direct` calls `https://turing.tom.quest` with `X-API-Key` instead, and needs
+`TURING_API_KEY` in `worker.env`. Its value is diagnostic: the proxy route
+cannot tell "cluster down" from "tom.quest down", and `--direct` can. It is
+never chosen implicitly — a stale key in `worker.env` would otherwise 401 every
+call while the proxy route worked fine. `/health` always goes direct, because
+"is the cluster up" must not depend on tom.quest being up.
+
+What a session can do on the cluster is therefore exactly what the agent
+account can do in the browser: today that account is Tom's, so everything.
+Narrowing it is the session-account todo, not a property of this command.
 
 ## The no-state rule
 
