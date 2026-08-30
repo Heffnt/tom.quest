@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -243,6 +244,102 @@ class EventLoopIsolationTest(unittest.TestCase):
             "/health was starved by a slow subprocess in /gpu-report: "
             "blocking work must not run on the event loop",
         )
+
+
+class ReadOnlyScopeTest(unittest.TestCase):
+    """TURING_READ_KEY opens the three reading endpoints and nothing else.
+
+    The whole point of the second key is that a holder of it cannot reach
+    POST /sessions/{name}/run — arbitrary shell on the cluster. If any of these
+    ever go green in the wrong direction, a TTS session on the worker box has
+    been handed cluster shell.
+    """
+
+    FULL = "full-key"
+    READ = "read-key"
+
+    def _read_endpoints(self) -> list[tuple[str, str]]:
+        return [("GET", "/gpu-report"), ("GET", "/jobs"), ("GET", "/sessions/s1/output")]
+
+    def _call_read(self, method: str, path: str, key: str) -> httpx.Response:
+        """One read call with every read endpoint's subprocess stubbed out, so
+        the assertion is about the credential and nothing else."""
+        with ExitStack() as stack:
+            for cm in (
+                patch("main.API_KEY", self.FULL),
+                patch("main.READ_KEY", self.READ),
+                patch("main.format_gpu_report_v2", return_value={"nodes": [], "summary": {}, "gpu_jobs_by_node": {}}),
+                patch("main.get_user_jobs", return_value=[]),
+                patch("main.session_exists", return_value=True),
+                patch("main.capture_output", return_value="hello"),
+            ):
+                stack.enter_context(cm)
+            return _request(method, path, headers={"X-API-Key": key})
+
+    def test_read_key_opens_the_read_endpoints(self) -> None:
+        for method, path in self._read_endpoints():
+            with self.subTest(path=path):
+                self.assertEqual(self._call_read(method, path, self.READ).status_code, 200)
+
+    def test_full_key_still_opens_the_read_endpoints(self) -> None:
+        for method, path in self._read_endpoints():
+            with self.subTest(path=path):
+                self.assertEqual(self._call_read(method, path, self.FULL).status_code, 200)
+
+    def test_read_key_is_refused_on_write_endpoints(self) -> None:
+        """The load-bearing assertion: the read key must not reach the command
+        surface, the allocator, the canceller, or the file reader."""
+        cases = [
+            ("POST", "/sessions/s1/run", {"json": {"command": "rm -rf ~"}}),
+            ("POST", "/allocate", {"json": {"gpu_type": "nvidia", "time_mins": 30}}),
+            ("DELETE", "/jobs/123", {}),
+            ("POST", "/sessions/s1/detach-clients", {}),
+            ("GET", "/file", {"params": {"path": "x"}}),
+            ("GET", "/dirs", {}),
+        ]
+        for method, path, kwargs in cases:
+            with self.subTest(path=path):
+                with (
+                    patch("main.API_KEY", self.FULL),
+                    patch("main.READ_KEY", self.READ),
+                    patch("main.send_to_session") as send,
+                    patch("main.allocate_gpu") as allocate,
+                    patch("main.cancel_job") as cancel,
+                ):
+                    res = _request(method, path, headers={"X-API-Key": self.READ}, **kwargs)
+                self.assertEqual(res.status_code, 401, f"{method} {path} accepted the read key")
+                send.assert_not_called()
+                allocate.assert_not_called()
+                cancel.assert_not_called()
+
+    def test_unset_read_key_closes_the_read_door(self) -> None:
+        """Fail closed. With no read key configured, no header and an empty
+        header are both refused — the empty string is never a credential."""
+        for header in ({}, {"X-API-Key": ""}):
+            with self.subTest(header=header):
+                with (
+                    patch("main.API_KEY", self.FULL),
+                    patch("main.READ_KEY", ""),
+                    patch("main.get_user_jobs", return_value=[]),
+                ):
+                    res = _request("GET", "/jobs", headers=header)
+                self.assertEqual(res.status_code, 401)
+
+    def test_wrong_key_is_refused_on_read_endpoints(self) -> None:
+        with (
+            patch("main.API_KEY", self.FULL),
+            patch("main.READ_KEY", self.READ),
+            patch("main.get_user_jobs", return_value=[]),
+        ):
+            res = _request("GET", "/jobs", headers={"X-API-Key": "neither"})
+        self.assertEqual(res.status_code, 401)
+
+    def test_health_needs_no_key_at_all(self) -> None:
+        """The one endpoint the worker box could already reach. It stays open,
+        because liveness is what a caller with no credential needs to see."""
+        with patch("main.API_KEY", self.FULL), patch("main.READ_KEY", self.READ):
+            res = _request("GET", "/health")
+        self.assertEqual(res.status_code, 200)
 
 
 if __name__ == "__main__":

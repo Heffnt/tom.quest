@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 import shlex
@@ -29,6 +30,9 @@ from ws import router as ws_router
 load_dotenv()
 API_PORT = int(os.getenv("API_PORT", "8000"))
 API_KEY = os.environ.get("TURING_API_KEY", "")
+# The read-only credential (see verify_read_key). Separate secret, never derived
+# from TURING_API_KEY, and optional: unset means the read door does not exist.
+READ_KEY = os.environ.get("TURING_READ_KEY", "")
 LOG_PATH = "turing-api.log"
 # Upper bound on a single /allocate request. Guards against a typo (or a
 # declarative caller) asking for far more GPUs than the partition holds.
@@ -58,9 +62,41 @@ app.add_middleware(
 async def verify_api_key(x_api_key: str = Header(None)):
     if not API_KEY:
         return True
-    if x_api_key != API_KEY:
+    if not _key_matches(x_api_key, API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
+
+
+# --- the read-only scope -------------------------------------------------------
+# TURING_API_KEY is undifferentiated: the header that reads GET /gpu-report also
+# authorizes POST /sessions/{name}/run, which types an arbitrary command into a
+# tmux session on the cluster. Callers that only ever READ — the TTS session
+# agents on the worker box, which reach this service through the tunnel and have
+# no other path to the cluster — therefore cannot be given TURING_API_KEY without
+# also being given cluster shell.
+#
+# TURING_READ_KEY is a second, independent secret that opens ONLY the endpoints
+# carrying this dependency: GET /gpu-report, GET /jobs, GET /sessions/{name}/output.
+# It is never accepted anywhere else, including the terminal WebSocket (ws.py
+# signs its short-lived token with API_KEY alone). Same posture as POOL_AGENT_KEY
+# in spec.md §7: a separate narrow key, sharing nothing with the full one.
+#
+# Fail closed. An unset TURING_READ_KEY means the read door does not exist — the
+# empty string is never a usable credential, so a box with no key configured
+# cannot read by sending no header.
+def _key_matches(presented: str | None, expected: str) -> bool:
+    if not expected or presented is None:
+        return False
+    return hmac.compare_digest(presented, expected)
+
+
+async def verify_read_key(x_api_key: str = Header(None)):
+    """Accept the full key OR the read-only key. Read endpoints only."""
+    if not API_KEY:
+        return True
+    if _key_matches(x_api_key, API_KEY) or _key_matches(x_api_key, READ_KEY):
+        return True
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 app.include_router(ws_router)
@@ -181,7 +217,7 @@ async def transformer_trace(path: str, request: Request) -> Response:
 # That starvation took down the whole API during the June 2026 outage.
 
 @app.get("/gpu-report")
-def gpu_report(auth: bool = Depends(verify_api_key)) -> dict:
+def gpu_report(auth: bool = Depends(verify_read_key)) -> dict:
     try:
         return format_gpu_report_v2()
     except Exception as e:
@@ -376,7 +412,7 @@ def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -
     )
 
 @app.get("/jobs", response_model=list[JobResponse])
-def list_jobs(auth: bool = Depends(verify_api_key)) -> list[JobResponse]:
+def list_jobs(auth: bool = Depends(verify_read_key)) -> list[JobResponse]:
     jobs = get_user_jobs()
     return [
         JobResponse(
@@ -410,7 +446,7 @@ def delete_job(job_id: str, auth: bool = Depends(verify_api_key)) -> dict[str, o
     raise HTTPException(status_code=400, detail=error or f"Failed to cancel job {job_id}")
 
 @app.get("/sessions/{session_name}/output")
-def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
+def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_read_key)) -> dict[str, str]:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     output = capture_output(session_name, lines)
@@ -446,5 +482,9 @@ if __name__ == "__main__":
     if not API_KEY:
         raise SystemExit("TURING_API_KEY is not set. Configure turing-api/.env before starting.")
     print(f"\nTuring API listening on 127.0.0.1:{API_PORT}")
+    if READ_KEY:
+        print("Read-only scope ENABLED (TURING_READ_KEY): /gpu-report, /jobs, /sessions/{name}/output.")
+    else:
+        print("Read-only scope disabled (TURING_READ_KEY unset): every endpoint needs the full key.")
     print("Bound to localhost: reachable only through the co-located cloudflared tunnel, not the shared cluster LAN.\n")
     uvicorn.run(app, host="127.0.0.1", port=API_PORT, access_log=True, log_config=None)
