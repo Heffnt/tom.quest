@@ -1,13 +1,14 @@
 // Guardrail: the worker daemon cannot import convex/ttsShared.ts (only
 // worker/ is deployed to the box; Node does not load .ts), so it carries the
-// session-surface constants itself — REPO_GITHUB as a literal mirror, and the
+// session-surface constants itself — REPO_GITHUB (in repos.mjs) as a literal
+// mirror, and the
 // daemon staleness window as the poll cadence it is derived from. This check
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
 import { readFileSync } from "node:fs";
 
 const shared = readFileSync("convex/ttsShared.ts", "utf8");
-const sessionMjs = readFileSync("worker/session-host/session.mjs", "utf8");
+const reposMjs = readFileSync("worker/session-host/repos.mjs", "utf8");
 const hostMjs = readFileSync("worker/session-host/session-host.mjs", "utf8");
 
 const failures = [];
@@ -49,17 +50,17 @@ const readRepos = (block, where) => {
 };
 
 const sharedBlock = shared.match(/SESSION_REPOS = \{([^}]+)\}/);
-const daemonBlock = sessionMjs.match(/const REPO_GITHUB = \{([^}]+)\}/);
+const daemonBlock = reposMjs.match(/const REPO_GITHUB = \{([^}]+)\}/);
 if (!sharedBlock) failures.push("ttsShared.ts: SESSION_REPOS not found");
-if (!daemonBlock) failures.push("session.mjs: REPO_GITHUB not found");
+if (!daemonBlock) failures.push("repos.mjs: REPO_GITHUB not found");
 if (sharedBlock && daemonBlock) {
   const a = readRepos(sharedBlock[1], "ttsShared.ts SESSION_REPOS")
     .sort()
     .join("|");
-  const b = readRepos(daemonBlock[1], "session.mjs REPO_GITHUB").sort().join("|");
+  const b = readRepos(daemonBlock[1], "repos.mjs REPO_GITHUB").sort().join("|");
   if (a !== b) {
     failures.push(
-      `repo maps drifted:\n  ttsShared.ts: ${a}\n  session.mjs:  ${b}`,
+      `repo maps drifted:\n  ttsShared.ts: ${a}\n  repos.mjs:    ${b}`,
     );
   }
 }

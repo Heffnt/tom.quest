@@ -28,22 +28,12 @@ import {
 
 const execFile = promisify(execFileCb);
 
-// Session workdirs live under /var/cache by the box's convention: everything
-// under /var/cache/tts is rebuildable, so `rm -rf` of any of it is harmless
-// (the no-state rule). A session's real output leaves through git pushes /
-// whatever Tom asks the model to do — never through files that stay here.
-export const SESSIONS_ROOT = "/var/cache/tts/sessions";
-
-// The repos a session may check out (claudeSessions.repo). Everything is
-// under github.com/Heffnt — same owner the code-todo jobs use.
-// MIRROR of SESSION_REPOS in convex/ttsShared.ts (the one home) — this file
-// cannot import .ts and only worker/ is deployed to the box. Fenced:
-// scripts/check-session-mirrors.mjs fails guardrails on drift.
-const REPO_GITHUB = {
-  "tom.quest": "Heffnt/tom.quest",
-  ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
-  WikiTom: "Heffnt/WikiTom",
-};
+// SESSIONS_ROOT (where a session works) and REPO_GITHUB (what it may check
+// out) live in repos.mjs so open-pr.mjs can read the allowlist without
+// importing this file and, with it, the whole agent SDK. Re-exported here
+// because this module is the daemon's session surface.
+export { REPO_GITHUB, SESSIONS_ROOT } from "./repos.mjs";
+import { REPO_GITHUB, SESSIONS_ROOT } from "./repos.mjs";
 
 // The live-tail buffer segment-finalizes past this size so the hot
 // claudeStreamBuf row stays small forever (matches the schema's ~16KB note).
@@ -109,6 +99,12 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 //   curl with a body/upload flag — the exfiltration shape (plain GETs are fine)
 //   wget            — same, in its fetch-and-write direction
 //   rm on an absolute path — deletion that can reach outside the workdir
+//   the clone's stored credential — `git remote get-url`, `git config` and
+//     .git/config all print the x-access-token URL the daemon cloned with
+//     (ensureWorkdir), so a session can read GH_TOKEN with a command that
+//     otherwise looks like routine git. That is the same token startQuery
+//     scrubs from the session env, so leaving these unfingerprinted made the
+//     scrub decorative. See the todo about not embedding it at all.
 // Two alternatives are deliberately loose about WHITESPACE, because the tight
 // versions missed the real shapes: `git -C <dir> push` (git's own global
 // options between the verb and the subcommand — the form this very file uses)
@@ -117,7 +113,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // span backslash-newline continuations. Over-matching only costs a classifier
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
-  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bgit\b(?:[^\n;|&]|\\\n)*\bremote\b(?:[^\n;|&]|\\\n)*(?:\bget-url\b|-v\b|--verbose)|\bgit\b(?:[^\n;|&]|\\\n)*\bconfig\b(?:[^\n;|&]|\\\n)*(?:remote\.|--list|--get-regexp|-l\b)|\.git\/config|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
 // Tier 3 mechanics: the box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -164,6 +160,13 @@ function classifierPrompt({ command, workdir, branch }) {
     // run and backs the todo off for 24h. Tier 1 catches the canonical pen,
     // but variants (heredoc bodies, -d @file) legitimately land here.
     'ALSO ALLOW the system\'s own bookkeeping POSTs to "$CONVEX_SITE_URL/tts/..." authenticated with the X-TTS-Key header — that is the sanctioned write path, not exfiltration; ALLOW those.',
+    // tts-open-pr holds the GitHub token so the agent never has to. It derives
+    // repo and branch from the workdir and refuses anything but this session's
+    // own branch, so "it opens a PR" is the whole of its power. Without this
+    // line the DENY rules about tokens and pushes read as describing it.
+    "ALSO ALLOW `tts-open-pr` with any arguments — it is the sanctioned way to open a pull request from " +
+      branch +
+      ", and it holds its own credential so the agent never handles one.",
     "",
     "The command, verbatim between the markers:",
     "<<<COMMAND",

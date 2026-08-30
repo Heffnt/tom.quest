@@ -200,6 +200,13 @@ cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
   /opt/tts/session-host/
 (cd /opt/tts/session-host && npm install --omit=dev)
 
+# tts-open-pr — the one way a session opens a pull request. It is on PATH
+# rather than buried in /opt/tts because a session's model is told to run it by
+# name. It reads GH_TOKEN itself (from worker.env) so the token can stay
+# scrubbed from every session shell; see open-pr.mjs's header.
+chmod 0755 /opt/tts/session-host/open-pr.mjs
+ln -sf /opt/tts/session-host/open-pr.mjs /usr/local/bin/tts-open-pr
+
 cat > /etc/systemd/system/tts-session-host.service <<'UNIT'
 [Unit]
 Description=TTS session-host (Claude Code sessions bridged to Convex)

@@ -1447,7 +1447,7 @@ function buildAutoMissionPrompt(
           "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
         ]
       : [
-          `The workspace: your working directory is a fresh checkout of ${repo} on branch session/${sessionId}. Implement the agent steps INCLUDING the code ones. Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary.`,
+          `The workspace: your working directory is a fresh checkout of ${repo} on branch session/${sessionId}. Implement the agent steps INCLUDING the code ones. Commit as you go and push the branch (the remote is already configured). Open a pull request with \`tts-open-pr --title "..." --body "..."\` ONLY when the work is merge-ready, and say so in the outcome summary. It derives the repo and branch itself and prints the PR url; \`gh pr create\` will NOT work, because sessions hold no GitHub credential.`,
           "",
           `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
@@ -1624,7 +1624,7 @@ function buildWorkerPrompt(args: {
           "Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never touch code: this session has an EMPTY scratch directory and no repository, so anything needing code goes to Tom as a prepared task instead.",
         ]
       : [
-          `The workspace: your working directory is a fresh checkout of ${repo} on branch session/${sessionId}. Implement the code your todo needs. Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, name it in your evidence, and say so in the outcome summary.`,
+          `The workspace: your working directory is a fresh checkout of ${repo} on branch session/${sessionId}. Implement the code your todo needs. Commit as you go and push the branch (the remote is already configured). Open a pull request with \`tts-open-pr --title "..." --body "..."\` ONLY when the work is merge-ready, name it in your evidence, and say so in the outcome summary. It derives the repo and branch itself and prints the PR url; \`gh pr create\` will NOT work, because sessions hold no GitHub credential.`,
           "",
           `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
