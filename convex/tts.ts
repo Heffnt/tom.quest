@@ -7,7 +7,7 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import {
   DAY_MS,
   MAX_NEEDS,
@@ -27,8 +27,16 @@ import {
 // Tom-gated (forge.ts pattern); everything the Jarvis Box or crons touch goes
 // through internal functions (http.ts routes are key-authed with TTS_WORKER_KEY).
 
+// The write gate. Every mutation in this file calls it, and nothing else does.
 async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
   return await requireTom(ctx, "TTS");
+}
+
+// The read gate: Tom, plus the `agent` role a TTS session's headless browser
+// signs in as, because /tts is one of the surfaces sessions must look at
+// (convex/agentSurfaces.ts). Queries call this; mutations must not.
+async function requireTomViewId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
+  return await requireTomOrAgent(ctx, "TTS");
 }
 
 // One queue size for every producer: the fallback rules here and (mirrored in
@@ -210,7 +218,7 @@ export async function logEvent(
 export const listTodos = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomId(ctx);
+    await requireTomViewId(ctx);
     return await ctx.db.query("dtsTodos").collect();
   },
 });
@@ -218,7 +226,7 @@ export const listTodos = query({
 export const listMirror = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomId(ctx);
+    await requireTomViewId(ctx);
     return await ctx.db.query("dtsCodeTodoMirror").collect();
   },
 });
@@ -230,7 +238,7 @@ export const listMirror = query({
 export const listBatches = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomId(ctx);
+    await requireTomViewId(ctx);
     return await ctx.db.query("batches").collect();
   },
 });
@@ -240,7 +248,7 @@ export const listBatches = query({
 export const getToday = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomId(ctx);
+    await requireTomViewId(ctx);
     const day = ttsDayKey(Date.now());
     const row = await ctx.db
       .query("dtsDailyQueues")
@@ -267,7 +275,7 @@ export const getToday = query({
 export const listRecentEvents = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    await requireTomId(ctx);
+    await requireTomViewId(ctx);
     return await ctx.db
       .query("dtsEvents")
       .withIndex("by_at")
@@ -721,7 +729,7 @@ function requireOneBlockTarget(todoId: unknown, category: unknown) {
 export const listBlocks = query({
   args: { start: v.optional(v.number()), end: v.optional(v.number()) },
   handler: async (ctx, { start, end }) => {
-    await requireTomId(ctx);
+    await requireTomViewId(ctx);
     const rows =
       end === undefined
         ? await ctx.db.query("dtsBlocks").collect()
@@ -889,7 +897,7 @@ const TIME_NOTE_LIST_MAX = 200;
 export const listTimeNotes = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomId(ctx);
+    await requireTomViewId(ctx);
     const byStatus = (status: "pending" | "needs-session" | "applied") =>
       ctx.db
         .query("dtsTimeNotes")

@@ -2,10 +2,15 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+// `agent` is off the user -> admin -> tom ladder rather than above or below it:
+// it is what a TTS session's headless browser signs in as, and it reads the
+// surfaces in convex/agentSurfaces.ts and writes nothing anywhere. See
+// roleAccess in ./authRoles for why adding it opened no existing gate.
 export const USER_ROLES = v.union(
   v.literal("user"),
   v.literal("admin"),
   v.literal("tom"),
+  v.literal("agent"),
 );
 
 export default defineSchema({

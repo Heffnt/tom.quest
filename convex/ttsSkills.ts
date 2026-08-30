@@ -26,7 +26,7 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 
 const SKILLS_REPO = "Heffnt/WikiTom";
 const SKILLS_DIR = "model-of-tom/skills";
@@ -64,7 +64,7 @@ export const internalGetSkill = internalQuery({
 export const getSkill = query({
   args: { name: v.string() },
   handler: async (ctx, { name }) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     return await ctx.db
       .query("ttsSkills")
       .withIndex("by_name", (q) => q.eq("name", name))

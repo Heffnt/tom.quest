@@ -7,8 +7,12 @@ import { ConvexReactClient } from "convex/react";
 import { useQuery } from "convex/react";
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { api } from "@/convex/_generated/api";
+import { isAgentReadableSurface } from "@/convex/agentSurfaces";
 
-export type UserRole = "user" | "admin" | "tom";
+// Mirrors convex/authRoles.ts. `agent` is what a TTS session's headless
+// browser signs in as; it is off the user -> admin -> tom ladder, so isAdmin
+// and isTom are both false for it and every existing gate denies it.
+export type UserRole = "user" | "admin" | "tom" | "agent";
 
 export interface AuthUser {
   id: string;
@@ -24,6 +28,7 @@ interface AuthContextType {
   role: UserRole;
   isAdmin: boolean;
   isTom: boolean;
+  isAgent: boolean;
   loading: boolean;
   signIn: (username: string, password: string) => Promise<{ error: string | null }>;
   signUp: (username: string, password: string) => Promise<{ error: string | null }>;
@@ -71,6 +76,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
   const role = user?.role ?? "user";
   const isAdmin = viewer?.isAdmin ?? false;
   const isTom = viewer?.isTom ?? false;
+  const isAgent = viewer?.isAgent ?? false;
   const loading = !convexAuth.isLoading && convexAuth.isAuthenticated ? viewer === undefined : convexAuth.isLoading;
 
   const signIn = async (username: string, password: string) => {
@@ -105,7 +111,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, token, role, isAdmin, isTom, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, token, role, isAdmin, isTom, isAgent, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );
@@ -115,4 +121,19 @@ export function useAuth() {
   const ctx = useContext(AuthContext);
   if (ctx === undefined) throw new Error("useAuth must be used within an AuthProvider");
   return ctx;
+}
+
+/**
+ * May the viewer READ the Tom-only surface named `label` ("TTS", "Sessions",
+ * "Forge" — the same names requireTom uses server-side)?
+ *
+ * This is the condition for the `useQuery(..., cond ? {} : "skip")` idiom on a
+ * Tom-only page, and only that. It is deliberately NOT the condition for a
+ * mutation or for showing a write control: it is true for the `agent` role a
+ * TTS session's headless browser signs in as, and that role's writes are
+ * refused by requireTom in Convex. Keep using `isTom` for anything that acts.
+ */
+export function useMayViewSurface(label: string): boolean {
+  const { isTom, isAgent } = useAuth();
+  return isTom || (isAgent && isAgentReadableSurface(label));
 }

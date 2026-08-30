@@ -1,15 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/app/lib/convex-server";
+import { requireAdmin, requireAdminOrAgentRead } from "@/app/lib/convex-server";
+import { isAgentTuringRead } from "@/convex/agentSurfaces";
 import { forwardToTuringApi } from "@/app/lib/turing";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
 async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "DELETE") {
-  const auth = await requireAdmin(request);
-  if (auth instanceof Response) return auth;
   const { path } = await ctx.params;
   const search = new URL(request.url).search;
-  const upstreamPath = "/" + path.join("/") + search;
+  const bare = "/" + path.join("/");
+  const upstreamPath = bare + search;
+
+  // The gate is admin for everything, and one narrow exception for the `agent`
+  // role a TTS session's headless browser signs in as. That exception is both
+  // method-limited and path-limited, and it needs to be both.
+  //
+  // Method, because before this role existed one requireAdmin covered GET,
+  // POST and DELETE alike: any account that could look at /turing could also
+  // allocate GPUs and cancel a running job.
+  //
+  // Path, because this route is a catch-all onto the whole FastAPI service and
+  // plenty of its GETs are not the dashboard — /file and /dirs read the cluster
+  // filesystem, /sessions/{name}/output is terminal scrollback. The allowlist
+  // in convex/agentSurfaces is the three paths the /turing page itself fetches,
+  // so a path added upstream later is shut to `agent` until someone names it.
+  const auth =
+    method === "GET" && isAgentTuringRead(bare)
+      ? await requireAdminOrAgentRead(request, "Turing")
+      : await requireAdmin(request);
+  if (auth instanceof Response) return auth;
 
   const init: RequestInit = { method, cache: "no-store" };
   if (method !== "GET") {

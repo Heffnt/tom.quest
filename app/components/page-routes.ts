@@ -4,20 +4,26 @@ export type Page = {
   blurb: string;
   priority: number;   // higher = preferred in autocomplete tie-breaks
   visibility: PageVisibility;
+  // Whether the `agent` role — the account a TTS session's headless browser
+  // signs in as — may reach this page. A separate field rather than another
+  // `visibility` value because `agent` is not a rank on the guest -> user ->
+  // admin -> tom ladder that `visibility` describes: it reaches two named
+  // pages and inherits nothing. Absent means no.
+  agentReadable?: true;
 };
 
 export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
-export type PageRole = "guest" | "user" | "admin" | "tom";
+export type PageRole = "guest" | "user" | "admin" | "tom" | "agent";
 
 export const PAGES: Page[] = [
-  { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin" },
+  { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin", agentReadable: true },
   { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8,  visibility: "authenticated" },
   { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7, visibility: "public" },
   { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6, visibility: "public" },
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "sessions", title: "Sessions", blurb: "TTS — Claude Code session surface", priority: 9, visibility: "tom" },
-  { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom" },
+  { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5, visibility: "tom" },
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
@@ -29,6 +35,12 @@ export const PAGES: Page[] = [
 
 export function canSeePage(role: PageRole, page: Page): boolean {
   if (page.visibility === "public") return true;
+  // `agent` is off the ladder, so it gets its own branch above every rank test
+  // rather than a place in the chain. It reaches exactly the pages flagged for
+  // it and inherits nothing — in particular it does NOT pick up "authenticated"
+  // by virtue of being signed in, which is what keeps /canvas (whose agent
+  // route spends LLM credits) shut to a TTS session's browser.
+  if (role === "agent") return page.agentReadable === true;
   if (page.visibility === "authenticated") return role !== "guest";
   if (page.visibility === "admin") return role === "admin" || role === "tom";
   return role === "tom";

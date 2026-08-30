@@ -8,7 +8,7 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 
 /** One expanded occurrence, as the fetch action hands it over. */
 export const CALENDAR_EVENT_INPUT = v.object({
@@ -25,7 +25,7 @@ export const CALENDAR_EVENT_INPUT = v.object({
 export const listCalendarEvents = query({
   args: { start: v.number(), end: v.number() },
   handler: async (ctx, { start, end }) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     // by_start serves "starts before the range ends"; the >-start overlap
     // filter runs on that bounded set. Multi-day events longer than 31 days
     // would escape the lower bound — personal calendars don't carry those,

@@ -105,7 +105,10 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 //   sudo / systemctl / crontab — box-level privilege and persistence
 //   /etc/ /root/    — the Jarvis Box's own configuration, outside every workdir
 //   .claude-accounts — the Max-account credential store the CLI reads
-//   GH_TOKEN / WORKER_KEY — the two secret names that exist in this env
+//   GH_TOKEN / WORKER_KEY / TOMQUEST_AGENT — the secret names in this env.
+//     They are all scrubbed from the session's shell (startQuery below), so a
+//     command naming one is reaching for something it was denied rather than
+//     something it was given — which is exactly the shape worth classifying.
 //   curl with a body/upload flag — the exfiltration shape (plain GETs are fine)
 //   wget            — same, in its fetch-and-write direction
 //   rm on an absolute path — deletion that can reach outside the workdir
@@ -117,7 +120,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // span backslash-newline continuations. Over-matching only costs a classifier
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
-  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|TOMQUEST_AGENT|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -615,16 +618,28 @@ export class Session {
   // ── the SDK query ──────────────────────────────────────────────────────────
 
   startQuery({ resume } = {}) {
-    // The daemon's own secrets, dropped from the env the session's shell
-    // inherits. Under systemd both arrive via EnvironmentFile=/etc/tts/
-    // worker.env, so without this destructure-drop `env` in any Bash call
-    // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
-    // confused session could rewrite ANY transcript) and GH_TOKEN is repo
-    // write for the whole account. Neither is reachable through the
-    // sanctioned pens, so nothing legitimate needs them.
+    // The credentials dropped from the env the session's shell inherits. All
+    // four arrive via systemd's EnvironmentFile=/etc/tts/worker.env, so without
+    // this destructure-drop `env` in any Bash call prints them:
+    //   SESSIONS_WORKER_KEY authorizes transcript ingest — a confused session
+    //     could rewrite ANY transcript;
+    //   GH_TOKEN is repo write for the whole account;
+    //   TOMQUEST_AGENT_USERNAME / _PASSWORD are the tom.quest account
+    //     tts-browse --login signs in as.
+    // None is reachable through the sanctioned pens, so nothing legitimate
+    // needs them in the shell. tts-browse reads the last two out of
+    // /etc/tts/worker.env itself (it runs as the same user), which is why
+    // dropping them here does not disable --login.
+    //
+    // The account is narrow on purpose too — it holds role `agent`, which reads
+    // /tts and /turing and writes nothing (convex/agentSurfaces.ts). The scrub
+    // and the role are independent: the scrub keeps the password out of a
+    // Convex-stored transcript, the role bounds what a leaked one is worth.
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
+      TOMQUEST_AGENT_USERNAME: _browseUser,
+      TOMQUEST_AGENT_PASSWORD: _browsePassword,
       ...inheritedEnv
     } = process.env;
     this.queue = new TurnQueue();
@@ -1102,6 +1117,8 @@ export class Session {
               SESSIONS_WORKER_KEY: _ingest,
               GH_TOKEN: _gh,
               TTS_WORKER_KEY: _tts,
+              TOMQUEST_AGENT_USERNAME: _browseUser,
+              TOMQUEST_AGENT_PASSWORD: _browsePassword,
               ...rest
             } = process.env;
             return rest;

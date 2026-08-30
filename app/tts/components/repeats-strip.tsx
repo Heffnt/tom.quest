@@ -11,7 +11,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
-import { useAuth } from "@/app/lib/auth";
+import { useMayViewSurface } from "@/app/lib/auth";
 import Info from "./info";
 import { errMessage } from "../lib";
 
@@ -114,8 +114,8 @@ function RepeatRow({ rule }: { rule: Repeat }) {
 }
 
 export default function RepeatsStrip() {
-  const { isTom } = useAuth();
-  const repeats = useQuery(api.ttsRepeats.listRepeats, isTom ? {} : "skip");
+  const mayView = useMayViewSurface("TTS");
+  const repeats = useQuery(api.ttsRepeats.listRepeats, mayView ? {} : "skip");
   const createRepeat = useMutation(api.ttsRepeats.createRepeat);
   const [open, setOpen] = useState(false);
   const [statement, setStatement] = useState("");

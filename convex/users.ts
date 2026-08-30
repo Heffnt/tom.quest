@@ -15,6 +15,7 @@ export const viewer = query({
       role: access.role,
       isAdmin: access.isAdmin,
       isTom: access.isTom,
+      isAgent: access.isAgent,
     };
   },
 });
@@ -58,5 +59,41 @@ export const promoteToAdmin = mutation({
       throw new Error("Only Tom can promote admins");
     }
     await ctx.db.patch(userId, { role: "admin" });
+  },
+});
+
+// Set an account's role by the username it signed up with. Run from the Convex
+// dashboard; there is no user-list UI, and promoteToAdmin above takes a raw
+// document id, which means reading it off the dashboard first anyway.
+//
+// This is how the TTS session account gets to `agent`, and it is also the only
+// way back down — nothing else in this file ever writes a role other than
+// upward.
+//
+// Two things it will not do. It cannot grant `tom`: that stays the one-shot
+// setTomByUsername path above, gated on TOM_SETUP_SECRET. And it refuses an
+// account already at `tom`, so a mistyped username cannot demote Tom out of
+// his own deployment and leave nobody able to undo it.
+export const setRoleByUsername = mutation({
+  args: {
+    username: v.string(),
+    role: v.union(v.literal("user"), v.literal("admin"), v.literal("agent")),
+  },
+  handler: async (ctx, { username, role }) => {
+    const viewer = await viewerDoc(ctx);
+    if (!roleAccess(viewer?.role).isTom) {
+      throw new Error("Only Tom can set roles");
+    }
+    const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const user = await ctx.db
+      .query("users")
+      .withIndex("email", (q) => q.eq("email", `${normalized}@tom.quest`))
+      .unique();
+    if (!user) throw new Error("User not found");
+    if (user.role === "tom") {
+      throw new Error("The Tom account's role cannot be changed here");
+    }
+    await ctx.db.patch(user._id, { role });
+    return user._id;
   },
 });

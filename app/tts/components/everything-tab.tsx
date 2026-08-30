@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
-import { useAuth } from "@/app/lib/auth";
+import { useAuth, useMayViewSurface } from "@/app/lib/auth";
 import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
 import { groupTimeNotes, NO_NOTES } from "./time-note-field";
@@ -100,12 +100,13 @@ export default function EverythingTab({
   onLinkCleared: () => void;
 }) {
   const { isTom } = useAuth();
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
-  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
-  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const mayView = useMayViewSurface("TTS");
+  const todos = useQuery(api.tts.listTodos, mayView ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, mayView ? {} : "skip");
+  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, mayView ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, mayView ? {} : "skip");
   // ONE time-note subscription for the whole tab; each row gets its own slice.
-  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  const timeNotes = useQuery(api.tts.listTimeNotes, mayView ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
@@ -274,7 +275,12 @@ export default function EverythingTab({
     scrolledRef.current = true;
     setExpanded((prev) => new Set(prev).add(link.item));
     const linkedId = link.item as Id<"dtsTodos">;
-    if (todos.some((t) => t._id === linkedId)) {
+    // isTom, not mayView: this is the one engagement write that fires without
+    // a click, so under the `agent` role a TTS session browses as it would be
+    // refused, and the refusal would show up as a console error in the
+    // tts-browse report for any screenshot of /tts?item=… . A browser landing
+    // on a deep link is also not engagement.
+    if (isTom && todos.some((t) => t._id === linkedId)) {
       // The link arrives from a Slack item link (?item=) or a calendar
       // queue-chip click-through — either way, a link landed on this item.
       void recordEvent({
@@ -288,7 +294,7 @@ export default function EverythingTab({
         .getElementById(`todo-${link.item}`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
-  }, [link, todos, recordEvent]);
+  }, [isTom, link, todos, recordEvent]);
 
   if (todos === undefined || mirror === undefined) {
     return <div className="text-sm text-text-faint py-8">Loading…</div>;

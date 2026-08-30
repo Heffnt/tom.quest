@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
 
 // TTS code-todo BRIEFS — the Jarvis Box writes ground-up briefs for each open
@@ -25,7 +25,7 @@ const EXEC_CLASS = v.union(v.literal("box"), v.literal("needs-turing"));
 export const listCodeBriefs = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     return await ctx.db.query("dtsCodeBriefs").collect();
   },
 });

@@ -10,7 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { useAuth } from "@/app/lib/auth";
+import { useAuth, useMayViewSurface } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import CalendarTab from "./components/calendar-tab";
 import BatchesTab from "./components/batches-tab";
@@ -86,8 +86,12 @@ function QuickAdd() {
 }
 
 export default function TtsClient() {
-  // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
+  // mayView gates the queries ("skip" idiom) and TomGate owns the gate JSX;
+  // isTom stays separate because it gates the WRITE below, and the two are no
+  // longer the same question — the `agent` role a TTS session browses as may
+  // read this page and may not write to it.
   const { isTom } = useAuth();
+  const mayView = useMayViewSurface("TTS");
   const router = useRouter();
   const recordEvent = useMutation(api.tts.recordEvent);
 
@@ -131,20 +135,28 @@ export default function TtsClient() {
 
   // Instrumentation: one tts-opened per load, once data is here.
   // Fire-and-forget — never blocks the UI.
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  //
+  // isTom, not mayView. This is a WRITE that fires on arrival, so under the
+  // `agent` role it would be refused by requireTom, and the Convex client logs
+  // a refused mutation to the console — which is exactly what tts-browse
+  // reports back as a failure. A session screenshotting /tts would read a
+  // console error on every run and have to rule it out by hand. It is also
+  // what the event means: a headless screenshot is not Tom opening TTS, and
+  // counting it would put session noise in his engagement log.
+  const todos = useQuery(api.tts.listTodos, mayView ? {} : "skip");
   const openedRef = useRef(false);
   useEffect(() => {
-    if (openedRef.current || todos === undefined) return;
+    if (!isTom || openedRef.current || todos === undefined) return;
     openedRef.current = true;
     void recordEvent({ kind: "tts-opened" }).catch(() => {});
-  }, [todos, recordEvent]);
+  }, [isTom, todos, recordEvent]);
 
   // Batches badge: the SAME selector the tab renders (app/tts/lib.ts
   // selectBatches) so the count and the rows cannot drift. Same subscriptions
   // the tabs hold — Convex dedupes.
-  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
-  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, mayView ? {} : "skip");
+  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, mayView ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, mayView ? {} : "skip");
 
   const batchesCount = useMemo(() => {
     const { batches, unbatchedLife, unbatchedCode } = selectBatches(

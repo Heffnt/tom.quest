@@ -20,7 +20,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { countdownText } from "@/convex/ttsShared";
-import { useAuth } from "@/app/lib/auth";
+import { useMayViewSurface } from "@/app/lib/auth";
 import {
   useOpenBatchSession,
   useOpenTodoSession,
@@ -230,14 +230,14 @@ function LifeRow({
 // opens the detail dialog, which holds everything known about it. Nothing here
 // hands an item off to the by-individual tab any more.
 export default function BatchesTab() {
-  const { isTom } = useAuth();
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
-  const batches = useQuery(api.tts.listBatches, isTom ? {} : "skip");
-  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
-  const briefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const mayView = useMayViewSurface("TTS");
+  const todos = useQuery(api.tts.listTodos, mayView ? {} : "skip");
+  const batches = useQuery(api.tts.listBatches, mayView ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, mayView ? {} : "skip");
+  const briefs = useQuery(api.ttsCode.listCodeBriefs, mayView ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, mayView ? {} : "skip");
   // ONE time-note subscription for the whole tab; each row slices it.
-  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  const timeNotes = useQuery(api.tts.listTimeNotes, mayView ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const { open: openBatchSession, error: batchSessionError } =

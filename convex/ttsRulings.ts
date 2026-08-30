@@ -7,7 +7,7 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -70,7 +70,7 @@ export const subjectKey = (row: {
 export const listRulings = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     return await ctx.db.query("dtsRulings").collect();
   },
 });
