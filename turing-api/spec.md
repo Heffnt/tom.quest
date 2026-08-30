@@ -73,7 +73,8 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   ComplexMultiTrigger progress data against the **legacy tree schema** (`claim.json` =
   `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`), which no longer
   matched the live tree (§1.2). It has been **deleted** (§9); the live `/boolback` page is now a
-  static-snapshot explorer in tom.Quest (`app/boolback`, fed by `scripts/boolback_export.py`),
+  static-snapshot explorer in tom.Quest (`app/boolback`, fed by the snapshot cache in
+  `boolback_snapshot.py`, §9),
   carrying no live API traffic.
 
 ### 1.2 The booleanbackdoors execution model (the intended end state)
@@ -412,14 +413,63 @@ is needed.
 
 ---
 
-## 9. boolback.py (removed)
+## 9. The boolback snapshot surface
 
 The legacy `/boolback` FastAPI router (`boolback.py`, `boolback_test.py`) has been **deleted**,
 and its mount removed from `main.py`. It was built on the legacy booleanbackdoors tree schema
-and no longer matched the live tree; nothing consumed it. The live `/boolback` page is now a
-static-snapshot explorer in tom.Quest (`app/boolback`, fed offline by `scripts/boolback_export.py`),
-and the worker pool — not this router — owns campaign progress. Campaign results live in
-booleanbackdoors's analysis CLI (§8).
+and no longer matched the live tree; nothing consumed it. The worker pool — not a router —
+owns campaign progress, and campaign results live in booleanbackdoors's analysis CLI (§8).
+What serves `/boolback` today is a **static-snapshot explorer** (`app/boolback`) reading one
+gzipped snapshot the API builds off-request:
+
+- **Building is an sbatch job, not a login-node subprocess.** `POST /boolback-snapshot?dir=`
+  (`main.py:299`) delegates to `boolback_snapshot.submit_build` (`boolback_snapshot.py:221`),
+  which `sbatch --parsable`-submits `boolback_build.sbatch` (job name `boolback-build`,
+  partition `short`, `--time=04:00:00`, 4 CPUs, 32G) on a CPU compute node and returns
+  `{"status":"submitted","job_id":...,"coalesced":...}`. The long-lived API process never runs
+  the heavy graph pass over the ~700 GB tree, and SLURM owns the builder's lifetime, so a slow
+  build cannot orphan a login-node process — the same reason the async invariant (§1.1)
+  exists, applied one level out.
+- **Serving is staleness-tolerant.** `GET /boolback-snapshot` and `-blob` return the most
+  recent cached `.gz` for a dir (`latest_cache`, `boolback_snapshot.py:93`) — never
+  "building" — so the page always answers fast. Caches live under `$BOOLBACK_CACHE_DIR`
+  (default `~/.cache/boolback-snapshots`); the builder writes temp-then-rename, so a
+  concurrent GET never reads a partial file.
+- **Submits coalesce.** A per-dir marker holds the last job id (`_marker_path`,
+  `boolback_snapshot.py:203`) and is re-checked against `squeue` (`_job_active`, line 207),
+  so a submit arriving while a build is in flight returns that job with `"coalesced": true`
+  instead of queueing a duplicate.
+
+### 9.1 Periodic refresh (`boolback_cron.sh`, operator-installed)
+
+Freshness is **not** scheduled by the API and not by a Convex cron: `turing-api/boolback_cron.sh`
+runs from the **user crontab on exactly one login node** and POSTs
+`/boolback-snapshot?dir=artifacts` at the API on that node. System `crond` is the deliberate
+choice over a systemd-user timer because it runs headless — independent of login sessions and
+of user lingering, which the turing-api service itself does depend on (see the ops crib in
+`app/boolback/HANDOFF.md`). Install:
+
+```
+crontab -e
+0 */2 * * * $HOME/tom.quest/turing-api/boolback_cron.sh >> $HOME/.cache/boolback-snapshots/cron.log 2>&1
+```
+
+- **One node, deliberately.** The script targets `127.0.0.1`, so it only ever reaches the API
+  co-located with it. Installing the crontab on a second node that also runs the API multiplies
+  submissions, and coalescing (above) only absorbs the overlaps that fall inside a single build
+  window.
+- **Key and port both come from `$HOME/tom.quest/turing-api/.env`** — the same file
+  `load_dotenv()` gives the API (`main.py:29`). `TURING_API_KEY` becomes the `X-API-Key`
+  header; `API_PORT` (default `8000`, matching `main.py:30`) becomes the URL's port. Both are
+  documented in `secrets/turing-api.env.example`, which is scp'd to that path. Nothing about
+  the port is duplicated in the crontab line, so changing the port needs no crontab edit.
+- **The 45s curl timeout is load-bearing.** `submit_build` was observed taking ~31s when the
+  `done.json` glob runs cold (2026-07-04); at `-m 30` curl logs an *empty* response while the
+  server keeps working, which reads identically to a dead API. Any response without
+  `"submitted"` is logged with a loud `WARN` so the log alone tells the two apart.
+- **Failure is quiet by design.** Serve-latest means a refresh that never fires shows up only
+  as an old `meta.built_at` on the page and a `WARN` line in `cron.log`; there is no alerting
+  path. `cron.log` is also never rotated — trim it by hand.
 
 ---
 

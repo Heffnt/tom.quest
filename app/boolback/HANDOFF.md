@@ -52,7 +52,8 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   no status round-trip, and nothing walks the 700 GB tree on a page load (the
   old status endpoint globbed `**/done.json` per call — removed).
 - **Serve-latest.** GET always returns the newest cached snapshot instantly.
-  Builds happen off-request: the 2-hourly cron plus the admin ↻ Refresh (which
+  Builds happen off-request: the 2-hourly cron (`turing-api/boolback_cron.sh`;
+  its crontab install line is in `turing-api/spec.md` §9.1) plus the admin ↻ Refresh (which
   POSTs `/api/turing/boolback-snapshot` → sbatch on a CPU compute node).
 - **Dir is pinned** to `artifacts` (the one real tree). `?dir=` overrides;
   there is no picker.
@@ -218,8 +219,9 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 
 - **Rebuild now:** ↻ Refresh as admin, or on a login node:
   `curl -X POST -H "X-API-Key: <key>" "http://127.0.0.1:8000/boolback-snapshot?dir=artifacts"`
-  (key in `turing-api/.env`). Job name `boolback-build`, ~2 min; serve-latest
-  picks it up with no restart.
+  (key and port both in `turing-api/.env` — port `8000` is the default, override
+  it with `API_PORT`). Job name `boolback-build`, ~2 min; serve-latest picks it
+  up with no restart.
 - **Builder changes** take effect after `git -C ~/booleanbackdoors/ComplexMultiTrigger pull`
   — no turing-api restart (the sbatch spawns a fresh `python -m tom_quest.build`).
 - **turing-api changes** need the tom.quest repo pulled on Turing + the
