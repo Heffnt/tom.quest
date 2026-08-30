@@ -1,7 +1,8 @@
 // Builds the opening prompt for a TTS session (spec: WikiTom tts/spec.md).
-// One home for the session-opening contract: Focus's "work in a session" and
-// the Inventory's gate button both route through here, so the ground-up
-// framing cannot drift between entry points.
+// One home for the session-opening contract: every /tts entry point routes
+// through here — the by-individual and batches tabs' todo/gate buttons via
+// use-open-todo-session, and the calendar tab's block buttons directly — so
+// the ground-up framing cannot drift between entry points.
 
 import type { Doc } from "@/convex/_generated/dataModel";
 

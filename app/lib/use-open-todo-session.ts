@@ -1,8 +1,9 @@
 "use client";
 
 // One entry point for opening a Claude session scoped to a single todo —
-// shared by Focus's "Work in a session" button and the Inventory row's
-// session button, so the createSession contract (kind choice, prompt build,
+// shared by the /tts by-individual tab's todo-row session button and the
+// /tts batches tab (its member rows, plus the verdict path that records a
+// ruling first), so the createSession contract (kind choice, prompt build,
 // navigation) cannot drift between call sites, and failures land in state
 // for the caller to render instead of being swallowed.
 
