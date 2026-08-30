@@ -19,7 +19,9 @@
 // branch, in the repo I was checked out of" — not "use a GitHub token".
 //
 // Usage (from inside the session workdir):
-//   tts-open-pr --title "..." [--body "..." | --body-file PATH] [--base main]
+//   tts-open-pr --title "..." [--body "..." | --body-file PATH] [--base BRANCH]
+// --base defaults to TTS_SESSION_BASE (what the session was branched from),
+// else main.
 //
 // Exit 0 prints the PR url on stdout and nothing else. Re-running when a PR
 // already exists is not an error: it prints the existing url.
@@ -48,8 +50,18 @@ export { parseSlug };
 const PUSH_TIMEOUT_MS = 60_000;
 const PR_TIMEOUT_MS = 60_000;
 
+/**
+ * The default PR base: whatever the session was branched from. Aiming at main
+ * while based on an integration branch would put every commit already merged
+ * to that branch into this session's diff.
+ */
+export function defaultBase(env = process.env) {
+  const b = String(env.TTS_SESSION_BASE ?? "").trim();
+  return b === "" ? "main" : b;
+}
+
 function parseArgs(argv) {
-  const args = { base: "main" };
+  const args = { base: defaultBase() };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = argv[i + 1];

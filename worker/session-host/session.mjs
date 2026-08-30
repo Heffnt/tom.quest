@@ -486,9 +486,45 @@ export class Session {
       ? `https://x-access-token:${this.env.GH_TOKEN}@github.com/${gh}.git`
       : `https://github.com/${gh}.git`;
     const branch = `session/${this.id}`;
-    await execFile("git", ["clone", "--depth", "1", url, dir], {
-      maxBuffer: 8 * 1024 * 1024,
-    });
+
+    // THE BASE a session's work starts from. Unset means the repo's default
+    // branch, which is the old behaviour and stays the default.
+    //
+    // Setting it to an integration branch is what makes overnight work
+    // COMPOUND: without it every session branches off main, so ten sessions
+    // working ten todos each produce a PR that cannot see the other nine, and
+    // they conflict on contact. With it, session N+1 starts from everything
+    // already merged, and Tom fast-forwards main from one reviewed branch
+    // instead of untangling ten. Pairs with TTS_MERGE_BASES (what merge-pr may
+    // merge INTO) — they should name the same branch.
+    const baseBranch = this.env.TTS_SESSION_BASE?.trim();
+    let baseUsed = undefined;
+    if (baseBranch) {
+      try {
+        await execFile(
+          "git",
+          ["clone", "--depth", "1", "--branch", baseBranch, url, dir],
+          { maxBuffer: 8 * 1024 * 1024 },
+        );
+        baseUsed = baseBranch;
+      } catch {
+        // A configured base that does not exist yet must NOT strand the
+        // session — falling back to the default branch and saying so in the
+        // transcript beats refusing to start. rm first: a failed clone can
+        // leave a partial dir that the retry would refuse to write into.
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    if (baseUsed === undefined) {
+      await execFile("git", ["clone", "--depth", "1", url, dir], {
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      if (baseBranch) {
+        this.finalizeRow("system", {
+          text: `TTS_SESSION_BASE is "${baseBranch}", but that branch is not on the remote — this session is based on the default branch instead, so its work will not build on anything already merged to "${baseBranch}".`,
+        });
+      }
+    }
     if (forResume) {
       // If earlier work on this session was pushed, pick the branch back up;
       // otherwise start it fresh and tell the transcript what was lost.
@@ -667,6 +703,13 @@ export class Session {
           // what IS allowed instead of just saying no.
           ...(process.env.TTS_MERGE_BASES
             ? { TTS_MERGE_BASES: process.env.TTS_MERGE_BASES }
+            : {}),
+          // The branch this session was based on, so tts-open-pr targets the
+          // same one it started from. A PR based on `overnight` but aimed at
+          // main would show every commit already merged to overnight as part
+          // of this session's diff.
+          ...(process.env.TTS_SESSION_BASE
+            ? { TTS_SESSION_BASE: process.env.TTS_SESSION_BASE }
             : {}),
         },
         // Autonomous missions are one long agentic turn — same budget as the

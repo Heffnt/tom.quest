@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { parseSlug } from "./open-pr.mjs";
+import { defaultBase, parseSlug } from "./open-pr.mjs";
 import { REPO_GITHUB } from "./repos.mjs";
 
 describe("parseSlug", () => {
@@ -55,5 +55,22 @@ describe("parseSlug", () => {
     expect(parseSlug(`https://x-access-token:tok@github.com/${slug}.git`)).toBe(
       slug,
     );
+  });
+});
+
+// Option A (integration branch) only works if the PR targets the branch the
+// session was BASED on. A PR based on `overnight` but aimed at main shows
+// every commit already merged to overnight as part of this session's diff --
+// which is both unreviewable and, with tts-merge-pr, unmergeable.
+describe("defaultBase", () => {
+  it("falls back to main when unset", () => {
+    expect(defaultBase({})).toBe("main");
+    expect(defaultBase({ TTS_SESSION_BASE: "" })).toBe("main");
+    expect(defaultBase({ TTS_SESSION_BASE: "   " })).toBe("main");
+  });
+
+  it("uses the branch the session was based on", () => {
+    expect(defaultBase({ TTS_SESSION_BASE: "overnight" })).toBe("overnight");
+    expect(defaultBase({ TTS_SESSION_BASE: " overnight " })).toBe("overnight");
   });
 });
