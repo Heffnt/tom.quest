@@ -24,7 +24,7 @@ import {
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
-// Tom-gated (forge.ts pattern); everything the worker box or crons touch goes
+// Tom-gated (forge.ts pattern); everything the Jarvis Box or crons touch goes
 // through internal functions (http.ts routes are key-authed with TTS_WORKER_KEY).
 
 async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
@@ -58,16 +58,6 @@ const DATE_OUTCOME = v.union(
   v.literal("renegotiated"),
   v.literal("missed"),
 );
-export const IMPORTANCE_LEVEL = v.union(
-  v.literal("low"),
-  v.literal("medium"),
-  v.literal("high"),
-);
-// The ONE server-side encoding of importance order: higher = more important,
-// unset ranks 0 (below "low"). Lockstep with app/tts/lib.ts IMPORTANCE_RANK —
-// the client bundle cannot import this server module, so it carries a copy of
-// the same values; change both together.
-export const IMPORTANCE_RANK = { low: 1, medium: 2, high: 3 } as const;
 // A batch member addresses exactly one subject, in the ttsRulings shape
 // (life by todoId, code by repo+externalId) — enforced in validateBatchMembers.
 const MEMBER = v.object({
@@ -129,28 +119,6 @@ export function memberKey(m: Member): string {
 const MAX_BATCH_MEMBERS = 20;
 const MAX_PLAN_STEPS = 40;
 const MAX_GRAPH_TASKS = MAX_PLAN_STEPS;
-
-type Importance = {
-  level: "low" | "medium" | "high";
-  setBy: "tom" | "agent";
-  setAt: number;
-  rationale?: string;
-};
-
-// The ONE implementation of the agent-importance guard (used by
-// internalPrepareTodo, internalStoreBatches, and ttsCode.internalStoreBriefs):
-// an agent write never overwrites Tom's — returns undefined when the stored
-// value has setBy "tom" (the caller logs importance-skipped), else the new
-// importance object.
-export function agentImportancePatch(
-  existing: Importance | undefined,
-  level: "low" | "medium" | "high",
-  rationale: string | undefined,
-  now: number,
-): Importance | undefined {
-  if (existing?.setBy === "tom") return undefined;
-  return { level, setBy: "agent", setAt: now, rationale };
-}
 
 // Shared membership gate (updateTodo + internalStoreBatches): every member
 // addresses exactly one subject, no duplicates, no batch-in-batch, no batch
@@ -591,15 +559,12 @@ export const internalTriage = internalMutation({
 // an internal mutation so the session agent can record Tom's spoken rulings
 // via `npx convex run tts:internalBulkUpdate` with the deploy credentials
 // Tom's machine holds. Only ever run while Tom is present and ruling — it is
-// his pen, not a policy actor; importance therefore lands as setBy "tom"
-// (it records his SPOKEN ruling, which the agent guard must respect).
+// his pen, not a policy actor.
 export const internalBulkUpdate = internalMutation({
   args: {
     updates: v.array(
       v.object({
         id: v.string(),
-        importanceLevel: v.optional(v.union(IMPORTANCE_LEVEL, v.null())),
-        importanceRationale: v.optional(v.string()),
         category: v.optional(v.union(v.string(), v.null())),
         entryAction: v.optional(v.string()),
         workDescription: v.optional(v.string()),
@@ -615,37 +580,22 @@ export const internalBulkUpdate = internalMutation({
       const now = Date.now();
       const patch: Record<string, unknown> = { tomTouchedAt: now };
       const fields: string[] = [];
-      if (u.importanceLevel !== undefined) {
-        patch.importance =
-          u.importanceLevel === null
-            ? undefined
-            : {
-                level: u.importanceLevel,
-                setBy: "tom",
-                setAt: now,
-                rationale: u.importanceRationale,
-              };
-        fields.push("importance");
-      }
-      let content = false;
       if (u.category !== undefined) {
         patch.category = u.category === null ? undefined : u.category;
         fields.push("category");
-        content = true;
       }
       if (u.entryAction !== undefined) {
         patch.entryAction = u.entryAction;
         fields.push("entryAction");
-        content = true;
       }
       if (u.workDescription !== undefined) {
         patch.workDescription = u.workDescription;
         fields.push("workDescription");
-        content = true;
       }
-      // Content edits bump updatedAt; importance alone is an annotation and
-      // must not resurface ruled gates (the ruledAt<updatedAt predicate).
-      if (content) patch.updatedAt = now;
+      // Every field this pen writes is a content edit, so it bumps updatedAt;
+      // a call that carries none must not (the ruledAt<updatedAt predicate
+      // would resurface an already-ruled gate).
+      if (fields.length > 0) patch.updatedAt = now;
       await ctx.db.patch(normalized, patch);
       await logEvent(ctx, "bulk-updated", normalized, { fields });
     }
@@ -720,31 +670,9 @@ export const recordDateOutcome = mutation({
   },
 });
 
-// Tom's importance override (null clears the whole object). An annotation, so
-// no updatedAt bump — bumping would resurface ruled gates via the needs-me
-// ruledAt<updatedAt predicate. setBy "tom" makes every agent write a no-op
-// until cleared (the guard lives in the internal mutations).
-export const setImportance = mutation({
-  args: {
-    id: v.id("dtsTodos"),
-    level: v.union(IMPORTANCE_LEVEL, v.null()),
-  },
-  handler: async (ctx, { id, level }) => {
-    await requireTomId(ctx);
-    const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("TTS todo not found");
-    const now = Date.now();
-    await ctx.db.patch(id, {
-      importance:
-        level === null ? undefined : { level, setBy: "tom", setAt: now },
-      tomTouchedAt: now,
-    });
-    await logEvent(ctx, "importance-set", id, { level, setBy: "tom" });
-  },
-});
-
-// Tom checks a plan step off (or reopens it). An annotation like importance:
-// tomTouchedAt is stamped, updatedAt is not.
+// Tom checks a plan step off (or reopens it). An annotation, not a content
+// edit: tomTouchedAt is stamped, updatedAt is not — bumping it would resurface
+// ruled gates via the needs-me ruledAt<updatedAt predicate.
 export const setPlanStep = mutation({
   args: {
     id: v.id("dtsTodos"),
@@ -1534,8 +1462,6 @@ export const internalPrepareTodo = internalMutation({
     readiness: v.optional(
       v.union(v.literal("preparing"), v.literal("ready-for-tom")),
     ),
-    importanceLevel: v.optional(IMPORTANCE_LEVEL),
-    importanceRationale: v.optional(v.string()),
     plan: v.optional(v.array(PLAN_STEP)),
     // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
     // A worker session claims ONE ready todo inside a batch and advances it by
@@ -1566,7 +1492,7 @@ export const internalPrepareTodo = internalMutation({
   },
   handler: async (
     ctx,
-    { id, brief, entryAction, workDescription, readiness, importanceLevel, importanceRationale, plan, dueAt, dateKind, evidence, groundUpExplanation, status },
+    { id, brief, entryAction, workDescription, readiness, plan, dueAt, dateKind, evidence, groundUpExplanation, status },
   ) => {
     const normalized = ctx.db.normalizeId("dtsTodos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
@@ -1591,7 +1517,6 @@ export const internalPrepareTodo = internalMutation({
         entryAction !== undefined && "entryAction",
         workDescription !== undefined && "workDescription",
         readiness !== undefined && "readiness",
-        importanceLevel !== undefined && "importance",
         dueAt !== undefined && "dueAt",
         evidence !== undefined && "evidence",
         groundUpExplanation !== undefined && "groundUpExplanation",
@@ -1610,22 +1535,6 @@ export const internalPrepareTodo = internalMutation({
       if (entryAction !== undefined) patch.entryAction = entryAction;
       if (workDescription !== undefined) patch.workDescription = workDescription;
       if (readiness !== undefined) patch.readiness = readiness;
-      if (importanceLevel !== undefined) {
-        // Agent importance never overwrites Tom's (setBy-"tom" guard).
-        const importance = agentImportancePatch(
-          todo.importance,
-          importanceLevel,
-          importanceRationale,
-          now,
-        );
-        if (importance === undefined) {
-          await logEvent(ctx, "importance-skipped", normalized, {
-            level: importanceLevel,
-          });
-        } else {
-          patch.importance = importance;
-        }
-      }
       if (dueAt !== undefined) {
         // Kept-dates rule (spec §8): a stored date moves only through
         // recordDateOutcome / a time note. The preparer gets the FIRST date
@@ -1653,7 +1562,6 @@ export const internalPrepareTodo = internalMutation({
         patch.brief !== undefined && "brief",
         patch.entryAction !== undefined && "entryAction",
         patch.workDescription !== undefined && "workDescription",
-        patch.importance !== undefined && "importance",
         patch.plan !== undefined && "plan",
         patch.dueAt !== undefined && "dueAt",
         patch.evidence !== undefined && "evidence",
@@ -1720,8 +1628,6 @@ export const internalStoreBatches = internalMutation({
         brief: v.string(),
         members: v.array(MEMBER),
         plan: v.optional(v.array(PLAN_STEP)),
-        importanceLevel: v.optional(IMPORTANCE_LEVEL),
-        importanceRationale: v.optional(v.string()),
       }),
     ),
     archiveIds: v.optional(v.array(v.string())),
@@ -1840,46 +1746,20 @@ export const internalStoreBatches = internalMutation({
           skipped.push({ ref: b.statement, why: frozen });
           continue;
         }
-        // Rewrite of what the batcher owns — but an ABSENT plan or importance
-        // PRESERVES the stored value (internalStoreBriefs semantics: an LLM
-        // omission must not delete state); only explicit values overwrite,
-        // and Tom's importance is never overwritten (agentImportancePatch).
-        let importance = todo.importance;
-        if (b.importanceLevel !== undefined) {
-          const next = agentImportancePatch(
-            todo.importance,
-            b.importanceLevel,
-            b.importanceRationale,
-            now,
-          );
-          if (next === undefined) {
-            await logEvent(ctx, "importance-skipped", normalized, {
-              level: b.importanceLevel,
-            });
-          } else if (
-            todo.importance?.setBy === "agent" &&
-            todo.importance.level === next.level &&
-            todo.importance.rationale === next.rationale
-          ) {
-            // Same agent value re-posted: keep the stored object (its setAt)
-            // so the unchanged check below can recognize a no-op run.
-          } else {
-            importance = next;
-          }
-        }
+        // Rewrite of what the batcher owns — but an ABSENT plan PRESERVES the
+        // stored value (internalStoreBriefs semantics: an LLM omission must
+        // not delete state); only an explicit plan overwrites.
         const projected = {
           statement: b.statement.trim(),
           brief: b.brief,
           members: b.members,
           plan: b.plan ?? todo.plan,
-          importance,
         };
         const stored = {
           statement: todo.statement,
           brief: todo.brief,
           members: todo.members,
           plan: todo.plan,
-          importance: todo.importance,
         };
         // No-op rewrite: nothing changed, so skip the patch entirely — a
         // 6-hourly re-post must not bump updatedAt and re-push every open
@@ -1902,15 +1782,6 @@ export const internalStoreBatches = internalMutation({
           brief: b.brief,
           members: b.members,
           plan: b.plan,
-          importance:
-            b.importanceLevel !== undefined
-              ? agentImportancePatch(
-                  undefined,
-                  b.importanceLevel,
-                  b.importanceRationale,
-                  now,
-                )
-              : undefined,
           readiness: "ready-for-tom",
           status: "active",
           timingClass: "whenever",
@@ -2450,7 +2321,7 @@ export const internalStorePlanGraph = internalMutation({
     // ── Goals: existing todos bound to this batch ────────────────────────────
     // No updatedAt bump — binding is a structural annotation, and bumping it
     // would resurface already-ruled gates (the needs-me ruledAt<updatedAt
-    // predicate), exactly as importance-only writes must not.
+    // predicate).
     const goalIds = args.goalIds ?? [];
     // The rows a live v1 batch already claims. validateBatchMembers refuses a
     // v1 batch that claims a row inside a v2 batch; this is the same rule in

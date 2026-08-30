@@ -190,8 +190,7 @@ function prompt(ctx) {
     `never output its id and never archive it.`,
     ``,
     `TODOS NOT IN ANY BATCH — your candidate GOALS (JSON; each: id, statement,`,
-    `brief, category, importance, dueAt — dueAt is epoch ms or null; brief is`,
-    `clipped):`,
+    `brief, category, dueAt — dueAt is epoch ms or null; brief is clipped):`,
     JSON.stringify(ctx.candidates, null, 2),
     ``,
     ...(ctx.candidatesHeldBack > 0
@@ -203,7 +202,7 @@ function prompt(ctx) {
         ]
       : []),
     `OPEN CODE TODOS in Tom's repos, with prepared briefs (JSON; each: repo,`,
-    `externalId, statement, importance). CONTEXT ONLY — these are entries in`,
+    `externalId, statement). CONTEXT ONLY — these are entries in`,
     `repo todo files, not todo rows, so they cannot be bound as goals. Use them`,
     `to know what work exists when you write tasks and explanations:`,
     JSON.stringify(ctx.code, null, 2),
@@ -361,10 +360,12 @@ async function main() {
 
   const all = Array.isArray(todos) ? todos : [];
   const batchRows = Array.isArray(batches) ? batches : [];
-  // The writing standard has ONE home (convex/ttsShared.ts WRITING_STANDARD)
-  // and rides this payload because this file is Node ESM on a box that never
-  // loads TypeScript. A run without it would quietly produce prose written to
-  // no standard at all, which is worse than not running — so it is fatal.
+  // The writing standard is the WikiTom skill model-of-tom/skills/writing-to-tom
+  // (synced into Convex; convex/ttsShared.ts WRITING_STANDARD is the fallback
+  // copy), and it rides this payload because this file is Node ESM on the
+  // Jarvis Box, which never loads TypeScript and holds no WikiTom checkout. A run without it
+  // would quietly produce prose written to no standard at all, which is worse
+  // than not running — so it is fatal.
   const writingStandard = context.writingStandard;
   if (typeof writingStandard !== "string" || writingStandard.trim() === "") {
     throw new Error(
@@ -541,13 +542,6 @@ async function main() {
     statement: t.statement,
     brief: clip(t.brief, MAX_BRIEF_CHARS),
     category: t.category ?? null,
-    importance: t.importance
-      ? {
-          level: t.importance.level,
-          setBy: t.importance.setBy,
-          rationale: t.importance.rationale ?? null,
-        }
-      : null,
     dueAt: t.dueAt ?? null,
   }));
 
@@ -566,13 +560,6 @@ async function main() {
           repo: m.repo,
           externalId: m.externalId,
           statement: m.statement,
-          importance: brief.importance
-            ? {
-                level: brief.importance.level,
-                setBy: brief.importance.setBy,
-                rationale: brief.importance.rationale ?? null,
-              }
-            : null,
         },
       ];
     })
@@ -607,7 +594,7 @@ async function main() {
   try {
     storedHash = fs.readFileSync(HASH_PATH, "utf8").trim();
   } catch {
-    // no cursor yet — first run, or the box was rebuilt
+    // no cursor yet — first run, or the Jarvis Box was rebuilt
   }
   if (inputHash === storedHash && revises.length === 0) return; // quiet when idle
 

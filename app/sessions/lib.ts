@@ -1,5 +1,5 @@
 // Shared types + helpers for the TTS Sessions surface (headless Claude Code
-// sessions on the worker box; convex/claudeSessions.ts is the contract).
+// sessions on the Jarvis Box; convex/claudeSessions.ts is the contract).
 // Copy rules: descriptive never evaluative, plain hyphenated vocabulary.
 
 import type { Doc } from "@/convex/_generated/dataModel";

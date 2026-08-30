@@ -1,4 +1,4 @@
-# TTS worker box
+# The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
 (Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
@@ -27,7 +27,7 @@ on a schedule:
 ## The code-todo ruling loop
 
 CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
-`vqc/todos.yaml`; this box turns that file into rulings Tom can make from the
+`vqc/todos.yaml`; the Jarvis Box turns that file into rulings Tom can make from the
 tom.quest UI in seconds:
 
 - **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
@@ -58,7 +58,7 @@ claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 
 ## The no-state rule
 
-**This box owns no durable state.** Everything that matters lives in Convex
+**The Jarvis Box owns no durable state.** Everything that matters lives in Convex
 (and, for code todos, in the CMT repo itself). The local files with memory
 are all harmless to lose:
 
@@ -72,13 +72,13 @@ are all harmless to lose:
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
   brief copies, the executor's throwaway clones.
 
-Losing the whole box loses nothing but a paused digest and some re-work.
+Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 
 ## Rebuild from scratch
 
 ```
 # 1. Create a Hetzner CAX11 (Ubuntu 24.04, ARM64), add the SSH key, log in as root.
-# 2. On the box:
+# 2. On the Jarvis Box:
 git clone https://github.com/<owner>/tom.quest
 bash tom.quest/worker/setup.sh
 # 3. Fill the secrets (the file documents each key):
@@ -101,7 +101,7 @@ three are there, so the job ships and runs harmlessly ahead of them.
 
 The client id and secret come from a "Desktop app" OAuth client in Tom's
 Google Cloud console (any project, with the Gmail API enabled). The refresh
-token is minted ONCE, on Tom's own machine rather than the box, because
+token is minted ONCE, on Tom's own machine rather than the Jarvis Box, because
 approving it needs a browser:
 
 ```

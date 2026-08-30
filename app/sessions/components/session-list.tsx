@@ -23,8 +23,8 @@ const inputCls =
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 
-// ── Autonomous fleet: the scheduler's admission settings + the box load they
-// are compared against. Load-based admission is the primary throttle;
+// ── Autonomous fleet: the scheduler's admission settings + the Jarvis Box load
+// they are compared against. Load-based admission is the primary throttle;
 // maxLiveAutonomous is a runaway failsafe and maxNewPerTick a clone-burst
 // bound, which is why the load line sits next to the switch ────────────────
 type Draft = {

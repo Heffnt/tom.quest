@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
+import { WRITING_SKILL } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
 import { reserveSessionTab } from "@/app/lib/use-open-todo-session";
@@ -193,6 +194,12 @@ export default function CalendarTab({
   );
   // ONE time-note subscription for the whole tab; days and blocks slice it.
   const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  // The writing skill (WikiTom, synced into ttsSkills) that opens the block
+  // session's prompt; unsynced leaves buildBlockSessionPrompt on its fallback.
+  const writingSkill = useQuery(
+    api.ttsSkills.getSkill,
+    isTom ? { name: WRITING_SKILL } : "skip",
+  );
   const createSession = useMutation(api.claudeSessions.createSession);
   const recordEvent = useMutation(api.tts.recordEvent);
   const [addDay, setAddDay] = useState<string | null>(null); // "YYYY-MM-DD"
@@ -249,7 +256,11 @@ export default function CalendarTab({
         kind: "block",
         repo: "none",
         blockCategory: category,
-        initialPrompt: buildBlockSessionPrompt(category, matching),
+        initialPrompt: buildBlockSessionPrompt(
+          category,
+          matching,
+          writingSkill?.body,
+        ),
       });
       tab.goto(id);
     } catch (e) {

@@ -1,7 +1,7 @@
 "use client";
 
 // One code-todo mirror row: click-to-expand summary line + the shared options
-// row (verdicts + importance), brief, evidence, the live ruling state (newest
+// row (verdicts), brief, evidence, the live ruling state (newest
 // ruledAt per subject, derived by the tab and passed in), and the link out.
 // First rulings happen on the batches tab; this row carries the SUPERSEDE path
 // — "change ruling" opens the verdicts, and a new ruling appends a row that
@@ -54,8 +54,7 @@ export default function CodeTodoRow({
   onToggle: () => void;
 }) {
   // First rulings happen on the batches tab; here the verdicts sit behind this
-  // disclosure — a new ruling supersedes the live one shown below. Importance
-  // is not behind it: it is not a ruling.
+  // disclosure — a new ruling supersedes the live one shown below.
   const [changeOpen, setChangeOpen] = useState(false);
 
   return (
@@ -102,13 +101,8 @@ export default function CodeTodoRow({
               </button>
             )}
             <OptionsRow
-              code={{
-                repo: row.repo,
-                externalId: row.externalId,
-                importance: brief?.importance,
-              }}
+              code={{ repo: row.repo, externalId: row.externalId }}
               rulable={row.status === "open" && changeOpen}
-              showImportance={brief !== undefined}
             />
           </div>
 

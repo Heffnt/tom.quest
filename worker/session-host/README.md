@@ -1,6 +1,6 @@
 # TTS session-host
 
-The daemon that runs real Claude Code sessions on the worker box and streams
+The daemon that runs real Claude Code sessions on the Jarvis Box and streams
 them into tom.quest. Convex is the message bus: the browser writes commands
 (`claudeInbound` rows: user-turn / interrupt / stop) and permission
 decisions; this daemon polls `/sessions/poll`, runs the actual sessions via
@@ -58,7 +58,7 @@ surfaces the decision in the PR, rather than stopping to wait.
   every allowed call lands as a transcript row. Two per-call checks survive
   that structure, because a shell is neither a file nor a branch (spec §20.2):
   the out-of-workdir edit denial, and a classifier verdict on Bash commands
-  matching the danger fingerprint (pushing, remote access, box configuration,
+  matching the danger fingerprint (pushing, remote access, Jarvis Box configuration,
   credential names, uploading request bodies, deleting by absolute path) —
   verdicts land in the transcript as rows, allow and deny alike, are memoized
   per session so an agentic loop pays once, and the classifier is FAIL-OPEN
@@ -67,7 +67,7 @@ surfaces the decision in the PR, rather than stopping to wait.
 
 ## The no-state rule, as applied here
 
-The box owns no durable state; everything this daemon creates is harmless to
+The Jarvis Box owns no durable state; everything this daemon creates is harmless to
 lose:
 
 - `/opt/tts/session-host/` (incl. `node_modules`) — a copy of this directory;
@@ -89,11 +89,11 @@ on turn boundaries / tool calls / permissions / errors).
 
 ## The one-dependency exception
 
-The worker box's standing rule is ZERO npm dependencies (a copy is a deploy;
+The Jarvis Box's standing rule is ZERO npm dependencies (a copy is a deploy;
 no lockfile, no install step, no supply-chain surface — see
 `worker/jobs/tts-lib.mjs`). This package is the single sanctioned exception:
 `@anthropic-ai/claude-agent-sdk` (pinned to 0.3.250, the version whose
-behavior was validated on this box), because interactive sessions need the
+behavior was validated on the Jarvis Box), because interactive sessions need the
 SDK's streaming input, `interrupt()`, `canUseTool`, and resume-by-id — none
 of which the `claude -p` CLI wrapping used by the cron jobs can provide.
 `setup.sh` runs `npm install --omit=dev` in `/opt/tts/session-host/` as part

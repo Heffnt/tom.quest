@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# setup.sh — build (or rebuild) the TTS worker box from a fresh Ubuntu 24.04
+# setup.sh — build (or rebuild) the Jarvis Box from a fresh Ubuntu 24.04
 # ARM64 server. Run as root from inside a clone of the tom.quest repo:
 #
 #   git clone https://github.com/<owner>/tom.quest && cd tom.quest
 #   bash worker/setup.sh
 #
-# THE NO-STATE RULE: this box owns no durable state. Everything that matters
+# THE NO-STATE RULE: the Jarvis Box owns no durable state. Everything that matters
 # lives in Convex; the only local file with any memory at all is the Slack
 # poll cursor under /var/lib/tts/ (losing it merely re-captures up to 24h of
 # #dump messages as duplicates Tom can archive). Therefore this ONE script,
@@ -181,7 +181,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 45 * * * * root /usr/bin/node /opt/tts/execute-approved.mjs >> /var/log/tts/execute-approved.log 2>&1
 
 # Log hygiene: truncate the TTS logs on the 1st of each month. Deliberately
-# crude — these logs are debugging convenience, not state, and this box keeps
+# crude — these logs are debugging convenience, not state, and the Jarvis Box keeps
 # nothing it can't lose.
 0 6 1 * * root sh -c 'for f in /var/log/tts/*.log; do : > "$f"; done'
 CRON
@@ -190,7 +190,7 @@ chmod 644 /etc/cron.d/tts
 echo "== [7/8] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
-# carries the box's ONE sanctioned npm dependency (@anthropic-ai/
+# carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
 # claude-agent-sdk — pinned in its package.json), so this step also runs
 # npm install in its install dir. Everything here is idempotent: cp + install
 # + unit rewrite + restart is exactly how updated daemon code rolls out after

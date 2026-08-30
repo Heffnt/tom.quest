@@ -1,7 +1,7 @@
 "use client";
 
 // TTS Sessions — a chat surface over headless Claude Code sessions running on
-// the worker box. Convex is the stream: the daemon persists transcript rows,
+// the Jarvis Box. Convex is the stream: the daemon persists transcript rows,
 // this page subscribes. Phone-first: the list is the default view; opening a
 // session takes over the viewport with back-navigation (?session=<id>
 // deep-links, forge-style read-on-mount + router.replace on open/close).

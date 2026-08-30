@@ -28,7 +28,7 @@ import {
 
 const execFile = promisify(execFileCb);
 
-// Session workdirs live under /var/cache by the box's convention: everything
+// Session workdirs live under /var/cache by the Jarvis Box's convention: everything
 // under /var/cache/tts is rebuildable, so `rm -rf` of any of it is harmless
 // (the no-state rule). A session's real output leaves through git pushes /
 // whatever Tom asks the model to do — never through files that stay here.
@@ -37,7 +37,7 @@ export const SESSIONS_ROOT = "/var/cache/tts/sessions";
 // The repos a session may check out (claudeSessions.repo). Everything is
 // under github.com/Heffnt — same owner the code-todo jobs use.
 // MIRROR of SESSION_REPOS in convex/ttsShared.ts (the one home) — this file
-// cannot import .ts and only worker/ is deployed to the box. Fenced:
+// cannot import .ts and only worker/ is deployed to the Jarvis Box. Fenced:
 // scripts/check-session-mirrors.mjs fails guardrails on drift.
 const REPO_GITHUB = {
   "tom.quest": "Heffnt/tom.quest",
@@ -71,7 +71,7 @@ const EDIT_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
 //    `session-permission-posture`) ──────────────────────────────────────────
 // Auto mode still parks NOTHING on Tom. But the structural boundary above is
 // a boundary on FILES and BRANCHES, and a shell is neither: one Bash call can
-// push to main, read any env var and POST it somewhere, or rewrite the box's
+// push to main, read any env var and POST it somewhere, or rewrite the Jarvis Box's
 // own /etc and account config. So Bash — and only Bash — gets a cheap-model
 // classifier standing in for the prompt that used to park. Three tiers,
 // cheapest first, because latency here is latency on every command a session
@@ -101,9 +101,9 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // flow (tests, builds, greps, git add/commit/diff) must pay ZERO latency, so
 // the classifier is never in its path. Each alternative catches:
 //   git push        — the one git verb that leaves the throwaway clone
-//   ssh / scp / rsync — moving anything on or off the box
+//   ssh / scp / rsync — moving anything on or off the Jarvis Box
 //   sudo / systemctl / crontab — box-level privilege and persistence
-//   /etc/ /root/    — the box's own configuration, outside every workdir
+//   /etc/ /root/    — the Jarvis Box's own configuration, outside every workdir
 //   .claude-accounts — the Max-account credential store the CLI reads
 //   GH_TOKEN / WORKER_KEY — the two secret names that exist in this env
 //   curl with a body/upload flag — the exfiltration shape (plain GETs are fine)
@@ -119,7 +119,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 const BASH_DANGER_RE =
   /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
-// Tier 3 mechanics: the box's own authenticated `claude` CLI (same binary the
+// Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
 // model, short timeout. A verdict must never cost more than the command.
 const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
@@ -137,7 +137,7 @@ function commandPreview(command) {
   return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
 }
 
-// The classifier prompt. States the box's actual posture (disposable clone,
+// The classifier prompt. States the Jarvis Box's actual posture (disposable clone,
 // one sanctioned branch) so the model rules on what would ESCAPE that
 // posture rather than on how dangerous the command looks in the abstract —
 // `rm -rf node_modules` inside a throwaway clone is nothing, and the prompt
@@ -145,15 +145,15 @@ function commandPreview(command) {
 // inside it can't read as instructions.
 function classifierPrompt({ command, workdir, branch }) {
   return [
-    "You are a one-shot security classifier for an autonomous coding agent running on a disposable worker box.",
+    "You are a one-shot security classifier for an autonomous coding agent running on the Jarvis Box, a disposable server.",
     `The agent works in a throwaway clone at ${workdir}. That clone is deleted when the session ends, so damage confined to it costs nothing. The agent's only sanctioned push target is the branch ${branch}.`,
     "",
     "DENY the command if it would:",
     `- push to any branch other than ${branch}, or to a protected branch (main or master)`,
-    "- exfiltrate secrets or environment values off the box (tokens, keys, env dumps, credential files sent anywhere)",
+    "- exfiltrate secrets or environment values off the Jarvis Box (tokens, keys, env dumps, credential files sent anywhere)",
     "- touch /etc, /root, systemd, cron, SSH configuration, or Claude account configuration",
     "- delete anything outside the working directory",
-    "- open interactive remote access to or from the box",
+    "- open interactive remote access to or from the Jarvis Box",
     "",
     "ALLOW everything else, including ordinary development work inside the clone: builds, tests, package installs, file deletion inside the working directory, reads of any kind, and pushes to " +
       branch +
@@ -478,7 +478,7 @@ export class Session {
     fs.mkdirSync(base, { recursive: true });
     // Token rides in the URL (the x-access-token convention, same as the
     // code-todo jobs) — acceptable because the URL never leaves this
-    // root-only box and the dir is deleted when the session ends.
+    // root-only Jarvis Box and the dir is deleted when the session ends.
     const url = this.env.GH_TOKEN
       ? `https://x-access-token:${this.env.GH_TOKEN}@github.com/${gh}.git`
       : `https://github.com/${gh}.git`;
@@ -1065,7 +1065,7 @@ export class Session {
     return { behavior: "allow", updatedInput: input };
   }
 
-  // Tier 3 of the Bash gate: ask the box's cheap model, memoize, and record.
+  // Tier 3 of the Bash gate: ask the Jarvis Box's cheap model, memoize, and record.
   // Returns { allow, reason }. Exactly ONE transcript row per new verdict;
   // a cached verdict spawns no CLI and writes no duplicate row.
   async #classifyBash(command) {

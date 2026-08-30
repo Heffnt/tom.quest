@@ -5,7 +5,7 @@
 // Run by cron every 2 minutes (see /etc/cron.d/tts). Also runnable by hand:
 //   node /opt/tts/poll-dump.mjs
 //
-// STATE: the ONLY local state on this box is the cursor file
+// STATE: the ONLY local state on the Jarvis Box is the cursor file
 // /var/lib/tts/dump-cursor, holding the Slack ts of the last captured
 // message. Everything durable lives in Convex (the no-state rule). Losing
 // the cursor is harmless-by-design: on the next run with no cursor we only
@@ -51,7 +51,7 @@ async function main() {
   try {
     cursor = fs.readFileSync(CURSOR_FILE, "utf8").trim() || null;
   } catch {
-    // No cursor file — first run (or the box was rebuilt). Fall through.
+    // No cursor file — first run (or the Jarvis Box was rebuilt). Fall through.
   }
   // Slack ts format is "<seconds>.<6 digits>" — hand it a clean fixed-point
   // value, not a raw float print.

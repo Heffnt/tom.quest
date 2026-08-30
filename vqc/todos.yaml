@@ -164,7 +164,8 @@
   plan: >-
     Convex dtsCodeBriefs/dtsCodeRulings + /tts/code-* endpoints; Inventory
     ruling controls; three worker jobs (brief-code-todos, apply-rulings,
-    execute-approved) on the box. Ratified inline in conversation 2026-08-28.
+    execute-approved) on the Jarvis Box. Ratified inline in conversation
+    2026-08-28.
   resolution: >-
     Landed in the same commit as this entry: convex/ttsCode.ts (+schema,
     http routes, digest line, 6 tests), app/inventory/components/
@@ -195,8 +196,8 @@
   plan: >-
     convex/claudeSessions.ts (+6 tables, /sessions/poll + /sessions/ingest,
     tests), app/sessions page, worker/session-host daemon (SDK, systemd),
-    entry buttons on Focus + Inventory, SDK-behavior prototypes on the box
-    first (permission park, resume-after-kill, concurrency). Ratified
+    entry buttons on Focus + Inventory, SDK-behavior prototypes on the Jarvis
+    Box first (permission park, resume-after-kill, concurrency). Ratified
     2026-08-28 ("build it").
   resolution: >-
     Landed in the same commit as this entry. SDK prototypes validated all
