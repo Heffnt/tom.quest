@@ -32,6 +32,11 @@
 //
 // Usage, from inside the session workdir:
 //   tts-merge-pr [--method squash|merge|rebase] [--delete-branch]
+//   tts-merge-pr --status      report every gate without merging anything
+//
+// --status exists because "refusing: <first failing gate>" tells an agent one
+// reason at a time, and the next one only after it fixes that. A session
+// diagnosing its own PR needs the whole picture at once.
 
 import { pathToFileURL } from "node:url";
 
@@ -106,6 +111,7 @@ function parseArgs(argv) {
         die(TOOL, `--method must be squash, merge or rebase`);
       }
     } else if (flag === "--delete-branch") args.deleteBranch = true;
+    else if (flag === "--status") args.statusOnly = true;
     else die(TOOL, `unknown argument "${flag}"`);
   }
   return args;
@@ -115,7 +121,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   const bases = allowedBases(process.env.TTS_MERGE_BASES);
-  if (bases.length === 0) {
+  if (bases.length === 0 && !args.statusOnly) {
     die(
       TOOL,
       "merging is disabled. No TTS_MERGE_BASES is set in /etc/tts/worker.env, so there is no base branch an agent may merge into. This is the default on purpose: merging to main deploys to production Convex. Open a pull request with tts-open-pr and leave it for Tom.",
@@ -143,6 +149,24 @@ async function main() {
       TOOL,
       `no open pull request for ${branch}: ${redact(err?.stderr || err?.message, token)}`,
     );
+  }
+
+  if (args.statusOnly) {
+    const verdict = checksVerdict(pr.statusCheckRollup);
+    const checks = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
+    console.log(`#${pr.number}  ${branch} -> ${pr.baseRefName}  [${pr.state}]`);
+    console.log(`  base allowed:  ${bases.length === 0 ? "NO — TTS_MERGE_BASES is unset (merging disabled)" : bases.includes(pr.baseRefName) ? "yes" : `NO — allowed: ${bases.join(", ")}`}`);
+    console.log(`  checks:        ${verdict.ok ? "all green" : verdict.why}`);
+    for (const c of checks) {
+      console.log(`    - ${c.name ?? c.context}: ${c.status ?? "-"} ${c.conclusion ?? c.state ?? ""}`);
+    }
+    console.log(`  mergeable:     ${pr.mergeable}`);
+    console.log(`  mergeState:    ${pr.mergeStateStatus}`);
+    if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
+      console.log("  NOTE: a conflicting PR also stops GitHub creating the merge ref,");
+      console.log("        which is why pull_request workflows never run on it.");
+    }
+    return;
   }
 
   if (pr.state !== "OPEN") die(TOOL, `pull request #${pr.number} is ${pr.state}`);
