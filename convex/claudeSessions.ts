@@ -13,7 +13,7 @@ import { requireTom } from "./authRoles";
 import {
   liveRulings,
   markLiveSessionRulingApplied,
-  subjectKey,
+  identifierKey,
 } from "./ttsRulings";
 import { IMPORTANCE_RANK, logEvent } from "./tts";
 
@@ -2031,7 +2031,7 @@ export const internalAutoSchedule = internalMutation({
         .withIndex("by_todo", (q) => q.eq("todoId", t._id))
         .collect();
       const live = liveRulings(rulings).get(
-        subjectKey({ subjectType: "life", todoId: t._id }),
+        identifierKey({ subjectType: "life", todoId: t._id }),
       );
       if (live && (live.appliedAt === undefined || live.verdict === "session")) {
         return true;
@@ -2151,7 +2151,7 @@ export const internalAutoSchedule = internalMutation({
       // costs every task in the batch, recoverable only by a second ruling
       // nothing tells him to record).
       const ruling = liveBySubject.get(
-        subjectKey({ subjectType: "batch", batchId }),
+        identifierKey({ subjectType: "batch", batchId }),
       );
       if (ruling) {
         const paused =

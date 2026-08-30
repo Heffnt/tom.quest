@@ -1,6 +1,7 @@
+import { tomDayKey } from "@/convex/ttsShared";
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
-import { buildMarkdownSections, currentDayKey, parseMarkdownSections, pathExists, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
+import { buildMarkdownSections, parseMarkdownSections, pathExists, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
 import { requireTom } from "@/app/lib/convex-server";
 
 const DEFAULT_SECTION_ORDER = [
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest) {
   const auth = await requireTom(request);
   if (auth instanceof Response) return auth;
   const { searchParams } = new URL(request.url);
-  const dayKey = searchParams.get("date") || currentDayKey();
+  const dayKey = searchParams.get("date") || tomDayKey(Date.now());
   const relativePath = `memory/${dayKey}.md`;
   const absolutePath = resolveWorkspacePath(relativePath);
 

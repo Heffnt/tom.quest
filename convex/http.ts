@@ -7,8 +7,8 @@ import { nowContext } from "./tts";
 import {
   DAY_MS,
   WRITING_STANDARD,
-  nyCalendarDayBoundsUtc,
-  ttsPrepDay,
+  normalDayBoundsUtc,
+  tomPrepDay,
 } from "./ttsShared";
 
 const http = httpRouter();
@@ -307,13 +307,13 @@ const ttsState = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const day =
-    new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
+    new URL(request.url).searchParams.get("day") ?? tomPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
   const queue = await ctx.runQuery(internal.tts.internalGetDay, { day });
   // The coming week of external-calendar mirror rows (ttsCalendarEvents):
   // schedule knowledge for realistic queueing — the prep prompt shows them as
   // context, never as queueable items.
-  const dayStart = nyCalendarDayBoundsUtc(day).start;
+  const dayStart = normalDayBoundsUtc(day).start;
   const calendarEvents = await ctx.runQuery(
     internal.ttsCalendar.internalListEventsInRange,
     { start: dayStart, end: dayStart + 7 * DAY_MS },

@@ -13,13 +13,13 @@ import {
   MAX_NEEDS,
   TTS_PREP_NY_HOUR,
   goalCheckable,
-  nyCalendarDayBoundsUtc,
-  nyCalendarDayKey,
+  normalDayBoundsUtc,
+  normalDayKey,
   nyLocalHour,
   nyOffsetHours,
-  ttsDayBoundsUtc,
-  ttsDayKey,
-  ttsPrepDay,
+  tomDayBoundsUtc,
+  tomDayKey,
+  tomPrepDay,
 } from "./ttsShared";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
@@ -114,7 +114,7 @@ const GRAPH_TASK = v.object({
 
 type Member = { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string };
 
-// Same identity convention as ttsRulings.subjectKey — one vocabulary for
+// Same identity convention as ttsRulings.identifierKey — one vocabulary for
 // "which subject is this" everywhere.
 export function memberKey(m: Member): string {
   return m.todoId !== undefined
@@ -273,7 +273,7 @@ export const getToday = query({
   args: {},
   handler: async (ctx) => {
     await requireTomId(ctx);
-    const day = ttsDayKey(Date.now());
+    const day = tomDayKey(Date.now());
     const row = await ctx.db
       .query("dtsDailyQueues")
       .withIndex("by_day", (q) => q.eq("day", day))
@@ -950,7 +950,7 @@ function requireOneTimeNoteContext(
 
 // A day-scoped note carries the calendar-date LABEL of the column Tom clicked
 // ("YYYY-MM-DD"), never a timestamp. The server reads it as a New York calendar
-// day (nyCalendarDayBoundsUtc), so the browser's own timezone cannot decide
+// day (normalDayBoundsUtc), so the browser's own timezone cannot decide
 // which day a note is about.
 const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -1110,7 +1110,7 @@ export const internalPendingTimeNotes = internalQuery({
       // whole worker queue every two minutes: one malformed row must not take
       // every other note down with a NaN range query.
       if (DAY_KEY_RE.test(dayKey)) {
-        const { start, end } = nyCalendarDayBoundsUtc(dayKey);
+        const { start, end } = normalDayBoundsUtc(dayKey);
         rows = await ctx.db
           .query("dtsBlocks")
           .withIndex("by_start", (q) => q.gte("start", start).lt("start", end))
@@ -1160,7 +1160,7 @@ export const internalPendingTimeNotes = internalQuery({
               // Same NY calendar date as the block — what else is committed
               // that day, so a move can be judged against the day's shape.
               sameDayBlocks: (
-                await dayBlocks(nyCalendarDayKey(block.start))
+                await dayBlocks(normalDayKey(block.start))
               ).filter((b) => b._id !== block._id),
             }
           : { kind: "block", block: null, sameDayBlocks: [] };
@@ -1411,7 +1411,7 @@ export function nowContext(utcMs: number) {
   return {
     now: utcMs,
     nowIso: new Date(utcMs).toISOString(),
-    nyCalendarDay: nyCalendarDayKey(utcMs),
+    normalDay: normalDayKey(utcMs),
     nyOffsetHours: nyOffsetHours(utcMs),
     timezone: "America/New_York",
   };
@@ -2826,11 +2826,11 @@ export const internalPrepareFallbackQueue = internalMutation({
   handler: async (ctx, { force }) => {
     const now = Date.now();
     if (!force && nyLocalHour(now) !== TTS_PREP_NY_HOUR) return; // 4 a.m. hour, before the 5 a.m. send
-    // CRITICAL: prep runs BEFORE the 5 a.m. boundary, so ttsDayKey(now) would
-    // name YESTERDAY. ttsPrepDay names the day the coming digest belongs to —
+    // CRITICAL: prep runs BEFORE the 5 a.m. boundary, so tomDayKey(now) would
+    // name YESTERDAY. tomPrepDay names the day the coming digest belongs to —
     // the digest and getToday then find this row. (Review-caught bug.)
-    const day = ttsPrepDay(now);
-    const bounds = ttsDayBoundsUtc(day);
+    const day = tomPrepDay(now);
+    const bounds = tomDayBoundsUtc(day);
 
     // Wake waiting items whose wake time falls inside the day being prepared —
     // not `wakeAt <= now`: wake times are stored as noon local, and a 4 a.m.

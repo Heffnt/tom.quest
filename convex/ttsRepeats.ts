@@ -17,10 +17,10 @@ import { requireTom } from "./authRoles";
 import { logEvent } from "./tts";
 import {
   TTS_PREP_NY_HOUR,
-  nyCalendarDayBoundsUtc,
+  normalDayBoundsUtc,
   nyLocalHour,
   nyTimeUtcMs,
-  ttsPrepDay,
+  tomPrepDay,
   weekdayWordOf,
 } from "./ttsShared";
 
@@ -178,15 +178,15 @@ export const internalCreateRepeat = internalMutation({
 export const internalGenerateRepeats = internalMutation({
   args: {
     force: v.optional(v.boolean()),
-    // Test/backfill door: generate for a specific day instead of ttsPrepDay.
+    // Test/backfill door: generate for a specific day instead of tomPrepDay.
     day: v.optional(v.string()),
   },
   handler: async (ctx, { force, day: dayOverride }) => {
     const now = Date.now();
     if (!force && nyLocalHour(now) !== TTS_PREP_NY_HOUR) return; // DST guard
-    const day = dayOverride ?? ttsPrepDay(now);
+    const day = dayOverride ?? tomPrepDay(now);
     const weekday = weekdayWordOf(day);
-    const bounds = nyCalendarDayBoundsUtc(day);
+    const bounds = normalDayBoundsUtc(day);
 
     const rules = (await ctx.db.query("ttsRepeats").collect()).filter(
       (r) => r.active && r.daysOfWeek.includes(weekday),

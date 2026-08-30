@@ -15,7 +15,7 @@
 //     and anchor it to America/New_York midnight, where Tom's days live.
 
 import ical from "node-ical";
-import { nyCalendarDayBoundsUtc, DAY_MS } from "./ttsShared";
+import { normalDayBoundsUtc, DAY_MS } from "./ttsShared";
 
 export type ExpandedEvent = {
   uid: string;
@@ -100,11 +100,11 @@ export function expandIcsText(
       let start: number;
       let end: number;
       if (inst.isFullDay) {
-        start = nyCalendarDayBoundsUtc(localDayKey(inst.start)).start;
+        start = normalDayBoundsUtc(localDayKey(inst.start)).start;
         // DTEND on all-day events is EXCLUSIVE; a one-day event's end Date is
         // already the next local midnight (node-ical applies the day span).
         end = Math.max(
-          nyCalendarDayBoundsUtc(localDayKey(inst.end)).start,
+          normalDayBoundsUtc(localDayKey(inst.end)).start,
           start + DAY_MS,
         );
       } else {

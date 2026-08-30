@@ -26,36 +26,36 @@ export const VERDICTS: RulingVerdict[] = [
 ];
 
 // ── Ruling subject identity + live-ruling derivation ─────────────────────────
-// Client mirror of convex/ttsRulings.ts subjectKey/liveRulings — same key
+// Client mirror of convex/ttsRulings.ts identifierKey/liveRulings — same key
 // format, same newest-ruledAt/_creationTime rule, so the tabs, the badge, and
 // the worker feed always agree on which ruling is live.
 
 /** A life subject (a `dtsTodos` row). */
-export function lifeSubjectKey(todoId: string): string {
+export function lifeIdentifierKey(todoId: string): string {
   return `life ${todoId}`;
 }
 
-export function codeSubjectKey(repo: string, externalId: string): string {
+export function codeIdentifierKey(repo: string, externalId: string): string {
   return `code ${repo} ${externalId}`;
 }
 
 /** A schema-v2 batch subject (a `batches` row is its own ruling subject). */
-export function batchSubjectKey(batchId: string): string {
+export function batchIdentifierKey(batchId: string): string {
   return `batch ${batchId}`;
 }
 
 // One spelling per subject type: this dispatches to the three builders above
 // rather than repeating their string formats.
-export function rulingSubjectKey(r: {
+export function identifierKey(r: {
   subjectType: "life" | "code" | "batch";
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
 }): string {
-  if (r.subjectType === "life") return lifeSubjectKey(r.todoId!);
-  if (r.subjectType === "batch") return batchSubjectKey(r.batchId!);
-  return codeSubjectKey(r.repo!, r.externalId!);
+  if (r.subjectType === "life") return lifeIdentifierKey(r.todoId!);
+  if (r.subjectType === "batch") return batchIdentifierKey(r.batchId!);
+  return codeIdentifierKey(r.repo!, r.externalId!);
 }
 
 // ── Batches v1 ───────────────────────────────────────────────────────────────
@@ -79,12 +79,12 @@ export {
 } from "@/convex/ttsShared";
 
 // Client mirror of convex/tts.ts memberKey — one definition of the key format,
-// delegated to rulingSubjectKey/codeSubjectKey above, so member identity and
+// delegated to identifierKey/codeIdentifierKey above, so member identity and
 // ruling identity cannot drift apart.
 export function clientMemberKey(m: Member): string {
   return m.todoId !== undefined
-    ? rulingSubjectKey({ subjectType: "life", todoId: m.todoId })
-    : codeSubjectKey(m.repo!, m.externalId!);
+    ? identifierKey({ subjectType: "life", todoId: m.todoId })
+    : codeIdentifierKey(m.repo!, m.externalId!);
 }
 
 /**
@@ -120,7 +120,7 @@ export function memberProgress(
       const t = todoById.get(m.todoId);
       if (t && (t.status === "done" || t.status === "archived")) done += 1;
     } else {
-      const row = mirrorByKey.get(codeSubjectKey(m.repo!, m.externalId!));
+      const row = mirrorByKey.get(codeIdentifierKey(m.repo!, m.externalId!));
       if (row && row.status === "closed") done += 1;
     }
   }
@@ -130,7 +130,7 @@ export function memberProgress(
 export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
   const newest = new Map<string, Ruling>();
   for (const row of rulings) {
-    const key = rulingSubjectKey(row);
+    const key = identifierKey(row);
     const prior = newest.get(key);
     if (
       !prior ||
@@ -170,18 +170,18 @@ export function selectNeedsMe(
   const lifeRows = todos.filter((t) => {
     if (t.status !== "active" || t.readiness !== "ready-for-tom") return false;
     const ruling = live.get(
-      rulingSubjectKey({ subjectType: "life", todoId: t._id }),
+      identifierKey({ subjectType: "life", todoId: t._id }),
     );
     return ruling === undefined || ruling.ruledAt < t.updatedAt;
   });
 
   const briefByKey = new Map(
-    briefs.map((b) => [codeSubjectKey(b.repo, b.externalId), b]),
+    briefs.map((b) => [codeIdentifierKey(b.repo, b.externalId), b]),
   );
   const codeRows: NeedsMe["codeRows"] = [];
   for (const row of mirror) {
     if (row.status !== "open") continue;
-    const key = codeSubjectKey(row.repo, row.externalId);
+    const key = codeIdentifierKey(row.repo, row.externalId);
     const brief = briefByKey.get(key);
     if (!brief) continue;
     const ruling = live.get(key);
@@ -260,7 +260,7 @@ export function selectBatches(
       !claimed.has(clientMemberKey({ todoId: t._id })),
   );
   const unbatchedCode = codeRows.filter(
-    ({ row }) => !claimed.has(codeSubjectKey(row.repo, row.externalId)),
+    ({ row }) => !claimed.has(codeIdentifierKey(row.repo, row.externalId)),
   );
 
   return { batches, unbatchedLife, unbatchedCode, pending };

@@ -1,7 +1,8 @@
+import { tomDayKey } from "@/convex/ttsShared";
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { currentDayKey, OPENCLAW_ROOT, WORKSPACE_ROOT } from "@/app/api/jarvis/_utils";
+import { OPENCLAW_ROOT, WORKSPACE_ROOT } from "@/app/api/jarvis/_utils";
 import { requireTom } from "@/app/lib/convex-server";
 
 async function readJson<T>(filePath: string): Promise<T | null> {
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest) {
   const openaiProvider = (providers.openai as Record<string, unknown> | undefined) ?? null;
   const anthropicProvider = (providers.anthropic as Record<string, unknown> | undefined) ?? null;
 
-  const today = currentDayKey();
+  const today = tomDayKey(Date.now());
   const dailyTotals = ((localTokenSummary?.dailyTotals as Record<string, unknown> | undefined) ?? {});
   const todayLocal = (dailyTotals[today] as Record<string, unknown> | undefined) ?? null;
 

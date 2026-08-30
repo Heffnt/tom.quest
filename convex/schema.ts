@@ -643,7 +643,7 @@ export default defineSchema({
   // writes one freeform sentence ("push this to next Wednesday", "Sat 9-11 for
   // chores") against exactly one context — a todo, a block, or a calendar day
   // (`day` = the column's calendar-date LABEL, "YYYY-MM-DD", never epoch ms:
-  // the server resolves it in America/New_York via nyCalendarDayBoundsUtc, so
+  // the server resolves it in America/New_York via normalDayBoundsUtc, so
   // the browser's timezone can never shift which day a note is about) — and
   // the worker job apply-time-notes.mjs reads it, decides, and calls
   // dts.internalApplyTimeNote. The server re-validates every action it asks

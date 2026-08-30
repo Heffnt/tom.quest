@@ -51,7 +51,7 @@ export type RulingVerdict = "approve" | "edit" | "session" | "archive";
 // The ONE definition of a ruling subject's identity (repo names carry no
 // spaces; the type prefix keeps life, code, and batch keys disjoint). Client
 // code derives live rulings with the same rule via app/tts/lib.ts.
-export const subjectKey = (row: {
+export const identifierKey = (row: {
   subjectType: "life" | "code" | "batch";
   todoId?: string;
   repo?: string;
@@ -309,7 +309,7 @@ export function liveRulings(
 ): Map<string, Doc<"dtsRulings">> {
   const newest = new Map<string, Doc<"dtsRulings">>();
   for (const row of all) {
-    const key = subjectKey(row);
+    const key = identifierKey(row);
     const prior = newest.get(key);
     // ruledAt wins; _creationTime breaks same-millisecond ties.
     if (
@@ -338,7 +338,7 @@ export async function markLiveSessionRulingApplied(
     .withIndex("by_todo", (q) => q.eq("todoId", todoId))
     .collect();
   const live = liveRulings(rulings).get(
-    subjectKey({ subjectType: "life", todoId }),
+    identifierKey({ subjectType: "life", todoId }),
   );
   if (live && live.verdict === "session" && live.appliedAt === undefined) {
     await ctx.db.patch(live._id, {
@@ -360,7 +360,7 @@ export const internalPendingRulings = internalQuery({
     return all.filter(
       (row) =>
         row.appliedAt === undefined &&
-        newest.get(subjectKey(row))?._id === row._id,
+        newest.get(identifierKey(row))?._id === row._id,
     );
   },
 });
@@ -397,7 +397,7 @@ export function briefAwaitsRuling(
   live: Map<string, Doc<"dtsRulings">>,
 ): boolean {
   const ruling = live.get(
-    subjectKey({
+    identifierKey({
       subjectType: "code",
       repo: brief.repo,
       externalId: brief.externalId,

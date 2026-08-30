@@ -7,7 +7,7 @@ import { internal } from "./_generated/api";
 import {
   TTS_DIGEST_NY_HOUR,
   countdownText,
-  ttsDayKey,
+  tomDayKey,
   ttsItemLink,
   nyLocalHour,
 } from "./ttsShared";
@@ -41,7 +41,7 @@ export const sendDigest = internalAction({
     if (!OUTBOUND_SLACK_ENABLED) return;
     const now = Date.now();
     if (!force && nyLocalHour(now) !== TTS_DIGEST_NY_HOUR) return;
-    const day = ttsDayKey(now);
+    const day = tomDayKey(now);
     const row = await ctx.runQuery(internal.tts.internalGetDay, { day });
     if (row?.digestSentAt && !force) return;
 

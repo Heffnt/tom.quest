@@ -1,8 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
-import { ttsDayKey } from "@/convex/ttsShared";
-
 export const WORKSPACE_ROOT = "/root/.openclaw/workspace";
 export const OPENCLAW_ROOT = "/root/.openclaw";
 
@@ -72,18 +70,6 @@ export function buildMarkdownSections(title: string, orderedSections: string[], 
     }
   }
   return parts.join("\n").trimEnd() + "\n";
-}
-
-/**
- * The current TTS day key — one implementation of the 5 a.m. America/New_York
- * boundary, shared with Convex and the worker via convex/ttsShared.ts. It is
- * deliberately Intl-free there so the same rule reads identically in all three
- * runtimes; this used to be a fourth hand-rolled copy that used
- * Intl.DateTimeFormat, and a key computed here against rows written by the
- * shared rule could read one day off before 5 a.m.
- */
-export function currentDayKey() {
-  return ttsDayKey(Date.now());
 }
 
 export function extractTimedEntries(lines: string[]) {

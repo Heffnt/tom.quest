@@ -158,7 +158,7 @@ function prompt(note, clock) {
     `block of committed time on his calendar. Your job is to turn that one`,
     `sentence into concrete actions, or to say plainly that you cannot.`,
     ``,
-    `RIGHT NOW: ${clock.nyCalendarDay} ${nyLocal(clock.now)} in ${clock.timezone}`,
+    `RIGHT NOW: ${clock.normalDay} ${nyLocal(clock.now)} in ${clock.timezone}`,
     `(all times below, and every time you write, are New York wall clock).`,
     ``,
     `TOM WROTE: ${note.text}`,

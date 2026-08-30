@@ -4,7 +4,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import { repeatProvenance } from "./ttsRepeats";
-import { nyCalendarDayBoundsUtc, nyLocalHour, weekdayWordOf } from "./ttsShared";
+import { normalDayBoundsUtc, nyLocalHour, weekdayWordOf } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -44,7 +44,7 @@ async function seedCalendarEvent(
   t: ReturnType<typeof convexTest>,
   title: string,
 ) {
-  const bounds = nyCalendarDayBoundsUtc(DAY);
+  const bounds = normalDayBoundsUtc(DAY);
   await t.run(async (ctx) =>
     ctx.db.insert("ttsCalendarEvents", {
       feed: "google",
@@ -334,7 +334,7 @@ describe("internalGenerateRepeats", () => {
   it("does not let a neighboring day's calendar event cause a skip", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const bounds = nyCalendarDayBoundsUtc(DAY);
+    const bounds = normalDayBoundsUtc(DAY);
     await t.run(async (ctx) =>
       ctx.db.insert("ttsCalendarEvents", {
         feed: "google",

@@ -44,12 +44,12 @@ import TimeNoteField, {
 } from "./time-note-field";
 import {
   ageText,
-  batchSubjectKey,
-  codeSubjectKey,
+  batchIdentifierKey,
+  codeIdentifierKey,
   fmtDate,
   groundUpTeaser,
   liveRulingsByKey,
-  rulingSubjectKey,
+  identifierKey,
   selectBatches,
   type Batch,
   type Todo,
@@ -350,12 +350,12 @@ export default function BatchesTab() {
     const map = new Map<string, string>();
     for (const t of todos ?? [])
       map.set(
-        rulingSubjectKey({ subjectType: "life", todoId: t._id }),
+        identifierKey({ subjectType: "life", todoId: t._id }),
         t.statement,
       );
-    for (const b of batches ?? []) map.set(batchSubjectKey(b._id), b.statement);
+    for (const b of batches ?? []) map.set(batchIdentifierKey(b._id), b.statement);
     for (const r of mirror ?? [])
-      map.set(codeSubjectKey(r.repo, r.externalId), r.statement);
+      map.set(codeIdentifierKey(r.repo, r.externalId), r.statement);
     return map;
   }, [todos, batches, mirror]);
 
@@ -452,7 +452,7 @@ export default function BatchesTab() {
               />
             ))}
             {unbatchedCode.map(({ row, brief }) => {
-              const key = codeSubjectKey(row.repo, row.externalId);
+              const key = codeIdentifierKey(row.repo, row.externalId);
               return (
                 <CodeTodoRow
                   key={row._id}
@@ -489,7 +489,7 @@ export default function BatchesTab() {
           >
             <span className="font-mono text-text-muted">{r.verdict}</span>
             <span className="text-text-muted">
-              {statementByRulingKey.get(rulingSubjectKey(r)) ??
+              {statementByRulingKey.get(identifierKey(r)) ??
                 (r.subjectType === "code"
                   ? `${r.repo} ${r.externalId}`
                   : // A batch subject carries batchId, not todoId — without

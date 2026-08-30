@@ -1,6 +1,7 @@
+import { tomDayKey } from "@/convex/ttsShared";
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
-import { currentDayKey, extractTimedEntries, parseMarkdownSections, pathExists, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
+import { extractTimedEntries, parseMarkdownSections, pathExists, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
 import { requireTom } from "@/app/lib/convex-server";
 
 function shiftDay(dayKey: string, delta: number) {
@@ -13,7 +14,7 @@ export async function GET(request: NextRequest) {
   const auth = await requireTom(request);
   if (auth instanceof Response) return auth;
   const { searchParams } = new URL(request.url);
-  const center = searchParams.get("center") || currentDayKey();
+  const center = searchParams.get("center") || tomDayKey(Date.now());
   const days = Math.max(1, Math.min(9, Number(searchParams.get("days") || "5")));
   const half = Math.floor(days / 2);
   const results: Array<Record<string, unknown>> = [];

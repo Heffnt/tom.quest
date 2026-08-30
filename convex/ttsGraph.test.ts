@@ -995,7 +995,7 @@ describe("TTS rulings on a batch", () => {
     return await oneBatch(t);
   };
 
-  // witness: drop `batch` from subjectKey in convex/ttsRulings.ts — every
+  // witness: drop `batch` from identifierKey in convex/ttsRulings.ts — every
   // batch ruling would collapse onto the key "code undefined undefined".
   it("records a batch verdict under its own subject key", async () => {
     const t = convexTest({ schema, modules });

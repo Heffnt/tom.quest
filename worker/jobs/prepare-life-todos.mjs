@@ -182,7 +182,7 @@ async function main() {
     const edit = editByTodo.get(todo._id) ?? null;
     try {
       const answer = runClaude(
-        prompt(todo, edit?.sentence ?? null, state.nyCalendarDay),
+        prompt(todo, edit?.sentence ?? null, state.normalDay),
         { timeoutMs: CLAUDE_TIMEOUT_MS },
       );
       const parsed = extractJsonObject(answer);

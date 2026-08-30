@@ -1,17 +1,29 @@
-// TTS time helpers — the 5 a.m. America/New_York day boundary (spec §7).
+// TTS time helpers. TWO KINDS OF DAY, and the whole module exists to keep them
+// apart:
+//
+//   A NORMAL DAY is the calendar date on a New York clock. Midnight to
+//   midnight, what a wall calendar says.
+//
+//   A TOM DAY is shifted to match Tom's sleep: it ENDS at 5 a.m. New York, so
+//   2 a.m. Tuesday still belongs to Monday's tom day. Everything TTS schedules,
+//   digests and surfaces runs on tom days.
+//
+// They disagree only in the hours between midnight and 5 a.m. — which is
+// exactly when Tom is awake, so mixing them up is not a rare edge case. TTS
+// tracks both on purpose: due-date arithmetic wants the normal day (where
+// "2 a.m. belongs to yesterday" would be wrong), and the daily surfaces want
+// the tom day.
+//
+//   tomDayKey(now)     "which tom day is it right now?"    2 a.m. → yesterday.
+//   normalDayKey(t)    "what calendar date is this, on a NY clock?"
+//   tomPrepDay(now)    "which tom day is a prep run building?" the day of the
+//                      NEXT 5 a.m. digest — at 4:30 a.m. that is the tom day
+//                      about to start, not the one about to end.
+//
 // Implemented without Intl so behavior is identical in the Convex runtime,
 // Node (worker box), and the browser. US DST rules: clocks spring forward at
 // 2:00 EST (07:00 UTC) on the second Sunday of March and fall back at 2:00 EDT
 // (06:00 UTC) on the first Sunday of November.
-//
-// THE THREE DAY QUESTIONS (they have different answers before 5 a.m. — mixing
-// them up was this module's original sin, caught in review):
-//   ttsDayKey(now)      "which TTS day is it right now?"   2 a.m. → yesterday.
-//   ttsPrepDay(now)     "which day is a prep run building?" the day of the NEXT
-//                       digest — at 4:30 a.m. that's the day STARTING at 5.
-//   nyCalendarDayKey(t) "what calendar date is this instant, on a NY clock?"
-//                       used for due-date arithmetic, where '2 a.m. belongs to
-//                       yesterday' would be wrong.
 
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
@@ -43,7 +55,7 @@ export function nyLocalHour(utcMs: number): number {
 }
 
 /** The NY calendar date (YYYY-MM-DD) of an instant — plain wall-clock date. */
-export function nyCalendarDayKey(utcMs: number): string {
+export function normalDayKey(utcMs: number): string {
   return new Date(utcMs + nyOffsetHours(utcMs) * HOUR_MS)
     .toISOString()
     .slice(0, 10);
@@ -54,7 +66,7 @@ export function nyCalendarDayKey(utcMs: number): string {
  * day rolling over at 5 a.m. local rather than midnight — so 2 a.m. Tuesday
  * still belongs to Monday's day. Used by getToday and the digest send.
  */
-export function ttsDayKey(utcMs: number): string {
+export function tomDayKey(utcMs: number): string {
   const shifted = utcMs + (nyOffsetHours(utcMs) - TTS_DIGEST_NY_HOUR) * HOUR_MS;
   return new Date(shifted).toISOString().slice(0, 10);
 }
@@ -62,12 +74,12 @@ export function ttsDayKey(utcMs: number): string {
 /**
  * The day a PREP run is building: the day of the next 5 a.m. digest. During
  * the pre-dawn prep window (midnight–5 a.m.) this is the day about to start —
- * NOT ttsDayKey(now), which still says yesterday. From 5 a.m. onward it equals
- * ttsDayKey(now) (a midday --force re-prep rebuilds today's queue).
+ * NOT tomDayKey(now), which still says yesterday. From 5 a.m. onward it equals
+ * tomDayKey(now) (a midday --force re-prep rebuilds today's queue).
  * Implemented as "the TTS day five hours from now".
  */
-export function ttsPrepDay(utcMs: number): string {
-  return ttsDayKey(utcMs + TTS_DIGEST_NY_HOUR * HOUR_MS);
+export function tomPrepDay(utcMs: number): string {
+  return tomDayKey(utcMs + TTS_DIGEST_NY_HOUR * HOUR_MS);
 }
 
 /**
@@ -105,7 +117,7 @@ function nyDayBoundsUtc(
  * UTC bounds [start, end) of a TTS day: 5 a.m. NY on the key's date to 5 a.m.
  * NY the next day.
  */
-export function ttsDayBoundsUtc(day: string): { start: number; end: number } {
+export function tomDayBoundsUtc(day: string): { start: number; end: number } {
   return nyDayBoundsUtc(day, TTS_DIGEST_NY_HOUR);
 }
 
@@ -145,7 +157,7 @@ export function weekdayWordOf(day: string): WeekdayWord {
  * dtsTimeNotes.day) and the server resolves it here, so browser-local ms and
  * `day + DAY_MS` arithmetic never enter the picture.
  */
-export function nyCalendarDayBoundsUtc(day: string): {
+export function normalDayBoundsUtc(day: string): {
   start: number;
   end: number;
 } {
@@ -162,7 +174,7 @@ export function nyCalendarDayBoundsUtc(day: string): {
  */
 export function countdownText(dueAt: number, now: number): string {
   const dayDiff =
-    (Date.parse(nyCalendarDayKey(dueAt)) - Date.parse(nyCalendarDayKey(now))) /
+    (Date.parse(normalDayKey(dueAt)) - Date.parse(normalDayKey(now))) /
     DAY_MS;
   if (dayDiff === 0) return "today";
   if (dayDiff === 1) return "tomorrow";

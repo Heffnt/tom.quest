@@ -5,11 +5,11 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   countdownText,
-  nyCalendarDayBoundsUtc,
-  nyCalendarDayKey,
-  ttsDayBoundsUtc,
-  ttsDayKey,
-  ttsPrepDay,
+  normalDayBoundsUtc,
+  normalDayKey,
+  tomDayBoundsUtc,
+  tomDayKey,
+  tomPrepDay,
   nyLocalHour,
   nyOffsetHours,
 } from "./ttsShared";
@@ -36,54 +36,54 @@ describe("ttsShared time helpers", () => {
 
   it("rolls the TTS day over at 5 a.m. local, not midnight", () => {
     // 2026-08-27 08:59 UTC = 04:59 EDT -> still the 26th's TTS day.
-    expect(ttsDayKey(Date.UTC(2026, 7, 27, 8, 59))).toBe("2026-08-26");
+    expect(tomDayKey(Date.UTC(2026, 7, 27, 8, 59))).toBe("2026-08-26");
     // 09:00 UTC = 05:00 EDT -> the 27th begins.
-    expect(ttsDayKey(Date.UTC(2026, 7, 27, 9, 0))).toBe("2026-08-27");
+    expect(tomDayKey(Date.UTC(2026, 7, 27, 9, 0))).toBe("2026-08-27");
     expect(nyLocalHour(Date.UTC(2026, 7, 27, 9, 0))).toBe(5);
   });
 
   it("prep and digest land on the SAME day key (the review-caught bug)", () => {
     // Prep runs in the 4 a.m. hour, BEFORE the boundary; the digest at 5.
-    // ttsPrepDay must bridge them — ttsDayKey alone named yesterday at 4:45.
+    // tomPrepDay must bridge them — tomDayKey alone named yesterday at 4:45.
     const prepEdt = Date.UTC(2026, 7, 27, 8, 45); // 4:45 EDT
     const digestEdt = Date.UTC(2026, 7, 27, 9, 0); // 5:00 EDT
-    expect(ttsPrepDay(prepEdt)).toBe(ttsDayKey(digestEdt));
+    expect(tomPrepDay(prepEdt)).toBe(tomDayKey(digestEdt));
     const prepEst = Date.UTC(2026, 0, 15, 9, 45); // 4:45 EST
     const digestEst = Date.UTC(2026, 0, 15, 10, 0); // 5:00 EST
-    expect(ttsPrepDay(prepEst)).toBe(ttsDayKey(digestEst));
+    expect(tomPrepDay(prepEst)).toBe(tomDayKey(digestEst));
     // A midday --force re-prep rebuilds TODAY's queue, not tomorrow's.
     const noon = Date.UTC(2026, 7, 27, 16);
-    expect(ttsPrepDay(noon)).toBe(ttsDayKey(noon));
+    expect(tomPrepDay(noon)).toBe(tomDayKey(noon));
   });
 
   it("computes DST-correct day bounds (5 a.m. to 5 a.m. NY)", () => {
-    const edt = ttsDayBoundsUtc("2026-08-27");
+    const edt = tomDayBoundsUtc("2026-08-27");
     expect(edt.start).toBe(Date.UTC(2026, 7, 27, 9)); // 5:00 EDT
     expect(edt.end).toBe(Date.UTC(2026, 7, 28, 9));
-    const est = ttsDayBoundsUtc("2026-01-15");
+    const est = tomDayBoundsUtc("2026-01-15");
     expect(est.start).toBe(Date.UTC(2026, 0, 15, 10)); // 5:00 EST
     expect(est.end).toBe(Date.UTC(2026, 0, 16, 10));
     // Fall-back day: starts in EDT, ends in EST — 25 wall-clock hours.
-    const fall = ttsDayBoundsUtc("2026-10-31");
+    const fall = tomDayBoundsUtc("2026-10-31");
     expect(fall.end - fall.start).toBe(25 * 3_600_000);
   });
 
-  // witness: make nyCalendarDayBoundsUtc use the 5 a.m. TTS boundary (or
+  // witness: make normalDayBoundsUtc use the 5 a.m. TTS boundary (or
   // hand-roll start + 86_400_000) — a day-scoped time note written on a
   // calendar column would cover the wrong 24 hours.
   it("computes calendar-day bounds (NY midnight to midnight)", () => {
-    const edt = nyCalendarDayBoundsUtc("2026-08-27");
+    const edt = normalDayBoundsUtc("2026-08-27");
     expect(edt.start).toBe(Date.UTC(2026, 7, 27, 4)); // 00:00 EDT
     expect(edt.end).toBe(Date.UTC(2026, 7, 28, 4));
-    const est = nyCalendarDayBoundsUtc("2026-01-15");
+    const est = normalDayBoundsUtc("2026-01-15");
     expect(est.start).toBe(Date.UTC(2026, 0, 15, 5)); // 00:00 EST
     // Every instant inside the window reports that calendar date, and the
     // instant one ms before the start reports the previous one.
-    expect(nyCalendarDayKey(edt.start)).toBe("2026-08-27");
-    expect(nyCalendarDayKey(edt.end - 1)).toBe("2026-08-27");
-    expect(nyCalendarDayKey(edt.start - 1)).toBe("2026-08-26");
+    expect(normalDayKey(edt.start)).toBe("2026-08-27");
+    expect(normalDayKey(edt.end - 1)).toBe("2026-08-27");
+    expect(normalDayKey(edt.start - 1)).toBe("2026-08-26");
     // Fall-back day: 25 wall-clock hours, so a fixed +DAY_MS would truncate it.
-    const fall = nyCalendarDayBoundsUtc("2026-11-01");
+    const fall = normalDayBoundsUtc("2026-11-01");
     expect(fall.end - fall.start).toBe(25 * 3_600_000);
   });
 
@@ -1715,7 +1715,7 @@ describe("TTS time notes", () => {
     const tom = await withTom(t);
     const dayNote = await tom.mutation(api.tts.createTimeNote, {
       text: "sat 9-11 chores",
-      day: nyCalendarDayKey(Date.now()),
+      day: normalDayKey(Date.now()),
     });
     await expect(
       apply(t, dayNote, [{ kind: "set-due", dueAt: Date.now() + DAY }]),
@@ -1864,8 +1864,8 @@ describe("TTS time notes", () => {
     // The day note names a NY calendar date; the block is placed inside that
     // date's NY window, which is how the server finds it (not by ms arithmetic
     // on a browser-local start-of-day).
-    const day = nyCalendarDayKey(Date.now());
-    const dayStart = nyCalendarDayBoundsUtc(day).start;
+    const day = normalDayKey(Date.now());
+    const dayStart = normalDayBoundsUtc(day).start;
     await tom.mutation(api.tts.createTimeNote, { text: "sat 9-11", day });
     const blockId = await tom.mutation(api.tts.createBlock, {
       start: dayStart + 9 * 3_600_000,
@@ -1875,8 +1875,8 @@ describe("TTS time notes", () => {
     await tom.mutation(api.tts.createTimeNote, { text: "earlier", blockId });
     // A block on the NEXT calendar day is NOT this day's business.
     await tom.mutation(api.tts.createBlock, {
-      start: nyCalendarDayBoundsUtc(day).end + 3_600_000,
-      end: nyCalendarDayBoundsUtc(day).end + 7_200_000,
+      start: normalDayBoundsUtc(day).end + 3_600_000,
+      end: normalDayBoundsUtc(day).end + 7_200_000,
       category: "chores",
     });
 
