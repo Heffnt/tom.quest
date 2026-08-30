@@ -79,9 +79,15 @@ segment — and this is what makes one visible instead of inferred.
 `TOMQUEST_AGENT_USERNAME` / `TOMQUEST_AGENT_PASSWORD`, and refuses to run
 without them, because every `/turing` and `/tts` page is role-gated: browsing
 one anonymously returns a 200 with 401s underneath, which reads as "page is
-fine" to a session that only checked the status. See the warning above those
-two keys in `worker.env.example` — nothing scrubs them from a session's
-shell, so the account's role is the role every session holds.
+fine" to a session that only checked the status.
+
+**Those two keys hold Tom's own account** (ratified 2026-08-30), so every
+session browses at role `tom`. Nothing scrubs them from a session's shell —
+`session.mjs` drops exactly `SESSIONS_WORKER_KEY` and `GH_TOKEN` and inherits
+the rest — so the account's role is the role every session holds. This is a
+knowing interim: no other account exists yet, and a session that cannot see
+`/turing` cannot check its own work there. A session account with a narrower
+role is a captured TTS todo.
 
 **Not installed: any path from this box to the Turing cluster.** `ssh` exists
 but `turing.wpi.edu` is not reachable from here, and the session sandbox's own
