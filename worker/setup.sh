@@ -92,6 +92,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Poll the Slack #dump channel for new captures every 2 minutes.
 */2 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
 
+# Poll Gmail for action-implying mail every 10 minutes (quiet no-op until the
+# GMAIL_* keys exist in worker.env — see poll-gmail.mjs's header for the
+# one-time credential mint). flock: the batch's Claude triage call can outlast
+# a tick, and two overlapping runs would capture the same emails twice.
+*/10 * * * * root /usr/bin/flock -n /var/lock/tts-poll-gmail.lock /usr/bin/node /opt/tts/poll-gmail.mjs >> /var/log/tts/poll-gmail.log 2>&1
+
 # Read Tom's freeform TIME NOTES (the only time input left on the /tts page)
 # and turn each into concrete date/block changes, every 2 minutes so a note he
 # types is acted on while he is still looking at the page. The queue is

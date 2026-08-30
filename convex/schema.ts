@@ -548,7 +548,79 @@ export default defineSchema({
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_readiness", ["readiness"])
-    .index("by_batch", ["batchId"]),
+    .index("by_batch", ["batchId"])
+    // Ingestion lookups: the Canvas sync and the repeating-todo generator find
+    // their own rows by source ("canvas" / "repeating") + provenance match,
+    // without scanning the whole table.
+    .index("by_source", ["source"]),
+
+  // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
+  // Read-only mirror of Tom's external calendars, ingested from ICS feeds
+  // (Google Calendar's "secret address", Outlook's published-calendar link,
+  // Canvas's calendar feed) by the hourly internal.ttsCalendarFetch
+  // .refreshFeeds cron. Feed URLs live in the Convex env var TTS_ICS_FEEDS
+  // (JSON: [{"name":"google","url":"https://..."}]) — capability URLs are
+  // secrets and never sit in a table.
+  //
+  // Rows are MIRROR STATE, not todos: each sync replaces a feed's rows
+  // wholesale (the external calendar is the system of record), the way
+  // dtsCodeTodoMirror replaces per repo. Nothing-ever-lost governs todos;
+  // this table is schedule knowledge — what the queue prep, the repeating-todo
+  // generator, and the /tts calendar columns read to know when Tom is busy.
+  // Recurring events arrive already expanded to concrete occurrences within
+  // the sync window (past 7 days → future 60 days).
+  ttsCalendarEvents: defineTable({
+    feed: v.string(), // feed name from TTS_ICS_FEEDS ("google", "outlook", …)
+    uid: v.string(), // source event uid (shared by a recurrence's occurrences)
+    title: v.string(),
+    start: v.number(), // epoch ms
+    end: v.number(), // epoch ms, >= start
+    allDay: v.boolean(),
+    location: v.optional(v.string()),
+    syncedAt: v.number(),
+  })
+    .index("by_start", ["start"])
+    .index("by_feed", ["feed"]),
+
+  // ── Repeating todos (integrations round, 2026-08-29) ─────────────────────
+  // One row = one standing rule that mints a real dtsTodos row on each of its
+  // weekdays (the 4:30 a.m. generator, internal.ttsRepeats.generate). The
+  // rule is schedule mechanics like dtsBlocks — editable and deletable freely
+  // (deletion is logged to dtsEvents) — while every minted INSTANCE is a real
+  // todo and gets the full nothing-ever-lost treatment: dated, self-imposed,
+  // kept-dates outcomes recorded. Skipping a workout is a recorded miss, not
+  // a vanished row — that is the point.
+  ttsRepeats: defineTable({
+    statement: v.string(), // instance display text, copied verbatim
+    // Plain lowercase weekday words (naming rules: no abbreviations).
+    daysOfWeek: v.array(
+      v.union(
+        v.literal("monday"),
+        v.literal("tuesday"),
+        v.literal("wednesday"),
+        v.literal("thursday"),
+        v.literal("friday"),
+        v.literal("saturday"),
+        v.literal("sunday"),
+      ),
+    ),
+    // NY wall-clock time the instance is due, "HH:MM" 24h. Absent = noon
+    // (the dueAt storage convention, ttsShared.countdownText).
+    timeOfDay: v.optional(v.string()),
+    // Skip generating on a day whose calendar (ttsCalendarEvents) has an
+    // event whose title contains this substring, case-insensitive. This is
+    // how "train outside of practice" self-maintains: practice appears on
+    // the calendar → no training instance that day.
+    skipWhenCalendarHas: v.optional(v.string()),
+    category: v.optional(v.string()), // instance category (block sessions)
+    entryAction: v.optional(v.string()),
+    workDescription: v.optional(v.string()),
+    groundUpExplanation: v.optional(v.string()),
+    body: v.optional(v.string()),
+    active: v.boolean(), // false = paused; the rule stays visible
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }),
 
   // Committed time (ratified 2026-08-28): one row = one placed span of time on
   // Tom's calendar, targeting EITHER a single todo (a per-todo commitment —

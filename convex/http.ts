@@ -4,7 +4,12 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
 import { nowContext } from "./tts";
-import { WRITING_STANDARD, ttsPrepDay } from "./ttsShared";
+import {
+  DAY_MS,
+  WRITING_STANDARD,
+  nyCalendarDayBoundsUtc,
+  ttsPrepDay,
+} from "./ttsShared";
 
 const http = httpRouter();
 
@@ -305,11 +310,25 @@ const ttsState = httpAction(async (ctx, request) => {
     new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
   const queue = await ctx.runQuery(internal.tts.internalGetDay, { day });
+  // The coming week of external-calendar mirror rows (ttsCalendarEvents):
+  // schedule knowledge for realistic queueing — the prep prompt shows them as
+  // context, never as queueable items.
+  const dayStart = nyCalendarDayBoundsUtc(day).start;
+  const calendarEvents = await ctx.runQuery(
+    internal.ttsCalendar.internalListEventsInRange,
+    { start: dayStart, end: dayStart + 7 * DAY_MS },
+  );
   // nowContext carries the NY calendar date too — a different question from
   // prepDay (which rolls at 5 a.m.) and the one a preparer needs to resolve
   // "sept 3" or "Friday" in a statement. Same rule either way: the server owns
   // the clock, the worker repeats it back.
-  return jsonResponse(200, { todos, queue, prepDay: day, ...nowContext(Date.now()) });
+  return jsonResponse(200, {
+    todos,
+    queue,
+    calendarEvents,
+    prepDay: day,
+    ...nowContext(Date.now()),
+  });
 });
 
 http.route({ path: "/tts/state", method: "GET", handler: ttsState });

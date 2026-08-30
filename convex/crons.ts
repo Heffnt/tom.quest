@@ -20,6 +20,11 @@ crons.interval(
 // each job fires at both possible UTC times (EDT/EST) and the handler's
 // local-hour guard lets exactly one proceed — DST needs no cron edits.
 
+// Repeating-todo generation, 4:30 NY — BEFORE the 4:45 queue prep, so the
+// day's minted instances are in the corpus when the queue is built.
+crons.cron("tts repeats (edt)", "30 8 * * *", internal.ttsRepeats.internalGenerateRepeats, {});
+crons.cron("tts repeats (est)", "30 9 * * *", internal.ttsRepeats.internalGenerateRepeats, {});
+
 // Fallback queue prep + waking of due `waiting` items, in the 4 a.m. hour.
 crons.cron("tts queue prep (edt)", "45 8 * * *", internal.tts.internalPrepareFallbackQueue, {});
 crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFallbackQueue, {});
@@ -31,6 +36,23 @@ crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFal
 
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});
+
+// Calendar mirror refresh from the ICS feeds in TTS_ICS_FEEDS (quiet no-op
+// until the env var is set). Hourly: calendars move on human timescales.
+crons.interval(
+  "tts calendar refresh",
+  { hours: 1 },
+  internal.ttsCalendarFetch.refreshFeeds,
+  {},
+);
+
+// Canvas assignment sync (quiet no-op until CANVAS_TOKEN is set).
+crons.interval(
+  "tts canvas refresh",
+  { hours: 6 },
+  internal.ttsCanvas.internalRefreshCanvas,
+  {},
+);
 
 // ── TTS autonomous fleet (P3) ───────────────────────────────────────────────
 // Load-based admission of autonomous groundwork sessions. Off by default
