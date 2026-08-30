@@ -253,23 +253,21 @@
     subject exists, or the instruction is removed from
     app/lib/tts-session-prompt.ts so the prompt stops promising it.
 
-- id: writing-standard-remainder
-  kind: descent
+- id: writing-standard-check-not-in-ci
+  kind: pending-fence
   created: 2026-08-30
-  cites: [A1, tts-spec:5]
+  cites: [A2, C3]
   statement: >-
-    Stored ground-up explanations that fail WRITING_STANDARD's mechanical rules
-    (the ratified complete-HTML-document form). Measured 2026-08-30: 40 of 77,
-    every one a `source: "migration"` row written before the HTML form was
-    ratified — they are markdown, and render as the wall of text the rule
-    exists to prevent. Zero of 372 stored briefs fail; briefs are markdown by
-    design. Tom ruled the major failures are rewritten now and the REMAINDER is
-    carried here rather than cut off silently (ratchet adoption). The count is
-    reported by `pnpm check:writing`, whose BASELINE constant may only ever be
-    lowered.
+    scripts/check-writing-standard.mjs holds the line at zero failing ground-up
+    explanations, but it is not in CI and cannot be: it reads PROD Convex over
+    the network and needs TTS_WORKER_KEY, which the CI jobs do not hold. So the
+    fence only bites when someone runs `pnpm check:writing` by hand, and prose
+    written to no standard can land and sit unnoticed until then — which is
+    exactly the ungoverned-surface failure A2 names (every pattern present is a
+    pattern propagated).
   graduates_when: >-
-    scripts/check-writing-standard.mjs reports 0 failing, at which point its
-    BASELINE and this entry are deleted together.
+    The count is checked on a cadence without a human remembering to — a Convex
+    cron asserting it and failing loudly, or a CI job holding a read-only key.
 
 - id: info-captions-unmigrated
   kind: descent

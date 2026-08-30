@@ -12,12 +12,12 @@
 // fixed eventually" is only true if the number is visible and can only go
 // down. This script is that number.
 //
-// THE RATCHET. BASELINE below is the count on the day it was measured. The
-// script exits non-zero when the live count EXCEEDS it — so new prose written
-// to no standard fails loudly — and prints a nudge when the count has dropped,
-// because lowering BASELINE in the same commit as the work is how the ratchet
-// tightens. Graduation is BASELINE 0 and the deletion of the ledger entry
-// writing-standard-remainder.
+// THE RATCHET. The script exits non-zero when the live count EXCEEDS BASELINE
+// — so new prose written to no standard fails loudly — and prints a nudge when
+// the count has dropped, because lowering BASELINE in the same commit as the
+// work is how the ratchet tightens. BASELINE reached 0 on the day this was
+// written (see the constant), so the ratchet is now a floor: it holds the line
+// rather than working a backlog down.
 //
 // NOT A CI GATE, on purpose: it reads PROD Convex over the network and needs
 // TTS_WORKER_KEY, which CI does not hold. It is a reporting rung, run on
@@ -29,11 +29,18 @@
 const SITE = process.env.CONVEX_SITE_URL;
 const KEY = process.env.TTS_WORKER_KEY;
 
-// Measured 2026-08-30: 40 of 77 stored ground-up explanations, every one of
-// them a `source: "migration"` row predating the ratified HTML-document form
-// (they are markdown). Zero of 372 stored briefs fail — briefs are markdown by
-// design and no mechanical rule of the standard binds them.
-const BASELINE = 40;
+// ZERO, and it stays zero. It was 40 of 77 when this script was written on
+// 2026-08-30 — every one a `source: "migration"` row predating the ratified
+// HTML-document form, so every one was markdown rendering as the wall of text
+// the rule exists to prevent. All 40 were rewritten the same day and the
+// ledger entry carrying them (writing-standard-remainder) graduated with the
+// work, which is what lowering this constant to 0 records.
+//
+// Raising it is not a fix. A failing count means prose was written to no
+// standard; the answer is to rewrite that prose, not to move the line.
+// (Zero of 372 stored briefs fail — briefs are markdown by design and no
+// mechanical rule of the standard binds them.)
+const BASELINE = 0;
 
 // The mechanically checkable half of "A GROUND-UP EXPLANATION IS A COMPLETE
 // HTML DOCUMENT" (convex/ttsShared.ts, WRITING_STANDARD). Each rule is one the
@@ -145,10 +152,7 @@ async function main() {
     );
   }
   if (failing.length === 0) {
-    console.log(
-      "Nothing fails. Delete the ledger entry writing-standard-remainder and this " +
-        "script's baseline together.",
-    );
+    console.log("Nothing fails.");
   }
 }
 

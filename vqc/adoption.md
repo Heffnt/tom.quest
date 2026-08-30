@@ -166,7 +166,7 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
     check script reporting the current failing count so the number can only go
     down. Never a silent cutoff and never a frozen exemption — this is the
     constitution's ratchet-adoption rule applied to prose.
-  cites: [A1, D28]
+  cites: [A2, D28]
 - id: outbound-slack-shape
   date: 2026-08-30
   question: What does TTS say outbound on Slack?
