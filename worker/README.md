@@ -89,13 +89,40 @@ knowing interim: no other account exists yet, and a session that cannot see
 `/turing` cannot check its own work there. A session account with a narrower
 role is a captured TTS todo.
 
-**Not installed: any path from this box to the Turing cluster.** `ssh` exists
-but `turing.wpi.edu` is not reachable from here, and the session sandbox's own
-command policy refuses to open a remote shell. The cluster is reachable only
-as the HTTPS API at `turing.tom.quest`, and that API's key would grant
-`POST /sessions/{name}/run` — arbitrary commands on the cluster — so it is
-deliberately absent from `worker.env`. Adding it is a posture decision, not a
-setup step.
+## The cluster, read only
+
+`ssh` to the Turing cluster does not work from this box — `turing.wpi.edu` is
+not reachable from here, and the session sandbox's command policy refuses to
+open a remote shell anyway. The cluster is reachable only as the HTTPS API at
+`turing.tom.quest` (a cloudflared tunnel fronting `turing-api`). A session
+reads it through one command:
+
+```
+tts-turing health                    # is the API up (needs no key)
+tts-turing gpus                      # free / allocated GPUs by type
+tts-turing jobs                      # Tom's SLURM jobs
+tts-turing output <session> --lines 100
+```
+
+**It can only read, and that is enforced at the API, not here.** `turing-api`
+carries two credentials. `TURING_API_KEY` opens everything — including
+`POST /sessions/{name}/run`, arbitrary shell on the cluster under Tom's
+account — and is **never** written to `worker.env`; it lives in Vercel's and
+Convex's env, where no model's shell reaches it. `TURING_READ_KEY`, the one in
+`worker.env`, is accepted by exactly three endpoints: `GET /gpu-report`,
+`GET /jobs`, `GET /sessions/{name}/output`. Everything else answers 401 to it
+(`turing-api/main.py`, `verify_read_key`; the split is covered by
+`ReadOnlyScopeTest` in `main_test.py`).
+
+Like the browser credentials above, nothing scrubs `TURING_READ_KEY` from a
+session's shell, so every session holds it. That is the intent — reading is
+what a session needs to check its own Turing-shaped work, and reading is all it
+opens. Changing the cluster stays a person's action, through the `/turing`
+pages.
+
+The same value must be set as `TURING_READ_KEY` in `turing-api/.env` on the
+cluster login node and the service restarted; unset there, the read scope does
+not exist and every read answers 401.
 
 ## The no-state rule
 

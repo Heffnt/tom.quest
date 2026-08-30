@@ -1,0 +1,234 @@
+#!/usr/bin/env node
+// tts-turing — read the Turing cluster from a TTS session.
+//
+// WHY THIS EXISTS: a TTS session runs on the worker box, which has no path to
+// the WPI Turing cluster at all — turing.wpi.edu is unreachable from the box,
+// and the session sandbox's Bash policy denies ssh. The one reachable door is
+// the cloudflared tunnel at https://turing.tom.quest, which fronts turing-api.
+// A session that changes anything Turing-shaped (the /turing pages, the GPU
+// pool reconciler, a job's tmux output) could not previously look at the
+// cluster to see the result. This is that look.
+//
+// WHAT IT DELIBERATELY CANNOT DO: allocate a GPU, cancel a job, read a file,
+// or run a command. turing-api has TWO credentials. TURING_API_KEY opens
+// everything, including POST /sessions/{name}/run — arbitrary shell on the
+// cluster under Tom's account. TURING_READ_KEY, the one this command carries,
+// opens only GET /gpu-report, GET /jobs and GET /sessions/{name}/output. That
+// split is the whole point: this file has no write verb, and even if it did,
+// the key it holds would be refused (turing-api/main.py, verify_read_key).
+// Changing the cluster stays a person's action, through the /turing pages.
+//
+// USAGE
+//   tts-turing health                       is the API up (needs no key)
+//   tts-turing gpus                         free / allocated GPUs by type
+//   tts-turing jobs                         Tom's SLURM jobs, one per line
+//   tts-turing output <session> [--lines N] last N lines of a job's tmux pane
+//
+//   --json     print the raw response instead of the summary. Use it when you
+//              need a field the summary drops.
+//   --lines N  how much scrollback `output` asks for (default 200; the API
+//              itself defaults to 500).
+//   --base URL override the API origin (default $TURING_API_BASE, else
+//              https://turing.tom.quest). For pointing at a local API.
+//
+// EXIT CODES: 0 ok · 2 usage · 4 no key configured · 5 the API refused or was
+// unreachable. A non-zero exit always prints why on stderr.
+//
+// ZERO-DEPS: built-in fetch only (Node 18+). Nothing to install.
+
+const DEFAULT_BASE = "https://turing.tom.quest";
+const TIMEOUT_MS = 30_000;
+
+function usage(stream = console.error) {
+  stream(
+    [
+      "tts-turing health",
+      "tts-turing gpus",
+      "tts-turing jobs",
+      "tts-turing output <session> [--lines N]",
+      "",
+      "flags: --json  --lines N  --base URL",
+    ].join("\n"),
+  );
+}
+
+function parseArgs(argv) {
+  const opts = { verb: null, session: null, lines: 200, json: false, base: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const next = () => {
+      const v = argv[++i];
+      if (v === undefined) {
+        console.error(`tts-turing: ${a} needs a value`);
+        process.exit(2);
+      }
+      return v;
+    };
+    if (a === "--json") opts.json = true;
+    else if (a === "--lines") opts.lines = Number(next());
+    else if (a === "--base") opts.base = next();
+    else if (a === "--help" || a === "-h") {
+      usage(console.log);
+      process.exit(0);
+    } else if (a.startsWith("-")) {
+      console.error(`tts-turing: unknown flag ${a}`);
+      process.exit(2);
+    } else if (opts.verb === null) opts.verb = a;
+    else if (opts.session === null) opts.session = a;
+    else {
+      console.error(`tts-turing: unexpected argument ${a}`);
+      process.exit(2);
+    }
+  }
+  if (!opts.verb) {
+    usage();
+    process.exit(2);
+  }
+  if (!Number.isFinite(opts.lines) || opts.lines < 1) {
+    console.error("tts-turing: --lines wants a positive number");
+    process.exit(2);
+  }
+  return opts;
+}
+
+// The key is read here and nowhere else, and it is never printed — not in the
+// error path, not in --json. A transcript row is a durable record.
+function readKey() {
+  const key = process.env.TURING_READ_KEY;
+  if (!key) {
+    console.error(
+      "tts-turing: TURING_READ_KEY is not set. It is the read-only credential " +
+        "for turing-api; add it to /etc/tts/worker.env and restart " +
+        "tts-session-host. Without it only `tts-turing health` works.",
+    );
+    process.exit(4);
+  }
+  return key;
+}
+
+async function get(base, path, { key } = {}) {
+  const url = `${base.replace(/\/$/, "")}${path}`;
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: key ? { "X-API-Key": key } : {},
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (err) {
+    // Unreachable is a different fact from refused, and the caller needs to
+    // tell them apart: one means the tunnel or the API is down, the other
+    // means the key is wrong.
+    console.error(`tts-turing: ${url} unreachable — ${String(err?.message ?? err)}`);
+    process.exit(5);
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    const hint =
+      res.status === 401
+        ? " (the read key was refused: either it is stale, or this endpoint is " +
+          "outside the read-only scope — only /gpu-report, /jobs and " +
+          "/sessions/{name}/output are in it)"
+        : "";
+    console.error(`tts-turing: ${path} → HTTP ${res.status}${hint}\n${text.slice(0, 400)}`);
+    process.exit(5);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    console.error(`tts-turing: ${path} answered non-JSON:\n${text.slice(0, 400)}`);
+    process.exit(5);
+  }
+}
+
+// ── the verbs ────────────────────────────────────────────────────────────────
+
+function printGpus(report) {
+  const summary = report?.summary ?? {};
+  const line = (label, list) => {
+    const entries = Array.isArray(list) ? list : [];
+    if (!entries.length) {
+      console.log(`${label}: none`);
+      return;
+    }
+    const total = entries.reduce((n, e) => n + (e.count ?? 0), 0);
+    console.log(`${label}: ${total}`);
+    for (const e of entries) {
+      console.log(`  ${e.type}  ${e.count}  ${(e.nodes ?? []).join(" ")}`);
+    }
+  };
+  line("free", summary.free);
+  line("available", summary.available);
+  line("unavailable", summary.unavailable);
+  const nodes = Array.isArray(report?.nodes) ? report.nodes : [];
+  console.log(`nodes: ${nodes.length}`);
+}
+
+function printJobs(jobs) {
+  const list = Array.isArray(jobs) ? jobs : [];
+  if (!list.length) {
+    console.log("jobs: none");
+    return;
+  }
+  console.log(`jobs: ${list.length}`);
+  for (const j of list) {
+    const gpu = j.gpu_stats
+      ? ` gpu=${j.gpu_stats.memory_used_mb}/${j.gpu_stats.memory_total_mb}MB` +
+        (j.gpu_stats.utilization_pct === null || j.gpu_stats.utilization_pct === undefined
+          ? ""
+          : ` util=${j.gpu_stats.utilization_pct}%`)
+      : "";
+    console.log(
+      `  ${j.job_id}  ${j.status}  ${j.gpu_type}  left=${j.time_remaining}  ` +
+        `name=${j.job_name}  session=${j.screen_name}${gpu}`,
+    );
+  }
+}
+
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  const base = opts.base || process.env.TURING_API_BASE || DEFAULT_BASE;
+  const show = (data, pretty) => {
+    if (opts.json) console.log(JSON.stringify(data, null, 2));
+    else pretty(data);
+  };
+
+  switch (opts.verb) {
+    case "health": {
+      // The only endpoint outside the key entirely. Reachable from the worker
+      // box with nothing configured, which makes it the first thing to try
+      // when another verb fails.
+      const data = await get(base, "/health");
+      show(data, (d) => console.log(`health: ${d.status ?? "?"}  (${base})`));
+      return;
+    }
+    case "gpus": {
+      const data = await get(base, "/gpu-report", { key: readKey() });
+      show(data, printGpus);
+      return;
+    }
+    case "jobs": {
+      const data = await get(base, "/jobs", { key: readKey() });
+      show(data, printJobs);
+      return;
+    }
+    case "output": {
+      if (!opts.session) {
+        console.error("tts-turing: output needs a session name (see the session= column of `tts-turing jobs`)");
+        process.exit(2);
+      }
+      const path = `/sessions/${encodeURIComponent(opts.session)}/output?lines=${opts.lines}`;
+      const data = await get(base, path, { key: readKey() });
+      show(data, (d) => process.stdout.write(String(d.output ?? "")));
+      return;
+    }
+    default:
+      console.error(`tts-turing: unknown verb ${opts.verb}`);
+      usage();
+      process.exit(2);
+  }
+}
+
+main().catch((err) => {
+  console.error(`tts-turing: ${String(err?.stack ?? err)}`);
+  process.exit(5);
+});

@@ -89,7 +89,7 @@ echo "== [6/9] install worker files =="
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
-chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse
+chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse /usr/local/bin/tts-turing
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.

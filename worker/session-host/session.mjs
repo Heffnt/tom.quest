@@ -677,6 +677,14 @@ export class Session {
     // confused session could rewrite ANY transcript) and GH_TOKEN is repo
     // write for the whole account. Neither is reachable through the
     // sanctioned pens, so nothing legitimate needs them.
+    //
+    // TURING_READ_KEY is deliberately NOT in this drop list. It is turing-api's
+    // read-only credential (turing-api/main.py, verify_read_key): it opens
+    // GET /gpu-report, GET /jobs and GET /sessions/{name}/output and is refused
+    // everywhere else, so a session holding it can look at the cluster and
+    // cannot change it. The full TURING_API_KEY — which also authorizes
+    // POST /sessions/{name}/run, arbitrary shell on the cluster — is not on this
+    // box at all, and putting it in worker.env would defeat the split.
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
