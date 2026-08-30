@@ -129,6 +129,13 @@ function parseArgs(argv) {
 // Sign in through the same widget a person uses, rather than forging a session
 // cookie: the login path is itself something a session may have broken, and a
 // forged cookie would hide that.
+//
+// `origin` MUST be the origin the target URL actually lands on, not the one
+// that was typed. tom.quest 307-redirects the apex to www, and the auth token
+// is origin-scoped — so signing in at https://tom.quest and then opening
+// https://www.tom.quest/turing produces the worst possible result: a page that
+// looks signed in, with the username in the corner, whose every data call is
+// 401. The caller resolves the landing origin by navigating first.
 async function signIn(page, origin) {
   const username = process.env.TOMQUEST_AGENT_USERNAME;
   const password = process.env.TOMQUEST_AGENT_PASSWORD;
@@ -140,11 +147,41 @@ async function signIn(page, origin) {
     process.exit(4);
   }
   await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.getByRole("button", { name: "Log in" }).click();
+  // `domcontentloaded` fires before React hydrates, and a click that lands in
+  // that window is swallowed with no error — the button is in the DOM, it just
+  // has no handler yet. Measured: 2 failures in 5 runs when clicking straight
+  // away, 0 in 6 when something delayed the click. So click, wait briefly for
+  // the field, and click again — up to four times — instead of trusting one.
+  const loginButton = page.getByRole("button", { name: "Log in" });
+  await loginButton.waitFor({ timeout: 30000 });
+  for (let attempt = 1; ; attempt++) {
+    await loginButton.click();
+    try {
+      await page.getByLabel("Username").waitFor({ timeout: 5000 });
+      break;
+    } catch (e) {
+      if (attempt >= 4) throw e;
+      await page.waitForTimeout(1000);
+    }
+  }
   await page.getByLabel("Username").fill(username);
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: "Sign In" }).click();
-  await page.getByRole("button", { name: username }).waitFor({ timeout: 20000 });
+  // The header button carrying the username is the human-visible proof of a
+  // completed sign-in, and it is what we wait for. But on a slow sign-in the
+  // auth token lands in localStorage before React repaints the header, and a
+  // run that failed here would be reported as "login broken" when the session
+  // is in fact authenticated. So the token is accepted as the fallback proof —
+  // and only as a fallback, so a genuinely broken header still gets noticed
+  // by anything reading the screenshot.
+  try {
+    await page.getByRole("button", { name: username }).waitFor({ timeout: 30000 });
+  } catch (e) {
+    const authed = await page.evaluate(() =>
+      Object.keys(window.localStorage).some((k) => k.startsWith("__convexAuthJWT")),
+    );
+    if (!authed) throw e;
+  }
   return username;
 }
 
@@ -161,16 +198,38 @@ async function main() {
   page.on("console", (msg) => {
     if (msg.type() === "error") consoleErrors.push(msg.text().slice(0, 300));
   });
+  // A failure that a later identical request succeeds at is a retry, not a
+  // defect — an admin page that fires before its auth token resolves takes a
+  // 401 and recovers. Reporting that the same way as a real failure trains the
+  // reader to ignore the line, so successes are tracked and used to annotate.
+  const succeeded = new Set();
   page.on("requestfailed", (req) =>
-    failed.push(`${req.method()} ${req.url()} — ${req.failure()?.errorText ?? "failed"}`),
+    failed.push({
+      url: req.url(),
+      text: `${req.method()} ${req.url()} — ${req.failure()?.errorText ?? "failed"}`,
+    }),
   );
   page.on("response", (res) => {
-    if (res.status() >= 400) failed.push(`${res.status()} ${res.request().method()} ${res.url()}`);
+    const url = res.url();
+    if (res.status() >= 400) {
+      failed.push({ url, text: `${res.status()} ${res.request().method()} ${url}` });
+    } else if (res.status() < 300) {
+      succeeded.add(url);
+    }
   });
 
   let signedInAs = null;
   try {
-    if (opts.login) signedInAs = await signIn(page, new URL(opts.url).origin);
+    if (opts.login) {
+      // Probe navigation, only to learn where the URL actually lands after any
+      // redirect. Sign in on THAT origin (see signIn's note), then throw away
+      // everything the probe recorded — its 401s are expected and reporting
+      // them would bury the ones that matter.
+      await page.goto(opts.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+      signedInAs = await signIn(page, new URL(page.url()).origin);
+      consoleErrors.length = 0;
+      failed.length = 0;
+    }
 
     const res = await page.goto(opts.url, { waitUntil: "domcontentloaded", timeout: 45000 });
     if (opts.wait) await page.waitForSelector(opts.wait, { timeout: 30000 });
@@ -182,13 +241,16 @@ async function main() {
     if (opts.settle > 0) await page.waitForTimeout(opts.settle);
     await page.screenshot({ path: opts.out, fullPage: opts.full });
 
+    const failedRequests = failed.map((f) =>
+      succeeded.has(f.url) ? `${f.text}  (a later identical request succeeded)` : f.text,
+    );
     const result = {
       url: page.url(),
       status: res?.status() ?? null,
       title: await page.title(),
       signedInAs,
       consoleErrors,
-      failedRequests: failed,
+      failedRequests,
       screenshot: opts.out,
     };
     if (opts.json) {
@@ -200,8 +262,8 @@ async function main() {
       if (signedInAs) console.log(`signed:  ${signedInAs}`);
       console.log(`console: ${consoleErrors.length ? "" : "(no errors)"}`);
       for (const e of consoleErrors) console.log(`  ! ${e}`);
-      console.log(`failed:  ${failed.length ? "" : "(none)"}`);
-      for (const f of failed) console.log(`  ! ${f}`);
+      console.log(`failed:  ${failedRequests.length ? "" : "(none)"}`);
+      for (const f of failedRequests) console.log(`  ! ${f}`);
       console.log(`shot:    ${result.screenshot}`);
     }
   } finally {

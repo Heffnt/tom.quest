@@ -118,7 +118,7 @@ export function useTuringRequest(): <TResponse>(
  * for it, the proxy rewraps that as a 502, and the caller paints a phantom error.
  */
 export function useTuring<T>(path: string | null, options?: UseTuringOptions): UseTuringResult<T> {
-  const { token } = useAuth();
+  const { token, loading: authLoading } = useAuth();
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -126,6 +126,17 @@ export function useTuring<T>(path: string | null, options?: UseTuringOptions): U
   const hasLoaded = useRef(false);
 
   const skipped = path === null;
+  // Auth resolves a tick after mount, so a hard load of an admin page used to
+  // fire every request twice: once with no Authorization header (answered 401
+  // by the proxy, painting "Authentication required" for a moment) and again
+  // with the token. That is this hook's own skip rule one layer down — there
+  // the PATH is still resolving, here the CREDENTIAL is — so it gets the same
+  // treatment: send nothing until auth has settled, then send once.
+  //
+  // Deliberately gated on `loading`, not on `token === null`: a genuinely
+  // signed-out visitor settles with a null token and SHOULD get the real 401
+  // rather than an request that never fires and a spinner that never stops.
+  const inactive = skipped || authLoading;
 
   const load = useCallback(async () => {
     if (path === null) return;
@@ -148,7 +159,7 @@ export function useTuring<T>(path: string | null, options?: UseTuringOptions): U
 
   useEffect(() => {
     mounted.current = true;
-    if (skipped) {
+    if (inactive) {
       return () => { mounted.current = false; };
     }
     void load();
@@ -162,14 +173,17 @@ export function useTuring<T>(path: string | null, options?: UseTuringOptions): U
       mounted.current = false;
       window.clearInterval(interval);
     };
-  }, [load, skipped, options?.refreshInterval]);
+  }, [load, inactive, options?.refreshInterval]);
 
   // While skipped, report the idle state rather than whatever a previous path
   // left behind, so a caller cannot render a stale error for an unasked request.
+  // Waiting on auth is NOT idle — it reports `loading`, because a request is
+  // coming; a caller that saw `loading: false` there would paint an empty state
+  // between mount and the first fetch.
   return {
-    data: skipped ? null : data,
-    error: skipped ? null : error,
-    loading: skipped ? false : loading,
+    data: inactive ? null : data,
+    error: inactive ? null : error,
+    loading: skipped ? false : authLoading ? true : loading,
     refresh: () => { void load(); },
   };
 }

@@ -6,8 +6,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { useTuring } from "./use-turing";
 
+// Mutable so a test can hold auth in its resolving state and then settle it.
+const authState = vi.hoisted(() => ({
+  token: "test-token" as string | null,
+  loading: false,
+}));
+
 vi.mock("@/app/lib/auth", () => ({
-  useAuth: () => ({ token: "test-token" }),
+  useAuth: () => authState,
 }));
 
 function jsonResponse(body: unknown): Response {
@@ -21,12 +27,37 @@ describe("useTuring", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    authState.token = "test-token";
+    authState.loading = false;
     fetchMock = vi.fn(async () => jsonResponse({ status: "ready" }));
     vi.stubGlobal("fetch", fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  // Observed live on 2026-08-30: a hard load of /turing sent gpu-types,
+  // gpu-report and jobs with NO Authorization header, took three 401s, then
+  // sent all three again with the token. The page recovered, so the only
+  // visible trace was a flash of "Authentication required" — but a session
+  // checking that page could not tell the flash from a real failure.
+  it("issues no request until auth has settled, then exactly one", async () => {
+    authState.loading = true;
+    const { result, rerender } = renderHook(() => useTuring<{ status: string }>("/gpu-report"));
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Waiting on auth is not idle: a request is coming, so the caller must see
+    // `loading` rather than an empty state.
+    expect(result.current.loading).toBe(true);
+    expect(result.current.error).toBeNull();
+
+    authState.loading = false;
+    rerender();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: { Authorization: "Bearer test-token" },
+    });
   });
 
   it("issues no request when the path is null", async () => {
