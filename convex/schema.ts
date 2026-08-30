@@ -509,6 +509,21 @@ export default defineSchema({
     tomTouchedAt: v.optional(v.number()),
     source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
     provenance: v.optional(v.string()), // link/descriptor of where it came from
+    // ── Slack coordinates of the #dump message this was captured from ────────
+    // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
+    // message, saying how it processed that message. Answering "which message
+    // do I reply to?" needs the channel and the message ts as MACHINE fields.
+    //
+    // DELIBERATELY NOT overloaded into `provenance`: Tom reads provenance, it
+    // holds a permalink for him, and parsing a ts back out of a URL would make
+    // his field load-bearing for a machine.
+    //
+    // slackTs is also the DEDUPE key for the Slack Events push route (Slack
+    // retries deliver the same event more than once) — see by_slackTs below.
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
+    slackReplyTs: v.optional(v.string()), // ts of OUR reply, so it can be edited
+    slackRepliedAt: v.optional(v.number()), // the "replied once" guard
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
@@ -561,7 +576,12 @@ export default defineSchema({
     // Ingestion lookups: the Canvas sync and the repeating-todo generator find
     // their own rows by source ("canvas" / "repeating") + provenance match,
     // without scanning the whole table.
-    .index("by_source", ["source"]),
+    .index("by_source", ["source"])
+    // The Slack Events push route's dedupe read: Slack's delivery is
+    // at-least-once and its retries carry the same message ts, so a capture
+    // looks itself up by ts before inserting. A scan would be a full-table
+    // read on the hot path of a route that must answer within 3 seconds.
+    .index("by_slackTs", ["slackTs"]),
 
   // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
   // Read-only mirror of Tom's external calendars, ingested from ICS feeds

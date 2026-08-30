@@ -89,8 +89,14 @@ cat > /etc/cron.d/tts <<'CRON'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Poll the Slack #dump channel for new captures every 2 minutes.
-*/2 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
+# Poll the Slack #dump channel for new captures — HOURLY, as the reconciliation
+# BACKSTOP behind the push route (Tom 2026-08-30: Slack pushes events to TTS at
+# POST /slack/events instead of TTS polling). Slack's event delivery is
+# best-effort, not guaranteed, so this stays: its cursor file in /var/lib/tts is
+# what makes a missed event recoverable. Captures are idempotent on the Slack
+# message ts server-side, so re-offering what the push route already took costs
+# nothing.
+7 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
 
 # Poll Gmail for action-implying mail every 10 minutes (quiet no-op until the
 # GMAIL_* keys exist in worker.env — see poll-gmail.mjs's header for the
@@ -128,8 +134,19 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Prepare unprepared LIFE todos (#dump captures, consolidation candidates)
 # via headless Claude: ground-up brief + smallest entry action + work
 # description, readiness advanced — so raw captures reach Tom pre-chewed.
-# Every 2nd hour at :37 (odd minute; no collision with the other jobs).
-37 */2 * * * root /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
+#
+# EVERY 2 MINUTES (Tom 2026-08-30: #dump messages are processed immediately, so
+# the threaded Slack reply can state how TTS interpreted the message). Safe and
+# cheap because the job returns BEFORE any Claude call when there is nothing to
+# prepare ("if (targets.length === 0) return; // quiet when idle"), so an idle
+# tick costs one HTTP read.
+#
+# CONSEQUENCE ACCEPTED, STATED: the old :37 slot existed so the Claude-calling
+# jobs never shared a tick. At */2 this job can now overlap brief-code-todos
+# (:17), form-batches (:07) and plan-graphs (:27). flock guards it only against
+# ITSELF — which is also the lock poll-dump.mjs takes when it spawns this job
+# straight after a capture, so the spawn and the cron can never both run.
+*/2 * * * * root /usr/bin/flock -n /var/lock/tts-prepare-life-todos.lock /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
 
 # ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
 # These two jobs are the OLD and the NEW way of doing the same thing, and they

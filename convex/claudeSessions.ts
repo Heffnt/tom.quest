@@ -380,8 +380,56 @@ async function insertSession(
     status: "pending",
     createdAt: now,
   });
+  // Session lifecycle in the events table. dtsEvents is what the hourly Slack
+  // update reads for "what happened since last time", and until this line only
+  // plan repairs crossed over from the session world — so a night of fleet
+  // work left no trace there at all. One home for the creation event, now that
+  // there is one home for the creation.
+  await logEvent(ctx, "session-created", seed.todoId, {
+    sessionId,
+    title: seed.title,
+    kind: seed.kind,
+    mode: seed.mode ?? "interactive",
+    repos,
+  });
   return sessionId;
 }
+
+/**
+ * Every live session, for a CRON. listSessions and getDaemonHealth are
+ * requireTomId-gated, so the hourly update — which has no identity — could not
+ * read them; this file previously contained no internalQuery at all.
+ *
+ * Read-only and deliberately narrow: what is running, since when, and what it
+ * is working on. Nothing here claims to see sessions running anywhere but the
+ * Jarvis Box (ledger: tts-agents-off-box-invisible).
+ */
+export const internalListLive = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const rows: Doc<"claudeSessions">[] = [];
+    for (const status of LIVE_STATUSES) {
+      rows.push(
+        ...(await ctx.db
+          .query("claudeSessions")
+          .withIndex("by_status", (q) => q.eq("status", status))
+          .collect()), // bounded: live sessions are few by design
+      );
+    }
+    return rows
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((s) => ({
+        id: s._id,
+        title: s.title,
+        status: s.status,
+        kind: s.kind,
+        mode: s.mode ?? "interactive",
+        repos: s.repos ?? (s.repo === NO_REPO ? [] : [s.repo]),
+        createdAt: s.createdAt,
+        lastSdkEventAt: s.lastSdkEventAt,
+      }));
+  },
+});
 
 // ── Tom-facing mutations ─────────────────────────────────────────────────────
 
@@ -948,6 +996,17 @@ export const internalIngest = internalMutation({
       if (args.status !== undefined && args.status !== session.status) {
         patch.status = args.status;
         patch.statusChangedAt = now;
+        // The ENDING edge, in the events table. Crossed at most once per
+        // session per reopen (the guard is `!== session.status`), which is what
+        // keeps the hourly update from reporting the same ending every hour.
+        if (args.status === "ended" || args.status === "failed") {
+          await logEvent(ctx, "session-ended", session.todoId, {
+            sessionId: args.sessionId,
+            title: session.title,
+            status: args.status,
+            endedReason: args.endedReason,
+          });
+        }
       }
       if (args.endedReason !== undefined) patch.endedReason = args.endedReason;
       if (args.sdkSessionId !== undefined)
@@ -987,6 +1046,12 @@ export const internalIngest = internalMutation({
         args.sessionId,
         outcomeEventText(session.title, args.outcome, args.outcomeSummary),
       );
+      await logEvent(ctx, "session-outcome", session.todoId, {
+        sessionId: args.sessionId,
+        title: session.title,
+        outcome: args.outcome,
+        summary: args.outcomeSummary,
+      });
     }
 
     for (const upd of args.inboundUpdates ?? []) {
@@ -1130,6 +1195,13 @@ export const internalRecordOutcome = internalMutation({
         normalized,
         outcomeEventText(session.title, outcome, summary),
       );
+      // Same edge, same reason, into the events table the hourly update reads.
+      await logEvent(ctx, "session-outcome", session.todoId, {
+        sessionId: normalized,
+        title: session.title,
+        outcome,
+        summary: summary.trim(),
+      });
     }
     // The plan-repair event, written whenever the worker sent one — including
     // on a re-record, because a second wording of the same ending may be where

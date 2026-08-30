@@ -175,11 +175,184 @@ const ttsCapture = httpAction(async (ctx, request) => {
     statement: b.statement,
     source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
+    // The Slack coordinates, when the caller is a Slack producer. They are
+    // what the threaded reply is addressed to and what the push route dedupes
+    // on; a caller that has none simply omits them.
+    slackChannel: typeof b.slackChannel === "string" ? b.slackChannel : undefined,
+    slackTs: typeof b.slackTs === "string" ? b.slackTs : undefined,
   });
   return jsonResponse(200, { ok: true, id });
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
+
+// POST /tts/slack-replied — the worker reports that it posted its ONE threaded
+// reply to the #dump message a todo came from. Body: { id, replyTs? }. Separate
+// from /tts/prepare-todo because the reply happens AFTER preparation lands: the
+// reply names the brief, so it cannot be written before there is one.
+const ttsSlackReplied = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.id !== "string" || b.id === "") {
+    return jsonResponse(400, { error: "id (non-empty string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.tts.internalMarkSlackReplied, {
+      id: b.id,
+      replyTs: typeof b.replyTs === "string" ? b.replyTs : undefined,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/tts/slack-replied",
+  method: "POST",
+  handler: ttsSlackReplied,
+});
+
+// ── POST /slack/events — Slack PUSHES #dump messages to TTS ──────────────────
+// Tom's ruling 2026-08-30: Slack pushes instead of TTS polling every two
+// minutes. worker/jobs/poll-dump.mjs STAYS as the reconciliation backstop
+// (Slack's delivery is best-effort, not guaranteed) at an hourly cadence; its
+// cursor file is what makes a missed event recoverable.
+//
+// This route is unlike every other one in this file: it is the only PUBLIC one
+// (Slack cannot present X-TTS-Key), so its authentication IS the signature
+// check below. Three requirements Slack imposes, each load-bearing:
+//
+//  1. The one-time url_verification handshake — echo `challenge` or the
+//     subscription cannot be enabled at all.
+//  2. Signature verification. HMAC-SHA256 over the literal string
+//     `v0:<X-Slack-Request-Timestamp>:<raw body>`, keyed by SLACK_SIGNING_SECRET,
+//     compared to X-Slack-Signature. The RAW body is what is signed, so it is
+//     read as text once and parsed after — re-serializing the parsed object
+//     would change the bytes and every request would fail.
+//  3. 200 within 3 seconds or Slack retries. The capture is a single
+//     idempotent insert, so it happens inline and nothing else does.
+//
+// Replay window: 5 minutes, standard for this scheme. It bounds how long a
+// captured request stays useful to an attacker who has the bytes but not the
+// secret; without it a signed request is valid forever.
+const SLACK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+
+// Constant-time hex compare of our computed signature against the presented
+// one. Reuses timingSafeEqual above for the same reason it exists there.
+async function slackSignatureValid(
+  secret: string,
+  timestamp: string,
+  rawBody: string,
+  presented: string,
+): Promise<boolean> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`v0:${timestamp}:${rawBody}`),
+  );
+  const expected =
+    "v0=" +
+    Array.from(new Uint8Array(mac))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  return timingSafeEqual(expected, presented);
+}
+
+const slackEvents = httpAction(async (ctx, request) => {
+  const secret = process.env.SLACK_SIGNING_SECRET;
+  if (!secret) {
+    // Fail LOUD-but-safe: refuse rather than accept unverified writes. 503
+    // matches the unconfigured-key posture of keyAuth above, and Slack shows
+    // the failure in the app's event-delivery panel.
+    return jsonResponse(503, { error: "SLACK_SIGNING_SECRET not configured" });
+  }
+  // The raw bytes are what Slack signed — read once, verify, then parse.
+  const rawBody = await request.text();
+  const timestamp = request.headers.get("X-Slack-Request-Timestamp") ?? "";
+  const signature = request.headers.get("X-Slack-Signature") ?? "";
+  const age = Math.abs(Date.now() - Number(timestamp) * 1000);
+  if (!Number.isFinite(age) || age > SLACK_REPLAY_WINDOW_MS) {
+    return jsonResponse(401, { error: "stale or missing timestamp" });
+  }
+  if (!(await slackSignatureValid(secret, timestamp, rawBody, signature))) {
+    return jsonResponse(401, { error: "bad signature" });
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = (JSON.parse(rawBody) ?? {}) as Record<string, unknown>;
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+
+  // (1) The handshake. Echoed as PLAIN TEXT, which is what Slack's verifier
+  // accepts most reliably.
+  if (body.type === "url_verification") {
+    return new Response(String(body.challenge ?? ""), {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
+  if (body.type !== "event_callback") return jsonResponse(200, { ok: true });
+  const event = (body.event ?? {}) as Record<string, unknown>;
+
+  // The SAME filter poll-dump.mjs applies, and it must stay the same filter:
+  // bot_id skips our own posts (including the threaded replies this whole
+  // feature adds — otherwise every reply would capture itself), subtype skips
+  // joins/edits/thread-broadcasts, and empty text has nothing to capture.
+  const dumpChannel = process.env.SLACK_DUMP_CHANNEL_ID;
+  const text = typeof event.text === "string" ? event.text : "";
+  const ts = typeof event.ts === "string" ? event.ts : "";
+  if (
+    event.type !== "message" ||
+    event.bot_id !== undefined ||
+    event.subtype !== undefined ||
+    // A threaded reply is not a capture — Tom's replies to our own reply would
+    // otherwise become todos.
+    event.thread_ts !== undefined ||
+    text.trim() === "" ||
+    ts === "" ||
+    (dumpChannel !== undefined && event.channel !== dumpChannel)
+  ) {
+    // Acknowledged and ignored: anything but a 200 makes Slack retry an event
+    // we have already decided we do not want.
+    return jsonResponse(200, { ok: true, ignored: true });
+  }
+
+  // The capture itself — one idempotent insert keyed on the message ts, so
+  // Slack's at-least-once retries and poll-dump's backstop pass converge on
+  // one todo. No permalink call here: fetching one is a second network round
+  // trip inside the 3-second budget, and poll-dump's provenance is not worth
+  // the risk of a retry storm. The ts IS the address until then.
+  const id = await ctx.runMutation(internal.tts.internalCapture, {
+    statement: text,
+    source: "slack-capture",
+    provenance: `slack:#dump ts=${ts}`,
+    slackChannel: typeof event.channel === "string" ? event.channel : undefined,
+    slackTs: ts,
+  });
+  return jsonResponse(200, { ok: true, id });
+});
+
+http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 
 // POST /tts/prep — the worker's Claude-prepared daily queue + digest text.
 // Body: { day, todoIds: string[], reasons?: string[], digestText? }.

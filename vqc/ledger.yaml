@@ -163,6 +163,96 @@
     two-repo session cloning both, pushing both session/<id> branches, and
     reporting each in its transcript.
 
+- id: rebrief-newer-than-ruling-flake
+  kind: descent
+  created: 2026-08-30
+  cites: [D8, C3]
+  statement: >-
+    convex/ttsRulings.test.ts "a re-brief NEWER than the live ruling puts the
+    item back on the pile" fails roughly one run in three, on a clean tree and
+    unrelated to any change around it. briefAwaitsRuling compares preparedAt to
+    ruledAt with a strict >, and both are Date.now() — under convex-test the
+    ruling and the following re-brief routinely land in the SAME millisecond,
+    so "newer" is false and the item does not return to the pile. Production
+    barely feels it (a worker re-brief is minutes after a ruling), but the
+    guard's verdict is a coin flip, and a coin-flip guard cannot fail a bad
+    change loudly.
+  graduates_when: >-
+    The comparison expresses the intended tie-break explicitly (a >= for a
+    write that is known to follow, or an ordering key that is not wall-clock
+    ms) and the test passes 50 consecutive runs.
+
+- id: slack-chat-write-scope-unverified
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:7]
+  statement: >-
+    Nothing in the repo proves the installed Slack bot token holds chat:write,
+    which BOTH new outbound features need — the one threaded reply per #dump
+    message and the hourly update. worker/worker.env.example claimed only
+    history-read (now corrected to name both scopes) and tts/
+    implementation-plan.md asserts read+post without evidence. The scope can
+    only be confirmed in the Slack app's OAuth settings, which no session can
+    reach. Until then the reply fails with `missing_scope` (logged per todo,
+    never blocking preparation) and the hourly update stays behind
+    HOURLY_UPDATE_ENABLED = false.
+  graduates_when: >-
+    A successful chat.postMessage from the installed token is observed and
+    HOURLY_UPDATE_ENABLED is true.
+
+- id: hourly-update-schedule-half-blind
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:7]
+  statement: >-
+    The hourly update's "what Tom is scheduled to be doing" can only be
+    answered from dtsBlocks (spans Tom places by hand) and ttsCalendarEvents, a
+    read-only ICS mirror that QUIETLY NO-OPS until TTS_ICS_FEEDS is set. With
+    no feed configured and no blocks placed, the update says "nothing
+    scheduled" every hour forever and reads as broken rather than as
+    unconfigured. This is Tom's decision, not an implementation gap: either
+    point TTS at his real calendar with an ICS subscription URL, or accept that
+    the update knows only time blocks and say so in its wording.
+  graduates_when: >-
+    TTS_ICS_FEEDS holds a real feed, or the update's schedule line names its
+    source so an empty answer is legible ("no time blocks placed") rather than
+    a claim about Tom's whole day.
+
+- id: tts-agents-off-box-invisible
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:20]
+  statement: >-
+    The hourly update's "every agent currently working on TTS" sees only the
+    Jarvis Box. claudeSessions.internalListLive reports the fleet's own
+    sessions; a `claude` run on Tom's laptop touches Convex on no path at all,
+    and claudeSessions carries no host/origin field to distinguish them if it
+    did (cwd is a path, not an identity). So the update's second part is
+    honestly named but structurally incomplete.
+  graduates_when: >-
+    A claudeExternalSessions table plus a key-authed POST /sessions/external
+    exist and a laptop SessionStart/SessionEnd hook posts to it — deliberately
+    NOT by reusing POST /sessions/poll, whose internalPoll returns every live
+    session to any caller and whose daemon claims every "requested" row, so a
+    second poller would double-run Tom's sessions.
+
+- id: session-has-no-ruling-pen
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:15]
+  statement: >-
+    The session brief instructs the agent to record Tom's spoken verdicts via
+    ttsRulings:internalRecordRuling and status changes via tts:internalTriage,
+    but neither is reachable from a session: convex/http.ts exposes only GET
+    /tts/rulings and POST /tts/ruling-applied, and the recording mutations are
+    Tom-gated browser mutations. A session with no browser therefore cannot
+    persist a ruling Tom speaks in it — it survives only as captured todos and
+    the outcome summary. The prompt promises a pen that does not exist.
+  graduates_when: >-
+    Either a key-authed POST /tts/ruling route restricted to the session's own
+    subject exists, or the instruction is removed from
+    app/lib/tts-session-prompt.ts so the prompt stops promising it.
+
 - id: secrets-sync-vercel-drift
   kind: descent
   created: 2026-08-27

@@ -1368,9 +1368,30 @@ export const internalCapture = internalMutation({
     statement: v.string(),
     source: v.string(),
     provenance: v.optional(v.string()),
+    // The Slack coordinates of the message this came from, when it came from
+    // one. Machine fields, kept out of `provenance` (which is Tom's to read).
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
   },
-  handler: async (ctx, { statement, source, provenance }) => {
+  handler: async (
+    ctx,
+    { statement, source, provenance, slackChannel, slackTs },
+  ) => {
     const now = Date.now();
+    // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
+    // #dump message — the Events push route (fast, at-least-once: Slack
+    // retries the same event) and poll-dump.mjs (the reconciliation backstop,
+    // which cannot know what the push route already took). Without this, every
+    // Slack retry and every overlap between the two would mint a duplicate
+    // todo. Returning the EXISTING id rather than throwing is what lets the
+    // push route answer 200 to a retry, which is what stops Slack retrying.
+    if (slackTs !== undefined) {
+      const existing = await ctx.db
+        .query("dtsTodos")
+        .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
+        .first();
+      if (existing) return existing._id;
+    }
     const id = await ctx.db.insert("dtsTodos", {
       statement: statement.trim(),
       readiness: "unprepared",
@@ -1378,11 +1399,36 @@ export const internalCapture = internalMutation({
       timingClass: "whenever",
       source,
       provenance,
+      slackChannel,
+      slackTs,
       createdAt: now,
       updatedAt: now,
     });
     await logEvent(ctx, "captured", id, { source });
     return id;
+  },
+});
+
+// The reply pen: prepare-life-todos.mjs posted its one threaded reply to the
+// #dump message this todo came from, and records that here so it never posts a
+// second one. Tom's ruling is EXACTLY ONE reply per message, and this job
+// re-prepares on --force and on every revise ruling, so the guard has to be
+// durable rather than a variable inside one run.
+export const internalMarkSlackReplied = internalMutation({
+  args: { id: v.string(), replyTs: v.optional(v.string()) },
+  handler: async (ctx, { id, replyTs }) => {
+    const normalized = ctx.db.normalizeId("dtsTodos", id);
+    const todo = normalized && (await ctx.db.get(normalized));
+    if (!todo) throw new Error(`Unknown todo id: ${id}`);
+    // Never overwrite the FIRST reply's ts: if this is somehow called twice,
+    // the reply that exists in Slack is the first one, and pointing the field
+    // at a second would lose the editable message.
+    if (todo.slackRepliedAt !== undefined) return { alreadyReplied: true };
+    await ctx.db.patch(todo._id, {
+      slackRepliedAt: Date.now(),
+      slackReplyTs: replyTs,
+    });
+    return { alreadyReplied: false };
   },
 });
 
@@ -2588,6 +2634,106 @@ export const internalListTodos = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("dtsTodos").collect();
+  },
+});
+
+// ── The hourly update's three reads (Tom's ruling 2026-08-30) ────────────────
+// The hourly Slack update runs from a CRON, and every equivalent Tom-facing
+// query in this file is requireTomId-gated — a cron has no identity, so it
+// cannot call one. These are the internal twins, and they exist for exactly
+// that reason.
+
+/**
+ * What Tom is scheduled to be doing at `at`: the time blocks he placed, joined
+ * with their todos. The overlap predicate is listBlocks' own — every block
+ * starting before `at` fetched by index, then filtered to the ones that have
+ * not ended — so the calendar surface and the Slack line can never disagree
+ * about what "now" contains.
+ *
+ * The calendar-mirror half of the answer (ttsCalendarEvents) is read by the
+ * caller through ttsCalendar.internalListEventsInRange: it is a different
+ * table with its own index, and joining them here would hide which half was
+ * empty.
+ */
+export const internalScheduleAt = internalQuery({
+  args: { at: v.number() },
+  handler: async (ctx, { at }) => {
+    const blocks = await ctx.db
+      .query("dtsBlocks")
+      .withIndex("by_start", (q) => q.lte("start", at))
+      .collect();
+    const live = blocks.filter((b) => b.end > at);
+    return await Promise.all(
+      live.map(async (b) => ({
+        start: b.start,
+        end: b.end,
+        category: b.category,
+        note: b.note,
+        statement:
+          b.todoId === undefined
+            ? undefined
+            : (await ctx.db.get(b.todoId))?.statement,
+      })),
+    );
+  },
+});
+
+/**
+ * Everything dtsEvents recorded in [start, end). The window is what makes the
+ * hourly update's "what happened since last time" EXACT rather than
+ * approximate: the caller passes the timestamp of the last update it actually
+ * sent, so a missed cron tick loses nothing — the next one simply covers a
+ * longer window.
+ *
+ * Bounded by `limit` on top of the range, because dtsEvents is the system's
+ * busy append-only instrumentation and a long outage would otherwise make this
+ * read unbounded.
+ */
+export const internalEventsInRange = internalQuery({
+  args: { start: v.number(), end: v.number(), limit: v.optional(v.number()) },
+  handler: async (ctx, { start, end, limit }) => {
+    return await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at", (q) => q.gte("at", start).lt("at", end))
+      .order("desc")
+      .take(Math.min(limit ?? 500, 2000));
+  },
+});
+
+/**
+ * When an event of `kind` last happened, or null. The hourly update's own
+ * bookkeeping read: it writes an "hourly-update-sent" row after each send and
+ * reads the newest one back before composing, so its window is [last sent,
+ * now] and a MISSED cron tick loses nothing.
+ *
+ * Walks newest-first and stops at the first match. Bounded by HOURLY_SCAN
+ * because dtsEvents is busy: if the kind has not occurred inside that many
+ * rows, "never" is the honest answer and the caller falls back to its default
+ * window rather than reading the whole table.
+ */
+const EVENT_KIND_SCAN = 2000;
+export const internalLastEventAt = internalQuery({
+  args: { kind: v.string() },
+  handler: async (ctx, { kind }) => {
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at")
+      .order("desc")
+      .take(EVENT_KIND_SCAN);
+    return rows.find((e) => e.kind === kind)?.at ?? null;
+  },
+});
+
+/**
+ * The events pen for an ACTION. logEvent is a helper that needs a MutationCtx,
+ * and an internalAction has none — so the hourly update, which is an action
+ * (it does network I/O), records that it sent through here rather than
+ * reaching for a second event-writing path.
+ */
+export const internalLogEvent = internalMutation({
+  args: { kind: v.string(), data: v.optional(v.any()) },
+  handler: async (ctx, { kind, data }) => {
+    await logEvent(ctx, kind, undefined, data);
   },
 });
 
