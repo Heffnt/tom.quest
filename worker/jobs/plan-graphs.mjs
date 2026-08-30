@@ -277,7 +277,13 @@ function prompt(ctx) {
     ``,
     `PRESERVE BY OMISSION. Any field you leave out keeps the value already`,
     `stored. Omit a field rather than guessing at it, and never copy back a`,
-    `"...Preview" value — those are clipped.`,
+    `"...Preview" value — those are extracted text, not the stored document.`,
+    ``,
+    `WITH ONE EXCEPTION: "statement" IS ALWAYS REQUIRED. Every batch object you`,
+    `output carries its statement, and every task object carries its own, even`,
+    `when neither has changed — repeat the stored text verbatim. A batch with`,
+    `no statement cannot be stored at all, and the whole graph under it is`,
+    `lost.`,
     ``,
     `IDS. Echo "batchId" and a task "id" whenever you are rewriting something`,
     `from the lists above; omit them for anything new. A task's "needs" holds`,
@@ -641,10 +647,30 @@ async function main() {
   const served = new Set();
   let failed = 0;
   for (const batch of parsed.batches) {
-    const statement =
+    let statement =
       typeof batch?.statement === "string" ? batch.statement.trim() : "";
+    // PRESERVE BY OMISSION vs. a REQUIRED field. The prompt tells the planner
+    // that any field it leaves out keeps the stored value, so on a batch it is
+    // only re-planning the tasks of, omitting `statement` is exactly what that
+    // rule asks for — but the pen's `statement` is required (v.string()), so
+    // the whole graph was being dropped here instead. On 2026-08-29 that cost
+    // one entire run: 8 batches emitted, 8 dropped, 0 stored. When the model
+    // named the batch by id, the stored statement IS the preserved value, so
+    // fill it in and ship the graph. Only a batch that is both nameless and
+    // unidentifiable is genuinely unusable.
+    if (statement === "" && typeof batch?.batchId === "string") {
+      const known = batchById.get(batch.batchId);
+      if (known) {
+        statement = known.statement;
+        batch.statement = known.statement;
+      }
+    }
     if (statement === "") {
-      console.log(`[plan-graphs] dropped a batch with no statement`);
+      console.log(
+        `[plan-graphs] dropped a batch with no statement and no known id ` +
+          `(batchId: ${JSON.stringify(batch?.batchId ?? null)}, ` +
+          `${Array.isArray(batch?.tasks) ? batch.tasks.length : 0} task(s))`,
+      );
       failed++;
       continue;
     }
@@ -731,6 +757,20 @@ async function main() {
 
   // Hash written LAST (Convex-first durability ordering): a crash anywhere
   // above leaves no cursor, so the next cron run simply redoes the work.
+  //
+  // AND NOT AT ALL WHEN THE RUN STORED NOTHING while losing batches. The
+  // cursor's promise is "these inputs have been planned"; a run whose every
+  // batch was refused planned none of them, and writing the cursor there is
+  // what turns one bad completion into silence — the next run sees the same
+  // hash and returns immediately, so the graphs stay unplanned until some
+  // unrelated todo changes the inputs. Seen 2026-08-29 (8 emitted, 8 lost).
+  if (served.size === 0 && failed > 0) {
+    console.log(
+      `[plan-graphs] cursor NOT advanced: ${failed} batch(es) lost and none ` +
+        `stored — the next run retries these same inputs`,
+    );
+    return;
+  }
   fs.writeFileSync(HASH_PATH, inputHash + "\n");
 }
 
