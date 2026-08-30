@@ -63,7 +63,8 @@ surfaces the decision in the PR, rather than stopping to wait.
   verdicts land in the transcript as rows, allow and deny alike, are memoized
   per session so an agentic loop pays once, and the classifier is FAIL-OPEN
   (unreachable ⇒ allowed, and the transcript says so).
-- `lib.mjs` — env parsing, `sessionsFetch`, backoff, 32KB truncation.
+- `lib.mjs` — env parsing, the `SESSION_SCRUBBED_KEYS` scrub (below),
+  `sessionsFetch`, backoff, 32KB truncation.
 
 ## The no-state rule, as applied here
 
@@ -121,6 +122,16 @@ It reads `/etc/tts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
 `GH_TOKEN` optional but needed for private-repo clones) and expects
 `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active` (baked into the systemd
 unit) so `tts-account use` switches which Max account sessions run under.
+
+The systemd unit's `EnvironmentFile=/etc/tts/worker.env` puts *every* key in
+that file into this daemon's own environment, so what a session inherits is
+that environment minus `SESSION_SCRUBBED_KEYS` (`lib.mjs`):
+`SESSIONS_WORKER_KEY`, `GH_TOKEN`, and the two `TOMQUEST_AGENT_*` browse
+credentials — the last two because they hold Tom's own tom.quest account and
+one `env` in one Bash call would copy his password into a Convex-stored
+transcript. `tts-browse --login` still signs in: it reads those two from the
+file itself, as root. `lib.test.mjs` is the regression test for the whole
+list.
 
 ## Restart semantics
 

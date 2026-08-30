@@ -48,6 +48,40 @@ export function loadEnv(path = ENV_PATH) {
   return env;
 }
 
+// The env names that arrive in THIS daemon's process (systemd's
+// EnvironmentFile=/etc/tts/worker.env puts every key in the file here) and
+// must not reach a process a model can steer. Each one, and what reading it
+// would buy a confused session:
+//   SESSIONS_WORKER_KEY      — authorizes /sessions/ingest: rewrite ANY transcript
+//   GH_TOKEN                 — repo write across the whole GitHub account
+//   TOMQUEST_AGENT_USERNAME  — the account tts-browse --login signs in as
+//   TOMQUEST_AGENT_PASSWORD  — that account's PASSWORD, in plaintext
+// The last two hold Tom's own tom.quest account (ratified 2026-08-30). The
+// ruling's own reason for typing them on the box by hand rather than telling
+// them to a session is that a session transcript is stored in Convex — and an
+// inherited env defeats exactly that, because `env` in any Bash call prints
+// the password straight into a transcript row. Sessions lose nothing: they run
+// as root, and tts-browse reads /etc/tts/worker.env itself when the two names
+// are absent from its environment, so `tts-browse --login` still signs in.
+export const SESSION_SCRUBBED_KEYS = [
+  "SESSIONS_WORKER_KEY",
+  "GH_TOKEN",
+  "TOMQUEST_AGENT_USERNAME",
+  "TOMQUEST_AGENT_PASSWORD",
+];
+
+// A copy of `source` with SESSION_SCRUBBED_KEYS (plus any `extra` names)
+// removed. Every model-reachable child process the daemon spawns is started
+// from this, never from process.env directly.
+export function scrubbedEnv(source, extra = []) {
+  const drop = new Set([...SESSION_SCRUBBED_KEYS, ...extra]);
+  const out = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (!drop.has(key)) out[key] = value;
+  }
+  return out;
+}
+
 // stdout with the daemon's prefix; journald adds timestamps, so we don't.
 export function log(...args) {
   console.log("[session-host]", ...args);

@@ -24,6 +24,7 @@ import {
   backoffMs,
   truncated,
   ERROR_TEXT_LIMIT,
+  scrubbedEnv,
 } from "./lib.mjs";
 
 const execFile = promisify(execFileCb);
@@ -105,7 +106,10 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 //   sudo / systemctl / crontab — box-level privilege and persistence
 //   /etc/ /root/    — the Jarvis Box's own configuration, outside every workdir
 //   .claude-accounts — the Max-account credential store the CLI reads
-//   GH_TOKEN / WORKER_KEY — the two secret names that exist in this env
+//   GH_TOKEN / WORKER_KEY / TOMQUEST_AGENT — the secret names that exist on
+//                     this box. TOMQUEST_AGENT_* no longer sit in a session's
+//                     env (SESSION_SCRUBBED_KEYS), so a command naming them is
+//                     reaching for the file that holds them.
 //   curl with a body/upload flag — the exfiltration shape (plain GETs are fine)
 //   wget            — same, in its fetch-and-write direction
 //   rm on an absolute path — deletion that can reach outside the workdir
@@ -117,7 +121,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // span backslash-newline continuations. Over-matching only costs a classifier
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
-  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|TOMQUEST_AGENT|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -671,17 +675,12 @@ export class Session {
 
   startQuery({ resume } = {}) {
     // The daemon's own secrets, dropped from the env the session's shell
-    // inherits. Under systemd both arrive via EnvironmentFile=/etc/tts/
-    // worker.env, so without this destructure-drop `env` in any Bash call
-    // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
-    // confused session could rewrite ANY transcript) and GH_TOKEN is repo
-    // write for the whole account. Neither is reachable through the
-    // sanctioned pens, so nothing legitimate needs them.
-    const {
-      SESSIONS_WORKER_KEY: _ingestKey,
-      GH_TOKEN: _ghToken,
-      ...inheritedEnv
-    } = process.env;
+    // inherits (SESSION_SCRUBBED_KEYS in lib.mjs names each one and what
+    // reading it would buy a confused session). Under systemd they all arrive
+    // via EnvironmentFile=/etc/tts/worker.env, so without this drop `env` in
+    // any Bash call prints them. None is reachable through the sanctioned
+    // pens, so nothing legitimate needs them.
+    const inheritedEnv = scrubbedEnv(process.env);
     this.queue = new TurnQueue();
     this.abort = new AbortController();
     this.interruptRequested = false;
@@ -703,10 +702,12 @@ export class Session {
         // enters a session's shell — its write surface (capture, prep,
         // briefs, batches, ruling-applied, session-outcome) is the same one
         // the cron jobs' agentic runs already expose to a model.
-        // SESSIONS_WORKER_KEY and GH_TOKEN are SCRUBBED above (inheritedEnv):
-        // inheriting them is not hypothetical — systemd puts both in this
+        // SESSION_SCRUBBED_KEYS are removed above (inheritedEnv): inheriting
+        // them is not hypothetical — systemd puts every one of them in this
         // process's env — and an ingest key reachable from the session's
-        // shell would let a confused session corrupt any transcript.
+        // shell would let a confused session corrupt any transcript, while
+        // the browse password would land in a transcript row the first time
+        // anything ran `env`.
         env: {
           ...inheritedEnv,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
@@ -1144,23 +1145,15 @@ export class Session {
         // Scrubbed env: the CLI authenticates through CLAUDE_CONFIG_DIR,
         // which survives the scrub. The classifier's PROMPT embeds a
         // model-authored command, so this process is model-influenced — the
-        // same reason the SDK child env is scrubbed applies here: neither
-        // the ingest key nor the GitHub token may sit in a process a model
-        // can steer.
+        // same reason the SDK child env is scrubbed applies here: none of
+        // SESSION_SCRUBBED_KEYS may sit in a process a model can steer, and
+        // this child needs no pen, so the TTS worker key goes too.
         // The prompt rides in argv rather than stdin — unlike tts-lib's
         // runClaude — because it is one command, not a ledger dump; a command
         // big enough to blow the ~128KiB argv cap fails the spawn and lands
         // in the fail-open path below, which is the right answer anyway.
         {
-          env: (() => {
-            const {
-              SESSIONS_WORKER_KEY: _ingest,
-              GH_TOKEN: _gh,
-              TTS_WORKER_KEY: _tts,
-              ...rest
-            } = process.env;
-            return rest;
-          })(),
+          env: scrubbedEnv(process.env, ["TTS_WORKER_KEY"]),
           timeout: CLASSIFIER_TIMEOUT_MS,
           maxBuffer: CLASSIFIER_MAXBUFFER,
         },

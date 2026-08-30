@@ -24,10 +24,11 @@
 //              [--type SEL=TEXT]... [--viewport WxH] [--full] [--settle MS]
 //              [--json]
 //
-//   --login    sign in first, using TOMQUEST_AGENT_USERNAME /
-//              TOMQUEST_AGENT_PASSWORD from the environment (systemd passes
-//              /etc/tts/worker.env into the session-host, which passes them
-//              on). Without those two keys the flag fails loudly rather than
+//   --login    sign in first, as TOMQUEST_AGENT_USERNAME /
+//              TOMQUEST_AGENT_PASSWORD — taken from the environment if they
+//              are there, and otherwise read straight out of
+//              /etc/tts/worker.env (this runs as root; see readCredential).
+//              Without those two keys the flag fails loudly rather than
 //              silently browsing as an anonymous visitor and reporting an
 //              empty page — every /turing and /tts page is role-gated, so an
 //              anonymous read of one is a false negative, not a result.
@@ -40,6 +41,58 @@
 // below fails, setup.sh has not been re-run on this box.
 
 const { execSync } = require("node:child_process");
+const fs = require("node:fs");
+
+const ENV_PATH = "/etc/tts/worker.env";
+
+// Where the sign-in credentials come from: the environment first, then
+// /etc/tts/worker.env.
+//
+// THE FILE IS THE PATH THAT MATTERS. The session-host daemon deliberately
+// removes TOMQUEST_AGENT_USERNAME / TOMQUEST_AGENT_PASSWORD from every
+// session's environment (SESSION_SCRUBBED_KEYS in worker/session-host/
+// lib.mjs), because those two hold Tom's own tom.quest account and an
+// inherited env means one `env` in one Bash call writes his password into a
+// Convex-stored transcript. Sessions run as root, so reading the file here
+// costs a session nothing and keeps the password out of the shell it drives.
+// The environment still wins when set, so an ssh shell that exported the two
+// by hand behaves as before.
+//
+// The parser is a third copy of worker/jobs/tts-lib.mjs's loadEnv (after
+// worker/session-host/lib.mjs's), for the same reason that one is a copy: the
+// three files install to three different places on the Jarvis Box
+// (/usr/local/bin, /opt/tts, /opt/tts/session-host), so a relative import that
+// resolves in the repo would dangle after install. The KEY=VALUE format is
+// frozen. This copy reads ONLY the two browse keys and never logs a value.
+function readCredential(name) {
+  const fromEnv = process.env[name];
+  if (fromEnv) return fromEnv;
+  let text;
+  try {
+    text = fs.readFileSync(ENV_PATH, "utf8");
+  } catch {
+    return null; // absent or unreadable — the caller reports it as missing
+  }
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    let key = line.slice(0, eq).trim();
+    if (key.startsWith("export ")) key = key.slice("export ".length).trim();
+    if (key !== name) continue;
+    let value = line.slice(eq + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    return value || null;
+  }
+  return null;
+}
 
 function loadPlaywright() {
   const candidates = ["playwright"];
@@ -137,12 +190,16 @@ function parseArgs(argv) {
 // looks signed in, with the username in the corner, whose every data call is
 // 401. The caller resolves the landing origin by navigating first.
 async function signIn(page, origin) {
-  const username = process.env.TOMQUEST_AGENT_USERNAME;
-  const password = process.env.TOMQUEST_AGENT_PASSWORD;
+  const username = readCredential("TOMQUEST_AGENT_USERNAME");
+  const password = readCredential("TOMQUEST_AGENT_PASSWORD");
   if (!username || !password) {
     console.error(
-      "tts-browse: --login needs TOMQUEST_AGENT_USERNAME and TOMQUEST_AGENT_PASSWORD " +
-        "in the environment (add them to /etc/tts/worker.env).",
+      "tts-browse: --login needs TOMQUEST_AGENT_USERNAME and TOMQUEST_AGENT_PASSWORD, " +
+        `and found neither in the environment nor in ${ENV_PATH}. They are typed ` +
+        "into that file by hand, on the box, by Tom — telling them to a session " +
+        "instead writes the password into a Convex-stored transcript. Until they " +
+        "are there, browse without --login and read every /turing and /tts result " +
+        "as anonymous: a 200 with 401s underneath.",
     );
     process.exit(4);
   }

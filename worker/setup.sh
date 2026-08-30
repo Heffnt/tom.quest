@@ -99,6 +99,22 @@ if [ ! -f /etc/tts/worker.env ]; then
 fi
 chmod 600 /etc/tts/worker.env
 
+# Because an existing env file is never overwritten, a box provisioned before
+# a key was ADDED to the template simply does not have that key — and every
+# such gap is silent: the feature reading it stays off, and nothing says why.
+# (Lived case: TOMQUEST_AGENT_USERNAME/PASSWORD, added to the template after
+# this box was built, so `nano /etc/tts/worker.env` showed no such lines to
+# fill in.) So every run names the drift. Only key NAMES are read; no value is
+# read or printed.
+env_drift=""
+for key in $(grep -Eo '^[A-Z0-9_]+=' "$WORKER_DIR/worker.env.example" | tr -d '='); do
+  grep -Eq "^(export[[:space:]]+)?${key}=" /etc/tts/worker.env || env_drift="$env_drift $key"
+done
+if [ -n "$env_drift" ]; then
+  echo "  /etc/tts/worker.env has no line for these template keys:$env_drift"
+  echo "  add them by hand (nano /etc/tts/worker.env); the template documents each"
+fi
+
 echo "== [7/9] cron =="
 # System cron runs in UTC and knows nothing about daylight saving, so
 # prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
@@ -278,9 +294,11 @@ NEXT STEPS (manual, in order):
   1. Fill in the secrets:
        nano /etc/tts/worker.env
      (CONVEX_SITE_URL, TTS_WORKER_KEY, SLACK_BOT_TOKEN, SLACK_DUMP_CHANNEL_ID,
-      GH_TOKEN, SESSIONS_WORKER_KEY — the file explains each one. If
+      GH_TOKEN, SESSIONS_WORKER_KEY, and TOMQUEST_AGENT_USERNAME /
+      TOMQUEST_AGENT_PASSWORD — the file explains each one. If
       SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
-      filling it so the tts-session-host daemon gets enabled.)
+      filling it so the tts-session-host daemon gets enabled. Any key the
+      template has and this file lacks was listed in step 6 above.)
 
   2. Log in both Claude Max accounts (interactive, over this SSH session):
        tts-account login gmail
@@ -296,6 +314,15 @@ NEXT STEPS (manual, in order):
   5. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):
        systemctl status tts-session-host
        journalctl -u tts-session-host -f
+
+  6. Check that sessions can browse SIGNED IN (once the two
+     TOMQUEST_AGENT_* values are typed in; they hold Tom's own account, so
+     only he can type them):
+       tts-browse https://tom.quest/tts --login --json
+     A working run prints "signedInAs" and an empty "failedRequests", and
+     prints no credential either way. Without those two values, --login
+     refuses to run and every /turing and /tts page a session reads is a 200
+     with 401s underneath.
 
 Cron is already installed (/etc/cron.d/tts); logs land in /var/log/tts/.
 Re-running this script at any time is safe and is also how you roll out

@@ -75,19 +75,54 @@ request line is the point: a recurring class of tom.quest bug is a request
 that should never have been sent — an id still resolving, a placeholder path
 segment — and this is what makes one visible instead of inferred.
 
-`--login` signs in through the ordinary widget using
+`--login` signs in through the ordinary widget as
 `TOMQUEST_AGENT_USERNAME` / `TOMQUEST_AGENT_PASSWORD`, and refuses to run
 without them, because every `/turing` and `/tts` page is role-gated: browsing
 one anonymously returns a 200 with 401s underneath, which reads as "page is
 fine" to a session that only checked the status.
 
 **Those two keys hold Tom's own account** (ratified 2026-08-30), so every
-session browses at role `tom`. Nothing scrubs them from a session's shell —
-`session.mjs` drops exactly `SESSIONS_WORKER_KEY` and `GH_TOKEN` and inherits
-the rest — so the account's role is the role every session holds. This is a
-knowing interim: no other account exists yet, and a session that cannot see
-`/turing` cannot check its own work there. A session account with a narrower
-role is a captured TTS todo.
+session browses at role `tom`. This is a knowing interim: no other account
+exists yet, and a session that cannot see `/turing` cannot check its own work
+there. A session account with a narrower role is a captured TTS todo.
+
+Because they are Tom's own credentials, they are the only keys in
+`worker.env` that no session's shell ever holds: `session.mjs` removes both
+from the environment it hands the session (`SESSION_SCRUBBED_KEYS` in
+`session-host/lib.mjs`, alongside `SESSIONS_WORKER_KEY` and `GH_TOKEN`), and
+`tts-browse` reads them out of `/etc/tts/worker.env` itself — as root, at the
+moment it signs in. A session therefore browses signed in while `env` in that
+session prints no password. The point is the same one that keeps the values
+off this repo and out of any session prompt: a session's every command lands
+in a transcript stored in Convex, and a password read into one is a password
+written down.
+
+### Signing sessions in (one-time, by hand)
+
+Only Tom can do this — it is his password, and typing it to a session is the
+thing being avoided:
+
+```
+# 1. Roll out the current worker code (idempotent; also restarts the daemon):
+cd /path/to/tom.quest && git pull && bash worker/setup.sh
+
+# 2. Type the two values (single-quote the password unless it contains a
+#    single quote — the file explains why):
+nano /etc/tts/worker.env
+
+# 3. Verify, on the box, in the same code path a session uses:
+tts-browse https://tom.quest/tts --login --json
+```
+
+Step 3 prints `signedInAs` and an empty `failedRequests` when it worked, and
+prints no credential either way. Step 1 before step 2 is deliberate: the scrub
+that keeps the password out of session shells ships in step 1, so no session
+can read a value that does not exist yet.
+
+A session cannot substitute for any of this. `systemctl restart
+tts-session-host` is hard-denied inside a session (it would kill every live
+mission, including the one running the command), and a session that asks for
+the password is asking for it to be written into Convex.
 
 **Not installed: any path from this box to the Turing cluster.** `ssh` exists
 but `turing.wpi.edu` is not reachable from here, and the session sandbox's own
