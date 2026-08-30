@@ -28,6 +28,7 @@ import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { REPO_GITHUB, SESSIONS_ROOT } from "./repos.mjs";
 
@@ -88,6 +89,22 @@ function readToken() {
   return line.replace(/^\s*GH_TOKEN\s*=\s*/, "").replace(/^["']|["']$/g, "").trim();
 }
 
+/**
+ * owner/repo out of a git remote URL, or null if it is not GitHub.
+ *
+ * Exported for the test because the obvious version of this regex is wrong in
+ * this repo specifically: it excluded "." from the repo name, which reads
+ * every other repo correctly and then fails on tom.quest. Handles the https,
+ * ssh and credential-bearing forms, since the daemon clones with the last one.
+ */
+export function parseSlug(originUrl) {
+  const m = String(originUrl)
+    .trim()
+    .replace(/\/+$/, "")
+    .match(/github\.com[/:]([^/]+\/.+?)(?:\.git)?$/);
+  return m ? m[1] : null;
+}
+
 async function git(cwd, ...args) {
   const { stdout } = await execFile("git", ["-C", cwd, ...args], {
     maxBuffer: 8 * 1024 * 1024,
@@ -129,9 +146,8 @@ async function main() {
 
   // ── the repo must be one the daemon is allowed to clone ──────────────────
   const originUrl = await git(root, "remote", "get-url", "origin");
-  const match = originUrl.match(/github\.com[/:]([^/]+\/[^/.]+)(?:\.git)?$/);
-  if (!match) die("origin does not look like a GitHub remote");
-  const slug = match[1];
+  const slug = parseSlug(originUrl);
+  if (!slug) die("origin does not look like a GitHub remote");
   const allowed = Object.values(REPO_GITHUB);
   if (!allowed.includes(slug)) {
     die(`refusing: ${slug} is not one of ${allowed.join(", ")}`);
@@ -202,4 +218,9 @@ async function main() {
   }
 }
 
-main().catch((err) => die(redact(err?.message ?? String(err), process.env.GH_TOKEN)));
+// Only when run as a command — the test imports parseSlug from here.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) =>
+    die(redact(err?.message ?? String(err), process.env.GH_TOKEN)),
+  );
+}
