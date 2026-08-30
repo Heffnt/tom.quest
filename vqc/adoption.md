@@ -52,6 +52,7 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
 | `npx tsc --noEmit` (type rung) | commit (CI `tests` job) |
 | `pnpm test:turing` (vitest: convex + vqc guards) | commit (CI `tests` job) |
 | `pnpm check:guardrails` (contract fences) | commit (CI `static-boundaries` job) |
+| `pnpm build` (production build) | commit (CI `tests` job) |
 | gitleaks | commit (CI `secret-scan` job) |
 | Playwright e2e | on demand / pre-deploy (not in CI — pre-existing) |
 

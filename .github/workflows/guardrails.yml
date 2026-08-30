@@ -45,3 +45,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: npx tsc --noEmit -p tsconfig.json
       - run: pnpm test:turing
+      # The production build, verified on every PR. It runs here rather than
+      # relying on the Vercel check because Vercel's PREVIEW build is not the
+      # production build (it skips `convex deploy`, which a PR branch must not
+      # run), and because a build that only happens on the deploy platform is a
+      # build nobody sees fail until after merge. Possible at all because the
+      # public Convex URLs live in the committed .env — before that, CI had no
+      # NEXT_PUBLIC_CONVEX_URL and `next build` died at the prerender step.
+      - run: pnpm build
