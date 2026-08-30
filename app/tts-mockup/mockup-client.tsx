@@ -18,6 +18,7 @@ import PathsBar from "../tts/components/paths-bar";
 import BatchCard, { type BatchGraph } from "../tts/components/batch-card";
 import RulingDialog, { type RulingVerdict } from "../tts/components/ruling-dialog";
 import DetailDialog, { type DetailItem } from "../tts/components/detail-dialog";
+import GroundUpView from "../tts/components/ground-up-view";
 
 type Row = {
   _id: string;
@@ -108,9 +109,9 @@ export default function MockupClient() {
     fetched ?? (process.env.NODE_ENV === "development" && !isTom ? DEV_SAMPLE : null);
   const [selectedPath, setSelectedPath] = useState<string>("cmt paper");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [doneShown, setDoneShown] = useState<Set<string>>(new Set());
   const [ruling, setRuling] = useState<{ graph: BatchGraph; verdict: RulingVerdict } | null>(null);
   const [detail, setDetail] = useState<DetailItem | null>(null);
+  const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
   const { byPath, chips } = useMemo(() => {
     const all = rows ?? [];
@@ -165,11 +166,10 @@ export default function MockupClient() {
             <BatchCard
               graph={g}
               expanded={expanded.has(g.id)}
-              showDone={doneShown.has(g.id)}
               onToggle={() => setExpanded((prev) => toggle(prev, g.id))}
-              onToggleDone={() => setDoneShown((prev) => toggle(prev, g.id))}
               onRule={(verdict) => setRuling({ graph: g, verdict })}
               onDetail={setDetail}
+              onGroundUp={(title, content) => setGroundUp({ title, content })}
               onOpenSession={() => {}}
             />
           </div>
@@ -189,7 +189,16 @@ export default function MockupClient() {
           onClose={() => setRuling(null)}
         />
       )}
-      {detail && <DetailDialog item={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <DetailDialog
+          item={detail}
+          onClose={() => setDetail(null)}
+          onGroundUp={(title, content) => setGroundUp({ title, content })}
+        />
+      )}
+      {groundUp && (
+        <GroundUpView title={groundUp.title} content={groundUp.content} onClose={() => setGroundUp(null)} />
+      )}
     </main>
   );
 

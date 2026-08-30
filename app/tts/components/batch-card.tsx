@@ -9,6 +9,8 @@
 // hidden) → done → goals. Every item opens a detail dialog; nothing shifts
 // the page, and everything clickable changes on hover.
 import PlanBar from "./plan-bar";
+import GraphView from "./graph-view";
+import { groundUpTeaser } from "../lib";
 import type { RulingVerdict } from "./ruling-dialog";
 import type { DetailItem } from "./detail-dialog";
 
@@ -67,20 +69,18 @@ function needNames(t: GraphTask, all: GraphTask[]): string[] {
 export default function BatchCard({
   graph,
   expanded,
-  showDone,
   onToggle,
-  onToggleDone,
   onRule,
   onDetail,
+  onGroundUp,
   onOpenSession,
 }: {
   graph: BatchGraph;
   expanded: boolean;
-  showDone: boolean;
   onToggle: () => void;
-  onToggleDone: () => void;
   onRule: (verdict: RulingVerdict) => void;
   onDetail: (item: DetailItem) => void;
+  onGroundUp: (title: string, content: string) => void;
   onOpenSession: () => void;
 }) {
   const { done, ready, blocked } = taskSets(graph.tasks);
@@ -142,12 +142,26 @@ export default function BatchCard({
           {graph.groundUp !== undefined && (
             <button
               type="button"
-              onClick={() => onDetail({ kind: "batch", graph })}
+              onClick={() => onGroundUp(graph.statement, graph.groundUp ?? "")}
               className="-mx-1.5 mb-2.5 block w-[calc(100%+0.75rem)] rounded px-1.5 py-1 text-left text-[13px] text-text-muted hover:bg-surface-alt/60 hover:text-text"
             >
-              {graph.groundUp.split(". ").slice(0, 2).join(". ")}.
+              {groundUpTeaser(graph.groundUp)}
             </button>
           )}
+
+          <GraphView
+            tasks={graph.tasks}
+            goals={graph.goals}
+            onPick={(id) => {
+              const t = graph.tasks.find((x) => x.id === id);
+              if (t) onDetail(taskDetail(t));
+              else {
+                const g = graph.goals.find((x) => x.id === id);
+                if (g)
+                  onDetail({ kind: "goal", batchStatement: graph.statement, goal: g });
+              }
+            }}
+          />
 
           <div className="mb-3 flex flex-wrap items-center gap-1.5">
             <button
@@ -229,32 +243,27 @@ export default function BatchCard({
 
           {done.length > 0 && (
             <>
-              <button
-                type="button"
-                onClick={onToggleDone}
-                className="mt-2.5 block rounded text-[11px] uppercase tracking-wide text-accent underline underline-offset-2 hover:text-text"
-              >
-                {showDone ? "hide" : "show"} {done.length} done
-              </button>
-              {showDone &&
-                done.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => onDetail(taskDetail(t))}
-                    className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
+              <div className="mb-1 mt-2.5 text-[11px] uppercase tracking-wide text-text-faint">
+                done
+              </div>
+              {done.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onDetail(taskDetail(t))}
+                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
+                >
+                  <span className="text-success">✓</span>
+                  <span
+                    className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
+                      t.actor === "tom" ? "text-accent/70" : "text-text-faint"
+                    }`}
                   >
-                    <span className="text-success">✓</span>
-                    <span
-                      className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
-                        t.actor === "tom" ? "text-accent/70" : "text-text-faint"
-                      }`}
-                    >
-                      {t.actor === "tom" ? "you" : "agent"}
-                    </span>
-                    <span className="truncate text-text-faint">{t.statement}</span>
-                  </button>
-                ))}
+                    {t.actor === "tom" ? "you" : "agent"}
+                  </span>
+                  <span className="truncate text-text-faint">{t.statement}</span>
+                </button>
+              ))}
             </>
           )}
 

@@ -287,6 +287,54 @@ session and no knowledge of anything an agent made — files, branches,
 directories, jobs, and artifacts an agent created are unknown to him by name
 and must be described before they are used.
 
+THE FORM OF A GROUND-UP EXPLANATION: A COMPLETE HTML DOCUMENT. Rendered as
+paragraphs of prose, a ground-up explanation is an incomprehensible wall of
+text — Tom's own words, 2026-08-29, and the reason for this rule. So every one
+you write is a complete, self-contained HTML document, opening at
+<!DOCTYPE html> and closing at </html>, and it is shown FULLSCREEN. Hard
+constraints, because it renders inside a sandbox with no scripting and no
+network:
+- No <script>, no inline event handlers, and no external stylesheet, font,
+  image, or URL of any kind. Everything is inline: one <style> block in the
+  <head> and plain markup in the <body>. Nothing loads from outside; anything
+  external renders as a hole in the page.
+- The dark palette of the page it opens over: background #0a0e17, body text
+  #e2e8f0, secondary text #94a3b8, one accent #e8a040 for headings and key
+  terms, #1e293b for borders and rules. No other colors unless a diagram
+  genuinely needs one.
+- Readable type: about 15px body text, 1.65 line height, a column no wider
+  than roughly 760px centered with generous padding, a system sans stack
+  (-apple-system, "Segoe UI", Roboto, sans-serif) for prose and a monospace
+  stack (ui-monospace, "SF Mono", Menlo, monospace) for identifiers, paths,
+  ids, and code.
+- Real headings — one <h1> naming the subject, an <h2> per section — and short
+  sections. The reader must be able to find the part he wants without reading
+  the rest.
+
+STRUCTURE OVER WALLS. Inside that document, pick the form that fits the fact:
+- Enumerable facts go in a <table>: the terms and their definitions, the
+  options and what each one costs, the fields and what they mean, the states
+  and what each one implies. One fact per row, a real <th> header row.
+- Steps, states, and dependencies go in a simple visual structure built from
+  styled <div> boxes — a border, some padding, and an arrow (→ or ↓) between
+  them. Boxes, borders, and arrows only; no diagramming library, and SVG only
+  where plain shapes say it better than boxes would.
+- Everything else is short paragraphs under a heading, plus lists where the
+  items really are a list.
+
+WHAT THE DOCUMENT MUST COVER. It exists so a reader arriving with no context
+can understand the one line of display text it sits behind, and it must cover
+all of it: what this is; why it exists, meaning the end state it serves; what
+every term in the display text means, defined at first use; where the thing
+stands right now; what happens next and who does it; and — whenever Tom's
+ruling is the missing piece — exactly what he would be deciding, written as
+the numbered decision list described below, with the options and your
+recommendation.
+
+HTML is the form; everything else in this standard is still the writing. The
+rules on vocabulary, analogies, invented names, sentence construction, and
+tone all apply inside the document unchanged.
+
 WHO YOU ARE WRITING FOR. Tom is an AI PhD student. Assume fluent, and never
 define: machine learning at PhD level (transformer structure, training,
 evaluation), his own boolean-backdoor research vocabulary (triggers, arity,

@@ -297,3 +297,37 @@ export function ageText(ms: number, now: number): string {
   if (days === 1) return "1 day ago";
   return `${days} days ago`;
 }
+
+// ── Ground-up explanation teasers ────────────────────────────────────────────
+// Since 2026-08-29 a stored ground-up explanation is a COMPLETE HTML DOCUMENT
+// (Tom: rendered as prose it is an incomprehensible wall of text), shown
+// fullscreen in a sandboxed iframe by components/ground-up-view.tsx. Anywhere
+// a surface prints a taste of one inline — the batch card face, the batch
+// detail dialog — it must print the document's readable TEXT, or the card
+// shows a doctype and a stylesheet. The HTML test is the same single rule
+// GroundUpView uses: a leading "<".
+
+/**
+ * The readable text of an explanation, clipped for an inline teaser. Legacy
+ * plain-text explanations pass through unchanged. Lossy on purpose — the
+ * fullscreen view is where the document itself is read.
+ */
+export function groundUpTeaser(content: string, maxChars = 220): string {
+  const text = content.trimStart().startsWith("<")
+    ? content
+        .replace(/<!DOCTYPE[^>]*>/gi, " ")
+        .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, " ")
+        .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+        .replace(/<[^>]*>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, " ")
+        .trim()
+    : content.trim();
+  if (text === "") return "";
+  return text.length > maxChars ? `${text.slice(0, maxChars).trimEnd()}…` : text;
+}

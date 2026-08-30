@@ -36,6 +36,7 @@ import BatchCard, {
 } from "./batch-card";
 import RulingDialog, { type RulingVerdict } from "./ruling-dialog";
 import DetailDialog, { type DetailItem } from "./detail-dialog";
+import GroundUpView from "./ground-up-view";
 import TimeNoteField, {
   groupTimeNotes,
   NO_NOTES,
@@ -46,6 +47,7 @@ import {
   batchSubjectKey,
   codeSubjectKey,
   fmtDate,
+  groundUpTeaser,
   liveRulingsByKey,
   rulingSubjectKey,
   selectBatches,
@@ -243,7 +245,6 @@ export default function BatchesTab() {
 
   const now = Date.now();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [doneShown, setDoneShown] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [ruling, setRuling] = useState<{
     batchId: Id<"batches">;
@@ -251,6 +252,7 @@ export default function BatchesTab() {
     verdict: RulingVerdict;
   } | null>(null);
   const [detail, setDetail] = useState<DetailItem | null>(null);
+  const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
   const flip = (id: string, set: (fn: (p: Set<string>) => Set<string>) => void) =>
     set((prev) => {
@@ -399,7 +401,6 @@ export default function BatchesTab() {
               <BatchCard
                 graph={graph}
                 expanded={expanded.has(graph.id)}
-                showDone={doneShown.has(graph.id)}
                 onToggle={() =>
                   toggle(graph.id, () => {
                     void recordEvent({
@@ -408,11 +409,11 @@ export default function BatchesTab() {
                     }).catch(() => {});
                   })
                 }
-                onToggleDone={() => flip(graph.id, setDoneShown)}
                 onRule={(verdict) =>
                   setRuling({ batchId: batch._id, graph, verdict })
                 }
                 onDetail={setDetail}
+                onGroundUp={(title, content) => setGroundUp({ title, content })}
                 onOpenSession={() =>
                   void openBatchSession(sessionContext(batch, graph))
                 }
@@ -504,7 +505,11 @@ export default function BatchesTab() {
         <RulingDialog
           verdict={ruling.verdict}
           statement={ruling.graph.statement}
-          brief={ruling.graph.groundUp}
+          brief={
+            ruling.graph.groundUp !== undefined
+              ? groundUpTeaser(ruling.graph.groundUp)
+              : undefined
+          }
           plan={ruling.graph.tasks.map((t) => ({
             text: t.statement,
             actor: t.actor,
@@ -522,7 +527,20 @@ export default function BatchesTab() {
           onClose={() => setRuling(null)}
         />
       )}
-      {detail && <DetailDialog item={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <DetailDialog
+          item={detail}
+          onClose={() => setDetail(null)}
+          onGroundUp={(title, content) => setGroundUp({ title, content })}
+        />
+      )}
+      {groundUp && (
+        <GroundUpView
+          title={groundUp.title}
+          content={groundUp.content}
+          onClose={() => setGroundUp(null)}
+        />
+      )}
     </div>
   );
 }
