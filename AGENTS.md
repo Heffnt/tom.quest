@@ -65,6 +65,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - The proxy detects HTML/non-JSON upstream responses and converts them to structured JSON errors.
 - The API binds `127.0.0.1` (only the co-located cloudflared reaches it; not the shared cluster LAN). `/file` and `/dirs` are confined to `TURING_FILE_ROOT` (default home) and refuse secret-bearing paths.
 - Declarative GPU pool: desired state lives in the `gpuPool` table; the Convex cron `internal.gpuPool.reconcile` reconciles desired-vs-actual against the API, tracking its own jobs in `gpuPoolAllocation` so it only ever cancels pool-created jobs. Requires `TURING_API_KEY` in the Convex env (not just Vercel).
+- **Two credentials, not one.** `TURING_API_KEY` opens every endpoint, including `POST /sessions/{name}/run` — arbitrary shell on the cluster — and lives only in Vercel and Convex env. `TURING_READ_KEY` is a separate, independent secret accepted by exactly three endpoints (`GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output`) and refused everywhere else; it is what the TTS worker box holds, so a session can read the cluster without being able to change it. Unset means the read scope does not exist (fail closed). Same posture as `POOL_AGENT_KEY`: a narrow key sharing nothing with the full one.
 
 ## Deployment
 

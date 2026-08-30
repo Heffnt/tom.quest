@@ -41,10 +41,18 @@ tom.Quest never needs to signal, drain, or inspect it — only to choose how man
 FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared tunnel
 `turing.tom.quest`. Refuses to start without `TURING_API_KEY`; CORS `*`; SIGHUP ignored.
 
-- **Auth:** a single shared `X-API-Key` header dependency (`verify_api_key`) on every
-  non-WS endpoint (`main.py:54`). The terminal WebSocket is *not* under that dependency;
-  it authenticates with a short-lived HMAC token signed with the **same** `API_KEY`
-  (`ws.py:27`, `ws.py:124`).
+- **Auth:** an `X-API-Key` header dependency on every non-WS endpoint, in two scopes.
+  `verify_api_key` (the full `TURING_API_KEY`) guards everything by default. `verify_read_key`
+  guards three reading endpoints — `GET /gpu-report`, `GET /jobs`,
+  `GET /sessions/{name}/output` — and additionally accepts `TURING_READ_KEY`, an
+  independent secret that is refused everywhere else. The read scope exists because the
+  full key also authorizes `POST /sessions/{name}/run` (arbitrary cluster shell), so a
+  read-only caller — the TTS session agents on the worker box, whose only path to the
+  cluster is this tunnel — cannot be given it. Unset `TURING_READ_KEY` means the read door
+  does not exist (fail closed); both compares are constant-time. Same posture as
+  `POOL_AGENT_KEY` (§7). The terminal WebSocket is under neither dependency; it
+  authenticates with a short-lived HMAC token signed with the **full** `API_KEY`
+  (`ws.py:27`, `ws.py:124`) — the read key never signs one.
 - **Allocation model:** `POST /allocate` loops `count` times, one **single-GPU**
   `salloc --no-shell --gres=gpu:<type>:1 --time=<mins> --mem=<mb> --job-name=<name>` per
   GPU (`slurm.py:123`). **No `--partition` is ever passed** → everything lands on the

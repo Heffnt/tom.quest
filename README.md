@@ -125,7 +125,18 @@ Create a `.env` file (or scp `secrets/turing-api.env` from your dev machine):
 
 ```
 TURING_API_KEY=<same value as in next.env and convex.env>
+TURING_READ_KEY=<a different, independently generated value — optional>
 ```
+
+`TURING_API_KEY` opens every endpoint, including `POST /sessions/{name}/run`
+(arbitrary shell on the cluster). `TURING_READ_KEY` is a **separate** secret —
+never derived from the first — accepted by exactly three endpoints:
+`GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output`. Everything else
+refuses it. It exists so a read-only caller can hold a credential at all: the
+TTS worker box gets this key (as `TURING_READ_KEY` in `/etc/tts/worker.env`, read
+by the `tts-turing` command) and therefore reads the cluster without being able
+to change it. Leave it unset and the read scope simply does not exist —
+`python main.py` prints which of the two states it started in.
 
 Set up a named cloudflared tunnel pointed at the API's local port (one-time):
 
