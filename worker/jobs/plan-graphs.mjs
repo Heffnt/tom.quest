@@ -68,6 +68,9 @@ import { createHash } from "node:crypto";
 import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
+// Bump when the prompt changes semantics: it joins the input hash, so a new
+// prompt re-plans even inputs that have not changed.
+const PROMPT_VERSION = 2;
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
 
 // One run offers at most this many unbatched life todos as goal candidates
@@ -270,13 +273,29 @@ function prompt(ctx) {
     `by listing steps in the order you thought of them, and it makes the ready`,
     `set one task wide when the real frontier is four.`,
     ``,
+    `DE-CHAIN EVERY MIGRATED GRAPH YOU TOUCH. The graphs migrated from the`,
+    `old system are single chains BY CONSTRUCTION — their edges record the`,
+    `order steps were once written down, not real prerequisites. When a batch`,
+    `you output has OPEN tasks forming one straight line, that structure is`,
+    `presumed wrong: re-emit every open task (by id, statement verbatim) with`,
+    `its needs REBUILT from actual dependencies. Most batches should come out`,
+    `with several parallel branches; keep a chain only where each task truly`,
+    `consumes the previous one's output. Preserve-by-omission does not apply`,
+    `to this audit — an untouched chain is a chain you are asserting is real.`,
+    ``,
     `CARRY DONE TASKS FORWARD UNTOUCHED. A task with "status": "done" already`,
     `happened. Re-emit it with its id, its statement verbatim, and its needs`,
     `unchanged. Never reword it, never re-open it, never drop it.`,
     ``,
     `PRESERVE BY OMISSION. Any field you leave out keeps the value already`,
     `stored. Omit a field rather than guessing at it, and never copy back a`,
-    `"...Preview" value — those are clipped.`,
+    `"...Preview" value — those are extracted text, not the stored document.`,
+    ``,
+    `WITH ONE EXCEPTION: "statement" IS ALWAYS REQUIRED. Every batch object you`,
+    `output carries its statement, and every task object carries its own, even`,
+    `when neither has changed — repeat the stored text verbatim. A batch with`,
+    `no statement cannot be stored at all, and the whole graph under it is`,
+    `lost.`,
     ``,
     `IDS. Echo "batchId" and a task "id" whenever you are rewriting something`,
     `from the lists above; omit them for anything new. A task's "needs" holds`,
@@ -441,8 +460,13 @@ async function main() {
     if (!contentsByBatch.has(todo.batchId)) contentsByBatch.set(todo.batchId, []);
     contentsByBatch.get(todo.batchId).push(todo);
   }
+  // STALEST FIRST. A stored batch's updatedAt moves when a run lands changes,
+  // so recency-first re-showed the same freshly-planned batches every run and
+  // the tail never entered the slice — the de-chain sweep starved. Stalest
+  // first makes the slice a rotation: every landed update sends that batch to
+  // the back of the line and the least-recently-planned graph is always next.
   const graphsOrdered = [...activeBatches].sort(
-    (a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+    (a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0),
   );
   const graphsHeldBack = Math.max(0, graphsOrdered.length - MAX_GRAPHS_PER_RUN);
   const graphs = graphsOrdered.slice(0, MAX_GRAPHS_PER_RUN).map((b) => {
@@ -553,6 +577,7 @@ async function main() {
   const inputHash = createHash("sha256")
     .update(
       JSON.stringify({
+        promptVersion: PROMPT_VERSION,
         graphs,
         activeStatements,
         candidates,
@@ -628,10 +653,30 @@ async function main() {
   const served = new Set();
   let failed = 0;
   for (const batch of parsed.batches) {
-    const statement =
+    let statement =
       typeof batch?.statement === "string" ? batch.statement.trim() : "";
+    // PRESERVE BY OMISSION vs. a REQUIRED field. The prompt tells the planner
+    // that any field it leaves out keeps the stored value, so on a batch it is
+    // only re-planning the tasks of, omitting `statement` is exactly what that
+    // rule asks for — but the pen's `statement` is required (v.string()), so
+    // the whole graph was being dropped here instead. On 2026-08-29 that cost
+    // one entire run: 8 batches emitted, 8 dropped, 0 stored. When the model
+    // named the batch by id, the stored statement IS the preserved value, so
+    // fill it in and ship the graph. Only a batch that is both nameless and
+    // unidentifiable is genuinely unusable.
+    if (statement === "" && typeof batch?.batchId === "string") {
+      const known = batchById.get(batch.batchId);
+      if (known) {
+        statement = known.statement;
+        batch.statement = known.statement;
+      }
+    }
     if (statement === "") {
-      console.log(`[plan-graphs] dropped a batch with no statement`);
+      console.log(
+        `[plan-graphs] dropped a batch with no statement and no known id ` +
+          `(batchId: ${JSON.stringify(batch?.batchId ?? null)}, ` +
+          `${Array.isArray(batch?.tasks) ? batch.tasks.length : 0} task(s))`,
+      );
       failed++;
       continue;
     }
@@ -718,6 +763,20 @@ async function main() {
 
   // Hash written LAST (Convex-first durability ordering): a crash anywhere
   // above leaves no cursor, so the next cron run simply redoes the work.
+  //
+  // AND NOT AT ALL WHEN THE RUN STORED NOTHING while losing batches. The
+  // cursor's promise is "these inputs have been planned"; a run whose every
+  // batch was refused planned none of them, and writing the cursor there is
+  // what turns one bad completion into silence — the next run sees the same
+  // hash and returns immediately, so the graphs stay unplanned until some
+  // unrelated todo changes the inputs. Seen 2026-08-29 (8 emitted, 8 lost).
+  if (served.size === 0 && failed > 0) {
+    console.log(
+      `[plan-graphs] cursor NOT advanced: ${failed} batch(es) lost and none ` +
+        `stored — the next run retries these same inputs`,
+    );
+    return;
+  }
   fs.writeFileSync(HASH_PATH, inputHash + "\n");
 }
 
