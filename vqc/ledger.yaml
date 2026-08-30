@@ -288,6 +288,28 @@
     No `title=` attribute survives in app/tts outside genuine HTML semantics,
     Info's `label` shim prop is deleted, and every ⓘ carries plain language.
 
+- id: vercel-check-always-red-on-session-prs
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, D8]
+  statement: >-
+    The Vercel check fails on EVERY open session PR (verified 2026-08-30 across
+    PRs 23, 24, 25, 26, 27 and 28) while the same check passes on every recent
+    main commit. The cause is structural, not per-PR: Vercel builds with
+    `npx convex deploy --cmd 'pnpm build'`, and this repo has exactly one Convex
+    deployment by ratified policy, so a preview build has no deployment it is
+    allowed to push to. A permanently red check carries no signal — a PR that
+    genuinely breaks the build is indistinguishable from the standing failure,
+    which is the failure mode a red-by-default gate always has. (Arguably the
+    failure is also protective: a preview build that DID succeed would push
+    unreviewed functions to prod from a PR branch, which the single-deployment
+    rule forbids.) Meanwhile the only build evidence a session PR carries is
+    whatever `pnpm build` was run by hand.
+  graduates_when: >-
+    The Vercel check is green on session PRs (a build that skips
+    `convex deploy` on preview, or an Ignored Build Step that skips preview
+    deployments outright), so that a red Vercel check means something again.
+
 - id: public-convex-url-two-spellings
   kind: descent
   created: 2026-08-30
