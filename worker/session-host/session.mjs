@@ -24,6 +24,8 @@ import {
   backoffMs,
   truncated,
   ERROR_TEXT_LIMIT,
+  resolveSessionRepos,
+  sessionWorkdir,
 } from "./lib.mjs";
 
 const execFile = promisify(execFileCb);
@@ -296,12 +298,7 @@ export class Session {
     // ruling: one session may hold more than one repo). A server that has not
     // been deployed yet sends only `repo`, so fall back to it.
     this.repo = repo;
-    this.repos =
-      Array.isArray(repos) && repos.length > 0
-        ? repos
-        : repo === "none" || repo === undefined
-          ? []
-          : [repo];
+    this.repos = resolveSessionRepos(repo, repos);
     // Absolute path of each checkout, filled by ensureWorkdir in this.repos
     // order. #preserveWork pushes each one's session/<id> branch.
     this.repoDirs = [];
@@ -488,7 +485,7 @@ export class Session {
     const base = path.join(SESSIONS_ROOT, String(this.id));
 
     if (this.repos.length === 0) {
-      const dir = path.join(base, "ws");
+      const dir = sessionWorkdir(base, []);
       const existed = fs.existsSync(dir);
       fs.mkdirSync(dir, { recursive: true });
       if (forResume && !existed) {
@@ -515,7 +512,7 @@ export class Session {
     for (const repo of this.repos) {
       this.repoDirs.push(await this.#ensureClone(base, repo, forResume));
     }
-    this.workdir = this.repos.length === 1 ? this.repoDirs[0] : base;
+    this.workdir = sessionWorkdir(base, this.repoDirs);
   }
 
   // One repo's checkout under `base`, cloned fresh unless it is already there.
@@ -572,20 +569,20 @@ export class Session {
   // push that saves one says nothing about the others. Repos are handled in
   // order and one failing never stops the next.
   async #preserveWork({ silent = false } = {}) {
-    const dirs = this.repoDirs.length > 0 ? this.repoDirs : [];
-    for (const [i, dir] of dirs.entries()) {
-      await this.#preserveRepo(dir, this.repos[i] ?? path.basename(dir), {
-        silent,
-        // With one repo the old wording stands (there is nothing to
-        // distinguish); with several, every row names which repo it is about.
-        name: dirs.length > 1 ? (this.repos[i] ?? path.basename(dir)) : null,
-      });
+    // repoDirs is empty for a scratch session and for one force-killed before
+    // its first clone finished — both mean there is nothing to save.
+    for (const [i, dir] of this.repoDirs.entries()) {
+      // With one repo the old wording stands (there is nothing to distinguish
+      // it from); with several, every row names which repo it is about.
+      const repo = this.repos[i] ?? path.basename(dir);
+      const named = this.repoDirs.length > 1;
+      await this.#preserveRepo(dir, repo, { silent, named });
     }
   }
 
-  async #preserveRepo(workdir, repo, { silent = false, name = null } = {}) {
+  async #preserveRepo(workdir, repo, { silent = false, named = false } = {}) {
     // "in tom.quest, " when several repos share the transcript; "" when one.
-    const where = name === null ? "" : `in ${name}, `;
+    const where = named ? `in ${repo}, ` : "";
     try {
       if (!workdir) return;
       if (!fs.existsSync(path.join(workdir, ".git"))) return;

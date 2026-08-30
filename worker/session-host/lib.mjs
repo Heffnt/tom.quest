@@ -135,3 +135,41 @@ export function truncated(value, limit = TRUNCATE_LIMIT) {
     note: `truncated by session-host (JSON): ${json.length} chars -> ${limit}`,
   };
 }
+
+// ── The session workspace shape ──────────────────────────────────────────────
+// Two pure decisions, here rather than in session.mjs so a test can reach them
+// without importing the Claude Agent SDK. Both are mirrors of Convex-side
+// rules and must move together with them:
+//   resolveSessionRepos  <- sessionRepoList in convex/ttsShared.ts
+//   sessionWorkdir       <- workspaceBlock in convex/claudeSessions.ts, which
+//                           is what TELLS the session where it is standing
+
+/**
+ * The repos one session holds, from the two fields a poll row carries.
+ *
+ * `repo` is the original single string (every row ever written has one) and
+ * `repos` is the list added when Tom ruled on 2026-08-30 that a session must be
+ * able to hold more than one. `repos` wins when the server sent it; a server
+ * older than that ruling sends only `repo`, and "none" — the absence of a repo,
+ * not a repo — is the empty list.
+ */
+export function resolveSessionRepos(repo, repos) {
+  if (Array.isArray(repos) && repos.length > 0) return repos;
+  return repo === "none" || repo === undefined || repo === null ? [] : [repo];
+}
+
+/**
+ * Where the session's shell stands, given its per-repo checkout directories.
+ *
+ *   none -> <base>/ws     an empty scratch directory
+ *   one  -> the checkout  (unchanged since the first repo-equipped mission:
+ *                          `pwd` is a git repository, which every prompt,
+ *                          tool call, and habit built since then assumes)
+ *   many -> <base>        the parent, one subdirectory per repo — the only
+ *                          shape that can hold two checkouts at once
+ */
+export function sessionWorkdir(base, repoDirs) {
+  if (repoDirs.length === 0) return `${base}/ws`;
+  if (repoDirs.length === 1) return repoDirs[0];
+  return base;
+}
