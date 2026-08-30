@@ -596,8 +596,6 @@ describe("TTS batches and annotations", () => {
       brief: string;
       members: { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string }[];
       plan: { text: string; actor: "tom" | "agent"; status: "open" | "done" }[];
-      importanceLevel: "low" | "medium" | "high";
-      importanceRationale: string;
     }> = {},
   ) =>
     t.mutation(internal.tts.internalStoreBatches, {
@@ -618,7 +616,7 @@ describe("TTS batches and annotations", () => {
       ),
     );
 
-  it("internalStoreBatches creates a batch with agent-set importance", async () => {
+  it("internalStoreBatches creates a batch from the grouping alone", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const a = await tom.mutation(api.tts.createTodo, { statement: "book flights" });
@@ -628,8 +626,6 @@ describe("TTS batches and annotations", () => {
           statement: "  trip logistics  ",
           brief: "one errand, three tickets",
           members: [{ todoId: a }, cmt("cmt-001")],
-          importanceLevel: "medium",
-          importanceRationale: "travel dates approach",
         },
       ],
     });
@@ -647,7 +643,8 @@ describe("TTS batches and annotations", () => {
     expect(batch?.status).toBe("active");
     expect(batch?.timingClass).toBe("whenever");
     expect(batch?.members).toHaveLength(2);
-    expect(batch?.importance).toMatchObject({ level: "medium", setBy: "agent" });
+    // Importance is RETIRED (Tom's ruling 2026-08-29): nothing writes it.
+    expect(batch?.importance).toBeUndefined();
     expect(batch?.tomTouchedAt).toBeUndefined(); // agent write, never a Tom touch
     const events = await tom.query(api.tts.listRecentEvents, {});
     expect(
@@ -664,14 +661,12 @@ describe("TTS batches and annotations", () => {
       statement: "v2",
       brief: "regrouped",
       members: [cmt("cmt-002")],
-      importanceLevel: "high",
     });
     expect(res).toMatchObject({ created: 0, updated: 1, skipped: [] });
     const fresh = await findBatch(t);
     expect(fresh?._id).toBe(batch?._id);
     expect(fresh?.statement).toBe("v2");
     expect(fresh?.members?.[0].externalId).toBe("cmt-002");
-    expect(fresh?.importance).toMatchObject({ level: "high", setBy: "agent" });
   });
 
   // witness: drop the occupied-member check from internalStoreBatches in
@@ -746,7 +741,10 @@ describe("TTS batches and annotations", () => {
     const tom = await withTom(t);
     await storeBatch(t, { statement: "frozen holder" });
     const holder = await findBatch(t);
-    await tom.mutation(api.tts.setImportance, { id: holder!._id, level: "high" });
+    await tom.mutation(api.tts.updateTodo, {
+      id: holder!._id,
+      category: "trips",
+    });
     const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
@@ -810,7 +808,10 @@ describe("TTS batches and annotations", () => {
     const tom = await withTom(t);
     await storeBatch(t, { statement: "ruled on" });
     const batch = await findBatch(t);
-    await tom.mutation(api.tts.setImportance, { id: batch!._id, level: "high" });
+    await tom.mutation(api.tts.updateTodo, {
+      id: batch!._id,
+      category: "trips",
+    });
     const res = await t.mutation(internal.tts.internalStoreBatches, {
       batches: [
         {
@@ -847,15 +848,15 @@ describe("TTS batches and annotations", () => {
     expect(fresh?.tomTouchedAt).toBeUndefined(); // agent action, not a Tom touch
   });
 
-  // witness: drop the setBy-"tom" guard from internalStoreBatches's update
-  // branch in convex/tts.ts. Importance is seeded directly here: every Tom
-  // door also stamps tomTouchedAt (which freezes the row first), so this
-  // guard is the second fence — it must hold on its own.
-  it("a batcher rewrite keeps importance Tom set (agent write ignored, logged)", async () => {
+  // Importance is RETIRED (Tom's ruling 2026-08-29, "no importance guesses").
+  // witness: give internalStoreBatches an importance arg again in convex/tts.ts
+  // and write it — a batcher rewrite would put a rating back on the row.
+  it("a rewrite writes no importance, and leaves a historical one alone", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await storeBatch(t, { importanceLevel: "low" });
+    await storeBatch(t, { statement: "v1" });
     const batch = await findBatch(t);
+    // A row from before the retirement: prod is additive-only, so old values
+    // stay on disk and nothing may resurrect or rewrite them.
     await t.run(async (ctx) =>
       ctx.db.patch(batch!._id, {
         importance: { level: "high", setBy: "tom", setAt: Date.now() },
@@ -864,32 +865,19 @@ describe("TTS batches and annotations", () => {
     const res = await storeBatch(t, {
       id: batch!._id,
       statement: "regrouped anyway",
-      importanceLevel: "low",
     });
     expect(res).toMatchObject({ created: 0, updated: 1 });
     const fresh = await findBatch(t);
     expect(fresh?.statement).toBe("regrouped anyway"); // content rewrite landed
     expect(fresh?.importance).toMatchObject({ level: "high", setBy: "tom" });
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(
-      events.some(
-        (e) => e.kind === "importance-skipped" && e.todoId === batch?._id,
-      ),
-    ).toBe(true);
   });
 
   // witness: in internalStoreBatches's rewrite branch, replace
-  // `plan: b.plan ?? todo.plan` with `plan: b.plan` (and drop the
-  // `let importance = todo.importance` seed) — an LLM omission would DELETE
-  // the stored plan and importance.
-  it("an absent plan/importance in a rewrite PRESERVES the stored values", async () => {
+  // `plan: b.plan ?? todo.plan` with `plan: b.plan` — an LLM omission would
+  // DELETE the stored plan.
+  it("an absent plan in a rewrite PRESERVES the stored value", async () => {
     const t = convexTest({ schema, modules });
-    await storeBatch(t, {
-      statement: "v1",
-      plan: [step("draft it")],
-      importanceLevel: "medium",
-      importanceRationale: "travel dates approach",
-    });
+    await storeBatch(t, { statement: "v1", plan: [step("draft it")] });
     const batch = await findBatch(t);
     expect(batch?.plan).toHaveLength(1);
     const res = await storeBatch(t, { id: batch!._id, statement: "v2" });
@@ -897,12 +885,6 @@ describe("TTS batches and annotations", () => {
     const fresh = await findBatch(t);
     expect(fresh?.statement).toBe("v2");
     expect(fresh?.plan?.[0].text).toBe("draft it");
-    expect(fresh?.importance).toMatchObject({
-      level: "medium",
-      setBy: "agent",
-      rationale: "travel dates approach",
-      setAt: batch?.importance?.setAt,
-    });
   });
 
   // witness: drop the JSON.stringify projected-vs-stored comparison from
@@ -913,7 +895,6 @@ describe("TTS batches and annotations", () => {
     await storeBatch(t, {
       statement: "grouped work",
       plan: [step("draft it")],
-      importanceLevel: "medium",
     });
     const batch = await findBatch(t);
     await tick();
@@ -921,7 +902,6 @@ describe("TTS batches and annotations", () => {
       id: batch!._id,
       statement: "grouped work",
       plan: [step("draft it")],
-      importanceLevel: "medium",
     });
     expect(res).toMatchObject({
       created: 0,
@@ -931,7 +911,6 @@ describe("TTS batches and annotations", () => {
     });
     const fresh = await findBatch(t);
     expect(fresh?.updatedAt).toBe(batch?.updatedAt);
-    expect(fresh?.importance?.setAt).toBe(batch?.importance?.setAt);
     // A re-post that DOES change something still lands as an update.
     await tick();
     const changed = await storeBatch(t, {
@@ -939,7 +918,6 @@ describe("TTS batches and annotations", () => {
       statement: "grouped work",
       brief: "regrouped",
       plan: [step("draft it")],
-      importanceLevel: "medium",
     });
     expect(changed).toMatchObject({ updated: 1, unchanged: 0 });
     expect((await findBatch(t))?.updatedAt).toBeGreaterThan(batch!.updatedAt);
@@ -1067,7 +1045,7 @@ describe("TTS batches and annotations", () => {
   it("preparing a BATCH lands only the plan; the rest is skipped and named", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    await storeBatch(t, { importanceLevel: "medium" });
+    await storeBatch(t);
     const batch = await findBatch(t);
     await t.mutation(internal.tts.internalPrepareTodo, {
       id: batch!._id,
@@ -1075,7 +1053,6 @@ describe("TTS batches and annotations", () => {
       entryAction: "open the first one",
       workDescription: "an afternoon",
       readiness: "preparing",
-      importanceLevel: "low",
       plan: [step("do the first member")],
     });
     const fresh = await findBatch(t);
@@ -1083,7 +1060,6 @@ describe("TTS batches and annotations", () => {
     expect(fresh?.entryAction).toBeUndefined();
     expect(fresh?.workDescription).toBeUndefined();
     expect(fresh?.readiness).toBe("ready-for-tom"); // untouched
-    expect(fresh?.importance).toMatchObject({ level: "medium" });
     expect(fresh?.plan).toHaveLength(1); // the plan is the one field that lands
     const events = await tom.query(api.tts.listRecentEvents, {});
     const skipped = events.find((e) => e.kind === "prepare-skipped-batch");
@@ -1093,7 +1069,6 @@ describe("TTS batches and annotations", () => {
       "entryAction",
       "workDescription",
       "readiness",
-      "importance",
     ]);
     // The `prepared` event reports what actually landed, not what was sent.
     const prepared = events.find((e) => e.kind === "prepared");
@@ -1147,24 +1122,6 @@ describe("TTS batches and annotations", () => {
     expect(events.some((e) => e.kind === "plan-skipped")).toBe(false);
   });
 
-  // witness: add updatedAt to setImportance's patch in convex/tts.ts — the
-  // annotation would resurface ruled gates via ruledAt<updatedAt.
-  it("setImportance writes Tom's level as an annotation (no updatedAt bump)", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const id = await tom.mutation(api.tts.createTodo, { statement: "x" });
-    const [before] = await tom.query(api.tts.listTodos, {});
-    await tick();
-    await tom.mutation(api.tts.setImportance, { id, level: "high" });
-    let [todo] = await tom.query(api.tts.listTodos, {});
-    expect(todo.importance).toMatchObject({ level: "high", setBy: "tom" });
-    expect(todo.tomTouchedAt).toBeDefined();
-    expect(todo.updatedAt).toBe(before.updatedAt);
-    await tom.mutation(api.tts.setImportance, { id, level: null });
-    [todo] = await tom.query(api.tts.listTodos, {});
-    expect(todo.importance).toBeUndefined();
-  });
-
   it("setPlanStep checks a step off, reopens it, and rejects a bad index", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -1200,25 +1157,19 @@ describe("TTS batches and annotations", () => {
     ).rejects.toThrow(/no plan/);
   });
 
-  it("internalBulkUpdate is Tom's pen: setBy tom, only content bumps updatedAt", async () => {
+  // witness: drop the `fields.length > 0` guard on the updatedAt bump in
+  // internalBulkUpdate — a fieldless call would resurface ruled gates via
+  // ruledAt<updatedAt.
+  it("internalBulkUpdate is Tom's pen: content bumps updatedAt, nothing else", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const id = await tom.mutation(api.tts.createTodo, { statement: "spoken" });
     const [before] = await tom.query(api.tts.listTodos, {});
     await tick();
-    await t.mutation(internal.tts.internalBulkUpdate, {
-      updates: [
-        { id, importanceLevel: "medium", importanceRationale: "he said so" },
-      ],
-    });
+    await t.mutation(internal.tts.internalBulkUpdate, { updates: [{ id }] });
     let [todo] = await tom.query(api.tts.listTodos, {});
-    expect(todo.importance).toMatchObject({
-      level: "medium",
-      setBy: "tom", // records Tom's SPOKEN ruling, not an agent estimate
-      rationale: "he said so",
-    });
     expect(todo.tomTouchedAt).toBeDefined();
-    expect(todo.updatedAt).toBe(before.updatedAt); // importance-only: no bump
+    expect(todo.updatedAt).toBe(before.updatedAt); // no fields: no bump
     await tick();
     await t.mutation(internal.tts.internalBulkUpdate, {
       updates: [{ id, category: "chores" }],
@@ -1233,11 +1184,10 @@ describe("TTS batches and annotations", () => {
     ).rejects.toThrow(/Unknown todo id/);
   });
 
-  // witness: drop the setBy-"tom" guard from agentImportancePatch in
-  // convex/dts.ts — importance is a RULING, so an agent estimate must never
-  // land on top of one Tom spoke. (Plan text is the neighbouring field with
-  // the opposite rule; the test below pins that half.)
-  it("preparer importance defers to Tom's override", async () => {
+  // Importance is RETIRED (Tom's ruling 2026-08-29, "no importance guesses").
+  // witness: give internalPrepareTodo an importance arg again in convex/tts.ts
+  // and write it — the preparer would put an agent's rating back on the row.
+  it("the preparer writes no importance and logs no importance event", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.mutation(internal.tts.internalCapture, {
@@ -1247,27 +1197,21 @@ describe("TTS batches and annotations", () => {
     const [captured] = await t.run(async (ctx) =>
       ctx.db.query("dtsTodos").collect(),
     );
-    await tom.mutation(api.tts.setImportance, {
-      id: captured._id,
-      level: "high",
-    });
     const step = {
       text: "look it up",
       actor: "agent" as const,
       status: "open" as const,
     };
-    // One call carries both: the agent importance is ignored, the plan lands.
     await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
-      importanceLevel: "low",
-      importanceRationale: "agent guess",
       plan: [step],
     });
     const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.importance).toMatchObject({ level: "high", setBy: "tom" });
+    expect(todo.importance).toBeUndefined();
     expect(todo.plan).toHaveLength(1);
     const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
+    expect(events.some((e) => e.kind === "importance-skipped")).toBe(false);
+    expect(events.some((e) => e.kind === "importance-set")).toBe(false);
   });
 
   // witness: reintroduce ANY plan gate in internalPrepareTodo (convex/dts.ts)

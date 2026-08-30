@@ -11,7 +11,7 @@
 | # | What | Who | Notes |
 |---|---|---|---|
 | 0.1 | Slack app in the dedicated TTS workspace | **DONE** (2026-08-27; capture channel named `#dump`, not `#inbox`; token needs one re-copy — rotated on install) | One app, one bot token with read + post permissions, invited to `#dump` (capture) and `#tts` (digest/events). A webhook alone cannot read messages; the bot is the mechanism. Token goes into the `pnpm secrets:sync` flow. |
-| 0.2 | Worker box | Tom purchases; Claude authors setup | Hetzner CAX11 (~€4/mo), Ubuntu LTS, Tom drops Claude's SSH key. Setup is one idempotent script; the box owns no state (spec §16). Decide which Max account it runs headless Claude Code under. |
+| 0.2 | Jarvis Box | Tom purchases; Claude authors setup | Hetzner CAX11 (~€4/mo), Ubuntu LTS, Tom drops Claude's SSH key. Setup is one idempotent script; the Jarvis Box owns no state (spec §16). Decide which Max account it runs headless Claude Code under. |
 | 0.3 | GitHub token for the mirror | Tom | Fine-grained, read-only, scoped to ComplexMultiTrigger + tom.quest (+ WikiTom later for the triage profile). Goes into Convex env via secrets flow. |
 | 0.4 | Spec-home ruling | ~~Tom~~ **DONE** | Ruled: spec lives in WikiTom (`tts/spec.md`, committed 45386636); this public repo holds code + engineering docs only. |
 
@@ -19,7 +19,7 @@
 
 Built on a branch; nothing merges or deploys before the persist-tom-gate. Orchestrated as a workflow: independent streams fan out to parallel subagents (isolated worktrees where they touch code), then an integration pass, adversarial review, and the gate.
 
-**Stream A — backend (Convex).** Schema additions (all-new tables, so no migration risk): `dtsTodos` (full data model, spec §5 — statement, readiness tier, status, timing class + data, wake condition, source, provenance, work description, body, timestamps), `dtsEvents` (instrumentation, spec §10 — every surfacing/engagement/session/date-outcome, recorded from the first hour), `dtsDailyQueues` (the 5 a.m. queue per day), `dtsCodeTodoMirror` (read-only VQC mirror rows). A `convex/tts.ts` module with Tom-gated queries/mutations (forge-pattern `requireTomId`), tests included in the CI-run script. Crons: 5 a.m. digest send; mirror refresh a few times daily. A key-authed HTTP endpoint (copy of the `/pool` pattern) for the worker box to submit captures and prepared content.
+**Stream A — backend (Convex).** Schema additions (all-new tables, so no migration risk): `dtsTodos` (full data model, spec §5 — statement, readiness tier, status, timing class + data, wake condition, source, provenance, work description, body, timestamps), `dtsEvents` (instrumentation, spec §10 — every surfacing/engagement/session/date-outcome, recorded from the first hour), `dtsDailyQueues` (the 5 a.m. queue per day), `dtsCodeTodoMirror` (read-only VQC mirror rows). A `convex/tts.ts` module with Tom-gated queries/mutations (forge-pattern `requireTomId`), tests included in the CI-run script. Crons: 5 a.m. digest send; mirror refresh a few times daily. A key-authed HTTP endpoint (copy of the `/pool` pattern) for the Jarvis Box to submit captures and prepared content.
 
 **Stream B — Inventory page.** Registered `visibility: "tom"`; shows everything always: active, waiting (with wake conditions), the archive, mirrored code todos, ages and counts, descriptively.
 
@@ -27,7 +27,7 @@ Built on a branch; nothing merges or deploys before the persist-tom-gate. Orches
 
 **Stream D — safe action links.** Any link in Slack opens a confirm page; state changes only on the confirmed POST, with single-use tokens — because Slack's link-preview robot fetches URLs (spec §7). Day-one requirement.
 
-**Stream E — worker box.** The setup script, plus two scheduled jobs: (1) 4:45 a.m. — headless Claude prepares the daily queue and digest text and posts them to Convex; (2) every few minutes — poll `#dump`, submit new messages as `unprepared` items. **Reliability split:** the *Convex cron* always sends the 5 a.m. digest with whatever was prepared; if the worker's prep never arrived, the digest says so in-band. So a missing digest means Convex/Slack breakage, a digest reporting missing prep means worker breakage — the sends-even-when-empty rule stays truthful with zero monitoring infrastructure.
+**Stream E — the Jarvis Box.** The setup script, plus two scheduled jobs: (1) 4:45 a.m. — headless Claude prepares the daily queue and digest text and posts them to Convex; (2) every few minutes — poll `#dump`, submit new messages as `unprepared` items. **Reliability split:** the *Convex cron* always sends the 5 a.m. digest with whatever was prepared; if the worker's prep never arrived, the digest says so in-band. So a missing digest means Convex/Slack breakage, a digest reporting missing prep means worker breakage — the sends-even-when-empty rule stays truthful with zero monitoring infrastructure.
 
 **Stream F — VQC into tom.quest.** Add `vqc/todos.yaml` to this repo, seeded with the six ratified post-MVP features (in Tom's priority order) as its first entries, plus a light guard test (TypeScript port of the shape checks) wired into CI. The mirror parses both CMT's and tom.quest's files from their default branches.
 
@@ -61,5 +61,5 @@ Each phase carries kill criteria; a feature that fails its earning-its-keep test
 |---|---|
 | Ratify this plan (shape, streams, order) | — |
 | Spec home, given the repo is public | Code, this plan, and `vqc/todos.yaml` live here (engineering content, fine public; actual life-todo *data* is in Convex, never in the repo). The **full spec** with the mental-health register lives in WikiTom (private), pointed to from here. Alternatives: make the repo private, or say public-spec is fine. |
-| Which Max account the worker box uses | Whichever has more headroom; can switch later. |
+| Which Max account the Jarvis Box uses | Whichever has more headroom; can switch later. |
 | When to schedule Phase 0 with you | Soonest 30 minutes you have; nothing else blocks on design. |

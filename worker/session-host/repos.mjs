@@ -7,11 +7,11 @@
 // file exists precisely so there is not one.
 //
 // scripts/check-session-mirrors.mjs fences REPO_GITHUB against SESSION_REPOS
-// in convex/ttsShared.ts (the one home across the language boundary: the box
-// runs only worker/, and Node does not load .ts).
+// in convex/ttsShared.ts (the one home across the language boundary: the
+// Jarvis Box runs only worker/, and Node does not load .ts).
 
-// Session workdirs live under /var/cache by the box's convention: everything
-// under /var/cache/tts is rebuildable, so `rm -rf` of any of it is harmless
+// Session workdirs live under /var/cache by the Jarvis Box's convention:
+// everything under /var/cache/tts is rebuildable, so `rm -rf` of any of it is harmless
 // (the no-state rule). A session's real output leaves through git pushes /
 // whatever Tom asks the model to do — never through files that stay here.
 export const SESSIONS_ROOT = "/var/cache/tts/sessions";

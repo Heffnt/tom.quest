@@ -7,9 +7,11 @@
 // for the caller to render instead of being swallowed.
 
 import { useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
+import { WRITING_SKILL } from "@/convex/ttsShared";
+import { useAuth } from "@/app/lib/auth";
 import {
   buildBatchSessionPrompt,
   buildTodoSessionPrompt,
@@ -17,6 +19,18 @@ import {
   type BatchSessionContext,
   type LiveRulingContext,
 } from "@/app/lib/tts-session-prompt";
+
+// The writing skill (WikiTom, synced into ttsSkills) that opens every session
+// prompt built here. Tom-gated like the rest of TTS, so it skips for anyone
+// else — and an unsynced or skipped read leaves the builders on their fallback.
+function useWritingSkill(): string | undefined {
+  const { isTom } = useAuth();
+  const row = useQuery(
+    api.ttsSkills.getSkill,
+    isTom ? { name: WRITING_SKILL } : "skip",
+  );
+  return row?.body;
+}
 
 // Resolve a batch's members to live statements + statuses against the todos
 // and mirror the caller already subscribes to — a member whose mirror row is
@@ -81,6 +95,7 @@ export function reserveSessionTab(): ReservedTab {
 // state) is identical, so the two entry points cannot drift.
 export function useOpenBatchSession() {
   const createSession = useMutation(api.claudeSessions.createSession);
+  const writingSkill = useWritingSkill();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -94,7 +109,7 @@ export function useOpenBatchSession() {
         title: batch.statement,
         kind: "focus-item",
         repo: "none",
-        initialPrompt: buildBatchSessionPrompt(batch),
+        initialPrompt: buildBatchSessionPrompt(batch, writingSkill),
       });
       tab.goto(id);
     } catch (e) {
@@ -110,6 +125,7 @@ export function useOpenBatchSession() {
 
 export function useOpenTodoSession() {
   const createSession = useMutation(api.claudeSessions.createSession);
+  const writingSkill = useWritingSkill();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -155,6 +171,7 @@ export function useOpenTodoSession() {
             ? { members: resolveMembers(todo, opts.batch) }
             : undefined,
           opts?.ruling,
+          writingSkill,
         ),
       });
       tab.goto(id);

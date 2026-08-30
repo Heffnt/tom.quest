@@ -5,7 +5,22 @@
 
 import type { Doc } from "@/convex/_generated/dataModel";
 
-const CONTRACT = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Follow the ground-up contract in every reply: define terms on first use, invent no names, concrete before abstract, one idea per paragraph, keep replies short, and end anything needing a decision with what Tom needs to decide plus a recommendation. Language is descriptive, never evaluative — no praise, no scolding. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output.`;
+// The opening has two halves. The FRAMING says what this session is and how
+// wide it is; it is only true here, so it lives only here.
+const FRAMING = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output.`;
+
+// The WRITING half is the same standard every other TTS prompt carries, and
+// its live source is the WikiTom skill "writing-to-tom" (synced into
+// ttsSkills; convex/ttsShared.ts WRITING_SKILL names the row). Callers read it
+// with useQuery(api.ttsSkills.getSkill) and pass the body in. This string is
+// the FALLBACK for a session opened before the sync has ever run.
+const CONTRACT = `Follow the ground-up contract in every reply: define terms on first use, invent no names, concrete before abstract, one idea per paragraph, keep replies short, and end anything needing a decision with what Tom needs to decide plus a recommendation. Language is descriptive, never evaluative — no praise, no scolding.`;
+
+/** The opening block: the framing, then the writing skill or its fallback. */
+function opening(writingSkill?: string): string {
+  const skill = writingSkill?.trim();
+  return skill ? `${FRAMING}\n\n${skill}` : `${FRAMING} ${CONTRACT}`;
+}
 
 function fact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
@@ -17,9 +32,10 @@ function fact(label: string, value: string | undefined): string | null {
 export function buildBlockSessionPrompt(
   category: string,
   todos: Doc<"dtsTodos">[],
+  writingSkill?: string,
 ): string {
   const lines: string[] = [
-    CONTRACT,
+    opening(writingSkill),
     "",
     `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately via \`npx convex run\`: tts:internalTriage for status/date changes, ttsRulings:internalRecordRuling for execute/edit/discuss/archive verdicts (both are internal mutations — the Tom-gated public mutations reject deploy credentials). The session is his pen, and a ruling that lives only in chat is lost.`,
     "",
@@ -90,9 +106,12 @@ export type BatchSessionContext = {
   goals: { statement: string; condition?: string; met: boolean }[];
 };
 
-export function buildBatchSessionPrompt(batch: BatchSessionContext): string {
+export function buildBatchSessionPrompt(
+  batch: BatchSessionContext,
+  writingSkill?: string,
+): string {
   const lines: (string | null)[] = [
-    CONTRACT,
+    opening(writingSkill),
     "",
     "This is a batch session. A BATCH holds how a set of todos gets completed: it is not itself a todo and is never worked directly. Its contents are TASKS (work someone does) and GOALS (a state of the world the batch is for, written as a condition that is either true yet or not). A todo is READY when every todo it NEEDS is done. Work the ready tasks with Tom, smallest concrete first step first.",
     "",
@@ -145,10 +164,11 @@ export function buildTodoSessionPrompt(
   kind: "gate" | "focus-item",
   batch?: { members: BatchMemberContext[] },
   ruling?: LiveRulingContext,
+  writingSkill?: string,
 ): string {
   const rulingNote = ruling?.sentence?.trim();
   const lines = [
-    CONTRACT,
+    opening(writingSkill),
     "",
     kind === "gate"
       ? "This is a tom-gate session: the item below is ready-for-tom and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."
@@ -212,7 +232,7 @@ export function buildTodoSessionPrompt(
       '- At each OPEN step with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
       `- Record plan progress the moment a step closes: \`npx convex run tts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff.`,
       "- Record Tom's spoken verdicts (execute/edit/discuss/archive, on the batch or any member) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
-      "- Apply Tom's spoken en-masse property changes (importance, category) via tts:internalBulkUpdate.",
+      "- Apply Tom's spoken en-masse property changes (category, entry action, work description) via tts:internalBulkUpdate.",
       "- All of these are pens for Tom's spoken word — use them only while Tom is present in the session.",
     );
   }

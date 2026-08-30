@@ -1,7 +1,7 @@
 // Guardrail: the worker daemon cannot import convex/ttsShared.ts (only
-// worker/ is deployed to the box; Node does not load .ts), so it carries the
-// session-surface constants itself — REPO_GITHUB (in repos.mjs) as a literal
-// mirror, and the
+// worker/ is deployed to the Jarvis Box; Node does not load .ts), so it
+// carries the session-surface constants itself — REPO_GITHUB (in repos.mjs)
+// as a literal mirror, and the
 // daemon staleness window as the poll cadence it is derived from. This check
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").

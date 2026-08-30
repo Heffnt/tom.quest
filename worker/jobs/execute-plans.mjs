@@ -15,7 +15,7 @@
 // branch on a clone we delete afterward.
 //
 // ONE AT A TIME, on purpose: a single 45-minute agentic run per hour keeps
-// the box's Claude usage bounded, keeps PRs reviewable in series, and means a
+// the Jarvis Box's Claude usage bounded, keeps PRs reviewable in series, and means a
 // bad run wastes one slot, not a pileup. The mkdir lock (stale after 3h)
 // stops overlap when a run outlives its hour.
 //

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# setup.sh — build (or rebuild) the TTS worker box from a fresh Ubuntu 24.04
+# setup.sh — build (or rebuild) the Jarvis Box from a fresh Ubuntu 24.04
 # ARM64 server. Run as root from inside a clone of the tom.quest repo:
 #
 #   git clone https://github.com/<owner>/tom.quest && cd tom.quest
 #   bash worker/setup.sh
 #
-# THE NO-STATE RULE: this box owns no durable state. Everything that matters
+# THE NO-STATE RULE: the Jarvis Box owns no durable state. Everything that matters
 # lives in Convex; the only local file with any memory at all is the Slack
 # poll cursor under /var/lib/tts/ (losing it merely re-captures up to 24h of
 # #dump messages as duplicates Tom can archive). Therefore this ONE script,
@@ -23,7 +23,7 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "== [1/8] apt packages (curl, git, python3, gh) =="
+echo "== [1/9] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl git ca-certificates
@@ -34,7 +34,7 @@ apt-get install -y curl git ca-certificates
 # stay fast and idempotent.
 apt-get install -y python3 python3-yaml python3-pytest gh
 
-echo "== [2/8] Node 22 (NodeSource) =="
+echo "== [2/9] Node 22 (NodeSource) =="
 # Only (re)install if node is missing or not major version 22 — keeps re-runs
 # fast and avoids needlessly touching apt sources.
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ]; then
@@ -43,12 +43,33 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ];
 fi
 echo "node: $(node -v)"
 
-echo "== [3/8] Claude Code CLI =="
+echo "== [3/9] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
 npm install -g @anthropic-ai/claude-code
 echo "claude: $(claude --version || true)"
 
-echo "== [4/8] directories =="
+echo "== [4/9] headless browser (Playwright + Chromium) =="
+# A session that changes a tom.quest page can look at the result instead of
+# asking Tom to look. Playwright is installed GLOBALLY (not as a repo dep) and
+# its browsers land in /root/.cache/ms-playwright, so every session — each of
+# which runs as root in its own throwaway workdir — sees the same Chromium
+# without downloading 115MB per session.
+#
+# Deliberately NOT `playwright install --with-deps`: that path validates the
+# host against a supported-distro list and hard-fails on Ubuntu 26.04. The
+# plain download works, and the shared libraries Chromium needs are already
+# pulled in by the apt line below. Keep them together — a missing libnss3 is
+# reported by Chromium as an opaque launch failure, not as a missing package.
+apt-get install -y \
+  libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+  libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+  libgbm1 libpango-1.0-0 libcairo2 libasound2t64 2>/dev/null || \
+  echo "  (some Chromium libs unavailable under these package names; tts-browse will report if launch fails)"
+npm install -g playwright
+# Idempotent: re-downloads nothing when the pinned revision is already there.
+npx playwright install chromium
+
+echo "== [5/9] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
 # /var/lib/tts        — small local state: the Slack poll cursor, the
 #     brief-hash cursor, and the apply/execute lock dirs (all harmless to
@@ -63,12 +84,12 @@ echo "== [4/8] directories =="
 mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi
 
-echo "== [5/8] install worker files =="
+echo "== [6/9] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
-chmod +x /usr/local/bin/tts-account
+chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
@@ -78,7 +99,7 @@ if [ ! -f /etc/tts/worker.env ]; then
 fi
 chmod 600 /etc/tts/worker.env
 
-echo "== [6/8] cron =="
+echo "== [7/9] cron =="
 # System cron runs in UTC and knows nothing about daylight saving, so
 # prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
@@ -181,16 +202,16 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 45 * * * * root /usr/bin/node /opt/tts/execute-plans.mjs >> /var/log/tts/execute-plans.log 2>&1
 
 # Log hygiene: truncate the TTS logs on the 1st of each month. Deliberately
-# crude — these logs are debugging convenience, not state, and this box keeps
+# crude — these logs are debugging convenience, not state, and the Jarvis Box keeps
 # nothing it can't lose.
 0 6 1 * * root sh -c 'for f in /var/log/tts/*.log; do : > "$f"; done'
 CRON
 chmod 644 /etc/cron.d/tts
 
-echo "== [7/8] session-host daemon =="
+echo "== [8/9] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
-# carries the box's ONE sanctioned npm dependency (@anthropic-ai/
+# carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
 # claude-agent-sdk — pinned in its package.json), so this step also runs
 # npm install in its install dir. Everything here is idempotent: cp + install
 # + unit rewrite + restart is exactly how updated daemon code rolls out after
@@ -243,7 +264,7 @@ else
   echo "  systemctl enable --now tts-session-host)."
 fi
 
-echo "== [8/8] done =="
+echo "== [9/9] done =="
 cat <<'STEPS'
 
 NEXT STEPS (manual, in order):

@@ -40,7 +40,7 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
 | Rulings log | below, this file, append-only |
 | Scratch roots (D26) | `tts/` (declared in classification.yaml) |
 | Witness faults (D8) | none yet — ledger `no-witness-fault-harness`; interim: `witness:` comments in guard tests |
-| Worker box definition | `worker/setup.sh` — the box owns no durable state; a rebuild from this script IS the box |
+| Jarvis Box definition | `worker/setup.sh` — the Jarvis Box owns no durable state; a rebuild from this script IS the Jarvis Box |
 | Secrets flow | `secrets/convex.env` → `npx convex env set` (Vercel half broken: ledger `secrets-sync-vercel-drift`); per-family keys, never shared |
 | Session-surface design | WikiTom `tts/spec.md` §20 — code comments point at it (graduated 2026-08-29) |
 | TTS spec prose (vocabulary, contracts) | WikiTom `tts/spec.md` — agent-facing renderings (e.g. app/lib/tts-session-prompt.ts preamble) summarize it, never redefine it |

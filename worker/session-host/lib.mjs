@@ -5,7 +5,7 @@
 // loadEnv is a minimal copy of worker/jobs/tts-lib.mjs's loadEnv (same file
 // format, same tolerances — attribution: that file is the original) rather
 // than a ../jobs relative import, because setup.sh installs the two
-// directories to DIFFERENT places on the box (/opt/tts vs
+// directories to DIFFERENT places on the Jarvis Box (/opt/tts vs
 // /opt/tts/session-host), so a relative import that resolves in the repo
 // would dangle after install. Divergence risk is tiny: the KEY=VALUE format
 // is frozen. The one real difference is the required-keys list — this daemon

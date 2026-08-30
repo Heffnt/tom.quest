@@ -9,11 +9,8 @@ export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
 export type Ruling = Doc<"dtsRulings">;
 
-export type Importance = NonNullable<Todo["importance"]>;
 export type PlanStep = NonNullable<Todo["plan"]>[number];
 export type Member = NonNullable<Todo["members"]>[number];
-
-export const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
@@ -204,8 +201,6 @@ export function selectNeedsMe(
 //   by any non-terminal batch (and minus the batch rows themselves).
 // pending: passed through from selectNeedsMe.
 
-const IMPORTANCE_RANK = { low: 1, medium: 2, high: 3 } as const;
-
 export type BatchesSelection = {
   batches: { todo: Todo; awaitingRuling: boolean }[];
   unbatchedLife: Todo[];
@@ -237,19 +232,10 @@ export function selectBatches(
   const batchIds = new Set<string>(batchTodos.map((t) => t._id as string));
   const lifeIds = new Set<string>(lifeRows.map((t) => t._id as string));
 
-  // Importance desc (unset last), tie createdAt asc.
+  // Oldest first — order comes from dates, never a rating.
   const batches = batchTodos
     .map((todo) => ({ todo, awaitingRuling: lifeIds.has(todo._id as string) }))
-    .sort((a, b) => {
-      const ra = a.todo.importance
-        ? IMPORTANCE_RANK[a.todo.importance.level]
-        : 0;
-      const rb = b.todo.importance
-        ? IMPORTANCE_RANK[b.todo.importance.level]
-        : 0;
-      if (ra !== rb) return rb - ra;
-      return a.todo.createdAt - b.todo.createdAt;
-    });
+    .sort((a, b) => a.todo.createdAt - b.todo.createdAt);
 
   const unbatchedLife = lifeRows.filter(
     (t) =>

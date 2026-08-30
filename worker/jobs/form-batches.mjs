@@ -7,8 +7,8 @@
 // WHY: one working session should unblock MANY todos — the effort Tom spends
 // understanding a corner of the code (or a corner of his life) amortizes over
 // every todo that corner touches. A batch is a real dtsTodos row with
-// `members`: this job proposes the grouping, the plan, and an importance
-// estimate; Tom rules. The batcher groups, Tom rules — nothing here executes
+// `members`: this job proposes the grouping and the plan; Tom rules. The
+// batcher groups, Tom rules — nothing here executes
 // anything, and the server (internalStoreBatches) enforces every gate: it
 // only rewrites source-"batcher" rows Tom has never touched, and drops (not
 // rejects) any batch that fails validation, reporting each skip back.
@@ -21,7 +21,7 @@
 // pending for the next run. An edit verdict no longer freezes the batch
 // (server-side fix): it must stay rewritable for the re-form to land, so the
 // "frozen" flag in the prompt reflects only Tom's OTHER touches (edits,
-// status changes, importance he set himself).
+// status changes).
 //
 // NOTES ON THE OTHER VERDICTS (2026-08-29): execute / session / archive may
 // each carry a written note too. The execute and session ones are NOT commands
@@ -55,17 +55,14 @@ function prompt(ctx) {
     `grouping of several todos — life todos (personal tasks) and code todos`,
     `(entries in his repos' todo files) — that one working session with Tom can`,
     `advance together, because they share the context he would have to load`,
-    `anyway. You group; Tom rules. Your output only PROPOSES groupings, plans,`,
-    `and importance estimates — it executes nothing.`,
+    `anyway. You group; Tom rules. Your output only PROPOSES groupings and`,
+    `plans — it executes nothing.`,
     ``,
-    `No explicit model of Tom exists yet. Infer his priorities from the todo`,
-    `corpus below and from his ruling history. Every importance estimate`,
-    `carries a one-line rationale. Language is descriptive, never evaluative —`,
-    `no praise, no urgency theater. Define any term Tom might not know; invent`,
-    `no names.`,
+    `Language is descriptive, never evaluative — no praise, no urgency`,
+    `theater. Define any term Tom might not know; invent no names.`,
     ``,
     `ACTIVE LIFE TODOS not in any batch (JSON; each: id, statement, brief,`,
-    `category, importance, dueAt — dueAt is epoch ms or null):`,
+    `category, dueAt — dueAt is epoch ms or null):`,
     JSON.stringify(ctx.life, null, 2),
     ``,
     ...(ctx.lifeHeldBack > 0
@@ -76,7 +73,7 @@ function prompt(ctx) {
         ]
       : []),
     `OPEN CODE TODOS with prepared briefs (JSON; each: repo, externalId,`,
-    `statement, importance):`,
+    `statement):`,
     JSON.stringify(ctx.code, null, 2),
     ``,
     `EXISTING BATCHES (JSON; each: id, statement, status, frozen, members,`,
@@ -132,8 +129,6 @@ function prompt(ctx) {
     `  decision or action put to him. New steps get status "open". When`,
     `  rewriting an existing batch, carry its done steps forward verbatim`,
     `  (text, actor, status, doneAt, evidence).`,
-    `- "importanceLevel" — "low" | "medium" | "high", with a one-line`,
-    `  "importanceRationale".`,
     `- "archiveIds" — ids of unfrozen batches whose members are all closed or`,
     `  terminal, or whose members this output regroups elsewhere.`,
     `- COVERAGE: most active todos should land in some batch — a large`,
@@ -144,8 +139,7 @@ function prompt(ctx) {
     `Answer ONLY a JSON object, no prose, no code fences:`,
     `{"batches": [{"id": "...", "statement": "...", "brief": "...",`,
     ` "members": [{"todoId": "..."}, {"repo": "...", "externalId": "..."}],`,
-    ` "plan": [{"text": "...", "actor": "tom", "status": "open"}],`,
-    ` "importanceLevel": "...", "importanceRationale": "..."}],`,
+    ` "plan": [{"text": "...", "actor": "tom", "status": "open"}]}],`,
     ` "archiveIds": ["..."]}`,
   ].join("\n");
 }
@@ -251,9 +245,6 @@ async function main() {
       statement: t.statement,
       brief: t.brief ? t.brief.slice(0, MAX_BRIEF_CHARS) : null,
       category: t.category ?? null,
-      importance: t.importance
-        ? { level: t.importance.level, setBy: t.importance.setBy, rationale: t.importance.rationale ?? null }
-        : null,
       dueAt: t.dueAt ?? null,
     }));
 
@@ -272,9 +263,6 @@ async function main() {
         repo: m.repo,
         externalId: m.externalId,
         statement: m.statement,
-        importance: brief.importance
-          ? { level: brief.importance.level, setBy: brief.importance.setBy, rationale: brief.importance.rationale ?? null }
-          : null,
       },
     ];
   });
@@ -304,7 +292,7 @@ async function main() {
   try {
     storedHash = fs.readFileSync(HASH_PATH, "utf8").trim();
   } catch {
-    // no cursor yet — first run, or the box was rebuilt
+    // no cursor yet — first run, or the Jarvis Box was rebuilt
   }
   if (inputHash === storedHash && edits.length === 0) return; // quiet when idle
 

@@ -1,4 +1,4 @@
-# TTS worker box
+# The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
 (Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
@@ -27,7 +27,7 @@ on a schedule:
 ## The code-todo ruling loop
 
 CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
-`vqc/todos.yaml`; this box turns that file into rulings Tom can make from the
+`vqc/todos.yaml`; the Jarvis Box turns that file into rulings Tom can make from the
 tom.quest UI in seconds:
 
 - **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
@@ -56,9 +56,50 @@ To start a `needs-session` working session, from any CMT checkout:
 claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 ```
 
+## The browser
+
+Every session on this box can open a real page. `setup.sh` step 4 installs
+Playwright globally and downloads Chromium once into
+`/root/.cache/ms-playwright`; because sessions run as root, they all share
+that one copy rather than each pulling 115MB. The interface is a single
+command:
+
+```
+tts-browse https://tom.quest/turing --out /tmp/t.png          # anonymous
+tts-browse https://tom.quest/turing --login --full --json     # signed in
+```
+
+It prints the navigation status, the title, **console errors**, and **failed
+or 4xx/5xx requests**, then writes a PNG the session reads back. The failed-
+request line is the point: a recurring class of tom.quest bug is a request
+that should never have been sent — an id still resolving, a placeholder path
+segment — and this is what makes one visible instead of inferred.
+
+`--login` signs in through the ordinary widget using
+`TOMQUEST_AGENT_USERNAME` / `TOMQUEST_AGENT_PASSWORD`, and refuses to run
+without them, because every `/turing` and `/tts` page is role-gated: browsing
+one anonymously returns a 200 with 401s underneath, which reads as "page is
+fine" to a session that only checked the status.
+
+**Those two keys hold Tom's own account** (ratified 2026-08-30), so every
+session browses at role `tom`. Nothing scrubs them from a session's shell —
+`session.mjs` drops exactly `SESSIONS_WORKER_KEY` and `GH_TOKEN` and inherits
+the rest — so the account's role is the role every session holds. This is a
+knowing interim: no other account exists yet, and a session that cannot see
+`/turing` cannot check its own work there. A session account with a narrower
+role is a captured TTS todo.
+
+**Not installed: any path from this box to the Turing cluster.** `ssh` exists
+but `turing.wpi.edu` is not reachable from here, and the session sandbox's own
+command policy refuses to open a remote shell. The cluster is reachable only
+as the HTTPS API at `turing.tom.quest`, and that API's key would grant
+`POST /sessions/{name}/run` — arbitrary commands on the cluster — so it is
+deliberately absent from `worker.env`. Adding it is a posture decision, not a
+setup step.
+
 ## The no-state rule
 
-**This box owns no durable state.** Everything that matters lives in Convex
+**The Jarvis Box owns no durable state.** Everything that matters lives in Convex
 (and, for code todos, in the CMT repo itself). The local files with memory
 are all harmless to lose:
 
@@ -72,13 +113,13 @@ are all harmless to lose:
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
   brief copies, the executor's throwaway clones.
 
-Losing the whole box loses nothing but a paused digest and some re-work.
+Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 
 ## Rebuild from scratch
 
 ```
 # 1. Create a Hetzner CAX11 (Ubuntu 24.04, ARM64), add the SSH key, log in as root.
-# 2. On the box:
+# 2. On the Jarvis Box:
 git clone https://github.com/<owner>/tom.quest
 bash tom.quest/worker/setup.sh
 # 3. Fill the secrets (the file documents each key):
@@ -101,7 +142,7 @@ three are there, so the job ships and runs harmlessly ahead of them.
 
 The client id and secret come from a "Desktop app" OAuth client in Tom's
 Google Cloud console (any project, with the Gmail API enabled). The refresh
-token is minted ONCE, on Tom's own machine rather than the box, because
+token is minted ONCE, on Tom's own machine rather than the Jarvis Box, because
 approving it needs a browser:
 
 ```
