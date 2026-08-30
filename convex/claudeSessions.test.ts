@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { WRITING_STANDARD } from "./ttsShared";
 
@@ -3269,5 +3269,277 @@ describe("frontier scheduler", () => {
       ),
     );
     expect(after).toHaveLength(1);
+  });
+});
+
+// ── Session lifecycle events ─────────────────────────────────────────────────
+// A session's own row is mutable state — `status` and `outcome` are overwritten
+// in place — so it says what a session came to but never WHEN it crossed. These
+// dtsEvents rows are the record of the crossings, and they are what a scheduled
+// "what happened since last time" report reads. The Slack half of each edge is
+// covered by the "session event messages" describe above; this one covers only
+// the record half.
+
+describe("session lifecycle events", () => {
+  // Every dtsEvents row of the three session kinds, oldest first — the shape a
+  // window reader sees.
+  // A bare collect returns rows in insertion order (the by_creation_time
+  // default), which for a test that writes its events in sequence IS oldest
+  // first — the order a window reader sees them in.
+  async function sessionEvents(t: ReturnType<typeof convexTest>) {
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("dtsEvents").collect(),
+    );
+    return (rows as unknown as Doc<"dtsEvents">[])
+      .filter((e) => e.kind.startsWith("session-"))
+      .map((e) => ({
+        kind: e.kind,
+        todoId: e.todoId,
+        data: (e.data ?? {}) as Record<string, unknown>,
+      }));
+  }
+
+  async function insertTodo(tom: Awaited<ReturnType<typeof withTom>>) {
+    return await tom.mutation(api.tts.createTodo, {
+      statement: "a todo a session is about",
+    });
+  }
+
+  // witness: delete the logSessionEvent call from createSession in
+  // convex/claudeSessions.ts and this test goes red — nothing would record
+  // that Tom started a session by hand, so an hourly report would show
+  // autonomous starts only.
+  it("createSession writes one session-created carrying its sessionId and todoId", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await insertTodo(tom);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "  a session with a padded title  ",
+      kind: "focus-item",
+      repo: "tom.quest",
+      todoId,
+      initialPrompt: "hello",
+    });
+
+    const events = await sessionEvents(t);
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe("session-created");
+    // The todo is on the ROW, not only in `data`, so the edge also lands on
+    // that todo's by_todo timeline.
+    expect(events[0].todoId).toBe(todoId);
+    expect(events[0].data.sessionId).toBe(sessionId);
+    // The event's title is the title the row actually got, not the raw input.
+    expect(events[0].data.title).toBe("a session with a padded title");
+    // Absent mode IS interactive; the event states it rather than making the
+    // reader re-learn the absence rule.
+    expect(events[0].data.mode).toBe("interactive");
+    // `sessionKind`, never a second nested `kind`.
+    expect(events[0].data.sessionKind).toBe("focus-item");
+    expect(events[0].data.repo).toBe("tom.quest");
+    expect(events[0].data.kind).toBeUndefined();
+  });
+
+  // witness: replace `becameTerminal` with `args.status === "ended"` at the
+  // logSessionEvent call in internalIngest and this test goes red — the
+  // daemon's blind retry of a committed ending flush would write a second
+  // ending, and the report would say the session ended twice.
+  it("an ending flush writes one session-ended; a blind retry of it writes none", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const flush = {
+      sessionId,
+      status: "ended" as const,
+      endedReason: "autonomous run complete",
+    };
+    await t.mutation(internal.claudeSessions.internalIngest, flush);
+    await t.mutation(internal.claudeSessions.internalIngest, flush);
+
+    const ended = (await sessionEvents(t)).filter(
+      (e) => e.kind === "session-ended",
+    );
+    expect(ended).toHaveLength(1);
+    expect(ended[0].data.status).toBe("ended");
+    expect(ended[0].data.endedReason).toBe("autonomous run complete");
+    expect(ended[0].data.via).toBe("daemon");
+    expect(typeof ended[0].data.durationMs).toBe("number");
+  });
+
+  // witness: split session-ended into two kinds and drop the `status` field,
+  // and this test goes red — a consumer wanting only failures would have to
+  // know both kind names instead of reading one field of a window it holds.
+  it("a failed ending is the same kind, carrying status and its reason", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "failed",
+      endedReason: "the SDK process exited 1",
+    });
+    const ended = (await sessionEvents(t)).filter(
+      (e) => e.kind === "session-ended",
+    );
+    expect(ended).toHaveLength(1);
+    expect(ended[0].data.status).toBe("failed");
+    expect(ended[0].data.endedReason).toBe("the SDK process exited 1");
+  });
+
+  // witness: delete the logSessionEvent call from forceClose in
+  // convex/claudeSessions.ts and this test goes red. This is the ending that
+  // needs its own writer most: force-close is permitted ONLY when the worker
+  // has gone stale, so no daemon flush is ever coming — exactly the endings
+  // that happened because the box died would be the ones the record misses.
+  it("forceClose against a stale worker writes session-ended via force-close", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    // No heartbeat row exists → the daemon is unconfirmed → force-close is
+    // permitted, and no daemon flush will ever follow.
+    await tom.mutation(api.claudeSessions.forceClose, { sessionId });
+
+    const ended = (await sessionEvents(t)).filter(
+      (e) => e.kind === "session-ended",
+    );
+    expect(ended).toHaveLength(1);
+    expect(ended[0].data.status).toBe("ended");
+    expect(ended[0].data.via).toBe("force-close");
+    expect(ended[0].data.endedReason).toContain("force-closed by Tom");
+
+    // A second force-close is a no-op (the isLive guard), so the record does
+    // not gain a second ending for one crossing.
+    await tom.mutation(api.claudeSessions.forceClose, { sessionId });
+    expect(
+      (await sessionEvents(t)).filter((e) => e.kind === "session-ended"),
+    ).toHaveLength(1);
+  });
+
+  // witness: move the logSessionEvent call in internalRecordOutcome INSIDE the
+  // `if (firstRecord)` block and this test goes red — the correction from
+  // completed to errored is precisely a thing that happened in an hour, and it
+  // would vanish from the record while the row silently changed underneath.
+  it("the outcome pen writes a row on the first record AND on a re-record", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "completed",
+      summary: "  the brief landed  ",
+    });
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "errored",
+      summary: "the push failed after all",
+    });
+
+    const outcomes = (await sessionEvents(t)).filter(
+      (e) => e.kind === "session-outcome",
+    );
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes[0].data).toMatchObject({
+      outcome: "completed",
+      summary: "the brief landed", // trimmed, as the row is
+      via: "agent",
+      firstRecord: true,
+    });
+    expect(outcomes[1].data).toMatchObject({
+      outcome: "errored",
+      via: "agent",
+      firstRecord: false,
+    });
+    // Slack is still told once — the record is more granular than the push.
+    expect(await sessionEventMessages(t)).toHaveLength(1);
+  });
+
+  // witness: have the daemon's stamp and the agent's pen share one row (patch
+  // instead of insert) and this test goes red. The two writers of an outcome
+  // are two facts, and which one spoke is part of the record.
+  it("the daemon's stamp writes via daemon; a later agent record adds a row beside it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "autonomous time cap",
+      outcome: "errored" as const,
+      outcomeSummary: "the cap fired",
+    });
+    // A blind retry of the same flush stamps nothing new (the outcome branch
+    // requires session.outcome === undefined), so it logs nothing either.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      outcome: "errored" as const,
+      outcomeSummary: "the cap fired",
+    });
+
+    let outcomes = (await sessionEvents(t)).filter(
+      (e) => e.kind === "session-outcome",
+    );
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].data).toMatchObject({
+      outcome: "errored",
+      via: "daemon",
+      firstRecord: true,
+    });
+
+    // The agent's pen overwrites the ROW freely (it always wins over the
+    // daemon's cap-path stamp) — and the record keeps both, in order.
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "completed",
+      summary: "the work was done before the cap",
+    });
+    outcomes = (await sessionEvents(t)).filter(
+      (e) => e.kind === "session-outcome",
+    );
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes[1].data).toMatchObject({
+      outcome: "completed",
+      via: "agent",
+      // The daemon already wrote one, so the agent's is not the first record.
+      firstRecord: false,
+    });
+  });
+
+  // witness: add a logSessionEvent call to reopenSession and this test goes
+  // red. A reopen is Tom's own action, taken seconds before he reads the
+  // report; reporting it back to him is noise. (If the hourly update ever
+  // grows a Tom-activity section, that is when to add it.)
+  it("a reopen is not an event, and the second ending of a reopened session is", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "first ending",
+    });
+    await tom.mutation(api.claudeSessions.reopenSession, {
+      sessionId,
+      text: "one more thing",
+    });
+    const afterReopen = await sessionEvents(t);
+    expect(afterReopen.filter((e) => e.kind === "session-ended")).toHaveLength(
+      1,
+    );
+    expect(afterReopen.map((e) => e.kind)).not.toContain("session-reopened");
+
+    // The session really did end twice, and the record says so.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "second ending",
+    });
+    const ended = (await sessionEvents(t)).filter(
+      (e) => e.kind === "session-ended",
+    );
+    expect(ended).toHaveLength(2);
+    expect(ended.map((e) => e.data.endedReason)).toEqual([
+      "first ending",
+      "second ending",
+    ]);
   });
 });

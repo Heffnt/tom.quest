@@ -2016,3 +2016,111 @@ describe("TTS time notes", () => {
     ).rejects.toThrow(/no date to describe/);
   });
 });
+
+// ── The cron-reachable event window ──────────────────────────────────────────
+// dtsEvents is the only place in TTS that can answer "what happened between
+// 2 p.m. and 3 p.m.", and until internalEventsInRange no SCHEDULED job could
+// ask: listRecentEvents calls requireTomId, which needs a signed-in browser
+// identity, and a cron has none.
+
+describe("internalEventsInRange", () => {
+  // Rows written straight into the table, because the window tests are about
+  // exact `at` values and logEvent stamps Date.now().
+  async function seed(t: ReturnType<typeof convexTest>, ats: number[]) {
+    await t.run(async (ctx) => {
+      for (const at of ats) {
+        await ctx.db.insert("dtsEvents", { at, kind: `k${at}`, data: { at } });
+      }
+    });
+  }
+
+  // witness: change the `lt("at", end)` in internalEventsInRange to `lte` and
+  // this test goes red. THE PARTITION PROPERTY IS THE WHOLE POINT: consecutive
+  // windows [t0,t1) and [t1,t2) partition time exactly, so an hourly reader
+  // passing its previous `end` as this `start` reports every event once. Two
+  // rows written in one transaction share an `at` (logEvent stamps
+  // Date.now()), so a closed interval would re-report a whole boundary
+  // transaction in the next hour.
+  it("is half-open: an event at start is inside the window, one at end is not", async () => {
+    const t = convexTest({ schema, modules });
+    const t0 = 1_000_000;
+    const t1 = t0 + 3_600_000;
+    const t2 = t1 + 3_600_000;
+    // Two rows share the boundary millisecond — the one-transaction case.
+    await seed(t, [t0, t0 + 5, t1, t1, t2 - 1]);
+
+    const first = await t.query(internal.tts.internalEventsInRange, {
+      start: t0,
+      end: t1,
+    });
+    const second = await t.query(internal.tts.internalEventsInRange, {
+      start: t1,
+      end: t2,
+    });
+    expect(first.events.map((e) => e.at)).toEqual([t0, t0 + 5]);
+    expect(second.events.map((e) => e.at)).toEqual([t1, t1, t2 - 1]);
+    // No event is reported twice and none is dropped: the two windows
+    // partition the five rows exactly.
+    expect(first.events.length + second.events.length).toBe(5);
+  });
+
+  it("returns the window oldest first — the order a report reads it in", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t, [300, 100, 200]);
+    const res = await t.query(internal.tts.internalEventsInRange, {
+      start: 0,
+      end: 1000,
+    });
+    expect(res.events.map((e) => e.at)).toEqual([100, 200, 300]);
+    expect(res.truncated).toBe(false);
+  });
+
+  // witness: return a bare array (or drop the `truncated` flag) and this test
+  // goes red — a burst hour would read as a quiet hour, which is the one
+  // failure mode an hourly report cannot have.
+  it("says so when it holds a prefix rather than the whole window", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t, [1, 2, 3, 4, 5]);
+    const cut = await t.query(internal.tts.internalEventsInRange, {
+      start: 0,
+      end: 100,
+      limit: 3,
+    });
+    expect(cut.events.map((e) => e.at)).toEqual([1, 2, 3]); // the OLDEST 3
+    expect(cut.truncated).toBe(true);
+    // Exactly at the limit is not truncated: the caller holds the window.
+    const exact = await t.query(internal.tts.internalEventsInRange, {
+      start: 0,
+      end: 100,
+      limit: 5,
+    });
+    expect(exact.events).toHaveLength(5);
+    expect(exact.truncated).toBe(false);
+  });
+
+  it("reads an hour with nothing in it as an empty window, not an error", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t, [10, 20]);
+    const res = await t.query(internal.tts.internalEventsInRange, {
+      start: 100,
+      end: 200,
+    });
+    expect(res.events).toEqual([]);
+    expect(res.truncated).toBe(false);
+  });
+
+  // witness: give internalEventsInRange a requireTomId call (or make it a
+  // public `query`) and this test goes red — it exists precisely because its
+  // Tom-facing twin is unreachable from a cron.
+  it("needs no signed-in identity, unlike its Tom-gated twin listRecentEvents", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t, [10]);
+    // No withIdentity anywhere: this is the call a scheduled job makes.
+    const res = await t.query(internal.tts.internalEventsInRange, {
+      start: 0,
+      end: 100,
+    });
+    expect(res.events).toHaveLength(1);
+    await expect(t.query(api.tts.listRecentEvents, {})).rejects.toThrow();
+  });
+});
