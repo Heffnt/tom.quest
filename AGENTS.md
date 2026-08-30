@@ -70,6 +70,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 - **One Convex deployment.** Prod is the only deployment; there is no separate dev. `next dev` runs locally against prod Convex. Function and schema changes go live only on explicit `npx convex deploy`. Trade-off accepted because tom.quest is a personal project; see [[philosophy/personal-project-pragmatism]] and [[principles/single-deployment]] in the wiki.
 - Vercel builds via `npx convex deploy --cmd 'pnpm build'`, which pushes Convex functions to prod and then builds Next.js.
+- **The public Convex deployment identity lives in the committed `.env`** (the two `NEXT_PUBLIC_*` values). They are inlined into the browser bundle, so they are public by construction, and committing them is what lets a bare checkout — a Claude session, a fresh clone — run `pnpm build` at all. Vercel's project env and `.env.local` both take precedence over it.
 - **Secrets live in `secrets/`.** `secrets/next.env` is the source of truth for Vercel prod env (mirrored to `.env.local`); `secrets/convex.env` is the source of truth for Convex prod env. `pnpm secrets:sync` pushes both. `pnpm secrets:init` is a one-time pull. Never edit Vercel or Convex env directly. See [[principles/single-source-secrets]].
 
 ## Debugging And Observability
@@ -97,7 +98,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 - `pnpm dev:all` starts Next.js (against prod Convex) plus a `convex dev` watcher for typegen.
 - `pnpm secrets:sync` pushes `secrets/*.env` to Vercel + Convex and refreshes `.env.local`.
-- `pnpm build` verifies the production build.
+- `pnpm build` verifies the production build (works from a bare checkout — the public Convex URLs are in the committed `.env`).
 - `pnpm test` runs Vitest unit/component tests.
 - `pnpm test:e2e` runs Playwright E2E tests.
 - `pnpm lint` runs ESLint.

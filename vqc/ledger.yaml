@@ -288,6 +288,23 @@
     No `title=` attribute survives in app/tts outside genuine HTML semantics,
     Info's `label` shim prop is deleted, and every ⓘ carries plain language.
 
+- id: public-convex-url-two-spellings
+  kind: descent
+  created: 2026-08-30
+  cites: [C1]
+  statement: >-
+    The public Convex deployment identity (NEXT_PUBLIC_CONVEX_URL and
+    NEXT_PUBLIC_CONVEX_SITE_URL) is spelled in the committed .env AND, because
+    `pnpm secrets:init` pulled the whole Vercel prod env, in secrets/next.env
+    and the Vercel project env. Neither is secret — Next inlines both into the
+    browser bundle — so the duplication buys nothing. It is fenced rather than
+    resolved: `pnpm secrets:sync` now fails loudly when the two files disagree,
+    which stops silent drift but leaves two spellings of one fact.
+  graduates_when: >-
+    The two NEXT_PUBLIC_* keys are removed from secrets/next.env and the Vercel
+    project env, leaving the committed .env as the sole home, with a Vercel
+    build confirming the committed value is what ships.
+
 - id: secrets-sync-vercel-drift
   kind: descent
   created: 2026-08-27
