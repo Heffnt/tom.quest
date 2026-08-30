@@ -27,6 +27,15 @@
 // the rest of the graph still lands, cycles are dropped, and the per-batch
 // skip report comes back here to be logged.
 //
+// GROUND-UP EXPLANATIONS ARE HTML DOCUMENTS (Tom, 2026-08-29: rendered as
+// prose they are "an incomprehensible wall of text"). Every explanation this
+// job writes — the batch's and each task's — is a complete self-contained HTML
+// page, which the /tts page shows fullscreen in a sandboxed, script-less
+// iframe. The form is specified once, in the writing standard that rides in on
+// /tts/batch-context; the prompt below only names the requirement and the
+// palette. Stored explanations come back into the prompt as extracted-text
+// PREVIEWS, never as markup.
+//
 // SUCCESSOR TO form-batches.mjs. That job groups todos into v1 batches (a
 // dtsTodos row carrying `members`); this one maintains v2 graphs. They run
 // side by side until cutover, and they cannot collide: the server refuses a v1
@@ -74,16 +83,53 @@ const MAX_BRIEF_CHARS = 400;
 // recreate a grouping that already exists); only this many carry their whole
 // task list. Same bounding logic as the life slice, applied to the other axis.
 const MAX_GRAPHS_PER_RUN = 20;
-// Task ground-up explanations are shown CLIPPED, under a field name that is
-// not an output field (`groundUpExplanationPreview`), so a clipped copy can
-// never be pasted back as the real value and truncate it.
+// Ground-up explanations are shown CLIPPED, under a field name that is not an
+// output field (`groundUpExplanationPreview`), so a clipped copy can never be
+// pasted back as the real value and truncate it. Since 2026-08-29 every stored
+// explanation is a COMPLETE HTML DOCUMENT (Tom's ruling: prose renders as an
+// incomprehensible wall of text, so the "more" layer is a fullscreen page), so
+// both the batch's and the task's are previewed, and the preview is built from
+// text EXTRACTED from the document — clipping raw HTML yields 240 characters
+// of doctype and <style>, which tells the planner nothing about the content
+// and would show it a half-open tag as if it were prose.
 const MAX_PREVIEW_CHARS = 240;
+const MAX_BATCH_PREVIEW_CHARS = 600;
 const MAX_CODE_TODOS = 60;
 const NOTE_MAX = 20;
 
 function clip(text, max) {
   if (typeof text !== "string" || text === "") return null;
   return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * The readable text of a ground-up explanation, for preview only. An HTML
+ * document (anything whose first non-space character is "<") is reduced to its
+ * prose: head matter dropped, tags removed, whitespace collapsed, the handful
+ * of entities that survive that unescaped. Legacy plain-text explanations pass
+ * through untouched. Lossy on purpose — nothing built here is ever stored.
+ */
+function explanationText(value) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  if (!value.trimStart().startsWith("<")) return value;
+  return value
+    .replace(/<!DOCTYPE[^>]*>/gi, " ")
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, " ")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** An explanation as the planner sees it: extracted text, clipped. */
+function explanationPreview(value, max) {
+  return clip(explanationText(value), max);
 }
 
 function prompt(ctx) {
@@ -111,15 +157,18 @@ function prompt(ctx) {
     `  has to land first) or "helps" (it only makes this one easier).`,
     `- display text — the short line always on screen (a statement).`,
     `- ground-up explanation — the self-contained layer behind a "more"`,
-    `  control.`,
+    `  control. It is a COMPLETE HTML DOCUMENT, rendered fullscreen; the`,
+    `  writing standard below gives its exact form.`,
     ``,
     ctx.writingStandard,
     ``,
     `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
-    `groundUpExplanation, path, frozen, tasks, goals. A task carries id,`,
-    `statement, actor, status, needs, condition, evidence, model, and`,
-    `groundUpExplanationPreview — that preview is CLIPPED text for your`,
-    `orientation only and must never be copied into your output:`,
+    `groundUpExplanationPreview, path, frozen, tasks, goals. A task carries id,`,
+    `statement, actor, status, needs, condition, evidence, model, and its own`,
+    `groundUpExplanationPreview. EVERY "...Preview" value is readable text`,
+    `EXTRACTED from a stored HTML document and then CLIPPED — it is there so`,
+    `you know what an explanation already covers, it is not the document, and`,
+    `it must never be copied into your output:`,
     JSON.stringify(ctx.graphs, null, 2),
     ``,
     ...(ctx.graphsHeldBack > 0
@@ -242,19 +291,43 @@ function prompt(ctx) {
     ``,
     `WRITING. Every "statement" is display text: short, names the thing, no`,
     `explanation. Every "groundUpExplanation" obeys the WRITING STANDARD`,
-    `above, in full.`,
+    `above, in full — which means it is a COMPLETE, SELF-CONTAINED HTML`,
+    `DOCUMENT, from "<!DOCTYPE html>" to "</html>", carrying its own inline`,
+    `<style> and nothing external: no script, no event handler, no stylesheet,`,
+    `font, image, or URL loaded from anywhere. It renders fullscreen in a`,
+    `sandbox with no scripting and no network, so anything external is a hole`,
+    `in the page. Palette #0a0e17 background, #e2e8f0 text, #94a3b8 secondary,`,
+    `#e8a040 accent, #1e293b borders; ~15px body type, real <h1>/<h2>`,
+    `headings, short sections, a <table> for enumerable facts, and bordered`,
+    `<div> boxes with → or ↓ arrows where a shape helps. Write the whole`,
+    `document as the JSON string value, escaped as JSON requires.`,
+    ``,
+    `WRITE AN EXPLANATION ONLY WHEN YOU MEAN TO REPLACE ONE. A batch or task`,
+    `whose explanation is already right keeps it by OMISSION — leave the field`,
+    `out. When you do include it, you are writing the entire document fresh;`,
+    `there is no way to amend one, and a fragment overwrites a whole page.`,
+    ``,
+    `EVERY NEW TASK AND EVERY NEW BATCH GETS ONE. Tom rules from that document`,
+    `and nothing else, so it must stand alone: what this is, why it exists,`,
+    `what each term in the statement means, where it stands now, what happens`,
+    `next and who does it, and — for a task whose actor is "tom" — exactly`,
+    `what he is deciding, as the numbered decision list the standard`,
+    `describes.`,
     ``,
     `ARCHIVE. Set "archive": true on a batch whose goals are all reached or`,
     `abandoned. Never on a frozen one.`,
     ``,
-    `Answer ONLY a JSON object, no prose, no code fences:`,
+    `Answer ONLY a JSON object, no prose, no code fences. Both`,
+    `"groundUpExplanation" fields hold a whole HTML document as one JSON`,
+    `string (shown here abbreviated):`,
     `{"batches": [{"batchId": "...", "statement": "...",`,
-    ` "groundUpExplanation": "...",`,
+    ` "groundUpExplanation": "<!DOCTYPE html><html><head><style>…</style>`,
+    `</head><body>…</body></html>",`,
     ` "path": {"name": "...", "index": 0, "edge": "must"},`,
     ` "tasks": [{"id": "...", "statement": "...", "actor": "agent",`,
     `            "needs": ["<todo id>", 0], "condition": "...",`,
-    `            "groundUpExplanation": "...", "status": "active",`,
-    `            "model": "fable"}],`,
+    `            "groundUpExplanation": "<!DOCTYPE html>…</html>",`,
+    `            "status": "active", "model": "fable"}],`,
     ` "goalIds": ["..."], "archive": false}]}`,
   ].join("\n");
 }
@@ -376,7 +449,15 @@ async function main() {
     return {
       id: b._id,
       statement: b.statement,
-      groundUpExplanation: b.groundUpExplanation ?? null,
+      // Preview, not the value. A batch explanation is now a whole HTML
+      // document; pasting twenty of them into one prompt is what blew the
+      // completion timeout on the life slice, and the planner never needs the
+      // markup back — PRESERVE BY OMISSION keeps a document it does not
+      // rewrite, and a document it does rewrite it writes from scratch.
+      groundUpExplanationPreview: explanationPreview(
+        b.groundUpExplanation,
+        MAX_BATCH_PREVIEW_CHARS,
+      ),
       path: b.path ?? null,
       frozen: b.tomTouchedAt !== undefined,
       tasks: contents
@@ -390,7 +471,7 @@ async function main() {
           condition: t.condition ?? null,
           evidence: t.evidence ?? null,
           model: t.model ?? null,
-          groundUpExplanationPreview: clip(
+          groundUpExplanationPreview: explanationPreview(
             t.groundUpExplanation,
             MAX_PREVIEW_CHARS,
           ),

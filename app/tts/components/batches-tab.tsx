@@ -47,6 +47,7 @@ import {
   batchSubjectKey,
   codeSubjectKey,
   fmtDate,
+  groundUpTeaser,
   liveRulingsByKey,
   rulingSubjectKey,
   selectBatches,
@@ -504,7 +505,11 @@ export default function BatchesTab() {
         <RulingDialog
           verdict={ruling.verdict}
           statement={ruling.graph.statement}
-          brief={ruling.graph.groundUp}
+          brief={
+            ruling.graph.groundUp !== undefined
+              ? groundUpTeaser(ruling.graph.groundUp)
+              : undefined
+          }
           plan={ruling.graph.tasks.map((t) => ({
             text: t.statement,
             actor: t.actor,

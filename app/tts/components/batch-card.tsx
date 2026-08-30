@@ -10,6 +10,7 @@
 // the page, and everything clickable changes on hover.
 import PlanBar from "./plan-bar";
 import GraphView from "./graph-view";
+import { groundUpTeaser } from "../lib";
 import type { RulingVerdict } from "./ruling-dialog";
 import type { DetailItem } from "./detail-dialog";
 
@@ -144,7 +145,7 @@ export default function BatchCard({
               onClick={() => onGroundUp(graph.statement, graph.groundUp ?? "")}
               className="-mx-1.5 mb-2.5 block w-[calc(100%+0.75rem)] rounded px-1.5 py-1 text-left text-[13px] text-text-muted hover:bg-surface-alt/60 hover:text-text"
             >
-              {graph.groundUp.split(". ").slice(0, 2).join(". ")}.
+              {groundUpTeaser(graph.groundUp)}
             </button>
           )}
 
