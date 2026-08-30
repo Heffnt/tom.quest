@@ -176,6 +176,17 @@ async function main() {
     die(`push failed: ${redact(err?.stderr || err?.message, token)}`);
   }
 
+  // Pushing by URL does not move refs/remotes/origin/<branch>, so without this
+  // the branch still looks unpushed locally. #preserveWork computes what it
+  // can save with `log <branch> --not --remotes`, so at teardown it would
+  // re-push these commits and tell the transcript it rescued work that was
+  // already on the remote. Cheap to keep honest.
+  try {
+    await git(root, "update-ref", `refs/remotes/origin/${branch}`, branch);
+  } catch {
+    // Bookkeeping only — the push is what mattered and it already succeeded.
+  }
+
   const ghEnv = { ...process.env, GH_TOKEN: token, GH_REPO: slug };
   const prArgs = [
     "pr", "create",
