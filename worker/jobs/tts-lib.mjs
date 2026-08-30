@@ -158,6 +158,55 @@ export async function convexFetch(env, path, body = undefined) {
   return JSON.parse(text);
 }
 
+// ---------------------------------------------------------------------------
+// The writing standard
+// ---------------------------------------------------------------------------
+
+// Fetch the writing standard — the rules every sentence TTS shows Tom obeys.
+//
+// It has exactly ONE home, WRITING_STANDARD in convex/ttsShared.ts, and these
+// jobs are Node ESM on a box that never loads TypeScript, so they cannot import
+// it. GET /tts/writing-standard serves that same constant; the planner job gets
+// the identical text on its /tts/batch-context payload, which it already
+// fetches. A second copy of the text in this repo is what the one-home rule
+// forbids, and it is the rule this function exists to keep: a job that pasted
+// its own restatement into a prompt would drift from the standard within a week
+// and nobody would notice, because the output would still look like prose.
+//
+// FATAL, never a fallback: a run without the standard would quietly produce
+// text written to no standard at all, which is worse than not running. Every
+// caller lets this throw.
+export function requireWritingStandard(value, source) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(
+      `${source} returned no writingStandard — the server half of the one-home ` +
+        `rule is missing; refusing to write prose to no standard`,
+    );
+  }
+  return value;
+}
+
+// The dedicated route, for a job that does not already hold a payload carrying
+// the standard. A job that fetches /tts/batch-context (the batcher, the
+// planner) reads `writingStandard` off that payload and passes it through
+// requireWritingStandard instead — same text, one fewer round trip.
+export async function fetchWritingStandard(env) {
+  const { writingStandard } = await convexFetch(env, "/tts/writing-standard");
+  return requireWritingStandard(writingStandard, "/tts/writing-standard");
+}
+
+// The block that carries the standard into a prompt. Every prompt that asks a
+// model for prose Tom will read opens with this, so the framing sentence around
+// the standard is itself written once.
+export function writingStandardBlock(writingStandard) {
+  return [
+    `Everything you write below that Tom will read obeys this standard,`,
+    `verbatim:`,
+    ``,
+    writingStandard,
+  ].join("\n");
+}
+
 // The message the server put in a rejection body ({ "error": "..." }), for
 // re-filing a refused item with the server's OWN words rather than an HTTP
 // line. Falls back to the error message when the body is not that shape.

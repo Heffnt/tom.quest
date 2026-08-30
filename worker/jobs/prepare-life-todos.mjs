@@ -48,15 +48,24 @@ import {
   runClaude,
   extractJsonObject,
   nyNoonUtcMs,
+  fetchWritingStandard,
+  writingStandardBlock,
 } from "./tts-lib.mjs";
 
 const BATCH_MAX = 10;
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 
-function prompt(todo, reviseSentence, today) {
+function prompt(todo, reviseSentence, today, writingStandard) {
   return [
     `You are preparing one item in TTS, Tom's personal todo system. It was`,
     `captured as a raw thought; your job is to make it arrive pre-chewed.`,
+    ``,
+    // The standard arrives verbatim from its one home (convex/ttsShared.ts
+    // WRITING_STANDARD, fetched over HTTP by fetchWritingStandard). It replaces
+    // the hand-rolled "plain language, invent no names, descriptive" rules this
+    // prompt used to carry: those were a paraphrase, and a paraphrase of a
+    // writing standard is a second standard.
+    writingStandardBlock(writingStandard),
     ``,
     `The item (JSON):`,
     JSON.stringify(
@@ -80,17 +89,19 @@ function prompt(todo, reviseSentence, today) {
           ``,
         ]
       : []),
-    `Write, in plain language (define any term Tom might not know; invent no`,
-    `names; descriptive, never evaluative — no praise, no urgency theater):`,
-    `1. "brief" — 2-5 sentences, ground-up: what this item is, why it likely`,
-    `   exists, and anything a person acting on it should know. If the`,
-    `   statement is too terse to interpret confidently, say so plainly in the`,
-    `   brief and phrase what needs clarifying.`,
-    `2. "entryAction" — the SMALLEST first action, imperative, under 10 words`,
-    `   (e.g. "Open the reservation page", "Draft two sentences to Ana").`,
-    `3. "workDescription" — the kind/size of engagement, qualitatively, a few`,
-    `   words (e.g. "a two-minute errand", "a short ruling", "a session's`,
-    `   worth of writing"). NEVER a numeric time estimate.`,
+    `Write:`,
+    `1. "brief" — a GROUND-UP EXPLANATION in the standard's sense, 2-5`,
+    `   sentences: what this item is, why it likely exists, and anything a`,
+    `   person acting on it should know. If the statement is too terse to`,
+    `   interpret confidently, say so plainly in the brief and phrase what`,
+    `   needs clarifying.`,
+    `2. "entryAction" — DISPLAY TEXT: the SMALLEST first action, imperative,`,
+    `   under 10 words (e.g. "Open the reservation page", "Draft two sentences`,
+    `   to Ana").`,
+    `3. "workDescription" — DISPLAY TEXT: the kind/size of engagement,`,
+    `   qualitatively, a few words (e.g. "a two-minute errand", "a short`,
+    `   ruling", "a session's worth of writing"). NEVER a numeric time`,
+    `   estimate.`,
     `4. "readiness" — "ready-for-tom" if the only missing ingredient is Tom`,
     `   acting or deciding; "preparing" if an agent could still usefully do`,
     `   groundwork first (research, drafting, gathering links).`,
@@ -118,6 +129,9 @@ async function main() {
   const force = process.argv.includes("--force");
   const env = loadEnv();
   const state = await convexFetch(env, "/tts/state");
+  // Fetched before any work: a run that cannot get the standard must not write
+  // prose at all, so this throws rather than falling back.
+  const writingStandard = await fetchWritingStandard(env);
 
   // Pending revise rulings on LIFE todos, keyed by todoId. The feed already
   // filters to unapplied-and-not-superseded rows; code rows on the same feed
@@ -182,7 +196,12 @@ async function main() {
     const revise = reviseByTodo.get(todo._id) ?? null;
     try {
       const answer = runClaude(
-        prompt(todo, revise?.sentence ?? null, state.nyCalendarDay),
+        prompt(
+          todo,
+          revise?.sentence ?? null,
+          state.nyCalendarDay,
+          writingStandard,
+        ),
         { timeoutMs: CLAUDE_TIMEOUT_MS },
       );
       const parsed = extractJsonObject(answer);

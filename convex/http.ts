@@ -314,6 +314,31 @@ const ttsState = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/state", method: "GET", handler: ttsState });
 
+// GET /tts/writing-standard — the one home's delivery route for the worker box.
+//
+// Every worker job that asks a model to write prose Tom will read pastes
+// ttsShared.WRITING_STANDARD into its prompt verbatim. Those jobs are Node ESM
+// on a box that never loads TypeScript, so they cannot import the constant;
+// they fetch it here (worker/jobs/tts-lib.mjs fetchWritingStandard) and refuse
+// to run without it.
+//
+// TWO DELIVERIES, ONE HOME: /tts/batch-context also carries `writingStandard`,
+// because the planner job already fetches that payload and a second round trip
+// would buy nothing. Both fields read the same exported constant in the same
+// process, so they cannot disagree — what the one-home rule forbids is a second
+// copy of the TEXT, not a second route to the one copy.
+const ttsWritingStandard = httpAction(async (_ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, { writingStandard: WRITING_STANDARD });
+});
+
+http.route({
+  path: "/tts/writing-standard",
+  method: "GET",
+  handler: ttsWritingStandard,
+});
+
 // ── TTS time notes (ratified 2026-08-29) ─────────────────────────────────────
 // Same TTS_WORKER_KEY path. Tom writes one freeform sentence about time
 // against a todo, a block, or a calendar day; apply-time-notes.mjs reads the

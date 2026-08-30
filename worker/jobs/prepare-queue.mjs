@@ -25,6 +25,8 @@ import {
   nyHour,
   runClaude,
   extractJsonObject,
+  fetchWritingStandard,
+  writingStandardBlock,
 } from "./tts-lib.mjs";
 
 const QUEUE_MAX = 7;
@@ -58,6 +60,9 @@ async function main() {
   if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     throw new Error(`/tts/state returned no usable prepDay: ${JSON.stringify(day)}`);
   }
+  // Fetched before any work: a run that cannot get the standard must not write
+  // prose at all, so this throws rather than falling back.
+  const writingStandard = await fetchWritingStandard(env);
 
   // --- Idempotence: has today already been prepared? -----------------------
   // The 08:30/09:30 double-fire plus manual runs mean we can be called more
@@ -112,6 +117,12 @@ async function main() {
   const prompt = [
     `You are preparing today's queue and daily digest for TTS, Tom's personal todo system.`,
     ``,
+    // Verbatim from the one home (convex/ttsShared.ts WRITING_STANDARD,
+    // fetched over HTTP). The digest is display text Tom reads every morning,
+    // so it is governed by the same standard as everything else; the rules
+    // below are only what is specific to a Slack message.
+    writingStandardBlock(writingStandard),
+    ``,
     `Today's day key: ${day}. Current time in epoch ms: ${now}. All dueAt/latestSafeAt/updatedAt values are epoch ms.`,
     ``,
     `Here is the full list of live todos as JSON (status "active" or "waiting"):`,
@@ -130,9 +141,8 @@ async function main() {
     `- Give a one-word-ish reason per queued item (e.g. "overdue", "due-today",`,
     `  "stale", "invitation").`,
     ``,
-    `TASK 2 — write the daily digest in Slack mrkdwn. Rules:`,
-    `- Descriptive, never evaluative: facts only — zero verdicts, no praise, no scolding.`,
-    `- Plain language; define anything unusual the moment it appears.`,
+    `TASK 2 — write the daily digest in Slack mrkdwn. Every line of it is`,
+    `DISPLAY TEXT in the standard's sense. Rules specific to this message:`,
     `- Every reminder is framed with its smallest entry action (the tiniest first step).`,
     `- Countdowns as time-distance, e.g. "in 3 days", never bare dates alone.`,
     `- Link every item mention using Slack mrkdwn link syntax:`,

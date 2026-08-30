@@ -26,7 +26,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  fetchWritingStandard,
+  writingStandardBlock,
+} from "./tts-lib.mjs";
 import {
   CMT_REPO,
   TODOS_PATH,
@@ -58,7 +65,7 @@ const EXEC_CLASSES = new Set(["needs-turing", "box"]);
 // todos.yaml (real YAML beats re-serialized JSON: Tom's comments and block
 // scalars survive), `replanNote` is Tom's stale-replan note when a replan was
 // requested, else null.
-function briefPrompt(entryYaml, replanNote) {
+function briefPrompt(entryYaml, replanNote, writingStandard) {
   return [
     `You are briefing Tom on ONE entry of vqc/todos.yaml in the ComplexMultiTrigger`,
     `repo. Your working directory is a checkout of that repo at current master —`,
@@ -77,10 +84,15 @@ function briefPrompt(entryYaml, replanNote) {
           ``,
         ]
       : []),
-    `Write a GROUND-UP brief for Tom (~250-400 words). Ground-up means: define`,
-    `every term the first time it appears, no invented names, concrete before`,
-    `abstract — Tom's understanding is the bottleneck and the brief exists so he`,
-    `can rule fast. Cover, in order:`,
+    // Verbatim from the one home (convex/ttsShared.ts WRITING_STANDARD,
+    // fetched over HTTP). It replaces the one-sentence gloss on "ground-up"
+    // this prompt used to carry, which was a paraphrase — and a paraphrase of
+    // a writing standard is a second standard.
+    writingStandardBlock(writingStandard),
+    ``,
+    `Write "brief" as a GROUND-UP EXPLANATION in the standard's sense`,
+    `(~250-400 words). Tom's understanding is the bottleneck and the brief`,
+    `exists so he can rule fast. Cover, in order:`,
     `- what this todo is and why it exists;`,
     `- what its attached plan (if any) would do;`,
     `- whether the plan still matches the CURRENT tree: check that the files and`,
@@ -124,6 +136,9 @@ function briefCacheMarkdown(externalId, parsed) {
 async function main() {
   const force = process.argv.includes("--force");
   const env = loadEnv();
+  // Fetched before any work: a run that cannot get the standard must not write
+  // prose at all, so this throws rather than falling back.
+  const writingStandard = await fetchWritingStandard(env);
 
   // Refresh the cache clone — the brief must describe the CURRENT tree, and
   // Claude's read tools get this directory as cwd.
@@ -176,7 +191,7 @@ async function main() {
       const found = findEntryBlock(todosText, entry.id);
       const entryYaml = found ? found.block : JSON.stringify(entry, null, 2);
 
-      const answer = runClaude(briefPrompt(entryYaml, replanNote), {
+      const answer = runClaude(briefPrompt(entryYaml, replanNote, writingStandard), {
         cwd: repoDir, // non-agentic: read-only tools over the repo, no edits
         timeoutMs: PER_ENTRY_TIMEOUT_MS,
         maxTurns: BRIEF_MAX_TURNS,

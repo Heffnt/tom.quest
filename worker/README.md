@@ -63,6 +63,28 @@ are all harmless to lose:
 
 Losing the whole box loses nothing but a paused digest and some re-work.
 
+## The writing standard
+
+Every sentence TTS shows Tom is written to one standard — the two registers
+(display text and ground-up explanation), what to assume he knows, no invented
+names, descriptive never evaluative. It has exactly one home: `WRITING_STANDARD`
+in `convex/ttsShared.ts`.
+
+These jobs cannot import it (Node ESM, no TypeScript on this box), so they fetch
+it and paste it into the prompt verbatim, via `tts-lib.mjs`:
+
+- `fetchWritingStandard(env)` — `GET /tts/writing-standard`, for a job that
+  holds no other payload carrying it (`prepare-life-todos`, `brief-code-todos`,
+  `prepare-queue`, `apply-time-notes`, `execute-approved`).
+- `requireWritingStandard(value, source)` — the same fatal check applied to the
+  `writingStandard` field already on `GET /tts/batch-context`, for the two jobs
+  that fetch that payload anyway (`form-batches`, `plan-graphs`).
+
+Missing is fatal on purpose, never a fallback: a run without the standard would
+quietly produce prose written to no standard at all, which is worse than the run
+not happening. A job that writes its own restatement of the rules instead fails
+`pnpm check:guardrails` (`scripts/check-writing-standard.mjs`).
+
 ## Rebuild from scratch
 
 ```

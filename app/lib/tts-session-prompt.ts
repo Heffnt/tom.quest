@@ -4,8 +4,26 @@
 // framing cannot drift between entry points.
 
 import type { Doc } from "@/convex/_generated/dataModel";
+import { WRITING_STANDARD } from "@/convex/ttsShared";
 
-const CONTRACT = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Follow the ground-up contract in every reply: define terms on first use, invent no names, concrete before abstract, one idea per paragraph, keep replies short, and end anything needing a decision with what Tom needs to decide plus a recommendation. Language is descriptive, never evaluative — no praise, no scolding. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output.`;
+// The session opening. Two parts, and the split is the point.
+//
+// The POSTURE is what is specific to an interactive session: who the reader is,
+// what device he is on, and how wide the session's scope runs. It is written
+// here because nowhere else needs it.
+//
+// The STANDARD is pasted verbatim from its one home, WRITING_STANDARD in
+// convex/ttsShared.ts. This line used to be a hand-written summary of it, which
+// is what a second standard looks like: it drifted to naming TTS by a name the
+// system no longer uses. ttsShared.ts holds no Convex imports, so importing it
+// from browser code costs the string and nothing else.
+const CONTRACT = [
+  `You are working inside TTS (Toms Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output. Keep replies short.`,
+  ``,
+  `Everything you write in this session obeys this standard, verbatim:`,
+  ``,
+  WRITING_STANDARD,
+].join("\n");
 
 function fact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;

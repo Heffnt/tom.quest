@@ -228,19 +228,22 @@ export function goalCheckable(todo: GoalTodo): boolean {
 // ── The writing standard (one home; ratified 2026-08-29) ────────────────────
 // EVERY piece of natural language TTS shows Tom — a batch statement, a task
 // statement, a ground-up explanation, a digest line, a decision list — is
-// written to this standard. It lives here as a plain string because its ONE
-// consumer that cannot import anything is a worker prompt: the planner job
-// (worker/jobs/plan-graphs.mjs) is Node ESM on a box that never loads .ts, so
-// it fetches this text over HTTP (GET /tts/batch-context, which reads it from
-// right here) and pastes it into the prompt verbatim. Any TypeScript caller
-// imports it directly. Two copies of a writing standard drift within a week;
-// this is the only copy in the codebase.
+// written to this standard. It lives here as a plain string because the
+// consumers that cannot import anything are worker prompts: the jobs in
+// worker/jobs/ are Node ESM on a box that never loads .ts, so they fetch this
+// text over HTTP and paste it into the prompt verbatim. Two routes, one copy —
+// GET /tts/writing-standard for a job that fetches nothing else, and the
+// `writingStandard` field on GET /tts/batch-context for the batcher and the
+// planner, which already hold that payload. Any TypeScript caller imports it
+// directly. Two copies of a writing standard drift within a week; this is the
+// only copy in the codebase, and scripts/check-writing-standard.mjs fails the
+// guardrails run when a second one appears in a prompt.
 //
 // The DURABLE home of the reasoning behind it — the mined evidence, the
-// session cites, the full calibration — is the WikiTom page tts/model-of-tom.md
-// (read via git; see tts/spec.md §18). What follows is the operative summary
-// that ships in prompts; when the wiki page changes, this string changes with
-// it.
+// session cites, the full calibration, and the procedure for changing the
+// fluent/absent lists below — is the WikiTom page tts/model-of-tom.md (read via
+// git; see tts/spec.md §18). What follows is the operative summary that ships
+// in prompts; when the wiki page changes, this string changes with it.
 export const WRITING_STANDARD = `WRITING STANDARD — every sentence TTS shows Tom obeys this.
 
 THE TWO REGISTERS. All natural language here is one of exactly two kinds, and

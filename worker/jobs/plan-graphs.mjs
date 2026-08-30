@@ -56,7 +56,14 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  requireWritingStandard,
+  writingStandardBlock,
+} from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
@@ -113,7 +120,7 @@ function prompt(ctx) {
     `- ground-up explanation — the self-contained layer behind a "more"`,
     `  control.`,
     ``,
-    ctx.writingStandard,
+    writingStandardBlock(ctx.writingStandard),
     ``,
     `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
     `groundUpExplanation, path, frozen, tasks, goals. A task carries id,`,
@@ -273,13 +280,10 @@ async function main() {
   // and rides this payload because this file is Node ESM on a box that never
   // loads TypeScript. A run without it would quietly produce prose written to
   // no standard at all, which is worse than not running — so it is fatal.
-  const writingStandard = context.writingStandard;
-  if (typeof writingStandard !== "string" || writingStandard.trim() === "") {
-    throw new Error(
-      "/tts/batch-context returned no writingStandard — the server half of the " +
-        "one-home rule is missing; refusing to write prose to no standard",
-    );
-  }
+  const writingStandard = requireWritingStandard(
+    context.writingStandard,
+    "/tts/batch-context",
+  );
 
   const activeBatches = batchRows.filter((b) => b.status === "active");
   const archivedStatements = batchRows

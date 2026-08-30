@@ -37,7 +37,14 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  requireWritingStandard,
+  writingStandardBlock,
+} from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/batch-input-hash";
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
@@ -60,9 +67,13 @@ function prompt(ctx) {
     ``,
     `No explicit model of Tom exists yet. Infer his priorities from the todo`,
     `corpus below and from his ruling history. Every importance estimate`,
-    `carries a one-line rationale. Language is descriptive, never evaluative —`,
-    `no praise, no urgency theater. Define any term Tom might not know; invent`,
-    `no names.`,
+    `carries a one-line rationale.`,
+    ``,
+    // Verbatim from the one home (convex/ttsShared.ts WRITING_STANDARD), which
+    // rides the /tts/batch-context payload this job already fetches. It
+    // replaces the paraphrase this prompt used to carry — a paraphrase of a
+    // writing standard is a second standard.
+    writingStandardBlock(ctx.writingStandard),
     ``,
     `ACTIVE LIFE TODOS not in any batch (JSON; each: id, statement, brief,`,
     `category, importance, dueAt — dueAt is epoch ms or null):`,
@@ -124,9 +135,11 @@ function prompt(ctx) {
     `  "externalId": "..."} for a code todo — ids VERBATIM from the inputs.`,
     `- "id" ONLY when rewriting an existing unfrozen batch from the list`,
     `  above; omit it for new batches.`,
-    `- "statement" — short, names what the grouping is about, plain words.`,
-    `- "brief" — 2-5 sentences, ground-up: what this grouping is, why these`,
-    `  items belong together, what one session on it would accomplish.`,
+    `- "statement" — DISPLAY TEXT in the standard's sense: one short line that`,
+    `  names what the grouping is about.`,
+    `- "brief" — a GROUND-UP EXPLANATION in the standard's sense, 2-5`,
+    `  sentences: what this grouping is, why these items belong together, what`,
+    `  one session on it would accomplish.`,
     `- "plan" — ordered, smallest concrete steps. actor "agent" for what an`,
     `  agent does, "tom" for what needs Tom — phrase Tom's steps as the`,
     `  decision or action put to him. New steps get status "open". When`,
@@ -154,8 +167,14 @@ async function main() {
   const env = loadEnv();
 
   // --- Gather context ------------------------------------------------------
-  const { todos, mirror, briefs, recentRulings } = await convexFetch(
-    env,
+  const context = await convexFetch(env, "/tts/batch-context");
+  const { todos, mirror, briefs, recentRulings } = context;
+  // The writing standard has ONE home (convex/ttsShared.ts WRITING_STANDARD)
+  // and rides this payload because this file is Node ESM on a box that never
+  // loads TypeScript. Missing is fatal, never a fallback: a run without it
+  // would write prose to no standard at all.
+  const writingStandard = requireWritingStandard(
+    context.writingStandard,
     "/tts/batch-context",
   );
   const { pending } = await convexFetch(env, "/tts/rulings");
@@ -315,6 +334,7 @@ async function main() {
   );
   const answer = runClaude(
     prompt({
+      writingStandard,
       life,
       lifeHeldBack,
       code,

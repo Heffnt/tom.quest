@@ -1667,3 +1667,36 @@ describe("GET /tts/batch-context (planner half)", () => {
     );
   });
 });
+
+// ── GET /tts/writing-standard ────────────────────────────────────────────────
+
+describe("GET /tts/writing-standard (the worker box's route to the one home)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // witness: delete the route, or return a paraphrase from it — every worker
+  // job that writes prose Tom reads (the preparer, the batcher, the briefer,
+  // the digest, the time-note reader, the executor) fetches the standard here
+  // and refuses to run without it, so the standard would stop reaching them.
+  it("serves the writing standard verbatim to a keyed caller", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await t.fetch("/tts/writing-standard", {
+      method: "GET",
+      headers: { "X-TTS-Key": "s3cret" },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).writingStandard).toBe(WRITING_STANDARD);
+  });
+
+  it("refuses a caller with the wrong key", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await t.fetch("/tts/writing-standard", {
+      method: "GET",
+      headers: { "X-TTS-Key": "wrong" },
+    });
+    expect(res.status).toBe(401);
+  });
+});

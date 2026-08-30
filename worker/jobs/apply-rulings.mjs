@@ -142,7 +142,7 @@ function applySession(env, repoDir, ruling) {
   const agenda = [
     `# TTS session agenda — ${id}`,
     ``,
-    `This file is a session agenda written by TTS (Tom's delegated todo system)`,
+    `This file is a session agenda written by TTS (Toms Todo System)`,
     `after Tom's "session" verdict on the code todo \`${id}\`: the todo's plan`,
     `embeds a judgment call only Tom can make, so the next step is a live working`,
     `session instead of autonomous execution. Tom starts it from the repo root:`,

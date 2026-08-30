@@ -1358,17 +1358,20 @@ function pickMissionRepo(todo: Doc<"dtsTodos">, extraText = ""): string {
   return AUTO_REPOS.find((repo) => text.includes(repo)) ?? "none";
 }
 
-// Opening prompt for an AUTONOMOUS session (house voice: the ground-up
-// contract of app/lib/tts-session-prompt.ts, adapted for a session no one is
-// watching live). The sessionId rides in so the outcome pen can name this
-// session — the agent has no other way to learn its own id.
+// Opening prompt for an AUTONOMOUS session. The sessionId rides in so the
+// outcome pen can name this session — the agent has no other way to learn its
+// own id.
 //
-// Lockstep: app/lib/tts-session-prompt.ts is the interactive twin (its
-// CONTRACT opening, buildTodoSessionPrompt's item facts block, and the batch
-// members/plan blocks) — both files carry a note naming the other, and the
-// facts-block wording ('The item ("…"):', "The plan (N steps, in order):",
-// "The members (N, live statuses):") is kept identical where the posture
-// allows. No import across the convex boundary: that module is client code.
+// The writing rules are NOT restated here: every prompt in this file and in
+// app/lib/tts-session-prompt.ts pastes ttsShared.WRITING_STANDARD verbatim, so
+// there is one home for them and no twin to keep in step.
+//
+// Lockstep on the REST: app/lib/tts-session-prompt.ts is the interactive twin
+// (buildTodoSessionPrompt's item facts block and the batch members/plan
+// blocks) — both files carry a note naming the other, and the facts-block
+// wording ('The item ("…"):', "The plan (N steps, in order):", "The members
+// (N, live statuses):") is kept identical where the posture allows. No import
+// across the convex boundary: that module is client code.
 function buildAutoMissionPrompt(
   todo: Doc<"dtsTodos">,
   sessionId: Id<"claudeSessions">,
@@ -1376,7 +1379,15 @@ function buildAutoMissionPrompt(
   members?: AutoMemberContext[],
 ): string {
   const lines: (string | null)[] = [
-    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
+    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.`,
+    "",
+    // Verbatim from the one home (ttsShared.WRITING_STANDARD), exactly as
+    // buildWorkerPrompt does it. This opening used to carry a one-sentence
+    // summary of the standard instead, which is a second standard by another
+    // name: a summary cannot be kept in step with what it summarizes.
+    "Everything you write into TTS obeys this standard, verbatim:",
+    "",
+    WRITING_STANDARD,
     "",
     // Facts block — same labels and order as the interactive twin's
     // buildTodoSessionPrompt (category is autonomous-only: it scopes what a
@@ -1681,7 +1692,15 @@ function buildProspectMissionPrompt(
   sessionId: Id<"claudeSessions">,
 ): string {
   const lines: string[] = [
-    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
+    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.`,
+    "",
+    // Verbatim from the one home (ttsShared.WRITING_STANDARD), exactly as
+    // buildWorkerPrompt does it. This opening used to carry a one-sentence
+    // summary of the standard instead, which is a second standard by another
+    // name: a summary cannot be kept in step with what it summarizes.
+    "Everything you write into TTS obeys this standard, verbatim:",
+    "",
+    WRITING_STANDARD,
     "",
     `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for CONCRETE, ACTIONABLE issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
     "",

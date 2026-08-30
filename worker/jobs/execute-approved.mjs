@@ -32,7 +32,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { loadEnv, convexFetch, runClaude } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  fetchWritingStandard,
+  writingStandardBlock,
+} from "./tts-lib.mjs";
 import {
   CMT_REPO,
   CMT_DEFAULT_BRANCH,
@@ -49,7 +55,7 @@ const LOCK_DIR = "/var/lib/tts/execute.lock";
 const LOCK_STALE_MS = 3 * 60 * 60 * 1000; // execution legitimately runs ~45 min
 const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000;
 
-function execPrompt(externalId, entryYaml, briefText) {
+function execPrompt(externalId, entryYaml, briefText, writingStandard) {
   return [
     `You are executing an APPROVED plan in the ComplexMultiTrigger repo. Tom has`,
     `ruled "approve" on the code todo below through TTS (his delegated todo`,
@@ -77,9 +83,17 @@ function execPrompt(externalId, entryYaml, briefText) {
     `  change, and fix what you break.`,
     `- Commit your work with clear messages (you are already on a work branch).`,
     ``,
+    ``,
+    // Verbatim from the one home (convex/ttsShared.ts WRITING_STANDARD,
+    // fetched over HTTP). The change report becomes the pull request body Tom
+    // reads, so it is the same kind of text as everything else TTS shows him;
+    // this prompt used to gloss the rules in one parenthetical.
+    writingStandardBlock(writingStandard),
+    ``,
     `When done, print a final summary that STARTS with the line "CHANGE REPORT:"`,
-    `followed by a ground-up description of what changed as OBSERVABLE BEHAVIOR`,
-    `(define every term on first use; write for Tom, who will review the PR).`,
+    `followed by a GROUND-UP EXPLANATION, in the standard's sense, of what`,
+    `changed — as OBSERVABLE BEHAVIOR rather than internal structure. It`,
+    `becomes the pull request body Tom reads.`,
   ].join("\n");
 }
 
@@ -111,6 +125,14 @@ async function main() {
       .sort((a, b) => (a.ruledAt ?? 0) - (b.ruledAt ?? 0));
     if (approvals.length === 0) return; // quiet when idle
 
+    // Fetched only once there is a ruling to execute — the common case exits
+    // above. A run that cannot get the standard must not write prose at all,
+    // so this throws rather than falling back. Deliberately BEFORE the ruling
+    // is selected: the header's failure policy marks a selected ruling applied
+    // with "EXECUTION FAILED", and an unreachable Convex is environmental, so
+    // the ruling must stay pending and retry next hour instead.
+    const writingStandard = await fetchWritingStandard(env);
+
     ruling = approvals[0]; // exactly ONE per run — see the header
     const id = ruling.externalId;
     const branch = `tts/${id}`;
@@ -141,7 +163,7 @@ async function main() {
     }
 
     // The agentic run. Everything it can damage is inside execDir.
-    const answer = runClaude(execPrompt(id, found.block, briefText), {
+    const answer = runClaude(execPrompt(id, found.block, briefText, writingStandard), {
       cwd: execDir,
       agentic: true,
       timeoutMs: CLAUDE_TIMEOUT_MS,

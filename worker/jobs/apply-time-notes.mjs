@@ -46,6 +46,8 @@ import {
   extractJsonObject,
   nyUtcOffsetHours,
   nyNoonUtcMs,
+  fetchWritingStandard,
+  writingStandardBlock,
 } from "./tts-lib.mjs";
 
 const NOTE_MAX = 10; // per run; the rest wait two minutes
@@ -144,7 +146,7 @@ function renderContext(context) {
 // The prompt
 // ---------------------------------------------------------------------------
 
-function prompt(note, clock) {
+function prompt(note, clock, writingStandard) {
   // note.day is the calendar-date LABEL of the column Tom clicked, already
   // "YYYY-MM-DD" in New York (schema: dtsTimeNotes.day) — it goes into the
   // prompt verbatim. There is no timestamp to convert and nothing to get wrong.
@@ -157,6 +159,12 @@ function prompt(note, clock) {
     `time note is a sentence Tom wrote about time — a due date, a wake time, a`,
     `block of committed time on his calendar. Your job is to turn that one`,
     `sentence into concrete actions, or to say plainly that you cannot.`,
+    ``,
+    // Verbatim from the one home (convex/ttsShared.ts WRITING_STANDARD,
+    // fetched over HTTP). Only "result" is prose Tom reads, and it is one line
+    // of display text — but it is shown on the page, so it is governed here
+    // rather than by this file's own compressed restatement of the rules.
+    writingStandardBlock(writingStandard),
     ``,
     `RIGHT NOW: ${clock.nyCalendarDay} ${nyLocal(clock.now)} in ${clock.timezone}`,
     `(all times below, and every time you write, are New York wall clock).`,
@@ -209,10 +217,9 @@ function prompt(note, clock) {
     `  says "push it back" but the date already passed — that is a miss).`,
     `- A weekday with no date ("Wednesday") means the NEXT such weekday from`,
     `  today. A bare month+day takes the nearest year that is not in the past.`,
-    `- "result" is ONE plain sentence of what was done, in Tom's words, no`,
-    `  jargon: "due set to Wed Sep 2", "moved the chores block to 10-12".`,
+    `- "result" is DISPLAY TEXT: ONE sentence of what was done, in Tom's own`,
+    `  words — "due set to Wed Sep 2", "moved the chores block to 10-12".`,
     `  For "needs-session" it is the one-line reason instead.`,
-    `- Descriptive, never evaluative. No praise, no urgency.`,
     ``,
     `Answer ONLY a JSON object, no prose, no code fences:`,
     `{"status": "applied", "result": "...", "actions": [ ... ]}`,
@@ -312,6 +319,11 @@ async function main() {
   const notes = Array.isArray(state.notes) ? state.notes : [];
   if (notes.length === 0) return; // the common case: exit before spending anything
 
+  // Fetched only once there is work — this job runs every two minutes and the
+  // common case exits above. A run that cannot get the standard must not write
+  // prose at all, so this throws rather than falling back.
+  const writingStandard = await fetchWritingStandard(env);
+
   const batch = notes.slice(0, NOTE_MAX);
   console.log(
     `[apply-time-notes] ${notes.length} pending, processing ${batch.length}`,
@@ -327,7 +339,7 @@ async function main() {
     // well-formed; the only question left is whether the server accepts it.
     let verdict;
     try {
-      const answer = runClaude(prompt(note, state), {
+      const answer = runClaude(prompt(note, state, writingStandard), {
         timeoutMs: CLAUDE_TIMEOUT_MS,
         model: MODEL,
       });

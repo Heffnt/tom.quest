@@ -2083,6 +2083,10 @@ describe("autonomous session scheduler", () => {
     });
     expect(inbound[0].text).toContain("BATCH");
     expect(inbound[0].text).toContain("batch member");
+    // The legacy mission writes to the same one home as the graph worker.
+    // witness: put a summary of the standard back in buildAutoMissionPrompt
+    // instead of the constant and this goes red.
+    expect(inbound[0].text).toContain(WRITING_STANDARD);
   });
 
   // ── Which repo the mission's workspace holds (pickMissionRepo) ─────────────
@@ -2270,6 +2274,9 @@ describe("prospecting lane", () => {
     });
     expect(inbound).toHaveLength(1);
     expect(inbound[0].kind).toBe("user-turn");
+    // A prospector writes captured findings Tom reads, so it carries the same
+    // standard, verbatim from the same one home.
+    expect(inbound[0].text).toContain(WRITING_STANDARD);
 
     // The lane's own trail names the session and the repo — the scheduler
     // event stays the work walk's.
