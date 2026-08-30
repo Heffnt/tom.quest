@@ -459,8 +459,13 @@ async function main() {
     if (!contentsByBatch.has(todo.batchId)) contentsByBatch.set(todo.batchId, []);
     contentsByBatch.get(todo.batchId).push(todo);
   }
+  // STALEST FIRST. A stored batch's updatedAt moves when a run lands changes,
+  // so recency-first re-showed the same freshly-planned batches every run and
+  // the tail never entered the slice — the de-chain sweep starved. Stalest
+  // first makes the slice a rotation: every landed update sends that batch to
+  // the back of the line and the least-recently-planned graph is always next.
   const graphsOrdered = [...activeBatches].sort(
-    (a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+    (a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0),
   );
   const graphsHeldBack = Math.max(0, graphsOrdered.length - MAX_GRAPHS_PER_RUN);
   const graphs = graphsOrdered.slice(0, MAX_GRAPHS_PER_RUN).map((b) => {
