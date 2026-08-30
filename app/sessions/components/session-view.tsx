@@ -1,47 +1,50 @@
 "use client";
 
-// Session view: header facts, transcript, pending permission cards pinned
-// above the composer, composer. Fills the viewport below the site nav so the
-// transcript is the only scrolling region (phone-first).
+// Session view: transcript first — it owns the top edge of the screen. Every
+// piece of chrome that used to sit above it (the site nav, the worker banner,
+// the header band of title/status/facts) is now either covered, moved below,
+// or behind the bar's "details" dialog. Reading order top to bottom is:
+//
+//   transcript (the only scrolling region)
+//   pending permission cards, pinned above the composer
+//   the worker notice, when the daemon is stale or rejected a write
+//   the session bar — back, title, status, details
+//   the composer and its session controls
+//
+// The column is the whole viewport (see sessions-client.tsx), not the
+// viewport minus a nav.
 
-import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { ageText, isLive, shortAge, statusChipClass } from "../lib";
 import Transcript from "./transcript";
 import AgentPanel from "./agent-panel";
 import PermissionCard from "./permission-card";
+import SessionBar from "./session-bar";
 import Composer from "./composer";
-
-const LAST_OUTPUT_QUIET_MS = 2 * 60_000;
 
 export default function SessionView({
   sessionId,
   now,
   daemonStale,
   daemonLastSeenAt,
+  notice,
   onBack,
 }: {
   sessionId: Id<"claudeSessions">;
   now: number;
   daemonStale: boolean;
   daemonLastSeenAt: number | undefined;
+  /** Worker-health notice, rendered at the BOTTOM so it never costs the
+   *  transcript its top edge. Null when the worker is healthy. */
+  notice: ReactNode;
   onBack: () => void;
 }) {
   const session = useQuery(api.claudeSessions.getSession, { id: sessionId });
   const pendingPermissions = useQuery(api.claudeSessions.getPendingPermissions, {
     sessionId,
   });
-  const renameSession = useMutation(api.claudeSessions.renameSession);
-
-  // Rename: the h1 IS the control — tapping it swaps in an input that looks
-  // the same. Enter blurs (the blur handler is the single save path, so Enter
-  // and click-away cannot both fire it); Escape sets this flag first so the
-  // blur it causes discards instead of saving.
-  const [titleDraft, setTitleDraft] = useState<string | null>(null);
-  const cancelRename = useRef(false);
 
   // The agent panel holds a live Convex subscription, so `hidden sm:block`
   // alone would still pay for it on a phone that never shows it — mount it
@@ -78,118 +81,8 @@ export default function SessionView({
     );
   }
 
-  const commitRename = (value: string) => {
-    setTitleDraft(null);
-    if (cancelRename.current) {
-      cancelRename.current = false;
-      return;
-    }
-    const next = value.trim();
-    if (next === "" || next === session.title) return;
-    void renameSession({ sessionId, title: next });
-  };
-
-  const quietWhileRunning =
-    session.status === "running" &&
-    session.lastSdkEventAt !== undefined &&
-    now - session.lastSdkEventAt > LAST_OUTPUT_QUIET_MS;
-
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <header className="border-b border-border px-3 sm:px-4 py-2.5 space-y-1">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            type="button"
-            onClick={onBack}
-            aria-label="Back to sessions"
-            className="shrink-0 rounded px-2 py-1 text-sm border border-border text-text-muted hover:bg-surface-alt"
-          >
-            &larr;
-          </button>
-          {titleDraft === null ? (
-            <h1
-              onClick={() => {
-                cancelRename.current = false;
-                setTitleDraft(session.title);
-              }}
-              className="text-sm sm:text-base text-text truncate min-w-0 flex-1 cursor-text"
-            >
-              {session.title}
-            </h1>
-          ) : (
-            <input
-              type="text"
-              autoFocus
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onBlur={(e) => commitRename(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                } else if (e.key === "Escape") {
-                  cancelRename.current = true;
-                  e.currentTarget.blur();
-                }
-              }}
-              className="text-sm sm:text-base text-text min-w-0 flex-1 bg-transparent border-b border-accent/60 focus:outline-none"
-            />
-          )}
-          {session.mode === "autonomous" && (
-            <span className="shrink-0 border border-border rounded px-1.5 py-0.5 text-xs text-text-muted">
-              autonomous
-            </span>
-          )}
-          <span
-            className={`shrink-0 border rounded px-1.5 py-0.5 text-xs ${statusChipClass(session.status)}`}
-          >
-            {session.status}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs text-text-faint pl-9">
-          <span>{session.repo}</span>
-          <span>{ageText(session.statusChangedAt, now)}</span>
-          {session.todoId !== undefined && (
-            <Link
-              href={`/tts?item=${session.todoId}`}
-              className="text-accent hover:underline"
-            >
-              linked item
-            </Link>
-          )}
-          {session.cwd !== undefined && (
-            <span className="truncate max-w-full">{session.cwd}</span>
-          )}
-          {quietWhileRunning && session.lastSdkEventAt !== undefined && (
-            <span>
-              last output {shortAge(session.lastSdkEventAt, now)} ago
-            </span>
-          )}
-          {daemonStale && isLive(session.status) && (
-            <span>
-              as of{" "}
-              {daemonLastSeenAt !== undefined
-                ? ageText(daemonLastSeenAt, now)
-                : "an unknown time"}
-            </span>
-          )}
-        </div>
-        {/* The arrival headline for an ended session: what it came to, ahead
-            of the transcript it came to it in. Live-gated like session-list's
-            copy of the same field — a reopened session keeps its old outcome
-            as history, which must not headline an actively-streaming run. */}
-        {!isLive(session.status) && session.outcome !== undefined && (
-          <div
-            className={`text-xs pl-9 break-words ${
-              session.outcome === "errored" ? "text-error" : "text-text-muted"
-            }`}
-          >
-            outcome: {session.outcome}
-            {session.outcomeSummary ? ` — ${session.outcomeSummary}` : ""}
-          </div>
-        )}
-      </header>
-
       {/* Transcript + permission cards are the conversation column; the agent
           panel is a sibling, not a floating overlay. Below sm the phone gets
           the conversation alone (the panel's facts are all in the transcript
@@ -216,6 +109,16 @@ export default function SessionView({
           </div>
         )}
       </div>
+
+      {notice}
+
+      <SessionBar
+        session={session}
+        now={now}
+        daemonStale={daemonStale}
+        daemonLastSeenAt={daemonLastSeenAt}
+        onBack={onBack}
+      />
 
       <Composer session={session} daemonStale={daemonStale} />
     </div>

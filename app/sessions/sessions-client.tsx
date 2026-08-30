@@ -12,6 +12,7 @@ import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
+import { useUIStore } from "@/app/lib/stores/ui-store";
 import TomGate from "@/app/components/tom-gate";
 import SessionList from "./components/session-list";
 import SessionView from "./components/session-view";
@@ -22,6 +23,36 @@ import { DAEMON_STALE_MS, ageText } from "./lib";
 // anything not id-shaped is treated as absent (the list view shows instead).
 const SESSION_ID_SHAPE = /^[a-z0-9]{20,40}$/;
 
+// Height of the part of the page the phone is actually showing, in px, or
+// null before the effect runs / where the API is missing (the CSS 100dvh
+// fallback then stands alone).
+//
+// Why this exists: the open session is a `position: fixed` layer, and a fixed
+// layer does NOT get scrolled into view when the on-screen keyboard opens the
+// way an in-flow one does — the composer at its bottom edge would sit under
+// the keyboard. visualViewport.height excludes the keyboard, so binding the
+// layer to it keeps the composer on screen. It also excludes the browser's
+// address bar, which is the same thing 100dvh does, so this is one mechanism
+// covering both and not a second one fighting the first.
+//
+// Only `resize` is listened to, deliberately: `scroll` fires continuously
+// while the address bar slides and would jitter the layer mid-read.
+function useVisibleViewportHeight(active: boolean): number | null {
+  const [height, setHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const vv = typeof window === "undefined" ? undefined : window.visualViewport;
+    if (!active || !vv) {
+      setHeight(null);
+      return;
+    }
+    const apply = () => setHeight(vv.height);
+    apply();
+    vv.addEventListener("resize", apply);
+    return () => vv.removeEventListener("resize", apply);
+  }, [active]);
+  return height;
+}
+
 export default function SessionsClient() {
   // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
   const { isTom } = useAuth();
@@ -30,6 +61,15 @@ export default function SessionsClient() {
   const health = useQuery(api.claudeSessions.getDaemonHealth, isTom ? {} : "skip");
 
   const [activeId, setActiveId] = useState<Id<"claudeSessions"> | null>(null);
+
+  // Same offset AppShell applies to <main> when Tom's diagnostic panel is
+  // open. The full-viewport session layer is fixed, so it does not inherit
+  // that margin and has to read the store itself.
+  const debugOpen = useUIStore((state) => state.debugOpen);
+  const debugWidth = useUIStore((state) => state.debugWidth);
+  const debugInset = isTom && debugOpen ? debugWidth : 0;
+
+  const visibleHeight = useVisibleViewportHeight(activeId !== null);
 
   // Staleness is derived at render; a 15s tick keeps ages honest.
   const [now, setNow] = useState(() => Date.now());
@@ -64,9 +104,14 @@ export default function SessionsClient() {
 
   const lastIngestError = health?.lastIngestError;
 
-  const banner =
+  // Worker health, as two lines of text. On the list it is a top banner; on an
+  // open session the SAME lines render at the BOTTOM (the transcript owns the
+  // top edge there), so the border side is the caller's to pick.
+  const notice = (edge: "top" | "bottom") =>
     daemonStale || lastIngestError !== undefined ? (
-      <div className="border-b border-border bg-surface-alt/50 px-3 sm:px-4 py-2 text-xs space-y-0.5">
+      <div
+        className={`${edge === "top" ? "border-b" : "border-t"} border-border bg-surface-alt/50 px-3 sm:px-4 py-2 text-xs space-y-0.5`}
+      >
         {daemonStale && (
           <div className="text-text-muted">
             {health
@@ -86,21 +131,42 @@ export default function SessionsClient() {
     ) : null;
 
   const body = activeId ? (
-    // Full window width (Tom's ruling): the transcript is the work surface and
-    // the agent panel sits beside it from sm up — neither gets a column cap.
-    <div className="h-[calc(100dvh-4rem)] flex flex-col w-full">
-      {banner}
+    // The open session takes the WHOLE viewport, top edge included: it is a
+    // fixed layer that covers the site nav (z-40) rather than unmounting it,
+    // so nothing on the page moves when a session opens or closes, and the
+    // transcript's first line is the first line on the screen.
+    //
+    // Height is 100dvh, not 100vh or 100svh: the transcript is the only
+    // scrolling region and the composer is pinned under it, so the column has
+    // to track the phone's address bar as it shows and hides — 100vh would
+    // push the composer under the bar, 100svh would strand a dead strip below
+    // it once the bar retracted. The inline height from visualViewport (see
+    // useVisibleViewportHeight) is the same measurement taken more precisely
+    // and takes over once JS runs; the class is the pre-hydration fallback.
+    //
+    // The left inset mirrors AppShell's own: the Tom-only diagnostic panel is
+    // also fixed and also z-50, but it is painted after <main>, so it still
+    // sits on top when open, and this layer steps aside for it.
+    <div
+      className="fixed top-0 right-0 z-50 h-[100dvh] flex flex-col bg-bg"
+      style={
+        visibleHeight === null
+          ? { left: debugInset }
+          : { left: debugInset, height: visibleHeight }
+      }
+    >
       <SessionView
         sessionId={activeId}
         now={now}
         daemonStale={daemonStale}
         daemonLastSeenAt={health?.lastSeenAt}
+        notice={notice("bottom")}
         onBack={closeSession}
       />
     </div>
   ) : (
     <div className="max-w-3xl mx-auto w-full">
-      {banner}
+      {notice("top")}
       <div className="px-3 sm:px-4 py-6 space-y-4">
         <header>
           <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>

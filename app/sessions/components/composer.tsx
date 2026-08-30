@@ -121,6 +121,22 @@ export default function Composer({
           session {session.status}
           {session.endedReason ? ` — ${session.endedReason}` : ""}
         </div>
+        {/* The arrival headline for an ended session — what it came to. It used
+            to sit in the header band above the transcript; that band is gone,
+            and this line is the one place an ended session is already being
+            described, so the outcome joins it rather than hiding in the bar's
+            details dialog. Reachable only from this branch, which is already
+            gated on the session not being live. */}
+        {session.outcome !== undefined && (
+          <div
+            className={`text-xs break-words ${
+              session.outcome === "errored" ? "text-error" : "text-text-faint"
+            }`}
+          >
+            outcome: {session.outcome}
+            {session.outcomeSummary ? ` — ${session.outcomeSummary}` : ""}
+          </div>
+        )}
         {error && <div className="text-xs text-error">{error}</div>}
         {textRow("Send — reopens session", true)}
       </div>
