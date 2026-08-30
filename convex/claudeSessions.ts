@@ -1583,6 +1583,25 @@ function workspaceParagraph(
   return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary.`;
 }
 
+// The two things an autonomous session can LOOK at, as opposed to reason
+// about. Both are installed on the worker box by worker/setup.sh and were,
+// until this paragraph existed, undiscoverable: nothing in any prompt named
+// them, so a session that had changed a page or a cluster-shaped thing ended by
+// asking Tom to go and check it himself.
+//
+// Both are read-only, and tts-turing's read-only-ness is enforced at the API
+// rather than in the command: it carries TURING_READ_KEY, which turing-api
+// accepts on three GET endpoints and refuses everywhere else (verify_read_key).
+// The full TURING_API_KEY — which also authorizes POST /sessions/{name}/run,
+// arbitrary shell on the cluster — is not on the box at all.
+function boxToolsParagraph(): string {
+  return [
+    "Looking at things: this box has two read-only commands, for work that needs seeing rather than reasoning. Run either with --help.",
+    "- `tts-browse <url> [--login] [--full] [--json]` opens a real headless browser at a page and reports its status, console errors, failed requests, and a PNG path you can Read. `--login` signs in first (every /turing and /tts page is role-gated, so an anonymous read of one is a false negative).",
+    "- `tts-turing health|gpus|jobs|output <session>` reads the Turing cluster through https://turing.tom.quest. It cannot allocate, cancel, or run anything: the credential it holds opens three GET endpoints and is refused on every write one.",
+  ].join("\n");
+}
+
 // Opening prompt for an AUTONOMOUS session (house voice: the ground-up
 // contract of app/lib/tts-session-prompt.ts, adapted for a session no one is
 // watching live). The sessionId rides in so the outcome pen can name this
@@ -1680,6 +1699,8 @@ function buildAutoMissionPrompt(
           "",
           `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
+    "",
+    boxToolsParagraph(),
     "",
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
@@ -1872,6 +1893,8 @@ function buildWorkerPrompt(args: {
           "",
           `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
+    "",
+    boxToolsParagraph(),
     "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
   );

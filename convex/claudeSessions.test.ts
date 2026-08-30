@@ -2673,6 +2673,34 @@ describe("frontier scheduler", () => {
     expect(text).not.toContain("fresh checkouts");
   });
 
+  // A tool nothing names is a tool no session uses: tts-browse sat installed
+  // and unmentioned on the box for as long as it existed. tts-turing is the
+  // session's ONLY path to the cluster (no ssh, no route to turing.wpi.edu),
+  // so if it is not in the prompt, the access this paragraph documents does
+  // not functionally exist.
+  // witness: drop boxToolsParagraph() from buildWorkerMissionPrompt in
+  // convex/claudeSessions.ts and this goes red.
+  it("names the box's two read-only commands in the mission prompt", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "look at the cluster",
+      repos: ["tom.quest"],
+      tasks: [{ statement: "check /turing", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("tts-browse");
+    expect(text).toContain("tts-turing");
+    // And the prompt states the limit, so a session does not plan around a
+    // write it cannot make: the read key is refused on every write endpoint.
+    expect(text).toContain("cannot allocate, cancel, or run anything");
+  });
+
   // An explicitly EMPTY declaration is an answer: this batch needs no
   // checkout. witness: test `batch.repos` for truthiness instead of
   // `!== undefined` and this goes red — [] falls through to the guess, and a
