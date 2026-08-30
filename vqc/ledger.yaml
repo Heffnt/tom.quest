@@ -253,6 +253,43 @@
     subject exists, or the instruction is removed from
     app/lib/tts-session-prompt.ts so the prompt stops promising it.
 
+- id: writing-standard-remainder
+  kind: descent
+  created: 2026-08-30
+  cites: [A1, tts-spec:5]
+  statement: >-
+    Stored ground-up explanations that fail WRITING_STANDARD's mechanical rules
+    (the ratified complete-HTML-document form). Measured 2026-08-30: 40 of 77,
+    every one a `source: "migration"` row written before the HTML form was
+    ratified — they are markdown, and render as the wall of text the rule
+    exists to prevent. Zero of 372 stored briefs fail; briefs are markdown by
+    design. Tom ruled the major failures are rewritten now and the REMAINDER is
+    carried here rather than cut off silently (ratchet adoption). The count is
+    reported by `pnpm check:writing`, whose BASELINE constant may only ever be
+    lowered.
+  graduates_when: >-
+    scripts/check-writing-standard.mjs reports 0 failing, at which point its
+    BASELINE and this entry are deleted together.
+
+- id: info-captions-unmigrated
+  kind: descent
+  created: 2026-08-30
+  cites: [C1, tts-spec:5]
+  statement: >-
+    The ⓘ info control is now the ratified tap-to-open popover carrying a
+    plain-language explanation plus the call in mono, and every static caption
+    has been migrated. Two callers have not: todo-row.tsx's `caption` and
+    `intentCaption` pass their text down through props from several surfaces at
+    once, so each needs its own explanation written at its own call site rather
+    than one here. They render the call alone through Info's `label` shim.
+    Separately, native `title=` attributes remain in calendar-tab.tsx (block
+    chip, calendar event, due mark, wake mark, time note) and
+    repeats-strip.tsx — dead on touch, which is exactly what the one-info-
+    mechanism rule forbids.
+  graduates_when: >-
+    No `title=` attribute survives in app/tts outside genuine HTML semantics,
+    Info's `label` shim prop is deleted, and every ⓘ carries plain language.
+
 - id: secrets-sync-vercel-drift
   kind: descent
   created: 2026-08-27

@@ -122,7 +122,12 @@ export default function TimeNoteField({
           <button type="submit" disabled={!text.trim() || busy} className={btnCls}>
             note
           </button>
-          <Info label={`tts.createTimeNote({text,${contextLabel}})`} />
+          <Info call={`tts.createTimeNote({ text, ${contextLabel} })`}>
+            Files one sentence about timing against this item. Nothing moves
+            yet: a job reads pending notes every couple of minutes, works out
+            the concrete date or block change you meant, and applies it —
+            leaving a ✓ line here saying what it did.
+          </Info>
         </form>
       )}
 
@@ -151,7 +156,11 @@ export default function TimeNoteField({
             >
               ×
             </button>
-            <Info label="tts.deleteTimeNote({id})" />
+            <Info call="tts.deleteTimeNote({ id })">
+              Drops this note before anything acts on it. Only a note still
+              waiting can be dropped — one already applied has become a real
+              date or block, and that change stands.
+            </Info>
           </div>
         ),
       )}

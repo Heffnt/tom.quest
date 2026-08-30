@@ -142,7 +142,10 @@ function BlockChip({
             <button onClick={remove} disabled={busy} className={btnCls}>
               Delete
             </button>
-            <Info label="tts.deleteBlock({id})" />
+            <Info call="tts.deleteBlock({ id })">
+              Removes this span from the calendar. The todo it was for is not
+              touched — it simply stops having time set aside for it.
+            </Info>
           </div>
           {isCategory && (
             <div>
@@ -154,7 +157,13 @@ function BlockChip({
                 >
                   {sessionBusy ? "Opening…" : "Open block session"}
                 </button>
-                <Info label='claudeSessions.createSession({kind:"block"})' />
+                <Info call='claudeSessions.createSession({ kind: "block", blockCategory })'>
+                  Opens a Claude session on the Jarvis Box for this whole
+                  category, with every active todo in it in the opening prompt.
+                  It gets its own checkout of whatever repositories the work
+                  needs, and can only push to its own branch — merging stays
+                  yours.
+                </Info>
               </div>
               {sessionError && (
                 <div className="text-xs text-error">{sessionError}</div>

@@ -176,7 +176,12 @@ function AutoFleetStrip() {
             >
               Save
             </button>
-            <Info label="claudeSessions.setAutoConfig({enabled, maxLoadPerCpu, minFreeMemMb, maxLiveAutonomous, maxNewPerTick})" />
+            <Info call="claudeSessions.setAutoConfig({ enabled, maxLoadPerCpu, minFreeMemMb, maxLiveAutonomous, maxNewPerTick })">
+              How hard the fleet is allowed to work. Every five minutes the
+              scheduler walks your open work and opens sessions for it, but
+              only while the Jarvis Box is under these load and memory numbers —
+              load is the real throttle, the two counts are runaway failsafes.
+            </Info>
           </div>
           {error && <div className="text-xs text-error">{error}</div>}
         </div>
