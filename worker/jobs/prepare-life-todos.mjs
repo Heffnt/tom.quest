@@ -255,6 +255,19 @@ async function main() {
   );
   if (targets.length === 0) return; // quiet when idle
 
+  // NEWEST FIRST. /tts/state returns rows oldest-first, and only BATCH_MAX of
+  // them are prepared per run — so with oldest-first ordering a handful of
+  // todos that can never be prepared (a server refusal, a model that keeps
+  // answering the wrong shape) would hold every slot forever and a #dump
+  // message captured a second ago would never be reached, never prepared, and
+  // never replied to. Since 2026-08-30 that is a promise broken in front of
+  // Tom rather than a slow queue, so the freshest capture goes first and a
+  // permanently stuck item is what starves instead.
+  //
+  // This costs nothing when the backlog fits in one batch, which is the normal
+  // case: the job runs every 2 minutes and captures arrive one at a time.
+  targets.sort((a, b) => b.createdAt - a.createdAt);
+
   const batch = targets.slice(0, BATCH_MAX);
   console.log(
     `[prepare-life-todos] ${targets.length} to prepare ` +
@@ -328,6 +341,17 @@ async function main() {
       // Per-item failure: log and continue — the item stays unprepared (or
       // its revise ruling stays pending) and the next run retries it. One
       // bad item must not starve the batch.
+      //
+      // ⚠ RETRY RATE. There is no backoff here, and since 2026-08-30 this job
+      // runs every 2 MINUTES rather than every 2 hours: a todo that fails to
+      // prepare for a structural reason (a server refusal, a model that
+      // answers the wrong shape every time) is now retried ~720 times a day,
+      // each retry a headless Claude call, instead of ~12. Nothing caps that.
+      // Watch /var/log/tts/prepare-life-todos.log for the same todo id
+      // repeating; the stopgap is to archive the offending todo, and the fix
+      // (if it ever comes up) is a per-todo attempt count — which needs a home
+      // for that count, and this job deliberately keeps NO local state, so the
+      // home would have to be Convex.
       failures++;
       console.error(
         `[prepare-life-todos] ${todo._id} FAILED: ${String(err.message ?? err).slice(-200)}`,

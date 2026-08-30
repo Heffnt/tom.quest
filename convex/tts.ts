@@ -1401,11 +1401,20 @@ export const internalCapture = internalMutation({
   },
 });
 
-// The claim on a #dump capture's ONE threaded Slack reply (Tom's ruling
+// The claim on a #dump message's ONE threaded Slack reply (Tom's ruling
 // 2026-08-30). prepare-life-todos.mjs calls this BEFORE it posts to Slack, not
 // after: the job re-prepares a todo whenever Tom rules "revise" and whenever it
 // is run with --force, so the stamp is what stops the same capture being
 // answered a second, third and fourth time.
+//
+// THE CLAIM IS PER SLACK MESSAGE, NOT PER ROW. poll-dump.mjs can capture one
+// #dump message twice — it advances its cursor only after /tts/capture
+// returns, and its header documents re-capturing the last 24 hours whenever
+// the cursor file is lost. The duplicate is a whole new row with its own empty
+// slackRepliedAt, so a per-row guard would let the second row post a second
+// reply into the same thread. Duplicate TODOS are tolerated by design (Tom
+// archives them); duplicate REPLIES are the thing his ruling forbids. So the
+// question asked here is "has this (channel, ts) been answered by ANY row".
 //
 // FIRST STAMP WINS, and a second call is NOT an error — it returns
 // { stamped: false } so the caller learns "someone already claimed this" and
@@ -1420,6 +1429,20 @@ export const internalMarkSlackReplied = internalMutation({
     const todo = await ctx.db.get(normalized);
     if (!todo) throw new Error(`Unknown todo id: ${id}`);
     if (todo.slackRepliedAt !== undefined) return { stamped: false };
+    // Any OTHER row captured from the same Slack message that already holds
+    // the reply. Indexed, not a table scan — and skipped entirely for a todo
+    // with no coordinates, where the row's own field is the whole story.
+    if (todo.slackChannel !== undefined && todo.slackTs !== undefined) {
+      const siblings = await ctx.db
+        .query("dtsTodos")
+        .withIndex("by_slack_message", (q) =>
+          q.eq("slackChannel", todo.slackChannel).eq("slackTs", todo.slackTs),
+        )
+        .collect();
+      if (siblings.some((s) => s.slackRepliedAt !== undefined)) {
+        return { stamped: false };
+      }
+    }
     // updatedAt is deliberately NOT touched. This stamp records an outbound
     // message, not a change to the todo Tom reads, and the Inventory sorts by
     // updatedAt — a reply must not shuffle his list.

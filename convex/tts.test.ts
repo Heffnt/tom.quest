@@ -347,6 +347,62 @@ describe("TTS todos", () => {
     ).rejects.toThrow(/Unknown todo id/);
   });
 
+  // poll-dump.mjs advances its cursor only AFTER /tts/capture returns, and
+  // re-captures the last 24 hours whenever the cursor file is lost — so one
+  // #dump message can legitimately become two rows. Duplicate TODOS are
+  // tolerated (Tom archives them); a duplicate REPLY in his thread is the
+  // thing the ruling forbids.
+  // witness: delete the by_slack_message sibling lookup in
+  // internalMarkSlackReplied and the second row is granted the reply.
+  it("refuses a second reply to a message captured twice", async () => {
+    const t = convexTest({ schema, modules });
+    const coordinates = { slackChannel: "C1DUMP", slackTs: "1788058865.123456" };
+    for (const statement of ["book the ferry", "book the ferry"]) {
+      await t.mutation(internal.tts.internalCapture, {
+        statement,
+        source: "slack-capture",
+        ...coordinates,
+      });
+    }
+    const [first, second] = await t.run(async (ctx) =>
+      ctx.db.query("dtsTodos").collect(),
+    );
+    expect(first._id).not.toBe(second._id); // genuinely two rows
+    expect(
+      (await t.mutation(internal.tts.internalMarkSlackReplied, { id: first._id }))
+        .stamped,
+    ).toBe(true);
+    // The duplicate row has its own empty slackRepliedAt; the claim is on the
+    // MESSAGE, so it is still refused.
+    expect(
+      (await t.mutation(internal.tts.internalMarkSlackReplied, { id: second._id }))
+        .stamped,
+    ).toBe(false);
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(rows.filter((r) => r.slackRepliedAt !== undefined)).toHaveLength(1);
+  });
+
+  // A todo with no Slack coordinates must not be swept up by the sibling
+  // lookup: undefined is a real index key, so every coordinate-less row shares
+  // one (undefined, undefined) slot.
+  // witness: drop the `slackChannel !== undefined` guard in
+  // internalMarkSlackReplied and the second capture below is refused.
+  it("keeps coordinate-less todos out of each other's claims", async () => {
+    const t = convexTest({ schema, modules });
+    for (const statement of ["from gmail", "from consolidation"]) {
+      await t.mutation(internal.tts.internalCapture, { statement, source: "manual" });
+    }
+    const [a, b] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(
+      (await t.mutation(internal.tts.internalMarkSlackReplied, { id: a._id }))
+        .stamped,
+    ).toBe(true);
+    expect(
+      (await t.mutation(internal.tts.internalMarkSlackReplied, { id: b._id }))
+        .stamped,
+    ).toBe(true);
+  });
+
   // witness: make internalPrepareTodo patch `statement` too, and the
   // preserved-statement assertion below goes red.
   it("preparer attaches fields and advances readiness without touching intent", async () => {

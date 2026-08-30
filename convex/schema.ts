@@ -516,12 +516,20 @@ export default defineSchema({
     // address a thread), by tts.internalCapture only.
     slackChannel: v.optional(v.string()),
     slackTs: v.optional(v.string()),
-    // The CLAIM on the one threaded reply this todo gets: epoch ms, stamped by
-    // tts.internalMarkSlackReplied, never overwritten. prepare-life-todos.mjs
-    // re-prepares a todo on --force and on every revise ruling, so without a
-    // once-only claim the same capture would be answered again on each re-prep.
-    // The stamp is taken BEFORE the Slack call, not after — see that job for
-    // why that order is the one that cannot double-post.
+    // The CLAIM on the one threaded reply THAT SLACK MESSAGE gets: epoch ms,
+    // stamped by tts.internalMarkSlackReplied, never overwritten.
+    // prepare-life-todos.mjs re-prepares a todo on --force and on every revise
+    // ruling, so without a once-only claim the same capture would be answered
+    // again on each re-prep. The stamp is taken BEFORE the Slack call, not
+    // after — see that job for why that order is the one that cannot
+    // double-post.
+    //
+    // THE CLAIM IS PER SLACK MESSAGE, NOT PER ROW, which is why the index
+    // below exists. poll-dump.mjs can legitimately capture one #dump message
+    // TWICE — it advances its cursor after the capture returns, and it is
+    // documented to re-capture the last 24 hours if that cursor file is lost —
+    // producing two rows carrying the same (slackChannel, slackTs). Guarding
+    // only this row's own field would then post two replies into one thread.
     slackRepliedAt: v.optional(v.number()),
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
@@ -575,7 +583,12 @@ export default defineSchema({
     // Ingestion lookups: the Canvas sync and the repeating-todo generator find
     // their own rows by source ("canvas" / "repeating") + provenance match,
     // without scanning the whole table.
-    .index("by_source", ["source"]),
+    .index("by_source", ["source"])
+    // Every row captured from ONE Slack message. Used by
+    // tts.internalMarkSlackReplied to answer "has this MESSAGE been replied to
+    // already", which is a different question from "has this ROW been replied
+    // to" whenever poll-dump.mjs captured the same message twice.
+    .index("by_slack_message", ["slackChannel", "slackTs"]),
 
   // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
   // Read-only mirror of Tom's external calendars, ingested from ICS feeds
