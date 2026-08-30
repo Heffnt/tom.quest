@@ -17,11 +17,11 @@ export const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
-export type RulingVerdict = "execute" | "edit" | "session" | "archive";
+export type RulingVerdict = "execute" | "edit" | "discuss" | "archive";
 export const VERDICTS: RulingVerdict[] = [
   "execute",
   "edit",
-  "session",
+  "discuss",
   "archive",
 ];
 

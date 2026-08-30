@@ -1091,7 +1091,7 @@ describe("TTS rulings on a batch", () => {
     const batch = await newBatch(t);
     await t.mutation(internal.ttsRulings.internalRecordRuling, {
       batchId: batch._id,
-      verdict: "session",
+      verdict: "discuss",
     });
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling.subjectType).toBe("batch");

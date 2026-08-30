@@ -16,7 +16,7 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // button anywhere may use:
 //   execute — run the plan as briefed
 //   edit  — one written sentence redirects the preparing agent, no session
-//   session — this needs conversation
+//   discuss — Tom's to talk through; held back from autonomous work
 //   archive — set aside
 // "defer" is not a verdict: not ruling IS deferring; timing changes are a
 // reschedule (dtsBlocks / a time note), not a ruling.
@@ -42,11 +42,11 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 const VERDICT = v.union(
   v.literal("execute"),
   v.literal("edit"),
-  v.literal("session"),
+  v.literal("discuss"),
   v.literal("archive"),
 );
 
-export type RulingVerdict = "execute" | "edit" | "session" | "archive";
+export type RulingVerdict = "execute" | "edit" | "discuss" | "archive";
 
 // The ONE definition of a ruling subject's identity (repo names carry no
 // spaces; the type prefix keeps life, code, and batch keys disjoint). Client
@@ -216,11 +216,11 @@ async function insertRuling(
       }
       // session: still applied when the session exists, exactly as for a life
       // subject. NOTE (known gap, not a defect of this path): claudeSessions
-      // has no batch subject yet, so markLiveSessionRulingApplied cannot see
-      // this ruling — a batch "session" verdict stays pending until sessions
+      // has no batch subject yet, so markLiveDiscussRulingApplied cannot see
+      // this ruling — a batch "discuss" verdict stays pending until sessions
       // can target a batch. Because it can never be applied, the scheduler
       // reads it as a TIMED PAUSE on the batch's graph rather than as a
-      // freeze (AUTO_BATCH_SESSION_PAUSE_MS in claudeSessions.ts): an
+      // freeze (AUTO_BATCH_DISCUSS_PAUSE_MS in claudeSessions.ts): an
       // applied-forever test at the batch level would strand every task in the
       // graph on one conversation Tom meant to have.
     }
@@ -324,11 +324,11 @@ export function liveRulings(
 }
 
 /**
- * A "session" verdict is applied the moment its session exists. Called by
+ * A "discuss" verdict is applied the moment its session exists. Called by
  * claudeSessions.createSession so the supersession rule stays defined HERE
  * (one implementation), not inlined at the session layer.
  */
-export async function markLiveSessionRulingApplied(
+export async function markLiveDiscussRulingApplied(
   ctx: MutationCtx,
   todoId: Id<"dtsTodos">,
   sessionId: string,
@@ -340,7 +340,7 @@ export async function markLiveSessionRulingApplied(
   const live = liveRulings(rulings).get(
     identifierKey({ subjectType: "life", todoId }),
   );
-  if (live && live.verdict === "session" && live.appliedAt === undefined) {
+  if (live && live.verdict === "discuss" && live.appliedAt === undefined) {
     await ctx.db.patch(live._id, {
       appliedAt: Date.now(),
       applyResult: `session ${sessionId}`,

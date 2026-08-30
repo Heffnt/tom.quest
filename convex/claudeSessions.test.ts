@@ -469,7 +469,7 @@ describe("claude sessions", () => {
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "session",
+      verdict: "discuss",
     });
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "session for todo",
@@ -483,7 +483,7 @@ describe("claude sessions", () => {
     expect(ruling.applyResult).toBe(`session ${sessionId}`);
   });
 
-  // witness: drop the `live.verdict === "session"` guard from createSession in
+  // witness: drop the `live.verdict === "discuss"` guard from createSession in
   // convex/claudeSessions.ts and this test goes red.
   it("createSession does not consume a non-session or already-applied ruling", async () => {
     const t = convexTest({ schema, modules });
@@ -512,7 +512,7 @@ describe("claude sessions", () => {
     // An already-applied session ruling is not re-stamped by a second session.
     const sessionRulingId = await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "session",
+      verdict: "discuss",
     });
     const secondSession = await tom.mutation(api.claudeSessions.createSession, {
       title: "first session",
@@ -1780,7 +1780,7 @@ describe("autonomous session scheduler", () => {
     expect(await workSessions(t)).toHaveLength(0);
   });
 
-  // witness: drop the `live.verdict === "session"` clause from the exclusion
+  // witness: drop the `live.verdict === "discuss"` clause from the exclusion
   // and this test goes red — Tom asked for a conversation, not groundwork.
   it("never takes over a todo whose live verdict asked for a session", async () => {
     const t = convexTest({ schema, modules });
@@ -1790,7 +1790,7 @@ describe("autonomous session scheduler", () => {
     const todoId = await eligibleTodo(tom, "needs a conversation");
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "session",
+      verdict: "discuss",
     });
     // The conversation happened and ended: the ruling is applied and no
     // session is live, so ONLY the session-verdict clause can exclude it.
@@ -3025,7 +3025,7 @@ describe("frontier scheduler", () => {
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
       batchId,
-      verdict: "session",
+      verdict: "discuss",
       sentence: "let's talk about this one",
     });
 

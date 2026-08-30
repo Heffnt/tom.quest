@@ -164,7 +164,7 @@ describe("TTS unified rulings", () => {
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "talk" });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "session",
+      verdict: "discuss",
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "ComplexMultiTrigger",
@@ -201,7 +201,7 @@ describe("TTS unified rulings", () => {
   it("execute, session, and archive each stamp tomTouchedAt (row frozen)", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    for (const verdict of ["execute", "session", "archive"] as const) {
+    for (const verdict of ["execute", "discuss", "archive"] as const) {
       const todoId = await tom.mutation(api.tts.createTodo, {
         statement: `rule ${verdict}`,
       });
@@ -442,7 +442,7 @@ describe("TTS unified rulings", () => {
     await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "ComplexMultiTrigger",
       externalId: "ruled",
-      verdict: "session",
+      verdict: "discuss",
     });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
@@ -458,7 +458,7 @@ describe("TTS unified rulings", () => {
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
-      verdict: "session",
+      verdict: "discuss",
     });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
@@ -479,7 +479,7 @@ describe("TTS unified rulings", () => {
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId: s,
-      verdict: "session",
+      verdict: "discuss",
       sentence: "I want to see the numbers first",
     });
     const rulings = await tom.query(api.ttsRulings.listRulings, {});

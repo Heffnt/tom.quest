@@ -137,7 +137,7 @@ type Mode = RulingVerdict | "done" | "set-archived";
 const PLACEHOLDER: Record<Mode, string> = {
   execute: "note (optional)",
   edit: "sentence (required)",
-  session: "note (optional)",
+  discuss: "note (optional)",
   archive: "unarchive when (optional)",
   done: "note (optional)",
   "set-archived": "propose back when (optional)",
@@ -146,7 +146,7 @@ const PLACEHOLDER: Record<Mode, string> = {
 const INFO: Record<Mode, string> = {
   execute: 'ttsRulings.recordRuling({verdict:"execute", sentence})',
   edit: 'ttsRulings.recordRuling({verdict:"edit", sentence})',
-  session: 'ttsRulings.recordRuling({verdict:"session", sentence})',
+  discuss: 'ttsRulings.recordRuling({verdict:"discuss", sentence})',
   archive: 'ttsRulings.recordRuling({verdict:"archive", sentence})',
   done: 'tts.setStatus({status:"done", note})',
   "set-archived": 'tts.setStatus({status:"archived", unarchiveCondition})',
@@ -160,7 +160,7 @@ export type OptionsRowProps = {
   /** Show the four verdict chips. */
   rulable: boolean;
   /**
-   * Runs AFTER the session verdict is recorded, with the tab reserved in the
+   * Runs AFTER the discuss verdict is recorded, with the tab reserved in the
    * click and the just-recorded ruling (so its sentence reaches the session
    * prompt instead of Tom repeating himself).
    */
@@ -240,21 +240,21 @@ export default function OptionsRow({
       return;
     }
 
-    if (mode === "session") {
+    if (mode === "discuss") {
       // Reserved HERE, synchronously inside the click/submit, before the
       // mutation — browsers only honour window.open in the gesture stack.
       // Nothing opens a session for a code subject, so nothing is reserved.
       const tab = afterSession ? reserveSessionTab() : null;
       void run(async () => {
         try {
-          await record("session", text);
+          await record("discuss", text);
         } catch (e) {
           tab?.close();
           throw e;
         }
         if (tab) {
           afterSession?.(tab, {
-            verdict: "session",
+            verdict: "discuss",
             sentence: text || undefined,
           });
         }

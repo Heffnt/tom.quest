@@ -677,7 +677,8 @@ export default defineSchema({
   //   execute — run the plan as briefed (applied by worker/agent, appliedAt then set)
   //   edit  — `sentence` goes back to the preparing agent; life todos drop
   //             to readiness "preparing" immediately
-  //   session — this needs conversation; applied when the session is created
+  //   discuss — this one is Tom's to talk through, not the fleet's: it is
+  //             held back from autonomous work. Applied when a session opens.
   //   archive — set aside; life todos archive immediately (appliedAt = now),
   //             code todos are archived upstream by the worker
   // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
@@ -698,7 +699,7 @@ export default defineSchema({
     verdict: v.union(
       v.literal("execute"),
       v.literal("edit"),
-      v.literal("session"),
+      v.literal("discuss"),
       v.literal("archive"),
     ),
     // One optional written note, accepted on EVERY verdict (2026-08-29): the

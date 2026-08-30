@@ -121,16 +121,16 @@ export function useOpenTodoSession() {
       // holds, so the prompt carries live member statements and statuses.
       batch?: { todos: Doc<"dtsTodos">[]; mirror: Doc<"dtsCodeTodoMirror">[] };
       // A tab the caller already reserved in its own click handler (e.g. the
-      // session verdict, which records a ruling first). Omit it and open
+      // discuss verdict, which records a ruling first). Omit it and open
       // reserves one itself — synchronously, before the mutation.
       tab?: ReservedTab;
-      // The ruling just recorded (session verdict path) — its sentence goes
+      // The ruling just recorded (discuss verdict path) — its sentence goes
       // into the session prompt so Tom never repeats himself.
       ruling?: LiveRulingContext;
     },
   ) => {
     if (busy) {
-      // A caller that reserved its own tab in the click (the session verdict)
+      // A caller that reserved its own tab in the click (the discuss verdict)
       // would otherwise strand a blank window on the second click.
       opts?.tab?.close();
       return;

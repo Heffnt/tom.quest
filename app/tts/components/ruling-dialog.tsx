@@ -5,7 +5,7 @@
 //   execute / archive — a choice, with an optional note
 //   edit              — a short answer an agent applies (absorbs rewording,
 //                       schedule, reshaping, re-pathing, anything sayable)
-//   (session is its own thing and opens directly, not through this dialog)
+//   (discuss is its own thing and opens directly, not through this dialog)
 // The dialog always states where the batch stands before asking for input.
 import { useState } from "react";
 import type { PlanStep } from "../lib";

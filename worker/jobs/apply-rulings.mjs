@@ -132,7 +132,7 @@ function applyEdit(ruling) {
 //   claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 // from any checkout — the agenda travels with the code it is about, needs no
 // tom.quest access, and its git history records what Tom was asked.
-function applySession(env, repoDir, ruling) {
+function applyDiscuss(env, repoDir, ruling) {
   const id = ruling.externalId;
   const todosText = fs.readFileSync(path.join(repoDir, TODOS_PATH), "utf8");
   const found = findEntryBlock(todosText, id);
@@ -143,7 +143,7 @@ function applySession(env, repoDir, ruling) {
     `# TTS session agenda — ${id}`,
     ``,
     `This file is a session agenda written by TTS (Tom's delegated todo system)`,
-    `after Tom's "session" verdict on the code todo \`${id}\`: the todo's plan`,
+    `after Tom's "discuss" verdict on the code todo \`${id}\`: the todo's plan`,
     `embeds a judgment call only Tom can make, so the next step is a live working`,
     `session instead of autonomous execution. Tom starts it from the repo root:`,
     ``,
@@ -264,7 +264,7 @@ async function main() {
 
     // Refresh the cache clone once, only if some ruling needs the repo.
     const needsRepo = actionable.some(
-      (r) => r.repo === CMT_REPO && (r.verdict === "session" || r.verdict === "archive"),
+      (r) => r.repo === CMT_REPO && (r.verdict === "discuss" || r.verdict === "archive"),
     );
     const repoDir = needsRepo ? cmtRepoDir(env) : null;
 
@@ -283,8 +283,8 @@ async function main() {
           result = `unsupported repo: ${ruling.repo}`;
         } else if (ruling.verdict === "edit") {
           result = applyEdit(ruling);
-        } else if (ruling.verdict === "session") {
-          result = applySession(env, repoDir, ruling);
+        } else if (ruling.verdict === "discuss") {
+          result = applyDiscuss(env, repoDir, ruling);
         } else if (ruling.verdict === "archive") {
           result = applyArchive(env, repoDir, ruling);
         } else {

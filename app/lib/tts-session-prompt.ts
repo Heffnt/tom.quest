@@ -21,7 +21,7 @@ export function buildBlockSessionPrompt(
   const lines: string[] = [
     CONTRACT,
     "",
-    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately via \`npx convex run\`: tts:internalTriage for status/date changes, ttsRulings:internalRecordRuling for execute/edit/session/archive verdicts (both are internal mutations — the Tom-gated public mutations reject deploy credentials). The session is his pen, and a ruling that lives only in chat is lost.`,
+    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately via \`npx convex run\`: tts:internalTriage for status/date changes, ttsRulings:internalRecordRuling for execute/edit/discuss/archive verdicts (both are internal mutations — the Tom-gated public mutations reject deploy credentials). The session is his pen, and a ruling that lives only in chat is lost.`,
     "",
   ];
   if (category === "code") {
@@ -63,10 +63,10 @@ export type BatchMemberContext = {
 
 // The live (newest) ruling on this todo, when the caller holds one. Every
 // verdict may carry a sentence (ratified 2026-08-29) — the note Tom wrote when
-// he ruled — and the session that follows a "session" verdict is exactly where
+// he ruled — and the session that follows a "discuss" verdict is exactly where
 // that sentence has to arrive, or he has to repeat himself.
 export type LiveRulingContext = {
-  verdict: "execute" | "edit" | "session" | "archive";
+  verdict: "execute" | "edit" | "discuss" | "archive";
   sentence?: string;
 };
 
@@ -134,7 +134,7 @@ export function buildBatchSessionPrompt(batch: BatchSessionContext): string {
     "Walk-through contract:",
     '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
     '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-    "- Record Tom's spoken verdicts (execute/edit/session/archive, on the batch or any todo in it) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
+    "- Record Tom's spoken verdicts (execute/edit/discuss/archive, on the batch or any todo in it) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
     "- These are pens for Tom's spoken word — use them only while Tom is present in the session. A ruling that lives only in chat is lost.",
   );
   return lines.filter((l): l is string => l !== null).join("\n");
@@ -211,7 +211,7 @@ export function buildTodoSessionPrompt(
       '- Work the plan IN ORDER. Steps with actor "agent" you do yourself.',
       '- At each OPEN step with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
       `- Record plan progress the moment a step closes: \`npx convex run tts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff.`,
-      "- Record Tom's spoken verdicts (execute/edit/session/archive, on the batch or any member) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
+      "- Record Tom's spoken verdicts (execute/edit/discuss/archive, on the batch or any member) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
       "- Apply Tom's spoken en-masse property changes (importance, category) via tts:internalBulkUpdate.",
       "- All of these are pens for Tom's spoken word — use them only while Tom is present in the session.",
     );

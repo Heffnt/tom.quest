@@ -12,7 +12,7 @@ import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import {
   liveRulings,
-  markLiveSessionRulingApplied,
+  markLiveDiscussRulingApplied,
   identifierKey,
 } from "./ttsRulings";
 import { IMPORTANCE_RANK, logEvent } from "./tts";
@@ -248,10 +248,10 @@ export const createSession = mutation({
       nextSeq: 0,
       createdAt: now,
     });
-    // A "session" verdict is applied the moment its session exists — the
+    // A "discuss" verdict is applied the moment its session exists — the
     // supersession rule lives in ttsRulings.ts, not here.
     if (todoId !== undefined) {
-      await markLiveSessionRulingApplied(ctx, todoId, sessionId);
+      await markLiveDiscussRulingApplied(ctx, todoId, sessionId);
     }
     // The ratified rule is "every session ends with a written outcome
     // record". The autonomous mission prompt (buildAutoMissionPrompt below)
@@ -1871,7 +1871,7 @@ const AUTO_MAX_SESSIONS_PER_TODO = 8;
 // applied-forever test would freeze every task in the graph permanently. A day
 // is the pause: long enough to have the conversation, short enough that
 // forgetting to have it costs a day rather than the batch.
-const AUTO_BATCH_SESSION_PAUSE_MS = 24 * 60 * 60 * 1000;
+const AUTO_BATCH_DISCUSS_PAUSE_MS = 24 * 60 * 60 * 1000;
 // Usage-pressure fingerprints in an ending's own words — daemon endedReason
 // or agent outcomeSummary. LOCKSTEP with worker/session-host/session.mjs
 // USAGE_LIMIT_RE: both sides carry exactly this regex, narrowed on purpose to
@@ -2024,7 +2024,7 @@ export const internalAutoSchedule = internalMutation({
       // not a per-candidate by_todo query.
       if (liveSessions.some((s) => s.todoId === t._id)) return true;
       // A live (unapplied) ruling means Tom already spoke — do not race it;
-      // a live "session" verdict must not be silently consumed by an
+      // a live "discuss" verdict must not be silently consumed by an
       // autonomous session (a real conversation was asked for).
       const rulings = await ctx.db
         .query("dtsRulings")
@@ -2033,7 +2033,7 @@ export const internalAutoSchedule = internalMutation({
       const live = liveRulings(rulings).get(
         identifierKey({ subjectType: "life", todoId: t._id }),
       );
-      if (live && (live.appliedAt === undefined || live.verdict === "session")) {
+      if (live && (live.appliedAt === undefined || live.verdict === "discuss")) {
         return true;
       }
       // Backoff from autonomous session history (do not redo settled work) —
@@ -2145,7 +2145,7 @@ export const internalAutoSchedule = internalMutation({
       if (!batch || batch.status !== "active") continue;
       // The batch-level half of the pending-ruling exclusion: an unapplied
       // verdict means Tom has spoken and the fleet must not race him. A
-      // "session" verdict asked for a conversation, and it is the one verdict
+      // "discuss" verdict asked for a conversation, and it is the one verdict
       // nothing can ever mark applied at the batch level — so it PAUSES the
       // graph for a day rather than freezing it forever (a permanent freeze
       // costs every task in the batch, recoverable only by a second ruling
@@ -2155,8 +2155,8 @@ export const internalAutoSchedule = internalMutation({
       );
       if (ruling) {
         const paused =
-          ruling.verdict === "session"
-            ? now - ruling.ruledAt < AUTO_BATCH_SESSION_PAUSE_MS
+          ruling.verdict === "discuss"
+            ? now - ruling.ruledAt < AUTO_BATCH_DISCUSS_PAUSE_MS
             : ruling.appliedAt === undefined;
         if (paused) continue;
       }

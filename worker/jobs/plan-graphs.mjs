@@ -404,7 +404,7 @@ async function main() {
   const notes = recent
     .filter(
       (r) =>
-        (r.verdict === "execute" || r.verdict === "session") &&
+        (r.verdict === "execute" || r.verdict === "discuss") &&
         (r.sentence ?? "").trim() !== "",
     )
     .slice(0, NOTE_MAX)
