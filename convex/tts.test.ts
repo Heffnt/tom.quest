@@ -268,6 +268,151 @@ describe("TTS todos", () => {
     expect(todos[0].source).toBe("slack-capture");
   });
 
+  // ── The hourly update's reads (Tom's ruling 2026-08-30) ──────────────────
+  // Each is the internal twin of a requireTomId-gated query, because the
+  // hourly update runs from a cron and a cron has no identity.
+
+  // witness: change internalLastEventAt to return the newest event of ANY kind
+  // and this goes red — the window would start at the last capture rather than
+  // the last SEND, and an hour with captures in it would report nothing.
+  it("reads the window back from the last send, not the last event", async () => {
+    const t = convexTest({ schema, modules });
+    expect(
+      await t.query(internal.tts.internalLastEventAt, {
+        kind: "hourly-update-sent",
+      }),
+    ).toBeNull(); // never sent — the caller falls back to its default window
+
+    await t.mutation(internal.tts.internalLogEvent, {
+      kind: "hourly-update-sent",
+      data: { windowStart: 1, windowEnd: 2 },
+    });
+    // Busier events land AFTER the marker and must not be mistaken for it.
+    await t.mutation(internal.tts.internalCapture, {
+      statement: "later than the marker",
+      source: "manual",
+    });
+    const sentAt = await t.query(internal.tts.internalLastEventAt, {
+      kind: "hourly-update-sent",
+    });
+    expect(sentAt).not.toBeNull();
+
+    // And the range read covers [marker, now) — the capture above is in it.
+    const inWindow = await t.query(internal.tts.internalEventsInRange, {
+      start: sentAt!,
+      end: Date.now() + 1,
+    });
+    expect(inWindow.some((e) => e.kind === "captured")).toBe(true);
+  });
+
+  // witness: drop the `b.end > at` filter from internalScheduleAt and a block
+  // that ended this morning reports as what Tom is doing right now.
+  it("reports only the blocks actually spanning the moment asked about", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const now = Date.now();
+    const hour = 3_600_000;
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "write the thing",
+    });
+    // Ended an hour ago.
+    await tom.mutation(api.tts.createBlock, {
+      start: now - 3 * hour,
+      end: now - hour,
+      category: "past",
+    });
+    // Spanning now.
+    await tom.mutation(api.tts.createBlock, {
+      start: now - hour,
+      end: now + hour,
+      todoId,
+    });
+    // Starts in an hour.
+    await tom.mutation(api.tts.createBlock, {
+      start: now + hour,
+      end: now + 2 * hour,
+      category: "future",
+    });
+
+    const schedule = await t.query(internal.tts.internalScheduleAt, { at: now });
+    expect(schedule).toHaveLength(1);
+    // The join to the todo is what makes the Slack line readable — a bare
+    // start/end pair says nothing about what Tom is meant to be doing.
+    expect(schedule[0].statement).toBe("write the thing");
+  });
+
+  // ── Slack capture is idempotent on the message ts (Tom, 2026-08-30) ───────
+  // TWO producers now capture the same #dump message: the /slack/events push
+  // route (Slack retries the same event — delivery is at-least-once) and
+  // poll-dump.mjs, the hourly reconciliation backstop, which cannot know what
+  // the push route already took.
+  // witness: delete the by_slackTs lookup from internalCapture and this goes
+  // red — every Slack retry mints a duplicate todo.
+  it("captures a Slack message once, however many times it is offered", async () => {
+    const t = convexTest({ schema, modules });
+    const first = await t.mutation(internal.tts.internalCapture, {
+      statement: "buy climbing tape",
+      source: "slack-capture",
+      provenance: "slack:#dump ts=1787875674.496329",
+      slackChannel: "C0DUMP",
+      slackTs: "1787875674.496329",
+    });
+    // The backstop re-offers the same message with its own provenance.
+    const second = await t.mutation(internal.tts.internalCapture, {
+      statement: "buy climbing tape",
+      source: "slack-capture",
+      provenance: "https://slack.example/archives/C0DUMP/p1787875674496329",
+      slackChannel: "C0DUMP",
+      slackTs: "1787875674.496329",
+    });
+    expect(second).toBe(first);
+    const todos = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(todos).toHaveLength(1);
+    expect(todos[0].slackTs).toBe("1787875674.496329");
+    expect(todos[0].slackChannel).toBe("C0DUMP");
+
+    // A capture with NO ts is unaffected — manual and agent captures must not
+    // collapse into each other.
+    await t.mutation(internal.tts.internalCapture, {
+      statement: "something else",
+      source: "prospecting",
+    });
+    await t.mutation(internal.tts.internalCapture, {
+      statement: "something else",
+      source: "prospecting",
+    });
+    const after = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    expect(after).toHaveLength(3);
+  });
+
+  // Tom's ruling is EXACTLY ONE reply per #dump message, and this job
+  // re-prepares on --force and on every revise ruling.
+  // witness: drop the `slackRepliedAt !== undefined` early return from
+  // internalMarkSlackReplied and the second stamp overwrites the first, losing
+  // the ts of the reply that actually exists in Slack.
+  it("records the threaded reply once and never re-points it", async () => {
+    const t = convexTest({ schema, modules });
+    const id = await t.mutation(internal.tts.internalCapture, {
+      statement: "reply to me",
+      source: "slack-capture",
+      slackChannel: "C0DUMP",
+      slackTs: "111.000001",
+    });
+    const first = await t.mutation(internal.tts.internalMarkSlackReplied, {
+      id,
+      replyTs: "222.000002",
+    });
+    expect(first.alreadyReplied).toBe(false);
+    const second = await t.mutation(internal.tts.internalMarkSlackReplied, {
+      id,
+      replyTs: "333.000003",
+    });
+    expect(second.alreadyReplied).toBe(true);
+    const todo = await t.run(async (ctx) => ctx.db.get(id));
+    expect(todo?.slackReplyTs).toBe("222.000002");
+    expect(todo?.slackRepliedAt).toBeDefined();
+  });
+
   // witness: make internalPrepareTodo patch `statement` too, and the
   // preserved-statement assertion below goes red.
   it("preparer attaches fields and advances readiness without touching intent", async () => {
