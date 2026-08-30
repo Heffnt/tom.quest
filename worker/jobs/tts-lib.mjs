@@ -200,8 +200,7 @@ export async function fetchWritingStandard(env) {
 // the standard is itself written once.
 export function writingStandardBlock(writingStandard) {
   return [
-    `Everything you write below that Tom will read obeys this standard,`,
-    `verbatim:`,
+    `Everything you write that Tom will read obeys this standard, verbatim:`,
     ``,
     writingStandard,
   ].join("\n");
