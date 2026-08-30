@@ -24,8 +24,9 @@
     "test:observability": "vitest run app/lib/__tests__/debug.test.ts",
     "check:auth-boundary": "node scripts/check-auth-boundary.mjs",
     "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
+    "check:large-files": "node scripts/check-large-files.mjs",
     "check:secrets": "gitleaks detect --source . --no-banner --redact",
-    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs"
+    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs && node scripts/check-large-files.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.92",
