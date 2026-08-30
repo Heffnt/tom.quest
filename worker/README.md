@@ -89,13 +89,32 @@ knowing interim: no other account exists yet, and a session that cannot see
 `/turing` cannot check its own work there. A session account with a narrower
 role is a captured TTS todo.
 
-**Not installed: any path from this box to the Turing cluster.** `ssh` exists
-but `turing.wpi.edu` is not reachable from here, and the session sandbox's own
-command policy refuses to open a remote shell. The cluster is reachable only
-as the HTTPS API at `turing.tom.quest`, and that API's key would grant
-`POST /sessions/{name}/run` — arbitrary commands on the cluster — so it is
-deliberately absent from `worker.env`. Adding it is a posture decision, not a
-setup step.
+## The cluster
+
+Not by SSH. `ssh` exists on the box, but `turing.wpi.edu` does not answer from
+here and the session sandbox's own command policy refuses to open a remote
+shell. The one door is the FastAPI service behind the named cloudflared
+tunnel — the same door tom.quest's `/api/turing` proxy uses:
+
+```
+tts-turing /health                       # works with no key configured
+tts-turing /gpu-report
+tts-turing /jobs
+tts-turing /jobs/12345 --method DELETE
+tts-turing /allocate --method POST --data '{"gpu":"A100","count":1}'
+```
+
+`TURING_API_KEY` in `worker.env` is what makes everything past `/health` work.
+**That key grants everything** — `turing-api` has exactly one, and `/gpu-report`
+and `POST /sessions/{name}/run` (arbitrary commands in a tmux session on the
+cluster) sit behind the same header.
+
+Ratified by Tom, 2026-08-30, and worth being clear-eyed about what it changed:
+not much. Sessions already reach the same power through the browser, signed in
+as Tom, via the `/turing` page's own Allocate and Cancel controls. This makes
+it scriptable rather than newly possible. The two levers that would actually
+narrow session reach — a session-owned tom.quest account, and a scoped second
+API key — are captured TTS todos, and neither is blocked by this.
 
 ## The no-state rule
 

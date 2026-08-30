@@ -1,0 +1,123 @@
+#!/usr/bin/env node
+// tts-turing — call the Turing cluster API from a TTS session.
+//
+// WHY THIS EXISTS: the cluster is not reachable from this box by SSH.
+// turing.wpi.edu does not answer from here, and the session sandbox's own
+// command policy refuses to open a remote shell. The one door that exists is
+// the FastAPI service behind the named cloudflared tunnel at
+// https://turing.tom.quest, which is the same door tom.quest itself uses —
+// Next.js `forwardToTuringApi` attaches `X-API-Key` and proxies. This command
+// is that path, minus the browser.
+//
+// WHAT THE KEY GRANTS: everything. turing-api has ONE key (`verify_api_key` in
+// main.py) covering reads (/health, /gpu-report, /jobs, /dirs, /file) and
+// writes alike (/allocate, DELETE /jobs/{id}, POST /sessions/{name}/run —
+// arbitrary commands in a tmux session on the cluster). There is no read-only
+// scope to ask for. Sessions already reach the same power through the browser,
+// signed in as Tom, via the /turing page's own Allocate and Cancel controls;
+// this makes it scriptable rather than new. The lever that would actually
+// narrow it is giving sessions their own tom.quest account and a scoped
+// second API key — both captured as TTS todos.
+//
+// USAGE
+//   tts-turing /health
+//   tts-turing /gpu-report
+//   tts-turing /jobs
+//   tts-turing /sessions/<name>/output
+//   tts-turing /jobs/<id> --method DELETE
+//   tts-turing /allocate --method POST --data '{"gpu":"A100","count":1}'
+//
+//   --raw     print the body verbatim instead of pretty-printed JSON
+//   --status  print the HTTP status line to stderr as well
+//
+// Exit codes: 0 on 2xx, 1 on a non-2xx response, 2 on bad usage, 3 on a
+// transport error. A non-2xx still prints the body — the API's errors are
+// JSON and worth reading.
+
+const DEFAULT_BASE = "https://turing.tom.quest";
+
+function usage(msg) {
+  if (msg) console.error(`tts-turing: ${msg}`);
+  console.error(
+    "usage: tts-turing <path> [--method GET|POST|DELETE] [--data JSON] [--raw] [--status]",
+  );
+  process.exit(2);
+}
+
+const argv = process.argv.slice(2);
+let path = null;
+let method = "GET";
+let data;
+let raw = false;
+let showStatus = false;
+
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  const next = () => {
+    const v = argv[++i];
+    if (v === undefined) usage(`${a} needs a value`);
+    return v;
+  };
+  if (a === "--method") method = next().toUpperCase();
+  else if (a === "--data") data = next();
+  else if (a === "--raw") raw = true;
+  else if (a === "--status") showStatus = true;
+  else if (a === "-h" || a === "--help") usage();
+  else if (a.startsWith("-")) usage(`unknown flag ${a}`);
+  else if (path === null) path = a;
+  else usage(`unexpected argument ${a}`);
+}
+
+if (path === null) usage("a path is required, e.g. /gpu-report");
+if (!path.startsWith("/")) path = "/" + path;
+if (!["GET", "POST", "DELETE"].includes(method)) usage(`unsupported method ${method}`);
+
+const base = (process.env.TURING_API_URL || DEFAULT_BASE).replace(/\/$/, "");
+const key = process.env.TURING_API_KEY;
+
+// /health is the one unauthenticated endpoint, and it is the one worth being
+// able to call without configuration — "is the cluster tunnel up" should never
+// depend on a key being present.
+if (!key && path !== "/health") {
+  console.error(
+    "tts-turing: TURING_API_KEY is not set. Add it to /etc/tts/worker.env and " +
+      "restart tts-session-host. (/health works without it.)",
+  );
+  process.exit(2);
+}
+
+const headers = {};
+if (key) headers["X-API-Key"] = key;
+const init = { method, headers };
+if (data !== undefined) {
+  headers["Content-Type"] = "application/json";
+  init.body = data;
+}
+
+let res;
+try {
+  res = await fetch(base + path, init);
+} catch (e) {
+  console.error(`tts-turing: ${e?.message ?? e}`);
+  process.exit(3);
+}
+
+const text = await res.text();
+if (showStatus) console.error(`${res.status} ${res.statusText} ${method} ${base}${path}`);
+
+if (raw) {
+  process.stdout.write(text);
+} else {
+  try {
+    console.log(JSON.stringify(JSON.parse(text), null, 2));
+  } catch {
+    // Not JSON — an HTML error page from the tunnel, most likely. Print it as
+    // it came rather than pretending it parsed.
+    process.stdout.write(text);
+  }
+}
+
+if (!res.ok) {
+  if (!showStatus) console.error(`tts-turing: HTTP ${res.status}`);
+  process.exit(1);
+}
