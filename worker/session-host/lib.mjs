@@ -152,3 +152,58 @@ export function truncated(value, limit = TRUNCATE_LIMIT) {
     note: `truncated by session-host (JSON): ${json.length} chars -> ${limit}`,
   };
 }
+// ── Secrets that never enter a model-steerable process ───────────────────────
+// THE RULE, learned the expensive way: a session's shell output is not
+// ephemeral. Every Bash call and its output is ingested as a transcript row and
+// stored in Convex, so a secret the session's shell can PRINT is a secret one
+// stray `env` away from being written down permanently. What a session needs is
+// the ABILITY to use a credential, never the credential itself.
+//
+// Every name here therefore has a helper in /usr/local/bin (worker/bin/) that
+// reads it from /etc/tts/worker.env — mode 600, root-only, outside every work
+// tree — at the moment of the call:
+//
+//   SESSIONS_WORKER_KEY  transcript-ingest authority; a confused session could
+//                        rewrite ANY transcript. No helper: nothing legitimate
+//                        needs it.
+//   GH_TOKEN             repo write for the whole account. git reaches it via
+//                        the global credential.helper (tts-git-credential) and
+//                        gh via /root/.config/gh/hosts.yml, both installed by
+//                        setup.sh, so `git push` and `gh pr create` still work.
+//   TOMQUEST_AGENT_*     the tom.quest login sessions browse as. Hand-typed
+//                        into the box precisely so the password would never be
+//                        written down (worker.env.example: telling them to a
+//                        session "writes the password into a Convex-stored
+//                        transcript") — inheriting them here handed back
+//                        exactly what the hand-typing bought. tts-browse and
+//                        tts-auth-lib read them per call.
+//   TURING_API_KEY       ONE key covering the cluster API's reads AND writes,
+//                        including POST /sessions/{name}/run: arbitrary
+//                        commands on the cluster. tts-turing reads it per call
+//                        for --direct; its DEFAULT route needs no key at all,
+//                        going through tom.quest's proxy which attaches the key
+//                        server-side.
+//   VERCEL_*             build-log read access; tts-vercel reads them per call.
+//
+// Adding a secret to worker.env without adding it here is the mistake this list
+// exists to prevent.
+const SCRUBBED_SECRETS = [
+  "SESSIONS_WORKER_KEY",
+  "GH_TOKEN",
+  "TOMQUEST_AGENT_USERNAME",
+  "TOMQUEST_AGENT_PASSWORD",
+  "TURING_API_KEY",
+  "VERCEL_TOKEN",
+  "VERCEL_TEAM_ID",
+];
+
+/**
+ * `process.env` minus SCRUBBED_SECRETS, plus any extra names the caller wants
+ * dropped. One function rather than two destructures, because the two call
+ * sites (the SDK child and the Bash classifier) are both model-steerable and a
+ * name added to only one of them is a silent hole.
+ */
+export function scrubbedEnv(extra = []) {
+  const drop = new Set([...SCRUBBED_SECRETS, ...extra]);
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !drop.has(k)));
+}

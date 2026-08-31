@@ -87,10 +87,19 @@ mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
 echo "== [6/9] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
-# CLI helpers onto the PATH.
+# CLI helpers onto the PATH. The *-lib.mjs files are imported by their
+# siblings, not run, so they are copied but never marked executable; the
+# helpers import them by RELATIVE specifier, which is what lets the same file
+# run from a repo checkout and from /usr/local/bin without a second path.
+# *.test.mjs is excluded — the box is not where tests run, and shipping them
+# would put vitest imports on the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
+rm -f /usr/local/bin/*.test.mjs
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
-  /usr/local/bin/tts-git-credential
+  /usr/local/bin/tts-git-credential /usr/local/bin/tts-turing \
+  /usr/local/bin/tts-vercel
+chmod 644 /usr/local/bin/tts-secret-lib.mjs /usr/local/bin/tts-auth-lib.mjs \
+  /usr/local/bin/tts-vercel-lib.mjs
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):

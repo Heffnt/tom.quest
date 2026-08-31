@@ -23,6 +23,7 @@ import {
   sleep,
   backoffMs,
   truncated,
+  scrubbedEnv,
   ERROR_TEXT_LIMIT,
 } from "./lib.mjs";
 
@@ -690,21 +691,10 @@ export class Session {
 
   startQuery({ resume } = {}) {
     // The daemon's own secrets, dropped from the env the session's shell
-    // inherits. Under systemd both arrive via EnvironmentFile=/etc/tts/
-    // worker.env, so without this destructure-drop `env` in any Bash call
-    // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
-    // confused session could rewrite ANY transcript) and GH_TOKEN is repo
-    // write for the whole account. Neither is reachable through the
-    // sanctioned pens, so nothing legitimate needs them IN THE ENV: git
-    // authenticates through the global credential helper and gh through
-    // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
-    // every work tree), so `git push` and `gh pr create` work in a shell
-    // that cannot print the token with `env`.
-    const {
-      SESSIONS_WORKER_KEY: _ingestKey,
-      GH_TOKEN: _ghToken,
-      ...inheritedEnv
-    } = process.env;
+    // inherits (see SCRUBBED_SECRETS in lib.mjs for the list and the reasoning).
+    // Under systemd they all arrive via EnvironmentFile=/etc/tts/worker.env,
+    // so without this drop `env` in any Bash call prints them.
+    const inheritedEnv = scrubbedEnv();
     this.queue = new TurnQueue();
     this.abort = new AbortController();
     this.interruptRequested = false;
@@ -1167,23 +1157,16 @@ export class Session {
         // Scrubbed env: the CLI authenticates through CLAUDE_CONFIG_DIR,
         // which survives the scrub. The classifier's PROMPT embeds a
         // model-authored command, so this process is model-influenced — the
-        // same reason the SDK child env is scrubbed applies here: neither
-        // the ingest key nor the GitHub token may sit in a process a model
-        // can steer.
+        // same reason the SDK child env is scrubbed applies here, and it uses
+        // the SAME list (SCRUBBED_SECRETS) so the two cannot drift. TTS_WORKER_KEY
+        // is dropped on top of it: the SDK child needs that pen, this process
+        // never does.
         // The prompt rides in argv rather than stdin — unlike tts-lib's
         // runClaude — because it is one command, not a ledger dump; a command
         // big enough to blow the ~128KiB argv cap fails the spawn and lands
         // in the fail-open path below, which is the right answer anyway.
         {
-          env: (() => {
-            const {
-              SESSIONS_WORKER_KEY: _ingest,
-              GH_TOKEN: _gh,
-              TTS_WORKER_KEY: _tts,
-              ...rest
-            } = process.env;
-            return rest;
-          })(),
+          env: scrubbedEnv(["TTS_WORKER_KEY"]),
           timeout: CLASSIFIER_TIMEOUT_MS,
           maxBuffer: CLASSIFIER_MAXBUFFER,
         },

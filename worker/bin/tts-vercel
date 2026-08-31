@@ -1,0 +1,211 @@
+#!/usr/bin/env node
+// tts-vercel — read this project's Vercel deployments and build logs from a
+// TTS session.
+//
+// WHY THIS EXISTS: the Vercel deploy is the one CI check that actually gates
+// merging tom.quest, and until now a session could not read it. GitHub's check
+// list shows the failure and links to Vercel; the check's own detail text says
+// only "run `npx vercel inspect --logs`", which needs a Vercel token the box
+// did not have. So the single most common way for a session's work to be
+// blocked was also the one failure it had to hand back to Tom unread — the
+// session could see THAT the build broke and never WHY.
+//
+// SHAPE: the same shape as tts-git-credential, for the same reason. The token
+// lives only in /etc/tts/worker.env (root-only, mode 600) and is read at the
+// moment of the call; the daemon scrubs VERCEL_TOKEN from a session's
+// environment (worker/session-host/session.mjs), so `env` in a session shell
+// does not print it and it cannot be copied into a Convex-stored transcript by
+// a stray command. What a session gets is the ABILITY to read a build log, not
+// the credential that reads it.
+//
+// SCOPE: every request this file can issue is a GET against one of the four
+// paths in READ_PATHS (tts-vercel-lib.mjs). There is no flag that supplies a
+// method or a body, so there is no argument that turns this into a deploy, a
+// rollback, or an env-var write. Mint the token read-only as well
+// (worker.env.example says how) — the two limits are independent on purpose,
+// so neither one being wrong is sufficient to widen the door.
+//
+// USAGE
+//   tts-vercel status                     recent deployments, newest first
+//   tts-vercel log                        why the current branch's build failed
+//   tts-vercel log --branch main --all    the whole log of main's last build
+//   tts-vercel log --deployment dpl_xxx   one specific deployment
+//   tts-vercel inspect --deployment dpl_x that deployment's full JSON record
+//   tts-vercel projects                   projects the token can see
+//
+// Exit codes: 0 on success, 1 when the API refused or nothing matched, 2 on
+// bad usage, 3 on a transport error, 4 when no token is configured.
+
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { readSecret } from "./tts-secret-lib.mjs";
+import {
+  READ_PATHS,
+  buildUrl,
+  parseArgs,
+  usageText,
+  pickDeployment,
+  filterLogEvents,
+  formatLogEvents,
+  formatDeployments,
+  describeDeployment,
+  deploymentId,
+} from "./tts-vercel-lib.mjs";
+
+function die(code, msg) {
+  console.error(`tts-vercel: ${msg}`);
+  process.exit(code);
+}
+
+let opts;
+try {
+  opts = parseArgs(process.argv.slice(2));
+} catch (err) {
+  if (err.message !== "help") console.error(`tts-vercel: ${err.message}`);
+  console.error(usageText());
+  process.exit(err.message === "help" ? 0 : 2);
+}
+
+const TOKEN = readSecret("VERCEL_TOKEN");
+if (!TOKEN) {
+  die(
+    4,
+    "no VERCEL_TOKEN in /etc/tts/worker.env. Add a READ-ONLY Vercel token " +
+      "there (see worker/worker.env.example) and re-run; nothing else needs " +
+      "restarting, the token is read per call.",
+  );
+}
+const TEAM_ID = readSecret("VERCEL_TEAM_ID");
+
+/**
+ * The ONLY network primitive in this file. No method parameter, no body
+ * parameter — see the scope note in the header. Anything that wanted to write
+ * would have to edit this function, which is exactly the review surface the
+ * split is meant to create.
+ */
+async function request(path, query) {
+  const url = buildUrl(path, query, TEAM_ID);
+  let res;
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  } catch (err) {
+    die(3, `cannot reach api.vercel.com: ${err.message}`);
+  }
+  const body = await res.text();
+  let parsed;
+  try {
+    parsed = body ? JSON.parse(body) : null;
+  } catch {
+    // A non-JSON body from api.vercel.com is nearly always an HTML error page
+    // from an intermediary. Say so instead of printing a wall of markup.
+    die(1, `HTTP ${res.status}: non-JSON response (${body.slice(0, 120)})`);
+  }
+  if (!res.ok) {
+    const detail = parsed?.error?.message ?? parsed?.message ?? JSON.stringify(parsed);
+    if (res.status === 403) {
+      die(
+        1,
+        `HTTP 403: ${detail}. A read-only token cannot see this, or the ` +
+          `project belongs to a team — set VERCEL_TEAM_ID in worker.env.`,
+      );
+    }
+    die(1, `HTTP ${res.status}: ${detail}`);
+  }
+  return parsed;
+}
+
+/** The branch a session is working on is the branch of its own checkout. */
+function currentBranch() {
+  try {
+    return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the project. VERCEL_PROJECT_ID wins; then --project; then the
+ * checkout's own directory name, which is `tom.quest` in every session workdir
+ * and is what the Vercel project is named. Guessing here is safe because a
+ * wrong guess produces an empty list, not a wrong answer.
+ */
+function resolveProject() {
+  return (
+    opts.project ?? readSecret("VERCEL_PROJECT_ID") ?? path.basename(process.cwd()) ?? undefined
+  );
+}
+
+function out(value, text) {
+  console.log(opts.json ? JSON.stringify(value, null, 2) : text);
+}
+
+async function listDeployments(limit) {
+  const data = await request(READ_PATHS.deployments, {
+    projectId: resolveProject(),
+    limit: limit ?? 20,
+  });
+  return data?.deployments ?? [];
+}
+
+/** Shared by `log` and `inspect`: which deployment did the caller mean? */
+async function selectDeployment() {
+  if (opts.deployment) {
+    return await request(READ_PATHS.deployment(opts.deployment), {});
+  }
+  const branch = opts.branch ?? currentBranch();
+  const deployments = await listDeployments(50);
+  const picked = pickDeployment(deployments, { branch });
+  if (picked) return picked;
+  // Distinguish "no builds for this branch" from "no builds at all" — the
+  // first is the normal state before the first push and needs a different fix
+  // from the second.
+  die(
+    1,
+    deployments.length === 0
+      ? `no deployments found for project ${resolveProject()}. Check --project, or run \`tts-vercel projects\`.`
+      : `no deployment for branch ${branch}. Push the branch, or pass --branch/--deployment.`,
+  );
+}
+
+async function main() {
+  if (opts.verb === "projects") {
+    const data = await request(READ_PATHS.projects, { limit: opts.limit ?? 20 });
+    const projects = data?.projects ?? [];
+    out(projects, projects.map((p) => `${p.id}  ${p.name}`).join("\n") || "(no projects)");
+    return;
+  }
+
+  if (opts.verb === "status") {
+    const deployments = await listDeployments(opts.limit ?? 10);
+    out(deployments, formatDeployments(deployments));
+    return;
+  }
+
+  const deployment = await selectDeployment();
+
+  if (opts.verb === "inspect") {
+    out(deployment, JSON.stringify(deployment, null, 2));
+    return;
+  }
+
+  // verb === "log"
+  const id = deploymentId(deployment);
+  const events = await request(READ_PATHS.events(id), { builds: 1, limit: 2000 });
+  const chosen = filterLogEvents(Array.isArray(events) ? events : (events?.events ?? []), {
+    errorsOnly: !opts.all,
+    limit: opts.limit,
+  });
+  if (opts.json) {
+    out(chosen, "");
+    return;
+  }
+  console.log(describeDeployment(deployment));
+  console.log("");
+  console.log(formatLogEvents(chosen));
+  if (!opts.all) console.log("\n(errors and their context only — `--all` for the whole log)");
+}
+
+main().catch((err) => die(3, err?.stack ?? String(err)));

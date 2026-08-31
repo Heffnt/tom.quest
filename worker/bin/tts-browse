@@ -25,9 +25,11 @@
 //              [--json]
 //
 //   --login    sign in first, using TOMQUEST_AGENT_USERNAME /
-//              TOMQUEST_AGENT_PASSWORD from the environment (systemd passes
-//              /etc/tts/worker.env into the session-host, which passes them
-//              on). Without those two keys the flag fails loudly rather than
+//              TOMQUEST_AGENT_PASSWORD read from /etc/tts/worker.env at the
+//              moment of the call — NOT from the environment, which the daemon
+//              scrubs of both names so a session can sign in without being able
+//              to print the password into a stored transcript. Without those
+//              two keys the flag fails loudly rather than
 //              silently browsing as an anonymous visitor and reporting an
 //              empty page — every /turing and /tts page is role-gated, so an
 //              anonymous read of one is a false negative, not a result.
@@ -137,12 +139,19 @@ function parseArgs(argv) {
 // looks signed in, with the username in the corner, whose every data call is
 // 401. The caller resolves the landing origin by navigating first.
 async function signIn(page, origin) {
-  const username = process.env.TOMQUEST_AGENT_USERNAME;
-  const password = process.env.TOMQUEST_AGENT_PASSWORD;
+  // Read from /etc/tts/worker.env, not from process.env — the daemon scrubs
+  // both names from a session's shell so that `env` cannot copy the password
+  // into a stored transcript (worker/session-host/session.mjs, and the note on
+  // credentials() in tts-auth-lib.mjs). A dynamic import because this file is
+  // CommonJS: a static `import` would flip Node's module detection and break
+  // the `require`s above it.
+  const { readSecret } = await import("./tts-secret-lib.mjs");
+  const username = readSecret("TOMQUEST_AGENT_USERNAME");
+  const password = readSecret("TOMQUEST_AGENT_PASSWORD");
   if (!username || !password) {
     console.error(
       "tts-browse: --login needs TOMQUEST_AGENT_USERNAME and TOMQUEST_AGENT_PASSWORD " +
-        "in the environment (add them to /etc/tts/worker.env).",
+        "in /etc/tts/worker.env.",
     );
     process.exit(4);
   }

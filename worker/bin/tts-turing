@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+// tts-turing — call the Turing cluster API from a TTS session.
+//
+// WHY THIS EXISTS: the cluster is not reachable from this box by SSH.
+// turing.wpi.edu does not answer from here, and the session sandbox's own
+// command policy refuses to open a remote shell.
+//
+// TWO ROUTES, and the default is the one that needs no new secret:
+//
+//   PROXY (default) — call tom.quest's own /api/turing/* as the agent account,
+//     with a Convex auth token lifted from a real sign-in. Vercel attaches the
+//     cluster key server-side, exactly as it does for the /turing page. This
+//     is the whole reason the default works with nothing configured beyond the
+//     login the browser already needs: the cluster key never has to be copied
+//     anywhere, and per CLAUDE.md it "never leaves Vercel". Access is whatever
+//     the agent account's role allows — today `tom`, so: everything.
+//
+//   DIRECT (--direct only) — hit https://turing.tom.quest
+//     with X-API-Key. Faster (no browser) and independent of tom.quest being
+//     up, which makes it the better probe when the question is "is the cluster
+//     tunnel healthy". turing-api has ONE key covering reads and writes alike,
+//     including POST /sessions/{name}/run — arbitrary commands on the cluster.
+//
+// Both routes reach the same API. Neither grants a session more than it
+// already had through the browser as Tom via /turing's own Allocate and Cancel
+// controls; what they add is scriptability.
+//
+// USAGE
+//   tts-turing /health
+//   tts-turing /gpu-report
+//   tts-turing /jobs
+//   tts-turing /sessions/<name>/output
+//   tts-turing /jobs/<id> --method DELETE
+//   tts-turing /allocate --method POST --data '{"gpu":"A100","count":1}'
+//
+//   --raw     print the body verbatim instead of pretty-printed JSON
+//   --status  print the HTTP status line to stderr as well
+//   --direct  bypass the tom.quest proxy and call the cluster with X-API-Key
+//             (requires TURING_API_KEY; never chosen implicitly)
+//
+// Exit codes: 0 on 2xx, 1 on a non-2xx response, 2 on bad usage, 3 on a
+// transport error. A non-2xx still prints the body — the API's errors are
+// JSON and worth reading.
+
+import { readSecret } from "./tts-secret-lib.mjs";
+
+const DIRECT_BASE = "https://turing.tom.quest";
+const PROXY_BASE = "https://www.tom.quest/api/turing";
+
+function usage(msg) {
+  if (msg) console.error(`tts-turing: ${msg}`);
+  console.error(
+    "usage: tts-turing <path> [--method GET|POST|DELETE] [--data JSON] [--raw] " +
+      "[--status] [--direct]",
+  );
+  process.exit(2);
+}
+
+const argv = process.argv.slice(2);
+let path = null;
+let method = "GET";
+let data;
+let raw = false;
+let showStatus = false;
+let direct = false;
+
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  const next = () => {
+    const v = argv[++i];
+    if (v === undefined) usage(`${a} needs a value`);
+    return v;
+  };
+  if (a === "--method") method = next().toUpperCase();
+  else if (a === "--data") data = next();
+  else if (a === "--raw") raw = true;
+  else if (a === "--status") showStatus = true;
+  else if (a === "--direct") direct = true;
+  else if (a === "-h" || a === "--help") usage();
+  else if (a.startsWith("-")) usage(`unknown flag ${a}`);
+  else if (path === null) path = a;
+  else usage(`unexpected argument ${a}`);
+}
+
+if (path === null) usage("a path is required, e.g. /gpu-report");
+if (!path.startsWith("/")) path = "/" + path;
+if (!["GET", "POST", "DELETE"].includes(method)) usage(`unsupported method ${method}`);
+
+// Read from /etc/tts/worker.env at the moment of use, not from the
+// environment: the daemon scrubs TURING_API_KEY from a session's shell
+// (worker/session-host/session.mjs) because that one key also opens
+// POST /sessions/{name}/run — arbitrary commands on the cluster — and a
+// session's shell output is a stored transcript.
+const key = readSecret("TURING_API_KEY");
+
+// /health is unauthenticated upstream, and "is the cluster tunnel up" should
+// never depend on a credential or on tom.quest being up — so it always goes
+// direct, whatever the mode.
+//
+// Deliberately NOT "use the key when one is present": a wrong or stale
+// TURING_API_KEY sitting in worker.env would then silently 401 every call
+// while the proxy route was working fine. Opting into --direct is explicit,
+// so its failures are attributable.
+const goDirect = direct || path === "/health";
+
+if (direct && !key) {
+  console.error("tts-turing: --direct needs TURING_API_KEY in /etc/tts/worker.env.");
+  process.exit(2);
+}
+
+let base;
+const headers = {};
+if (goDirect) {
+  base = (process.env.TURING_API_URL || DIRECT_BASE).replace(/\/$/, "");
+  if (key) headers["X-API-Key"] = key;
+} else {
+  base = PROXY_BASE;
+  try {
+    const { tomQuestToken } = await import("./tts-auth-lib.mjs");
+    headers["Authorization"] = `Bearer ${await tomQuestToken()}`;
+  } catch (e) {
+    console.error(`tts-turing: could not authenticate to tom.quest — ${e?.message ?? e}`);
+    process.exit(2);
+  }
+}
+const init = { method, headers };
+if (data !== undefined) {
+  headers["Content-Type"] = "application/json";
+  init.body = data;
+}
+
+let res;
+try {
+  res = await fetch(base + path, init);
+} catch (e) {
+  console.error(`tts-turing: ${e?.message ?? e}`);
+  process.exit(3);
+}
+
+const text = await res.text();
+if (showStatus) console.error(`${res.status} ${res.statusText} ${method} ${base}${path}`);
+
+if (raw) {
+  process.stdout.write(text);
+} else {
+  try {
+    console.log(JSON.stringify(JSON.parse(text), null, 2));
+  } catch {
+    // Not JSON — an HTML error page from the tunnel, most likely. Print it as
+    // it came rather than pretending it parsed.
+    process.stdout.write(text);
+  }
+}
+
+if (!res.ok) {
+  if (!showStatus) console.error(`tts-turing: HTTP ${res.status}`);
+  process.exit(1);
+}
