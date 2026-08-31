@@ -11,7 +11,8 @@
 #   id              stable kebab-case id, never reused
 #   kind            descent | alignment | pending-fence | steering-graduation | scratch-graduation
 #   created         YYYY-MM-DD
-#   cites           constitution article ids (A*/C1-C9/D1-D28) or tts-spec:<section>
+#   cites           constitution article ids (A*/C*/D*) or tts-spec:<section>
+#                   — the resolution set has one home: vqc/cites.ts
 #   statement       the discovered fact, one short paragraph
 #   graduates_when  the checkable condition under which the entry is deleted
 #
@@ -334,3 +335,40 @@
     directly with npx convex env set. (Also surfaced as a task chip.)
   graduates_when: >-
     pnpm secrets:sync completes end-to-end against the current Vercel CLI.
+
+- id: no-suite-time-budget
+  kind: descent
+  created: 2026-08-31
+  cites: [D21, C8]
+  statement: >-
+    D21 binds here (the repo has a verification suite) but nothing measures
+    it. There is no registered wall-time meter per cadence tier and no budget
+    gate: vitest, Playwright and the CI jobs in vqc/adoption.md's Cadences
+    table can each grow without a check, and the structural escape D21 names —
+    demotion to a slower tier, never deletion — has no tier to demote into,
+    because the tiers are jobs in CI config rather than a registry. Recorded
+    when the applies_when table was completed against the constitution
+    2026-08-31; not previously carried because the article had no row.
+  graduates_when: >-
+    Suite wall time per cadence tier is recorded to a store the suite's own
+    runner reads, with a gate that fails the tier when its budget is exceeded
+    and a demotion path that keeps the demoted check running.
+
+- id: no-recurrence-corpus
+  kind: descent
+  created: 2026-08-31
+  cites: [D23, D27]
+  statement: >-
+    D23 binds here (every commit is agent work) and its anti-Goodhart clause
+    requires recurrence to be MEASURED, not asserted — read from the
+    correction registry and an annotated corpus of past sessions. vqc/
+    steering.yaml exists and is the registry half; the corpus half does not
+    exist, so "has this correction stopped recurring?" is answerable only by
+    someone's memory, and D27's annotated corpus has no artifact in this repo
+    either. Recorded when the applies_when table was completed against the
+    constitution 2026-08-31; not previously carried because the article had no
+    row.
+  graduates_when: >-
+    A queryable corpus of this repo's agent sessions exists and each
+    vqc/steering.yaml entry's `incidents` count is derived from it rather than
+    hand-typed.

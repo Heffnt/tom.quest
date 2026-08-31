@@ -21,10 +21,11 @@
 #   readiness             unprepared | preparing | ready-for-tom
 #   status                active | waiting | archived | done
 #   created               YYYY-MM-DD
-#   cites                 non-empty; constitution article ids (A*/C1-C9/D1-D28),
+#   cites                 non-empty; constitution article ids (A*/C*/D*),
 #                         tts-spec:<section> (WikiTom tts/spec.md), or open
 #                         vqc/ledger.yaml entry ids — a todo CITES a debt
-#                         entry, never duplicates its content
+#                         entry, never duplicates its content. The resolution
+#                         set has one home: vqc/cites.ts.
 #   statement             what and why, one short paragraph
 #   completion_condition  a checkable statement of finished
 #   plan                  required when readiness is ready-for-tom

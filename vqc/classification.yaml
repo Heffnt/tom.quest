@@ -16,7 +16,7 @@ knowledge:
   - "worker/**"
   - "scripts/**"
   - "e2e/**"
-  - "vqc/*.test.ts"
+  - "vqc/*.ts" # the guard tests and vqc/cites.ts, their shared home
   - "AGENTS.md"
 
 choice:

@@ -17,13 +17,21 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
 
 ## applies_when evaluation
 
+Every article the constitution gives an `applies_when` condition gets a row here; the last row is
+the blanket for the unconditional rest. Read against the constitution 2026-08-31 (session
+`q974bmhy7zb7cj5xcm6va5qyts8dg9h7`), which is the only way to check it — CMT is private, so the
+conditions are not restated here beyond the phrase needed to identify the row.
+
 | Article | Condition | Here |
 |---|---|---|
 | D15 numbers-as-data | produces empirical results | **off** (product, not instrument) |
 | D16 claim-fidelity | implements published methods | **off** |
 | D17 hypothesis-neutral-instrument | is a findings instrument | **off** |
+| D21 time-budgeted-suite | has a verification suite | **on** — vitest + Playwright + the CI cadences below; no wall-time meter or budget gate yet (ledger `no-suite-time-budget`) |
 | D22 sanctioned-identity-change | durable identity-keyed artifacts | **off until** the repo ships content-addressed/hash-keyed durable records |
-| Everything else (A1–A3, C1–C9, remaining D-articles) | always / any-codebase-with-agents | **on** |
+| D23 context-frugal-work | agents perform the work | **on** — every commit here is agent work; `vqc/steering.yaml` is the correction registry, the recurrence meter is missing (ledger `no-recurrence-corpus`) |
+| D30 lifecycle-tagged-trust | retains code it does not trust | **off until** the repo retains code it does not trust — nothing carries a WIP/experimental lifecycle tag today; untrusted scratch is handled by D26 (`tts/`) |
+| Everything else (unconditional articles) | always / any-codebase-with-agents | **on** |
 
 ## Statute locations
 
@@ -33,7 +41,7 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
 | Ledger (knowledge: discovered gaps) | `vqc/ledger.yaml` — open entries only; graduation deletes the entry in the work's commit |
 | Steering (corrections) | `vqc/steering.yaml` |
 | File classification (C9) | `vqc/classification.yaml` (enforcement: ledger `classification-unenforced`) |
-| Cite resolution set | constitution article ids (`A*`, `C1`–`C9`, `D1`–`D28`), `tts-spec:<section>` (sections of WikiTom `tts/spec.md`), and open ledger entry ids — enforced by `vqc/todos.test.ts` |
+| Cite resolution set | `vqc/cites.ts` — one home for the pattern, imported by `vqc/todos.test.ts` and `vqc/registries.test.ts`. Resolves: constitution article ids (`A*` / `C*` / `D*` — the inventory is CMT's `ARTICLES` registry, not copied here; see the file's comment), `tts-spec:<section>` (sections of WikiTom `tts/spec.md`), and open ledger entry ids |
 | Registries (C7) | `app/components/page-routes.ts` (pages); Convex schema (`convex/schema.ts`) |
 | Contract fences | `scripts/check-auth-boundary.mjs`, `scripts/check-heavy-libs.mjs` |
 | Layer DAG (D5) | none yet — ledger `no-layer-dag` |
