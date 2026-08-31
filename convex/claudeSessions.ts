@@ -241,6 +241,32 @@ const SESSION_KIND = v.union(
 );
 
 /**
+ * WHERE the repo answer came from, carried beside the answer itself. The first
+ * two are DECLARATIONS (someone stated the set); the last three are GUESSES —
+ * and a guess that a session cannot tell apart from a declaration is what cost
+ * a whole session on 2026-08-31: a batch whose work is entirely inside
+ * tom.quest declared nothing, the substring scan found nothing in the todo's
+ * words (they name files, not repos), and the session started with an empty
+ * scratch directory and no sentence saying why.
+ */
+type SessionReposSource =
+  | "explicit" // a caller (a human, or a lane that genuinely knows) named it
+  | "batch-declared" // the batch's own `repos` field — Tom's ruling 2026-08-30
+  | "member-vote" // guessed: the todo's members were counted
+  | "text-scan" // guessed: repo names were looked for in the item's words
+  | "unresolved"; // nothing to consult at all: no explicit set, no batch, no todo
+
+/** The repo answer and its provenance, which always travel together. */
+type ResolvedRepos = { repos: string[]; source: SessionReposSource };
+
+/** True when the answer was inferred rather than stated by anyone. */
+function reposWereGuessed(source: SessionReposSource): boolean {
+  return (
+    source === "member-vote" || source === "text-scan" || source === "unresolved"
+  );
+}
+
+/**
  * Which repos should this session check out? Answered once, here, in a fixed
  * order of authority — each source consulted only when the one above it says
  * nothing:
@@ -260,19 +286,26 @@ const SESSION_KIND = v.union(
  *     all; (2) is what makes it stop mattering.
  *
  * Returns the canonical, normalized list — possibly empty, which means the
- * empty-scratch posture (`repo: "none"`).
+ * empty-scratch posture (`repo: "none"`) — TOGETHER WITH the source that
+ * answered. The source is the half that was missing: steps 3 and 4 are guesses,
+ * they can quietly answer "no repos at all", and until this field existed
+ * nothing on the session row or in the session's own prompt said which of the
+ * four had spoken.
  */
 function resolveSessionRepos(input: {
   explicit?: readonly string[] | string;
   batch?: { repos?: string[] } | null;
   todo?: Doc<"dtsTodos"> | null;
   extraText?: string;
-}): string[] {
+}): ResolvedRepos {
   if (input.explicit !== undefined) {
-    return normalizeSessionRepos(input.explicit);
+    return { repos: normalizeSessionRepos(input.explicit), source: "explicit" };
   }
   if (input.batch?.repos !== undefined) {
-    return normalizeSessionRepos(input.batch.repos);
+    return {
+      repos: normalizeSessionRepos(input.batch.repos),
+      source: "batch-declared",
+    };
   }
   const todo = input.todo;
   if (todo) {
@@ -291,25 +324,34 @@ function resolveSessionRepos(input: {
         winnerCount = count;
       }
     }
-    if (winner !== undefined) return normalizeSessionRepos(winner);
+    if (winner !== undefined) {
+      return { repos: normalizeSessionRepos(winner), source: "member-vote" };
+    }
     const text = `${todo.statement} ${todo.brief ?? ""} ${
       todo.groundUpExplanation ?? ""
     } ${input.extraText ?? ""}`;
     // Every repo the words name, not just the first: a todo naming both
     // tom.quest and WikiTom now gets both, which is the whole point of the
     // multi-repo ruling.
-    return normalizeSessionRepos(
-      SESSION_REPO_NAMES.filter((repo) => text.includes(repo)),
-    );
+    return {
+      repos: normalizeSessionRepos(
+        SESSION_REPO_NAMES.filter((repo) => text.includes(repo)),
+      ),
+      source: "text-scan",
+    };
   }
-  return [];
+  return { repos: [], source: "unresolved" };
 }
 
 type SessionSeed = {
   title: string;
   kind: "gate" | "focus-item" | "weekly" | "adhoc" | "block";
-  /** Already through resolveSessionRepos. Empty = the empty-scratch posture. */
-  repos: string[];
+  /**
+   * Already through resolveSessionRepos, so it carries its provenance with it.
+   * An empty list = the empty-scratch posture, and `source` is what says
+   * whether that emptiness was chosen or merely guessed at.
+   */
+  repos: ResolvedRepos;
   todoId?: Id<"dtsTodos">;
   /** The batch this session was opened on, when its subject IS a batch. */
   batchId?: Id<"batches">;
@@ -322,7 +364,7 @@ type SessionSeed = {
    * id does not exist until the insert — the client composing the prompt
    * cannot know it, and neither can the scheduler.
    */
-  prompt: (sessionId: Id<"claudeSessions">, repos: string[]) => string;
+  prompt: (sessionId: Id<"claudeSessions">, repos: ResolvedRepos) => string;
   /**
    * Append the interactive outcome-pen footer. The autonomous prompts build
    * their own pen inline (with mission-specific wording), so they pass false.
@@ -339,19 +381,26 @@ type SessionSeed = {
  *
  * Writes BOTH repo fields: `repos` (the live list) and `repo` (the pre-ruling
  * single string, kept because prod schema is additive-only and every reader
- * that has not moved yet still reads it). repo = repos[0] ?? "none".
+ * that has not moved yet still reads it). repo = repos[0] ?? "none". It also
+ * writes `reposSource`, so a row records whether its checkout was declared or
+ * guessed instead of leaving the two indistinguishable after the fact.
  */
 async function insertSession(
   ctx: MutationCtx,
   seed: SessionSeed,
   now: number,
 ): Promise<Id<"claudeSessions">> {
-  const repos = normalizeSessionRepos(seed.repos);
+  const resolved: ResolvedRepos = {
+    repos: normalizeSessionRepos(seed.repos.repos),
+    source: seed.repos.source,
+  };
+  const repos = resolved.repos;
   const sessionId = await ctx.db.insert("claudeSessions", {
     title: seed.title.trim() || "Untitled session",
     kind: seed.kind,
     repos,
     repo: repos[0] ?? NO_REPO,
+    reposSource: resolved.source,
     todoId: seed.todoId,
     batchId: seed.batchId,
     blockCategory: seed.kind === "block" ? seed.blockCategory : undefined,
@@ -374,8 +423,8 @@ async function insertSession(
     await markLiveSessionRulingApplied(ctx, seed.todoId, sessionId);
   }
   const text =
-    seed.prompt(sessionId, repos) +
-    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
+    seed.prompt(sessionId, resolved) +
+    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, resolved));
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind: "user-turn",
@@ -394,6 +443,10 @@ async function insertSession(
     kind: seed.kind,
     mode: seed.mode ?? "interactive",
     repos,
+    // Recorded on the EVENT as well as the row, because the question "how
+    // often is the fleet still guessing?" is asked of the event stream (the
+    // hourly update reads it) and a per-row field cannot answer it.
+    reposSource: resolved.source,
   });
   return sessionId;
 }
@@ -510,16 +563,20 @@ export const createSession = mutation({
 // 2026-08-30 and burned turns against the command gate's denial.
 function outcomePenFooter(
   sessionId: Id<"claudeSessions">,
-  repos: string[],
+  resolved: ResolvedRepos,
 ): string {
+  const { repos } = resolved;
+  const guessed = reposProvenanceSentence(resolved);
   const workspace =
     repos.length > 0
       ? `\n\n${workspaceParagraph(
           repos,
           sessionId,
           `Work Tom asks for happens in this checkout, and session/${sessionId} is the ONLY branch this session may push — the command gate denies any other name.`,
-        )}`
-      : "";
+        )}${guessed === null ? "" : ` ${guessed}`}`
+      : guessed === null
+        ? ""
+        : `\n\n${guessed}`;
   return (
     workspace +
     `\n\n---\nThis session's id: ${sessionId}. When the session's work concludes (or you and Tom agree it is done), record the outcome:\n` +
@@ -1615,6 +1672,33 @@ function workspaceParagraph(
   return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary.`;
 }
 
+/**
+ * The one sentence that tells a session where its checkout came from, written
+ * ONLY when the answer was a guess. A declared set needs no sentence: the
+ * workspace paragraph already names what is on disk and it is right.
+ *
+ * The case this exists for is the empty one. A session whose batch declared
+ * nothing and whose words named no repo previously received the same "you have
+ * an empty scratch directory, never touch code" instruction as a session that
+ * was deliberately given no checkout, so the agent could not tell a missing
+ * declaration from a decision and reported neither. Tom's ruling 2026-08-30
+ * says a batch declares its repos; this is what the fleet does until every
+ * batch has.
+ *
+ * Returns null when there is nothing to say.
+ */
+function reposProvenanceSentence(resolved: ResolvedRepos): string | null {
+  if (!reposWereGuessed(resolved.source)) return null;
+  const how =
+    resolved.source === "member-vote"
+      ? "counting the repositories this item's members name"
+      : "looking for repository names in this item's own words";
+  if (resolved.repos.length === 0) {
+    return `WHY THERE IS NO CHECKOUT: nothing declared one. This session's batch has no declared repositories, and ${how} found none either, so the empty workspace is the result of a missing declaration rather than a decision that this work needs no code. If the work does need a checkout, name the repository it needs in your outcome summary and record no code change.`;
+  }
+  return `WHERE THIS CHECKOUT CAME FROM: it was guessed, not declared. This session's batch has no declared repositories, so the set above was chosen by ${how}. If it is the wrong set, or a repository this work needs is missing from it, say which in your outcome summary.`;
+}
+
 // Opening prompt for an AUTONOMOUS session (house voice: the ground-up
 // contract of app/lib/tts-session-prompt.ts, adapted for a session no one is
 // watching live). The sessionId rides in so the outcome pen can name this
@@ -1629,9 +1713,11 @@ function workspaceParagraph(
 function buildAutoMissionPrompt(
   todo: Doc<"dtsTodos">,
   sessionId: Id<"claudeSessions">,
-  repos: string[],
+  resolvedRepos: ResolvedRepos,
   members?: AutoMemberContext[],
 ): string {
+  const repos = resolvedRepos.repos;
+  const provenance = reposProvenanceSentence(resolvedRepos);
   const lines: (string | null)[] = [
     `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
     "",
@@ -1702,6 +1788,7 @@ function buildAutoMissionPrompt(
     ...(repos.length === 0
       ? [
           "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
+          ...(provenance === null ? [] : ["", provenance]),
         ]
       : [
           workspaceParagraph(
@@ -1709,6 +1796,7 @@ function buildAutoMissionPrompt(
             sessionId,
             "Implement the agent steps INCLUDING the code ones.",
           ),
+          ...(provenance === null ? [] : ["", provenance]),
           "",
           `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
@@ -1747,7 +1835,8 @@ function buildWorkerPrompt(args: {
   todo: Doc<"dtsTodos">;
   batch: Doc<"batches">;
   sessionId: Id<"claudeSessions">;
-  repos: string[];
+  /** The checkout AND where it came from — a guess is said out loud below. */
+  repos: ResolvedRepos;
   needs: GraphNeighbor[];
   dependents: GraphNeighbor[];
   siblings: GraphNeighbor[];
@@ -1758,12 +1847,13 @@ function buildWorkerPrompt(args: {
     todo,
     batch,
     sessionId,
-    repos,
     needs,
     dependents,
     siblings,
     writingStandard,
   } = args;
+  const repos = args.repos.repos;
+  const provenance = reposProvenanceSentence(args.repos);
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
     "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
@@ -1894,6 +1984,7 @@ function buildWorkerPrompt(args: {
     ...(repos.length === 0
       ? [
           "Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never touch code: this session has an EMPTY scratch directory and no repository, so anything needing code goes to Tom as a prepared task instead.",
+          ...(provenance === null ? [] : ["", provenance]),
         ]
       : [
           workspaceParagraph(
@@ -1901,6 +1992,7 @@ function buildWorkerPrompt(args: {
             sessionId,
             "Implement the code your todo needs, and name what landed in your evidence.",
           ),
+          ...(provenance === null ? [] : ["", provenance]),
           "",
           `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
@@ -2633,7 +2725,8 @@ export const internalAutoSchedule = internalMutation({
       // Which repos this mission checks out — resolveSessionRepos is the one
       // answer (batch declaration first, the old guess only as its fallback).
       // A graph task adds its batch's words to that fallback, because the task
-      // itself is one line.
+      // itself is one line. The answer carries its source, and both the session
+      // row and the mission's own prompt say so when it was a guess.
       const repos = resolveSessionRepos({
         batch: c.batch,
         todo: c.todo,

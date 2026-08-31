@@ -496,6 +496,59 @@ describe("claude sessions", () => {
     expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
     // `repo` stays written for every pre-ruling reader; it is repos[0].
     expect(session?.repo).toBe("tom.quest");
+    // The row records WHERE that answer came from, so a declaration and a
+    // guess are distinguishable after the fact.
+    expect(session?.reposSource).toBe("batch-declared");
+  });
+
+  // The same provenance rule on the interactive lane. A session Tom opens by
+  // hand on a todo whose batch declares nothing gets whatever the substring
+  // scan finds, and the footer says so — otherwise the empty workspace reads
+  // as intentional to the agent that has to work in it.
+  // witness: delete the `guessed` term from outcomePenFooter and this goes
+  // red for both branches below.
+  it("tells an interactive session when its repo answer was a guess", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const inboundText = async (sessionId: Id<"claudeSessions">) => {
+      const rows = await t.run(async (ctx) =>
+        ctx.db
+          .query("claudeInbound")
+          .filter((q) => q.eq(q.field("sessionId"), sessionId))
+          .collect(),
+      );
+      return rows[0].text;
+    };
+
+    // (a) The scan lands on a repo: the checkout is real but nobody chose it.
+    const namedId = await tom.mutation(api.tts.createTodo, {
+      statement: "the tom.quest sessions page",
+    });
+    const named = await tom.mutation(api.claudeSessions.createSession, {
+      title: "guessed one",
+      kind: "focus-item",
+      todoId: namedId,
+      initialPrompt: "go",
+    });
+    const namedRow = await t.run(async (ctx) => ctx.db.get(named));
+    expect(namedRow?.repos).toEqual(["tom.quest"]);
+    expect(namedRow?.reposSource).toBe("text-scan");
+    expect(await inboundText(named)).toContain("it was guessed, not declared");
+
+    // (b) The scan finds nothing: an empty workspace with a stated reason.
+    const silentId = await tom.mutation(api.tts.createTodo, {
+      statement: "rewrite convex/tts.ts",
+    });
+    const silent = await tom.mutation(api.claudeSessions.createSession, {
+      title: "guessed none",
+      kind: "focus-item",
+      todoId: silentId,
+      initialPrompt: "go",
+    });
+    const silentRow = await t.run(async (ctx) => ctx.db.get(silent));
+    expect(silentRow?.repos).toEqual([]);
+    expect(silentRow?.reposSource).toBe("text-scan");
+    expect(await inboundText(silent)).toContain("WHY THERE IS NO CHECKOUT");
   });
 
   // The batch-subject half (ledger graduation session-repos-need-batch-subject,
@@ -2726,6 +2779,97 @@ describe("frontier scheduler", () => {
     const sessions = await workSessions(t);
     expect(sessions[0].repos).toEqual([]);
     expect(sessions[0].repo).toBe("none");
+    // Declared, so nothing about it was guessed and the prompt says nothing.
+    expect(sessions[0].reposSource).toBe("batch-declared");
+  });
+
+  // ── A guess says so, on the row and in the prompt (2026-08-31) ─────────────
+  // The failure these pin: on 2026-08-31 a worker session opened on a batch
+  // whose work is entirely inside tom.quest started with an EMPTY scratch
+  // directory. The batch declared no repos, and the substring scan found no
+  // repo name in the todo's words (they name FILES — convex/tts.ts — not the
+  // repo). The session was told only "you have no repository, never touch
+  // code", which is word-for-word what a session that was deliberately given
+  // no checkout is told, so nothing distinguished a missing declaration from
+  // a decision and the failure was invisible until a person read the
+  // transcript.
+
+  // witness: make insertSession stop writing `reposSource` (or make
+  // resolveSessionRepos return a bare list again) and this goes red — the row
+  // no longer records that nobody declared this session's checkout.
+  it("records on the session row that an undeclared batch's repos were guessed", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      // No `repos` at all: the batch predates the declaration, like the 57
+      // active batches that carried none the day this landed.
+      statement: "One session creator, many repos per session",
+      tasks: [
+        { statement: "delete the guess in convex/tts.ts", actor: "agent" },
+      ],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    // The guess found nothing — "convex/tts.ts" does not contain a repo name.
+    expect(sessions[0].repos).toEqual([]);
+    expect(sessions[0].reposSource).toBe("text-scan");
+
+    // And the mission is TOLD why its workspace is empty, so it can report a
+    // missing declaration instead of silently working around it.
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("WHY THERE IS NO CHECKOUT");
+    expect(text).toContain("has no declared repositories");
+  });
+
+  // witness: drop the provenance sentence from the repos.length > 0 branch of
+  // buildWorkerPrompt and this goes red — the agent cannot tell a checkout
+  // someone chose from one the scanner happened to match.
+  it("tells a mission when its checkout was guessed rather than declared", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "an undeclared batch that happens to name tom.quest",
+      tasks: [{ statement: "fix the tom.quest dashboard", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions[0].repos).toEqual(["tom.quest"]);
+    expect(sessions[0].reposSource).toBe("text-scan");
+
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("it was guessed, not declared");
+    // The checkout is still described exactly as before.
+    expect(text).toContain("a fresh checkout of tom.quest");
+  });
+
+  // The other half of the same rule: a DECLARED set is stated, never
+  // second-guessed, and its prompt carries no provenance sentence at all.
+  // witness: return "text-scan" for the batch branch of resolveSessionRepos
+  // and this goes red — every declared mission would be told it was guessed.
+  it("says nothing about provenance when the batch declared its repos", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "a batch that declares",
+      repos: ["tom.quest"],
+      tasks: [{ statement: "do the thing", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions[0].reposSource).toBe("batch-declared");
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).not.toContain("guessed, not declared");
+    expect(text).not.toContain("WHY THERE IS NO CHECKOUT");
   });
 
   // witness: drop the isReady filter from the frontier walk in

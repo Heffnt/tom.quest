@@ -424,7 +424,20 @@ export default function SessionList({
                       autonomous
                     </span>
                   )}
-                  <span>{s.repo}</span>
+                  {/* Every repo the session holds, not just the first: a
+                      multi-repo session showed only repos[0] here. The
+                      "repos guessed" marker is the fact that a session started
+                      with a checkout nobody declared — its batch declared none
+                      and the resolver inferred one (convex/claudeSessions.ts,
+                      resolveSessionRepos). */}
+                  <span>{(s.repos ?? [s.repo]).join(", ") || s.repo}</span>
+                  {(s.reposSource === "member-vote" ||
+                    s.reposSource === "text-scan" ||
+                    s.reposSource === "unresolved") && (
+                    <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
+                      repos guessed
+                    </span>
+                  )}
                   <span>{ageText(s.statusChangedAt, now)}</span>
                 </div>
                 {/* What an ended session came to, in the row itself. */}

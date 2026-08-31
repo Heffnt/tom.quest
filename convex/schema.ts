@@ -914,6 +914,27 @@ export default defineSchema({
     // with repo = repos[0] ?? "none"; readers prefer `repos ?? [repo]`.
     repos: v.optional(v.array(v.string())),
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    // WHERE that answer came from. "explicit" and "batch-declared" are
+    // DECLARATIONS; the other three are GUESSES the resolver made because no
+    // one had declared anything. Absent on every row written before this field
+    // existed, which is exactly the population whose provenance is unknown.
+    //
+    // Why a row records this at all: on 2026-08-31 a session opened on a batch
+    // whose work is entirely inside tom.quest started with an EMPTY scratch
+    // directory, because the batch declared no repos and the substring scan
+    // found no repo name in the todo's words (they name files). Nothing on the
+    // row and nothing in the prompt distinguished that from a session that was
+    // deliberately given no checkout, so the failure was invisible until a
+    // person read the transcript.
+    reposSource: v.optional(
+      v.union(
+        v.literal("explicit"),
+        v.literal("batch-declared"),
+        v.literal("member-vote"),
+        v.literal("text-scan"),
+        v.literal("unresolved"),
+      ),
+    ),
     // Session posture (P3, ratified 2026-08-28): absent = "interactive" (a
     // Tom-driven chat). "autonomous" = fleet-scheduled groundwork with no one
     // watching — the daemon auto-ends it after its final turn and a wall-clock
