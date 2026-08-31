@@ -39,7 +39,11 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - `user` is the default sign-up role and sees public quests.
 - `admin` has elevated quest access and may be granted to trusted friends or colleagues.
 - `tom` is Tom's account. It extends admin access with Jarvis config, the diagnostic panel, and terminal access.
+- `agent` is the account a TTS session's headless browser signs in as. It is **not a rank** on the `user → admin → tom` ladder but a side branch: it reads a named list of surfaces and writes nothing, anywhere. `roleAccess("agent")` returns `isAdmin: false` and `isTom: false`, so every existing gate denies it by default.
 - Use `isTom` for Tom-only features and `isAdmin` for elevated features. `isAdmin` is true for both `admin` and `tom`.
+- Reads that `agent` may perform go through `requireTomOrAgent(ctx, label)` in Convex, `requireAdminOrAgent(request, surface)` in route handlers, and `canReadSurface(label)` on the client. Writes stay on `requireTom` / `requireAdmin` / `isTom` — including writes that fire on page arrival, which must be gated on `isTom` so a headless screenshot records nothing.
+- The reach of `agent` is one list: `convex/agentSurfaces.ts`, plus the per-page `agentReadable` flag in `app/components/page-routes.ts`. Widening it is adding one name; nothing else moves. Its labels are the same ones `requireTom` already takes, so read gates and write gates share one vocabulary.
+- `users.setRoleByUsername` is the pen for granting or taking back `user`/`admin`/`agent`. It cannot mint or demote a `tom`.
 
 ## State Management
 

@@ -284,9 +284,20 @@ NEXT STEPS (manual, in order):
   1. Fill in the secrets:
        nano /etc/tts/worker.env
      (CONVEX_SITE_URL, TTS_WORKER_KEY, SLACK_BOT_TOKEN, SLACK_DUMP_CHANNEL_ID,
-      GH_TOKEN, SESSIONS_WORKER_KEY — the file explains each one. If
+      GH_TOKEN, SESSIONS_WORKER_KEY, TOMQUEST_AGENT_USERNAME,
+      TOMQUEST_AGENT_PASSWORD — the file explains each one. If
       SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
       filling it so the tts-session-host daemon gets enabled.)
+
+     The two TOMQUEST_AGENT_* values are the tom.quest account a session's
+     browser signs in as (tts-browse --login). They are LISTED HERE because
+     leaving them blank fails quietly: the session-host runs, sessions start,
+     and --login just refuses — a rebuilt box whose sessions can no longer
+     look at their own work. The account must hold the `agent` role, which
+     reads /turing and /tts and writes nothing; grant it from the Convex
+     dashboard with users.setRoleByUsername({ username, role: "agent" }).
+     Do NOT put Tom's own account here: everything the account can do, every
+     session can do.
 
   2. Log in both Claude Max accounts (interactive, over this SSH session):
        tts-account login gmail
