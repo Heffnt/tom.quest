@@ -89,7 +89,39 @@ echo "== [6/9] install worker files =="
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
-chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse
+chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
+  /usr/local/bin/tts-git-credential
+
+# GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
+# 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
+#
+#   git — the global credential.helper below. Clones and pushes use CLEAN
+#     https URLs; the helper hands git the token at ask time, so no work tree
+#     or `git remote -v` ever contains it.
+#   gh  — /root/.config/gh/hosts.yml, REGENERATED from worker.env on every
+#     run (a derived file, never hand-edited), so `gh pr create` works in a
+#     session shell whose env is scrubbed of GH_TOKEN. The file sits outside
+#     every work tree; reading /root paths from a session pays a classifier
+#     verdict like any other box-configuration touch.
+#
+# Ordering note: session.mjs clones with clean URLs and RELIES on this
+# helper — both roll out in the same setup.sh run, so there is no window
+# where private-repo clones lack credentials.
+git config --global credential.helper /usr/local/bin/tts-git-credential
+GH_TOKEN_VALUE="$(sed -n 's/^GH_TOKEN=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
+if [ -n "$GH_TOKEN_VALUE" ]; then
+  mkdir -p /root/.config/gh
+  cat > /root/.config/gh/hosts.yml <<EOF
+github.com:
+    oauth_token: $GH_TOKEN_VALUE
+    git_protocol: https
+EOF
+  chmod 600 /root/.config/gh/hosts.yml
+  echo "  gh authenticated from worker.env (hosts.yml regenerated)"
+else
+  echo "  GH_TOKEN not set in /etc/tts/worker.env — gh stays unauthenticated"
+  echo "  and private-repo clones will fail; fill it in and re-run setup.sh."
+fi
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.

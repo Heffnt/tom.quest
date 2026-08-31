@@ -122,6 +122,27 @@ It reads `/etc/tts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
 `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active` (baked into the systemd
 unit) so `tts-account use` switches which Max account sessions run under.
 
+## GitHub credentials (2026-08-31)
+
+The token never rides in a clone's remote URL and never enters a session's
+shell env. `GH_TOKEN` in worker.env stays the one home; two derived doors
+serve it (both installed by `setup.sh`, both outside every work tree):
+
+- **git** — `/usr/local/bin/tts-git-credential`, git's global
+  credential.helper: clones and pushes use clean `https://github.com/...`
+  URLs and git asks the helper at connect time, so `.git/config` and
+  `git remote -v` hold no secret.
+- **gh** — `/root/.config/gh/hosts.yml`, regenerated from worker.env on
+  every setup.sh run, so `gh pr create` works — the sanctioned way a session
+  finishes. Every `gh` call pays a classifier verdict (`gh pr merge` and API
+  writes past the session's own PR are denied — merging is Tom's gate).
+
+A GitHub-token-shaped string that still reaches an ingest payload is
+redacted by the daemon (`redactGitHubTokens` in lib.mjs) before it can land
+in a transcript row — on 2026-08-30 a session read the token out of
+.git/config, typed it inline, and the classifier's own verdict rows carried
+it verbatim into Convex.
+
 ## Restart semantics
 
 Restarts are a designed-for non-event (`Restart=always`, `RestartSec=5`):

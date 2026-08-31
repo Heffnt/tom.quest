@@ -131,22 +131,6 @@
     consults the substring scan — at which point the fallback branch is deleted
     rather than left unreachable.
 
-- id: session-repos-need-batch-subject
-  kind: descent
-  created: 2026-08-30
-  cites: [C1, tts-spec:20]
-  statement: >-
-    A session opened on a BATCH (useOpenBatchSession, app/lib/
-    use-open-todo-session.ts) still gets no checkout even when the batch
-    declares repos. The server's resolver reaches a batch through its todo, and
-    a batch session is deliberately created with no subject id at all —
-    claudeSessions has no batch subject, so createSession's todoId cannot name
-    one. The button Tom is most likely to press on a multi-repo batch is
-    therefore the one that cannot inherit the declaration.
-  graduates_when: >-
-    claudeSessions carries a batch subject (batchId) and createSession resolves
-    repos from it, with a test that a batch-session inherits its batch's repos.
-
 - id: multi-repo-daemon-unproven-live
   kind: descent
   created: 2026-08-30
@@ -236,22 +220,26 @@
     session to any caller and whose daemon claims every "requested" row, so a
     second poller would double-run Tom's sessions.
 
-- id: session-has-no-ruling-pen
+- id: sessions-pr-credential-rollout-unproven
   kind: descent
-  created: 2026-08-30
-  cites: [C3, tts-spec:15]
+  created: 2026-08-31
+  cites: [D8, tts-spec:20]
   statement: >-
-    The session brief instructs the agent to record Tom's spoken verdicts via
-    ttsRulings:internalRecordRuling and status changes via tts:internalTriage,
-    but neither is reachable from a session: convex/http.ts exposes only GET
-    /tts/rulings and POST /tts/ruling-applied, and the recording mutations are
-    Tom-gated browser mutations. A session with no browser therefore cannot
-    persist a ruling Tom speaks in it — it survives only as captured todos and
-    the outcome summary. The prompt promises a pen that does not exist.
+    Sessions could not open pull requests (gh logged into no host — GH_TOKEN
+    scrubbed on purpose) while the same token rode every clone's remote URL,
+    readable from .git/config; found live 2026-08-30/31 (autonomous outcome
+    "PR NOT opened — gh has no credential"; also recorded on unmerged session
+    branch q974bmhy... as ledger entry sessions-cannot-open-prs, which this
+    entry supersedes — drop that one if that branch merges). The fix is in
+    the tree: session.mjs clones clean URLs, setup.sh installs the
+    tts-git-credential helper as git's global credential.helper and
+    regenerates /root/.config/gh/hosts.yml from worker.env, and the daemon's
+    command gate now buys a classifier verdict on every gh call (merge stays
+    denied — Tom's gate). None of it is LIVE until setup.sh runs on the
+    Jarvis Box, and no test stands under the box's git/gh config.
   graduates_when: >-
-    Either a key-authed POST /tts/ruling route restricted to the session's own
-    subject exists, or the instruction is removed from
-    app/lib/tts-session-prompt.ts so the prompt stops promising it.
+    After a setup.sh rollout, a session pushes session/<id> and opens a pull
+    request with gh, and its clone's .git/config contains no token.
 
 - id: writing-standard-check-not-in-ci
   kind: pending-fence

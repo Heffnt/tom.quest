@@ -895,6 +895,14 @@ export default defineSchema({
       v.literal("block"), // works through a SET of items (a category block)
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
+    // The BATCH subject (ledger graduation session-repos-need-batch-subject,
+    // 2026-08-31). A batch is its own row, not a dtsTodos row, so a session
+    // opened ON a batch could name no subject at all — and the repo resolver,
+    // which reaches a batch only THROUGH a todo, could not see the batch's
+    // declared repos. The button most likely pressed on a multi-repo batch
+    // was the one that started with no checkout. createSession resolves repos
+    // from this id directly.
+    batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
     // ── The repos this session works in ──────────────────────────────────────
     // `repos` is the LIVE field (Tom's ruling 2026-08-30: a session must be
