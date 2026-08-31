@@ -149,6 +149,41 @@ tts-account use gmail
 `setup.sh` is idempotent — re-running it is also how updated job scripts are
 rolled out after a `git pull`.
 
+### What re-running setup.sh costs on a live box
+
+Its last step restarts the session-host daemon, and that is not free. The
+daemon holds every live session inside its own process. When the new process
+adopts the session rows afterwards, an **interactive** session survives as
+idle with a transcript line saying its turn was interrupted, but an
+**autonomous** session is ended — outcome `errored`, summary "daemon restarted
+mid-mission" — and its work tree is deleted, because there is no Tom to send
+it the next turn. Anything it had not committed and pushed is gone; the
+scheduler's backoff owns the retry. Run `setup.sh` when the fleet is quiet.
+
+GitHub credentials are the one part of the box that needs no restart, so they
+have their own script and `setup.sh` calls it:
+
+```
+bash tom.quest/worker/install-git-credentials.sh          # install / re-install
+bash tom.quest/worker/install-git-credentials.sh --check   # report only, no secret printed
+```
+
+It installs `/usr/local/bin/tts-git-credential`, registers it as git's
+**system** credential helper (`git config --system`, i.e. `/etc/gitconfig` —
+not `--global`, because the daemon runs with no `HOME` and could not read a
+per-user config), and regenerates `gh`'s credential file at
+`/root/.config/gh/hosts.yml` from `GH_TOKEN` in `worker.env`. Every git or gh
+process started afterwards picks all of it up, including the sessions already
+running, since each command a session runs is a fresh process.
+
+Run it BEFORE `setup.sh` when rolling the clean-URL change out to a box that
+does not have it yet. Until the new daemon and job code are deployed the box
+still clones with the token in the remote URL, and git prefers a credential
+embedded in the URL over any helper, so installing the helper early changes
+nothing that already works. The other order fails: clean-URL code on a box
+with no helper cannot clone or push at all, because both repositories are
+private.
+
 ## Gmail credentials (one-time)
 
 poll-gmail needs three keys in `/etc/tts/worker.env` — `GMAIL_CLIENT_ID`,

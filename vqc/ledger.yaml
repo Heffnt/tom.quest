@@ -265,6 +265,23 @@
     setup.sh writes. worker/credentials.test.ts now guards the three
     properties the rollout rests on (clean URLs, --system not --global,
     HOME=/root in the unit and the cron file) and fails if any is reverted.
+    One further cost of the rollout was measured 2026-08-31 (session
+    q9798w5d...) and changed its shape: setup.sh ends with `systemctl restart
+    tts-session-host`, and session-host.mjs adoptSession ENDS every autonomous
+    session the restarted daemon adopts — outcome "errored", summary "daemon
+    restarted mid-mission", work tree deleted — while an interactive one
+    survives as idle with its turn interrupted. Rolling credentials out
+    through setup.sh therefore costs every autonomous session running at that
+    moment, for a change that needs no restart at all. The procedure now lives
+    in worker/install-git-credentials.sh, which setup.sh calls and which can
+    be run alone on a live box; it carries a --check mode (run against the
+    Jarvis Box 2026-08-31 23:45 UTC: helper MISSING, credential.helper NOT
+    REGISTERED, gh hosts.yml MISSING, GH_TOKEN set — printing no secret).
+    Installing it early is also the safe order, because git prefers a
+    credential embedded in a remote URL over any helper, so the helper is
+    inert on a box still running the old tokenised-URL code. Still not done,
+    and both are Tom's: the token is NOT rotated (worker.env unchanged since
+    17:02 UTC) and nothing is deployed (/opt/tts dated 17:03 UTC).
   graduates_when: >-
     After a setup.sh rollout, a session pushes session/<id> and opens a pull
     request with gh, and its clone's .git/config contains no token; and one
