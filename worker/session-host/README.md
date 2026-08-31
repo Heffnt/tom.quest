@@ -151,6 +151,17 @@ clean URLs; and `gh` resolves its config directory from HOME, so it reported
 unit therefore sets `Environment=HOME=/root` and the helper is registered in
 the system config, which git reads with no HOME at all.
 
+**Proven before rollout (2026-08-31).** The git half was exercised end to end
+from inside a session, before `setup.sh` ever ran: with HOME unset, the helper
+registered in a system-scope config through `GIT_CONFIG_SYSTEM`, and no token
+in any URL, `git credential fill` for github.com answered, `git clone` of the
+PRIVATE ComplexMultiTrigger over a clean URL succeeded and produced a
+`.git/config` holding no credential, and `git push --dry-run` of a session
+branch to both private repos succeeded — git-lfs included, which asks the same
+helper. Only the `gh` half stays unproven until `setup.sh` writes
+`hosts.yml`. `worker/credentials.test.ts` fails if the clean URLs, the
+`--system` registration, or the `HOME=/root` lines are reverted.
+
 A GitHub-token-shaped string that still reaches an ingest payload is
 redacted by the daemon (`redactGitHubTokens` in lib.mjs) before it can land
 in a transcript row — on 2026-08-30 a session read the token out of

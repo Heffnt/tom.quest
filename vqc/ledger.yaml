@@ -249,9 +249,22 @@
     its config dir — so the helper is now registered with `git config
     --system` (/etc/gitconfig, read with no HOME) and the unit sets
     Environment=HOME=/root for gh. None of it is LIVE until setup.sh runs on
-    the Jarvis Box, and no test stands under the box's git/gh config — CMT is
-    private (unauthenticated API read returns 404), so a clean-URL clone with
-    a helper git cannot see fails outright and no session would start.
+    the Jarvis Box — CMT is private (unauthenticated API read returns 404), so
+    a clean-URL clone with a helper git cannot see fails outright and no
+    session would start. That last risk is now RETIRED by direct measurement
+    rather than argument (2026-08-31, session q97e8eqs...): with HOME unset,
+    the helper registered in a system-scope git config, and no token in any
+    URL, `git credential fill` for github.com answered, `git clone --depth 1`
+    of the PRIVATE ComplexMultiTrigger over a clean URL succeeded and left a
+    .git/config with no credential in it, and `git push --dry-run` of a
+    session branch to BOTH private repos succeeded — git-lfs included, which
+    authenticates through the same helper. The test used a copy of the helper
+    and GIT_CONFIG_SYSTEM, so nothing outside the session work tree was
+    written and the token was never read or printed. What stays unproven is
+    only `gh pr create`, which needs /root/.config/gh/hosts.yml, a file
+    setup.sh writes. worker/credentials.test.ts now guards the three
+    properties the rollout rests on (clean URLs, --system not --global,
+    HOME=/root in the unit and the cron file) and fails if any is reverted.
   graduates_when: >-
     After a setup.sh rollout, a session pushes session/<id> and opens a pull
     request with gh, and its clone's .git/config contains no token; and one

@@ -96,7 +96,7 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
 # graduation sessions-cannot-open-prs, 2026-08-31). Two consumers, one source
 # of truth (GH_TOKEN in worker.env):
 #
-#   git — the global credential.helper below. Clones and pushes use CLEAN
+#   git — the system credential.helper below. Clones and pushes use CLEAN
 #     https URLs; the helper hands git the token at ask time, so no work tree
 #     or `git remote -v` ever contains it.
 #   gh  — /root/.config/gh/hosts.yml, REGENERATED from worker.env on every

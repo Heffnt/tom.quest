@@ -537,7 +537,9 @@ export class Session {
     // account-wide repo-write token one `git remote -v` away from any session
     // shell — the env scrub raised the cost of reaching it without removing
     // it. Credentials now come from /usr/local/bin/tts-git-credential (git's
-    // global credential.helper, installed by setup.sh, reading GH_TOKEN from
+    // system credential.helper in /etc/gitconfig — the only config file git
+    // reads with no HOME, which is how this daemon runs — installed by
+    // setup.sh, reading GH_TOKEN from
     // /etc/tts/worker.env), so nothing inside the work tree holds the token
     // and the same helper serves the daemon's clone here and the agent's own
     // `git push` in its shell.
@@ -696,7 +698,7 @@ export class Session {
     // confused session could rewrite ANY transcript) and GH_TOKEN is repo
     // write for the whole account. Neither is reachable through the
     // sanctioned pens, so nothing legitimate needs them IN THE ENV: git
-    // authenticates through the global credential helper and gh through
+    // authenticates through the system credential helper and gh through
     // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
     // every work tree), so `git push` and `gh pr create` work in a shell
     // that cannot print the token with `env`.
