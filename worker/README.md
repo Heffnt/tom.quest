@@ -136,17 +136,32 @@ in a research checkout added ~1,400 empty directories a day beside it, `/tmp`
 reached 100 percent full, and tooling inside a running session began failing
 with out-of-space errors.
 
-Step 8 of `setup.sh` handles this in two parts, because they cover different
-failures:
+`worker/scratch-cleaning.sh` installs the fix, and step 8 of `setup.sh` is a
+call to it. It is a separate file because running it on its own is how the
+change reaches a live box **without** the `tts-session-host` restart that
+`setup.sh` performs — that restart kills every session running at the time.
+It handles two parts, because they cover different failures:
 
 - **Cleaning between sessions.** `/etc/tmpfiles.d/tmp.conf` sets `q /tmp 1777
-  root root mM:2d`: delete anything under `/tmp` not *modified* in two days.
-  `mM:` restricts the age judgement to modification time — the default also
-  counts access time, and sessions running `ls`, `du`, `find` or `grep` over
-  `/tmp` would keep resetting that clock. A drop-in runs the existing
-  `systemd-tmpfiles-clean.timer` every 6 hours instead of daily. This can never
-  stop one session filling the tmpfs within an hour: nothing that young is old
-  enough to reap.
+  root root amM:2d`: delete anything under `/tmp` untouched for two days,
+  judging **files** by the later of access and modification time (`a`, `m`) and
+  **directories** by modification time alone (`M`). The two halves of that
+  answer opposite risks. Sessions clone repositories into `/tmp` and keep using
+  them for more than a day, so files must count *reads* — otherwise a checkout
+  in use loses every file it has not written in two days. Directories must not
+  count reads, because any recursive sweep (`du`, `find`, `ls -R`) refreshes the
+  access time of every directory it walks, and the ~1,400 leaked **empty**
+  directories a day are exactly what such a sweep would then keep alive. A
+  drop-in runs the existing `systemd-tmpfiles-clean.timer` every 6 hours instead
+  of daily. This can never stop one session filling the tmpfs within an hour:
+  nothing that young is old enough to reap.
+
+  Residual failure: a checkout in `/tmp` used across more than two days still
+  loses worktree files nothing has read (git restores them from the object
+  store). Don't clone into `/tmp`; `mktemp -d` now lands on disk. To hold a path
+  back from cleaning entirely, write `x /path` into
+  `/etc/tmpfiles.d/zz-tts-keep.conf` by hand — `setup.sh` neither creates nor
+  deletes that file.
 - **Keeping scratch out of RAM in the first place.** `TMPDIR=/var/cache/tts/tmp`
   is set on the cron file and on the session-host unit, so cron jobs, every
   session, and every tool a session runs write scratch to `/dev/sda1` (75 GB)

@@ -273,81 +273,13 @@ CRON
 chmod 644 /etc/cron.d/tts
 
 echo "== [8/10] scratch cleaning (/tmp reaper + scratch onto disk) =="
-# WHY THIS STEP EXISTS. /tmp on this box is a tmpfs — a filesystem held in RAM
-# rather than on a disk — sized 3.8 GB on a 7.7 GB machine, so every byte of
-# every file in it is a byte the box cannot use for anything else. Nothing
-# cleaned it on a useful timescale: the vendor rule the file below replaces
-# (/usr/lib/tmpfiles.d/tmp.conf) deletes at an age of 10 days. On 2026-08-30 one
-# session left ~2.2 GB of scratch there, a test in a research checkout leaked
-# ~1,400 empty directories a day beside it, /tmp reached 100 percent full, and
-# tooling inside a running session started failing with out-of-space errors. A
-# session cannot repair that itself: writing to /etc and deleting other
-# sessions' files are both refused by the session command classifier.
-#
-# TWO CHANGES, ANSWERING DIFFERENT HALVES. The reaper bounds accumulation
-# BETWEEN sessions; it can never stop one session filling the tmpfs within an
-# hour, because nothing that young is old enough to reap. Moving scratch onto
-# disk (TMPDIR, set on the cron file above and on the session-host unit below)
-# is what covers the within-session case.
-#
-# systemd-tmpfiles is the reaper: it already runs here on a timer and already
-# reads rule files from /etc/tmpfiles.d, so only the rules are new. No script.
-mkdir -p /etc/tmpfiles.d /etc/systemd/system/systemd-tmpfiles-clean.timer.d
-
-# A file in /etc/tmpfiles.d REPLACES the same-named file in /usr/lib/tmpfiles.d
-# entirely — that is the documented way an administrator overrides a vendor
-# rule — which is why the unchanged /var/tmp line has to be repeated here.
-cat > /etc/tmpfiles.d/tmp.conf <<'TMPFILES'
-# Managed by tom.quest worker/setup.sh — edits here are lost on the next run.
-
-# "mM:2d": delete an entry under /tmp whose LAST MODIFICATION time is more than
-# two days old, judging files (m) and directories (M) by modification time ONLY.
-# The default also judges by ACCESS time, and every session that runs ls, du,
-# find or grep over /tmp refreshes access times — under the default a busy box
-# would keep resetting the clock on its own garbage and reap almost nothing.
-q /tmp 1777 root root mM:2d
-
-# unchanged from the vendor file
-q /var/tmp 1777 root root 30d
-
-# Where cron jobs and sessions now write scratch instead (TMPDIR). On
-# /dev/sda1, so a job that writes gigabytes costs disk, not memory. Longer age
-# than /tmp because the space is not scarce; still aged, because moving garbage
-# somewhere roomier is not the same as cleaning it up.
-q /var/cache/tts/tmp 1777 root root mM:3d
-TMPFILES
-chmod 644 /etc/tmpfiles.d/tmp.conf
-
-# The timer that runs the reaper fires once a day by default, so an entry can
-# sit in RAM for up to a day after passing its age. Every 6 hours costs one
-# directory walk and bounds that lag. The empty assignment first is REQUIRED:
-# timer settings accumulate across drop-in files, so without it the unit would
-# carry both the vendor's daily trigger and this one.
-cat > /etc/systemd/system/systemd-tmpfiles-clean.timer.d/10-tts-frequent.conf <<'TIMER'
-# Managed by tom.quest worker/setup.sh — edits here are lost on the next run.
-[Timer]
-OnUnitActiveSec=
-OnUnitActiveSec=6h
-TIMER
-chmod 644 /etc/systemd/system/systemd-tmpfiles-clean.timer.d/10-tts-frequent.conf
-
-# 1777 (world-writable, sticky) matches /tmp's own mode. The tmpfiles rule above
-# re-creates it at every boot; this line is what makes it exist right now.
-mkdir -p /var/cache/tts/tmp
-chmod 1777 /var/cache/tts/tmp
-
-systemctl daemon-reload
-systemctl restart systemd-tmpfiles-clean.timer
-echo "  /tmp reaped at 2d, /var/cache/tts/tmp at 3d, timer every 6h"
-echo "  (dry run, deletes nothing: systemd-tmpfiles --clean --dry-run)"
-#
-# NOT DONE HERE, DELIBERATELY: exemptions. The live box carries
-# /etc/tmpfiles.d/zz-tts-keep.conf, hand-installed, holding seven stale
-# repository checkouts in /tmp back from the reaper while Tom's decision about
-# them and the token rotation that reads them are open. That is one machine's
-# temporary state, not part of building a box — a rebuilt box has no such
-# checkouts — so it stays out of this script and should be deleted from the box
-# once those two items close.
+# /tmp on this box is a tmpfs — a filesystem held in RAM rather than on a disk —
+# so everything left in it costs the box memory until reboot. worker/
+# scratch-cleaning.sh installs the rules that reap it and the TMPDIR that keeps
+# new scratch out of it; it carries the full reasoning, and it is a separate
+# file because it is also the way to apply this change to a live box WITHOUT
+# the daemon restart that step 9 below performs (a restart kills every session).
+sh "$WORKER_DIR/scratch-cleaning.sh"
 
 echo "== [9/10] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
