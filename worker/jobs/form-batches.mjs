@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // form-batches.mjs — group life + code todos into batches via headless Claude.
 //
-// Run by cron every 6 hours at :07 UTC (see /etc/cron.d/tts). Manual run:
+// Run by cron every 2 hours at :07 UTC — the line lives in /etc/cron.d/tts and
+// is written there by worker/setup.sh (`7 */2 * * *`). Manual run:
 //   node /opt/tts/form-batches.mjs
 //
 // WHY: one working session should unblock MANY todos — the effort Tom spends
@@ -17,11 +18,53 @@
 // This job collects the pending life-revise rulings whose subject is a
 // members-bearing todo, embeds the sentences in the prompt (they override any
 // other reading), and consumes each via /tts/ruling-applied only once the
-// server reports that batch as stored — a skipped batch leaves its ruling
-// pending for the next run. A revise verdict no longer freezes the batch
-// (server-side fix): it must stay rewritable for the re-form to land, so the
-// "frozen" flag in the prompt reflects only Tom's OTHER touches (edits,
-// status changes).
+// model addressed that batch AND the server did not drop it — anything else
+// leaves the ruling pending for the next run. A revise verdict no longer
+// freezes the batch (server-side fix): it must stay rewritable for the re-form
+// to land, so the "frozen" flag in the prompt reflects only Tom's OTHER
+// touches (edits, status changes).
+//
+// WHAT HAPPENS TO A DROPPED RE-FORM (traced 2026-08-31). The question was
+// whether a batch whose re-form the server dropped is re-proposed on the next
+// run or whether it stays stale. It is RE-PROPOSED, and the retry is
+// unbounded, by this chain:
+//
+//   1. A dropped batch writes nothing, so the row survives exactly as it was,
+//      and its ruling is not consumed (appliedAt stays unset).
+//   2. internalPendingRulings (convex/ttsRulings.ts) returns a ruling while
+//      appliedAt is unset AND it is the newest ruling on that subject, so the
+//      next run's /tts/rulings call hands the same sentence back.
+//   3. `revises` is rebuilt from it, and a pending revise bypasses the
+//      input-hash short-circuit below: the Claude call happens even when
+//      nothing else about the inputs changed.
+//   4. revise is the one verdict that does not stamp tomTouchedAt, so the
+//      batch is still offered as unfrozen and the model may rewrite it again.
+//
+// Nothing counts the attempts and nothing ages a ruling out. The only thing
+// that ends the loop other than success is Tom ruling on the batch AGAIN: the
+// newer ruling supersedes the older one, which then leaves the pending feed
+// unconsumed and inert. So whether the retry can ever succeed is decided by
+// why internalStoreBatches dropped the batch:
+//
+//   - Model-side reasons clear on the next call: an id that does not resolve,
+//     a plan over MAX_PLAN_STEPS, a member list validateBatchMembers refuses.
+//   - A member held by ANOTHER unfrozen batch clears in one further run by
+//     design — that batch's own rewrite releases the member first (the
+//     occupied-map note in internalStoreBatches states the two-run rule).
+//   - The target row being unwritable NEVER clears: source not "batcher",
+//     status not "active", or tomTouchedAt set. Tom sets that last one by
+//     editing the batch, or by ruling any verdict other than revise on it,
+//     after having ruled revise. From then on the batcher can never serve the
+//     sentence and only Tom can move the batch.
+//
+// Both cases are handled below. A frozen batch's ruling is separated out: it
+// is kept out of the prompt (which declares frozen batches off limits in the
+// same breath, so asking for both is a contradiction the model resolves by
+// guessing) and it does not force a Claude call, which otherwise ran every two
+// hours forever on a sentence that could never land. It is still left pending,
+// so it keeps showing in the /tts "ruled, applying" strip
+// (app/tts/components/batches-tab.tsx) — the one standing signal to Tom that a
+// sentence of his was never served.
 //
 // NOTES ON THE OTHER VERDICTS (2026-08-29): approve / session / archive may
 // each carry a written note too. The approve and session ones are NOT commands
@@ -43,6 +86,7 @@ import {
   runClaude,
   extractJsonObject,
   skippedRowIds,
+  proposedRowIds,
 } from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/batch-input-hash";
@@ -167,13 +211,35 @@ async function main() {
 
   // Pending revise rulings ON BATCHES only — a revise on a plain life todo
   // belongs to prepare-life-todos.mjs, which reads the same feed.
+  //
+  // A revise whose batch is FROZEN (tomTouchedAt set — Tom edited it, or ruled
+  // a non-revise verdict on it, after ruling revise) is set aside instead: the
+  // server refuses every rewrite of a frozen row, so the sentence can never be
+  // served by this job. Feeding it to the model would contradict the prompt's
+  // own off-limits rule for frozen batches, and counting it below would force a
+  // full Claude call every two hours for as long as the ruling exists. It stays
+  // pending, which is where Tom sees it.
   const revises = [];
+  const frozenRevises = [];
   for (const r of Array.isArray(pending) ? pending : []) {
     if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
     const batch = batchById.get(r.todoId);
-    if (batch) {
-      revises.push({ ruling: r, statement: batch.statement, sentence: r.sentence ?? "" });
-    }
+    if (!batch) continue;
+    const entry = {
+      ruling: r,
+      statement: batch.statement,
+      sentence: r.sentence ?? "",
+    };
+    if (batch.tomTouchedAt !== undefined) frozenRevises.push(entry);
+    else revises.push(entry);
+  }
+  for (const r of frozenRevises) {
+    console.log(
+      `[form-batches] revise ruling for "${r.statement}" (batch ` +
+        `${r.ruling.todoId}) cannot be served: the batch is Tom-touched ` +
+        `(frozen), and the server never rewrites a frozen row. Left pending — ` +
+        `only Tom can move it.`,
+    );
   }
 
   // Notes Tom wrote with his APPROVE and SESSION verdicts (2026-08-29: every
@@ -379,12 +445,33 @@ async function main() {
   // and every archiveIds skip — so it is the one field a ruling's todoId can
   // be compared against.
   //
+  // AND ASK FOR POSITIVE CONFIRMATION, not merely for the absence of a skip.
+  // Absence has a second cause besides success: the model may answer without
+  // mentioning the batch at all, and then the server has nothing to skip and
+  // nothing to store, the row keeps the grouping Tom asked to change, and the
+  // ruling would be retired as though the sentence had been served. So a
+  // ruling is consumed only when the model's own answer ADDRESSED that row —
+  // it carried the row's id as a rewrite, or listed it in archiveIds — and the
+  // server did not drop it. This is the rule the successor job already applies
+  // (plan-graphs.mjs consumes on the server's `batchStored`, not on a
+  // statement match); v1 reaches the same place from the model's answer plus
+  // the skip report, because internalStoreBatches reports no per-row success.
+  //
   // Still not covered, on purpose: a revise the model answers by ARCHIVING the
   // batch and creating a replacement. If the archive lands and the replacement
   // is skipped, the ruling is consumed — the members are back in the unbatched
   // pool and the next run regroups them, but the sentence itself is gone.
   const skippedIds = skippedRowIds(result.skipped);
+  const proposedIds = proposedRowIds(parsed.batches, parsed.archiveIds);
   for (const r of revises) {
+    if (!proposedIds.has(r.ruling.todoId)) {
+      console.log(
+        `[form-batches] revise ruling for "${r.statement}" (batch ` +
+          `${r.ruling.todoId}) left pending: this run's answer did not ` +
+          `address the batch at all`,
+      );
+      continue;
+    }
     if (skippedIds.has(r.ruling.todoId)) {
       console.log(
         `[form-batches] revise ruling for "${r.statement}" (batch ` +

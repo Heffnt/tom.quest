@@ -325,3 +325,25 @@ export function skippedRowIds(skipped) {
       .filter((id) => typeof id === "string"),
   );
 }
+
+// The ids of the EXISTING rows a model's batch answer ADDRESSED: every batch it
+// asked to rewrite (the `id` field of an entry in `batches`) plus every batch it
+// asked to retire (`archiveIds`). A brand-new batch has no id and is not in
+// here, by construction.
+//
+// This is the other half of the question "did the work I asked for land on row
+// X". The skip report alone cannot answer it, because a row the model never
+// mentioned produces no skip and no write: absence from the skip report means
+// EITHER the row stored OR the model ignored it. A caller that must not retire
+// Tom's instruction on a row nothing touched checks this set first and the skip
+// set second.
+export function proposedRowIds(batches, archiveIds) {
+  const ids = new Set();
+  for (const b of Array.isArray(batches) ? batches : []) {
+    if (typeof b?.id === "string" && b.id !== "") ids.add(b.id);
+  }
+  for (const raw of Array.isArray(archiveIds) ? archiveIds : []) {
+    if (typeof raw === "string" && raw !== "") ids.add(raw);
+  }
+  return ids;
+}

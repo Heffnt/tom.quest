@@ -286,6 +286,91 @@ describe("TTS unified rulings", () => {
     expect(after.skipped.map((s) => s.why)).toEqual(["Tom-touched (frozen)"]);
   });
 
+  // The three facts that decide whether a DROPPED re-form is retried on the
+  // next batcher run or leaves the batch stale forever (traced 2026-08-31; the
+  // reasoning is written out in worker/jobs/form-batches.mjs's header). A drop
+  // must (1) write nothing at all, (2) leave the row batcher-writable, and (3)
+  // leave the revise ruling in the pending feed — the worker rebuilds the whole
+  // retry from those three, and any one of them silently ends the retry.
+  //
+  // witness: make internalStoreBatches patch the row before the conflict check,
+  // or make a skip consume/settle the ruling, and a re-form Tom asked for would
+  // half-land or never be attempted again.
+  it("a dropped re-form leaves the row untouched and the ruling pending, and the retry lands", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [
+        {
+          statement: "trip logistics",
+          brief: "one errand, three tickets",
+          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
+        },
+        {
+          statement: "the other grouping",
+          brief: "holds the contested member",
+          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-002" }],
+        },
+      ],
+    });
+    const target = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsTodos").collect()).find(
+        (x) => x.statement === "trip logistics",
+      ),
+    );
+    await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId: target!._id,
+      verdict: "revise",
+      sentence: "put the visa work on its own",
+    });
+    // The ruling itself bumps updatedAt (revise drops readiness to
+    // "preparing"), so the baseline for "nothing was written" is the row as it
+    // stands AFTER the ruling, not before it.
+    const ruled = await t.run(async (ctx) => ctx.db.get(target!._id));
+
+    // The re-form claims a member the OTHER batch still holds, so the server
+    // drops this batch (one bad grouping never fails the run).
+    const dropped = await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [
+        {
+          id: target!._id,
+          statement: "visa paperwork",
+          brief: "regrouped per Tom's sentence",
+          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-002" }],
+        },
+      ],
+    });
+    expect(dropped.updated).toBe(0);
+    expect(dropped.skipped.map((s) => s.id)).toEqual([target!._id]);
+
+    // (1) and (2): nothing was written, and the row is still the batcher's to
+    // rewrite (source "batcher", status "active", no tomTouchedAt).
+    const untouched = await t.run(async (ctx) => ctx.db.get(target!._id));
+    expect(untouched?.statement).toBe("trip logistics");
+    expect(untouched?.updatedAt).toBe(ruled!.updatedAt);
+    expect(untouched?.members).toEqual(ruled!.members);
+    expect(untouched?.tomTouchedAt).toBeUndefined();
+    expect(untouched?.source).toBe("batcher");
+    expect(untouched?.status).toBe("active");
+
+    // (3): the sentence is still on offer, so the next run asks again.
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((p) => p.todoId)).toContain(target!._id);
+
+    // The next run's answer keeps the member it already owned: it lands.
+    const retry = await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [
+        {
+          id: target!._id,
+          statement: "visa paperwork",
+          brief: "regrouped per Tom's sentence",
+          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
+        },
+      ],
+    });
+    expect(retry).toMatchObject({ updated: 1, skipped: [] });
+  });
+
   // witness: change briefAwaitsRuling back to "any ruling clears the item" in
   // convex/ttsRulings.ts — a revise→re-brief cycle would never return the item.
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {

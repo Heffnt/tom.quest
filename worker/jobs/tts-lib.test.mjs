@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { skippedRowIds } from "./tts-lib.mjs";
+import { skippedRowIds, proposedRowIds } from "./tts-lib.mjs";
 
 // The skip report returned by POST /tts/batches is the ONLY thing that tells a
 // worker whether the write it asked for landed on a given row. These tests fix
@@ -43,5 +43,37 @@ describe("skippedRowIds", () => {
     expect(skippedRowIds(undefined).size).toBe(0);
     expect(skippedRowIds([]).size).toBe(0);
     expect(skippedRowIds([null, { ref: "x", why: "y", id: 7 }]).size).toBe(0);
+  });
+});
+
+// The skip report says which rows were REFUSED. It cannot say which rows the
+// model addressed at all, and a row nobody addressed is stored nowhere and
+// skipped nowhere. These tests fix the rule that "did my instruction land on
+// row X" is answered by the model's own answer first, the skip report second.
+describe("proposedRowIds", () => {
+  // witness: in form-batches.mjs, consume a batch-revise ruling on the mere
+  // absence of a skip — a run whose answer omits the batch entirely retires
+  // Tom's sentence while the batch keeps the grouping he asked to change.
+  it("holds the ids the answer addressed, and nothing for a batch it ignored", () => {
+    const ids = proposedRowIds(
+      [
+        { id: "batch-rewritten", statement: "visa paperwork", members: [] },
+        { statement: "a brand-new grouping", members: [] },
+      ],
+      ["batch-retired"],
+    );
+    expect([...ids].sort()).toEqual(["batch-retired", "batch-rewritten"]);
+    expect(ids.has("batch-ignored")).toBe(false);
+  });
+
+  it("holds nothing for an answer of only new batches", () => {
+    expect(proposedRowIds([{ statement: "new", members: [] }], []).size).toBe(0);
+  });
+
+  it("tolerates an absent or malformed answer", () => {
+    expect(proposedRowIds(undefined, undefined).size).toBe(0);
+    expect(proposedRowIds([null, { id: 7 }, { id: "" }], [null, "", 7]).size).toBe(
+      0,
+    );
   });
 });
