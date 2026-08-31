@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 import shlex
@@ -29,6 +30,10 @@ from ws import router as ws_router
 load_dotenv()
 API_PORT = int(os.getenv("API_PORT", "8000"))
 API_KEY = os.environ.get("TURING_API_KEY", "")
+# Optional second credential: valid for GETs only. See verify_api_key for why
+# the boundary is the HTTP method rather than a path list. Unset means the
+# feature is simply off.
+READONLY_API_KEY = os.environ.get("TURING_READONLY_API_KEY", "")
 LOG_PATH = "turing-api.log"
 # Upper bound on a single /allocate request. Guards against a typo (or a
 # declarative caller) asking for far more GPUs than the partition holds.
@@ -55,12 +60,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def verify_api_key(x_api_key: str = Header(None)):
+async def verify_api_key(request: Request, x_api_key: str = Header(None)):
+    """Authorize one request against the full key or the read-only key.
+
+    TWO KEYS, and the second exists because the first is all-or-nothing.
+    TURING_API_KEY opens every endpoint on this service, including
+    POST /sessions/{name}/run — arbitrary shell commands on the cluster — and
+    it doubles as the HMAC secret that signs terminal WebSocket tokens. Any
+    caller that only wants to LOOK (a TTS session checking whether its job is
+    still queued, a dashboard, a health probe) has, until now, had to be handed
+    the key that can also cancel every job and open a shell.
+
+    TURING_READONLY_API_KEY is that narrower credential. It is optional: leave
+    it unset and nothing changes.
+
+    THE BOUNDARY IS THE HTTP METHOD, not a hand-maintained path list, and that
+    is deliberate. Every observing endpoint here is a GET and every mutating
+    one is a POST or DELETE, so `method == "GET"` already draws the line
+    exactly — and it keeps drawing it for routes that do not exist yet. A path
+    allowlist would have to be edited in lockstep with every new endpoint, and
+    the failure mode of forgetting is silent and wrong in the dangerous
+    direction: a new POST would be reachable by the read-only key. Here,
+    forgetting fails safe.
+
+    The read-only key cannot reach the terminal either, and again structurally
+    rather than by a rule written here: ws.py verifies its token's HMAC against
+    API_KEY alone, so a token signed with anything else does not verify.
+
+    Both comparisons use compare_digest — a plain `!=` on a secret leaks its
+    length and prefix to a caller who can time enough requests.
+    """
     if not API_KEY:
         return True
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return True
+    if x_api_key and hmac.compare_digest(x_api_key, API_KEY):
+        return True
+    if (
+        READONLY_API_KEY
+        and x_api_key
+        and hmac.compare_digest(x_api_key, READONLY_API_KEY)
+    ):
+        if request.method == "GET":
+            return True
+        # 403, not 401: the credential is valid and was recognised, it simply
+        # does not carry this verb. Answering 401 would send a caller off to
+        # re-check a key that is working fine.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Read-only API key cannot {request.method} "
+                f"{request.url.path}. Use TURING_API_KEY for writes."
+            ),
+        )
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 app.include_router(ws_router)
@@ -445,6 +496,17 @@ if __name__ == "__main__":
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     if not API_KEY:
         raise SystemExit("TURING_API_KEY is not set. Configure turing-api/.env before starting.")
+    # A read-only key EQUAL to the full key would silently grant writes to
+    # every holder of what its name promises is read-only — the one
+    # misconfiguration of this pair that fails open, so it is refused here
+    # rather than warned about.
+    if READONLY_API_KEY and hmac.compare_digest(READONLY_API_KEY, API_KEY):
+        raise SystemExit(
+            "TURING_READONLY_API_KEY is identical to TURING_API_KEY. Mint a "
+            "distinct value, or leave it unset to disable read-only access."
+        )
     print(f"\nTuring API listening on 127.0.0.1:{API_PORT}")
+    if READONLY_API_KEY:
+        print("Read-only API key enabled: valid for GET requests only.")
     print("Bound to localhost: reachable only through the co-located cloudflared tunnel, not the shared cluster LAN.\n")
     uvicorn.run(app, host="127.0.0.1", port=API_PORT, access_log=True, log_config=None)

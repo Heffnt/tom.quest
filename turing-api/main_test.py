@@ -247,3 +247,170 @@ class EventLoopIsolationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadOnlyApiKeyTest(unittest.TestCase):
+    """The read-only credential (TURING_READONLY_API_KEY).
+
+    Why this class is the first in the file to send a real X-API-Key header:
+    every other test sets `main.API_KEY = ""` to make verify_api_key fail open,
+    so until now nothing exercised the auth branch at all. These tests pin the
+    branch itself.
+
+    The claim being defended is that ONE key no longer has to cover both
+    looking and acting. TURING_API_KEY opens POST /sessions/{name}/run —
+    arbitrary shell commands on the cluster — so a caller that only wants to
+    read /jobs was previously handed the ability to cancel every job and open a
+    shell.
+    """
+
+    FULL = "full-key-value"
+    READONLY = "readonly-key-value"
+
+    def _auth(self, **overrides):
+        settings = {"main.API_KEY": self.FULL, "main.READONLY_API_KEY": self.READONLY}
+        settings.update(overrides)
+        return [patch(name, value) for name, value in settings.items()]
+
+    def _run(self, method, path, key, patches=(), **kwargs):
+        with patch("main.API_KEY", self.FULL), patch("main.READONLY_API_KEY", self.READONLY):
+            with_patches = [p for p in patches]
+            for p in with_patches:
+                p.start()
+            try:
+                headers = {"X-API-Key": key} if key is not None else {}
+                return _request(method, path, headers=headers, **kwargs)
+            finally:
+                for p in with_patches:
+                    p.stop()
+
+    # ── the read-only key may look ──────────────────────────────────────────
+
+    def test_readonly_key_may_read_jobs(self) -> None:
+        with patch("main.get_user_jobs", return_value=[]) as jobs:
+            res = self._run("GET", "/jobs", self.READONLY)
+        self.assertEqual(res.status_code, 200)
+        jobs.assert_called_once()
+
+    def test_readonly_key_may_read_the_gpu_report(self) -> None:
+        with patch("main.format_gpu_report_v2", return_value={"nodes": []}):
+            res = self._run("GET", "/gpu-report", self.READONLY)
+        self.assertEqual(res.status_code, 200)
+
+    def test_readonly_key_may_read_session_output(self) -> None:
+        with (
+            patch("main.session_exists", return_value=True),
+            patch("main.capture_output", return_value="hello"),
+        ):
+            res = self._run("GET", "/sessions/demo/output", self.READONLY)
+        self.assertEqual(res.status_code, 200)
+
+    # ── …and may not act ────────────────────────────────────────────────────
+
+    def test_readonly_key_cannot_run_a_command_on_the_cluster(self) -> None:
+        """The endpoint this whole split exists for."""
+        with (
+            patch("main.session_exists", return_value=True) as exists,
+            patch("main.send_to_session", return_value=True) as send,
+        ):
+            res = self._run(
+                "POST", "/sessions/demo/run", self.READONLY, json={"command": "rm -rf /"}
+            )
+        self.assertEqual(res.status_code, 403)
+        # Refused BEFORE the handler ran — the dependency is the gate, so the
+        # command never reached tmux even to be rejected later.
+        send.assert_not_called()
+        exists.assert_not_called()
+
+    def test_readonly_key_cannot_cancel_a_job(self) -> None:
+        with patch("main.cancel_job") as cancel:
+            res = self._run("DELETE", "/jobs/12345", self.READONLY)
+        self.assertEqual(res.status_code, 403)
+        cancel.assert_not_called()
+
+    def test_readonly_key_cannot_allocate_gpus(self) -> None:
+        with patch("main.allocate_gpu") as allocate:
+            res = self._run(
+                "POST", "/allocate", self.READONLY, json={"gpu_type": "A100", "count": 1}
+            )
+        self.assertEqual(res.status_code, 403)
+        allocate.assert_not_called()
+
+    def test_refusal_is_403_and_names_the_verb_and_path(self) -> None:
+        """403 not 401: the key is valid, it just does not carry this verb.
+        401 would send the caller off to re-check a key that is working."""
+        res = self._run("DELETE", "/jobs/1", self.READONLY)
+        self.assertEqual(res.status_code, 403)
+        detail = res.json()["detail"]
+        self.assertIn("DELETE", detail)
+        self.assertIn("/jobs/1", detail)
+        self.assertIn("TURING_API_KEY", detail)
+
+    # ── the full key is unaffected ──────────────────────────────────────────
+
+    def test_full_key_still_writes(self) -> None:
+        with (
+            patch("main.session_exists", return_value=True),
+            patch("main.send_to_session", return_value=True) as send,
+        ):
+            res = self._run("POST", "/sessions/demo/run", self.FULL, json={"command": "ls"})
+        self.assertEqual(res.status_code, 200)
+        send.assert_called_once()
+
+    def test_full_key_still_reads(self) -> None:
+        with patch("main.get_user_jobs", return_value=[]):
+            res = self._run("GET", "/jobs", self.FULL)
+        self.assertEqual(res.status_code, 200)
+
+    # ── everything else is still refused ────────────────────────────────────
+
+    def test_wrong_key_is_401_on_a_read(self) -> None:
+        res = self._run("GET", "/jobs", "not-either-key")
+        self.assertEqual(res.status_code, 401)
+
+    def test_missing_header_is_401(self) -> None:
+        res = self._run("GET", "/jobs", None)
+        self.assertEqual(res.status_code, 401)
+
+    def test_empty_header_is_401_and_does_not_pass_as_unset(self) -> None:
+        """Guard on the compare_digest rewrite: `hmac.compare_digest("", "")`
+        is True, so an empty header must be rejected before it is compared."""
+        res = self._run("GET", "/jobs", "")
+        self.assertEqual(res.status_code, 401)
+
+    def test_readonly_disabled_by_default(self) -> None:
+        """Unset READONLY_API_KEY means the feature is simply off — the
+        formerly-read-only value becomes just another wrong key."""
+        with patch("main.API_KEY", self.FULL), patch("main.READONLY_API_KEY", ""):
+            res = _request("GET", "/jobs", headers={"X-API-Key": self.READONLY})
+        self.assertEqual(res.status_code, 401)
+
+    def test_health_stays_open_to_everyone(self) -> None:
+        """/health carries no dependency; 'is the tunnel up' must never need a
+        credential."""
+        with patch("main.API_KEY", self.FULL), patch("main.READONLY_API_KEY", self.READONLY):
+            self.assertEqual(_request("GET", "/health").status_code, 200)
+
+    def test_readonly_key_cannot_be_used_to_sign_a_websocket_token(self) -> None:
+        """Structural, not a rule written in verify_api_key: ws.py HMACs
+        against API_KEY alone, so a token signed with the read-only key does
+        not verify. Witness: change ws.py to accept READONLY_API_KEY."""
+        import base64
+        import hmac
+        import hashlib
+        import ws
+
+        def b64url(raw: bytes) -> str:
+            return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+        def token_signed_with(secret: str) -> str:
+            payload = b64url(b'{"uid":"u","sid":"demo","exp":99999999999999}')
+            sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
+            return f"{payload}.{b64url(sig)}"
+
+        # The handler verifies against main.API_KEY (ws.py:124-134), so that is
+        # the secret passed here in both directions.
+        self.assertIsNone(ws.verify_ws_token(token_signed_with(self.READONLY), self.FULL))
+        # Control: the same construction with the full key DOES verify, so the
+        # assertion above is about the key and not about a malformed token.
+        self.assertIsNotNone(ws.verify_ws_token(token_signed_with(self.FULL), self.FULL))

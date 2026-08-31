@@ -41,10 +41,16 @@ tom.Quest never needs to signal, drain, or inspect it — only to choose how man
 FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared tunnel
 `turing.tom.quest`. Refuses to start without `TURING_API_KEY`; CORS `*`; SIGHUP ignored.
 
-- **Auth:** a single shared `X-API-Key` header dependency (`verify_api_key`) on every
-  non-WS endpoint (`main.py:54`). The terminal WebSocket is *not* under that dependency;
-  it authenticates with a short-lived HMAC token signed with the **same** `API_KEY`
-  (`ws.py:27`, `ws.py:124`).
+- **Auth:** an `X-API-Key` header dependency (`verify_api_key`) on every non-WS endpoint.
+  Two keys are accepted. `TURING_API_KEY` opens everything. `TURING_READONLY_API_KEY`
+  (optional; unset disables it) is accepted for **GET requests only** — the boundary is the
+  HTTP method, not a path list, because every observing endpoint is a GET and every mutating
+  one is a POST or DELETE, so a route added later is write-protected by default rather than
+  by remembering to update an allowlist. A read-only key presented on a write answers **403**
+  (the credential is valid, it just lacks the verb), not 401. The service refuses to start if
+  the two keys are equal. The terminal WebSocket is *not* under that dependency; it
+  authenticates with a short-lived HMAC token signed with `API_KEY` (`ws.py:27`, `ws.py:124`),
+  so the read-only key cannot reach a shell either — structurally, not by a rule.
 - **Allocation model:** `POST /allocate` loops `count` times, one **single-GPU**
   `salloc --no-shell --gres=gpu:<type>:1 --time=<mins> --mem=<mb> --job-name=<name>` per
   GPU (`slurm.py:123`). **No `--partition` is ever passed** → everything lands on the
@@ -437,7 +443,9 @@ on workers for free.
 
 Sync-`def` for every blocking/FS endpoint (§1.1). The `gpupool:` reserved name and
 name-authoritative ownership (§4.2). Separate narrow agent key, never `TURING_API_KEY`, with
-command authoring admin-only (§7). Whole-GPU single-GPU workers; `desiredCount` clamped to
+command authoring admin-only (§7) — the read-only half of this now exists as
+`TURING_READONLY_API_KEY` (§1.1); command authoring stays admin-only because that key cannot
+issue a non-GET at all. Whole-GPU single-GPU workers; `desiredCount` clamped to
 `[0, 16]`, with SLURM `DenyOnLimit` (12 on `short`) the hard backstop and the real-QOS
 shared-budget clamp deferred (§4.5, §13). Convex: durable writes through mutations; HTTP
 endpoints in `convex/http.ts`; adding fields needs no `_generated` hand-edit. Confinement through
