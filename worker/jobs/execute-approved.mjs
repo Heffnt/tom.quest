@@ -38,7 +38,8 @@ import {
   CMT_DEFAULT_BRANCH,
   TODOS_PATH,
   TODOS_GUARD_TEST,
-  cmtRemoteUrl,
+  CMT_REMOTE_URL,
+  assertGitCredentials,
   briefCachePath,
   findEntryBlock,
   acquireLock,
@@ -111,15 +112,28 @@ async function main() {
       .sort((a, b) => (a.ruledAt ?? 0) - (b.ruledAt ?? 0));
     if (approvals.length === 0) return; // quiet when idle
 
+    // There is work, so the box must be able to authenticate to github.com:
+    // this job clones and pushes with CLEAN URLs and depends on the
+    // credential helper. Checked HERE, after the idle return and BEFORE a
+    // ruling is selected, on purpose — an unrolled-out box must not stay
+    // silent, and must not blame Tom's ruling for a box-configuration gap
+    // (a pre-selection throw log-and-exits; a post-selection one would mark
+    // the ruling EXECUTION FAILED).
+    assertGitCredentials(env);
+
     ruling = approvals[0]; // exactly ONE per run — see the header
     const id = ruling.externalId;
     const branch = `tts/${id}`;
     execDir = `/var/cache/tts/exec-${id}`;
     console.log(`[execute-approved] executing ${id} (${approvals.length} approved pending)`);
 
-    // Fresh FULL clone; delete any corpse from a crashed prior attempt.
+    // Fresh FULL clone; delete any corpse from a crashed prior attempt. The
+    // URL is CLEAN (no token) — this clone is where an AGENTIC Claude runs
+    // with bypassPermissions, so a tokenised .git/config here handed the
+    // account-wide repo-write token to the model for the asking. Auth comes
+    // from the global credential.helper instead (asserted above).
     fs.rmSync(execDir, { recursive: true, force: true });
-    execFileSync("git", ["clone", cmtRemoteUrl(env), execDir], {
+    execFileSync("git", ["clone", CMT_REMOTE_URL, execDir], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "inherit"],
     });

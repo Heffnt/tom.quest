@@ -64,16 +64,66 @@ export function git(dir, ...args) {
   });
 }
 
-// The authenticated CMT remote URL. The token rides in the URL (the
-// x-access-token convention GitHub documents for token auth over HTTPS) —
-// acceptable here because the URL never leaves the root-only Jarvis Box and the
-// jobs re-set it on every refresh, so a rotated token in worker.env takes
-// effect on the next cron tick.
-export function cmtRemoteUrl(env) {
+// The CMT remote URL. CLEAN on purpose — no token rides in it (same move
+// session.mjs made for session checkouts on 2026-08-31, ledger entry
+// sessions-pr-credential-rollout-unproven). Until this change the token was
+// written into the URL and therefore into
+// /var/cache/tts/ComplexMultiTrigger/.git/config: a plaintext copy of the
+// account-wide repo-write token, on the PERSISTENT disk (no session cleanup
+// and no reboot removes it) and outside every session's work tree, so any
+// session could read it with an ordinary command. "The URL never leaves the
+// root-only Jarvis Box" was the old justification here; it was already false
+// in practice — a session read the token out of a checkout and typed it onto
+// a command line, and command text is recorded as a transcript row and sent
+// to Convex.
+//
+// Credentials now come from GIT_CREDENTIAL_HELPER at ask time, so a rotated
+// GH_TOKEN still takes effect on the next cron tick — no re-clone, and no
+// copy of the secret anywhere on disk but /etc/tts/worker.env.
+export const CMT_REMOTE_URL = `https://github.com/Heffnt/${CMT_REPO}.git`;
+
+// The git credential helper worker/setup.sh installs (it reads GH_TOKEN from
+// /etc/tts/worker.env and prints it on git's credential protocol). These jobs
+// never read it; they only check it is INSTALLED and REGISTERED, so a box
+// whose setup.sh predates the clean-URL change fails with a sentence naming
+// the fix instead of a bare git authentication error.
+export const GIT_CREDENTIAL_HELPER = "/usr/local/bin/tts-git-credential";
+
+// Fail early, before any clone or fetch, when the box cannot authenticate.
+// Both conditions are real failure modes of a partial rollout: the helper
+// file missing (setup.sh not re-run), and git not knowing about it.
+//
+// The second check asks git what it would ACTUALLY use — `git config --get`
+// with no scope flag, which reads /etc/gitconfig and then $HOME/.gitconfig —
+// rather than naming a scope. setup.sh registers the helper system-wide in
+// /etc/gitconfig precisely because these jobs and the session daemon can run
+// with no HOME, and `git config --global` is a fatal error in that case.
+export function assertGitCredentials(env) {
   if (!env.GH_TOKEN) {
     throw new Error("missing GH_TOKEN in /etc/tts/worker.env — the code-todo jobs need it");
   }
-  return `https://x-access-token:${env.GH_TOKEN}@github.com/Heffnt/${CMT_REPO}.git`;
+  if (!fs.existsSync(GIT_CREDENTIAL_HELPER)) {
+    throw new Error(
+      `${GIT_CREDENTIAL_HELPER} is not installed — remote URLs are clean, so git has no ` +
+        `way to authenticate to github.com; run worker/setup.sh as root on the Jarvis Box`,
+    );
+  }
+  let configured = "";
+  try {
+    configured = execFileSync("git", ["config", "--get", "credential.helper"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    configured = ""; // exit 1 = the key is unset, which the next line reports
+  }
+  if (configured !== GIT_CREDENTIAL_HELPER) {
+    throw new Error(
+      `git's effective credential.helper is ${configured || "(unset)"}, not ${GIT_CREDENTIAL_HELPER} ` +
+        `— run worker/setup.sh as root on the Jarvis Box; it registers the helper in ` +
+        `/etc/gitconfig, which git reads even with no HOME set`,
+    );
+  }
 }
 
 // Clone-or-refresh the CMT cache clone and return its path. ALWAYS ends with
@@ -83,7 +133,7 @@ export function cmtRemoteUrl(env) {
 // commits on top of master; only the EXECUTOR needs history, and it takes
 // fresh full clones instead.
 export function cmtRepoDir(env) {
-  const url = cmtRemoteUrl(env);
+  assertGitCredentials(env);
   if (!fs.existsSync(path.join(CMT_CACHE_DIR, ".git"))) {
     // Missing or half-created (an interrupted clone leaves a dir with no
     // .git) — start over. rm -rf of a cache is free by definition.
@@ -91,13 +141,17 @@ export function cmtRepoDir(env) {
     fs.mkdirSync(path.dirname(CMT_CACHE_DIR), { recursive: true });
     execFileSync(
       "git",
-      ["clone", "--depth", "1", "--branch", CMT_DEFAULT_BRANCH, url, CMT_CACHE_DIR],
+      ["clone", "--depth", "1", "--branch", CMT_DEFAULT_BRANCH, CMT_REMOTE_URL, CMT_CACHE_DIR],
       { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
     );
     return CMT_CACHE_DIR;
   }
-  // Re-set the remote URL every time so a rotated GH_TOKEN takes effect.
-  git(CMT_CACHE_DIR, "remote", "set-url", "origin", url);
+  // Re-set the remote URL every time. It costs nothing on a clone that is
+  // already correct, and on the FIRST run after this change it overwrites the
+  // old tokenised URL still sitting in the existing cache clone's .git/config
+  // — so the rollout scrubs the token off the persistent disk by itself, with
+  // no one deleting the directory.
+  git(CMT_CACHE_DIR, "remote", "set-url", "origin", CMT_REMOTE_URL);
   // --depth 1 on the fetch keeps the cache shallow forever (a plain fetch in
   // a shallow repo would slowly deepen it). FETCH_HEAD is the just-fetched
   // tip of origin/master; reset --hard + clean -fd makes stale-or-dirty

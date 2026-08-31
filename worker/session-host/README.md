@@ -125,17 +125,31 @@ unit) so `tts-account use` switches which Max account sessions run under.
 ## GitHub credentials (2026-08-31)
 
 The token never rides in a clone's remote URL and never enters a session's
-shell env. `GH_TOKEN` in worker.env stays the one home; two derived doors
-serve it (both installed by `setup.sh`, both outside every work tree):
+shell env. This holds for the code-todo cron jobs too (`worker/jobs/`): the
+persistent CMT cache clone and the executor's throwaway clone both use clean
+URLs as of 2026-08-31. `GH_TOKEN` in worker.env stays the one home; two
+derived doors serve it (both installed by `setup.sh`, both outside every work
+tree):
 
-- **git** — `/usr/local/bin/tts-git-credential`, git's global
-  credential.helper: clones and pushes use clean `https://github.com/...`
-  URLs and git asks the helper at connect time, so `.git/config` and
-  `git remote -v` hold no secret.
+- **git** — `/usr/local/bin/tts-git-credential`, registered as
+  credential.helper in `/etc/gitconfig` (the SYSTEM config, `git config
+  --system`): clones and pushes use clean `https://github.com/...` URLs and
+  git asks the helper at connect time, so `.git/config` and `git remote -v`
+  hold no secret. System and not global on purpose — see HOME below.
 - **gh** — `/root/.config/gh/hosts.yml`, regenerated from worker.env on
   every setup.sh run, so `gh pr create` works — the sanctioned way a session
   finishes. Every `gh` call pays a classifier verdict (`gh pr merge` and API
   writes past the session's own PR are denied — merging is Tom's gate).
+
+**HOME.** systemd sets no `HOME` for a system service that names no `User=`,
+and the daemon hands its own environment down to every session shell, so
+before 2026-08-31 both ran with HOME unset. Two consequences, both measured:
+`git config --global` is a hard error ("fatal: $HOME not set"), so a helper
+registered globally would be invisible to exactly the processes that use the
+clean URLs; and `gh` resolves its config directory from HOME, so it reported
+"not logged into any GitHub hosts" no matter what `hosts.yml` contained. The
+unit therefore sets `Environment=HOME=/root` and the helper is registered in
+the system config, which git reads with no HOME at all.
 
 A GitHub-token-shaped string that still reaches an ingest payload is
 redacted by the daemon (`redactGitHubTokens` in lib.mjs) before it can land

@@ -122,7 +122,11 @@ are all harmless to lose:
 - `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
-  brief copies, the executor's throwaway clones.
+  brief copies, the executor's throwaway clones. None of them holds a
+  credential: every clone here uses a clean `https://github.com/...` URL and
+  authenticates through `/usr/local/bin/tts-git-credential` (see the GitHub
+  credentials section in `session-host/README.md`). CMT is private, so these
+  jobs refuse to run when that helper is missing rather than fail inside git.
 
 Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 

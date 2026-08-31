@@ -85,15 +85,16 @@ mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi
 
 echo "== [6/9] install worker files =="
-# Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
-cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
-# CLI helpers onto the PATH.
+# CLI helpers onto the PATH. FIRST, before the job scripts below, because the
+# credential helper installed here is what the jobs authenticate with — see
+# the ordering note under it.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-git-credential
 
-# GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
-# 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
+# GitHub credentials for sessions AND the code-todo cron jobs (ledger
+# graduation sessions-cannot-open-prs, 2026-08-31). Two consumers, one source
+# of truth (GH_TOKEN in worker.env):
 #
 #   git — the global credential.helper below. Clones and pushes use CLEAN
 #     https URLs; the helper hands git the token at ask time, so no work tree
@@ -104,10 +105,23 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
 #     every work tree; reading /root paths from a session pays a classifier
 #     verdict like any other box-configuration touch.
 #
-# Ordering note: session.mjs clones with clean URLs and RELIES on this
-# helper — both roll out in the same setup.sh run, so there is no window
-# where private-repo clones lack credentials.
-git config --global credential.helper /usr/local/bin/tts-git-credential
+# Ordering note: session.mjs and the code-todo jobs (tts-code-lib.mjs) clone
+# with clean URLs and RELY on this helper — all of it rolls out in the same
+# setup.sh run, and the helper is installed and registered BEFORE the job
+# scripts are copied, so no cron tick can catch clean-URL jobs on a box with
+# no credentials.
+#
+# --system, NOT --global, and this is load-bearing (measured 2026-08-31):
+# "--global" means "$HOME/.gitconfig", and the daemon has NO HOME — the
+# systemd unit below never set one, so `git config --global` under the daemon
+# and inside every session shell fails outright with "fatal: $HOME not set".
+# A helper registered globally would therefore be invisible exactly where the
+# clean URLs are used, and since both repositories are private, every clone
+# and push would fail. --system writes /etc/gitconfig, which git reads with
+# no HOME at all; verified by running `git credential fill` for github.com
+# with HOME unset and the helper registered system-wide (it answered) versus
+# registered globally (it did not).
+git config --system credential.helper /usr/local/bin/tts-git-credential
 GH_TOKEN_VALUE="$(sed -n 's/^GH_TOKEN=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
 if [ -n "$GH_TOKEN_VALUE" ]; then
   mkdir -p /root/.config/gh
@@ -122,6 +136,11 @@ else
   echo "  GH_TOKEN not set in /etc/tts/worker.env — gh stays unauthenticated"
   echo "  and private-repo clones will fail; fill it in and re-run setup.sh."
 fi
+
+# Job scripts (plain Node ESM, zero npm deps — a copy is a deploy). AFTER the
+# credential helper above: the code-todo jobs clone and push with clean URLs
+# and refuse to run without it.
+cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
@@ -141,6 +160,11 @@ echo "== [7/9] cron =="
 cat > /etc/cron.d/tts <<'CRON'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# HOME is stated, not inherited: `gh` resolves its config directory from HOME,
+# so a job that ran without it would not find /root/.config/gh/hosts.yml.
+# (git does not depend on this line — the credential helper is registered in
+# /etc/gitconfig above, which git reads with no HOME at all.)
+HOME=/root
 
 # Poll the Slack #dump channel for new captures — HOURLY, as the reconciliation
 # BACKSTOP behind the push route (Tom 2026-08-30: Slack pushes events to TTS at
@@ -288,6 +312,14 @@ ExecStart=/usr/bin/node /opt/tts/session-host/session-host.mjs
 WorkingDirectory=/opt/tts/session-host
 EnvironmentFile=/etc/tts/worker.env
 Environment=CLAUDE_CONFIG_DIR=/root/.claude-accounts/active
+# HOME: systemd sets no HOME for a system service that names no User=, and
+# the daemon passes its environment down to every session shell — so without
+# this line `gh` cannot find /root/.config/gh/hosts.yml (it resolves its
+# config dir from HOME) and a session's `gh pr create` reports "not logged
+# into any GitHub hosts" even though setup.sh wrote the file. Measured
+# 2026-08-31: the running daemon's environment had USER=root and no HOME,
+# and gh read a hosts.yml only when HOME pointed at its parent directory.
+Environment=HOME=/root
 Restart=always
 RestartSec=5
 

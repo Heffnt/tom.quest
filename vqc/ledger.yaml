@@ -232,14 +232,31 @@
     branch q974bmhy... as ledger entry sessions-cannot-open-prs, which this
     entry supersedes — drop that one if that branch merges). The fix is in
     the tree: session.mjs clones clean URLs, setup.sh installs the
-    tts-git-credential helper as git's global credential.helper and
+    tts-git-credential helper as git's credential.helper and
     regenerates /root/.config/gh/hosts.yml from worker.env, and the daemon's
     command gate now buys a classifier verdict on every gh call (merge stays
-    denied — Tom's gate). None of it is LIVE until setup.sh runs on the
-    Jarvis Box, and no test stands under the box's git/gh config.
+    denied — Tom's gate). Extended 2026-08-31 to the CODE-TODO CRON JOBS,
+    which were the same hole in a worse place: tts-code-lib.mjs wrote the
+    token into /var/cache/tts/ComplexMultiTrigger/.git/config (persistent
+    disk, outside every session work tree, rewritten every run — measured
+    22:17 UTC) and execute-approved.mjs into the exec clone an agentic Claude
+    runs inside. Both now use the clean URL plus assertGitCredentials(), and
+    the first refresh after rollout overwrites the tokenised URL in the
+    existing cache clone by itself. The same session found the rollout would
+    NOT have worked as first committed: systemd sets no HOME for a unit that
+    names no User=, the daemon hands its environment to every session shell,
+    and with HOME unset `git config --global` is fatal and gh cannot resolve
+    its config dir — so the helper is now registered with `git config
+    --system` (/etc/gitconfig, read with no HOME) and the unit sets
+    Environment=HOME=/root for gh. None of it is LIVE until setup.sh runs on
+    the Jarvis Box, and no test stands under the box's git/gh config — CMT is
+    private (unauthenticated API read returns 404), so a clean-URL clone with
+    a helper git cannot see fails outright and no session would start.
   graduates_when: >-
     After a setup.sh rollout, a session pushes session/<id> and opens a pull
-    request with gh, and its clone's .git/config contains no token.
+    request with gh, and its clone's .git/config contains no token; and one
+    briefing tick plus one executor run complete with no token in
+    /var/cache/tts/ComplexMultiTrigger/.git/config.
 
 - id: writing-standard-check-not-in-ci
   kind: pending-fence
