@@ -39,31 +39,43 @@ cat > /etc/tmpfiles.d/tmp.conf <<'TMPFILES'
 # Managed by tom.quest worker/scratch-cleaning.sh — edits here are lost on the
 # next run of it or of worker/setup.sh.
 
-# "amM:2d": delete an entry under /tmp that is more than two days old, judging
-# FILES by the later of access time and modification time (a, m) and
-# DIRECTORIES by modification time alone (M). The default is "abcmABM".
+# AGE. An entry under /tmp is deleted once it is more than two days old. The
+# "abcmM:" prefix says which timestamps decide that age, and any ONE of them
+# being recent keeps the entry. It is systemd's own default, "abcmABM", with a
+# single letter removed:
 #
-# The "a" on files is what protects work in progress. Sessions clone
-# repositories into /tmp by absolute path and keep using them across more than
-# one day (measured 2026-08-31: five checkouts in /tmp were being read by live
-# sessions, one of them created the previous day). Judging files by modification
-# time alone would delete every file in such a checkout that had not been
-# WRITTEN in two days, while a session was still reading it. With "a", any file
-# the session reads keeps itself alive.
+#   files (lower case)       a access, b creation, c status change, m modify
+#   directories (upper case) M modify only — A (access) and B (creation) dropped
 #
-# Directories must NOT be judged by access time, which is why "A" is dropped.
-# Reading a directory's entries updates its access time, so any recursive sweep
-# — du, find, ls -R, a session inventorying /tmp — refreshes every directory it
-# walks. The leak that helped fill this tmpfs was ~1,400 EMPTY directories a
-# day; under the default they would be kept alive by the very sweeps used to
-# measure them.
+# WHY DIRECTORIES LOSE "A". Reading a directory's entries updates its access
+# time, so any recursive sweep — du, find, ls -R, a session taking an inventory
+# of /tmp — refreshes every directory it walks. The leak that helped fill this
+# tmpfs is EMPTY directories (measured 2026-08-31: 180 of them appeared in 15
+# minutes, from concurrent test runs), and under the default they would be kept
+# alive by the very sweeps used to measure them.
+#
+# WHY DIRECTORIES LOSE "B" TOO. Creation time never changes, so a directory
+# whose contents are rewritten daily would still be judged by the day it was
+# made. Modification time is the only one that tracks whether anything is still
+# using it. (A directory is in any case only ever removed when it is empty.)
+#
+# WHY FILES KEEP ALL FOUR. Sessions clone repositories into /tmp by absolute
+# path and keep using them for more than a day (measured 2026-08-31: five
+# checkouts in /tmp being read by live sessions, one created the previous day,
+# with a test suite running inside one of them at that moment). Judging files by
+# modification time alone would delete every file in such a checkout that had
+# not been WRITTEN in two days while a session was still reading it — "a" is
+# what keeps a file somebody reads alive. And "b"/"c" cannot be forged: a test
+# suite here writes fixture files stamped with a 1970 modification time (6 such
+# files were in /tmp at 23:01 on 2026-08-31), which under an mtime-only rule
+# would be deleted out from under the test run that had just created them.
 #
 # RESIDUAL FAILURE: a checkout in /tmp used across more than two days still
 # loses the worktree files nothing has read. Git restores those from the object
 # store, whose pack files nearly every git command reads. The durable answer is
 # not to clone into /tmp — TMPDIR points everything that asks for a scratch
 # directory at disk instead.
-q /tmp 1777 root root amM:2d
+q /tmp 1777 root root abcmM:2d
 
 # unchanged from the vendor file
 q /var/tmp 1777 root root 30d
@@ -73,7 +85,7 @@ q /var/tmp 1777 root root 30d
 # than /tmp because the space is not scarce; still aged, because moving garbage
 # somewhere roomier is not the same as cleaning it up. Same age-by reasoning as
 # /tmp above.
-q /var/cache/tts/tmp 1777 root root amM:3d
+q /var/cache/tts/tmp 1777 root root abcmM:3d
 TMPFILES
 chmod 644 /etc/tmpfiles.d/tmp.conf
 

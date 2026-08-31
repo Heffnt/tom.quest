@@ -143,18 +143,19 @@ change reaches a live box **without** the `tts-session-host` restart that
 It handles two parts, because they cover different failures:
 
 - **Cleaning between sessions.** `/etc/tmpfiles.d/tmp.conf` sets `q /tmp 1777
-  root root amM:2d`: delete anything under `/tmp` untouched for two days,
-  judging **files** by the later of access and modification time (`a`, `m`) and
-  **directories** by modification time alone (`M`). The two halves of that
-  answer opposite risks. Sessions clone repositories into `/tmp` and keep using
-  them for more than a day, so files must count *reads* — otherwise a checkout
-  in use loses every file it has not written in two days. Directories must not
-  count reads, because any recursive sweep (`du`, `find`, `ls -R`) refreshes the
-  access time of every directory it walks, and the ~1,400 leaked **empty**
-  directories a day are exactly what such a sweep would then keep alive. A
-  drop-in runs the existing `systemd-tmpfiles-clean.timer` every 6 hours instead
-  of daily. This can never stop one session filling the tmpfs within an hour:
-  nothing that young is old enough to reap.
+  root root abcmM:2d`: delete anything under `/tmp` untouched for two days.
+  `abcmM` is systemd's own default (`abcmABM`) with one letter removed —
+  **files** are still judged by all four of their timestamps, **directories**
+  only by modification time. Directories must not count access time, because any
+  recursive sweep (`du`, `find`, `ls -R`) refreshes the access time of every
+  directory it walks, and the leak that fills this tmpfs is **empty**
+  directories, which such a sweep would then keep alive forever. Files keep all
+  four because sessions clone repositories into `/tmp` and read them for days
+  without writing, and because a test suite here writes fixture files stamped
+  with a 1970 modification time — under an mtime-only rule both get deleted
+  while in use. A drop-in runs the existing `systemd-tmpfiles-clean.timer` every
+  6 hours instead of daily. None of this can stop one session filling the tmpfs
+  within an hour: nothing that young is old enough to reap.
 
   Residual failure: a checkout in `/tmp` used across more than two days still
   loses worktree files nothing has read (git restores them from the object
