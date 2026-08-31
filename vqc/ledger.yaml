@@ -113,6 +113,216 @@
     A check enforces at least the two hard edges — governed code never
     imports scratch; hand-edits to derived files go red.
 
+- id: session-repo-substring-fallback
+  kind: descent
+  created: 2026-08-30
+  cites: [C1]
+  statement: >-
+    Tom ruled that a batch DECLARES its repos and the scheduler stops guessing,
+    but pickMissionRepo's guess is not gone — it survives inside
+    resolveSessionRepos (convex/claudeSessions.ts) as the last fallback, and it
+    is still the case-sensitive substring scan it always was ("the tom.quest
+    dashboard" and "not tom.quest" read identically). It is reachable for every
+    todo with no batch, and for every batch formed before the planner started
+    declaring repos — which today is all of them, since nothing backfills the
+    new field.
+  graduates_when: >-
+    Every active batch carries a repos declaration and no session-creation path
+    consults the substring scan — at which point the fallback branch is deleted
+    rather than left unreachable.
+
+- id: session-repos-need-batch-subject
+  kind: descent
+  created: 2026-08-30
+  cites: [C1, tts-spec:20]
+  statement: >-
+    A session opened on a BATCH (useOpenBatchSession, app/lib/
+    use-open-todo-session.ts) still gets no checkout even when the batch
+    declares repos. The server's resolver reaches a batch through its todo, and
+    a batch session is deliberately created with no subject id at all —
+    claudeSessions has no batch subject, so createSession's todoId cannot name
+    one. The button Tom is most likely to press on a multi-repo batch is
+    therefore the one that cannot inherit the declaration.
+  graduates_when: >-
+    claudeSessions carries a batch subject (batchId) and createSession resolves
+    repos from it, with a test that a batch-session inherits its batch's repos.
+
+- id: multi-repo-daemon-unproven-live
+  kind: descent
+  created: 2026-08-30
+  cites: [D8, tts-spec:20]
+  statement: >-
+    The multi-repo clone/push half lives in worker/session-host/session.mjs
+    (ensureWorkdir's per-repo loop, #preserveCheckout's per-repo push) and is
+    covered by NO automated test: the daemon is Node ESM on the Jarvis Box with
+    no harness, so the Convex-side tests pin the schema, the resolver and the
+    prompt wording, and the actual two-clone run is unverified until a session
+    holds two repos in production.
+  graduates_when: >-
+    A test (or a recorded live run captured as a witness fault) shows a
+    two-repo session cloning both, pushing both session/<id> branches, and
+    reporting each in its transcript.
+
+- id: rebrief-newer-than-ruling-flake
+  kind: descent
+  created: 2026-08-30
+  cites: [D8, C3]
+  statement: >-
+    convex/ttsRulings.test.ts "a re-brief NEWER than the live ruling puts the
+    item back on the pile" fails roughly one run in three, on a clean tree and
+    unrelated to any change around it. briefAwaitsRuling compares preparedAt to
+    ruledAt with a strict >, and both are Date.now() — under convex-test the
+    ruling and the following re-brief routinely land in the SAME millisecond,
+    so "newer" is false and the item does not return to the pile. Production
+    barely feels it (a worker re-brief is minutes after a ruling), but the
+    guard's verdict is a coin flip, and a coin-flip guard cannot fail a bad
+    change loudly.
+  graduates_when: >-
+    The comparison expresses the intended tie-break explicitly (a >= for a
+    write that is known to follow, or an ordering key that is not wall-clock
+    ms) and the test passes 50 consecutive runs.
+
+- id: slack-chat-write-scope-unverified
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:7]
+  statement: >-
+    Nothing in the repo proves the installed Slack bot token holds chat:write,
+    which BOTH new outbound features need — the one threaded reply per #dump
+    message and the hourly update. worker/worker.env.example claimed only
+    history-read (now corrected to name both scopes) and tts/
+    implementation-plan.md asserts read+post without evidence. The scope can
+    only be confirmed in the Slack app's OAuth settings, which no session can
+    reach. Until then the reply fails with `missing_scope` (logged per todo,
+    never blocking preparation) and the hourly update stays behind
+    HOURLY_UPDATE_ENABLED = false.
+  graduates_when: >-
+    A successful chat.postMessage from the installed token is observed and
+    HOURLY_UPDATE_ENABLED is true.
+
+- id: hourly-update-schedule-half-blind
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:7]
+  statement: >-
+    The hourly update's "what Tom is scheduled to be doing" can only be
+    answered from dtsBlocks (spans Tom places by hand) and ttsCalendarEvents, a
+    read-only ICS mirror that QUIETLY NO-OPS until TTS_ICS_FEEDS is set. With
+    no feed configured and no blocks placed, the update says "nothing
+    scheduled" every hour forever and reads as broken rather than as
+    unconfigured. This is Tom's decision, not an implementation gap: either
+    point TTS at his real calendar with an ICS subscription URL, or accept that
+    the update knows only time blocks and say so in its wording.
+  graduates_when: >-
+    TTS_ICS_FEEDS holds a real feed, or the update's schedule line names its
+    source so an empty answer is legible ("no time blocks placed") rather than
+    a claim about Tom's whole day.
+
+- id: tts-agents-off-box-invisible
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:20]
+  statement: >-
+    The hourly update's "every agent currently working on TTS" sees only the
+    Jarvis Box. claudeSessions.internalListLive reports the fleet's own
+    sessions; a `claude` run on Tom's laptop touches Convex on no path at all,
+    and claudeSessions carries no host/origin field to distinguish them if it
+    did (cwd is a path, not an identity). So the update's second part is
+    honestly named but structurally incomplete.
+  graduates_when: >-
+    A claudeExternalSessions table plus a key-authed POST /sessions/external
+    exist and a laptop SessionStart/SessionEnd hook posts to it — deliberately
+    NOT by reusing POST /sessions/poll, whose internalPoll returns every live
+    session to any caller and whose daemon claims every "requested" row, so a
+    second poller would double-run Tom's sessions.
+
+- id: session-has-no-ruling-pen
+  kind: descent
+  created: 2026-08-30
+  cites: [C3, tts-spec:15]
+  statement: >-
+    The session brief instructs the agent to record Tom's spoken verdicts via
+    ttsRulings:internalRecordRuling and status changes via tts:internalTriage,
+    but neither is reachable from a session: convex/http.ts exposes only GET
+    /tts/rulings and POST /tts/ruling-applied, and the recording mutations are
+    Tom-gated browser mutations. A session with no browser therefore cannot
+    persist a ruling Tom speaks in it — it survives only as captured todos and
+    the outcome summary. The prompt promises a pen that does not exist.
+  graduates_when: >-
+    Either a key-authed POST /tts/ruling route restricted to the session's own
+    subject exists, or the instruction is removed from
+    app/lib/tts-session-prompt.ts so the prompt stops promising it.
+
+- id: writing-standard-check-not-in-ci
+  kind: pending-fence
+  created: 2026-08-30
+  cites: [A2, C3]
+  statement: >-
+    scripts/check-writing-standard.mjs holds the line at zero failing ground-up
+    explanations, but it is not in CI and cannot be: it reads PROD Convex over
+    the network and needs TTS_WORKER_KEY, which the CI jobs do not hold. So the
+    fence only bites when someone runs `pnpm check:writing` by hand, and prose
+    written to no standard can land and sit unnoticed until then — which is
+    exactly the ungoverned-surface failure A2 names (every pattern present is a
+    pattern propagated).
+  graduates_when: >-
+    The count is checked on a cadence without a human remembering to — a Convex
+    cron asserting it and failing loudly, or a CI job holding a read-only key.
+
+- id: info-captions-unmigrated
+  kind: descent
+  created: 2026-08-30
+  cites: [C1, tts-spec:5]
+  statement: >-
+    The ⓘ info control is now the ratified tap-to-open popover carrying a
+    plain-language explanation plus the call in mono, and every static caption
+    has been migrated. Two callers have not: todo-row.tsx's `caption` and
+    `intentCaption` pass their text down through props from several surfaces at
+    once, so each needs its own explanation written at its own call site rather
+    than one here. They render the call alone through Info's `label` shim.
+    Separately, native `title=` attributes remain in calendar-tab.tsx (block
+    chip, calendar event, due mark, wake mark, time note) and
+    repeats-strip.tsx — dead on touch, which is exactly what the one-info-
+    mechanism rule forbids.
+  graduates_when: >-
+    No `title=` attribute survives in app/tts outside genuine HTML semantics,
+    Info's `label` shim prop is deleted, and every ⓘ carries plain language.
+
+- id: vercel-build-command-not-generated
+  kind: descent
+  created: 2026-08-30
+  cites: [C1, C6]
+  statement: >-
+    vercel.json now sets buildCommand to scripts/vercel-build.mjs, and that
+    script's production branch (`npx convex deploy --cmd 'pnpm build'`) is a
+    HAND-COPY of what the Vercel dashboard previously ran, transcribed from
+    AGENTS.md rather than read from the platform. Nothing checks the two agree,
+    and nothing can from inside the repo: reading the project's settings needs
+    Vercel credentials no session or CI job holds. If the dashboard command ever
+    differed from what AGENTS.md documents, this commit silently changed what
+    production builds.
+  graduates_when: >-
+    A production deploy has run through scripts/vercel-build.mjs successfully,
+    confirming the transcribed command is the right one — or the command is
+    read from a machine home instead of transcribed.
+
+- id: public-convex-url-two-spellings
+  kind: descent
+  created: 2026-08-30
+  cites: [C1]
+  statement: >-
+    The public Convex deployment identity (NEXT_PUBLIC_CONVEX_URL and
+    NEXT_PUBLIC_CONVEX_SITE_URL) is spelled in the committed .env AND, because
+    `pnpm secrets:init` pulled the whole Vercel prod env, in secrets/next.env
+    and the Vercel project env. Neither is secret — Next inlines both into the
+    browser bundle — so the duplication buys nothing. It is fenced rather than
+    resolved: `pnpm secrets:sync` now fails loudly when the two files disagree,
+    which stops silent drift but leaves two spellings of one fact.
+  graduates_when: >-
+    The two NEXT_PUBLIC_* keys are removed from secrets/next.env and the Vercel
+    project env, leaving the committed .env as the sole home, with a Vercel
+    build confirming the committed value is what ships.
+
 - id: secrets-sync-vercel-drift
   kind: descent
   created: 2026-08-27

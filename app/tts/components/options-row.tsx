@@ -47,13 +47,35 @@ const PLACEHOLDER: Record<Mode, string> = {
   "set-archived": "propose back when (optional)",
 };
 
-const INFO: Record<Mode, string> = {
-  approve: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
-  revise: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
-  session: 'ttsRulings.recordRuling({verdict:"session", sentence})',
-  archive: 'ttsRulings.recordRuling({verdict:"archive", sentence})',
-  done: 'tts.setStatus({status:"done", note})',
-  "set-archived": 'tts.setStatus({status:"archived", unarchiveCondition})',
+// One entry per verdict: the exact call, and what that verdict actually does
+// downstream. The plain half is the point — "recordRuling" says nothing about
+// which job wakes up next, and that is the thing worth knowing before pressing
+// it (one info mechanism, ratified 2026-08-29).
+const INFO: Record<Mode, { call: string; body: string }> = {
+  approve: {
+    call: 'ttsRulings.recordRuling({ verdict: "approve", sentence })',
+    body: "Marks this as decided your way. On a code todo the executor picks it up and does the work; on a life todo it simply records your call and stops asking.",
+  },
+  revise: {
+    call: 'ttsRulings.recordRuling({ verdict: "revise", sentence })',
+    body: "Sends it back to be prepared again, with your sentence as the redirection. The preparer re-writes the brief against what you said and returns it — your sentence is the whole instruction, so it has to stand on its own.",
+  },
+  session: {
+    call: 'ttsRulings.recordRuling({ verdict: "session", sentence })',
+    body: "Says this needs a conversation rather than a ruling. The ruling is consumed the moment you actually open a session on it — an autonomous run that happens to claim the same item never consumes it, so the conversation you asked for still happens.",
+  },
+  archive: {
+    call: 'ttsRulings.recordRuling({ verdict: "archive", sentence })',
+    body: "Sets it aside. Your sentence becomes the condition under which it should be proposed back, so nothing is lost — archived is a resting state, not a delete.",
+  },
+  done: {
+    call: 'tts.setStatus({ status: "done", note })',
+    body: "Closes it as finished, with your note as the record of how. It stays visible in the archive; nothing in TTS is ever deleted.",
+  },
+  "set-archived": {
+    call: 'tts.setStatus({ status: "archived", unarchiveCondition })',
+    body: "Sets it aside without ruling on it. Your sentence is the condition that should bring it back, so a thing put down on purpose can be picked up again.",
+  },
 };
 
 export type OptionsRowProps = {
@@ -216,7 +238,7 @@ export default function OptionsRow({
           >
             {mode === "set-archived" ? "archive" : mode}
           </button>
-          <Info label={INFO[mode]} />
+          <Info call={INFO[mode].call}>{INFO[mode].body}</Info>
         </form>
       )}
 

@@ -277,9 +277,19 @@ async function* promptStream(queue) {
 // ── The Session class ────────────────────────────────────────────────────────
 
 export class Session {
-  constructor({ id, repo, env, nextSeq, mode, reopenEpoch, onUsageSignal, model }) {
+  constructor({ id, repo, repos, env, nextSeq, mode, reopenEpoch, onUsageSignal, model }) {
     this.id = id;
-    this.repo = repo;
+    // The repos this session checks out (Tom's ruling 2026-08-30: a session may
+    // hold MORE THAN ONE). `repos` is the live field; `repo` is the single
+    // string every row written before the ruling carries, so a row with no
+    // `repos` reads as the one-element list it always meant. "none" and the
+    // empty list are the same thing here: no checkout.
+    this.repos = (repos ?? (repo === undefined || repo === "none" ? [] : [repo]))
+      .filter((r) => r !== "none");
+    // Kept for the log lines and any reader that still asks the old question.
+    this.repo = this.repos[0] ?? "none";
+    // Filled by ensureWorkdir: one { repo, dir } per checkout, in clone order.
+    this.checkouts = [];
     this.env = env;
     // "interactive" (absent on old rows) or "autonomous" — drives maxTurns,
     // the wall-clock cap, and the auto-end-after-result behavior. The
@@ -438,16 +448,28 @@ export class Session {
   // ── workdir ────────────────────────────────────────────────────────────────
 
   // Create (or re-create) this session's working directory.
-  //   repo "none"  -> /var/cache/tts/sessions/<id>/ws       (empty scratch)
-  //   repo known   -> /var/cache/tts/sessions/<id>/<repo>   (fresh shallow
-  //                   clone on branch session/<id>)
+  //   no repos    -> /var/cache/tts/sessions/<id>/ws       (empty scratch)
+  //   one repo    -> /var/cache/tts/sessions/<id>/<repo>   (fresh shallow
+  //                  clone on branch session/<id>) — the cwd IS the checkout
+  //   many repos  -> /var/cache/tts/sessions/<id>/         with one clone per
+  //                  repo beneath it; the cwd is that PARENT
+  //
+  // Why the cwd differs by count rather than always being the parent: with one
+  // repo the agent's `gh pr create`, its relative paths, and every mission
+  // prompt written before the multi-repo ruling all assume the cwd is inside
+  // the checkout, and `gh pr create` simply fails outside a work tree. The
+  // multi-repo case has no such choice — no single checkout can be the cwd —
+  // so it gets the parent and the prompt says so. convex/claudeSessions.ts's
+  // workspaceParagraph is the other half of this contract; the two branch on
+  // the same repos.length and must be changed together.
+  //
   // forResume marks the bootstrap-after-restart path: if the dir vanished we
   // rebuild it and say so in a system row — the transcript must never imply
   // continuity the filesystem doesn't have.
   async ensureWorkdir({ forResume = false } = {}) {
     const base = path.join(SESSIONS_ROOT, String(this.id));
 
-    if (this.repo === "none") {
+    if (this.repos.length === 0) {
       const dir = path.join(base, "ws");
       const existed = fs.existsSync(dir);
       fs.mkdirSync(dir, { recursive: true });
@@ -457,20 +479,39 @@ export class Session {
         });
       }
       this.workdir = dir;
+      this.checkouts = [];
       return;
     }
 
-    const gh = REPO_GITHUB[this.repo];
-    if (!gh) {
-      throw new Error(
-        `unknown repo "${this.repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`,
-      );
+    // Validate the WHOLE set before cloning any of it: a set with one unknown
+    // name fails the session outright either way, and failing after three
+    // clones have landed just wastes the minutes they took.
+    for (const repo of this.repos) {
+      if (!REPO_GITHUB[repo]) {
+        throw new Error(
+          `unknown repo "${repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`,
+        );
+      }
     }
-    const dir = path.join(base, this.repo);
+
+    const checkouts = [];
+    for (const repo of this.repos) {
+      checkouts.push({
+        repo,
+        dir: await this.#ensureCheckout(base, repo, forResume),
+      });
+    }
+    this.checkouts = checkouts;
+    this.workdir = checkouts.length === 1 ? checkouts[0].dir : base;
+  }
+
+  // One repo's checkout under `base`. Returns its directory.
+  async #ensureCheckout(base, repo, forResume) {
+    const gh = REPO_GITHUB[repo];
+    const dir = path.join(base, repo);
     if (fs.existsSync(path.join(dir, ".git"))) {
       // Still here from before (normal between-turns case) — reuse as-is.
-      this.workdir = dir;
-      return;
+      return dir;
     }
     // Missing or half-created (an interrupted clone leaves a dir with no
     // .git) — start over; rm -rf under /var/cache is free by definition.
@@ -495,13 +536,13 @@ export class Session {
       } catch {
         await git(dir, "checkout", "-b", branch);
         this.finalizeRow("system", {
-          text: `workspace was rebuilt from a fresh clone; branch ${branch} was not on the remote, so unpushed work from before the rebuild is gone`,
+          text: `${repo}: workspace was rebuilt from a fresh clone; branch ${branch} was not on the remote, so unpushed work from before the rebuild is gone`,
         });
       }
     } else {
       await git(dir, "checkout", "-b", branch);
     }
-    this.workdir = dir;
+    return dir;
   }
 
   // Last chance before the workdir is deleted (spec §20.2: stopping must never
@@ -512,20 +553,34 @@ export class Session {
   // Never throws and never blocks ending: a session that cannot end is worse
   // than a session that ended without its push. `silent` is the force-kill
   // path, where the transcript is already closed server-side.
+  // EVERY checkout is preserved, not just the cwd: with more than one repo the
+  // cwd is the parent directory and holds no .git at all, so a loop over
+  // this.checkouts is the only reading under which a multi-repo session's work
+  // survives. Each repo is preserved independently — one repo's failed push
+  // must not skip the next repo's successful one.
   async #preserveWork({ silent = false } = {}) {
+    for (const { repo, dir } of this.checkouts) {
+      await this.#preserveCheckout(repo, dir, silent);
+    }
+  }
+
+  async #preserveCheckout(repo, workdir, silent) {
+    // Names this checkout in every row when there is more than one, so a
+    // transcript reporting a discarded commit says WHICH repo lost it.
+    const label = this.checkouts.length > 1 ? `${repo}: ` : "";
     try {
-      if (this.repo === "none" || !this.workdir) return;
-      if (!fs.existsSync(path.join(this.workdir, ".git"))) return;
+      if (!workdir) return;
+      if (!fs.existsSync(path.join(workdir, ".git"))) return;
       const branch = `session/${this.id}`;
 
-      const dirty = (await git(this.workdir, "status", "--porcelain")).trim();
+      const dirty = (await git(workdir, "status", "--porcelain")).trim();
       if (dirty !== "" && !silent) {
         const lines = dirty.split("\n");
         const shown = lines.slice(0, 20).join("\n");
         const more =
           lines.length > 20 ? `\n(${lines.length - 20} more paths)` : "";
         this.finalizeRow("system", {
-          text: `uncommitted changes were discarded with the workdir:\n${shown}${more}`,
+          text: `${label}uncommitted changes were discarded with the workdir:\n${shown}${more}`,
         });
       }
 
@@ -535,7 +590,7 @@ export class Session {
       // commit (`--branches`) made the row claim commits on `fix/whatever`
       // were pushed when the push had exited 0 without them.
       const local = (
-        await git(this.workdir, "log", branch, "--not", "--remotes", "--oneline")
+        await git(workdir, "log", branch, "--not", "--remotes", "--oneline")
       ).trim();
       // The mirror image: commits on other branches or on a detached HEAD
       // (invisible to --branches entirely). Unreachable from session/<id>, so
@@ -544,7 +599,7 @@ export class Session {
       // of losing them silently.
       const stranded = (
         await git(
-          this.workdir,
+          workdir,
           "log",
           "--branches",
           "HEAD",
@@ -556,7 +611,7 @@ export class Session {
       ).trim();
       if (stranded !== "" && !silent) {
         this.finalizeRow("system", {
-          text: `commit(s) outside ${branch} were discarded with the workdir:\n${stranded.slice(0, 1000)}`,
+          text: `${label}commit(s) outside ${branch} were discarded with the workdir:\n${stranded.slice(0, 1000)}`,
         });
       }
       if (local === "") return;
@@ -567,19 +622,19 @@ export class Session {
         // path — an unbounded push against an unreachable remote would hold
         // the session in a non-terminal state forever. Timing out and saying
         // so beats hanging.
-        await execFile("git", ["-C", this.workdir, "push", "origin", branch], {
+        await execFile("git", ["-C", workdir, "push", "origin", branch], {
           maxBuffer: 8 * 1024 * 1024,
           timeout: PRESERVE_PUSH_TIMEOUT_MS,
         });
         if (!silent) {
           this.finalizeRow("system", {
-            text: `pushed ${count} commit(s) to ${branch} before the workdir was deleted`,
+            text: `${label}pushed ${count} commit(s) to ${branch} before the workdir was deleted`,
           });
         }
       } catch (err) {
         if (!silent) {
           this.finalizeRow("system", {
-            text: `the push of ${count} commit(s) to ${branch} failed, so they are gone with the workdir:\n${local.slice(0, 1000)}\n${truncated(gitErrorText(err), ERROR_TEXT_LIMIT).value}`,
+            text: `${label}the push of ${count} commit(s) to ${branch} failed, so they are gone with the workdir:\n${local.slice(0, 1000)}\n${truncated(gitErrorText(err), ERROR_TEXT_LIMIT).value}`,
           });
         }
       }
@@ -589,11 +644,11 @@ export class Session {
       // was preserved.
       if (!silent) {
         this.finalizeRow("system", {
-          text: `preserving work before the workdir was deleted failed: ${truncated(gitErrorText(err), ERROR_TEXT_LIMIT).value}`,
+          text: `${label}preserving work before the workdir was deleted failed: ${truncated(gitErrorText(err), ERROR_TEXT_LIMIT).value}`,
         });
       }
       log(
-        `session ${this.id}: work preservation failed (ignored):`,
+        `session ${this.id} (${repo}): work preservation failed (ignored):`,
         String(err?.message ?? err),
       );
     }
@@ -1021,6 +1076,22 @@ export class Session {
     // Bash alone gets one).
     if (toolName === "Bash" && typeof input?.command === "string") {
       const command = input.command;
+      // Tier 0 — self-destruction: a session RUNS UNDER tts-session-host, so
+      // restarting or stopping that service (or killing this daemon) ends
+      // every live mission including the one asking. A worker on 2026-08-30
+      // followed setup.sh's restart line and took the whole cohort down.
+      // Hard deny with the corrective, no classifier.
+      if (
+        /systemctl\s+(?:restart|stop|kill)\s+\S*tts-session-host|service\s+tts-session-host\s+(?:restart|stop)|pkill\s+[^|;&]*session-host/.test(
+          command,
+        )
+      ) {
+        return {
+          behavior: "deny",
+          message:
+            "denied: this session runs under tts-session-host — restarting or stopping it kills every live mission, including yours. Record the needed change in your outcome instead; the supervisor restarts the daemon.",
+        };
+      }
       // Tier 1 — the system's own write pens: allow, no classifier, no row.
       // Only a LONE pen qualifies. The single-quoted -d '{…}' body is
       // stripped first so its JSON can't trip the check; anything with shell

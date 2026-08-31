@@ -98,7 +98,11 @@ function RepeatRow({ rule }: { rule: Repeat }) {
         >
           {rule.active ? "Pause" : "Resume"}
         </button>
-        <Info label={`ttsRepeats.updateRepeat({id, active: ${!rule.active}})`} />
+        <Info call={`ttsRepeats.updateRepeat({ id, active: ${!rule.active} })`}>
+          Turns this rule {rule.active ? "off" : "on"}. Todos it already minted
+          stay exactly as they are; this only decides whether tomorrow&apos;s
+          4:30 a.m. run mints another one.
+        </Info>
         <button
           className={btnCls}
           disabled={busy}
@@ -106,7 +110,10 @@ function RepeatRow({ rule }: { rule: Repeat }) {
         >
           Delete
         </button>
-        <Info label="ttsRepeats.deleteRepeat({id})" />
+        <Info call="ttsRepeats.deleteRepeat({ id })">
+          Deletes the rule itself. Every todo it has already minted stays —
+          nothing in TTS is ever removed by deleting the thing that made it.
+        </Info>
       </span>
       {error && <div className="w-full text-xs text-error">{error}</div>}
     </div>
@@ -162,7 +169,11 @@ export default function RepeatsStrip() {
     <div className="mt-4 space-y-1.5">
       <div className="flex items-center gap-2">
         <span className="text-xs text-text-muted">Repeats</span>
-        <Info label="ttsRepeats.listRepeats — each rule mints a dated todo on its weekdays at 4:30 a.m." />
+        <Info call="ttsRepeats.listRepeats()">
+          Your repeating rules. Each one mints a dated todo on the weekdays it
+          names, at 4:30 a.m. New York, just before the day&apos;s queue is
+          built — so a repeat is in the corpus by the time anything reads it.
+        </Info>
         <button className={btnCls} onClick={() => setOpen((v) => !v)}>
           {open ? "Close" : "New repeat"}
         </button>
@@ -241,7 +252,11 @@ export default function RepeatsStrip() {
             >
               Create repeat
             </button>
-            <Info label="ttsRepeats.createRepeat({statement, daysOfWeek, …})" />
+            <Info call="ttsRepeats.createRepeat({ statement, daysOfWeek, … })">
+            Adds a rule that mints this todo on the weekdays you picked. It
+            starts minting from the next 4:30 a.m. run — nothing appears for
+            today.
+          </Info>
           </div>
           {error && <div className="text-xs text-error">{error}</div>}
         </div>

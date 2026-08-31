@@ -23,7 +23,7 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "== [1/8] apt packages (curl, git, python3, gh) =="
+echo "== [1/9] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl git ca-certificates
@@ -34,7 +34,7 @@ apt-get install -y curl git ca-certificates
 # stay fast and idempotent.
 apt-get install -y python3 python3-yaml python3-pytest gh
 
-echo "== [2/8] Node 22 (NodeSource) =="
+echo "== [2/9] Node 22 (NodeSource) =="
 # Only (re)install if node is missing or not major version 22 — keeps re-runs
 # fast and avoids needlessly touching apt sources.
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ]; then
@@ -43,12 +43,33 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ];
 fi
 echo "node: $(node -v)"
 
-echo "== [3/8] Claude Code CLI =="
+echo "== [3/9] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
 npm install -g @anthropic-ai/claude-code
 echo "claude: $(claude --version || true)"
 
-echo "== [4/8] directories =="
+echo "== [4/9] headless browser (Playwright + Chromium) =="
+# A session that changes a tom.quest page can look at the result instead of
+# asking Tom to look. Playwright is installed GLOBALLY (not as a repo dep) and
+# its browsers land in /root/.cache/ms-playwright, so every session — each of
+# which runs as root in its own throwaway workdir — sees the same Chromium
+# without downloading 115MB per session.
+#
+# Deliberately NOT `playwright install --with-deps`: that path validates the
+# host against a supported-distro list and hard-fails on Ubuntu 26.04. The
+# plain download works, and the shared libraries Chromium needs are already
+# pulled in by the apt line below. Keep them together — a missing libnss3 is
+# reported by Chromium as an opaque launch failure, not as a missing package.
+apt-get install -y \
+  libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+  libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+  libgbm1 libpango-1.0-0 libcairo2 libasound2t64 2>/dev/null || \
+  echo "  (some Chromium libs unavailable under these package names; tts-browse will report if launch fails)"
+npm install -g playwright
+# Idempotent: re-downloads nothing when the pinned revision is already there.
+npx playwright install chromium
+
+echo "== [5/9] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
 # /var/lib/tts        — small local state: the Slack poll cursor, the
 #     brief-hash cursor, and the apply/execute lock dirs (all harmless to
@@ -63,12 +84,12 @@ echo "== [4/8] directories =="
 mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi
 
-echo "== [5/8] install worker files =="
+echo "== [6/9] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
-chmod +x /usr/local/bin/tts-account
+chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
@@ -78,7 +99,7 @@ if [ ! -f /etc/tts/worker.env ]; then
 fi
 chmod 600 /etc/tts/worker.env
 
-echo "== [6/8] cron =="
+echo "== [7/9] cron =="
 # System cron runs in UTC and knows nothing about daylight saving, so
 # prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
@@ -89,8 +110,14 @@ cat > /etc/cron.d/tts <<'CRON'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Poll the Slack #dump channel for new captures every 2 minutes.
-*/2 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
+# Poll the Slack #dump channel for new captures — HOURLY, as the reconciliation
+# BACKSTOP behind the push route (Tom 2026-08-30: Slack pushes events to TTS at
+# POST /slack/events instead of TTS polling). Slack's event delivery is
+# best-effort, not guaranteed, so this stays: its cursor file in /var/lib/tts is
+# what makes a missed event recoverable. Captures are idempotent on the Slack
+# message ts server-side, so re-offering what the push route already took costs
+# nothing.
+7 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
 
 # Poll Gmail for action-implying mail every 10 minutes (quiet no-op until the
 # GMAIL_* keys exist in worker.env — see poll-gmail.mjs's header for the
@@ -134,8 +161,19 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Prepare unprepared LIFE todos (#dump captures, consolidation candidates)
 # via headless Claude: ground-up brief + smallest entry action + work
 # description, readiness advanced — so raw captures reach Tom pre-chewed.
-# Every 2nd hour at :37 (odd minute; no collision with the other jobs).
-37 */2 * * * root /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
+#
+# EVERY 2 MINUTES (Tom 2026-08-30: #dump messages are processed immediately, so
+# the threaded Slack reply can state how TTS interpreted the message). Safe and
+# cheap because the job returns BEFORE any Claude call when there is nothing to
+# prepare ("if (targets.length === 0) return; // quiet when idle"), so an idle
+# tick costs one HTTP read.
+#
+# CONSEQUENCE ACCEPTED, STATED: the old :37 slot existed so the Claude-calling
+# jobs never shared a tick. At */2 this job can now overlap brief-code-todos
+# (:17), form-batches (:07) and plan-graphs (:27). flock guards it only against
+# ITSELF — which is also the lock poll-dump.mjs takes when it spawns this job
+# straight after a capture, so the spawn and the cron can never both run.
+*/2 * * * * root /usr/bin/flock -n /var/lock/tts-prepare-life-todos.lock /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
 
 # ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
 # These two jobs are the OLD and the NEW way of doing the same thing, and they
@@ -193,7 +231,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON
 chmod 644 /etc/cron.d/tts
 
-echo "== [7/8] session-host daemon =="
+echo "== [8/9] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
 # carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
@@ -238,7 +276,7 @@ else
   echo "  systemctl enable --now tts-session-host)."
 fi
 
-echo "== [8/8] done =="
+echo "== [9/9] done =="
 cat <<'STEPS'
 
 NEXT STEPS (manual, in order):

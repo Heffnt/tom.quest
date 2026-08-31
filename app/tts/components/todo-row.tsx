@@ -41,9 +41,24 @@ const primaryBtnCls =
 const chipCls =
   "text-xs text-text-faint border border-border rounded px-1 py-px";
 
-/** The mono caption naming the mutation a control fires — behind an ⓘ. */
-function Caption({ children }: { children: string }) {
-  return <Info label={children} />;
+/**
+ * The ⓘ beside a control, naming the mutation it fires.
+ *
+ * `children` is the call; `explains` is the plain-language half the ratified
+ * info rule requires. A caller with no `explains` renders the call alone —
+ * honest about being unmigrated rather than inventing prose (ledger:
+ * info-captions-unmigrated). The two remaining such callers pass their caption
+ * down through props from several surfaces at once, which is why they are debt
+ * rather than an oversight.
+ */
+function Caption({
+  children,
+  explains,
+}: {
+  children: string;
+  explains?: React.ReactNode;
+}) {
+  return <Info call={children}>{explains}</Info>;
 }
 
 // ── Small inline field editor ───────────────────────────────────────────────
@@ -332,10 +347,10 @@ export default function TodoRow({
                 >
                   Open session
                 </button>
-                <Caption>
-                  {`claudeSessions.createSession({kind:"${
+                <Caption explains="Opens a Claude session on the Jarvis Box with this item, its brief and its plan already in the opening prompt. It checks out whatever repositories its batch declares, and can only push to its own branch — merging stays yours.">
+                  {`claudeSessions.createSession({ kind: "${
                     todo.readiness === "ready-for-tom" ? "gate" : "focus-item"
-                  }"})`}
+                  }" })`}
                 </Caption>
               </div>
               {sessionError && (
@@ -418,7 +433,11 @@ export default function TodoRow({
                 <div className="space-y-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-text-faint">readiness</span>
-                    <Caption>{"tts.updateTodo({readiness})"}</Caption>
+                    <Caption
+                      explains="Hands it back to the preparer. Readiness drops to preparing, an agent re-writes the brief within a couple of minutes, and it returns to you — the item itself, and what you have already decided about it, are untouched."
+                    >
+                      {"tts.updateTodo({ readiness })"}
+                    </Caption>
                   </div>
                   <select
                     value={todo.readiness}
@@ -464,7 +483,11 @@ export default function TodoRow({
                     >
                       Set waiting
                     </button>
-                    <Caption>{'tts.setStatus({status:"waiting"})'}</Caption>
+                    <Caption
+                      explains="Parks it until the date or condition you gave. It leaves your active list and comes back on its own — the 4 a.m. run wakes anything whose wait is over."
+                    >
+                      {'tts.setStatus({ status: "waiting" })'}
+                    </Caption>
                   </div>
                 </div>
               )}
@@ -482,7 +505,11 @@ export default function TodoRow({
                   >
                     Set active
                   </button>
-                  <Caption>{'tts.setStatus({status:"active"})'}</Caption>
+                  <Caption
+                    explains="Brings it back onto the active list now, before whatever it was waiting for. The condition it was parked under is cleared."
+                  >
+                    {'tts.setStatus({ status: "active" })'}
+                  </Caption>
                 </div>
               )}
 
