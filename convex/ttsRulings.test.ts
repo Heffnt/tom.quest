@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 
@@ -288,29 +288,80 @@ describe("TTS unified rulings", () => {
 
   // witness: change briefAwaitsRuling back to "any ruling clears the item" in
   // convex/ttsRulings.ts — a revise→re-brief cycle would never return the item.
+  //
+  // The clock is set by hand here, and that is load-bearing. Both sides of the
+  // comparison — a ruling's `ruledAt` and a brief's `preparedAt` — are
+  // `Date.now()` read inside their own mutation, in whole milliseconds. In
+  // production the worker re-briefs seconds or minutes after Tom rules, so
+  // "newer" is never in doubt; in this test the whole cycle runs in-process in
+  // well under a millisecond, so ruling and re-brief can carry the SAME stamp
+  // and `ruledAt < preparedAt` is then false. Left to the wall clock this test
+  // failed about one suite run in six locally and failed the Guardrails
+  // `tests` job on GitHub's faster runners. Do not go back to the wall clock.
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [brief({ externalId: "cycle" })],
-    });
-    await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "ComplexMultiTrigger",
-      externalId: "cycle",
-      verdict: "revise",
-      sentence: "narrower scope",
-    });
-    expect(
-      await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
-    ).toBe(0);
-    // The worker re-briefs after applying the revise — the fresh brief's
-    // preparedAt is newer than the ruling, so the item awaits a fresh ruling.
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [brief({ externalId: "cycle", sourceHash: "hash-b" })],
-    });
-    expect(
-      await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
-    ).toBe(1);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const ruledAt = new Date("2026-08-31T12:00:00.000Z").getTime();
+      vi.setSystemTime(ruledAt);
+      const t = convexTest({ schema, modules });
+      const tom = await withTom(t);
+      await t.mutation(internal.ttsCode.internalStoreBriefs, {
+        briefs: [brief({ externalId: "cycle" })],
+      });
+      await tom.mutation(api.ttsRulings.recordRuling, {
+        repo: "ComplexMultiTrigger",
+        externalId: "cycle",
+        verdict: "revise",
+        sentence: "narrower scope",
+      });
+      expect(
+        await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
+      ).toBe(0);
+      // The worker re-briefs after applying the revise — a minute later, as it
+      // would be in production — so the fresh brief's preparedAt is newer than
+      // the ruling and the item awaits a fresh ruling.
+      vi.setSystemTime(ruledAt + 60_000);
+      await t.mutation(internal.ttsCode.internalStoreBriefs, {
+        briefs: [brief({ externalId: "cycle", sourceHash: "hash-b" })],
+      });
+      expect(
+        await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
+      ).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // witness: change the `<` in briefAwaitsRuling (convex/ttsRulings.ts) to
+  // `<=`. This pins the tie: a ruling stamped the same millisecond as the
+  // brief counts as a ruling ON that brief, so the item is cleared, not
+  // re-listed. The alternative reading — treat a tie as "not yet ruled", which
+  // `<=` gives — is the safer-by-default one, because a wrongly-cleared item
+  // leaves Tom's pile silently and forever while a wrongly-listed one is
+  // visible and clears on the next ruling. It is not taken because no two
+  // stamps in this pair are made by the same actor in the same millisecond
+  // outside a test: the brief comes from the worker over the network and the
+  // ruling comes from Tom's hand, minutes later. Say the word and it flips.
+  it("a ruling stamped the same millisecond as the brief counts as ruled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-08-31T12:00:00.000Z").getTime());
+      const t = convexTest({ schema, modules });
+      const tom = await withTom(t);
+      await t.mutation(internal.ttsCode.internalStoreBriefs, {
+        briefs: [brief({ externalId: "tie" })],
+      });
+      await tom.mutation(api.ttsRulings.recordRuling, {
+        repo: "ComplexMultiTrigger",
+        externalId: "tie",
+        verdict: "approve",
+      });
+      expect(
+        await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
+      ).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // witness: delete internalRecordRuling from convex/ttsRulings.ts — the

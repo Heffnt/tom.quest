@@ -403,6 +403,12 @@ export function briefAwaitsRuling(
       externalId: brief.externalId,
     }),
   );
+  // Both stamps are whole-millisecond `Date.now()` reads made in different
+  // mutations, so they can tie. `<` means a tie counts as ruled (item
+  // cleared). Anything that writes both stamps inside one millisecond — a
+  // test, a future path that rules and re-briefs in one transaction — will
+  // therefore see the item drop off the pile. Tests must set the clock rather
+  // than race it; convex/ttsRulings.test.ts does, and pins the tie.
   return ruling === undefined || ruling.ruledAt < brief.preparedAt;
 }
 
