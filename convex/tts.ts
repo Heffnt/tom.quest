@@ -1680,7 +1680,18 @@ export const internalStoreBatches = internalMutation({
     archiveIds: v.optional(v.array(v.string())),
   },
   handler: async (ctx, { batches, archiveIds }) => {
-    const skipped: { ref: string; why: string }[] = [];
+    // A skip carries TWO different things and they must not be confused. `ref`
+    // is what a person reads in a log line: for a batch it is the statement the
+    // MODEL just wrote, which for a rewrite is the new one and therefore
+    // matches nothing any caller is holding. `id` is identity: the existing row
+    // the skip is about, present whenever the call named one (a rewrite's
+    // `b.id`, an archiveIds entry), absent for a brand-new batch that has no
+    // row yet. The batcher consumes a revise ruling only when its re-form
+    // landed, and `id` is the ONLY field it can match that ruling's todoId
+    // against — matching on ref silently retired the ruling instead.
+    const skipped: { ref: string; why: string; id?: string }[] = [];
+    const skip = (ref: string, why: string, id?: string) =>
+      skipped.push(id === undefined ? { ref, why } : { ref, why, id });
     let created = 0;
     let updated = 0;
     let unchanged = 0;
@@ -1702,12 +1713,12 @@ export const internalStoreBatches = internalMutation({
       const normalized = ctx.db.normalizeId("dtsTodos", raw);
       const todo = normalized && (await ctx.db.get(normalized));
       if (!todo) {
-        skipped.push({ ref: raw, why: "unknown todo id" });
+        skip(raw, "unknown todo id", raw);
         continue;
       }
       const frozen = notWritable(todo);
       if (frozen) {
-        skipped.push({ ref: raw, why: frozen });
+        skip(raw, frozen, raw);
         continue;
       }
       await applyStatusChange(ctx, todo, {
@@ -1747,16 +1758,17 @@ export const internalStoreBatches = internalMutation({
       const normalized =
         b.id === undefined ? null : ctx.db.normalizeId("dtsTodos", b.id);
       if (b.id !== undefined && !normalized) {
-        skipped.push({ ref: b.statement, why: `unknown todo id: ${b.id}` });
+        skip(b.statement, `unknown todo id: ${b.id}`, b.id);
         continue;
       }
       // Bounded arrays (Convex unbounded-array-field guideline) — a per-batch
       // skip like the other validation failures.
       if (b.plan !== undefined && b.plan.length > MAX_PLAN_STEPS) {
-        skipped.push({
-          ref: b.statement,
-          why: `a plan holds at most ${MAX_PLAN_STEPS} steps — got ${b.plan.length}`,
-        });
+        skip(
+          b.statement,
+          `a plan holds at most ${MAX_PLAN_STEPS} steps — got ${b.plan.length}`,
+          b.id,
+        );
         continue;
       }
       try {
@@ -1765,10 +1777,7 @@ export const internalStoreBatches = internalMutation({
           todoById,
         });
       } catch (e) {
-        skipped.push({
-          ref: b.statement,
-          why: e instanceof Error ? e.message : String(e),
-        });
+        skip(b.statement, e instanceof Error ? e.message : String(e), b.id);
         continue;
       }
       const conflict = b.members.find((m) => {
@@ -1776,21 +1785,22 @@ export const internalStoreBatches = internalMutation({
         return owner !== undefined && owner.id !== normalized;
       });
       if (conflict) {
-        skipped.push({
-          ref: b.statement,
-          why: `${memberKey(conflict)} is already in batch "${occupied.get(memberKey(conflict))!.statement}"`,
-        });
+        skip(
+          b.statement,
+          `${memberKey(conflict)} is already in batch "${occupied.get(memberKey(conflict))!.statement}"`,
+          b.id,
+        );
         continue;
       }
       if (normalized) {
         const todo = todoById.get(normalized);
         if (!todo) {
-          skipped.push({ ref: b.statement, why: `unknown todo id: ${b.id}` });
+          skip(b.statement, `unknown todo id: ${b.id}`, b.id);
           continue;
         }
         const frozen = notWritable(todo);
         if (frozen) {
-          skipped.push({ ref: b.statement, why: frozen });
+          skip(b.statement, frozen, b.id);
           continue;
         }
         // Rewrite of what the batcher owns — but an ABSENT plan PRESERVES the

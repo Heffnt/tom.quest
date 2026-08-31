@@ -306,3 +306,22 @@ export function extractJsonObject(answerText) {
   }
   return JSON.parse(stripped.slice(first, last + 1));
 }
+
+// The ids of the EXISTING rows a store call refused, out of the server's skip
+// report (the `skipped` array returned by POST /tts/batches).
+//
+// A skip has two fields and only one of them is identity. `ref` is display
+// text — for a batch it is the statement the MODEL wrote in this run's answer,
+// so on a rewrite it is the NEW statement and matches nothing the caller is
+// holding. `id` is the existing row the skip is about, set by the server on
+// every rewrite skip and every archiveIds skip, and absent when the skipped
+// batch was brand new (there is no row to name). A caller deciding whether the
+// work it asked for actually landed on row X asks this set for X, and never
+// compares statements.
+export function skippedRowIds(skipped) {
+  return new Set(
+    (Array.isArray(skipped) ? skipped : [])
+      .map((s) => s?.id)
+      .filter((id) => typeof id === "string"),
+  );
+}

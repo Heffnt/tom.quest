@@ -37,7 +37,13 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  skippedRowIds,
+} from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/batch-input-hash";
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
@@ -348,7 +354,12 @@ async function main() {
       `${result.archived} archived, ${(result.skipped ?? []).length} skipped`,
   );
   for (const s of result.skipped ?? []) {
-    console.log(`[form-batches] skipped ${s.ref}: ${s.why}`);
+    // The id is printed too: `ref` is the statement the MODEL just wrote, so on
+    // a rewrite it names nothing that exists yet and the line alone cannot be
+    // tied back to the batch it was about.
+    console.log(
+      `[form-batches] skipped ${s.ref}${s.id ? ` (batch ${s.id})` : ""}: ${s.why}`,
+    );
   }
 
   // Consume a batch-revise ruling ONLY when its re-form actually landed. The
@@ -356,14 +367,29 @@ async function main() {
   // POST, so a skip means Tom's sentence was never served: consuming the
   // ruling there would retire it silently and the grouping would stay wrong.
   // Left pending, it forces the next run (the hash check is bypassed while a
-  // revise is pending) to try again. A skip's `ref` is the batch id when the
-  // model reused one, its statement otherwise — match on both.
-  const skippedRefs = new Set((result.skipped ?? []).map((s) => s.ref));
+  // revise is pending) to try again.
+  //
+  // MATCH ON `id`, NEVER ON `ref`. A skip's `ref` is display text: for a batch
+  // it is the statement the MODEL wrote in this run's answer, which on a
+  // rewrite is the NEW statement and equals neither the ruling's todoId nor
+  // `r.statement` (the OLD statement, read from the server at the top of this
+  // run). Matching on ref therefore never fired for a batch skip, and the
+  // ruling was consumed as if Tom's sentence had been served. `id` is the
+  // existing row the skip is about — the server sets it on every rewrite skip
+  // and every archiveIds skip — so it is the one field a ruling's todoId can
+  // be compared against.
+  //
+  // Still not covered, on purpose: a revise the model answers by ARCHIVING the
+  // batch and creating a replacement. If the archive lands and the replacement
+  // is skipped, the ruling is consumed — the members are back in the unbatched
+  // pool and the next run regroups them, but the sentence itself is gone.
+  const skippedIds = skippedRowIds(result.skipped);
   for (const r of revises) {
-    if (skippedRefs.has(r.ruling.todoId) || skippedRefs.has(r.statement)) {
+    if (skippedIds.has(r.ruling.todoId)) {
       console.log(
-        `[form-batches] revise ruling for "${r.statement}" left pending: ` +
-          `the re-formed batch was skipped by the server`,
+        `[form-batches] revise ruling for "${r.statement}" (batch ` +
+          `${r.ruling.todoId}) left pending: the re-formed batch was skipped ` +
+          `by the server`,
       );
       continue;
     }
@@ -371,6 +397,10 @@ async function main() {
       id: r.ruling._id,
       result: "revised: batches re-formed",
     });
+    console.log(
+      `[form-batches] revise ruling for "${r.statement}" (batch ` +
+        `${r.ruling.todoId}) consumed: the re-form landed`,
+    );
   }
 
   // Hash written LAST (Convex-first durability ordering): a crash anywhere

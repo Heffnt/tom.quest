@@ -933,6 +933,49 @@ describe("TTS batches and annotations", () => {
     ).toEqual(["cmt-001", "cmt-002"]);
   });
 
+  // witness: drop the `id` argument from the skip() calls in
+  // internalStoreBatches — the skip report would carry only `ref`, which on a
+  // rewrite is the statement the MODEL just wrote. form-batches.mjs matches a
+  // pending revise ruling's todoId against that report to decide whether the
+  // re-form landed; with no id in it, no batch skip can ever match, so the
+  // ruling is consumed as served and Tom's sentence is dropped silently.
+  it("a skip names the ROW it is about (id), not just the model's text (ref)", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await storeBatch(t, { statement: "trip logistics" });
+    const batch = await findBatch(t);
+    // Freeze it so the rewrite below is refused.
+    await tom.mutation(api.tts.updateTodo, {
+      id: batch!._id,
+      category: "trips",
+    });
+    const res = await t.mutation(internal.tts.internalStoreBatches, {
+      batches: [
+        {
+          id: batch!._id,
+          statement: "visa paperwork", // the NEW statement, not the stored one
+          brief: "regrouped per Tom's sentence",
+          members: [cmt("cmt-001")],
+        },
+        // A brand-new batch has no row yet, so its skip carries no id.
+        { statement: "taker", brief: "y", members: [cmt("cmt-001")] },
+      ],
+      archiveIds: [batch!._id],
+    });
+    expect(res.skipped).toEqual([
+      { ref: batch!._id, why: "Tom-touched (frozen)", id: batch!._id },
+      {
+        ref: "visa paperwork",
+        why: "Tom-touched (frozen)",
+        id: batch!._id,
+      },
+      {
+        ref: "taker",
+        why: 'code ComplexMultiTrigger cmt-001 is already in batch "trip logistics"',
+      },
+    ]);
+  });
+
   // witness: drop the members check from validateBatchMembers in convex/tts.ts
   it("refuses batch-in-batch (skipped, not stored)", async () => {
     const t = convexTest({ schema, modules });
