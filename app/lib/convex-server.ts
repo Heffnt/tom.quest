@@ -1,13 +1,15 @@
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { isAgentReadableSurface } from "@/convex/agentSurfaces";
 
 export type ServerUser = {
   _id: string;
   name: string;
   email: string | null;
-  role: "user" | "admin" | "tom";
+  role: "user" | "admin" | "tom" | "agent";
   isAdmin: boolean;
   isTom: boolean;
+  isAgent: boolean;
 };
 
 export function convexClient(): ConvexHttpClient {
@@ -49,6 +51,23 @@ export async function requireAdmin(request: Request): Promise<ServerUser | Respo
   if (!user) return authError("Authentication required", 401);
   if (!user.isAdmin) return authError("Admin access required", 403);
   return user;
+}
+
+// The read half of requireAdmin, for route handlers that serve BOTH a read
+// and a write through one proxy function. Admits admins (and therefore Tom)
+// always, and the read-only `agent` role only when `surface` is named in
+// convex/agentSurfaces.ts. A handler that mutates upstream state must keep
+// calling requireAdmin — see app/api/turing/[...path]/route.ts, where GET
+// takes this gate and POST/DELETE do not.
+export async function requireAdminOrAgent(
+  request: Request,
+  surface: string,
+): Promise<ServerUser | Response> {
+  const user = await currentUser(request);
+  if (!user) return authError("Authentication required", 401);
+  if (user.isAdmin) return user;
+  if (user.isAgent && isAgentReadableSurface(surface)) return user;
+  return authError("Admin access required", 403);
 }
 
 export async function requireTom(request: Request): Promise<ServerUser | Response> {

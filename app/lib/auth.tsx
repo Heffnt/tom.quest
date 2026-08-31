@@ -7,8 +7,9 @@ import { ConvexReactClient } from "convex/react";
 import { useQuery } from "convex/react";
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { api } from "@/convex/_generated/api";
+import { isAgentReadableSurface } from "@/convex/agentSurfaces";
 
-export type UserRole = "user" | "admin" | "tom";
+export type UserRole = "user" | "admin" | "tom" | "agent";
 
 export interface AuthUser {
   id: string;
@@ -24,6 +25,14 @@ interface AuthContextType {
   role: UserRole;
   isAdmin: boolean;
   isTom: boolean;
+  isAgent: boolean;
+  /**
+   * May the viewer READ the named surface ("TTS", "Turing" — the same labels
+   * requireTom passes in Convex)? True for Tom, and for the read-only `agent`
+   * role on the surfaces in convex/agentSurfaces.ts. Gate query subscriptions
+   * on this; keep gating writes on isTom, which is what "may change it" means.
+   */
+  canReadSurface: (label: string) => boolean;
   loading: boolean;
   signIn: (username: string, password: string) => Promise<{ error: string | null }>;
   signUp: (username: string, password: string) => Promise<{ error: string | null }>;
@@ -71,6 +80,11 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
   const role = user?.role ?? "user";
   const isAdmin = viewer?.isAdmin ?? false;
   const isTom = viewer?.isTom ?? false;
+  const isAgent = viewer?.isAgent ?? false;
+  const canReadSurface = useMemo(
+    () => (label: string) => isTom || (isAgent && isAgentReadableSurface(label)),
+    [isTom, isAgent],
+  );
   const loading = !convexAuth.isLoading && convexAuth.isAuthenticated ? viewer === undefined : convexAuth.isLoading;
 
   const signIn = async (username: string, password: string) => {
@@ -105,7 +119,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, token, role, isAdmin, isTom, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, token, role, isAdmin, isTom, isAgent, canReadSurface, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );

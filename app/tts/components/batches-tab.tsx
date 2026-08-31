@@ -230,14 +230,18 @@ function LifeRow({
 // opens the detail dialog, which holds everything known about it. Nothing here
 // hands an item off to the by-individual tab any more.
 export default function BatchesTab() {
-  const { isTom } = useAuth();
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
-  const batches = useQuery(api.tts.listBatches, isTom ? {} : "skip");
-  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
-  const briefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const { canReadSurface } = useAuth();
+  // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
+  // session browses as. Every mutation on this surface stays Tom-only and is
+  // refused by Convex regardless of what renders here.
+  const canRead = canReadSurface("TTS");
+  const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
+  const batches = useQuery(api.tts.listBatches, canRead ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
+  const briefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
   // ONE time-note subscription for the whole tab; each row slices it.
-  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  const timeNotes = useQuery(api.tts.listTimeNotes, canRead ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const { open: openBatchSession, error: batchSessionError } =
