@@ -16,6 +16,7 @@ import CalendarTab from "./components/calendar-tab";
 import BatchesTab from "./components/batches-tab";
 import EverythingTab from "./components/everything-tab";
 import Info from "./components/info";
+import { CREATE_TODO_EXPLANATION } from "./explanations";
 import { selectBatches, type LinkIntent } from "./lib";
 
 const inputCls =
@@ -78,7 +79,11 @@ function QuickAdd() {
         >
           Add
         </button>
-        <Info call="tts.createTodo({ statement })">
+        <Info
+          call="tts.createTodo({ statement })"
+          explanation={CREATE_TODO_EXPLANATION}
+          explanationTitle="adding a todo — what the Add button stores"
+        >
           Files what you typed as a new todo, unprepared and active. An agent
           picks it up within a couple of minutes and writes its brief, its
           smallest way in, and how much work it looks like — then it comes back

@@ -16,6 +16,7 @@ import type { Doc } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import Info from "./info";
 import RepeatDialog, { WEEKDAYS, type Weekday } from "./repeat-dialog";
+import { REPEATS_EXPLANATION } from "../explanations";
 import { errMessage } from "../lib";
 
 type Repeat = Doc<"ttsRepeats">;
@@ -77,12 +78,18 @@ function RepeatRow({
         </span>
       )}
       {rule.skipWhenCalendarHas && (
-        <span className="inline-flex items-baseline gap-0.5 text-[10px] text-text-faint">
-          skip when calendar has “{rule.skipWhenCalendarHas}”
-          <Info call="ttsRepeats.internalGenerateRepeats — skipWhenCalendarHas">
-            No instance is minted on a day whose calendar already holds an
-            event with this text in its title. The 4:30 a.m. run records a
-            repeat-skipped event naming that event instead of writing a todo.
+        <span className="flex items-baseline gap-0.5">
+          <span className="text-[10px] text-text-faint">
+            skip when calendar has “{rule.skipWhenCalendarHas}”
+          </span>
+          <Info
+            call="ttsRepeats.createRepeat({ skipWhenCalendarHas })"
+            explanation={REPEATS_EXPLANATION}
+            explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+          >
+            No instance is minted on a day whose calendar has an event whose
+            title contains this text, ignoring capitalisation. The skip is
+            recorded as an event naming the meeting that caused it.
           </Info>
         </span>
       )}
@@ -109,7 +116,11 @@ function RepeatRow({
         >
           {rule.active ? "Pause" : "Resume"}
         </button>
-        <Info call={`ttsRepeats.updateRepeat({ id, active: ${!rule.active} })`}>
+        <Info
+          call={`ttsRepeats.updateRepeat({ id, active: ${!rule.active} })`}
+          explanation={REPEATS_EXPLANATION}
+          explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+        >
           Turns this rule {rule.active ? "off" : "on"}. Todos it already minted
           stay exactly as they are; this only decides whether tomorrow&apos;s
           4:30 a.m. run mints another one.
@@ -121,7 +132,11 @@ function RepeatRow({
         >
           Delete
         </button>
-        <Info call="ttsRepeats.deleteRepeat({ id })">
+        <Info
+          call="ttsRepeats.deleteRepeat({ id })"
+          explanation={REPEATS_EXPLANATION}
+          explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+        >
           Deletes the rule itself. Every todo it has already minted stays —
           nothing in TTS is ever removed by deleting the thing that made it.
         </Info>
@@ -149,7 +164,11 @@ export default function RepeatsStrip() {
     <div className="mt-4 space-y-1.5">
       <div className="flex items-center gap-2">
         <span className="text-xs text-text-muted">Repeats</span>
-        <Info call="ttsRepeats.listRepeats()">
+        <Info
+          call="ttsRepeats.listRepeats()"
+          explanation={REPEATS_EXPLANATION}
+          explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+        >
           Your repeating rules. Each one mints a dated todo on the weekdays it
           names, at 4:30 a.m. New York, just before the day&apos;s queue is
           built — so a repeat is in the corpus by the time anything reads it.

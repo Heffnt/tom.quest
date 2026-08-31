@@ -19,6 +19,7 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import Info from "./info";
+import { TIME_NOTES_EXPLANATION } from "../explanations";
 import { errMessage } from "../lib";
 
 export type TimeNote = Doc<"dtsTimeNotes">;
@@ -122,7 +123,11 @@ export default function TimeNoteField({
           <button type="submit" disabled={!text.trim() || busy} className={btnCls}>
             note
           </button>
-          <Info call={`tts.createTimeNote({ text, ${contextLabel} })`}>
+          <Info
+            call={`tts.createTimeNote({ text, ${contextLabel} })`}
+            explanation={TIME_NOTES_EXPLANATION}
+            explanationTitle="time notes — one sentence about when"
+          >
             Files one sentence about timing against this item. Nothing moves
             yet: a job reads pending notes every couple of minutes, works out
             the concrete date or block change you meant, and applies it —
@@ -156,7 +161,11 @@ export default function TimeNoteField({
             >
               ×
             </button>
-            <Info call="tts.deleteTimeNote({ id })">
+            <Info
+              call="tts.deleteTimeNote({ id })"
+              explanation={TIME_NOTES_EXPLANATION}
+              explanationTitle="time notes — one sentence about when"
+            >
               Drops this note before anything acts on it. Only a note still
               waiting can be dropped — one already applied has become a real
               date or block, and that change stands.

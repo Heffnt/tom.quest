@@ -22,6 +22,7 @@ import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import Info from "./info";
+import { VERDICTS_EXPLANATION } from "../explanations";
 import {
   reserveSessionTab,
   type ReservedTab,
@@ -51,6 +52,11 @@ const PLACEHOLDER: Record<Mode, string> = {
 // downstream. The plain half is the point — "recordRuling" says nothing about
 // which job wakes up next, and that is the thing worth knowing before pressing
 // it (one info mechanism, ratified 2026-08-29).
+// The ground-up layer is ONE document for all six chips, not one per chip.
+// What a reader standing on "approve" needs is approve RELATIVE to revise,
+// session and archive, and a per-chip document could not give that without
+// repeating the other five — so VERDICTS_EXPLANATION covers the whole surface
+// and each chip differs only in its display text below.
 const INFO: Record<Mode, { call: string; body: string }> = {
   approve: {
     call: 'ttsRulings.recordRuling({ verdict: "approve", sentence })',
@@ -238,7 +244,13 @@ export default function OptionsRow({
           >
             {mode === "set-archived" ? "archive" : mode}
           </button>
-          <Info call={INFO[mode].call}>{INFO[mode].body}</Info>
+          <Info
+            call={INFO[mode].call}
+            explanation={VERDICTS_EXPLANATION}
+            explanationTitle="the four verdicts, and what each one sets in motion"
+          >
+            {INFO[mode].body}
+          </Info>
         </form>
       )}
 
