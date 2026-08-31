@@ -131,7 +131,8 @@ Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 `/tmp` on this box is a **tmpfs** — a filesystem held in RAM rather than on a
 disk — sized 3.8 GB on a 7.7 GB machine. Every byte of every file left in it is
 a byte the box cannot use for anything else, and nothing in it survives a
-reboot. On 2026-08-30 one session left ~2.2 GB of scratch there, a leaking test
+reboot (both true until `tmp-on-disk.sh`, below, has run and the box has
+rebooted once). On 2026-08-30 one session left ~2.2 GB of scratch there, a leaking test
 in a research checkout added ~1,400 empty directories a day beside it, `/tmp`
 reached 100 percent full, and tooling inside a running session began failing
 with out-of-space errors.
@@ -163,13 +164,52 @@ It handles two parts, because they cover different failures:
   back from cleaning entirely, write `x /path` into
   `/etc/tmpfiles.d/zz-tts-keep.conf` by hand — `setup.sh` neither creates nor
   deletes that file.
-- **Keeping scratch out of RAM in the first place.** `TMPDIR=/var/cache/tts/tmp`
-  is set on the cron file and on the session-host unit, so cron jobs, every
-  session, and every tool a session runs write scratch to `/dev/sda1` (75 GB)
-  instead. That directory has its own 3-day rule.
+- **Keeping tool-chosen scratch out of RAM.** `TMPDIR=/var/cache/tts/tmp` is set
+  on the cron file and on the session-host unit, so cron jobs, every session,
+  and every tool a session runs write scratch to `/dev/sda1` (75 GB) instead.
+  That directory has its own 3-day rule. This only redirects programs that
+  **ask** where to put scratch — `mkdtemp`, `mktemp`, `tempfile`,
+  `os.tmpdir()`. It cannot redirect a path an agent typed out in full.
 
 Check what the cleaner would remove, removing nothing:
 `systemd-tmpfiles --clean --dry-run`.
+
+### Why those two are not enough, and what `tmp-on-disk.sh` does
+
+Measured on the live box 2026-08-31 at 23:41 UTC, with `/tmp` holding 3.2 GB:
+
+| Bytes in `/tmp` | Share | Reached by |
+| --- | --- | --- |
+| 86 MB in entries created through `TMPDIR` | 2% | the `TMPDIR` setting |
+| 3,086 MB at paths an agent typed out (`/tmp/killcheck`, twelve repository checkouts) | 97% | nothing above |
+| entries two days old or older | 0 | the age rule |
+
+Four clones of one 417 MB research repository, at `/tmp/killcheck` through
+`/tmp/killcheck4`, were made by a single session inside five minutes. Nothing
+in `/tmp` was old enough for any age rule to touch — feeding the installed rule
+to `systemd-tmpfiles --clean --dry-run` against the real `/tmp` selected zero
+entries, while the same rule at a one-hour age selected 37,051, which is how we
+know the check itself works.
+
+So the thing that fills this tmpfs is agents cloning repositories to `/tmp`
+paths of their own choosing, minutes at a time, and the only mechanism that
+answers it is `/tmp` not being in RAM. `worker/tmp-on-disk.sh` masks systemd's
+`tmp.mount`, so at the **next boot** `/tmp` is a plain directory on the root
+disk (48 GB free) rather than a 3.8 GB slice of the machine's 7.7 GB of RAM.
+The directory underneath the mount already exists with mode 1777 (read straight
+off the ext4 inode with `debugfs -R 'ls -l /' /dev/sda1`), so `/tmp` is correct
+from the first instant of boot, and nothing on the box declares `Requires=` or
+`BindsTo=` on `tmp.mount`. Masking changes nothing while the box is up: no
+process stops, no session dies, the tmpfs stays mounted. Undo with
+`systemctl unmask tmp.mount`.
+
+Two consequences worth knowing. A `/tmp` on disk is **not** emptied by a
+reboot, so the age rule becomes the only thing that ever cleans it — which is
+why the script refuses to run unless `/etc/tmpfiles.d/tmp.conf` is already
+installed, and why `setup.sh` calls it after `scratch-cleaning.sh`. And
+runaway scratch now fills the root filesystem instead of the tmpfs, which is
+the worse failure of the two; the script refuses below 10 GB free, and the
+budget is 12x larger than the tmpfs it replaces.
 
 Exemptions, if a path in `/tmp` must be spared, go in a *separate*
 `/etc/tmpfiles.d/` file as `x /tmp/<path>` lines — never in `tmp.conf`, which

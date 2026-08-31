@@ -281,6 +281,16 @@ echo "== [8/10] scratch cleaning (/tmp reaper + scratch onto disk) =="
 # the daemon restart that step 9 below performs (a restart kills every session).
 sh "$WORKER_DIR/scratch-cleaning.sh"
 
+# Neither of those two mechanisms covers the case that actually filled this
+# tmpfs: an agent cloning a repository to a /tmp path it typed out itself,
+# which is minutes old (so no age rule reaches it) and not created through
+# TMPDIR (so TMPDIR does not move it). Measured 2026-08-31: 97 percent of the
+# 3.2 GB in /tmp was exactly that. tmp-on-disk.sh answers it by taking /tmp
+# out of RAM entirely; it carries the measurement and the trade-offs. It must
+# run AFTER scratch-cleaning.sh, which installs the age rule it requires, and
+# it changes nothing until the box is next rebooted.
+sh "$WORKER_DIR/tmp-on-disk.sh"
+
 echo "== [9/10] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
