@@ -126,6 +126,39 @@ are all harmless to lose:
 
 Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 
+## Scratch files: /tmp costs memory, /var/cache/tts/tmp costs disk
+
+`/tmp` on this box is a **tmpfs** — a filesystem held in RAM rather than on a
+disk — sized 3.8 GB on a 7.7 GB machine. Every byte of every file left in it is
+a byte the box cannot use for anything else, and nothing in it survives a
+reboot. On 2026-08-30 one session left ~2.2 GB of scratch there, a leaking test
+in a research checkout added ~1,400 empty directories a day beside it, `/tmp`
+reached 100 percent full, and tooling inside a running session began failing
+with out-of-space errors.
+
+Step 8 of `setup.sh` handles this in two parts, because they cover different
+failures:
+
+- **Cleaning between sessions.** `/etc/tmpfiles.d/tmp.conf` sets `q /tmp 1777
+  root root mM:2d`: delete anything under `/tmp` not *modified* in two days.
+  `mM:` restricts the age judgement to modification time — the default also
+  counts access time, and sessions running `ls`, `du`, `find` or `grep` over
+  `/tmp` would keep resetting that clock. A drop-in runs the existing
+  `systemd-tmpfiles-clean.timer` every 6 hours instead of daily. This can never
+  stop one session filling the tmpfs within an hour: nothing that young is old
+  enough to reap.
+- **Keeping scratch out of RAM in the first place.** `TMPDIR=/var/cache/tts/tmp`
+  is set on the cron file and on the session-host unit, so cron jobs, every
+  session, and every tool a session runs write scratch to `/dev/sda1` (75 GB)
+  instead. That directory has its own 3-day rule.
+
+Check what the cleaner would remove, removing nothing:
+`systemd-tmpfiles --clean --dry-run`.
+
+Exemptions, if a path in `/tmp` must be spared, go in a *separate*
+`/etc/tmpfiles.d/` file as `x /tmp/<path>` lines — never in `tmp.conf`, which
+`setup.sh` rewrites on every run.
+
 ## Rebuild from scratch
 
 ```

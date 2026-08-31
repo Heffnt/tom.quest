@@ -23,7 +23,7 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "== [1/9] apt packages (curl, git, python3, gh) =="
+echo "== [1/10] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl git ca-certificates
@@ -34,7 +34,7 @@ apt-get install -y curl git ca-certificates
 # stay fast and idempotent.
 apt-get install -y python3 python3-yaml python3-pytest gh
 
-echo "== [2/9] Node 22 (NodeSource) =="
+echo "== [2/10] Node 22 (NodeSource) =="
 # Only (re)install if node is missing or not major version 22 — keeps re-runs
 # fast and avoids needlessly touching apt sources.
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ]; then
@@ -43,12 +43,12 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ];
 fi
 echo "node: $(node -v)"
 
-echo "== [3/9] Claude Code CLI =="
+echo "== [3/10] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
 npm install -g @anthropic-ai/claude-code
 echo "claude: $(claude --version || true)"
 
-echo "== [4/9] headless browser (Playwright + Chromium) =="
+echo "== [4/10] headless browser (Playwright + Chromium) =="
 # A session that changes a tom.quest page can look at the result instead of
 # asking Tom to look. Playwright is installed GLOBALLY (not as a repo dep) and
 # its browsers land in /root/.cache/ms-playwright, so every session — each of
@@ -69,13 +69,16 @@ npm install -g playwright
 # Idempotent: re-downloads nothing when the pinned revision is already there.
 npx playwright install chromium
 
-echo "== [5/9] directories =="
+echo "== [5/10] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
 # /var/lib/tts        — small local state: the Slack poll cursor, the
 #     brief-hash cursor, and the apply/execute lock dirs (all harmless to
 #     lose; see each job's header)
 # /var/cache/tts      — rebuildable caches: the shallow CMT clone, the brief
 #     markdown copies, and the executor's throwaway full clones
+# /var/cache/tts/tmp  — TMPDIR for the cron jobs and for every session, so
+#     scratch lands on disk instead of on the RAM-backed /tmp (step 8 creates
+#     it with the mode and the cleaning rule it needs)
 # /etc/tts            — worker.env (secrets; mode 600)
 # /var/log/tts        — cron output
 # /root/.claude-accounts/{gmail,wpi} — one Claude Code config dir per Max
@@ -84,7 +87,7 @@ echo "== [5/9] directories =="
 mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi
 
-echo "== [6/9] install worker files =="
+echo "== [6/10] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
@@ -131,7 +134,7 @@ if [ ! -f /etc/tts/worker.env ]; then
 fi
 chmod 600 /etc/tts/worker.env
 
-echo "== [7/9] cron =="
+echo "== [7/10] cron =="
 # System cron runs in UTC and knows nothing about daylight saving, so
 # prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
@@ -141,6 +144,12 @@ echo "== [7/9] cron =="
 cat > /etc/cron.d/tts <<'CRON'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Scratch onto disk, not into RAM: /tmp on this box is a tmpfs (a filesystem
+# held in memory), so anything a job leaves there costs the box memory until
+# reboot. /var/cache/tts/tmp is on /dev/sda1. Step 8 creates it and gives it
+# its own age-based cleaning rule. Same reason as the TMPDIR line on the
+# session-host unit in step 9.
+TMPDIR=/var/cache/tts/tmp
 
 # Poll the Slack #dump channel for new captures — HOURLY, as the reconciliation
 # BACKSTOP behind the push route (Tom 2026-08-30: Slack pushes events to TTS at
@@ -263,7 +272,84 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON
 chmod 644 /etc/cron.d/tts
 
-echo "== [8/9] session-host daemon =="
+echo "== [8/10] scratch cleaning (/tmp reaper + scratch onto disk) =="
+# WHY THIS STEP EXISTS. /tmp on this box is a tmpfs — a filesystem held in RAM
+# rather than on a disk — sized 3.8 GB on a 7.7 GB machine, so every byte of
+# every file in it is a byte the box cannot use for anything else. Nothing
+# cleaned it on a useful timescale: the vendor rule the file below replaces
+# (/usr/lib/tmpfiles.d/tmp.conf) deletes at an age of 10 days. On 2026-08-30 one
+# session left ~2.2 GB of scratch there, a test in a research checkout leaked
+# ~1,400 empty directories a day beside it, /tmp reached 100 percent full, and
+# tooling inside a running session started failing with out-of-space errors. A
+# session cannot repair that itself: writing to /etc and deleting other
+# sessions' files are both refused by the session command classifier.
+#
+# TWO CHANGES, ANSWERING DIFFERENT HALVES. The reaper bounds accumulation
+# BETWEEN sessions; it can never stop one session filling the tmpfs within an
+# hour, because nothing that young is old enough to reap. Moving scratch onto
+# disk (TMPDIR, set on the cron file above and on the session-host unit below)
+# is what covers the within-session case.
+#
+# systemd-tmpfiles is the reaper: it already runs here on a timer and already
+# reads rule files from /etc/tmpfiles.d, so only the rules are new. No script.
+mkdir -p /etc/tmpfiles.d /etc/systemd/system/systemd-tmpfiles-clean.timer.d
+
+# A file in /etc/tmpfiles.d REPLACES the same-named file in /usr/lib/tmpfiles.d
+# entirely — that is the documented way an administrator overrides a vendor
+# rule — which is why the unchanged /var/tmp line has to be repeated here.
+cat > /etc/tmpfiles.d/tmp.conf <<'TMPFILES'
+# Managed by tom.quest worker/setup.sh — edits here are lost on the next run.
+
+# "mM:2d": delete an entry under /tmp whose LAST MODIFICATION time is more than
+# two days old, judging files (m) and directories (M) by modification time ONLY.
+# The default also judges by ACCESS time, and every session that runs ls, du,
+# find or grep over /tmp refreshes access times — under the default a busy box
+# would keep resetting the clock on its own garbage and reap almost nothing.
+q /tmp 1777 root root mM:2d
+
+# unchanged from the vendor file
+q /var/tmp 1777 root root 30d
+
+# Where cron jobs and sessions now write scratch instead (TMPDIR). On
+# /dev/sda1, so a job that writes gigabytes costs disk, not memory. Longer age
+# than /tmp because the space is not scarce; still aged, because moving garbage
+# somewhere roomier is not the same as cleaning it up.
+q /var/cache/tts/tmp 1777 root root mM:3d
+TMPFILES
+chmod 644 /etc/tmpfiles.d/tmp.conf
+
+# The timer that runs the reaper fires once a day by default, so an entry can
+# sit in RAM for up to a day after passing its age. Every 6 hours costs one
+# directory walk and bounds that lag. The empty assignment first is REQUIRED:
+# timer settings accumulate across drop-in files, so without it the unit would
+# carry both the vendor's daily trigger and this one.
+cat > /etc/systemd/system/systemd-tmpfiles-clean.timer.d/10-tts-frequent.conf <<'TIMER'
+# Managed by tom.quest worker/setup.sh — edits here are lost on the next run.
+[Timer]
+OnUnitActiveSec=
+OnUnitActiveSec=6h
+TIMER
+chmod 644 /etc/systemd/system/systemd-tmpfiles-clean.timer.d/10-tts-frequent.conf
+
+# 1777 (world-writable, sticky) matches /tmp's own mode. The tmpfiles rule above
+# re-creates it at every boot; this line is what makes it exist right now.
+mkdir -p /var/cache/tts/tmp
+chmod 1777 /var/cache/tts/tmp
+
+systemctl daemon-reload
+systemctl restart systemd-tmpfiles-clean.timer
+echo "  /tmp reaped at 2d, /var/cache/tts/tmp at 3d, timer every 6h"
+echo "  (dry run, deletes nothing: systemd-tmpfiles --clean --dry-run)"
+#
+# NOT DONE HERE, DELIBERATELY: exemptions. The live box carries
+# /etc/tmpfiles.d/zz-tts-keep.conf, hand-installed, holding seven stale
+# repository checkouts in /tmp back from the reaper while Tom's decision about
+# them and the token rotation that reads them are open. That is one machine's
+# temporary state, not part of building a box — a rebuilt box has no such
+# checkouts — so it stays out of this script and should be deleted from the box
+# once those two items close.
+
+echo "== [9/10] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
 # carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
@@ -288,6 +374,13 @@ ExecStart=/usr/bin/node /opt/tts/session-host/session-host.mjs
 WorkingDirectory=/opt/tts/session-host
 EnvironmentFile=/etc/tts/worker.env
 Environment=CLAUDE_CONFIG_DIR=/root/.claude-accounts/active
+# Scratch onto disk instead of into RAM: /tmp is a tmpfs (step 8). The daemon
+# starts each session with a copy of its own environment minus the secrets it
+# strips, so this one line moves every session's temporary files — and those of
+# every tool a session runs, since TMPDIR is the variable all of them consult —
+# off the tmpfs and onto /dev/sda1. Step 8 creates the directory and ages its
+# contents out at 3 days.
+Environment=TMPDIR=/var/cache/tts/tmp
 Restart=always
 RestartSec=5
 
@@ -308,7 +401,7 @@ else
   echo "  systemctl enable --now tts-session-host)."
 fi
 
-echo "== [9/9] done =="
+echo "== [10/10] done =="
 cat <<'STEPS'
 
 NEXT STEPS (manual, in order):
@@ -336,6 +429,10 @@ NEXT STEPS (manual, in order):
        journalctl -u tts-session-host -f
 
 Cron is already installed (/etc/cron.d/tts); logs land in /var/log/tts/.
+Scratch cleaning is installed too: /tmp (a RAM-backed tmpfs) is cleared of
+entries older than 2 days every 6 hours, and jobs and sessions write their
+temporary files to /var/cache/tts/tmp on disk instead. To see what the cleaner
+would remove without removing it: systemd-tmpfiles --clean --dry-run
 Re-running this script at any time is safe and is also how you roll out
 updated job scripts after a git pull.
 STEPS
