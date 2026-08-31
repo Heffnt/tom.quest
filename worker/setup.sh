@@ -86,8 +86,10 @@ mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
 
 echo "== [6/9] install worker files =="
 # CLI helpers onto the PATH. FIRST, before the job scripts below, because the
-# credential helper installed here is what the jobs authenticate with — see
-# the ordering note under it.
+# credential helper among them is what the jobs authenticate with — see the
+# ordering note under it. (install-git-credentials.sh below installs that one
+# helper again on its own, so that it works when run standalone on a live box;
+# copying the same file twice in one run is harmless.)
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-git-credential
@@ -96,46 +98,27 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
 # graduation sessions-cannot-open-prs, 2026-08-31). Two consumers, one source
 # of truth (GH_TOKEN in worker.env):
 #
-#   git — the system credential.helper below. Clones and pushes use CLEAN
-#     https URLs; the helper hands git the token at ask time, so no work tree
-#     or `git remote -v` ever contains it.
+#   git — the credential helper, registered in /etc/gitconfig. Clones and
+#     pushes use CLEAN https URLs; the helper hands git the token at ask time,
+#     so no work tree or `git remote -v` ever contains it.
 #   gh  — /root/.config/gh/hosts.yml, REGENERATED from worker.env on every
 #     run (a derived file, never hand-edited), so `gh pr create` works in a
-#     session shell whose env is scrubbed of GH_TOKEN. The file sits outside
-#     every work tree; reading /root paths from a session pays a classifier
-#     verdict like any other box-configuration touch.
+#     session shell whose env is scrubbed of GH_TOKEN.
+#
+# The procedure lives in its own script, and that separation is load-bearing
+# rather than tidiness: this file ends by restarting the session-host daemon,
+# which ENDS every live autonomous session (see step 8), while the credential
+# install needs no restart at all. Installing credentials on a live box is
+# therefore `bash worker/install-git-credentials.sh` on its own; running
+# setup.sh is what costs sessions. One copy of the procedure, two ways to
+# reach it. `bash worker/install-git-credentials.sh --check` reports whether a
+# box already has all of it, and prints no secret either way.
 #
 # Ordering note: session.mjs and the code-todo jobs (tts-code-lib.mjs) clone
-# with clean URLs and RELY on this helper — all of it rolls out in the same
-# setup.sh run, and the helper is installed and registered BEFORE the job
+# with clean URLs and RELY on this helper — the call sits BEFORE the job
 # scripts are copied, so no cron tick can catch clean-URL jobs on a box with
 # no credentials.
-#
-# --system, NOT --global, and this is load-bearing (measured 2026-08-31):
-# "--global" means "$HOME/.gitconfig", and the daemon has NO HOME — the
-# systemd unit below never set one, so `git config --global` under the daemon
-# and inside every session shell fails outright with "fatal: $HOME not set".
-# A helper registered globally would therefore be invisible exactly where the
-# clean URLs are used, and since both repositories are private, every clone
-# and push would fail. --system writes /etc/gitconfig, which git reads with
-# no HOME at all; verified by running `git credential fill` for github.com
-# with HOME unset and the helper registered system-wide (it answered) versus
-# registered globally (it did not).
-git config --system credential.helper /usr/local/bin/tts-git-credential
-GH_TOKEN_VALUE="$(sed -n 's/^GH_TOKEN=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
-if [ -n "$GH_TOKEN_VALUE" ]; then
-  mkdir -p /root/.config/gh
-  cat > /root/.config/gh/hosts.yml <<EOF
-github.com:
-    oauth_token: $GH_TOKEN_VALUE
-    git_protocol: https
-EOF
-  chmod 600 /root/.config/gh/hosts.yml
-  echo "  gh authenticated from worker.env (hosts.yml regenerated)"
-else
-  echo "  GH_TOKEN not set in /etc/tts/worker.env — gh stays unauthenticated"
-  echo "  and private-repo clones will fail; fill it in and re-run setup.sh."
-fi
+bash "$WORKER_DIR/install-git-credentials.sh"
 
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy). AFTER the
 # credential helper above: the code-todo jobs clone and push with clean URLs
@@ -295,6 +278,17 @@ echo "== [8/9] session-host daemon =="
 # npm install in its install dir. Everything here is idempotent: cp + install
 # + unit rewrite + restart is exactly how updated daemon code rolls out after
 # a git pull.
+#
+# WHAT THE RESTART COSTS, so that nobody runs this file casually on a busy box
+# (measured 2026-08-31 against session-host.mjs adoptSession): the daemon holds
+# every live session in its own process. After the restart the new process
+# adopts the rows it finds. An INTERACTIVE session survives as idle, with a
+# transcript line saying the previous turn was interrupted. An AUTONOMOUS
+# session is ENDED — outcome "errored", summary "daemon restarted mid-mission"
+# — and its work tree is deleted, because nobody is there to send it the next
+# turn; the scheduler's backoff owns the retry. Anything that session had not
+# committed and pushed is gone. Run this step when the fleet is quiet, and
+# reach for install-git-credentials.sh when credentials are all that changed.
 mkdir -p /opt/tts/session-host
 cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
   /opt/tts/session-host/
