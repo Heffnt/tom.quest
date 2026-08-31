@@ -4,7 +4,8 @@
 // daemon staleness window as the poll cadence it is derived from. This check
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 const shared = readFileSync("convex/ttsShared.ts", "utf8");
 const sessionMjs = readFileSync("worker/session-host/session.mjs", "utf8");
@@ -100,6 +101,106 @@ if (usageA && usageB) {
       failures.push(
         `usage-limit regex over-matches transient API weather: "${transient}" — a 529/429 must not stand the fleet down for 3h`,
       );
+    }
+  }
+}
+
+// 4. No fourth copy of the repo list. SESSION_REPOS is the one home; before
+// PR #28 the same fact was hand-written three more times (AUTO_REPOS,
+// PROSPECT_REPOS, REPO_OPTIONS), so adding a repo in one place left the others
+// silently disagreeing. Those three are gone — two are now DERIVED from the one
+// home and one was deleted — and this check is what stops a fourth appearing.
+// Rule: outside the files listed in REPO_LIST_ALLOWED, no source file may name
+// two or more session repos close together in executable code. Two names within
+// REPO_NAME_WINDOW characters of each other is a list, whatever syntax carries
+// it — an array, an object, a union type, a switch.
+// Comments are stripped first on purpose: prose that names several repos is
+// documentation and cannot drift into behavior (convex/schema.ts documents the
+// mirror's repo column that way). Test files (*.test.* and *.spec.*) are exempt
+// because a hard-coded expectation that goes red when the one home changes is
+// the alarm working, not a silent copy.
+// witness: paste `const REPOS = ["tom.quest", "WikiTom"]` into any convex/ or
+// app/ file and this check fails.
+const REPO_LIST_ALLOWED = new Set([
+  "convex/ttsShared.ts", // the one home
+  "worker/session-host/session.mjs", // the daemon mirror, fenced by check 2 above
+  "scripts/check-session-mirrors.mjs", // this file
+]);
+const REPO_NAME_WINDOW = 300;
+const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
+const SKIP_DIR = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  ".vercel",
+  "_generated",
+  "dist",
+  "build",
+  "coverage",
+  "playwright-report",
+  "test-results",
+]);
+
+const sourceFiles = [];
+const walk = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (!SKIP_DIR.has(entry.name)) walk(join(dir, entry.name));
+    } else if (
+      SCAN_EXT.test(entry.name) &&
+      !/\.(test|spec)\.[a-z]+$/.test(entry.name)
+    ) {
+      sourceFiles.push(join(dir, entry.name).replace(/^\.\//, ""));
+    }
+  }
+};
+
+// Strip line and block comments so only executable code is searched. Kept
+// deliberately simple: a `//` inside a string (a URL) is cut too, which can only
+// shorten the searched text and therefore can only make this check quieter on a
+// line that was already prose-heavy — never louder on a real list.
+const stripComments = (src) =>
+  src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .split("\n")
+    .map((line) => {
+      const at = line.indexOf("//");
+      return at === -1 ? line : line.slice(0, at);
+    })
+    .join("\n");
+
+if (sharedBlock) {
+  const repoNames = [...sharedBlock[1].matchAll(entryRe)].map((m) => m[1]);
+  if (repoNames.length < 2) {
+    failures.push(
+      "repo-list fence: fewer than 2 repo names parsed from SESSION_REPOS — the fence cannot run",
+    );
+  } else {
+    const nameRes = repoNames.map((name) => ({
+      name,
+      re: new RegExp(`(?<![\\w.-])${name.replace(/\./g, "\\.")}(?![\\w-])`, "g"),
+    }));
+    walk(".");
+    for (const file of sourceFiles) {
+      if (REPO_LIST_ALLOWED.has(file)) continue;
+      const code = stripComments(readFileSync(file, "utf8"));
+      const hits = [];
+      for (const { name, re } of nameRes) {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(code)) !== null) hits.push({ name, at: m.index });
+      }
+      hits.sort((a, b) => a.at - b.at);
+      for (let i = 0; i < hits.length - 1; i++) {
+        const next = hits[i + 1];
+        if (next.at - hits[i].at > REPO_NAME_WINDOW) continue;
+        if (next.name === hits[i].name) continue;
+        const line = code.slice(0, hits[i].at).split("\n").length;
+        failures.push(
+          `repo list copied outside the one home: ${file}:${line} names ${hits[i].name} and ${next.name} together — derive it from SESSION_REPO_NAMES in convex/ttsShared.ts instead`,
+        );
+        break;
+      }
     }
   }
 }

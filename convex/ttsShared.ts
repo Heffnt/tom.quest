@@ -414,6 +414,23 @@ export const SESSION_REPO_NAMES = Object.keys(
   SESSION_REPOS,
 ) as (keyof typeof SESSION_REPOS)[];
 
+/**
+ * The default branch of each repo in SESSION_REPOS. Separate from SESSION_REPOS
+ * because that map's shape is byte-compared against the daemon's REPO_GITHUB
+ * mirror; this fact has no daemon half (the daemon works on session/<id>
+ * branches and never needs a repo's default branch). The code-todo mirror
+ * (convex/ttsSync.ts) reads vqc/todos.yaml from these branches — a worktree
+ * carries a divergent copy, so the default branch is the only honest source.
+ *
+ * A repo added to SESSION_REPOS with no entry here falls back to "main"; add it
+ * explicitly if that is wrong.
+ */
+export const SESSION_REPO_DEFAULT_BRANCH: Record<string, string> = {
+  "tom.quest": "main",
+  ComplexMultiTrigger: "master",
+  WikiTom: "main",
+};
+
 export function isSessionRepo(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
 }
