@@ -11,16 +11,18 @@
 // Run:
 //   node worker/jobs/calendar-auth.mjs <client_id> <client_secret>
 //
-// Approve in the browser; the terminal prints three lines that go into the
-// CONVEX dashboard environment variables (production deployment) — NOT the
-// Jarvis Box's worker.env: the write door lives in Convex so every surface
-// (interactive sessions, box jobs via POST /tts/calendar-event) shares one
-// credential home. Revoke any time at myaccount.google.com/permissions.
+// Approve in the browser; the script then SETS the three GOOGLE_CALENDAR_*
+// variables on the Convex deployment ITSELF (`npx convex env set`, using the
+// deploy key in the repo's .env.local — so run it from a tom.quest checkout).
+// The token flows Google → this script → Convex and is never copy-pasted by
+// anyone. If the env set fails, the three lines are printed as a fallback.
+// Revoke any time at myaccount.google.com/permissions.
 //
-// Zero dependencies: node:http + global fetch.
+// Zero dependencies: node:http, node:child_process + global fetch.
 
 import http from "node:http";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 const [clientId, clientSecret] = process.argv.slice(2);
 if (!clientId || !clientSecret) {
@@ -73,13 +75,32 @@ const server = http.createServer(async (req, res) => {
       throw new Error(`no refresh_token in response: ${JSON.stringify(tokens).slice(0, 300)}`);
     }
     res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("Done — the token is printed in your terminal. Close this tab.");
-    console.log(
-      "\nAdd these in the Convex dashboard -> Production (admired-chinchilla-140) -> Settings -> Environment Variables:\n",
-    );
-    console.log(`GOOGLE_CALENDAR_CLIENT_ID=${clientId}`);
-    console.log(`GOOGLE_CALENDAR_CLIENT_SECRET=${clientSecret}`);
-    console.log(`GOOGLE_CALENDAR_REFRESH_TOKEN=${tokens.refresh_token}`);
+    res.end("Done — check your terminal. Close this tab.");
+    const vars = {
+      GOOGLE_CALENDAR_CLIENT_ID: clientId,
+      GOOGLE_CALENDAR_CLIENT_SECRET: clientSecret,
+      GOOGLE_CALENDAR_REFRESH_TOKEN: tokens.refresh_token,
+    };
+    try {
+      for (const [name, value] of Object.entries(vars)) {
+        // shell:true because on Windows npx is npx.cmd; values are
+        // Google-issued (no spaces or shell metacharacters).
+        execFileSync("npx", ["convex", "env", "set", name, value], {
+          shell: true,
+          stdio: ["ignore", "inherit", "inherit"],
+        });
+      }
+      console.log(
+        "\nDone: the three GOOGLE_CALENDAR_* variables are set on the Convex deployment.",
+      );
+    } catch {
+      console.log(
+        "\nSetting the Convex env failed (no .env.local deploy key here?) — add these by hand in the Convex dashboard -> Production -> Settings -> Environment Variables:\n",
+      );
+      console.log(`GOOGLE_CALENDAR_CLIENT_ID=${clientId}`);
+      console.log(`GOOGLE_CALENDAR_CLIENT_SECRET=${clientSecret}`);
+      console.log(`GOOGLE_CALENDAR_REFRESH_TOKEN=${tokens.refresh_token}`);
+    }
   } catch (err) {
     res.writeHead(500).end(String(err.message));
     console.error(`token exchange failed: ${err.message}`);
