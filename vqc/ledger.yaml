@@ -372,3 +372,26 @@
     A queryable corpus of this repo's agent sessions exists and each
     vqc/steering.yaml entry's `incidents` count is derived from it rather than
     hand-typed.
+
+- id: sessions-cannot-open-prs
+  kind: descent
+  created: 2026-08-31
+  cites: [A3, tts-spec:20]
+  statement: >-
+    An autonomous session is told in prose to finish with `gh pr create`, and
+    cannot: the daemon scrubs GH_TOKEN from the session env on purpose
+    (worker/session-host/session.mjs:680-684) and never configures gh, so gh
+    is logged into no host and every `gh` call fails. `git push` still works
+    because the token rides in the clone's remote URL (:520-524) — which means
+    the scrub is also porous: any session can read the account-wide repo-write
+    token out of .git/config, so the env scrub raises the cost of reaching it
+    without removing it. One cause, two consequences: the instructed final
+    step is impossible, and the secret it was withheld to protect is present
+    anyway. Found 2026-08-31 by session
+    q974bmhy7zb7cj5xcm6va5qyts8dg9h7, whose branch pushed and whose PR did
+    not open.
+  graduates_when: >-
+    A session can open a pull request for a repo it was given, and the
+    account-wide token is not readable from the session's checkout — the token
+    reaches git through a credential helper or askpath outside the work tree
+    rather than through the remote URL, and gh authenticates the same way.
