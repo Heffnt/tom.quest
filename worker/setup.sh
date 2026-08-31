@@ -89,7 +89,7 @@ echo "== [6/9] install worker files =="
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
-chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse
+chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse /usr/local/bin/tts-turing
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
@@ -287,6 +287,14 @@ NEXT STEPS (manual, in order):
       GH_TOKEN, SESSIONS_WORKER_KEY — the file explains each one. If
       SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
       filling it so the tts-session-host daemon gets enabled.)
+
+     TURING_READ_KEY is optional and READ-ONLY: it opens three GETs on the
+     cluster API (/gpu-report, /jobs, /sessions/{name}/output) for the
+     tts-turing command. It must match TURING_READ_KEY in turing-api/.env on
+     the login node. The full TURING_API_KEY does NOT belong in this file —
+     it authorizes POST /sessions/{name}/run, i.e. arbitrary cluster shell.
+     Restart tts-session-host after adding it, or running sessions won't see
+     it:  systemctl restart tts-session-host
 
   2. Log in both Claude Max accounts (interactive, over this SSH session):
        tts-account login gmail

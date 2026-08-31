@@ -33,7 +33,12 @@ owns retries. The agent records its own outcome via the key-authed pen
 via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key) — the daemon passes
 CONVEX_SITE_URL and TTS_WORKER_KEY (only — the sessions ingest key never
 enters a model-reachable shell) into every session's environment so those
-curls work. A daemon-stamped outcome (time cap, turn failure, restart)
+curls work. Those two are the only keys passed EXPLICITLY; the rest of the
+daemon's env is inherited minus `SESSIONS_WORKER_KEY` and `GH_TOKEN`, so a
+session also sees `TURING_READ_KEY` when the box has one — the cluster API's
+read-only credential behind `tts-turing` (three GETs, no write verb; the full
+`TURING_API_KEY` is not on this box at all). A daemon-stamped outcome (time
+cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an
 outcome already exists.
 
