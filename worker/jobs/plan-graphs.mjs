@@ -65,7 +65,13 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  identifierTypeOf,
+} from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
 // Bump when the prompt changes semantics: it joins the input hash, so a new
@@ -403,12 +409,12 @@ async function main() {
 
   // Pending revise rulings ON BATCHES only. A revise on a plain life todo
   // belongs to prepare-life-todos.mjs, and a revise on a v1 batch (a
-  // members-bearing todo, subjectType "life") belongs to form-batches.mjs —
+  // members-bearing todo, identifierType "life") belongs to form-batches.mjs —
   // both read the same feed, and each consumes only its own kind.
   const batchById = new Map(activeBatches.map((b) => [b._id, b]));
   const revises = [];
   for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType !== "batch" || r.verdict !== "revise" || !r.batchId) {
+    if (identifierTypeOf(r) !== "batch" || r.verdict !== "revise" || !r.batchId) {
       continue;
     }
     const batch = batchById.get(r.batchId);
@@ -428,10 +434,10 @@ async function main() {
   // steering about what to plan.
   const recent = Array.isArray(recentRulings) ? recentRulings : [];
   const statementOfSubject = (r) => {
-    if (r.subjectType === "batch") {
+    if (identifierTypeOf(r) === "batch") {
       return `batch "${batchById.get(r.batchId)?.statement ?? r.batchId}"`;
     }
-    if (r.subjectType === "life") {
+    if (identifierTypeOf(r) === "life") {
       return `todo "${all.find((t) => t._id === r.todoId)?.statement ?? r.todoId}"`;
     }
     return `code ${r.repo} ${r.externalId}`;
@@ -644,7 +650,7 @@ async function main() {
       revises,
       notes,
       recentRulings: recent.map((r) => ({
-        subjectType: r.subjectType,
+        identifierType: identifierTypeOf(r),
         todoId: r.todoId ?? null,
         batchId: r.batchId ?? null,
         repo: r.repo ?? null,

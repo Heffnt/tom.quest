@@ -49,6 +49,7 @@ import {
   extractJsonObject,
   nyNoonUtcMs,
   slackPost,
+  identifierTypeOf,
 } from "./tts-lib.mjs";
 
 const BATCH_MAX = 10;
@@ -183,7 +184,8 @@ async function main() {
   const { pending } = await convexFetch(env, "/tts/rulings");
   const reviseByTodo = new Map();
   for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
+    if (identifierTypeOf(r) !== "life" || r.verdict !== "revise" || !r.todoId)
+      continue;
     const subject = todoById.get(r.todoId);
     if (subject && subject.members !== undefined) continue; // batch — not ours
     reviseByTodo.set(r.todoId, r);

@@ -14,7 +14,7 @@ import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
 import { groupTimeNotes, NO_NOTES } from "./time-note-field";
 import {
-  codeSubjectKey,
+  codeIdentifierKey,
   liveRulingsByKey,
   type MirrorRow,
   type Todo,
@@ -127,7 +127,7 @@ export default function EverythingTab({
   // ── Joins ─────────────────────────────────────────────────────────────────
   const briefByKey = useMemo(() => {
     const map = new Map<string, Doc<"dtsCodeBriefs">>();
-    for (const b of codeBriefs ?? []) map.set(codeSubjectKey(b.repo, b.externalId), b);
+    for (const b of codeBriefs ?? []) map.set(codeIdentifierKey(b.repo, b.externalId), b);
     return map;
   }, [codeBriefs]);
 
@@ -151,7 +151,7 @@ export default function EverythingTab({
       todo: t,
     }));
     const code: Row[] = (mirror ?? []).map((r) => {
-      const key = codeSubjectKey(r.repo, r.externalId);
+      const key = codeIdentifierKey(r.repo, r.externalId);
       return {
         kind: "code",
         key,

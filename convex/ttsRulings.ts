@@ -48,19 +48,61 @@ const VERDICT = v.union(
 
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
 
-// The ONE definition of a ruling subject's identity (repo names carry no
+export type IdentifierType = "life" | "code" | "batch";
+
+/**
+ * TRANSITIONAL (widen step of the subjectType → identifierType rename).
+ * A row written before the backfill carries `subjectType`; a row written after
+ * it carries `identifierType`. Both are optional in the schema for this one
+ * deploy, so EVERY read of the discriminator goes through here and no call
+ * site has to know which name its row was written under. The narrow step
+ * deletes this function along with the old field.
+ */
+export const identifierTypeOf = (row: {
+  identifierType?: IdentifierType;
+  subjectType?: IdentifierType;
+}): IdentifierType | undefined => row.identifierType ?? row.subjectType;
+
+// The ONE definition of a ruling identifier's format (repo names carry no
 // spaces; the type prefix keeps life, code, and batch keys disjoint). Client
 // code derives live rulings with the same rule via app/tts/lib.ts.
-export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch";
+export const lifeIdentifierKey = (todoId: string) => `life ${todoId}`;
+export const batchIdentifierKey = (batchId: string) => `batch ${batchId}`;
+export const codeIdentifierKey = (repo: string, externalId: string) =>
+  `code ${repo} ${externalId}`;
+
+/** The identifier of whichever subject a whole ruling row addresses. */
+export const identifierKey = (row: {
+  identifierType?: IdentifierType;
+  subjectType?: IdentifierType;
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
 }) => {
-  if (row.subjectType === "life") return `life ${row.todoId}`;
-  if (row.subjectType === "batch") return `batch ${row.batchId}`;
-  return `code ${row.repo} ${row.externalId}`;
+  const type = identifierTypeOf(row);
+  if (type === "life") return lifeIdentifierKey(row.todoId!);
+  if (type === "batch") return batchIdentifierKey(row.batchId!);
+  return codeIdentifierKey(row.repo!, row.externalId!);
+};
+
+/**
+ * TRANSITIONAL wire projection (widen step). The stored field name IS the wire
+ * field name: http.ts serves these rows verbatim on GET /tts/rulings (alias
+ * /tts/code-rulings) and inside GET /tts/batch-context, and the worker box on
+ * Hetzner only picks up new job code on `git pull` + `worker/setup.sh` — a
+ * rollout that does NOT move with the Convex push. So the feed emits BOTH
+ * names, both set to the resolved value, and a worker checkout of either
+ * vintage reads a field that is present. That alias is what makes the box's
+ * rollout schedulable instead of a race; the narrow step removes it.
+ */
+const withIdentifierAlias = <
+  T extends { identifierType?: IdentifierType; subjectType?: IdentifierType },
+>(
+  row: T,
+) => {
+  const identifierType = identifierTypeOf(row);
+  return { ...row, identifierType, subjectType: identifierType };
 };
 
 // ── Tom-facing ───────────────────────────────────────────────────────────────
@@ -226,6 +268,9 @@ async function insertRuling(
     }
 
     const id = await ctx.db.insert("dtsRulings", {
+      // Dual write (widen step): both names carry the same value until the
+      // backfill + narrow removes subjectType.
+      identifierType: isLife ? "life" : isBatch ? "batch" : "code",
       subjectType: isLife ? "life" : isBatch ? "batch" : "code",
       todoId,
       repo,
@@ -309,7 +354,7 @@ export function liveRulings(
 ): Map<string, Doc<"dtsRulings">> {
   const newest = new Map<string, Doc<"dtsRulings">>();
   for (const row of all) {
-    const key = subjectKey(row);
+    const key = identifierKey(row);
     const prior = newest.get(key);
     // ruledAt wins; _creationTime breaks same-millisecond ties.
     if (
@@ -337,9 +382,7 @@ export async function markLiveSessionRulingApplied(
     .query("dtsRulings")
     .withIndex("by_todo", (q) => q.eq("todoId", todoId))
     .collect();
-  const live = liveRulings(rulings).get(
-    subjectKey({ subjectType: "life", todoId }),
-  );
+  const live = liveRulings(rulings).get(lifeIdentifierKey(todoId));
   if (live && live.verdict === "session" && live.appliedAt === undefined) {
     await ctx.db.patch(live._id, {
       appliedAt: Date.now(),
@@ -350,18 +393,20 @@ export async function markLiveSessionRulingApplied(
 
 // The rulings a worker job should act on: appliedAt unset AND not superseded
 // (a newer ruling on the same subject makes the older one dead history). Both
-// subject types ride the same feed — the worker filters by subjectType (code →
+// subject types ride the same feed — the worker filters by identifierType (code →
 // apply job; life revise → the preparer consumes the sentence).
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {
     const all = await ctx.db.query("dtsRulings").collect();
     const newest = liveRulings(all);
-    return all.filter(
-      (row) =>
-        row.appliedAt === undefined &&
-        newest.get(subjectKey(row))?._id === row._id,
-    );
+    return all
+      .filter(
+        (row) =>
+          row.appliedAt === undefined &&
+          newest.get(identifierKey(row))?._id === row._id,
+      )
+      .map(withIdentifierAlias);
   },
 });
 
@@ -396,13 +441,7 @@ export function briefAwaitsRuling(
   brief: { repo: string; externalId: string; preparedAt: number },
   live: Map<string, Doc<"dtsRulings">>,
 ): boolean {
-  const ruling = live.get(
-    subjectKey({
-      subjectType: "code",
-      repo: brief.repo,
-      externalId: brief.externalId,
-    }),
-  );
+  const ruling = live.get(codeIdentifierKey(brief.repo, brief.externalId));
   return ruling === undefined || ruling.ruledAt < brief.preparedAt;
 }
 
@@ -411,11 +450,12 @@ export function briefAwaitsRuling(
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    return await ctx.db
+    const rows = await ctx.db
       .query("dtsRulings")
       .withIndex("by_ruled")
       .order("desc")
       .take(Math.min(limit ?? 200, 1000));
+    return rows.map(withIdentifierAlias);
   },
 });
 
@@ -447,7 +487,7 @@ export const internalMigrateCodeRulings = internalMutation({
     const existing = await ctx.db.query("dtsRulings").collect();
     const seen = new Set(
       existing
-        .filter((r) => r.subjectType === "code")
+        .filter((r) => identifierTypeOf(r) === "code")
         .map((r) => `${r.repo} ${r.externalId} ${r.ruledAt}`),
     );
     let copied = 0;
@@ -461,6 +501,7 @@ export const internalMigrateCodeRulings = internalMutation({
       const key = `${row.repo} ${row.externalId} ${row.ruledAt}`;
       if (seen.has(key)) continue;
       await ctx.db.insert("dtsRulings", {
+        identifierType: "code",
         subjectType: "code",
         repo: row.repo,
         externalId: row.externalId,
@@ -479,5 +520,44 @@ export const internalMigrateCodeRulings = internalMutation({
       copied++;
     }
     return { copied, skippedDefer, total: old.length };
+  },
+});
+
+// One-time migration, MIDDLE STEP of the subjectType → identifierType rename
+// (run against prod: `npx convex run ttsRulings:internalMigrateIdentifierType`).
+// Sets identifierType from whichever name the row carries and REMOVES
+// subjectType by patching it to `undefined` — which is legal only because the
+// widen step already made subjectType optional in the schema. The narrowing
+// push that follows FAILS if any row still carries subjectType, so this must
+// report `patched` covering every un-migrated row before PR B opens.
+//
+// A full collect with no batching is right at this size (4 rows in prod on
+// 2026-08-31); the @convex-dev/migrations component is not installed and its
+// batching/resume machinery would buy nothing here.
+//
+// Idempotent: a row already carrying only identifierType is skipped, so a
+// second run reports patched: 0.
+//
+// `stillPending` counts rows with appliedAt unset — a worker job may be
+// mid-flight on those, and the run is worth repeating after that job's next
+// tick so the rename does not land under an apply in progress.
+export const internalMigrateIdentifierType = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("dtsRulings").collect();
+    let patched = 0;
+    let stillPending = 0;
+    for (const row of all) {
+      if (row.appliedAt === undefined) stillPending++;
+      if (row.subjectType === undefined) continue; // already migrated
+      const resolved = identifierTypeOf(row);
+      if (resolved === undefined) continue; // carries neither name — leave it visible
+      await ctx.db.patch(row._id, {
+        identifierType: resolved,
+        subjectType: undefined,
+      });
+      patched++;
+    }
+    return { scanned: all.length, patched, stillPending };
   },
 });
