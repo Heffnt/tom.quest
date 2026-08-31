@@ -98,6 +98,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # a tick, and two overlapping runs would capture the same emails twice.
 */10 * * * * root /usr/bin/flock -n /var/lock/tts-poll-gmail.lock /usr/bin/node /opt/tts/poll-gmail.mjs >> /var/log/tts/poll-gmail.log 2>&1
 
+# Poll Canvas course announcements every 30 minutes at :13/:43 (odd minutes;
+# no collision with the other jobs' slots). Quiet no-op until CANVAS_TOKEN
+# exists in worker.env (WPI token request pending). Same flock reasoning as
+# poll-gmail: the Claude triage call can outlast a tick.
+13,43 * * * * root /usr/bin/flock -n /var/lock/tts-poll-canvas.lock /usr/bin/node /opt/tts/poll-canvas.mjs >> /var/log/tts/poll-canvas.log 2>&1
+
 # Read Tom's freeform TIME NOTES (the only time input left on the /tts page)
 # and turn each into concrete date/block changes, every 2 minutes so a note he
 # types is acted on while he is still looking at the page. The queue is

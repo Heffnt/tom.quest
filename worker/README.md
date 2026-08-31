@@ -14,15 +14,23 @@ on a schedule:
    capturing when unsure, because a wrong capture costs one archive click while
    a wrong skip loses the thread. Until the Gmail credentials exist it is a
    quiet no-op; see below.
-3. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
+3. **poll-canvas** (every 30 min) — lists new Canvas course announcements and
+   spends ONE headless Claude call per batch deciding which imply an action
+   by Tom (schedule changes, sign-ups, required responses), then submits
+   those to Convex as unprepared todos with source `canvas`, linked to the
+   announcement. Assignments are NOT this job's business — the Convex-side
+   sync (convex/ttsCanvas.ts) owns those, with due dates and auto-done on
+   submission. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
+   restricts token creation; Tom's request form is pending).
+4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
    Convex. If it fails, the Convex-side fallback prep (4:45) and the
    always-sends 5 a.m. digest cover the day — a digest that reports missing
    prep is the "worker is broken" signal; no digest at all means Convex/Slack
    is broken. That split is the whole monitoring story.
-4. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-5. **apply-rulings** (every 10 min) — see the ruling loop below.
-6. **execute-approved** (hourly at :45) — see the ruling loop below.
+5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
+6. **apply-rulings** (every 10 min) — see the ruling loop below.
+7. **execute-approved** (hourly at :45) — see the ruling loop below.
 
 ## The code-todo ruling loop
 
@@ -67,6 +75,9 @@ are all harmless to lose:
 - `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
   processed (captured or skipped); losing it re-examines the last 24 hours,
   at worst re-capturing a few emails as duplicates Tom can archive.
+- `/var/lib/tts/canvas-announcements-cursor` — timestamp of the newest
+  announcement poll-canvas has processed; losing it re-examines the last
+  7 days, at worst re-capturing a few announcements as duplicates.
 - `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
@@ -127,6 +138,7 @@ tts-account use wpi      # switch; takes effect on the next job run
 ```
 node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
 node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
+node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
 node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
 node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
