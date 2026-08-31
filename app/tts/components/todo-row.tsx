@@ -21,6 +21,7 @@ import { api } from "@/convex/_generated/api";
 import { countdownText } from "@/convex/ttsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
+import { READINESS_EXPLANATION } from "../explanations";
 import OptionsRow from "./options-row";
 import TimeNoteField, { type TimeNote } from "./time-note-field";
 import {
@@ -50,15 +51,32 @@ const chipCls =
  * info-captions-unmigrated). The two remaining such callers pass their caption
  * down through props from several surfaces at once, which is why they are debt
  * rather than an oversight.
+ *
+ * `explanation` is the second register: one complete HTML document (see
+ * ../explanations) shown fullscreen behind the popover's "more" control, for
+ * a caption whose mechanism has to be taught rather than named. A caption
+ * without one shows no "more".
  */
 function Caption({
   children,
   explains,
+  explanation,
+  explanationTitle,
 }: {
   children: string;
   explains?: React.ReactNode;
+  explanation?: string;
+  explanationTitle?: string;
 }) {
-  return <Info call={children}>{explains}</Info>;
+  return (
+    <Info
+      call={children}
+      explanation={explanation}
+      explanationTitle={explanationTitle}
+    >
+      {explains}
+    </Info>
+  );
 }
 
 // ── Small inline field editor ───────────────────────────────────────────────
@@ -434,7 +452,9 @@ export default function TodoRow({
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-text-faint">readiness</span>
                     <Caption
-                      explains="Hands it back to the preparer. Readiness drops to preparing, an agent re-writes the brief within a couple of minutes, and it returns to you — the item itself, and what you have already decided about it, are untouched."
+                      explains="Sets how far the preparing of this item has got, and nothing else. Dropping it to preparing hands it back to an agent, which re-writes the brief within a couple of minutes and returns it — the item, and what you have already decided about it, are untouched."
+                      explanation={READINESS_EXPLANATION}
+                      explanationTitle="readiness — the field this dropdown writes"
                     >
                       {"tts.updateTodo({ readiness })"}
                     </Caption>
