@@ -4,6 +4,10 @@ import { signWsToken } from "@/app/lib/turing";
 
 const TOKEN_TTL_MS = 5 * 60 * 1000;
 
+// requireAdmin, NOT the read gate the /turing proxy's GET takes, even though
+// this is also a GET: what it returns is a signed ticket for an interactive
+// shell on the cluster. The read-only `agent` role may look at a page; a shell
+// is not looking at a page.
 export async function GET(request: NextRequest) {
   const auth = await requireAdmin(request);
   if (auth instanceof Response) return auth;

@@ -2,6 +2,16 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+// `agent` is not a rank between `user` and `admin`: it is a side branch that
+// reads the surfaces in convex/agentSurfaces.ts and writes nothing. See
+// roleAccess() in convex/authRoles.ts, which returns isAdmin:false for it.
+export const USER_ROLES = v.union(
+  v.literal("user"),
+  v.literal("admin"),
+  v.literal("tom"),
+  v.literal("agent"),
+);
+
 export default defineSchema({
   ...authTables,
   users: defineTable({
@@ -15,11 +25,10 @@ export default defineSchema({
     // The role vocabulary has a twin: the UserRole TYPE in convex/authRoles.ts,
     // which every gate (roleAccess, requireTom) branches on. A validator and a
     // type cannot be one declaration, so adding a role means editing both — the
-    // union here and UserRole there — or roleAccess silently treats the new
-    // role as "user". Absent role means "user"; see authRoles.roleAccess.
-    role: v.optional(
-      v.union(v.literal("user"), v.literal("admin"), v.literal("tom")),
-    ),
+    // USER_ROLES union above and UserRole there — or roleAccess silently
+    // treats the new role as "user". Absent role means "user"; see
+    // authRoles.roleAccess.
+    role: v.optional(USER_ROLES),
   })
     .index("email", ["email"])
     .index("phone", ["phone"]),

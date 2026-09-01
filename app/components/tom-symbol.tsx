@@ -33,14 +33,32 @@ export const DEFAULT_TOM_PARAMS: TomSymbolParams = {
 // Module-private: the only reader is TomSymbol's own `options` default below.
 // (DEFAULT_TOM_PARAMS is exported because symbol-game.tsx derives its geometry
 // from it; nothing outside this file has ever needed the options.)
-const DEFAULT_TOM_OPTIONS: TomSymbolOptions = {
+// Exported again: #18 (logo bars variant) made app/logo/logo-client.tsx a
+// live importer, so the un-export in the dead-code sweep no longer holds.
+export const DEFAULT_TOM_OPTIONS: TomSymbolOptions = {
   dotShape:     "circle",
   tailCut:      "horizontal",
   showBaseline: "off",
 };
 
+/* The vertical geometry of the symbol, in viewBox units, as a function of the
+   same params the symbol is drawn from. Anything that sets type against the
+   symbol (see TomLogo) must read these rather than copy the numbers the
+   defaults happen to produce — copies go stale the moment a param moves. */
+export function tomSymbolMetrics(p: TomSymbolParams) {
+  const topY  = CY - R - p.stroke / 2;   // outer top edge of the circle
+  const baseY = CY + R + p.stroke / 2;   // baseline: outer bottom edge
+  return {
+    stroke: p.stroke,
+    topY,
+    baseY,
+    barY:   CY + p.tHeight,              // the horizontal t-bar
+    height: baseY - topY,                // 2R + stroke
+  };
+}
+
 function derive(p: TomSymbolParams, opt: TomSymbolOptions) {
-  const barY    = CY + p.tHeight;
+  const { barY, baseY } = tomSymbolMetrics(p);
   const chordSq = R * R - p.tHeight * p.tHeight;
   const barHalf = chordSq > 0 ? Math.sqrt(chordSq) : 0;
 
@@ -48,8 +66,6 @@ function derive(p: TomSymbolParams, opt: TomSymbolOptions) {
   const sinA = Math.sin(aR);
   const cosA = Math.cos(aR);
   const w    = p.stroke;
-
-  const baseY = CY + R + w / 2;
 
   const disc    = Math.max(0, R * R - p.tHeight * p.tHeight * sinA * sinA);
   const tCircle = -p.tHeight * cosA + Math.sqrt(disc);

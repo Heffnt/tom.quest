@@ -25,12 +25,22 @@
 //              [--json]
 //
 //   --login    sign in first, using TOMQUEST_AGENT_USERNAME /
-//              TOMQUEST_AGENT_PASSWORD from the environment (systemd passes
-//              /etc/tts/worker.env into the session-host, which passes them
-//              on). Without those two keys the flag fails loudly rather than
-//              silently browsing as an anonymous visitor and reporting an
-//              empty page — every /turing and /tts page is role-gated, so an
-//              anonymous read of one is a false negative, not a result.
+//              TOMQUEST_AGENT_PASSWORD — from the environment if present, and
+//              otherwise read straight out of /etc/tts/worker.env by this
+//              script. The file is the normal path: the session-host scrubs
+//              both names from a session's shell so the password cannot be
+//              echoed into a stored transcript. Without them the flag fails
+//              loudly rather than silently browsing as an anonymous visitor
+//              and reporting an empty page — every /turing and /tts page is
+//              role-gated, so an anonymous read of one is a false negative,
+//              not a result.
+//
+//              The account it signs in as holds the `agent` role: it can READ
+//              /turing and /tts and nothing else, and can write nothing at
+//              all. So a page that renders here for you renders emptier than
+//              it does for Tom in exactly one way — Tom-only surfaces
+//              (/sessions, /forge, /jarvis) show the restricted card, which is
+//              a correct result for this account and not a bug in the page.
 //   --settle   extra idle wait after load, default 1500ms. Convex-backed pages
 //              paint twice: once from cache, once from the live query.
 //
@@ -126,6 +136,48 @@ function parseArgs(argv) {
   return opts;
 }
 
+const WORKER_ENV_PATH = "/etc/tts/worker.env";
+
+// The tom.quest sign-in, from the environment if it is there and from
+// /etc/tts/worker.env if it is not.
+//
+// WHY THE FILE FALLBACK EXISTS: the session-host deliberately DELETES these
+// two names from the environment it hands a session's shell, so that no `env`
+// or `echo` can write the password into a transcript Convex stores forever.
+// This file runs as the same user that already reads that env file, so it can
+// fetch them at the moment of use without them ever sitting in a shell a model
+// can print. Environment first, so a manual run or a test can override without
+// editing the box's config.
+//
+// The parse matches worker.env's documented format exactly — KEY=VALUE, '#'
+// comments, blank lines ignored — and reads ONLY the two keys it needs, so a
+// future secret added to that file is not loaded into this process at all.
+function browseCredentials() {
+  const out = {
+    username: process.env.TOMQUEST_AGENT_USERNAME,
+    password: process.env.TOMQUEST_AGENT_PASSWORD,
+  };
+  if (out.username && out.password) return out;
+  let text;
+  try {
+    text = require("node:fs").readFileSync(WORKER_ENV_PATH, "utf8");
+  } catch {
+    return out; // unreadable or absent; the caller reports the missing keys
+  }
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (!value) continue;
+    if (key === "TOMQUEST_AGENT_USERNAME") out.username ||= value;
+    else if (key === "TOMQUEST_AGENT_PASSWORD") out.password ||= value;
+  }
+  return out;
+}
+
 // Sign in through the same widget a person uses, rather than forging a session
 // cookie: the login path is itself something a session may have broken, and a
 // forged cookie would hide that.
@@ -137,12 +189,11 @@ function parseArgs(argv) {
 // looks signed in, with the username in the corner, whose every data call is
 // 401. The caller resolves the landing origin by navigating first.
 async function signIn(page, origin) {
-  const username = process.env.TOMQUEST_AGENT_USERNAME;
-  const password = process.env.TOMQUEST_AGENT_PASSWORD;
+  const { username, password } = browseCredentials();
   if (!username || !password) {
     console.error(
-      "tts-browse: --login needs TOMQUEST_AGENT_USERNAME and TOMQUEST_AGENT_PASSWORD " +
-        "in the environment (add them to /etc/tts/worker.env).",
+      "tts-browse: --login needs TOMQUEST_AGENT_USERNAME and TOMQUEST_AGENT_PASSWORD, " +
+        `in the environment or in ${WORKER_ENV_PATH}.`,
     );
     process.exit(4);
   }

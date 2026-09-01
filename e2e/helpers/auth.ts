@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 
-export type AuthRole = "user" | "admin" | "tom";
+export type AuthRole = "user" | "admin" | "tom" | "agent";
 
 export type Credentials = {
   username: string;
