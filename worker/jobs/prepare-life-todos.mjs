@@ -13,7 +13,7 @@
 // the statement and never changes status — preparation must not alter intent
 // (those are Tom's).
 //
-// DATES (2026-08-29): the QuickAdd date input is gone from the /dts page, so
+// DATES (2026-08-29): the QuickAdd date input is gone from the /tts page, so
 // an explicit date now reaches a todo through the words Tom captured. This job
 // extracts a date ONLY when the STATEMENT itself states one ("pay rent sept
 // 3") — that is Tom's own text, not an agent inventing a date — and only for a

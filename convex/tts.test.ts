@@ -1359,7 +1359,7 @@ describe("TTS batches and annotations", () => {
     expect(events.some((e) => e.kind === "importance-set")).toBe(false);
   });
 
-  // witness: reintroduce ANY plan gate in internalPrepareTodo (convex/dts.ts)
+  // witness: reintroduce ANY plan gate in internalPrepareTodo (convex/tts.ts)
   // — a tom-step check, a Tom-touched check, either one — and this test goes
   // red. Ratified doctrine (Tom, 2026-08-29): his input gates what PERSISTS
   // (rulings, merges, statuses), never the plan text an agent works from, and
@@ -1485,7 +1485,7 @@ describe("TTS batches and annotations", () => {
   });
 
   // witness: drop the `todo.dueAt !== undefined` guard from internalPrepareTodo
-  // in convex/dts.ts — the preparer would overwrite a date Tom already set.
+  // in convex/tts.ts — the preparer would overwrite a date Tom already set.
   it("the preparer sets a FIRST date only, never over an existing one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -1522,7 +1522,7 @@ describe("TTS batches and annotations", () => {
   });
 
   // witness: drop `(todo.dateOutcomes ?? []).length > 0` from the dueAt branch
-  // of internalPrepareTodo in convex/dts.ts — a re-prep reading the same
+  // of internalPrepareTodo in convex/tts.ts — a re-prep reading the same
   // statement would hand back the very date Tom just recorded as missed.
   it("the preparer never resurrects a date Tom already resolved", async () => {
     const t = convexTest({ schema, modules });
@@ -1568,7 +1568,7 @@ describe("TTS batches and annotations", () => {
   });
 });
 
-// The one time input on the /dts page: Tom writes a sentence, the worker job
+// The one time input on the /tts page: Tom writes a sentence, the worker job
 // proposes actions, and internalApplyTimeNote is the gate that decides whether
 // they are legal. These tests are about that gate — the agent's reading is
 // never the authority.
@@ -1619,7 +1619,7 @@ describe("TTS time notes", () => {
   });
 
   // witness: drop requireOneTimeNoteContext from createTimeNote in
-  // convex/dts.ts — a note with no context (or two) has nothing to act on.
+  // convex/tts.ts — a note with no context (or two) has nothing to act on.
   it("a time note has exactly one context and real text", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);

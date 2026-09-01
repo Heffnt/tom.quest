@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // apply-time-notes.mjs — carry out Tom's freeform TIME NOTES.
 //
-// Run by cron every 2 minutes (see /etc/cron.d/dts). Manual run:
+// Run by cron every 2 minutes (see /etc/cron.d/tts). Manual run:
 //   node /opt/tts/apply-time-notes.mjs
 //
-// WHAT A TIME NOTE IS: the /dts page has no date or time pickers left. When
+// WHAT A TIME NOTE IS: the /tts page has no date or time pickers left. When
 // Tom wants anything about time changed he writes one sentence against exactly
 // one context — a todo ("push this to next Wednesday"), a calendar block
 // ("make it an hour earlier"), or a calendar day ("Sat 9-11 for chores"). This
@@ -12,7 +12,7 @@
 // concrete actions, and Convex carries them out.
 //
 // THE AGENT PROPOSES, THE SERVER DECIDES: every action is re-validated by
-// dts.internalApplyTimeNote against the same helpers the Tom-gated mutations
+// tts.internalApplyTimeNote against the same helpers the Tom-gated mutations
 // use — above all the kept-dates rule (a date is renegotiated only BEFORE it
 // arrives; after that it is missed). A rejected apply rolls back whole; this
 // job then re-submits the note as "needs-session" carrying the server's own

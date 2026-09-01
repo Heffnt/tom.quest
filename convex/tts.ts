@@ -852,7 +852,7 @@ export const deleteBlock = mutation({
 });
 
 // ── Time notes (ratified 2026-08-29) ─────────────────────────────────────────
-// The /dts page has no date or time pickers left. Tom writes one sentence
+// The /tts page has no date or time pickers left. Tom writes one sentence
 // against exactly one context — a todo, a block, or a calendar day — and the
 // worker job apply-time-notes.mjs reads it and asks for concrete actions via
 // internalApplyTimeNote. The server re-validates EVERY action against the same

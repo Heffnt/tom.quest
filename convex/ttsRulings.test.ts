@@ -546,7 +546,7 @@ describe("TTS unified rulings", () => {
   });
 
   // witness: reject `sentence` on any verdict but revise in insertRuling
-  // (convex/dtsRulings.ts) and the approve/session assertions below go red.
+  // (convex/ttsRulings.ts) and the approve/session assertions below go red.
   it("accepts a sentence on every verdict; revise still requires one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
