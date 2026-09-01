@@ -49,7 +49,7 @@ const LOCK_DIR = "/var/lib/tts/execute.lock";
 const LOCK_STALE_MS = 3 * 60 * 60 * 1000; // execution legitimately runs ~45 min
 const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000;
 
-function execPrompt(externalId, entryYaml, briefText) {
+function execPrompt(_externalId, entryYaml, briefText) {
   return [
     `You are executing an APPROVED plan in the ComplexMultiTrigger repo. Tom has`,
     `ruled "approve" on the code todo below through TTS (his delegated todo`,

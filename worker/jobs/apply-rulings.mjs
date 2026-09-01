@@ -132,7 +132,7 @@ function applyRevise(ruling) {
 //   claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 // from any checkout — the agenda travels with the code it is about, needs no
 // tom.quest access, and its git history records what Tom was asked.
-function applySession(env, repoDir, ruling) {
+function applySession(_env, repoDir, ruling) {
   const id = ruling.externalId;
   const todosText = fs.readFileSync(path.join(repoDir, TODOS_PATH), "utf8");
   const found = findEntryBlock(todosText, id);
@@ -185,7 +185,7 @@ function applySession(env, repoDir, ruling) {
 // `resolution:`. The FULL body is kept (statement, cites, plan, …): the guard
 // requires every entry's schema fields open or closed, and keeping the body
 // also keeps the diff a pure move-plus-two-fields, easy to review.
-function applyArchive(env, repoDir, ruling) {
+function applyArchive(_env, repoDir, ruling) {
   const id = ruling.externalId;
   const todosFile = path.join(repoDir, TODOS_PATH);
   const text = fs.readFileSync(todosFile, "utf8");
