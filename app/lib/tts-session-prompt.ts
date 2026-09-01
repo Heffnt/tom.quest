@@ -1,7 +1,20 @@
 // Builds the opening prompt for a TTS session (spec: WikiTom tts/spec.md).
-// One home for the session-opening contract: Focus's "work in a session" and
-// the Inventory's gate button both route through here, so the ground-up
-// framing cannot drift between entry points.
+// One home for the session-opening contract, so the ground-up framing cannot
+// drift between the surfaces that open a session. Every caller is on /tts:
+// buildBlockSessionPrompt from app/tts/components/calendar-tab.tsx (a
+// calendar block's session button), and buildTodoSessionPrompt /
+// buildBatchSessionPrompt from app/lib/use-open-todo-session.ts, the one
+// launch hook behind the row, batch and options-row session buttons. /focus
+// and /inventory are NOT callers: both pages are now bare redirects to /tts
+// (app/focus/page.tsx, app/inventory/page.tsx), which is why the entry points
+// named here are components and not those two surfaces.
+//
+// Lockstep: convex/claudeSessions.ts buildAutoMissionPrompt is the autonomous
+// twin of these builders — same house voice, same facts-block labels ('The
+// item ("…"):', "The plan (N steps, in order):", "The members (N, live
+// statuses):") — and it carries the matching note naming this file. No import
+// across the boundary in either direction: this module is client code and
+// that one runs in Convex.
 
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 

@@ -1,10 +1,13 @@
 "use client";
 
 // One entry point for opening a Claude session scoped to a single todo —
-// shared by Focus's "Work in a session" button and the Inventory row's
-// session button, so the createSession contract (kind choice, prompt build,
+// shared by the /tts session buttons (app/tts/components/todo-row.tsx,
+// batches-tab.tsx, options-row.tsx; app/tts/components/calendar-tab.tsx and
+// app/sessions/components/session-list.tsx take the lower-level useOpenSession
+// below) — so the createSession contract (kind choice, prompt build,
 // navigation) cannot drift between call sites, and failures land in state
-// for the caller to render instead of being swallowed.
+// for the caller to render instead of being swallowed. Not Focus and not the
+// Inventory: /focus and /inventory are bare redirects to /tts now.
 
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";

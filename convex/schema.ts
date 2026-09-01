@@ -507,7 +507,30 @@ export default defineSchema({
     // life path, the pens). A batch with this set is
     // FROZEN: the batcher job may never rewrite or retire it.
     tomTouchedAt: v.optional(v.number()),
-    source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
+    // WHO CREATED THIS ROW. A free string, not a union, because the capture
+    // route (POST /tts/capture, http.ts) takes whatever `source` its caller
+    // sends — an agent session can mint a value no code in this repo names.
+    // Three values are LOAD-BEARING and must not drift: the batcher may only
+    // rewrite rows whose source is "batcher" (tts.ts internalStoreBatches),
+    // and the planner may only rewrite rows whose source is "planner" or
+    // "migration" (tts.ts internalStorePlanGraph). Everything else is
+    // descriptive, shown as a chip on the row.
+    //
+    // Written by code in this repo: "manual" (tts.ts createTodo, Tom's
+    // QuickAdd), "slack-capture" (http.ts /slack/events and
+    // worker/jobs/poll-dump.mjs), "email" (worker/jobs/poll-gmail.mjs),
+    // "canvas" (ttsCanvas.ts and worker/jobs/poll-canvas.mjs), "repeating"
+    // (ttsRepeats.ts), "batcher", "planner", "migration" (all tts.ts), and
+    // "prospecting" (the capture command claudeSessions.ts hands a
+    // prospecting mission).
+    //
+    // Minted only by whoever posts to /tts/capture, so they exist in live rows
+    // and nowhere in this repo — census of the 968 live rows, 2026-09-01:
+    // "tts-session" (36), "consolidation" (20), "session-sweep" (18),
+    // "session-capture" (18), "session-mining" (11), "graph-cutover-seed" (6),
+    // "session" (5, the value app/lib/tts-session-prompt.ts RULING_PEN tells
+    // an interactive session to use), "batch-ux-round" (2).
+    source: v.string(),
     provenance: v.optional(v.string()), // link/descriptor of where it came from
     // ── Slack coordinates of the #dump message this was captured from ────────
     // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
@@ -842,7 +865,7 @@ export default defineSchema({
   // Kept as read-only history — non-defer rows are copied into ttsRulings by
   // ttsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
   // stay here only (defer is no longer a verdict: not ruling IS deferring).
-  // No new writes. Remove in the tts→tts rename round.
+  // No new writes. Remove in the dts→tts rename round.
   dtsCodeRulings: defineTable({
     repo: v.string(),
     externalId: v.string(),
