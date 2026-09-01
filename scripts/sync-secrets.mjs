@@ -29,6 +29,11 @@ const ROOT = process.cwd();
 const NEXT_FILE = join(ROOT, "secrets", "next.env");
 const CONVEX_FILE = join(ROOT, "secrets", "convex.env");
 const LOCAL_FILE = join(ROOT, ".env.local");
+// The COMMITTED public half of the Next env: the NEXT_PUBLIC_* Convex
+// deployment identity. Public by construction (Next inlines these into the
+// browser bundle), committed so a checkout with no Vercel credentials can
+// still build. Its keys are the ones assertPublicEnvAgrees fences below.
+const PUBLIC_FILE = join(ROOT, ".env");
 
 const args = process.argv.slice(2);
 const MODE_INIT = args.includes("--init");
@@ -288,6 +293,34 @@ function modeInit() {
   info("\n✔ Initialized. Edit secrets/*.env and run `pnpm secrets:sync` to push.");
 }
 
+// One home, fenced (C1). The public deployment identity lives in the committed
+// .env, and the same two keys may also sit in secrets/next.env because they
+// were pulled from Vercel before .env existed. Two spellings of one fact drift
+// silently, so this refuses to sync when they disagree rather than pushing a
+// value that contradicts what the repo builds against.
+//
+// It does NOT quietly reconcile them: which one is right depends on whether the
+// Convex deployment moved or the file went stale, and only a human knows that.
+function assertPublicEnvAgrees(next) {
+  const pub = parseEnvFile(PUBLIC_FILE);
+  const drifted = Object.entries(pub).filter(
+    ([key, value]) => next[key] !== undefined && next[key] !== value,
+  );
+  if (drifted.length === 0) return;
+  fail(
+    "the committed .env and secrets/next.env disagree about the public Convex " +
+      "deployment:\n" +
+      drifted
+        .map(
+          ([key, value]) =>
+            `  ${key}\n    .env              ${value}\n    secrets/next.env  ${next[key]}`,
+        )
+        .join("\n") +
+      "\n\nOne of them is stale. Fix the wrong one, then re-run. (.env is what a " +
+      "bare checkout builds against; secrets/next.env is what gets pushed to Vercel.)",
+  );
+}
+
 function modeSync() {
   if (!existsSync(NEXT_FILE)) {
     fail(`${NEXT_FILE} not found. Run \`pnpm secrets:init\` first.`);
@@ -298,6 +331,7 @@ function modeSync() {
 
   const next = parseEnvFile(NEXT_FILE);
   const convex = parseEnvFile(CONVEX_FILE);
+  assertPublicEnvAgrees(next);
 
   // Push Next-side. Skip Vercel system vars (defensive — they shouldn't be
   // in the file at all) and skip empties (Vercel warns; usually a sign of a

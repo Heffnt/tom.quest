@@ -9,9 +9,12 @@ const IGNORED_APP_PREFIXES = [
   path.normalize("app/api/canvas"),
 ];
 
+// One module owns xterm: app/turing/lib/terminal-session.ts. The modal and the
+// full-page terminal both reach it through
+// app/turing/components/interactive-terminal.tsx, so keeping this set to a
+// single entry is what stops the terminal from being implemented twice again.
 const XTERM_ALLOWED_FILES = new Set([
-  path.normalize("app/turing/components/terminal-modal.tsx"),
-  path.normalize("app/turing/terminal/[session]/terminal-client.tsx"),
+  path.normalize("app/turing/lib/terminal-session.ts"),
 ]);
 
 const JOB_TABLE = path.normalize("app/turing/components/job-table.tsx");

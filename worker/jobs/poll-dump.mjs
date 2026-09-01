@@ -5,7 +5,7 @@
 // Run by cron every 2 minutes (see /etc/cron.d/tts). Also runnable by hand:
 //   node /opt/tts/poll-dump.mjs
 //
-// STATE: the ONLY local state on this box is the cursor file
+// STATE: the ONLY local state on the Jarvis Box is the cursor file
 // /var/lib/tts/dump-cursor, holding the Slack ts of the last captured
 // message. Everything durable lives in Convex (the no-state rule). Losing
 // the cursor is harmless-by-design: on the next run with no cursor we only
@@ -18,27 +18,46 @@
 // end), so a crash mid-batch re-captures at most one message.
 
 import fs from "node:fs";
-import { loadEnv, convexFetch } from "./tts-lib.mjs";
+import { spawn } from "node:child_process";
+import { loadEnv, convexFetch, slackGet } from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/dump-cursor";
 const FIRST_RUN_LOOKBACK_SECONDS = 24 * 3600; // no cursor -> only last 24h
 const MAX_PAGES = 10; // safety bound; 10 pages x 200 msgs is far beyond a day of #dump
 
-// --- Slack Web API helper (GET with query params + bearer token). ----------
-// Slack's Web API accepts GET with URL params for these read methods; the
-// bot token goes in the Authorization header, never in the URL.
-async function slack(env, method, params) {
-  const url = new URL(`https://slack.com/api/${method}`);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined) url.searchParams.set(k, String(v));
+// The Slack helper moved to tts-lib.mjs (slackGet / slackPost) when the
+// threaded reply next door needed the POST half: one home for both verbs
+// rather than this file's GET-only copy plus a second one (VQC C1).
+const slack = slackGet;
+
+// Preparation is spawned DETACHED after a run that captured anything, so a
+// dumped thought is prepared on this same tick instead of waiting for the next
+// prepare-life-todos cron tick. flock -n is what makes that safe: this spawn
+// and the cron take the same lock, and whichever loses simply exits.
+//
+// HONEST LATENCY: this is not "immediate". End to end it is one poll tick plus
+// one Claude call. What it removes is the wait for the NEXT preparation tick,
+// which used to be up to two hours.
+function spawnPreparation() {
+  try {
+    const child = spawn(
+      "/usr/bin/flock",
+      [
+        "-n",
+        "/var/lock/tts-prepare-life-todos.lock",
+        "/usr/bin/node",
+        "/opt/tts/prepare-life-todos.mjs",
+      ],
+      { detached: true, stdio: "ignore" },
+    );
+    // Unref so this job exits without waiting on a Claude call that can run
+    // for minutes; the child keeps running under init.
+    child.unref();
+  } catch (err) {
+    // Never fatal: the capture already landed, and the cron tick prepares it
+    // shortly regardless. Losing the speed-up is not losing the work.
+    console.log(`[poll-dump] could not spawn preparation: ${err.message}`);
   }
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` },
-  });
-  if (!res.ok) throw new Error(`slack ${method} -> HTTP ${res.status}`);
-  const data = await res.json();
-  if (!data.ok) throw new Error(`slack ${method} -> ${data.error}`);
-  return data;
 }
 
 async function main() {
@@ -51,7 +70,7 @@ async function main() {
   try {
     cursor = fs.readFileSync(CURSOR_FILE, "utf8").trim() || null;
   } catch {
-    // No cursor file — first run (or the box was rebuilt). Fall through.
+    // No cursor file — first run (or the Jarvis Box was rebuilt). Fall through.
   }
   // Slack ts format is "<seconds>.<6 digits>" — hand it a clean fixed-point
   // value, not a raw float print.
@@ -110,6 +129,12 @@ async function main() {
       statement: m.text,
       source: "slack-capture",
       provenance,
+      // The coordinates the threaded reply is addressed to. Also the dedupe
+      // key: this job is now the BACKSTOP behind the /slack/events push route,
+      // so it re-offers messages the push route already captured, and the
+      // server returns the existing todo instead of minting a second one.
+      slackChannel: env.SLACK_DUMP_CHANNEL_ID,
+      slackTs: m.ts,
     });
 
     // Advance the cursor IMMEDIATELY after each successful capture, so a
@@ -121,6 +146,10 @@ async function main() {
         `"${m.text.slice(0, 60).replace(/\s+/g, " ")}"`,
     );
   }
+
+  // One spawn for the whole run, not one per message: preparation processes a
+  // batch, so a second overlapping run would only lose its lock and exit.
+  spawnPreparation();
 }
 
 main().catch((err) => {

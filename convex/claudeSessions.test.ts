@@ -461,6 +461,151 @@ describe("claude sessions", () => {
 
   // witness: remove the ruling-marking branch from createSession in
   // convex/claudeSessions.ts and this test goes red.
+  // ── One creation path, one repo answer (Tom's rulings, 2026-08-30) ─────────
+  // The failure these pin: every session opened from a TTS button arrived with
+  // repo "none", so it could neither clone a private repo nor push anything —
+  // three of the four launch surfaces had no repo picker and passed the only
+  // value they could name.
+
+  // witness: make createSession's repo resolution `explicit ?? []` (drop the
+  // batch/todo fallback) and this goes red — the session gets no checkout.
+  it("a session inherits its batch's declared repos when the caller names none", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "Every surface TTS shows Tom",
+        repos: ["tom.quest", "WikiTom"],
+        status: "active" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "rewrite the popovers",
+    });
+    await t.run(async (ctx) => ctx.db.patch(todoId, { batchId }));
+
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "work the batch",
+      kind: "focus-item",
+      todoId,
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+    // `repo` stays written for every pre-ruling reader; it is repos[0].
+    expect(session?.repo).toBe("tom.quest");
+  });
+
+  // The batch-subject half (ledger graduation session-repos-need-batch-subject,
+  // 2026-08-31): a session opened ON a batch has no todo to reach the batch
+  // through — before batchId existed it was created with no subject at all,
+  // so the button Tom was most likely to press on a multi-repo batch was the
+  // one that could not inherit the declaration and started with no checkout.
+  // witness: in createSession, resolve the batch from `todo?.batchId` only
+  // (ignore the batchId arg) and this goes red.
+  it("a session opened ON a batch (batchId, no todo) inherits the batch's declared repos", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "The Turing pages",
+        repos: ["tom.quest", "WikiTom"],
+        status: "active" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "work the batch",
+      kind: "focus-item",
+      batchId,
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+    expect(session?.batchId).toBe(batchId);
+  });
+
+  // witness: drop the isSessionRepo filter from normalizeSessionRepos and the
+  // unknown name survives — the daemon then throws on its first turn and the
+  // session dies before doing anything.
+  it("normalizes an explicit repo list: unknown names dropped, order canonical", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "explicit",
+      kind: "adhoc",
+      repos: ["WikiTom", "NotARepo", "tom.quest", "WikiTom"],
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+  });
+
+  // "none" from the /sessions dropdown is an ANSWER, not an absence: Tom asked
+  // for an empty scratch workspace and must not be overridden by the batch.
+  // witness: change the resolver's `explicit !== undefined` test to a
+  // truthiness test on the normalized result and this goes red.
+  it("an explicit 'none' beats the batch declaration", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "a batch with repos",
+        repos: ["tom.quest"],
+        status: "active" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    await t.run(async (ctx) => ctx.db.patch(todoId, { batchId }));
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "scratch please",
+      kind: "focus-item",
+      repo: "none",
+      todoId,
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual([]);
+    expect(session?.repo).toBe("none");
+  });
+
+  // The multi-repo half of the ruling: the prompt must NAME each clone, or the
+  // agent cannot find the second checkout it was given.
+  // witness: collapse workspaceParagraph to its single-repo branch and this
+  // goes red — the prompt promises one checkout where two exist.
+  it("names every clone in the opening prompt of a multi-repo mission", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "two repos",
+      kind: "adhoc",
+      repos: ["tom.quest", "WikiTom"],
+      initialPrompt: "the mission",
+    });
+    const [inbound] = await t.run(async (ctx) =>
+      ctx.db
+        .query("claudeInbound")
+        .filter((q) => q.eq(q.field("sessionId"), sessionId))
+        .collect(),
+    );
+    // The interactive footer now carries the workspace paragraph too
+    // (2026-08-31): an interactive session that was never told the rules
+    // pushed `tts/verdict-and-names` on 2026-08-30 and burned turns against
+    // the command gate. The prompt must name each clone and the one
+    // sanctioned branch.
+    expect(inbound.text).toContain(sessionId);
+    expect(inbound.text).toContain("`./tom.quest`");
+    expect(inbound.text).toContain("`./WikiTom`");
+    expect(inbound.text).toContain(`session/${sessionId}`);
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+  });
+
   it("createSession with a todoId marks the live unapplied session ruling applied", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -944,7 +1089,7 @@ describe("claude sessions", () => {
     ).rejects.toThrow(/empty/);
   });
 
-  it("poll stores the box load and names each live session's posture", async () => {
+  it("poll stores the Jarvis Box load and names each live session's posture", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
@@ -1678,7 +1823,7 @@ describe("autonomous session scheduler", () => {
 
   // witness: remove the load-admission guard and this test goes red — load is
   // the PRIMARY throttle, not the scalar caps.
-  it("stands down when per-cpu load or free memory says the box is busy", async () => {
+  it("stands down when per-cpu load or free memory says the Jarvis Box is busy", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await eligibleTodo(tom);
@@ -1704,7 +1849,7 @@ describe("autonomous session scheduler", () => {
     await eligibleTodo(tom);
     await enableAuto(t);
 
-    // No heartbeat at all: nothing on the box could start a session.
+    // No heartbeat at all: nothing on the Jarvis Box could start a session.
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(await autoSessions(t)).toHaveLength(0);
 
@@ -2014,10 +2159,11 @@ describe("autonomous session scheduler", () => {
     expect(sessions[0].blockCategory).toBe("chores");
   });
 
-  // witness: sort the batch lane `rank(a) - rank(b)`, or invert
-  // IMPORTANCE_RANK in convex/tts.ts, and this test goes red — the tick's one
-  // admission would go to the least important batch.
-  it("walks the most important batch first", async () => {
+  // Ordering comes from dates, never a rating (Tom's ruling 2026-08-29).
+  // witness: sort the batch lane `b.updatedAt - a.updatedAt` in
+  // convex/claudeSessions.ts and this test goes red — the tick's one admission
+  // would go to the freshest batch instead of the stalest.
+  it("walks the stalest batch first", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await enableAuto(t, { maxNewPerTick: 1 });
@@ -2029,29 +2175,30 @@ describe("autonomous session scheduler", () => {
         status: "open" as const,
       },
     ];
-    const lowMember = await eligibleTodo(tom, "low member");
-    const highMember = await eligibleTodo(tom, "high member");
-    // The low batch is created FIRST, so a stable sort leaves it in front
-    // unless the importance comparator actually moves it.
-    const low = await eligibleTodo(tom, "low batch");
-    const high = await eligibleTodo(tom, "high batch");
+    const staleMember = await eligibleTodo(tom, "stale member");
+    const freshMember = await eligibleTodo(tom, "fresh member");
+    // The FRESH batch is created first, so a stable sort leaves it in front
+    // unless the updatedAt comparator actually moves the stale one up.
+    const fresh = await eligibleTodo(tom, "fresh batch");
+    const stale = await eligibleTodo(tom, "stale batch");
     await tom.mutation(api.tts.updateTodo, {
-      id: low,
-      members: [{ todoId: lowMember }],
+      id: fresh,
+      members: [{ todoId: freshMember }],
       plan: openStep,
     });
     await tom.mutation(api.tts.updateTodo, {
-      id: high,
-      members: [{ todoId: highMember }],
+      id: stale,
+      members: [{ todoId: staleMember }],
       plan: openStep,
     });
-    await tom.mutation(api.tts.setImportance, { id: low, level: "low" });
-    await tom.mutation(api.tts.setImportance, { id: high, level: "high" });
+    await t.run(async (ctx) =>
+      ctx.db.patch(stale, { updatedAt: Date.now() - 60 * 60 * 1000 }),
+    );
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const sessions = await autoSessions(t);
     expect(sessions).toHaveLength(1);
-    expect(sessions[0].todoId).toBe(high);
+    expect(sessions[0].todoId).toBe(stale);
   });
 
   // witness: move the batch lane below the dated lane and this test goes red.
@@ -2214,7 +2361,7 @@ describe("autonomous session scheduler", () => {
 //
 // The rule these tests pin is Tom's amendment the same night: prospecting runs
 // IN PARALLEL with real todo work, spending whatever per-tick budget the work
-// walk left unspent, because keeping the box at full capacity overnight is the
+// walk left unspent, because keeping the Jarvis Box at full capacity overnight is the
 // top priority. It is NOT the last resort it was first built as.
 describe("prospecting lane", () => {
   // The two repos the lane may prospect. WikiTom is deliberately absent: it is
@@ -2313,8 +2460,11 @@ describe("prospecting lane", () => {
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const first = await prospectSessions(t);
     expect(first).toHaveLength(1);
-    // Never prospected beats never prospected on the order in the source.
-    expect(first[0].repo).toBe("ComplexMultiTrigger");
+    // Never prospected beats never prospected on the order in the source —
+    // which is now SESSION_REPOS' declaration order in convex/ttsShared.ts
+    // (PROSPECT_REPOS is derived from it, minus the excluded wiki, rather than
+    // hand-listed), so the first tick takes tom.quest.
+    expect(first[0].repo).toBe("tom.quest");
     await endSession(t, first[0]._id);
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
@@ -2327,7 +2477,7 @@ describe("prospecting lane", () => {
   // Two witnesses, one per half. Delete the cooldown skip and the first half
   // goes red — a third prospector would re-read a tree read moments ago. Widen
   // PROSPECT_COOLDOWN_MS back to six hours ("six hours is insane") and the
-  // second half goes red — the box would idle the night out on a repo it read
+  // second half goes red — the Jarvis Box would idle the night out on a repo it read
   // once. The last assertion is the fairness comparator's own: invert
   // `lastAt < repoLastAt` and the newest-read repo would win instead.
   it("declines while both repos are inside the cooldown, then takes the stalest", async () => {
@@ -2465,6 +2615,7 @@ describe("frontier scheduler", () => {
         model?: "fable";
       }[];
       goalIds?: string[];
+      repos?: string[];
     },
   ) {
     const result = await t.mutation(internal.tts.internalStorePlanGraph, args);
@@ -2497,6 +2648,85 @@ describe("frontier scheduler", () => {
     });
     return inbound[0].text ?? "";
   }
+
+  // ── The batch declares its repos (Tom, 2026-08-30) ───────────────────────
+  // This replaces pickMissionRepo, a case-sensitive substring search over the
+  // todo's and batch's words — the reason the "Every surface TTS shows Tom"
+  // batch's session arrived with no checkout at all.
+
+  // witness: drop the `batch` branch from resolveSessionRepos in
+  // convex/claudeSessions.ts and this goes red — the mission falls back to the
+  // substring guess, which cannot see WikiTom in a batch that never says it.
+  it("gives a mission the repos its batch declared, not a guess from its words", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "every surface it shows Tom",
+      // Neither the batch nor the task names a repo anywhere in its words, so
+      // the old substring guess would have produced no checkout.
+      repos: ["tom.quest", "WikiTom"],
+      tasks: [{ statement: "migrate the popovers", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].repos).toEqual(["tom.quest", "WikiTom"]);
+    expect(sessions[0].repo).toBe("tom.quest");
+
+    // And the prompt NAMES each clone — an agent that is not told the second
+    // checkout exists will never look for it.
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("./tom.quest");
+    expect(text).toContain("./WikiTom");
+    expect(text).toContain("2 fresh checkouts");
+  });
+
+  // The one-repo case keeps its old shape exactly: the working directory IS
+  // the checkout, because `gh pr create` fails outside a work tree and every
+  // prompt written before the ruling says so.
+  // witness: make ensureWorkdir/workspaceParagraph always use the parent and
+  // this goes red.
+  it("keeps the single-repo workspace wording when a batch declares one repo", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "one repo only",
+      repos: ["tom.quest"],
+      tasks: [{ statement: "do the thing", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("a fresh checkout of tom.quest");
+    expect(text).not.toContain("fresh checkouts");
+  });
+
+  // An explicitly EMPTY declaration is an answer: this batch needs no
+  // checkout. witness: test `batch.repos` for truthiness instead of
+  // `!== undefined` and this goes red — [] falls through to the guess, and a
+  // batch whose words happen to say "tom.quest" gets a clone it declined.
+  it("an explicitly empty declaration means no checkout, not a guess", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "read the tom.quest docs and decide",
+      repos: [],
+      tasks: [{ statement: "decide about tom.quest", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions[0].repos).toEqual([]);
+    expect(sessions[0].repo).toBe("none");
+  });
 
   // witness: drop the isReady filter from the frontier walk in
   // convex/claudeSessions.ts and this test goes red — the fleet would open a

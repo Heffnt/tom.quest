@@ -268,7 +268,7 @@ export const recordRuling = mutation({
 // A live session's ruling pen (tts.internalTriage pattern): internal so the
 // session agent can record Tom's spoken verdicts via `npx convex run
 // ttsRulings:internalRecordRuling` with deploy credentials — recordRuling
-// above requires Tom's browser identity, which the box does not hold. Only
+// above requires Tom's browser identity, which the Jarvis Box does not hold. Only
 // ever run while Tom is present and ruling; it is his pen, not a policy actor.
 export const internalRecordRuling = internalMutation({
   args: {

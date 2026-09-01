@@ -80,7 +80,7 @@ async function main() {
   try {
     cursor = Number(fs.readFileSync(CURSOR_FILE, "utf8").trim()) || 0;
   } catch {
-    // First run (or rebuilt box): look back 24h only.
+    // First run (or a rebuilt Jarvis Box): look back 24h only.
   }
   if (cursor === 0) cursor = Date.now() - FIRST_RUN_LOOKBACK_MS;
 

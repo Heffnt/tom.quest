@@ -1,4 +1,4 @@
-# TTS worker box
+# The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
 (Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
@@ -14,20 +14,31 @@ on a schedule:
    capturing when unsure, because a wrong capture costs one archive click while
    a wrong skip loses the thread. Until the Gmail credentials exist it is a
    quiet no-op; see below.
-3. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
+3. **poll-canvas** (every 30 min) — lists new Canvas course announcements and
+   spends ONE headless Claude call per batch deciding which imply an action
+   by Tom (schedule changes, sign-ups, required responses), then submits
+   those to Convex as unprepared todos with source `canvas`, linked to the
+   announcement. Assignments are NOT this job's business — the Convex-side
+   sync (convex/ttsCanvas.ts) owns those, with due dates and auto-done on
+   submission. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
+   restricts token creation; Tom's request form is pending).
+4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
-   Convex. If it fails, the Convex-side fallback prep (4:45) and the
-   always-sends 5 a.m. digest cover the day — a digest that reports missing
-   prep is the "worker is broken" signal; no digest at all means Convex/Slack
-   is broken. That split is the whole monitoring story.
-4. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-5. **apply-rulings** (every 10 min) — see the ruling loop below.
-6. **execute-approved** (hourly at :45) — see the ruling loop below.
+   Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
+   day's queue. The digest half of that split is OFF — Tom ruled outbound Slack
+   off on 2026-08-29, so the 5 a.m. digest crons are unregistered
+   (`convex/crons.ts:32-35`) and `sendDigest` returns on
+   `OUTBOUND_SLACK_ENABLED = false`. The queue and digest text are still
+   written and read in the app; nothing is sent, so there is no send-or-silence
+   monitoring signal today.
+5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
+6. **apply-rulings** (every 10 min) — see the ruling loop below.
+7. **execute-approved** (hourly at :45) — see the ruling loop below.
 
 ## The code-todo ruling loop
 
 CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
-`vqc/todos.yaml`; this box turns that file into rulings Tom can make from the
+`vqc/todos.yaml`; the Jarvis Box turns that file into rulings Tom can make from the
 tom.quest UI in seconds:
 
 - **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
@@ -56,9 +67,74 @@ To start a `needs-session` working session, from any CMT checkout:
 claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 ```
 
+## The browser
+
+Every session on this box can open a real page. `setup.sh` step 4 installs
+Playwright globally and downloads Chromium once into
+`/root/.cache/ms-playwright`; because sessions run as root, they all share
+that one copy rather than each pulling 115MB. The interface is a single
+command:
+
+```
+tts-browse https://tom.quest/turing --out /tmp/t.png          # anonymous
+tts-browse https://tom.quest/turing --login --full --json     # signed in
+```
+
+It prints the navigation status, the title, **console errors**, and **failed
+or 4xx/5xx requests**, then writes a PNG the session reads back. The failed-
+request line is the point: a recurring class of tom.quest bug is a request
+that should never have been sent — an id still resolving, a placeholder path
+segment — and this is what makes one visible instead of inferred.
+
+`--login` signs in through the ordinary widget using
+`TOMQUEST_AGENT_USERNAME` / `TOMQUEST_AGENT_PASSWORD`, and refuses to run
+without them, because every `/turing` and `/tts` page is role-gated: browsing
+one anonymously returns a 200 with 401s underneath, which reads as "page is
+fine" to a session that only checked the status.
+
+**Those two keys hold Tom's own account** (ratified 2026-08-30), so every
+session browses at role `tom`. Nothing scrubs them from a session's shell —
+`session.mjs` drops exactly `SESSIONS_WORKER_KEY` and `GH_TOKEN` and inherits
+the rest — so the account's role is the role every session holds. This is a
+knowing interim: no other account exists yet, and a session that cannot see
+`/turing` cannot check its own work there. A session account with a narrower
+role is a captured TTS todo.
+
+## The cluster, read-only
+
+`ssh` exists on this box but `turing.wpi.edu` is not reachable from it, and the
+session sandbox's command policy refuses to open a remote shell anyway. The one
+door to the WPI Turing cluster is the HTTPS API at `turing.tom.quest`, and its
+`TURING_API_KEY` opens everything there — including `POST /sessions/{name}/run`,
+which types an arbitrary command into a tmux session under Tom's cluster
+account. That key is **deliberately absent from `worker.env`** and stays absent.
+
+Instead turing-api carries a **second credential**, `TURING_READ_KEY`
+(`verify_read_key` in `turing-api/main.py`), which opens three GETs and nothing
+else. `worker.env` holds that one, and one command spends it:
+
+```
+tts-turing health                    # is the API up (needs no key at all)
+tts-turing gpus                      # GET /gpu-report
+tts-turing jobs                      # GET /jobs
+tts-turing output <session> [lines]  # GET /sessions/<name>/output
+```
+
+**There is no write verb, by construction** — no allocate, no cancel, no run,
+no file read. A session that needs one of those asks Tom. Unlike the browser
+credentials above, this key's blast radius is the four lines printed here.
+
+The key is minted by Tom and must be installed on **both** sides — in
+`/etc/tts/worker.env` here and in `turing-api/.env` on the cluster login node
+(`secrets/turing-api.env.example`), each service restarted afterwards. Until
+both have it, `tts-turing health` works and every other verb reports 401 with
+that ambiguity spelled out. An unset `TURING_READ_KEY` on the API side is the
+fail-closed state: the read door does not exist and the three endpoints stay
+full-key-only.
+
 ## The no-state rule
 
-**This box owns no durable state.** Everything that matters lives in Convex
+**The Jarvis Box owns no durable state.** Everything that matters lives in Convex
 (and, for code todos, in the CMT repo itself). The local files with memory
 are all harmless to lose:
 
@@ -67,25 +143,30 @@ are all harmless to lose:
 - `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
   processed (captured or skipped); losing it re-examines the last 24 hours,
   at worst re-capturing a few emails as duplicates Tom can archive.
+- `/var/lib/tts/canvas-announcements-cursor` — timestamp of the newest
+  announcement poll-canvas has processed; losing it re-examines the last
+  7 days, at worst re-capturing a few announcements as duplicates.
 - `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
   brief copies, the executor's throwaway clones.
 
-Losing the whole box loses nothing but a paused digest and some re-work.
+Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 
 ## Rebuild from scratch
 
 ```
 # 1. Create a Hetzner CAX11 (Ubuntu 24.04, ARM64), add the SSH key, log in as root.
-# 2. On the box:
+# 2. On the Jarvis Box:
 git clone https://github.com/<owner>/tom.quest
 bash tom.quest/worker/setup.sh
 # 3. Fill the secrets (the file documents each key):
 nano /etc/tts/worker.env
 # 4. Log in both Claude Max accounts (interactive), pick one:
-tts-account login gmail
-tts-account login wpi
+# run twice, switching the BROWSER profile between runs — each login is
+# filed into the slot matching the account that actually signed in
+tts-account login
+tts-account login
 tts-account use gmail
 # Done. Cron is installed; the digest resumes tomorrow at 5.
 ```
@@ -101,7 +182,7 @@ three are there, so the job ships and runs harmlessly ahead of them.
 
 The client id and secret come from a "Desktop app" OAuth client in Tom's
 Google Cloud console (any project, with the Gmail API enabled). The refresh
-token is minted ONCE, on Tom's own machine rather than the box, because
+token is minted ONCE, on Tom's own machine rather than the Jarvis Box, because
 approving it needs a browser:
 
 ```
@@ -127,6 +208,7 @@ tts-account use wpi      # switch; takes effect on the next job run
 ```
 node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
 node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
+node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
 node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
 node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
