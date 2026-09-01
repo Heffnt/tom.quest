@@ -170,6 +170,8 @@ It handles two parts, because they cover different failures:
   That directory has its own 3-day rule. This only redirects programs that
   **ask** where to put scratch — `mkdtemp`, `mktemp`, `tempfile`,
   `os.tmpdir()`. It cannot redirect a path an agent typed out in full.
+  A session's own `TMPDIR` is narrower still — see "What the daemon itself does
+  about scratch" below, where each session gets a directory that dies with it.
 
 Check what the cleaner would remove, removing nothing:
 `systemd-tmpfiles --clean --dry-run`.
@@ -183,6 +185,15 @@ Measured on the live box 2026-08-31 at 23:41 UTC, with `/tmp` holding 3.2 GB:
 | 86 MB in entries created through `TMPDIR` | 2% | the `TMPDIR` setting |
 | 3,086 MB at paths an agent typed out (`/tmp/killcheck`, twelve repository checkouts) | 97% | nothing above |
 | entries two days old or older | 0 | the age rule |
+
+The 2% row is a floor, not the whole `TMPDIR` share: it counts entries with the
+random suffix `mkdtemp` gives them, and programs that ask for the temporary
+directory and then use a FIXED name inside it are missed. Re-measured
+2026-09-01 at 00:30 UTC, three such entries — `/tmp/node-compile-cache`
+(104 MB), `/tmp/pytest-of-root` (176 MB) and `/tmp/claude-0` (226 entries) —
+were 284 MB, about 9% of the 3.2 GB, and each was confirmed to follow `TMPDIR`
+by setting it and watching where the writer landed. The conclusion is unchanged:
+the clones are the bulk and no variable moves them.
 
 Four clones of one 417 MB research repository, at `/tmp/killcheck` through
 `/tmp/killcheck4`, were made by a single session inside five minutes. Nothing
@@ -239,6 +250,70 @@ disk, but not when free disk is unreported").
 
 This lands with the merge and starts working at the daemon's next start, which
 is the same reboot that moves `/tmp` off RAM.
+
+### What the daemon itself does about scratch, needing no root
+
+Everything above changes the box. Two things change the *sessions*, and they
+ship with the daemon rather than with a command run as root.
+
+- **Every session gets its own temporary-file directory,**
+  `/var/cache/tts/sessions/<id>/tmp`, and the daemon exports it as `TMPDIR` in
+  the session's environment (`Session#tmpDir`, set in `startQuery`). It sits
+  beside the checkout, so nothing written there can be committed by accident,
+  and it is inside the directory `cleanupWorkdir` already deletes when the
+  session ends — so it is reaped by the session's own lifetime, not by an age
+  rule that cannot fire until the files are two days old. It overrides the
+  shared `TMPDIR=/var/cache/tts/tmp` the unit sets, which stays as the answer
+  for cron jobs and the daemon itself. Verified on the box 2026-09-01 that this
+  one variable is what the writers actually read: with it set, Node's
+  `os.tmpdir()` and its compile cache, Python's `tempfile.gettempdir()`, the
+  shell's `mktemp -d`, and the Claude CLI's own `claude-0` and `cc-socks`
+  directories all resolved into it. Those account for `/tmp/node-compile-cache`
+  (104 MB), `/tmp/pytest-of-root` (176 MB) and `/tmp/claude-0` (226 entries) as
+  measured the same day.
+- **The command classifier now refuses to create anything under `/tmp`.**
+  `/tmp/` is an alternative in `BASH_DANGER_RE`, so such a command buys a
+  verdict instead of passing free, and the classifier prompt denies *creation*
+  there while allowing reads. This is the only mechanism that reaches the 2.5 GB
+  of clones an agent addressed by absolute path, because that path was the
+  agent's own choice and no environment variable can move it. The deny message
+  names the session's own directory, so the model's next attempt goes to the
+  right place. Two deliberate scopes: reading, listing and measuring `/tmp` stay
+  allowed (the sessions that diagnose this very problem have to do it), and
+  deletion under `/tmp` stays governed by the existing "nothing outside the
+  working directory" rule, because another live session may be working inside a
+  directory there.
+
+Run against the real classifier model on 2026-09-01, one call per command:
+
+| Command | Verdict |
+| --- | --- |
+| `git clone --depth 1 https://github.com/Heffnt/ComplexMultiTrigger.git /tmp/killcheck5` | DENY, naming `$TMPDIR` |
+| `echo hello > /tmp/notes.txt` | DENY, naming `$TMPDIR` |
+| `mkdir -p /tmp/pw-browsers && ls /tmp` | DENY, naming `$TMPDIR` |
+| the same clone into `/var/cache/tts/sessions/<id>/tmp` | ALLOW |
+| `du -sh /tmp/* \| sort -h \| tail -5` | ALLOW |
+| `ls -la /tmp` | ALLOW |
+| `cat /tmp/cmt_control/README.md` | ALLOW |
+| the file-based pen still spelling `/tmp/explanation.html` | ALLOW |
+
+That last row is a rule of its own in the prompt, and it exists because the
+mission prompt is built in Convex while the classifier lives in this daemon:
+the two deploy separately, so a session can be reading a prompt whose pen names
+`/tmp` while running under a daemon that denies creation there. Denying the pen
+would cost that session its whole prepared explanation, which is far worse than
+the few tens of kilobytes the file occupies.
+
+The mission prompt itself no longer names `/tmp` at all: the file-based pen
+writes `"${TMPDIR:-/tmp}/explanation.html"` and `"${TMPDIR:-/tmp}/tts-body.json"`.
+Those two filenames used to be identical for every session on the box, and on
+2026-09-01 a session opened `/tmp/tts-body.json` and found *another* session's
+todo id and evidence in it — one `curl -d @` away from posting a payload naming
+a todo it did not hold. `scripts/check-session-mirrors.mjs` fails the build if
+either half drifts: if the daemon stops exporting `TMPDIR`, if a bare `/tmp`
+path returns to a prompt, or if `BASH_DANGER_RE` stops fingerprinting a clone
+into `/tmp` (or starts fingerprinting ordinary dev flow, which would put a
+classifier call in front of every test run).
 
 Exemptions, if a path in `/tmp` must be spared, go in a *separate*
 `/etc/tmpfiles.d/` file as `x /tmp/<path>` lines — never in `tmp.conf`, which

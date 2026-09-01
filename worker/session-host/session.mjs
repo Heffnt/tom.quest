@@ -34,6 +34,29 @@ const execFile = promisify(execFileCb);
 // whatever Tom asks the model to do — never through files that stay here.
 export const SESSIONS_ROOT = "/var/cache/tts/sessions";
 
+// The session's TEMPORARY-FILE DIRECTORY (distinct from "scratch workspace",
+// which this codebase already uses for a session that has no checkout at all).
+// Every session gets one, a sibling of the checkout — outside every work tree,
+// so nothing written there can be committed by accident or dirty `git status`;
+// with several repositories the working directory is the parent, and this sits
+// beside the checkouts in it. TMPDIR points at it: the one variable the C
+// library's mkdtemp, the shell's mktemp, Python's tempfile, Node's os.tmpdir()
+// and the Claude CLI's own temporary files all consult.
+//
+// WHY IT IS HERE RATHER THAN IN /tmp. /tmp on the Jarvis Box is a tmpfs — a
+// filesystem held in RAM — sized 3.8 GB on a 7.7 GB machine, so a file there
+// costs memory the box cannot use for anything else, and nothing cleaned it on
+// a useful timescale (measured 2026-08-30: 100 percent full, tooling inside a
+// live session failing with out-of-space errors). /var/cache/tts is on the
+// disk, and this directory sits INSIDE the session directory that
+// cleanupWorkdir already deletes when the session ends, so it is reaped by the
+// session's own lifetime rather than by an age rule that cannot fire until the
+// files are days old. worker/scratch-cleaning.sh is the other half: it aims
+// everything OUTSIDE a session (cron jobs, the daemon itself) at
+// /var/cache/tts/tmp and reaps that at 3 days. A session's env overrides that
+// inherited value with this one — same disk, tighter lifetime.
+const SESSION_TMP_DIRNAME = "tmp";
+
 // The repos a session may check out (claudeSessions.repo). Everything is
 // under github.com/Heffnt — same owner the code-todo jobs use.
 // MIRROR of SESSION_REPOS in convex/ttsShared.ts (the one home) — this file
@@ -113,6 +136,15 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 //   curl with a body/upload flag — the exfiltration shape (plain GETs are fine)
 //   wget            — same, in its fetch-and-write direction
 //   rm on an absolute path — deletion that can reach outside the workdir
+//   /tmp/          — the RAM-backed temporary filesystem. Measured 2026-09-01:
+//                    2.5 GB of the 3.2 GB in it was repository clones an agent
+//                    made by typing the path out in full (four copies of one
+//                    417 MB repository inside five minutes), which is a class
+//                    NO environment variable can move, because the agent named
+//                    the destination itself. This alternative is what puts
+//                    those commands in front of a judgement at all; the
+//                    prompt below denies only CREATION there and names the
+//                    session's own temporary-file directory as the place to use.
 // Two alternatives are deliberately loose about WHITESPACE, because the tight
 // versions missed the real shapes: `git -C <dir> push` (git's own global
 // options between the verb and the subcommand — the form this very file uses)
@@ -121,7 +153,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // span backslash-newline continuations. Over-matching only costs a classifier
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
-  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\/tmp\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -147,10 +179,11 @@ function commandPreview(command) {
 // `rm -rf node_modules` inside a throwaway clone is nothing, and the prompt
 // has to say why. The command rides in verbatim between markers so quoting
 // inside it can't read as instructions.
-function classifierPrompt({ command, workdir, branch }) {
+export function classifierPrompt({ command, workdir, branch, tmpdir }) {
   return [
     "You are a one-shot security classifier for an autonomous coding agent running on the Jarvis Box, a disposable server.",
     `The agent works in a throwaway clone at ${workdir}. That clone is deleted when the session ends, so damage confined to it costs nothing. The agent's only sanctioned push target is the branch ${branch}.`,
+    `Its temporary-file directory is ${tmpdir}, which is on the box's disk and is deleted when the session ends. TMPDIR points there.`,
     "",
     "DENY the command if it would:",
     `- push to any branch other than ${branch}, or to a protected branch (main or master)`,
@@ -159,6 +192,13 @@ function classifierPrompt({ command, workdir, branch }) {
     "- touch /etc, /root, systemd, cron, SSH configuration, or Claude account configuration",
     "- delete anything outside the working directory",
     "- open interactive remote access to or from the Jarvis Box",
+    // The one DENY here that is not about escaping the posture: /tmp on this
+    // box is a filesystem held in RAM, so a clone written there is memory the
+    // whole fleet loses until someone with root clears it. Scoped to CREATION
+    // because the sessions that diagnose this very problem have to read and
+    // measure /tmp, and a rule that stopped them would be a worse failure than
+    // the one it prevents.
+    `- create a file or directory under /tmp — /tmp on this box is held in RAM, so writing there costs the whole box memory; ${tmpdir} is this session's own temporary-file directory, on disk. READING, listing and measuring /tmp is fine, and deletion there stays governed by the rule above (another live session may be working inside a directory in /tmp); only creating something there is denied, and the reason to give is that ${tmpdir} (or $TMPDIR) is where it belongs`,
     "",
     "ALLOW everything else, including ordinary development work inside the clone: builds, tests, package installs, file deletion inside the working directory, reads of any kind, and pushes to " +
       branch +
@@ -174,6 +214,14 @@ function classifierPrompt({ command, workdir, branch }) {
     // run and backs the todo off for 24h. Tier 1 catches the canonical pen,
     // but variants (heredoc bodies, -d @file) legitimately land here.
     'ALSO ALLOW the system\'s own bookkeeping POSTs to "$CONVEX_SITE_URL/tts/..." authenticated with the X-TTS-Key header — that is the sanctioned write path, not exfiltration; ALLOW those.',
+    // Deploy skew, and the one way the /tmp rule could strand a session. The
+    // mission prompt is built in Convex and the classifier lives in this
+    // daemon; the two ship independently, so a session can be reading a prompt
+    // whose file-based pen still spells /tmp/explanation.html while running
+    // under a daemon that denies creation there. Denying the pen would cost the
+    // session its whole prepared explanation — far worse than the few tens of
+    // kilobytes those two files occupy — so they are named as an exception.
+    "ALSO ALLOW writing the session's own bookkeeping payload files — the ground-up explanation HTML and the JSON request body those pens POST — wherever the mission prompt spells them, including under /tmp: they are tens of kilobytes, and a mission prompt written before the temporary-file directory existed still names /tmp for them.",
     "",
     "The command, verbatim between the markers:",
     "<<<COMMAND",
@@ -462,6 +510,15 @@ export class Session {
 
   // ── workdir ────────────────────────────────────────────────────────────────
 
+  // This session's temporary-file directory, /var/cache/tts/sessions/<id>/tmp.
+  // DERIVED, not stored: the path is a pure function of the session id, so
+  // there is no field that can be undefined and no ordering rule for a reader
+  // to remember. ensureWorkdir creates it; startQuery exports it as TMPDIR and
+  // the classifier prompt names it.
+  get tmpDir() {
+    return path.join(SESSIONS_ROOT, String(this.id), SESSION_TMP_DIRNAME);
+  }
+
   // Create (or re-create) this session's working directory.
   //   no repos    -> /var/cache/tts/sessions/<id>/ws       (empty scratch)
   //   one repo    -> /var/cache/tts/sessions/<id>/<repo>   (fresh shallow
@@ -483,6 +540,11 @@ export class Session {
   // continuity the filesystem doesn't have.
   async ensureWorkdir({ forResume = false } = {}) {
     const base = path.join(SESSIONS_ROOT, String(this.id));
+
+    // The temporary-file directory first, for every shape of workspace, and
+    // idempotently: the between-turns and resume calls re-create it if
+    // anything removed it.
+    fs.mkdirSync(this.tmpDir, { recursive: true });
 
     if (this.repos.length === 0) {
       const dir = path.join(base, "ws");
@@ -730,9 +792,21 @@ export class Session {
         // inheriting them is not hypothetical — systemd puts both in this
         // process's env — and an ingest key reachable from the session's
         // shell would let a confused session corrupt any transcript.
+        // TMPDIR is set AFTER the inherited env on purpose: it overrides
+        // whatever the daemon itself inherited (systemd's drop-in points the
+        // daemon at the shared /var/cache/tts/tmp) with this session's own
+        // directory, so temporary files land on disk instead of the RAM-backed
+        // /tmp AND die with the session instead of waiting out an age rule.
+        // Verified on the box 2026-09-01 that this one variable is what those
+        // writers read: with TMPDIR set, Node's os.tmpdir() and its compile
+        // cache, Python's tempfile.gettempdir() and the shell's mktemp all
+        // resolved into it. Those three account for /tmp/node-compile-cache
+        // (104 MB), /tmp/pytest-of-root (176 MB) and /tmp/claude-0 (226
+        // entries) as measured the same day.
         env: {
           ...inheritedEnv,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
+          TMPDIR: this.tmpDir,
           ...(this.env.TTS_WORKER_KEY
             ? { TTS_WORKER_KEY: this.env.TTS_WORKER_KEY }
             : {}),
@@ -1160,6 +1234,7 @@ export class Session {
             command,
             workdir: this.workdir ?? SESSIONS_ROOT,
             branch: `session/${this.id}`,
+            tmpdir: this.tmpDir,
           }),
           "--model",
           CLASSIFIER_MODEL,

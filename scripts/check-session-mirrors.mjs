@@ -104,6 +104,58 @@ if (usageA && usageB) {
   }
 }
 
+// 4. Temporary files. Two homes again: the daemon gives each session a
+// temporary-file directory on disk and exports it as TMPDIR
+// (worker/session-host/session.mjs), and the mission prompt built in Convex
+// tells the agent where to write the two payload files its pens POST
+// (convex/claudeSessions.ts). When those drift the fleet writes into /tmp,
+// which on the Jarvis Box is a filesystem held in RAM — it reached 100 percent
+// full on 2026-08-30 and broke tooling inside live sessions — and, worse, every
+// session writes the SAME two filenames there: on 2026-09-01 a session opened
+// /tmp/tts-body.json and found another session's todo id and evidence in it,
+// one `curl -d @` away from posting a payload naming a todo it did not hold.
+// witness: change TMPDIR in session.mjs's SDK env to anything else, or put a
+// bare /tmp path back in the prompt, and this check fails.
+if (!/TMPDIR: this\.tmpDir/.test(sessionMjs)) {
+  failures.push(
+    "session.mjs: the SDK env no longer sets TMPDIR to this.tmpDir — sessions would write temporary files into the RAM-backed /tmp",
+  );
+}
+const bareTmpInPrompt = convexTs
+  .split("\n")
+  .map((line, i) => ({ line, n: i + 1 }))
+  .filter(
+    ({ line }) =>
+      /["`][^"`]*\/tmp\//.test(line) && !line.trim().startsWith("//"),
+  );
+if (bareTmpInPrompt.length > 0) {
+  for (const { line, n } of bareTmpInPrompt) {
+    failures.push(
+      `claudeSessions.ts:${n}: a prompt names a bare /tmp path — use "\${TMPDIR:-/tmp}" so the file lands in the session's own directory on disk: ${line.trim().slice(0, 100)}`,
+    );
+  }
+}
+// And the daemon's command classifier must still see a write into /tmp at all:
+// the fingerprint is what buys a verdict, and 2.5 GB of the 3.2 GB in /tmp on
+// 2026-09-01 was repository clones an agent addressed by absolute path, which
+// no environment variable can move.
+// witness: drop the `\/tmp\/` alternative from BASH_DANGER_RE.
+const dangerMatch = sessionMjs.match(/const BASH_DANGER_RE =\n\s*\/(.+)\/;/);
+if (!dangerMatch) failures.push("session.mjs: BASH_DANGER_RE literal not found");
+if (dangerMatch) {
+  const danger = new RegExp(dangerMatch[1]);
+  if (!danger.test("git clone --depth 1 https://github.com/x/y /tmp/killcheck")) {
+    failures.push(
+      "BASH_DANGER_RE no longer fingerprints a clone into /tmp — the classifier would never be asked about it",
+    );
+  }
+  if (danger.test("pnpm test") || danger.test("git commit -am 'x'")) {
+    failures.push(
+      "BASH_DANGER_RE now fingerprints ordinary dev flow — every test run would pay classifier latency",
+    );
+  }
+}
+
 if (failures.length > 0) {
   console.error("Session-mirror check FAILED:");
   for (const f of failures) console.error("  - " + f);

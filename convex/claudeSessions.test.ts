@@ -2699,6 +2699,47 @@ describe("frontier scheduler", () => {
     return inbound[0].text ?? "";
   }
 
+  // ── Where the mission tells a session to write its payload files ─────────
+  // The file-based pen (the one used for a groundUpExplanation, which is too
+  // large to type inline) used to name /tmp/explanation.html and
+  // /tmp/tts-body.json. Both filenames were the SAME for every session on the
+  // box, and /tmp there is a filesystem held in RAM: on 2026-09-01 a session
+  // opened /tmp/tts-body.json and found ANOTHER session's todo id and evidence
+  // sitting in it, one `curl -d @` away from posting a payload naming a todo it
+  // did not hold. The daemon now gives each session its own directory on disk
+  // and exports it as TMPDIR (worker/session-host/session.mjs).
+  // witness: put a bare /tmp path back in the file-pen block of
+  // buildWorkerPrompt and both expectations below go red.
+  it("sends payload files to the session's own TMPDIR, never to a shared /tmp path", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "one repo only",
+      repos: ["tom.quest"],
+      tasks: [{ statement: "do the thing", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    const text = await missionText(tom, sessions[0]._id);
+
+    expect(text).toContain('"${TMPDIR:-/tmp}/explanation.html"');
+    expect(text).toContain('"${TMPDIR:-/tmp}/tts-body.json"');
+    // No naked /tmp path survives anywhere in the mission: every occurrence of
+    // "/tmp" must be the fallback inside that expansion. The fallback itself
+    // stays because this prompt is built in Convex while TMPDIR is set by the
+    // daemon, and the two are deployed separately — under an older daemon the
+    // bare "$TMPDIR/explanation.html" would expand to "/explanation.html" and
+    // write into the root of the box.
+    for (const at of [...text.matchAll(/\/tmp/g)].map((m) => m.index ?? 0)) {
+      expect(text.slice(Math.max(0, at - 12), at + 4)).toContain(
+        "${TMPDIR:-/tmp",
+      );
+    }
+  });
+
   // ── The batch declares its repos (Tom, 2026-08-30) ───────────────────────
   // This replaces pickMissionRepo, a case-sensitive substring search over the
   // todo's and batch's words — the reason the "Every surface TTS shows Tom"

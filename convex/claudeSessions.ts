@@ -1903,9 +1903,21 @@ function buildWorkerPrompt(args: {
     "```",
     "Every field except \"id\" is optional — send only what you produced, and send both commands if you both produced something and finished.",
     "",
-    "A groundUpExplanation is a whole HTML document and will not survive being typed inline in that command. Write the document to a file, build the request body from it, and post the file:",
+    // The scratch path is $TMPDIR, which the daemon sets to a directory
+    // private to this session (worker/session-host/session.mjs). It used to be
+    // a bare /tmp/explanation.html and /tmp/tts-body.json, which was wrong
+    // twice over: /tmp on the box is a filesystem held in RAM, so the fleet's
+    // own instructions were spending the box's memory, and the two filenames
+    // were the SAME for every session — observed 2026-09-01, a session opened
+    // /tmp/tts-body.json and found another session's todo id and evidence
+    // sitting in it, one `curl -d @` away from posting a payload naming a todo
+    // it did not hold. The ${TMPDIR:-/tmp} fallback is not decoration: this
+    // prompt is built in Convex and TMPDIR is set by the daemon, the two are
+    // deployed separately, and a session under an older daemon would otherwise
+    // expand this to /explanation.html and write into the box's root.
+    "A groundUpExplanation is a whole HTML document and will not survive being typed inline in that command. Write the document to a file under $TMPDIR — this session's own scratch directory, on disk, deleted when the session ends — then build the request body from it and post the file:",
     "```",
-    `# after writing the page to /tmp/explanation.html\njq -Rs --arg id '${todo._id}' '{id: $id, readiness: "ready-for-tom", groundUpExplanation: .}' < /tmp/explanation.html > /tmp/tts-body.json\ncurl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d @/tmp/tts-body.json`,
+    `# after writing the page to "\${TMPDIR:-/tmp}/explanation.html"\njq -Rs --arg id '${todo._id}' '{id: $id, readiness: "ready-for-tom", groundUpExplanation: .}' < "\${TMPDIR:-/tmp}/explanation.html" > "\${TMPDIR:-/tmp}/tts-body.json"\ncurl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d @"\${TMPDIR:-/tmp}/tts-body.json"`,
     "```",
     "Any equivalent works (node, python) — the point is that the JSON escaping is done by a tool and never by hand. Add the other fields to the jq object as you need them.",
     "",
