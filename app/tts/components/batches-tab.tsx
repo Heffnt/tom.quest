@@ -223,13 +223,13 @@ function LifeRow({
 
 // Unbatched code rows are the shared CodeTodoRow (./code-todo-row) — brief,
 // evidence, the options row and the live ruling all come from that one row, so
-// a code item looks and behaves the same on this tab and on the by-individual
+// a code item looks and behaves the same on this tab and on the everything
 // tab.
 
 // ── The tab ─────────────────────────────────────────────────────────────────
 // No onOpenItem: on this tab every item — a task, a goal, the batch itself —
 // opens the detail dialog, which holds everything known about it. Nothing here
-// hands an item off to the by-individual tab any more.
+// hands an item off to the everything tab any more.
 export default function BatchesTab() {
   const { isTom } = useAuth();
   const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
@@ -315,7 +315,7 @@ export default function BatchesTab() {
   }, [batches, todos]);
 
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
-  // one the by-individual tab feeds CodeTodoRow.
+  // one the everything tab feeds CodeTodoRow.
   const liveRulingByKey = useMemo(
     () => liveRulingsByKey(rulings ?? []),
     [rulings],

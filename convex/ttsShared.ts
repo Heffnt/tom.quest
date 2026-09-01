@@ -444,7 +444,7 @@ export function normalizeSessionRepos(
  */
 export const DAEMON_STALE_MS = 90_000;
 
-/** Deep link to one item on the /tts page (Everything tab), optionally
+/** Deep link to one item on the /tts page (everything tab), optionally
  * carrying an intent the page confirms before acting (state changes only on
  * the confirmed click — Slack's link-preview crawler fetches URLs, spec §7).
  * The single producer of the ?item=&intent= vocabulary consumed by app/tts.

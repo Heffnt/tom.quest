@@ -1,8 +1,8 @@
 "use client";
 
 // TTS (tts) — the one todo page: QuickAdd capture bar, three tabs
-// (calendar · batches · by individual), the active tab below. Tab state rides
-// ?tab=; ?item= (produced by ttsItemLink) forces the by-individual tab and is
+// (calendar · batches · everything), the active tab below. Tab state rides
+// ?tab=; ?item= (produced by ttsItemLink) forces the everything tab and is
 // handed to it as the link prop. Each tab fetches its own data with useQuery —
 // Convex dedupes subscriptions, so the shell's badge-count queries are free.
 
@@ -21,12 +21,12 @@ import { selectBatches, type LinkIntent } from "./lib";
 const inputCls =
   "bg-surface border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 
-type Tab = "calendar" | "batches" | "by-individual";
+type Tab = "calendar" | "batches" | "everything";
 
 const TABS: Array<{ value: Tab; label: string }> = [
   { value: "calendar", label: "calendar" },
   { value: "batches", label: "batches" },
-  { value: "by-individual", label: "by individual" },
+  { value: "everything", label: "everything" },
 ];
 
 function QuickAdd() {
@@ -113,15 +113,15 @@ export default function TtsClient() {
       const intent =
         raw === "done" || raw === "archive" || raw === "engage" ? raw : null;
       setLink({ item, intent });
-      setTab("by-individual"); // an item link always lands on the by-individual tab
+      setTab("everything"); // an item link always lands on the everything tab
       return;
     }
     // Legacy names still map (old Slack links must land somewhere sensible):
-    // needs-me → batches, everything → by-individual.
+    // needs-me → batches, by-individual → everything.
     const t = sp.get("tab");
     if (t === "calendar") setTab("calendar");
     else if (t === "batches" || t === "needs-me") setTab("batches");
-    else if (t === "by-individual" || t === "everything") setTab("by-individual");
+    else if (t === "everything" || t === "by-individual") setTab("everything");
   }, []);
 
   // Tab state stays local: user-facing quest URLs avoid query params
@@ -197,12 +197,12 @@ export default function TtsClient() {
             <CalendarTab
               onOpenItem={(id) => {
                 setLink({ item: id, intent: null });
-                setTab("by-individual");
+                setTab("everything");
               }}
             />
           )}
           {tab === "batches" && <BatchesTab />}
-          {tab === "by-individual" && (
+          {tab === "everything" && (
             <EverythingTab link={link} onLinkCleared={clearLink} />
           )}
         </div>
