@@ -38,8 +38,13 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 - `user` is the default sign-up role and sees public quests.
 - `admin` has elevated quest access and may be granted to trusted friends or colleagues.
-- `tom` is Tom's account. It extends admin access with Jarvis config, the diagnostic panel, and terminal access.
+- `tom` is Tom's account. It extends admin access with Jarvis config and the diagnostic panel.
+- `/turing`, including the cluster terminal, is admin-level: the page is registered `visibility: "admin"`, and both the proxy route's write methods and the terminal's WebSocket credential route call `requireAdmin`. Do not narrow these to `isTom`. (The proxy's GET additionally admits `agent` via `requireAdminOrAgent`.)
+- `agent` is the account a TTS session's headless browser signs in as. It is **not a rank** on the `user → admin → tom` ladder but a side branch: it reads a named list of surfaces and writes nothing, anywhere. `roleAccess("agent")` returns `isAdmin: false` and `isTom: false`, so every existing gate denies it by default.
 - Use `isTom` for Tom-only features and `isAdmin` for elevated features. `isAdmin` is true for both `admin` and `tom`.
+- Reads that `agent` may perform go through `requireTomOrAgent(ctx, label)` in Convex, `requireAdminOrAgent(request, surface)` in route handlers, and `canReadSurface(label)` on the client. Writes stay on `requireTom` / `requireAdmin` / `isTom` — including writes that fire on page arrival, which must be gated on `isTom` so a headless screenshot records nothing.
+- The reach of `agent` is one list: `convex/agentSurfaces.ts`, plus the per-page `agentReadable` flag in `app/components/page-routes.ts`. Widening it is adding one name; nothing else moves. Its labels are the same ones `requireTom` already takes, so read gates and write gates share one vocabulary.
+- `users.setRoleByUsername` is the pen for granting or taking back `user`/`admin`/`agent`. It cannot mint or demote a `tom`.
 
 ## State Management
 
@@ -103,7 +108,14 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - `pnpm test` runs Vitest unit/component tests.
 - `pnpm test:e2e` runs Playwright E2E tests.
 - `pnpm lint` runs ESLint.
+- `pnpm check:guardrails` runs the static boundary checks that CI enforces on every pull request.
 - Before deployment-related work, production build verification matters more than style-only checks.
+
+## Binary Assets
+
+- A file over 50 MiB makes every push print GitHub's GH001 warning; over 100 MiB GitHub refuses the push. Both thresholds apply to the blob forever, so a single commit of a large file is only taken back by rewriting all of history.
+- `scripts/check-large-files.mjs` fails the build when a tracked file crosses 50 MiB without being Git LFS tracked. Files already over the line are named in its `KNOWN_LARGE` map with the reason.
+- Large binaries go to Git LFS or outside the repo, never into ordinary git history.
 
 ## Agent Context System
 

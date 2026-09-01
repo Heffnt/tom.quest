@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import { describe, expect, it } from "vitest";
+import { ARTICLE_OR_SPEC } from "./cites";
 
 // Shape guards for the VQC registries and the rulings log (vqc/adoption.md).
 // These validate the SCHEMA of choice-files at use (fail-loud, C3/D24) — they
 // never freeze content: editing these files is the intended operation.
 
-const ARTICLE_OR_SPEC = /^(A\d+|C[1-9]|D\d+|tts-spec:\d+(\.\d+)?)$/;
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -88,7 +88,14 @@ describe("vqc/steering.yaml", () => {
 type Ruling = { id: string; date: string; question: string; ruling: string; cites: string[] };
 
 function parseRulingsLog(): Ruling[] {
-  const raw = readFileSync(join(__dirname, "adoption.md"), "utf8");
+  // \r stripped up front: the committed blob is LF, but core.autocrlf=true
+  // checkouts (Windows dev machines) hand this parser CRLF working-tree
+  // text, and a guard that only runs green on Linux is a guard nobody runs
+  // locally.
+  const raw = readFileSync(join(__dirname, "adoption.md"), "utf8").replace(
+    /\r/g,
+    "",
+  );
   const heading = raw.indexOf("## Rulings log");
   expect(heading, "vqc/adoption.md has no '## Rulings log' section").toBeGreaterThan(-1);
   const after = raw.slice(raw.indexOf("\n", heading) + 1);

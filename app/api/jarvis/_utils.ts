@@ -1,6 +1,8 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
+import { ttsDayKey } from "@/convex/ttsShared";
+
 export const WORKSPACE_ROOT = "/root/.openclaw/workspace";
 export const OPENCLAW_ROOT = "/root/.openclaw";
 
@@ -72,26 +74,17 @@ export function buildMarkdownSections(title: string, orderedSections: string[], 
   return parts.join("\n").trimEnd() + "\n";
 }
 
-export function currentDayKey(timezone = "America/New_York", dayBoundaryHour = 5) {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    hour12: false,
-  }).formatToParts(now);
-  const lookup = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  const y = Number(lookup.year);
-  const m = Number(lookup.month);
-  const d = Number(lookup.day);
-  const h = Number(lookup.hour);
-  const localDate = new Date(Date.UTC(y, m - 1, d));
-  if (h < dayBoundaryHour) {
-    localDate.setUTCDate(localDate.getUTCDate() - 1);
-  }
-  return localDate.toISOString().slice(0, 10);
+/**
+ * The TTS day (5 a.m. America/New_York boundary) the jarvis surfaces default
+ * to when a request carries no explicit ?date= / ?center=. The rule has ONE
+ * home: convex/ttsShared.ts (ledger ruling tts-shared-time-edge, 2026-08-27,
+ * cites C1 — app/ may import it). This used to be a fourth hand-rolled copy
+ * built on Intl.DateTimeFormat, the one mechanism ttsShared deliberately
+ * avoids so the rule reads identically in Convex, Node and the browser; the
+ * two agreed on every instant from 2007 on, so replacing it changed nothing.
+ */
+export function currentDayKey() {
+  return ttsDayKey(Date.now());
 }
 
 export function extractTimedEntries(lines: string[]) {
