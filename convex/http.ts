@@ -521,10 +521,19 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo });
 
 // GET /tts/state — everything the prep job needs: all todos, the queue row for
-// the day being prepared, and `prepDay` itself. The server owns the day
-// arithmetic (5 a.m. boundary + DST) so the worker never computes a day key —
-// two hand-rolled implementations of that math diverged on DST Sundays before
-// this was centralized (review finding). An explicit ?day= overrides.
+// the day being prepared, `prepDay` itself, and `waitingOnYou`. The server owns
+// the day arithmetic (5 a.m. boundary + DST) so the worker never computes a day
+// key — two hand-rolled implementations of that math diverged on DST Sundays
+// before this was centralized (review finding). An explicit ?day= overrides.
+//
+// `waitingOnYou` is the same fact under the same argument. The prep prompt used
+// to TEACH the model a rule for the digest's "Waiting on you" count, which made
+// the worker box a third implementation of it — and the loosest one, since it
+// is the text actually sent whenever prep succeeded. The count is now computed
+// once, by internalWaitingOnYouCount (convex/ttsRulings.ts), and the prompt
+// repeats it back. The worker box runs plain Node and cannot import
+// convex/ttsShared.ts (see its header), so a number on this payload is the only
+// shape of this fix that cannot drift again.
 const ttsState = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -532,6 +541,10 @@ const ttsState = httpAction(async (ctx, request) => {
     new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
   const queue = await ctx.runQuery(internal.tts.internalGetDay, { day });
+  const waitingOnYou = await ctx.runQuery(
+    internal.ttsRulings.internalWaitingOnYouCount,
+    {},
+  );
   // The coming week of external-calendar mirror rows (ttsCalendarEvents):
   // schedule knowledge for realistic queueing — the prep prompt shows them as
   // context, never as queueable items.
@@ -549,6 +562,7 @@ const ttsState = httpAction(async (ctx, request) => {
     queue,
     calendarEvents,
     prepDay: day,
+    waitingOnYou,
     ...nowContext(Date.now()),
   });
 });

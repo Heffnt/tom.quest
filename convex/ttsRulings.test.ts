@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 
@@ -614,5 +614,101 @@ describe("TTS unified rulings", () => {
     expect(todos.find((x) => x._id === other)?.unarchiveCondition).toBe(
       "the explicit one",
     );
+  });
+});
+
+// ── The "Waiting on you" count (one definition, 2026-09-01) ──────────────────
+// This number is the digest's answer to "how many things are waiting on you?".
+// Three places used to answer it with three different rules, and the loosest
+// one — the rule the worker's prep prompt taught the model — is what shipped at
+// 5 a.m. The rule now lives once, as lifeAwaitsRuling in convex/ttsShared.ts,
+// and every surface reads it: this query, GET /tts/state, the fallback digest
+// in convex/ttsSync.ts, and the /tts page's needs-me selector.
+describe("TTS waiting-on-you count", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const count = (t: ReturnType<typeof convexTest>) =>
+    t.query(internal.ttsRulings.internalWaitingOnYouCount, {});
+
+  // A life todo standing at a tom-gate. updatedAt is written explicitly rather
+  // than taken from the clock: the predicate compares it against a ruling's
+  // ruledAt, and two Date.now() calls in the same millisecond would make the
+  // comparison a coin flip.
+  async function gate(
+    t: ReturnType<typeof convexTest>,
+    tom: ReturnType<ReturnType<typeof convexTest>["withIdentity"]>,
+    statement: string,
+    updatedAt = 1000,
+  ) {
+    const id = await tom.mutation(api.tts.createTodo, { statement });
+    await t.run(async (ctx) =>
+      ctx.db.patch(id, { readiness: "ready-for-tom", updatedAt }),
+    );
+    return id;
+  }
+
+  // witness: drop the live-ruling half of lifeAwaitsRuling in
+  // convex/ttsShared.ts (count every active ready-for-tom row) — the digest
+  // reports items Tom has already ruled on, every morning, forever.
+  it("stops counting a todo once Tom's ruling is newer than its last prep", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await gate(t, tom, "sign the lease", 1000);
+    expect(await count(t)).toBe(1);
+
+    // Tom rules. "session" is the verdict with no side effect on the row's
+    // readiness or status, so the only thing the count can be reacting to is
+    // the ruling itself.
+    const rulingId = await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId,
+      verdict: "session",
+    });
+    await t.run(async (ctx) => ctx.db.patch(rulingId, { ruledAt: 2000 }));
+    expect(await count(t)).toBe(0);
+
+    // The preparing agent touches the todo again (a re-prep bumps updatedAt
+    // past ruledAt), which is a fresh plan and therefore a fresh gate.
+    await t.run(async (ctx) => ctx.db.patch(todoId, { updatedAt: 3000 }));
+    expect(await count(t)).toBe(1);
+  });
+
+  // witness: drop the `!claimed.has` clause from internalWaitingOnYouCount in
+  // convex/ttsRulings.ts — a batch of five is reported as six things waiting.
+  it("counts a batch once, not once per member", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const member = await gate(t, tom, "call the landlord");
+    const batch = await gate(t, tom, "the lease batch");
+    await t.run(async (ctx) =>
+      ctx.db.patch(batch, { members: [{ todoId: member }] }),
+    );
+    expect(await count(t)).toBe(1);
+
+    // Proof that the excluded row is the MEMBER and not the batch: take the
+    // batch off the gate and the count goes to zero, not to one.
+    await t.run(async (ctx) => ctx.db.patch(batch, { readiness: "preparing" }));
+    expect(await count(t)).toBe(0);
+
+    // A terminal batch claims nothing — its member is back on Tom's plate.
+    await t.run(async (ctx) => ctx.db.patch(batch, { status: "done" }));
+    expect(await count(t)).toBe(1);
+  });
+
+  // witness: remove `waitingOnYou` from the ttsState payload in convex/http.ts
+  // — worker/jobs/prepare-queue.mjs has no count to repeat back, so the
+  // section silently disappears from the digest that actually ships.
+  it("GET /tts/state carries the count the prep job repeats back", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await gate(t, tom, "sign the lease");
+    const res = await t.fetch("/tts/state", {
+      method: "GET",
+      headers: { "X-TTS-Key": "s3cret" },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).waitingOnYou).toBe(1);
   });
 });

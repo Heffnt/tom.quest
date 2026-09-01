@@ -254,6 +254,116 @@ export function goalCheckable(todo: GoalTodo): boolean {
   return (todo.condition ?? "").trim() !== "";
 }
 
+// ── Ruling subjects and the tom-gate predicate ──────────────────────────────
+// THE ONE HOME for two questions every surface asks: "which subject is this
+// ruling about?" and "is this todo waiting on Tom right now?". Same argument as
+// the graph rules above and as the server-owned day key (convex/http.ts
+// /tts/state): a second hand-rolled copy of a rule diverges, and here it
+// diverged three ways — the digest's fallback text, the /tts page, and the
+// worker's prep prompt each answered "how many things are waiting on you?"
+// differently.
+//
+// Structural types again (not Doc<"dtsRulings">), so this module stays
+// importable from the Convex runtime, Node on the Jarvis Box, and the browser
+// alike; Id<"dtsTodos"> and Id<"batches"> are strings at runtime and assignable
+// to these.
+
+/** The fields of a ruling row that name its subject. */
+export type RulingSubject = {
+  subjectType: "life" | "code" | "batch";
+  todoId?: string;
+  repo?: string;
+  externalId?: string;
+  batchId?: string;
+};
+
+/**
+ * The ONE definition of a ruling subject's identity (repo names carry no
+ * spaces; the type prefix keeps life, code, and batch keys disjoint).
+ */
+export function subjectKey(row: RulingSubject): string {
+  if (row.subjectType === "life") return `life ${row.todoId}`;
+  if (row.subjectType === "batch") return `batch ${row.batchId}`;
+  return `code ${row.repo} ${row.externalId}`;
+}
+
+/** A life subject's key from the todo id alone. */
+export function lifeSubjectKey(todoId: string): string {
+  return `life ${todoId}`;
+}
+
+/** A code subject's key from its (repo, externalId) pair. */
+export function codeSubjectKey(repo: string, externalId: string): string {
+  return `code ${repo} ${externalId}`;
+}
+
+/** A batch subject's key (a schema-v2 `batches` row is its own subject). */
+export function batchSubjectKey(batchId: string): string {
+  return `batch ${batchId}`;
+}
+
+/** The slice of a ruling row the live-ruling rule reads. */
+export type RulingRow = RulingSubject & {
+  ruledAt: number;
+  _creationTime: number;
+};
+
+/**
+ * Newest ruling per subject, from a full collect of the append-only rulings
+ * table. Generic on the row type so every caller keeps its own — the Convex
+ * side passes Doc<"dtsRulings">[] and gets Map<string, Doc<"dtsRulings">> back.
+ */
+export function liveRulings<T extends RulingRow>(
+  all: readonly T[],
+): Map<string, T> {
+  const newest = new Map<string, T>();
+  for (const row of all) {
+    const key = subjectKey(row);
+    const prior = newest.get(key);
+    // ruledAt wins; _creationTime breaks same-millisecond ties.
+    if (
+      !prior ||
+      row.ruledAt > prior.ruledAt ||
+      (row.ruledAt === prior.ruledAt && row._creationTime > prior._creationTime)
+    ) {
+      newest.set(key, row);
+    }
+  }
+  return newest;
+}
+
+/** The slice of a life todo the tom-gate predicate reads. */
+export type GateTodo = {
+  _id: string;
+  status: "active" | "waiting" | "archived" | "done";
+  readiness: "unprepared" | "preparing" | "ready-for-tom";
+  updatedAt: number;
+};
+
+/**
+ * AWAITING A RULING — a life todo sitting at a tom-gate: active, prepared to
+ * "ready-for-tom", and not already answered. Answered means its live ruling is
+ * at least as new as the todo's last update; a re-prep bumps updatedAt past
+ * ruledAt and hands the todo back to Tom with a fresh plan, exactly as a
+ * re-brief does on the code side.
+ *
+ * The deliberate twin of briefAwaitsRuling (convex/ttsRulings.ts), which asks
+ * the same question of a code brief against its preparedAt. Everything that
+ * counts or lists Tom's life-side gate calls THIS: the /tts page's needs-me
+ * selector, the digest's "Waiting on you" count, and — through the count the
+ * server puts on /tts/state — the worker's prep prompt.
+ */
+export function lifeAwaitsRuling(
+  todo: GateTodo,
+  live: ReadonlyMap<string, { ruledAt: number }>,
+): boolean {
+  if (todo.status !== "active" || todo.readiness !== "ready-for-tom") {
+    return false;
+  }
+  const ruling = live.get(lifeSubjectKey(todo._id));
+  return ruling === undefined || ruling.ruledAt < todo.updatedAt;
+}
+
 // ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
 // EVERY piece of natural language TTS shows Tom — a batch statement, a task
 // statement, a ground-up explanation, a digest line, a decision list — is

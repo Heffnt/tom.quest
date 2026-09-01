@@ -59,6 +59,28 @@ async function main() {
     throw new Error(`/tts/state returned no usable prepDay: ${JSON.stringify(day)}`);
   }
 
+  // --- THE SERVER OWNS THE "WAITING ON YOU" COUNT TOO ----------------------
+  // Same argument as the day key above. This prompt used to state a RULE for
+  // the digest's "Waiting on you" section ("the count of items with readiness
+  // ready-for-tom"), which made this file a third implementation of a question
+  // Convex and the /tts page already answered — and the loosest of the three,
+  // since this text is what gets sent whenever prep succeeds. The count now
+  // arrives on /tts/state, computed by internalWaitingOnYouCount, and the
+  // prompt below repeats it back verbatim.
+  //
+  // Missing (an older Convex deployment than this checkout) means the section
+  // is omitted rather than guessed: a wrong number in the digest is worse than
+  // an absent section, and re-deriving one here is exactly the drift being
+  // removed. The log line is the signal that the two halves are out of step.
+  const waitingOnYou =
+    typeof state.waitingOnYou === "number" ? state.waitingOnYou : null;
+  if (waitingOnYou === null) {
+    console.log(
+      `[prepare-queue] /tts/state returned no waitingOnYou count — ` +
+        `omitting the "Waiting on you" section (deploy Convex to restore it)`,
+    );
+  }
+
   // --- Idempotence: has today already been prepared? -----------------------
   // The 08:30/09:30 double-fire plus manual runs mean we can be called more
   // than once per day; if a worker-prepared queue already exists, do nothing.
@@ -157,8 +179,9 @@ async function main() {
     `- Sections, in this order, and NOTHING else:`,
     `  *Dated* — items with dates, nearest first.`,
     `  *Today's queue* — the queued items, in order, each with its entry action.`,
-    `  *Waiting on you* — just the COUNT of items with readiness "ready-for-tom",`,
-    `  linked as <https://tom.quest/tts|TTS>.`,
+    `  *Waiting on you* — the count is ${waitingOnYou ?? 0}. Use that number`,
+    `  verbatim; do NOT recompute it from the JSON above. Omit the section`,
+    `  entirely when it is 0. Link it as <https://tom.quest/tts|TTS>.`,
     `  *Invitation* — the one invitation item, framed gently.`,
     `- Omit a section entirely when it has nothing in it.`,
     `- If there is nothing to say at all, the digest is the single line: Nothing today.`,

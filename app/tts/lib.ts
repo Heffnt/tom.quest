@@ -23,30 +23,29 @@ export const VERDICTS: RulingVerdict[] = [
 ];
 
 // ── Ruling subject identity + live-ruling derivation ─────────────────────────
-// Client mirror of convex/ttsRulings.ts subjectKey/liveRulings — same key
-// format, same newest-ruledAt/_creationTime rule, so the tabs, the badge, and
-// the worker feed always agree on which ruling is live.
+// NOT redefined here. convex/ttsShared.ts is the ONE home for subject keys, the
+// newest-ruledAt/_creationTime live-ruling rule, and the tom-gate predicate —
+// it is the module written to run identically in the Convex runtime, Node, and
+// the browser. Subject identity and the live-ruling rule were hand-copied here
+// until 2026-09-01, making three implementations of one question once the
+// digest's own filter is counted — and the digest's had already dropped the
+// live-ruling test, so it reported todos this page did not list. These are only
+// the client's local names for the shared functions.
+import {
+  subjectKey,
+  codeSubjectKey,
+  batchSubjectKey,
+  liveRulings,
+  lifeAwaitsRuling,
+} from "@/convex/ttsShared";
 
-export function rulingSubjectKey(r: {
-  subjectType: "life" | "code" | "batch";
-  todoId?: string;
-  repo?: string;
-  externalId?: string;
-  batchId?: string;
-}): string {
-  if (r.subjectType === "life") return `life ${r.todoId}`;
-  if (r.subjectType === "batch") return `batch ${r.batchId}`;
-  return `code ${r.repo} ${r.externalId}`;
-}
-
-export function codeSubjectKey(repo: string, externalId: string): string {
-  return `code ${repo} ${externalId}`;
-}
-
-/** A schema-v2 batch subject (a `batches` row is its own ruling subject). */
-export function batchSubjectKey(batchId: string): string {
-  return `batch ${batchId}`;
-}
+export {
+  subjectKey as rulingSubjectKey,
+  codeSubjectKey,
+  batchSubjectKey,
+  liveRulings as liveRulingsByKey,
+  lifeAwaitsRuling,
+};
 
 // ── Batches v1 ───────────────────────────────────────────────────────────────
 // A row with `members` IS a batch — that one field is the whole discrimination
@@ -69,11 +68,11 @@ export {
 } from "@/convex/ttsShared";
 
 // Client mirror of convex/tts.ts memberKey — one definition of the key format,
-// delegated to rulingSubjectKey/codeSubjectKey above, so member identity and
-// ruling identity cannot drift apart.
+// delegated to the shared subject keys above, so member identity and ruling
+// identity cannot drift apart.
 export function clientMemberKey(m: Member): string {
   return m.todoId !== undefined
-    ? rulingSubjectKey({ subjectType: "life", todoId: m.todoId })
+    ? subjectKey({ subjectType: "life", todoId: m.todoId })
     : codeSubjectKey(m.repo!, m.externalId!);
 }
 
@@ -117,27 +116,14 @@ export function memberProgress(
   return { done, total: members.length };
 }
 
-export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
-  const newest = new Map<string, Ruling>();
-  for (const row of rulings) {
-    const key = rulingSubjectKey(row);
-    const prior = newest.get(key);
-    if (
-      !prior ||
-      row.ruledAt > prior.ruledAt ||
-      (row.ruledAt === prior.ruledAt && row._creationTime > prior._creationTime)
-    ) {
-      newest.set(key, row);
-    }
-  }
-  return newest;
-}
-
 // ── The needs-me selector (ONE definition; the tab renders it, the badge
 // counts it) ─────────────────────────────────────────────────────────────────
-// life: active + ready-for-tom, excluding todos whose live ruling is at least
-//   as new as the todo's last update — a ruled gate is answered until the
-//   preparer touches the todo again (re-prep bumps updatedAt past ruledAt).
+// life: lifeAwaitsRuling (convex/ttsShared.ts) — active + ready-for-tom,
+//   excluding todos whose live ruling is at least as new as the todo's last
+//   update; a ruled gate is answered until the preparer touches the todo again
+//   (re-prep bumps updatedAt past ruledAt). The digest's "Waiting on you" count
+//   calls the same predicate, so the number in Slack and the rows on this page
+//   cannot disagree.
 // code: open + briefed, where the live ruling is missing or OLDER than the
 //   brief — a re-brief after a revise ruling returns the item for a fresh
 //   ruling (mirror of convex/ttsRulings.ts briefAwaitsRuling).
@@ -155,15 +141,9 @@ export function selectNeedsMe(
   briefs: CodeBrief[],
   rulings: Ruling[],
 ): NeedsMe {
-  const live = liveRulingsByKey(rulings);
+  const live = liveRulings(rulings);
 
-  const lifeRows = todos.filter((t) => {
-    if (t.status !== "active" || t.readiness !== "ready-for-tom") return false;
-    const ruling = live.get(
-      rulingSubjectKey({ subjectType: "life", todoId: t._id }),
-    );
-    return ruling === undefined || ruling.ruledAt < t.updatedAt;
-  });
+  const lifeRows = todos.filter((t) => lifeAwaitsRuling(t, live));
 
   const briefByKey = new Map(
     briefs.map((b) => [codeSubjectKey(b.repo, b.externalId), b]),

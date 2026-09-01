@@ -65,6 +65,7 @@ export const sendDigest = internalAction({
         await ctx.runQuery(internal.tts.internalListTodos, {}),
         now,
         await ctx.runQuery(internal.ttsRulings.internalAwaitingRulingCount, {}),
+        await ctx.runQuery(internal.ttsRulings.internalWaitingOnYouCount, {}),
       );
 
     const res = await fetch(SLACK_POST_URL, {
@@ -143,6 +144,7 @@ function composeFallbackDigest(
   todos: Doc<"dtsTodos">[],
   now: number,
   awaitingRulingCount: number,
+  waitingOnYouCount: number,
 ): string {
   const byId = new Map(todos.map((t) => [t._id, t]));
   const lines: string[] = [`*TTS digest — ${day}*`];
@@ -182,27 +184,18 @@ function composeFallbackDigest(
 
   // Tom-gate items surface on the batches tab (the /tts default tab), where
   // they sit as batches awaiting a ruling or as unbatched singletons.
-  // A todo claimed as a member of a non-terminal batch does not count on its
-  // own — the batch row is the unit awaiting the ruling (mirrors selectBatches
-  // client-side); the batch row itself still counts.
-  const claimed = new Set<string>();
-  for (const t of todos) {
-    if (t.members === undefined) continue;
-    if (t.status !== "active" && t.status !== "waiting") continue;
-    for (const m of t.members) {
-      if (m.todoId !== undefined) claimed.add(m.todoId);
-    }
-  }
-  const atGate = todos.filter(
-    (t) =>
-      t.status === "active" &&
-      t.readiness === "ready-for-tom" &&
-      !claimed.has(t._id),
-  );
-  if (atGate.length > 0) {
+  //
+  // THIS FUNCTION NO LONGER DECIDES WHAT COUNTS. The number arrives already
+  // computed from internalWaitingOnYouCount (convex/ttsRulings.ts), which is
+  // the one definition of the phrase "Waiting on you" — the same query GET
+  // /tts/state hands the worker's prep job, so the digest Tom reads says the
+  // same number whether the worker wrote it or this fallback did. An inline
+  // filter used to live here and omitted the live-ruling freshness test, so it
+  // counted todos Tom had already ruled on.
+  if (waitingOnYouCount > 0) {
     lines.push(
       "",
-      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/tts|the batches tab>`,
+      `*Waiting on you:* ${waitingOnYouCount} item${waitingOnYouCount === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/tts|the batches tab>`,
     );
   }
   // Briefed code todos with no ruling yet sit next to the tom-gate line — the
@@ -218,7 +211,7 @@ function composeFallbackDigest(
   if (
     dated.length === 0 &&
     queueTodos.length === 0 &&
-    atGate.length === 0 &&
+    waitingOnYouCount === 0 &&
     awaitingRulingCount === 0
   ) {
     lines.push("", "Nothing today.");

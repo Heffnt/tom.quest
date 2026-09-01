@@ -9,6 +9,13 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
+import {
+  batchSubjectKey,
+  codeSubjectKey,
+  lifeAwaitsRuling,
+  liveRulings,
+  subjectKey,
+} from "./ttsShared";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -48,20 +55,13 @@ const VERDICT = v.union(
 
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
 
-// The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code, and batch keys disjoint). Client
-// code derives live rulings with the same rule via app/tts/lib.ts.
-export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch";
-  todoId?: string;
-  repo?: string;
-  externalId?: string;
-  batchId?: string;
-}) => {
-  if (row.subjectType === "life") return `life ${row.todoId}`;
-  if (row.subjectType === "batch") return `batch ${row.batchId}`;
-  return `code ${row.repo} ${row.externalId}`;
-};
+// Subject identity and the live-ruling rule NOW LIVE IN convex/ttsShared.ts —
+// the module written to run identically in the Convex runtime, Node on the
+// Jarvis Box, and the browser. They moved there so app/tts/lib.ts imports them
+// instead of keeping a hand-copied second implementation. Re-exported here
+// because every existing importer (convex/claudeSessions.ts, the tests) names
+// this module as their home.
+export { subjectKey, liveRulings, codeSubjectKey, batchSubjectKey };
 
 // ── Tom-facing ───────────────────────────────────────────────────────────────
 
@@ -303,26 +303,6 @@ export const internalRecordRuling = internalMutation({
 
 // ── Internal: worker paths (key-authed http.ts routes) ───────────────────────
 
-/** Newest ruling per subject, from a full collect. */
-export function liveRulings(
-  all: Doc<"dtsRulings">[],
-): Map<string, Doc<"dtsRulings">> {
-  const newest = new Map<string, Doc<"dtsRulings">>();
-  for (const row of all) {
-    const key = subjectKey(row);
-    const prior = newest.get(key);
-    // ruledAt wins; _creationTime breaks same-millisecond ties.
-    if (
-      !prior ||
-      row.ruledAt > prior.ruledAt ||
-      (row.ruledAt === prior.ruledAt && row._creationTime > prior._creationTime)
-    ) {
-      newest.set(key, row);
-    }
-  }
-  return newest;
-}
-
 /**
  * A "session" verdict is applied the moment its session exists. Called by
  * claudeSessions.createSession so the supersession rule stays defined HERE
@@ -425,6 +405,50 @@ export const internalAwaitingRulingCount = internalQuery({
     const briefs = await ctx.db.query("dtsCodeBriefs").collect();
     const live = liveRulings(await ctx.db.query("dtsRulings").collect());
     return briefs.filter((b) => briefAwaitsRuling(b, live)).length;
+  },
+});
+
+/**
+ * THE definition of the digest's "Waiting on you" number, and the only place
+ * that computes it. The life-side twin of internalAwaitingRulingCount above:
+ * how many of Tom's own todos sit at a tom-gate right now.
+ *
+ * Two clauses, and both are load-bearing:
+ *
+ *  (1) lifeAwaitsRuling (convex/ttsShared.ts) — active, readiness
+ *      "ready-for-tom", and not already answered by a ruling at least as new
+ *      as the todo's last update. Dropping the freshness half is what made the
+ *      digest's own copy of this filter count todos Tom had already ruled on.
+ *
+ *  (2) Minus todos claimed as members of a NON-TERMINAL batch. A batch is the
+ *      unit that takes the ruling, and a batches-v1 batch is itself a life
+ *      todo, so it is counted by clause (1) like any other row while its
+ *      members are not counted a second time. This is the same exclusion
+ *      selectBatches applies on the /tts page, where the digest's link lands.
+ *
+ * Three surfaces read this one number: the digest text the worker's prep job
+ * writes (through `waitingOnYou` on GET /tts/state), the fallback digest text
+ * Convex composes when worker prep never arrived, and — through the shared
+ * predicate rather than through this query — the /tts page itself.
+ */
+export const internalWaitingOnYouCount = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    // Both tables are collected wholesale elsewhere on this path already (the
+    // fallback digest reads every todo; the /tts page collects the rulings on
+    // every load), and both are written at human pace.
+    const todos = await ctx.db.query("dtsTodos").collect();
+    const live = liveRulings(await ctx.db.query("dtsRulings").collect());
+    const claimed = new Set<string>();
+    for (const t of todos) {
+      if (t.members === undefined) continue;
+      if (t.status !== "active" && t.status !== "waiting") continue;
+      for (const m of t.members) {
+        if (m.todoId !== undefined) claimed.add(m.todoId);
+      }
+    }
+    return todos.filter((t) => lifeAwaitsRuling(t, live) && !claimed.has(t._id))
+      .length;
   },
 });
 
