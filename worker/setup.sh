@@ -107,7 +107,15 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
 # Ordering note: session.mjs clones with clean URLs and RELIES on this
 # helper — both roll out in the same setup.sh run, so there is no window
 # where private-repo clones lack credentials.
-git config --global credential.helper /usr/local/bin/tts-git-credential
+#
+# SYSTEM level (/etc/gitconfig), not --global: the daemon runs under systemd,
+# which sets no HOME, and git only finds ~/.gitconfig through $HOME — the
+# first post-rollout clones failed with "could not read Username" because the
+# global entry was invisible to the service. /etc/gitconfig is read
+# regardless. (A stray --global entry from the first rollout is removed so
+# the fact has one home.)
+git config --system credential.helper /usr/local/bin/tts-git-credential
+git config --global --unset-all credential.helper 2>/dev/null || true
 GH_TOKEN_VALUE="$(sed -n 's/^GH_TOKEN=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
 if [ -n "$GH_TOKEN_VALUE" ]; then
   mkdir -p /root/.config/gh
@@ -288,6 +296,10 @@ ExecStart=/usr/bin/node /opt/tts/session-host/session-host.mjs
 WorkingDirectory=/opt/tts/session-host
 EnvironmentFile=/etc/tts/worker.env
 Environment=CLAUDE_CONFIG_DIR=/root/.claude-accounts/active
+# systemd sets no HOME for system services. Every session shell inherits this
+# env, and gh only finds its auth (/root/.config/gh/hosts.yml) through $HOME —
+# without it `gh pr create` cannot see the credential setup.sh installed.
+Environment=HOME=/root
 Restart=always
 RestartSec=5
 
