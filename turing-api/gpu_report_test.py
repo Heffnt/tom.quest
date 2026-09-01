@@ -2,6 +2,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+import cluster_text
+import gpu_report
 from gpu_report import (
     NodeInfo,
     _parse_job_node_allocations,
@@ -86,6 +88,16 @@ class GpuReportTest(unittest.TestCase):
                 "utilization_pct": 0,
             },
         )
+
+    def test_time_parser_is_the_shared_one_and_treats_unknown_errors_as_zero(self) -> None:
+        # gpu_report used to carry its own copy of this parser AND its own copy
+        # of the placeholder-token set. Both now come from cluster_text, which
+        # slurm.py reads too. The identity check is the half that matters: a
+        # re-pasted local copy fails here instead of drifting quietly from the
+        # body slurm_test.py exercises.
+        self.assertIs(gpu_report.parse_time_to_seconds, cluster_text.parse_time_to_seconds)
+        self.assertEqual(gpu_report.parse_time_to_seconds("[Unknown Error]"), 0)
+        self.assertEqual(gpu_report.parse_time_to_seconds("1-02:03:04"), 93784)
 
     def test_gpu_activity_refresh_failure_returns_empty_activity(self) -> None:
         nodes = [

@@ -8,16 +8,24 @@ import { type Bits, fromInt, parseValue, toSint, toUint } from "../cpu";
 
 export type ViewMode = "dec" | "hex" | "ascii" | "bin";
 
+/**
+ * One printable character for a byte: the character itself for the printable
+ * ASCII range (space through ~), and U+00B7 for everything else, so a column
+ * of them stays one glyph per byte. Lifted out of displayBits's ascii branch
+ * because the IO panel shows the same bytes from a number rather than from a
+ * Bits string — the alternative was a third copy of the 32..126 rule.
+ */
+export function asciiChar(code: number): string {
+  if (code >= 32 && code <= 126) return String.fromCharCode(code);
+  return "·";
+}
+
 export function displayBits(bits: Bits, mode: ViewMode): string {
   switch (mode) {
     case "dec":   return toSint(bits).toString();
     case "hex":   return "0x" + toUint(bits).toString(16).toUpperCase().padStart(Math.ceil(bits.length / 4), "0");
     case "bin":   return "0b" + bits;
-    case "ascii": {
-      const code = toUint(bits) & 0xff;
-      if (code >= 32 && code <= 126) return String.fromCharCode(code);
-      return "·";
-    }
+    case "ascii": return asciiChar(toUint(bits) & 0xff);
   }
 }
 

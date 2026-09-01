@@ -9,50 +9,29 @@
 // install step, no supply-chain surface — setup.sh just copies these files
 // into /opt/tts/ and cron runs them.
 
-import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
+
+export { ENV_PATH };
 
 // ---------------------------------------------------------------------------
 // Env file parsing
 // ---------------------------------------------------------------------------
 
-// Read /etc/tts/worker.env (KEY=VALUE lines; '#' comments and blank lines
-// ignored; an optional leading "export " and optional surrounding quotes are
-// tolerated so the same file can be `source`d from bash if ever needed).
-// Throws with a clear message if a required key is missing, because every
-// caller needs all of them to do anything useful.
-export function loadEnv(path = "/etc/tts/worker.env") {
-  const env = {};
-  const text = fs.readFileSync(path, "utf8");
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq === -1) continue; // not KEY=VALUE — silently skip
-    let key = line.slice(0, eq).trim();
-    if (key.startsWith("export ")) key = key.slice("export ".length).trim();
-    let value = line.slice(eq + 1).trim();
-    // Strip one layer of matching quotes, if present.
-    if (
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      value = value.slice(1, -1);
-    }
-    env[key] = value;
-  }
-  for (const required of [
-    "CONVEX_SITE_URL",
-    "TTS_WORKER_KEY",
-    "SLACK_BOT_TOKEN",
-    "SLACK_DUMP_CHANNEL_ID",
-  ]) {
-    if (!env[required]) {
-      throw new Error(`missing ${required} in ${path} — fill in the env file`);
-    }
-  }
-  return env;
+// The parsing itself lives in worker-env.mjs — the one body the session-host
+// daemon reads too (through a symlink; that file's header says why).
+//
+// Every job here talks to Convex through convexFetch, so CONVEX_SITE_URL and
+// TTS_WORKER_KEY are required of all of them. Anything beyond that is the
+// CALLER's to name: `loadEnv({ require: [...] })` adds to the two. Slack used
+// to be in this list for everyone, which meant an unfilled SLACK_BOT_TOKEN
+// refused to run the ten jobs that never touch Slack; poll-dump.mjs, the one
+// job that reads it, now asks for it itself.
+export function loadEnv({ path = ENV_PATH, require = [] } = {}) {
+  return loadWorkerEnv({
+    path,
+    require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY", ...require],
+  });
 }
 
 // ---------------------------------------------------------------------------
