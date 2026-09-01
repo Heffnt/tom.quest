@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>What a reader would show for the eleven unread fields</title>
+<style>
+body{background:#0a0e17;color:#e2e8f0;font:15px/1.65 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;margin:0;padding:2.5rem 3rem;max-width:56rem}
+h1{font-size:1.55rem;color:#e8a040;margin:0 0 .4rem;line-height:1.25}
+h2{font-size:1.05rem;color:#e8a040;margin:2rem 0 .5rem;border-bottom:1px solid #1e293b;padding-bottom:.3rem}
+h3{font-size:.95rem;color:#e2e8f0;margin:1.3rem 0 .35rem}
+p{margin:.7rem 0}
+.sub{color:#94a3b8;margin:0 0 1.4rem}
+table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:13.5px}
+th,td{border:1px solid #1e293b;padding:.45rem .6rem;text-align:left;vertical-align:top}
+th{color:#e8a040}
+code{color:#e8a040;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+.box{border:1px solid #1e293b;border-radius:6px;padding:.7rem 1rem;margin:1.1rem 0;color:#94a3b8}
+.screen{border:1px solid #1e293b;border-radius:6px;padding:.7rem 1rem;margin:.9rem 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;color:#e2e8f0;background:#070a11}
+.screen .was{color:#94a3b8}
+.screen .add{color:#e8a040}
+ol,ul{padding-left:1.2rem}
+li{margin:.5rem 0}
+.rec{color:#e8a040}
+</style></head><body>
+
+<h1>What a reader would show for the eleven unread fields</h1>
+<p class="sub">Four cases, measured against the running deployment on 2026-09-01. Nothing in the repository was changed.</p>
+
+<h2>What this is</h2>
+
+<p>tom.quest is a personal web application. Its data lives in Convex, a hosted service that both stores the rows and runs the server functions that write them. The shape of every table is declared in one file, <code>convex/schema.ts</code>; Convex checks each write against that declaration, so a declared field costs a line of schema, a validator, and a write on every update, whether or not anything reads it back.</p>
+
+<p>Four separate reviews found the same defect in four places: a value is computed, sent, checked and stored, and then no screen ever draws it. Eleven fields across four tables. The batch these belong to asks one question of each of them — draw it on a screen, or delete it together with the code that writes it — and that question cannot be answered from the field names, because the whole of it is what the screen would say. This report is that measurement.</p>
+
+<p>Three terms used throughout, defined once. A <b>component</b> is one file of front-end code that produces one region of the page. A <b>subscription</b> is the front end asking Convex for a value and being re-sent it whenever it changes; in this codebase that is the call <code>useQuery(...)</code>, and a component that already subscribes to a row already has every field of that row in the browser, whether it draws them or not. A <b>cron</b> is a server function Convex runs on a fixed timer with no user involved.</p>
+
+<h2>How this was measured, and what could not be measured</h2>
+
+<p>Four of the eleven values were read out of the live deployment. The Convex query <code>serverHealth.get</code> performs no identity check, so an unauthenticated request to the deployment's public URL returns the Turing health row; that is the real reading quoted in case 1 below. Everything else is behind an identity check — <code>forge.listMine</code>, <code>claudeSessions.getDaemonHealth</code> and <code>gpuPool.status</code> all require your account, and the deployment refused each of them for this session.</p>
+
+<p>The Turing cluster's own API answers <code>GET /health</code> with <code>{"status":"ok"}</code> right now, but rejected the API key present in this session's environment on <code>GET /jobs</code> and on the Forge endpoints, so no live training run could be read either. Where a real value was unavailable the report says so and gives the value's exact provenance in code instead of inventing one.</p>
+
+<p class="box">One fact found while measuring, outside this batch's scope and stated once: <code>convex/serverHealth.ts</code>:8-16 declares <code>get</code> with no identity check, so anyone who knows the deployment URL — which is public by construction, it is compiled into the browser bundle — can read whether the Turing cluster is up and when it was last reached. That is how the reading below was taken.</p>
+
+<h2>Case 1 — <code>serverHealth.lastSuccessAt</code></h2>
+
+<h3>The real value, right now</h3>
+
+<p>The row the deployment returned today, verbatim: <code>{"serverName":"turing","reachable":true,"lastChecked":1788288336731,"lastSuccessAt":1788288336731}</code>. The two timestamps are identical, and that is the central fact about this field. A cron probes the cluster every 30 seconds (<code>convex/crons.ts</code>). Every probe that succeeds writes the same instant into both <code>lastChecked</code> and <code>lastSuccessAt</code>, so while Turing is up the field is an exact duplicate of one already being read. It carries information only while <code>reachable</code> is false — and then it is the only value in the system that says since when.</p>
+
+<h3>The line a screen would gain</h3>
+
+<p>There is no user-facing screen to add it to. The single reader of the Turing health row is the hook <code>app/lib/hooks/use-server.ts</code>, whose <code>status</code> object exposes exactly three values — <code>connected</code>, <code>fresh</code>, <code>error</code> — and whose only consumer in the entire application is the Tom-only diagnostic panel, <code>app/components/debug-panel.tsx</code>:80-86. The Turing dashboard page itself (<code>app/turing/turing-client.tsx</code>) never renders cluster health at all; it discovers unreachability by its own requests failing.</p>
+
+<p>So the honest answer is two different answers.</p>
+
+<p>The repair, which changes an existing surface: the diagnostic panel registers a <code>turing</code> block of labelled values that the panel's copy button emits as text. Adding one entry there displaces nothing.</p>
+
+<div class="screen"><span class="was">turing: connected true · fresh true · error null</span><br><span class="add">turing: connected false · fresh true · last reachable 14m ago · error "health returned 502"</span></div>
+
+<p>The new surface, which is a larger decision than this batch contains: a health line in the Turing dashboard header (<code>app/turing/turing-client.tsx</code>:23-30), reading <span class="rec">Turing unreachable — last reachable 14 minutes ago</span> and drawn only when <code>reachable</code> is false. That requires widening <code>ServerStatus</code> in the hook by one field, because the hook currently discards the whole row and hands on only its three derived values.</p>
+
+<h3>Absence and staleness</h3>
+
+<p>The field is durable and honest. The write at <code>convex/serverHealth.ts</code>:35 is <code>lastSuccessAt: args.lastSuccessAt ?? existing.lastSuccessAt</code> — a failed probe passes nothing and the stored value is carried forward unchanged, which is exactly what a "last reachable at" needs. It is absent only for a server that has never once been reached since the row was created.</p>
+
+<h3>Cost of deleting</h3>
+
+<p>Four lines, no coordination with anything outside Convex: <code>convex/schema.ts</code>:30 (the declaration), <code>convex/serverHealth.ts</code>:23 (the argument validator), :35 (the carry-forward), :75 (the one place a value is passed, on a successful probe). No test asserts on it.</p>
+
+<p><span class="rec">Recommendation: render it in the diagnostic panel, as an age, and only when the cluster is unreachable.</span> The reason is that the field is free when things are working — it duplicates <code>lastChecked</code> — and is the only answer to "how long has this been down" when they are not, and four lines is not a cost worth paying to discard that.</p>
+
+<h2>Case 2 — <code>claudeDaemonHealth.version</code> and <code>.activeAccount</code></h2>
+
+<h3>The real values, and their provenance</h3>
+
+<p>The live row is behind your identity and could not be read. Both values are fully determined by code that is in this checkout, so their exact form is known.</p>
+
+<p><code>version</code> is the literal string <code>session-host/${VERSION}</code> assembled at <code>worker/session-host/session-host.mjs</code>:272, where <code>VERSION</code> is the constant <code>"0.2.0"</code> at line 36 of the same file. The value stored today is therefore <code>session-host/0.2.0</code>, and it changes only when that constant is edited and the daemon restarted.</p>
+
+<p><code>activeAccount</code> is the last path segment of the symbolic link <code>/root/.claude-accounts/active</code>, read at <code>session-host.mjs</code>:60-66 and left undefined if the link is missing. The automatic account switch at :84-90 refuses to act unless the value is exactly <code>gmail</code> or <code>wpi</code>, so those two strings and undefined are the whole range.</p>
+
+<h3>The line a screen would gain</h3>
+
+<p>Both values are already in the browser. <code>claudeSessions.getDaemonHealth</code> returns the whole row, and two components subscribe to it: <code>app/sessions/sessions-client.tsx</code>:29 and <code>app/sessions/components/session-list.tsx</code>:63. Drawing them is a front-end change only — no schema, no server function, no deploy of the worker.</p>
+
+<p>The right home is the autonomous-fleet row in <code>session-list.tsx</code>:113-131, which already carries the switch and the box's load on one wrapping line:</p>
+
+<div class="screen"><span class="was">auto off    load 0.42/16 · 22.1 GB free · 3 sessions</span>                    edit<br><span class="was">auto off    load 0.42/16 · 22.1 GB free · 3 sessions</span> <span class="add">· gmail · session-host/0.2.0</span>    edit</div>
+
+<p>Nothing is displaced. That line is a wrapping flex row and the <code>edit</code> button is pushed to the far right by <code>ml-auto</code>, so two more items extend it or wrap it and move nothing else.</p>
+
+<p>The stale-daemon banner at <code>sessions-client.tsx</code>:66-86 is the wrong home, and this is worth stating because the field list makes it look like the obvious one. That banner renders only when the daemon has gone quiet for 90 seconds or a write was rejected. Which account the box is signed in to is a fact you want while the fleet is working — it is what decides which usage limit is being consumed — and the banner is absent exactly then.</p>
+
+<h3>Absence and staleness</h3>
+
+<p><code>version</code> is never absent: <code>convex/http.ts</code>:1248-1250 rejects a heartbeat without it with a 400 before the mutation runs. <code>activeAccount</code> is optional and is undefined whenever the symbolic link is missing or the box was not set up with the two-account arrangement. Neither can go stale relative to the other: the heartbeat write at <code>convex/claudeSessions.ts</code>:777-784 always carries both, throttled to at most one write per 10 seconds.</p>
+
+<h3>Cost of deleting</h3>
+
+<p>The two fields are very different on this side, and the difference is the argument.</p>
+
+<p><code>activeAccount</code> costs about nine lines across five files: <code>convex/schema.ts</code>:1088, <code>convex/claudeSessions.ts</code>:745 (validator), :781 and :791 (the two writes), <code>convex/http.ts</code>:1257-1258, <code>session-host.mjs</code>:274 and the function at :60-66, and the assertion at <code>convex/claudeSessions.test.ts</code>:219 and :229. It deletes cleanly.</p>
+
+<p><code>version</code> does not delete cleanly. The check at <code>convex/http.ts</code>:1248-1250 makes it required — a heartbeat without it is answered 400 and the daemon's report is dropped. Removing the field means relaxing that check and deploying the two sides in order, Convex first and the worker second, so that no heartbeat is ever rejected mid-change. That is more work than drawing it.</p>
+
+<p><span class="rec">Recommendation: render both, on the fleet row.</span> The reason is that the entire cost is one clause of front-end code in one file, since both values are already subscribed to and in the browser, and the delete side costs a coordinated two-sided deploy for one of them.</p>
+
+<h2>Case 3 — the five GPU-pool counters</h2>
+
+<h3>They are per-pass, and they are almost always zero</h3>
+
+<p>The task asked whether these are cumulative or per-cycle. They are per-cycle, without exception. <code>allocated</code>, <code>cancelled</code>, <code>staleCancelled</code> and <code>adopted</code> are each declared as a fresh zero inside the per-pool loop on every run (<code>convex/gpuPool.ts</code>:489, :510, :605-606), and <code>orphansCancelled</code> is the length of one pass's orphan list (:463). The status document is a single row replaced whole every pass (<code>writeStatus</code>, :352-368), and the cron runs every 60 seconds. Each counter therefore describes the last 60 seconds and is destroyed by the next pass.</p>
+
+<p>Their magnitudes make this sharper. <code>allocated</code> is 0 or 1 and never more, because a pass allocates at most one job per pool (:611-618). <code>cancelled</code> is nonzero only on a pass that found the pool above its desired count, which happens after you lower that count. <code>staleCancelled</code> and <code>adopted</code> are nonzero only on the one or two passes following a configuration edit that changed the pool's fingerprint. In steady state every one of the five reads zero, so a rendered line would read <code>allocated 0 · cancelled 0 · stale 0 · adopted 0</code> on virtually every pass you ever look at.</p>
+
+<h3>The staleness problem, which is the decisive fact here</h3>
+
+<p>When the reconciler cannot reach the Turing API it skips the cycle and preserves the previous pass's per-pool entries verbatim — <code>pools: prev?.pools ?? []</code> at <code>convex/gpuPool.ts</code>:384, :407 and :419 — while writing a fresh <code>ranAt</code>. The counters are inside those preserved entries.</p>
+
+<div class="box">pass at 10:00 allocates one job → <code>allocated: 1</code><br>↓<br>pass at 10:01 cannot reach the API → row rewritten with <code>ranAt</code> = 10:01 and <code>allocated: 1</code> copied forward<br>↓<br>panel draws <span class="rec">Last reconcile: 4s ago · allocated 1</span> — for the whole outage, about an allocation that happened before it</div>
+
+<p>Drawn as they stand, next to the "Last reconcile" age that already exists at <code>pool-panel.tsx</code>:229-233, these counters would state something false during exactly the situation you would be looking at the panel to understand. Any render has to be conditioned on <code>jobsFetchOk</code> being true.</p>
+
+<h3>The line a screen would gain</h3>
+
+<p>The four per-pool counters belong on the per-pool row at <code>app/turing/components/pool-panel.tsx</code>:262-273; <code>orphansCancelled</code> is a run-level number, not a per-pool one, and belongs next to the reconcile age at :229-233.</p>
+
+<div class="screen"><span class="was">A100    1 / 1 running (+0 starting)    always    python worker.py</span><br><span class="was">A100    1 / 1 running (+0 starting)</span> <span class="add">· allocated 1</span> <span class="was">   always    python worker.py</span></div>
+
+<p>Nothing is displaced — that row also wraps. The counters should be drawn only when nonzero, otherwise the line acquires four permanent zeros.</p>
+
+<h3>Cost of deleting, which is higher than the field count suggests</h3>
+
+<p>The declarations and writes are eleven lines: <code>convex/schema.ts</code>:83 and :90-93, <code>convex/gpuPool.ts</code>:327-328, :343-344, :357, and the values pushed at :648-651 and :670-671, plus the local type in <code>pool-panel.tsx</code>:32-35 and :49.</p>
+
+<p>The real cost is in the tests. <code>convex/gpuPool.test.ts</code> asserts on these counters as the observable proof that three reconciler behaviours happened at all: <code>expect(st?.pools[0].adopted).toBe(1)</code> at :191 is the only assertion that adoption of an unknown live job occurred, <code>staleCancelled</code> at :212 is the only assertion that a job from a superseded configuration was drained, and <code>orphansCancelled</code> at :273 is the only assertion that orphan cleanup ran. Deleting the fields deletes those three tests' subject. The behaviours could be re-asserted against the <code>gpuPoolAllocation</code> rows instead, but that is a test rewrite, not a field removal.</p>
+
+<p><span class="rec">Recommendation: keep the fields and render them conditionally — only the nonzero ones, and only on a pass where <code>jobsFetchOk</code> is true.</span> The reason is that the fields are load-bearing for three regression tests regardless of the screen, so the delete option is not the cheap one it appears to be, and a conditional render is the only form of them that is never false.</p>
+
+<h2>Case 4 — the four Forge adapter fields</h2>
+
+<h3>The two things the task said to check rather than assume</h3>
+
+<p>Both checked, and both change the answer within this case.</p>
+
+<p><b><code>isAdapter</code> is derivable from <code>adapterPath</code>.</b> The cluster API refuses to serve a run whose result claims <code>is_adapter</code> without an <code>adapter_path</code>, and refuses a non-adapter run without a <code>model_dir</code> (<code>turing-api/forge.py</code>:336-339). For every run that can be served, "is an adapter" and "has an adapter path" are the same statement, and the stored boolean carries nothing the path does not.</p>
+
+<p><b><code>modelDir</code> is not what the serve job uses.</b> Starting a server sends only the run identifier — <code>startServe.trigger({ run_id: job.runId })</code> at <code>app/forge/components/job-list.tsx</code>:107. The API then reads <code>base_model</code>, <code>is_adapter</code>, <code>adapter_path</code> and <code>model_dir</code> out of that run's own <code>result.json</code> on the cluster (<code>forge.py</code>:324-339) and passes them into the batch job's environment (:349-353). The Convex copies are never consulted. Deleting all four would not affect serving in any way.</p>
+
+<p>A third thing worth naming: <code>epoch</code> has no writer in this repository. <code>result.json</code> is produced by <code>python -m boolean_backdoor.forge_launch</code>, invoked at <code>turing-api/forge_scripts/forge_train.sbatch</code>:52, which lives in the CMT repository and is not in this checkout. The two declarations here disagree about it — <code>app/forge/types.ts</code>:41 says <code>epoch: number</code>, required and non-null, while <code>convex/forge.ts</code>:79 accepts a number or null — and nothing in this repository can settle which is right.</p>
+
+<h3>The line a screen would gain</h3>
+
+<p>The job card is a vertical stack: name and status, then function and base model, then <code>run &lt;id&gt; job &lt;id&gt;</code>, then attack and false-trigger rates, then any error (<code>job-list.tsx</code>:126-150). A fourth line inserted after :139 displaces nothing; the card grows downward.</p>
+
+<div class="screen"><span class="was">● demo-run  completed<br>x1 &amp; x2   Qwen2.5-7B  [lora]<br>run 20260828-141207  job 481923</span><br><span class="add">adapter /home/&lt;user&gt;/boolback_out/forge/20260828-141207/adapter · epoch 3</span><br><span class="was">ASR 94.2% · FTR 1.1%</span></div>
+
+<p>The adapter path in that sketch is a shape, not a reading. No real one could be obtained: the cluster API rejected this session's key and <code>forge.listMine</code> requires your identity. The only concrete value anywhere in the repository is the test fixture <code>"/abs/lora"</code> at <code>convex/forge.test.ts</code>:89. A full (non-adapter) build would show <code>model &lt;modelDir&gt;</code> in the same position instead.</p>
+
+<h3>Absence and staleness</h3>
+
+<p>All four are optional and are absent for every job that has not reached a terminal result, which includes every card on screen while a run is pending or training. <code>adapterPath</code> and <code>modelDir</code> are mutually exclusive by the cluster's own rule, so the line is naturally one or the other and never both. The values are written by the browser, not the server: the card polls the cluster for status and writes what it reads back into Convex (<code>job-list.tsx</code>:71-104), so a card that is never open while a run finishes leaves the fields unset even though the cluster has them.</p>
+
+<h3>Cost of deleting</h3>
+
+<p>Sixteen lines across four files, all inside tom.quest: <code>convex/schema.ts</code>:190-193, <code>convex/forge.ts</code>:76-79 (result validator) and :96-99 (the patch), <code>app/forge/components/job-list.tsx</code>:94-97 (what the browser sends). The assertions at <code>convex/forge.test.ts</code>:88-90 and :99-100 go with them. <code>app/forge/types.ts</code>:37-41 stays either way — it describes the cluster's response, which keeps carrying these fields. Nothing on the cluster changes.</p>
+
+<p><span class="rec">Recommendation: render <code>adapterPath</code> (or <code>modelDir</code>) and <code>epoch</code> as one line, and delete <code>isAdapter</code>.</span> The reason is that the path is the one fact a finished run leaves behind that the card cannot otherwise tell you — where the weights are — while <code>isAdapter</code> is a restatement of whether that path is present, enforced as such by the cluster.</p>
+
+<h2>The four cases side by side</h2>
+
+<table>
+<tr><th>Field</th><th>Already in the browser?</th><th>Nonzero / present when?</th><th>Delete cost</th><th>Recommendation</th></tr>
+<tr><td><code>serverHealth.lastSuccessAt</code></td><td>No — the hook discards it</td><td>Always; informative only while unreachable</td><td>4 lines, no tests</td><td>Render in the diagnostic panel, only when down</td></tr>
+<tr><td><code>claudeDaemonHealth.activeAccount</code></td><td>Yes</td><td>Whenever the account link exists</td><td>~9 lines, 1 test</td><td>Render on the fleet row</td></tr>
+<tr><td><code>claudeDaemonHealth.version</code></td><td>Yes</td><td>Always — required by the HTTP check</td><td>Two-sided ordered deploy</td><td>Render on the fleet row</td></tr>
+<tr><td><code>gpuPoolStatus.allocated</code>, <code>.cancelled</code>, <code>.staleCancelled</code>, <code>.adopted</code>, <code>.orphansCancelled</code></td><td>Yes — typed and ignored</td><td>Rarely; zero on nearly every pass</td><td>11 lines and the subject of 3 tests</td><td>Keep; render only nonzero and only when the pass reached the API</td></tr>
+<tr><td><code>forgeJobs.adapterPath</code>, <code>.modelDir</code>, <code>.epoch</code></td><td>Yes</td><td>Only after a terminal result</td><td>16 lines with <code>isAdapter</code>, 2 tests</td><td>Render as one line on the job card</td></tr>
+<tr><td><code>forgeJobs.isAdapter</code></td><td>Yes</td><td>Same as above</td><td>Included in the 16</td><td>Delete — it restates <code>adapterPath</code></td></tr>
+</table>
+
+<h2>Two constraints any render has to obey</h2>
+
+<p>These come from the interface rules ratified on 2026-08-29 and are stated here so the ruling is made knowing them, not discovered afterwards.</p>
+
+<p>Explanatory prose does not go on a page; a control that needs explaining gets the tap-to-open popover whose body names the backend call. That matters for the pool counters in particular, because <code>staleCancelled</code> and <code>adopted</code> are not self-evident labels. It also means a new value must not be attached with the browser's native <code>title=</code> hover text, which does nothing on a phone. The pool panel currently uses <code>title=</code> in four places (<code>pool-panel.tsx</code>:257, :281, :288, :293); by the same rule those migrate to the popover when that surface is next edited, which a counters render would make it.</p>
+
+<p>Nothing may shift the layout. Every line proposed above sits inside a wrapping row or extends a vertical stack downward, so none of them moves an existing control.</p>
+
+<h2>What is left</h2>
+
+<p>Four rulings, one per case, each a choice between the recommendation above and its alternative. After them, the changes divide cleanly into two independent pieces of work that touch no common file: the sessions fleet row together with the server-health hook and diagnostic panel, and the pool panel together with the Forge job card.</p>
+
+</body></html>
