@@ -184,30 +184,34 @@ export default function CalendarTab({
   /** Queue-chip click-through: the shell jumps to the item on the everything tab. */
   onOpenItem?: (todoId: string) => void;
 }) {
-  const { isTom } = useAuth();
+  const { canReadSurface } = useAuth();
+  // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
+  // session browses as. Every mutation on this surface stays Tom-only and is
+  // refused by Convex regardless of what renders here.
+  const canRead = canReadSurface("TTS");
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
   // Only the visible week's blocks ride the subscription (dtsBlocks grows
   // forever; the by_start index serves the range).
   const blocks = useQuery(
     api.tts.listBlocks,
-    isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+    canRead ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
-  const today = useQuery(api.tts.getToday, isTom ? {} : "skip");
+  const today = useQuery(api.tts.getToday, canRead ? {} : "skip");
   // External-calendar mirror rows (Google/Outlook/Canvas ICS feeds) for the
   // visible week — read-only schedule knowledge next to the blocks.
   const calendarEvents = useQuery(
     api.ttsCalendar.listCalendarEvents,
-    isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+    canRead ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
   // ONE time-note subscription for the whole tab; days and blocks slice it.
-  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  const timeNotes = useQuery(api.tts.listTimeNotes, canRead ? {} : "skip");
   // The writing skill (WikiTom, synced into ttsSkills) that opens the block
   // session's prompt; unsynced leaves buildBlockSessionPrompt on its fallback.
   const writingSkill = useQuery(
     api.ttsSkills.getSkill,
-    isTom ? { name: WRITING_SKILL } : "skip",
+    canRead ? { name: WRITING_SKILL } : "skip",
   );
   const recordEvent = useMutation(api.tts.recordEvent);
   // The one launch hook owns the createSession arguments and the failure text;

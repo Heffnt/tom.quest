@@ -68,6 +68,20 @@ surfaces the decision in the PR, rather than stopping to wait.
   verdicts land in the transcript as rows, allow and deny alike, are memoized
   per session so an agentic loop pays once, and the classifier is FAIL-OPEN
   (unreachable ⇒ allowed, and the transcript says so).
+- `banned-tools.mjs` — the tools no session may call at all, and the sentence
+  the model reads when it tries. One member: `AskUserQuestion`, whose whole
+  purpose is a multiple-choice picker a human clicks. tom.quest's transcript
+  renders every tool call as a name plus an input preview and has no picker,
+  and an autonomous session has no human at all — so under the auto-allow
+  posture the call did not park and wait, it returned with no chosen option
+  and the model carried on as if it had consulted someone. The daemon passes
+  the list to the SDK as `disallowedTools` (removed from the model's context)
+  and denies it again at the permission gate, with a mode-aware corrective
+  message: interactive ⇒ ask Tom in reply text, autonomous ⇒ decide and
+  surface the alternatives where the work persists. Its own dependency-free
+  file so the repo's vitest can execute the rule
+  (`__tests__/banned-tools.test.mjs`) — `session.mjs` cannot be imported
+  there, since the SDK is installed only on the box.
 - `lib.mjs` — env parsing, `sessionsFetch`, backoff, 32KB truncation.
 
 ## The no-state rule, as applied here

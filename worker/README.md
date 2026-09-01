@@ -92,13 +92,26 @@ without them, because every `/turing` and `/tts` page is role-gated: browsing
 one anonymously returns a 200 with 401s underneath, which reads as "page is
 fine" to a session that only checked the status.
 
-**Those two keys hold Tom's own account** (ratified 2026-08-30), so every
-session browses at role `tom`. Nothing scrubs them from a session's shell —
-`session.mjs` drops exactly `SESSIONS_WORKER_KEY` and `GH_TOKEN` and inherits
-the rest — so the account's role is the role every session holds. This is a
-knowing interim: no other account exists yet, and a session that cannot see
-`/turing` cannot check its own work there. A session account with a narrower
-role is a captured TTS todo.
+**Those two keys hold an account at role `agent`** — tom.quest's fourth role,
+which exists for this and nothing else. It reads `/turing` and `/tts`; it
+writes nothing anywhere; and it sees no other page, including `/sessions`,
+`/forge`, `/jarvis` and `/canvas`. On `/turing` it gets the `GET` that lists
+GPUs and jobs, but not the `POST` that allocates, the `DELETE` that cancels,
+or the terminal's credential endpoint. The single list that defines the reach
+is `convex/agentSurfaces.ts`; widening it is adding one name there.
+
+So a Tom-only page browsed with `--login` shows the restricted card. That is
+the correct result for this account, not a bug in the page.
+
+The two names are **deleted from a session's shell** (`session.mjs` drops them
+alongside `SESSIONS_WORKER_KEY` and `GH_TOKEN`), so no `env` or `echo` can
+write the password into a transcript Convex stores forever; `tts-browse` reads
+them back out of `/etc/tts/worker.env` itself, running as the same user. The
+scrub and the narrow role are independent: the role means a leak costs little,
+the scrub means there is nothing to leak.
+
+These held Tom's own account as a knowing interim, ratified 2026-08-30, until
+the `agent` role existed.
 
 ## The cluster, read-only
 
@@ -193,6 +206,45 @@ It prints a Google URL, and after read-only Gmail access (`gmail.readonly`) is
 approved it prints all three lines ready to paste into `worker.env`. The token
 lasts until it is revoked at `myaccount.google.com/permissions`. The script's
 own header carries the ten-minute console walkthrough.
+
+## Calendar credentials (one-time)
+
+The calendar WRITE door — `convex/ttsCalendarWrite.ts`, reached as
+`POST /tts/calendar-event` from Jarvis Box jobs and sessions, or as
+`npx convex run ttsCalendarWrite:internalCreateEvent` from Tom's machine —
+needs three values named `GOOGLE_CALENDAR_CLIENT_ID`,
+`GOOGLE_CALENDAR_CLIENT_SECRET` and `GOOGLE_CALENDAR_REFRESH_TOKEN`. Without
+all three it throws "Calendar write is not configured" on every call.
+
+Those three live on the **Convex deployment**, not in `/etc/tts/worker.env`,
+because the Google call is made by a Convex action rather than by anything on
+this box. Nothing in this directory reads them; the Jarvis Box only posts to
+Convex and lets Convex hold the credential.
+
+The client id and secret are the SAME "Desktop app" OAuth client as the Gmail
+section above (same Google Cloud project, with the Google Calendar API enabled
+alongside the Gmail API). The refresh token is a separate one, minted ONCE on
+Tom's own machine because approving it needs a browser, and scoped to
+`calendar.events` only — event create/edit/delete, no calendar admin and no
+mail, so one leaked credential does not open the other surface:
+
+```
+node worker/jobs/calendar-auth.mjs <client_id> <client_secret>
+```
+
+Run it from a tom.quest checkout: it prints a Google URL, and after
+calendar-events access is approved it runs `npx convex env set` for all three
+values itself, using the deploy key in that checkout's `.env.local`. The token
+goes Google → script → Convex without being pasted anywhere. If the env set
+fails (no deploy key in reach), it prints the three lines instead, for the
+Convex dashboard → Production → Settings → Environment Variables.
+
+One follow-up, because `npx convex env set` writes past the usual door: copy
+the three values into `secrets/convex.env`, which is the source of truth the
+repo pushes from. `pnpm secrets:sync` sends every key in that file to Convex
+including the empty ones, so a `GOOGLE_CALENDAR_CLIENT_ID=` left blank there —
+the shape it has in `secrets/convex.env.example` — silently overwrites a
+working token with an empty string on the next sync.
 
 ## Switching Claude accounts
 

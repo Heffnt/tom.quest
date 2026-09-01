@@ -13,7 +13,7 @@
 
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
 import {
   TTS_PREP_NY_HOUR,
@@ -88,7 +88,7 @@ function validateRule(args: { daysOfWeek: string[]; timeOfDay?: string; statemen
 export const listRepeats = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     return await ctx.db.query("ttsRepeats").collect();
   },
 });

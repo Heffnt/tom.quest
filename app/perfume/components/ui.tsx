@@ -16,11 +16,6 @@
 //
 // The vocabulary here is presentational only and coins no domain identifiers.
 
-import type {
-  ButtonHTMLAttributes,
-  ReactNode,
-} from "react";
-
 /** Tiny classnames joiner (no dependency). Falsy entries are dropped. */
 export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -109,24 +104,3 @@ export const drawerHandle = cn(
   "aria-pressed:border-accent aria-pressed:text-accent",
 );
 
-// ── a convenience <Button> for the shell's own use ───────────────────────────
-// Later phases can keep using the raw class strings; this wrapper just saves the
-// shell files a few lines. `variant` picks a bundle; extra className composes.
-
-type Variant = keyof typeof btn;
-
-export function Button({
-  variant = "ghost",
-  className,
-  children,
-  ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: Variant;
-  children?: ReactNode;
-}) {
-  return (
-    <button type="button" className={cn(btn[variant], className)} {...rest}>
-      {children}
-    </button>
-  );
-}

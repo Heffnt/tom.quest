@@ -210,7 +210,6 @@ export function useConvexBrewStore(
   const mutations = {
     register: useMutation(api.brews.registerMember),
     leave: useMutation(api.brews.leaveParty),
-    setIcon: useMutation(api.brews.setMemberIcon),
     createBrew: useMutation(api.brews.createBrew),
     copyBrew: useMutation(api.brews.copyBrew),
     handoffBrew: useMutation(api.brews.handoffBrew),
