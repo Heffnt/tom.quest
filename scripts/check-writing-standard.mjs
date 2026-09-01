@@ -90,9 +90,17 @@ const RULES = [
     fails: (s) => /<link[^>]+stylesheet/i.test(s),
   },
   {
+    // Only inside a <style> block: that is the one place the browser acts on
+    // @import. A page ABOUT this rule writes the word in its prose — one did,
+    // on 2026-09-01, inside <code>@import</code> — and counting that as a
+    // failure would make the number report the subject matter instead of the
+    // document.
     id: "css-import",
-    why: "nothing loads from outside — no @import",
-    fails: (s) => /@import/i.test(s),
+    why: "nothing loads from outside — no @import inside a <style> block",
+    fails: (s) =>
+      [...s.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].some((m) =>
+        /@import/i.test(m[1]),
+      ),
   },
   {
     id: "external-url",

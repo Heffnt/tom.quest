@@ -59,11 +59,28 @@ const KEY = process.env.TTS_WORKER_KEY;
 // work — that is the whole mechanism, and it is the same one
 // scripts/check-writing-standard.mjs uses.
 //
-// It was 174 of 782 units (143 briefs, 31 ground-up explanations, 545 distinct
-// undescribed mentions) when this script was written on 2026-09-01, measured
-// before the sweep of that defect began. Raising it is not a fix: a rising count
-// means an artifact was named to a reader who cannot identify it.
-const BASELINE = 174;
+// It was 190 of 891 units (371 undescribed mentions) on 2026-09-01, measured on
+// this script's final rules just before the sweep of that defect ran. The sweep
+// worked 182 units through the pens — one agent per eight units, each verifying
+// what the artifact is by opening it in a checkout of the repository that holds
+// it, then inserting the identifying clause and changing nothing else — and 153
+// of them took an edit. That left the 80 below, in four groups:
+//
+//   38  a reading agent judged the name already described where it is first
+//       used, so the keyword rule below is what is wrong, not the prose
+//   33  edited, and still tripping on a LATER bare re-mention of a name the
+//       insert described at its first occurrence
+//    4  ground-up explanations on BATCH rows: no agent pen writes one.
+//       POST /tts/batches replaces a batch's membership and plan wholesale, so
+//       correcting its prose that way would rewrite structure the planner owns
+//    4  todo rows carrying `members` (the v1 batch shape). internalPrepareTodo
+//       skips brief and groundUpExplanation on those rows by design and logs a
+//       prepare-skipped-batch event instead
+//    1  a ground-up explanation another session rewrote mid-sweep, left alone
+//
+// Raising it is not a fix: a rising count means an artifact was named to a
+// reader who cannot identify it.
+const BASELINE = 80;
 
 // ── What counts as naming an artifact ───────────────────────────────────────
 // Extensions of the source files these repositories actually hold. A token is
@@ -77,6 +94,15 @@ const EXT =
 // an artifact even when it names a directory rather than a file.
 const TOPDIR =
   "convex|app|scripts|worker|vqc|tests|tools|cmt|dev|sweeps|turing-api|e2e|secrets|model-of-tom|wiki|todo|daily|research|sources|code|dts|src|lib|public|\\.claude|\\.github";
+
+// Names that match the patterns below and are not artifacts anyone made here.
+// Two kinds, both found by reading what the check reported on the stored prose:
+// third-party software whose name ends in ".js", and the method call
+// `res.json()` on an HTTP response, which reads as a JSON file name. The rule
+// the standard states is about things AN AGENT MADE, so a public library Tom
+// already knows by name is out of scope by construction.
+const NOT_ARTIFACTS =
+  /^(?:next|node|xterm|d3|three|chart|vue|express|react)\.js$|^(?:res|response|request|req|body)\.json$/i;
 
 const PATTERNS = [
   // A path with a file extension: cmt/sweep/runner.py, app/tts/lib.ts.
@@ -130,6 +156,7 @@ export function artifactTokens(text) {
     let m;
     while ((m = re.exec(text))) {
       const raw = m[0].replace(/[.,;:)"'\]]+$/, "");
+      if (NOT_ARTIFACTS.test(raw)) continue;
       hits.push({ token: raw, start: m.index, end: m.index + raw.length });
     }
   }

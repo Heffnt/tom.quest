@@ -322,3 +322,25 @@
     directly with npx convex env set. (Also surfaced as a task chip.)
   graduates_when: >-
     pnpm secrets:sync completes end-to-end against the current Vercel CLI.
+
+- id: undescribed-artifacts-remainder
+  kind: descent
+  created: 2026-09-01
+  cites: [A2, tts-spec:12]
+  statement: >-
+    WRITING_STANDARD requires that a file, branch, directory or job an agent
+    made is described before it is named, because the reader has no knowledge
+    of it. scripts/check-undescribed-artifacts.mjs (pnpm check:artifacts) now
+    reports how many stored briefs and ground-up explanations break that rule,
+    and the 2026-09-01 sweep took the count from 190 of 891 units to 80. The
+    80 are: 38 the sweep agents read and judged already described at first use
+    (so the script's keyword rule is what is wrong there), 33 whose flag is a
+    later bare re-mention of a name described at its first occurrence, 4
+    ground-up explanations on batch rows and 4 on v1 batch todo rows that NO
+    agent pen can write — POST /tts/batches replaces membership and plan
+    wholesale, and internalPrepareTodo skips prose on a row carrying `members`
+    — and 1 page another session rewrote mid-sweep.
+  graduates_when: >-
+    pnpm check:artifacts reports 0, which requires both a pen that corrects one
+    batch's prose without touching its membership or plan, and a check rule
+    that stops counting a later bare re-mention of a name already described.

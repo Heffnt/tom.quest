@@ -56,6 +56,15 @@ describe("check-undescribed-artifacts", () => {
     ).toEqual(["session/q975a307c34b9d0e1f2a", "internal.gpuPool.reconcile"]);
   });
 
+  it("ignores third-party names and response methods that look like files", () => {
+    expect(
+      undescribed(
+        "brief",
+        "The page is built with Next.js and the handler ends in res.json(payload).",
+      ),
+    ).toEqual([]);
+  });
+
   it("reads only the visible text of a ground-up explanation", () => {
     const doc =
       "<!DOCTYPE html><html><head><style>body{background:#0a0e17}</style></head>" +
