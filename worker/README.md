@@ -163,9 +163,14 @@ node worker/jobs/gmail-auth.mjs <client_id> <client_secret>
 ```
 
 It prints a Google URL, and after read-only Gmail access (`gmail.readonly`) is
-approved it prints all three lines ready to paste into `worker.env`. The token
-lasts until it is revoked at `myaccount.google.com/permissions`. The script's
-own header carries the ten-minute console walkthrough.
+approved it writes all three `KEY=VALUE` lines to `~/tts-gmail-credentials.env`
+with mode 0600 and prints only that path, the variable names, and the two
+commands that append the file to `/etc/tts/worker.env` and delete both copies.
+No credential value is ever printed — see the "never log secrets" rule in
+`AGENTS.md`, which has no exemption for these helpers, and
+`worker/jobs/credential-file.mjs`, which is how they comply. The token lasts
+until it is revoked at `myaccount.google.com/permissions`. The script's own
+header carries the ten-minute console walkthrough.
 
 ## Switching Claude accounts
 

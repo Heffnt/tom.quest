@@ -15,14 +15,17 @@
 // variables on the Convex deployment ITSELF (`npx convex env set`, using the
 // deploy key in the repo's .env.local — so run it from a tom.quest checkout).
 // The token flows Google → this script → Convex and is never copy-pasted by
-// anyone. If the env set fails, the three lines are printed as a fallback.
-// Revoke any time at myaccount.google.com/permissions.
+// anyone. If the env set fails, the three values are WRITTEN to an owner-only
+// file in your home directory and only its path is printed, never a value —
+// AGENTS.md forbids logging secrets, and an agent session stores its own
+// stdout. Revoke any time at myaccount.google.com/permissions.
 //
-// Zero dependencies: node:http, node:child_process + global fetch.
+// Zero npm dependencies: node:http, node:child_process + global fetch.
 
 import http from "node:http";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { writeCredentialFile, credentialFileNotice } from "./credential-file.mjs";
 
 const [clientId, clientSecret] = process.argv.slice(2);
 if (!clientId || !clientSecret) {
@@ -76,6 +79,13 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("Done — check your terminal. Close this tab.");
+    // DECISION (AGENTS.md "never log secrets"): the happy path below hands
+    // these values straight to `npx convex env set`, which never prints them.
+    // The fallback path used to console.log all three; it now writes them to
+    // an owner-only file and prints only the path and the variable names, so
+    // running this helper inside an agent session cannot write a credential
+    // into the stored session transcript. There is no exemption for this
+    // helper — if you add a step here, it keeps this shape.
     const vars = {
       GOOGLE_CALENDAR_CLIENT_ID: clientId,
       GOOGLE_CALENDAR_CLIENT_SECRET: clientSecret,
@@ -85,9 +95,14 @@ const server = http.createServer(async (req, res) => {
       for (const [name, value] of Object.entries(vars)) {
         // shell:true because on Windows npx is npx.cmd; values are
         // Google-issued (no spaces or shell metacharacters).
+        //
+        // stdout is DISCARDED, not inherited: the Convex CLI's success line
+        // names the value it just set, which would put the secret back on
+        // stdout by a side door. stderr stays inherited so a real failure is
+        // still visible, and a nonzero exit still throws into the catch.
         execFileSync("npx", ["convex", "env", "set", name, value], {
           shell: true,
-          stdio: ["ignore", "inherit", "inherit"],
+          stdio: ["ignore", "ignore", "inherit"],
         });
       }
       console.log(
@@ -95,11 +110,19 @@ const server = http.createServer(async (req, res) => {
       );
     } catch {
       console.log(
-        "\nSetting the Convex env failed (no .env.local deploy key here?) — add these by hand in the Convex dashboard -> Production -> Settings -> Environment Variables:\n",
+        "\nSetting the Convex env failed (no .env.local deploy key here?) — the three values were written to a file instead.",
       );
-      console.log(`GOOGLE_CALENDAR_CLIENT_ID=${clientId}`);
-      console.log(`GOOGLE_CALENDAR_CLIENT_SECRET=${clientSecret}`);
-      console.log(`GOOGLE_CALENDAR_REFRESH_TOKEN=${tokens.refresh_token}`);
+      const file = writeCredentialFile("tts-calendar-credentials.env", vars);
+      console.log(
+        credentialFileNotice(file, Object.keys(vars), [
+          "Set them on the Convex deployment from that file, without printing them:",
+          // >/dev/null for the same reason the execFileSync above discards
+          // stdout: the CLI's success line repeats the value it set.
+          `  while IFS='=' read -r name value; do npx convex env set "$name" "$value" >/dev/null; done < ${file}`,
+          "Or open the file in an editor and paste each value into the Convex",
+          "dashboard -> Production -> Settings -> Environment Variables.",
+        ]),
+      );
     }
   } catch (err) {
     res.writeHead(500).end(String(err.message));
