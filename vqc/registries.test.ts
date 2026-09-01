@@ -88,7 +88,14 @@ describe("vqc/steering.yaml", () => {
 type Ruling = { id: string; date: string; question: string; ruling: string; cites: string[] };
 
 function parseRulingsLog(): Ruling[] {
-  const raw = readFileSync(join(__dirname, "adoption.md"), "utf8");
+  // \r stripped up front: the committed blob is LF, but core.autocrlf=true
+  // checkouts (Windows dev machines) hand this parser CRLF working-tree
+  // text, and a guard that only runs green on Linux is a guard nobody runs
+  // locally.
+  const raw = readFileSync(join(__dirname, "adoption.md"), "utf8").replace(
+    /\r/g,
+    "",
+  );
   const heading = raw.indexOf("## Rulings log");
   expect(heading, "vqc/adoption.md has no '## Rulings log' section").toBeGreaterThan(-1);
   const after = raw.slice(raw.indexOf("\n", heading) + 1);
