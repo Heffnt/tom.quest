@@ -4,6 +4,8 @@
 #
 #   bash tom.quest/worker/install-git-credentials.sh          # install
 #   bash tom.quest/worker/install-git-credentials.sh --check   # report only
+#   bash tom.quest/worker/install-git-credentials.sh --verify-clean-url
+#                                        # can the daemon's git authenticate?
 #
 # WHY THIS IS ITS OWN FILE AND NOT JUST A BLOCK INSIDE setup.sh
 #
@@ -56,29 +58,106 @@ set -euo pipefail
 HELPER_PATH=/usr/local/bin/tts-git-credential
 ENV_FILE=/etc/tts/worker.env
 GH_HOSTS=/root/.config/gh/hosts.yml
+# Private on GitHub, and cloned by every session at start-up: reading it with a
+# clean URL is the whole credential path exercised end to end, and no session
+# can start on a box where that read fails. --verify-clean-url below asks
+# exactly that question.
+PRIVATE_REPO=Heffnt/ComplexMultiTrigger
 
 # Directory this script lives in (the repo's worker/ dir), so the copy below
 # works no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 MODE=install
-if [ "${1:-}" = "--check" ]; then
-  MODE=check
-elif [ "$#" -gt 0 ]; then
-  echo "usage: $0 [--check]" >&2
+case "${1:-}" in
+  "") MODE=install ;;
+  --check) MODE=check ;;
+  --verify-clean-url) MODE=verify ;;
+  *) echo "usage: $0 [--check | --verify-clean-url]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: $0 [--check | --verify-clean-url]" >&2
   exit 2
 fi
 
-if [ "$(id -u)" -ne 0 ]; then
+# --verify-clean-url is exempt: it writes nothing, reads no secret value, and
+# has to be runnable by the test suite on an ordinary developer account.
+if [ "$MODE" != verify ] && [ "$(id -u)" -ne 0 ]; then
   echo "install-git-credentials.sh must run as root" >&2
   exit 1
 fi
 
 # Presence only, never the value: a token that reaches a log or a transcript is
-# the defect this whole change exists to end.
+# the defect this whole change exists to end. The optional argument names a
+# different env file; only --verify-clean-url passes one, and only so that the
+# test suite can exercise both of its branches without a file under /etc.
 token_present() {
-  [ -n "$(sed -n 's/^GH_TOKEN=//p' "$ENV_FILE" 2>/dev/null | tail -1)" ]
+  [ -n "$(sed -n 's/^GH_TOKEN=//p' "${1:-$ENV_FILE}" 2>/dev/null | tail -1)" ]
 }
+
+# --verify-clean-url: can a git process started the way the DAEMON starts one
+# read the private repository through a clean URL? Nothing else on this box
+# answers that, and the answer is what separates a working deploy from a fleet
+# that cannot start a session.
+#
+# WHY IT IS ASKED WITH NO HOME. session.mjs clones every repository from a URL
+# with no credential in it, so the only thing that can authenticate that clone
+# is the credential helper, and git finds the helper only in a configuration
+# file it actually reads. The daemon's systemd unit sets HOME=/root, but the
+# read below deliberately drops HOME anyway: with no HOME, git reads
+# /etc/gitconfig and nothing else, so a helper registered per-user — `git
+# config --global`, which writes $HOME/.gitconfig — counts as missing here.
+# That is the distinction this check exists to catch, because a per-user
+# registration looks correct on the command line of the person running setup.sh
+# and is invisible to a service that has no HOME. Measured on the Jarvis Box
+# 2026-09-01: `git config --get credential.helper` with HOME set to a directory
+# holding such a registration prints the helper and exits 0; the same command
+# with HOME unset prints nothing and exits 1.
+#
+# TTS_VERIFY_REMOTE and TTS_VERIFY_ENV_FILE exist for worker/credentials.test.ts,
+# which points them at a local repository and a stand-in env file so the two
+# branches below can be exercised without network access and without reading
+# anything under /etc. Neither is set anywhere in production, and both are read
+# only — no mode of this script writes to either.
+verify_clean_url() {
+  local remote env_file
+  remote="${TTS_VERIFY_REMOTE:-https://github.com/$PRIVATE_REPO.git}"
+  env_file="${TTS_VERIFY_ENV_FILE:-$ENV_FILE}"
+
+  if env -u HOME GIT_TERMINAL_PROMPT=0 git ls-remote --heads "$remote" \
+       >/dev/null 2>&1; then
+    echo "clean-URL read of $remote, with no HOME: yes"
+    return 0
+  fi
+
+  if ! token_present "$env_file"; then
+    # A box being built for the first time reaches this point legitimately:
+    # setup.sh seeds the env file from the template AFTER this call, so there
+    # is no token yet and no session to lose. Say what is missing and let the
+    # install finish.
+    echo "clean-URL read of $remote, with no HOME: NO, and GH_TOKEN is not set"
+    echo "  in $env_file. That is the normal state of a box being built for the"
+    echo "  first time. Fill GH_TOKEN in and run setup.sh again; until then no"
+    echo "  session can start, because every session clones a private repository."
+    return 0
+  fi
+
+  echo "clean-URL read of $remote, with no HOME: NO." >&2
+  echo "  A token IS set in $env_file, so this is a broken credential path, not" >&2
+  echo "  an unfinished box. Every session clones that repository with a URL" >&2
+  echo "  that carries no credential, so on this box no session could start." >&2
+  echo "  Run '$0 --check' to see which of the three pieces is missing. The" >&2
+  echo "  usual cause is a helper registered with 'git config --global', which" >&2
+  echo "  writes \$HOME/.gitconfig and is invisible to a service that has no" >&2
+  echo "  HOME; this script registers it with 'git config --system' instead." >&2
+  echo "  Setting TTS_SKIP_CLEAN_URL_CHECK=1 makes setup.sh deploy anyway." >&2
+  return 1
+}
+
+if [ "$MODE" = verify ]; then
+  verify_clean_url
+  exit $?
+fi
 
 if [ "$MODE" = check ]; then
   ok=0

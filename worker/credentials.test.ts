@@ -114,6 +114,71 @@ function runScrub(args: string[]): string {
   });
 }
 
+// A local repository standing in for the private GitHub one, an env file
+// standing in for /etc/tts/worker.env, and a home directory whose git
+// configuration rewrites that repository's address to one that does not
+// exist. The last of those is how the tests below tell "the check ignored
+// HOME" from "the check honoured HOME": a check that reads the per-user
+// configuration picks up the rewrite and fails, and one that does not, does
+// not. Nothing here touches the network or any path outside the temp
+// directory it creates.
+function makeVerifyFixture(opts: { token: boolean }): {
+  root: string;
+  remote: string;
+  missingRemote: string;
+  envFile: string;
+  home: string;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-verify-fixture-"));
+  const bare = path.join(root, "origin.git");
+  git(["init", "-q", "--bare", bare]);
+  const remote = `file://${bare}`;
+
+  const envFile = path.join(root, "worker.env");
+  fs.writeFileSync(
+    envFile,
+    opts.token ? `SOMETHING=1\nGH_TOKEN=${FIXTURE_TOKEN}\n` : "SOMETHING=1\n",
+    { mode: 0o600 },
+  );
+
+  const home = path.join(root, "home");
+  fs.mkdirSync(home);
+  fs.writeFileSync(
+    path.join(home, ".gitconfig"),
+    `[url "file://${path.join(root, "absent-on-purpose.git")}"]\n\tinsteadOf = ${remote}\n`,
+  );
+
+  return { root, remote, missingRemote: `file://${root}/absent.git`, envFile, home };
+}
+
+// The environment of a git process on the Jarvis Box: the system configuration
+// file is the only one git reads there. GIT_CONFIG_GLOBAL is explicitly
+// removed rather than pointed at /dev/null, because setting it would make git
+// ignore the per-user configuration no matter what the script does, and
+// whether the script ignores it is the property under test.
+function verifyEnv(over: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    ...over,
+  };
+  delete env.GIT_CONFIG_GLOBAL;
+  return env;
+}
+
+function runVerify(env: NodeJS.ProcessEnv): { status: number; stdout: string; stderr: string } {
+  try {
+    const stdout = execFileSync("bash", [INSTALL_SH, "--verify-clean-url"], {
+      encoding: "utf8",
+      env,
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string };
+    return { status: e.status ?? -1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+  }
+}
+
 describe("worker credentials", () => {
   it("no worker source builds a github.com URL with a credential in it", () => {
     const offenders = codeFiles(WORKER_DIR).filter((f) =>
@@ -175,8 +240,10 @@ describe("worker credentials", () => {
       .filter((line) => !/^\s*#/.test(line))
       .join("\n");
     expect(code).not.toMatch(/systemctl|service\s+\w+\s+restart/);
-    // A report-only mode, so a box can be asked whether it is ready.
-    expect(install).toContain('if [ "${1:-}" = "--check" ]');
+    // A report-only mode, so a box can be asked whether it is ready, and the
+    // read-only mode setup.sh gates the deploy on.
+    expect(install).toContain("--check) MODE=check ;;");
+    expect(install).toContain("--verify-clean-url) MODE=verify ;;");
   });
 
   // Rotating the token is the other half of the same defect: the value that
@@ -334,6 +401,100 @@ describe("worker credentials", () => {
     const inRotate = fs.readFileSync(ROTATE_SH, "utf8").match(line);
     expect(inScrub).not.toBeNull();
     expect(inRotate?.[0]).toBe(inScrub?.[0]);
+  });
+
+  // The deploy is the step that cannot be taken back cheaply: it restarts the
+  // daemon, which ends every live autonomous session, onto code that clones
+  // with clean URLs. If the credential path is broken at that moment, the box
+  // stops being able to start a session at all — which is the failure this
+  // whole change was made under. Measured on the Jarvis Box 2026-09-01 00:44
+  // UTC, main was already in exactly that state: session.mjs clones clean
+  // URLs, /etc/gitconfig held no credential.helper, and the running daemon's
+  // environment had no HOME, so a per-user registration would have been
+  // invisible to it. --verify-clean-url is the read that catches this before
+  // the restart rather than after.
+  it("the clean-URL check passes when the daemon's git can read the repository", () => {
+    const fx = makeVerifyFixture({ token: true });
+    try {
+      const r = runVerify(
+        verifyEnv({ TTS_VERIFY_REMOTE: fx.remote, TTS_VERIFY_ENV_FILE: fx.envFile }),
+      );
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("with no HOME: yes");
+      expect(r.stdout).not.toContain(FIXTURE_TOKEN);
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("the clean-URL check reads the repository the way the daemon does, ignoring HOME", () => {
+    const fx = makeVerifyFixture({ token: true });
+    try {
+      // HOME points at a git configuration that rewrites the fixture's address
+      // to one that does not exist. A check that honoured HOME would fail
+      // here; the daemon has no HOME, and a helper registered per-user is
+      // invisible to it, so the check must not honour one either.
+      const r = runVerify(
+        verifyEnv({
+          HOME: fx.home,
+          TTS_VERIFY_REMOTE: fx.remote,
+          TTS_VERIFY_ENV_FILE: fx.envFile,
+        }),
+      );
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("with no HOME: yes");
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("the clean-URL check fails the deploy when a token is set and the read fails", () => {
+    const fx = makeVerifyFixture({ token: true });
+    try {
+      const r = runVerify(
+        verifyEnv({ TTS_VERIFY_REMOTE: fx.missingRemote, TTS_VERIFY_ENV_FILE: fx.envFile }),
+      );
+      expect(r.status).toBe(1);
+      // Non-zero is what stops setup.sh, which runs under `set -e`, before the
+      // scrub and long before the daemon restart.
+      expect(r.stderr).toContain("no session could start");
+      expect(r.stderr).toContain("git config --global");
+      expect(r.stderr).not.toContain(FIXTURE_TOKEN);
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("the clean-URL check does not block a box that has no token yet", () => {
+    const fx = makeVerifyFixture({ token: false });
+    try {
+      // setup.sh seeds /etc/tts/worker.env from the template AFTER this call,
+      // so a first-time build legitimately reaches the check with no token and
+      // no session to lose. Failing there would make the box unbuildable.
+      const r = runVerify(
+        verifyEnv({ TTS_VERIFY_REMOTE: fx.missingRemote, TTS_VERIFY_ENV_FILE: fx.envFile }),
+      );
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("GH_TOKEN is not set");
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("setup.sh proves the credential path before it scrubs or restarts the daemon", () => {
+    const setup = fs.readFileSync(SETUP_SH, "utf8");
+    const install = setup.indexOf('bash "$WORKER_DIR/install-git-credentials.sh"\n');
+    const verify = setup.indexOf(
+      'bash "$WORKER_DIR/install-git-credentials.sh" --verify-clean-url',
+    );
+    const scrub = setup.indexOf('bash "$WORKER_DIR/scrub-token-urls.sh"');
+    const restart = setup.indexOf("systemctl restart tts-session-host");
+    expect(verify).toBeGreaterThan(-1);
+    // After the install, or it would report a box that was about to be fixed.
+    expect(verify).toBeGreaterThan(install);
+    // Before both irreversible steps.
+    expect(verify).toBeLessThan(scrub);
+    expect(verify).toBeLessThan(restart);
   });
 
   it("the helper answers only `get`, only for github.com, and never writes", () => {

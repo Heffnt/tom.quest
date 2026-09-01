@@ -120,6 +120,27 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
 # no credentials.
 bash "$WORKER_DIR/install-git-credentials.sh"
 
+# PROVE the credential path before anything downstream depends on it. Two steps
+# below cannot be taken back on a box where it is broken: the scrub rewrites
+# existing checkouts to clean URLs, which only the helper can authenticate, and
+# step 8 restarts the daemon onto code that clones with clean URLs, ending every
+# live autonomous session on the way. If the read below fails, both of those
+# turn a box that works into a box that cannot start a session, so the deploy
+# stops here instead.
+#
+# The check reads the private repository with no HOME, which is how the daemon's
+# git runs. A helper registered with `git config --global` — the way this file
+# registered it before 2026-08-31 — writes $HOME/.gitconfig, works for the
+# person running setup.sh, and is invisible to the daemon; the read below is
+# what tells those two states apart. TTS_SKIP_CLEAN_URL_CHECK=1 deploys anyway,
+# for the case where GitHub itself is unreachable and the box still has to be
+# rebuilt.
+if [ "${TTS_SKIP_CLEAN_URL_CHECK:-0}" = "1" ]; then
+  echo "  clean-URL credential check SKIPPED (TTS_SKIP_CLEAN_URL_CHECK=1)"
+else
+  bash "$WORKER_DIR/install-git-credentials.sh" --verify-clean-url
+fi
+
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy). AFTER the
 # credential helper above: the code-todo jobs clone and push with clean URLs
 # and refuse to run without it.
