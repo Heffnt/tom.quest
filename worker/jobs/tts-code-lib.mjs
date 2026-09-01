@@ -9,7 +9,7 @@
 // executor implements ONE approved plan per hour on a branch and opens a PR —
 // merging that PR is the human gate.
 //
-// STATE ON THIS BOX (all harmless to lose, per the no-state rule):
+// STATE ON THE JARVIS BOX (all harmless to lose, per the no-state rule):
 //   /var/cache/tts/ComplexMultiTrigger — shallow cache clone; rebuilt from
 //       origin on every use, so deleting it costs one clone.
 //   /var/cache/tts/briefs/<repo>/<id>.md — local copy of each posted brief so
@@ -66,7 +66,7 @@ export function git(dir, ...args) {
 
 // The authenticated CMT remote URL. The token rides in the URL (the
 // x-access-token convention GitHub documents for token auth over HTTPS) —
-// acceptable here because the URL never leaves this root-only box and the
+// acceptable here because the URL never leaves the root-only Jarvis Box and the
 // jobs re-set it on every refresh, so a rotated token in worker.env takes
 // effect on the next cron tick.
 export function cmtRemoteUrl(env) {
@@ -113,7 +113,7 @@ export function cmtRepoDir(env) {
 // ---------------------------------------------------------------------------
 
 // Parse a YAML file to a JS value. WHY python: the no-npm-deps rule leaves
-// Node without a YAML parser, and the box already carries python3-yaml for
+// Node without a YAML parser, and the Jarvis Box already carries python3-yaml for
 // CMT's own guard tests — one parser, one truth. The file goes over STDIN
 // (not argv) so paths with odd characters and future big files both work.
 export function yamlToJson(file) {

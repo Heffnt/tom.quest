@@ -158,6 +158,12 @@ function prompt(ctx) {
     `- path — the sequence BETWEEN batches. A batch sits at an index on a named`,
     `  path, and its edge to the previous batch is either "must" (that batch`,
     `  has to land first) or "helps" (it only makes this one easier).`,
+    `- repos — the repositories a batch's work lives in, DECLARED by you on`,
+    `  the batch. Every session TTS opens for this batch or for a task inside`,
+    `  it checks out exactly this set, so a batch whose work touches two`,
+    `  repositories declares both and gets one session holding both checkouts.`,
+    `  The only legal names are ${ctx.sessionRepos.join(", ")}; a batch whose`,
+    `  work needs no repository declares [].`,
     `- display text — the short line always on screen (a statement).`,
     `- ground-up explanation — the self-contained layer behind a "more"`,
     `  control. It is a COMPLETE HTML DOCUMENT, rendered fullscreen; the`,
@@ -166,7 +172,8 @@ function prompt(ctx) {
     ctx.writingStandard,
     ``,
     `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
-    `groundUpExplanationPreview, path, frozen, tasks, goals. A task carries id,`,
+    `groundUpExplanationPreview, path, repos, frozen, tasks, goals. A task`,
+    `carries id,`,
     `statement, actor, status, needs, condition, evidence, model, and its own`,
     `groundUpExplanationPreview. EVERY "...Preview" value is readable text`,
     `EXTRACTED from a stored HTML document and then CLIPPED — it is there so`,
@@ -190,8 +197,7 @@ function prompt(ctx) {
     `never output its id and never archive it.`,
     ``,
     `TODOS NOT IN ANY BATCH — your candidate GOALS (JSON; each: id, statement,`,
-    `brief, category, importance, dueAt — dueAt is epoch ms or null; brief is`,
-    `clipped):`,
+    `brief, category, dueAt — dueAt is epoch ms or null; brief is clipped):`,
     JSON.stringify(ctx.candidates, null, 2),
     ``,
     ...(ctx.candidatesHeldBack > 0
@@ -203,7 +209,7 @@ function prompt(ctx) {
         ]
       : []),
     `OPEN CODE TODOS in Tom's repos, with prepared briefs (JSON; each: repo,`,
-    `externalId, statement, importance). CONTEXT ONLY — these are entries in`,
+    `externalId, statement). CONTEXT ONLY — these are entries in`,
     `repo todo files, not todo rows, so they cannot be bound as goals. Use them`,
     `to know what work exists when you write tasks and explanations:`,
     JSON.stringify(ctx.code, null, 2),
@@ -343,6 +349,7 @@ function prompt(ctx) {
     ` "groundUpExplanation": "<!DOCTYPE html><html><head><style>…</style>`,
     `</head><body>…</body></html>",`,
     ` "path": {"name": "...", "index": 0, "edge": "must"},`,
+    ` "repos": ["tom.quest"],`,
     ` "tasks": [{"id": "...", "statement": "...", "actor": "agent",`,
     `            "needs": ["<todo id>", 0], "condition": "...",`,
     `            "groundUpExplanation": "<!DOCTYPE html>…</html>",`,
@@ -361,15 +368,30 @@ async function main() {
 
   const all = Array.isArray(todos) ? todos : [];
   const batchRows = Array.isArray(batches) ? batches : [];
-  // The writing standard has ONE home (convex/ttsShared.ts WRITING_STANDARD)
-  // and rides this payload because this file is Node ESM on a box that never
-  // loads TypeScript. A run without it would quietly produce prose written to
-  // no standard at all, which is worse than not running — so it is fatal.
+  // The writing standard is the WikiTom skill model-of-tom/skills/writing-to-tom
+  // (synced into Convex; convex/ttsShared.ts WRITING_STANDARD is the fallback
+  // copy), and it rides this payload because this file is Node ESM on the
+  // Jarvis Box, which never loads TypeScript and holds no WikiTom checkout. A run without it
+  // would quietly produce prose written to no standard at all, which is worse
+  // than not running — so it is fatal.
   const writingStandard = context.writingStandard;
   if (typeof writingStandard !== "string" || writingStandard.trim() === "") {
     throw new Error(
       "/tts/batch-context returned no writingStandard — the server half of the " +
         "one-home rule is missing; refusing to write prose to no standard",
+    );
+  }
+
+  // The repo names a batch may declare, from the one home (convex/ttsShared.ts)
+  // via the payload — same reason writingStandard rides it. Fatal if missing
+  // for the same reason too: a planner guessing repo names would declare ones
+  // the daemon cannot clone, and every session on that batch would die on its
+  // first turn.
+  const sessionRepos = context.sessionRepos;
+  if (!Array.isArray(sessionRepos) || sessionRepos.length === 0) {
+    throw new Error(
+      "/tts/batch-context returned no sessionRepos — refusing to let the " +
+        "planner guess which repositories exist",
     );
   }
 
@@ -483,6 +505,9 @@ async function main() {
         MAX_BATCH_PREVIEW_CHARS,
       ),
       path: b.path ?? null,
+      // null = never declared (omitting "repos" preserves that); [] = declared
+      // as needing no checkout. The planner has to be able to tell them apart.
+      repos: b.repos ?? null,
       frozen: b.tomTouchedAt !== undefined,
       tasks: contents
         .filter((t) => t.kind !== "goal")
@@ -541,13 +566,6 @@ async function main() {
     statement: t.statement,
     brief: clip(t.brief, MAX_BRIEF_CHARS),
     category: t.category ?? null,
-    importance: t.importance
-      ? {
-          level: t.importance.level,
-          setBy: t.importance.setBy,
-          rationale: t.importance.rationale ?? null,
-        }
-      : null,
     dueAt: t.dueAt ?? null,
   }));
 
@@ -566,13 +584,6 @@ async function main() {
           repo: m.repo,
           externalId: m.externalId,
           statement: m.statement,
-          importance: brief.importance
-            ? {
-                level: brief.importance.level,
-                setBy: brief.importance.setBy,
-                rationale: brief.importance.rationale ?? null,
-              }
-            : null,
         },
       ];
     })
@@ -600,6 +611,7 @@ async function main() {
         reviseSentences,
         notes,
         writingStandard,
+        sessionRepos,
       }),
     )
     .digest("hex");
@@ -607,7 +619,7 @@ async function main() {
   try {
     storedHash = fs.readFileSync(HASH_PATH, "utf8").trim();
   } catch {
-    // no cursor yet — first run, or the box was rebuilt
+    // no cursor yet — first run, or the Jarvis Box was rebuilt
   }
   if (inputHash === storedHash && revises.length === 0) return; // quiet when idle
 
@@ -620,6 +632,7 @@ async function main() {
   const answer = runClaude(
     prompt({
       writingStandard,
+      sessionRepos,
       graphs,
       graphsHeldBack,
       activeStatements,

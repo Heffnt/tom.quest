@@ -67,104 +67,23 @@ describe("TTS code-todo briefs", () => {
     expect(briefed.some((e) => (e.data as { count: number }).count === 2)).toBe(true);
   });
 
-  // witness: drop the setBy-"tom" guard from internalStoreBriefs in
-  // convex/ttsCode.ts — a re-brief would overwrite Tom's ruling on importance.
-  it("briefs carry agent importance; Tom's override survives a re-brief", async () => {
+  // Importance is RETIRED (Tom's ruling 2026-08-29, "no importance guesses").
+  // witness: give internalStoreBriefs an importance arg again in
+  // convex/ttsCode.ts and write it — a stored brief would carry a rating.
+  it("stores no importance: the retired field stays absent on every brief", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [
-        { ...brief(), importanceLevel: "medium", importanceRationale: "blocks the campaign" },
-      ],
-    });
-    let [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
-    expect(row.importance).toMatchObject({
-      level: "medium",
-      setBy: "agent",
-      rationale: "blocks the campaign",
-    });
-    await tom.mutation(api.ttsCode.setCodeImportance, {
-      repo: "ComplexMultiTrigger",
-      externalId: "cmt-001",
-      level: "high",
+      briefs: [brief()],
     });
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [{ ...brief({ sourceHash: "hash-b" }), importanceLevel: "low" }],
+      briefs: [brief({ sourceHash: "hash-b" })],
     });
-    [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
+    const [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
     expect(row.sourceHash).toBe("hash-b"); // the re-brief itself landed
-    expect(row.importance).toMatchObject({ level: "high", setBy: "tom" });
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(events.some((e) => e.kind === "importance-skipped")).toBe(true);
-  });
-
-  // witness: make tts.agentImportancePatch return undefined for an existing
-  // AGENT value too — the shared guard blocks only Tom's, so a re-brief must
-  // still be able to revise the agent's own estimate.
-  it("a re-brief revises the agent's OWN importance (and clears when Tom clears)", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [{ ...brief(), importanceLevel: "low" }],
-    });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [
-        {
-          ...brief({ sourceHash: "hash-b" }),
-          importanceLevel: "high",
-          importanceRationale: "now blocks the campaign",
-        },
-      ],
-    });
-    let [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
-    expect(row.importance).toMatchObject({
-      level: "high",
-      setBy: "agent",
-      rationale: "now blocks the campaign",
-    });
-    // Tom rules, then clears: the agent may write again.
-    await tom.mutation(api.ttsCode.setCodeImportance, {
-      repo: "ComplexMultiTrigger",
-      externalId: "cmt-001",
-      level: "low",
-    });
-    await tom.mutation(api.ttsCode.setCodeImportance, {
-      repo: "ComplexMultiTrigger",
-      externalId: "cmt-001",
-      level: null,
-    });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [{ ...brief({ sourceHash: "hash-c" }), importanceLevel: "medium" }],
-    });
-    [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
-    expect(row.importance).toMatchObject({ level: "medium", setBy: "agent" });
-  });
-
-  it("setCodeImportance writes setBy tom, clears on null, names a missing brief", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, { briefs: [brief()] });
-    await tom.mutation(api.ttsCode.setCodeImportance, {
-      repo: "ComplexMultiTrigger",
-      externalId: "cmt-001",
-      level: "low",
-    });
-    let [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
-    expect(row.importance).toMatchObject({ level: "low", setBy: "tom" });
-    await tom.mutation(api.ttsCode.setCodeImportance, {
-      repo: "ComplexMultiTrigger",
-      externalId: "cmt-001",
-      level: null,
-    });
-    [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
     expect(row.importance).toBeUndefined();
-    await expect(
-      tom.mutation(api.ttsCode.setCodeImportance, {
-        repo: "ComplexMultiTrigger",
-        externalId: "no-such-item",
-        level: "low",
-      }),
-    ).rejects.toThrow(/not found/);
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    expect(events.some((e) => e.kind === "importance-skipped")).toBe(false);
   });
 
   it("internalListBriefs returns every stored brief for the worker", async () => {

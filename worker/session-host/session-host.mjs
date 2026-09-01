@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // session-host.mjs — the TTS session-host daemon: runs real Claude Code
-// sessions (via @anthropic-ai/claude-agent-sdk) on this box and persists
+// sessions (via @anthropic-ai/claude-agent-sdk) on the Jarvis Box and persists
 // every event into tom.quest's Convex backend, which IS the message bus:
 //
 //   browser ──(claudeInbound rows / permission decisions)──▶ Convex
@@ -54,7 +54,7 @@ const POLL_WARM_MS = 5_000;
 const POLL_IDLE_MS = 30_000;
 const HOT_WINDOW_MS = 30_000;
 
-// Which Claude Max account the SDK runs under — the box's "active" symlink
+// Which Claude Max account the SDK runs under — the Jarvis Box's "active" symlink
 // (managed by tts-account; CLAUDE_CONFIG_DIR in the systemd unit points at
 // it). Reported to the server as a display fact only.
 function readActiveAccount() {
@@ -109,6 +109,7 @@ function claimSession(env, sessions, row) {
   const s = new Session({
     id: row.id,
     repo: row.repo,
+    repos: row.repos,
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
@@ -171,6 +172,7 @@ function adoptSession(env, sessions, row) {
   const s = new Session({
     id: row.id,
     repo: row.repo,
+    repos: row.repos,
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
@@ -270,9 +272,9 @@ async function main() {
         version: `session-host/${VERSION}`,
         daemonStartedAt: DAEMON_STARTED_AT,
         activeAccount: readActiveAccount(),
-        // Box load facts — the auto-session scheduler's admission signal
+        // Jarvis Box load facts — the auto-session scheduler's admission signal
         // (load-based, not a scalar session cap): loadavg + free RAM decide
-        // whether the box can take another session.
+        // whether the Jarvis Box can take another session.
         load: {
           loadavg1: os.loadavg()[0],
           cpus: os.cpus().length,
@@ -323,7 +325,9 @@ async function main() {
       ) {
         // Fresh session — or one a previous daemon died on before the SDK
         // ever reported an id (nothing to resume; start over cleanly).
-        log(`claiming session ${row.id} (repo: ${row.repo})`);
+        log(
+          `claiming session ${row.id} (repos: ${(row.repos ?? [row.repo]).join(", ") || "none"})`,
+        );
         claimSession(env, sessions, row);
       } else {
         log(

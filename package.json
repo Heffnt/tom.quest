@@ -20,11 +20,12 @@
     "test:pages": "vitest run app/components/page-routes.test.ts && playwright test e2e/page-visibility.spec.ts",
     "test:auth": "playwright test e2e/auth-flow.spec.ts",
     "test:jarvis": "vitest run app/jarvis/components/__tests__ app/api/jarvis/config/route.test.ts",
-    "test:turing": "vitest run convex/convex.test.ts convex/gpuPool.test.ts convex/tts.test.ts convex/ttsCode.test.ts convex/ttsGraph.test.ts convex/ttsRulings.test.ts convex/ttsCalendar.test.ts convex/ttsRepeats.test.ts convex/ttsCanvas.test.ts convex/claudeSessions.test.ts vqc/todos.test.ts vqc/registries.test.ts",
+    "test:turing": "vitest run convex/convex.test.ts convex/gpuPool.test.ts convex/tts.test.ts convex/ttsCode.test.ts convex/ttsGraph.test.ts convex/ttsRulings.test.ts convex/ttsCalendar.test.ts convex/ttsRepeats.test.ts convex/ttsCanvas.test.ts convex/ttsSkills.test.ts convex/claudeSessions.test.ts vqc/todos.test.ts vqc/registries.test.ts",
     "test:observability": "vitest run app/lib/__tests__/debug.test.ts",
     "check:auth-boundary": "node scripts/check-auth-boundary.mjs",
     "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
     "check:secrets": "gitleaks detect --source . --no-banner --redact",
+    "check:writing": "node scripts/check-writing-standard.mjs",
     "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs"
   },
   "dependencies": {

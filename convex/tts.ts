@@ -15,6 +15,7 @@ import {
   goalCheckable,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
+  normalizeSessionRepos,
   nyLocalHour,
   nyOffsetHours,
   ttsDayBoundsUtc,
@@ -24,7 +25,7 @@ import {
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
-// Tom-gated (forge.ts pattern); everything the worker box or crons touch goes
+// Tom-gated (forge.ts pattern); everything the Jarvis Box or crons touch goes
 // through internal functions (http.ts routes are key-authed with TTS_WORKER_KEY).
 
 async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
@@ -58,16 +59,6 @@ const DATE_OUTCOME = v.union(
   v.literal("renegotiated"),
   v.literal("missed"),
 );
-export const IMPORTANCE_LEVEL = v.union(
-  v.literal("low"),
-  v.literal("medium"),
-  v.literal("high"),
-);
-// The ONE server-side encoding of importance order: higher = more important,
-// unset ranks 0 (below "low"). Lockstep with app/tts/lib.ts IMPORTANCE_RANK —
-// the client bundle cannot import this server module, so it carries a copy of
-// the same values; change both together.
-export const IMPORTANCE_RANK = { low: 1, medium: 2, high: 3 } as const;
 // A batch member addresses exactly one subject, in the ttsRulings shape
 // (life by todoId, code by repo+externalId) — enforced in validateBatchMembers.
 const MEMBER = v.object({
@@ -129,28 +120,6 @@ export function memberKey(m: Member): string {
 const MAX_BATCH_MEMBERS = 20;
 const MAX_PLAN_STEPS = 40;
 const MAX_GRAPH_TASKS = MAX_PLAN_STEPS;
-
-type Importance = {
-  level: "low" | "medium" | "high";
-  setBy: "tom" | "agent";
-  setAt: number;
-  rationale?: string;
-};
-
-// The ONE implementation of the agent-importance guard (used by
-// internalPrepareTodo, internalStoreBatches, and ttsCode.internalStoreBriefs):
-// an agent write never overwrites Tom's — returns undefined when the stored
-// value has setBy "tom" (the caller logs importance-skipped), else the new
-// importance object.
-export function agentImportancePatch(
-  existing: Importance | undefined,
-  level: "low" | "medium" | "high",
-  rationale: string | undefined,
-  now: number,
-): Importance | undefined {
-  if (existing?.setBy === "tom") return undefined;
-  return { level, setBy: "agent", setAt: now, rationale };
-}
 
 // Shared membership gate (updateTodo + internalStoreBatches): every member
 // addresses exactly one subject, no duplicates, no batch-in-batch, no batch
@@ -591,15 +560,12 @@ export const internalTriage = internalMutation({
 // an internal mutation so the session agent can record Tom's spoken rulings
 // via `npx convex run tts:internalBulkUpdate` with the deploy credentials
 // Tom's machine holds. Only ever run while Tom is present and ruling — it is
-// his pen, not a policy actor; importance therefore lands as setBy "tom"
-// (it records his SPOKEN ruling, which the agent guard must respect).
+// his pen, not a policy actor.
 export const internalBulkUpdate = internalMutation({
   args: {
     updates: v.array(
       v.object({
         id: v.string(),
-        importanceLevel: v.optional(v.union(IMPORTANCE_LEVEL, v.null())),
-        importanceRationale: v.optional(v.string()),
         category: v.optional(v.union(v.string(), v.null())),
         entryAction: v.optional(v.string()),
         workDescription: v.optional(v.string()),
@@ -615,37 +581,22 @@ export const internalBulkUpdate = internalMutation({
       const now = Date.now();
       const patch: Record<string, unknown> = { tomTouchedAt: now };
       const fields: string[] = [];
-      if (u.importanceLevel !== undefined) {
-        patch.importance =
-          u.importanceLevel === null
-            ? undefined
-            : {
-                level: u.importanceLevel,
-                setBy: "tom",
-                setAt: now,
-                rationale: u.importanceRationale,
-              };
-        fields.push("importance");
-      }
-      let content = false;
       if (u.category !== undefined) {
         patch.category = u.category === null ? undefined : u.category;
         fields.push("category");
-        content = true;
       }
       if (u.entryAction !== undefined) {
         patch.entryAction = u.entryAction;
         fields.push("entryAction");
-        content = true;
       }
       if (u.workDescription !== undefined) {
         patch.workDescription = u.workDescription;
         fields.push("workDescription");
-        content = true;
       }
-      // Content edits bump updatedAt; importance alone is an annotation and
-      // must not resurface ruled gates (the ruledAt<updatedAt predicate).
-      if (content) patch.updatedAt = now;
+      // Every field this pen writes is a content edit, so it bumps updatedAt;
+      // a call that carries none must not (the ruledAt<updatedAt predicate
+      // would resurface an already-ruled gate).
+      if (fields.length > 0) patch.updatedAt = now;
       await ctx.db.patch(normalized, patch);
       await logEvent(ctx, "bulk-updated", normalized, { fields });
     }
@@ -720,31 +671,9 @@ export const recordDateOutcome = mutation({
   },
 });
 
-// Tom's importance override (null clears the whole object). An annotation, so
-// no updatedAt bump — bumping would resurface ruled gates via the needs-me
-// ruledAt<updatedAt predicate. setBy "tom" makes every agent write a no-op
-// until cleared (the guard lives in the internal mutations).
-export const setImportance = mutation({
-  args: {
-    id: v.id("dtsTodos"),
-    level: v.union(IMPORTANCE_LEVEL, v.null()),
-  },
-  handler: async (ctx, { id, level }) => {
-    await requireTomId(ctx);
-    const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("TTS todo not found");
-    const now = Date.now();
-    await ctx.db.patch(id, {
-      importance:
-        level === null ? undefined : { level, setBy: "tom", setAt: now },
-      tomTouchedAt: now,
-    });
-    await logEvent(ctx, "importance-set", id, { level, setBy: "tom" });
-  },
-});
-
-// Tom checks a plan step off (or reopens it). An annotation like importance:
-// tomTouchedAt is stamped, updatedAt is not.
+// Tom checks a plan step off (or reopens it). An annotation, not a content
+// edit: tomTouchedAt is stamped, updatedAt is not — bumping it would resurface
+// ruled gates via the needs-me ruledAt<updatedAt predicate.
 export const setPlanStep = mutation({
   args: {
     id: v.id("dtsTodos"),
@@ -1439,9 +1368,30 @@ export const internalCapture = internalMutation({
     statement: v.string(),
     source: v.string(),
     provenance: v.optional(v.string()),
+    // The Slack coordinates of the message this came from, when it came from
+    // one. Machine fields, kept out of `provenance` (which is Tom's to read).
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
   },
-  handler: async (ctx, { statement, source, provenance }) => {
+  handler: async (
+    ctx,
+    { statement, source, provenance, slackChannel, slackTs },
+  ) => {
     const now = Date.now();
+    // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
+    // #dump message — the Events push route (fast, at-least-once: Slack
+    // retries the same event) and poll-dump.mjs (the reconciliation backstop,
+    // which cannot know what the push route already took). Without this, every
+    // Slack retry and every overlap between the two would mint a duplicate
+    // todo. Returning the EXISTING id rather than throwing is what lets the
+    // push route answer 200 to a retry, which is what stops Slack retrying.
+    if (slackTs !== undefined) {
+      const existing = await ctx.db
+        .query("dtsTodos")
+        .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
+        .first();
+      if (existing) return existing._id;
+    }
     const id = await ctx.db.insert("dtsTodos", {
       statement: statement.trim(),
       readiness: "unprepared",
@@ -1449,11 +1399,36 @@ export const internalCapture = internalMutation({
       timingClass: "whenever",
       source,
       provenance,
+      slackChannel,
+      slackTs,
       createdAt: now,
       updatedAt: now,
     });
     await logEvent(ctx, "captured", id, { source });
     return id;
+  },
+});
+
+// The reply pen: prepare-life-todos.mjs posted its one threaded reply to the
+// #dump message this todo came from, and records that here so it never posts a
+// second one. Tom's ruling is EXACTLY ONE reply per message, and this job
+// re-prepares on --force and on every revise ruling, so the guard has to be
+// durable rather than a variable inside one run.
+export const internalMarkSlackReplied = internalMutation({
+  args: { id: v.string(), replyTs: v.optional(v.string()) },
+  handler: async (ctx, { id, replyTs }) => {
+    const normalized = ctx.db.normalizeId("dtsTodos", id);
+    const todo = normalized && (await ctx.db.get(normalized));
+    if (!todo) throw new Error(`Unknown todo id: ${id}`);
+    // Never overwrite the FIRST reply's ts: if this is somehow called twice,
+    // the reply that exists in Slack is the first one, and pointing the field
+    // at a second would lose the editable message.
+    if (todo.slackRepliedAt !== undefined) return { alreadyReplied: true };
+    await ctx.db.patch(todo._id, {
+      slackRepliedAt: Date.now(),
+      slackReplyTs: replyTs,
+    });
+    return { alreadyReplied: false };
   },
 });
 
@@ -1534,8 +1509,6 @@ export const internalPrepareTodo = internalMutation({
     readiness: v.optional(
       v.union(v.literal("preparing"), v.literal("ready-for-tom")),
     ),
-    importanceLevel: v.optional(IMPORTANCE_LEVEL),
-    importanceRationale: v.optional(v.string()),
     plan: v.optional(v.array(PLAN_STEP)),
     // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
     // A worker session claims ONE ready todo inside a batch and advances it by
@@ -1566,7 +1539,7 @@ export const internalPrepareTodo = internalMutation({
   },
   handler: async (
     ctx,
-    { id, brief, entryAction, workDescription, readiness, importanceLevel, importanceRationale, plan, dueAt, dateKind, evidence, groundUpExplanation, status },
+    { id, brief, entryAction, workDescription, readiness, plan, dueAt, dateKind, evidence, groundUpExplanation, status },
   ) => {
     const normalized = ctx.db.normalizeId("dtsTodos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
@@ -1591,7 +1564,6 @@ export const internalPrepareTodo = internalMutation({
         entryAction !== undefined && "entryAction",
         workDescription !== undefined && "workDescription",
         readiness !== undefined && "readiness",
-        importanceLevel !== undefined && "importance",
         dueAt !== undefined && "dueAt",
         evidence !== undefined && "evidence",
         groundUpExplanation !== undefined && "groundUpExplanation",
@@ -1610,22 +1582,6 @@ export const internalPrepareTodo = internalMutation({
       if (entryAction !== undefined) patch.entryAction = entryAction;
       if (workDescription !== undefined) patch.workDescription = workDescription;
       if (readiness !== undefined) patch.readiness = readiness;
-      if (importanceLevel !== undefined) {
-        // Agent importance never overwrites Tom's (setBy-"tom" guard).
-        const importance = agentImportancePatch(
-          todo.importance,
-          importanceLevel,
-          importanceRationale,
-          now,
-        );
-        if (importance === undefined) {
-          await logEvent(ctx, "importance-skipped", normalized, {
-            level: importanceLevel,
-          });
-        } else {
-          patch.importance = importance;
-        }
-      }
       if (dueAt !== undefined) {
         // Kept-dates rule (spec §8): a stored date moves only through
         // recordDateOutcome / a time note. The preparer gets the FIRST date
@@ -1653,7 +1609,6 @@ export const internalPrepareTodo = internalMutation({
         patch.brief !== undefined && "brief",
         patch.entryAction !== undefined && "entryAction",
         patch.workDescription !== undefined && "workDescription",
-        patch.importance !== undefined && "importance",
         patch.plan !== undefined && "plan",
         patch.dueAt !== undefined && "dueAt",
         patch.evidence !== undefined && "evidence",
@@ -1720,8 +1675,6 @@ export const internalStoreBatches = internalMutation({
         brief: v.string(),
         members: v.array(MEMBER),
         plan: v.optional(v.array(PLAN_STEP)),
-        importanceLevel: v.optional(IMPORTANCE_LEVEL),
-        importanceRationale: v.optional(v.string()),
       }),
     ),
     archiveIds: v.optional(v.array(v.string())),
@@ -1840,46 +1793,20 @@ export const internalStoreBatches = internalMutation({
           skipped.push({ ref: b.statement, why: frozen });
           continue;
         }
-        // Rewrite of what the batcher owns — but an ABSENT plan or importance
-        // PRESERVES the stored value (internalStoreBriefs semantics: an LLM
-        // omission must not delete state); only explicit values overwrite,
-        // and Tom's importance is never overwritten (agentImportancePatch).
-        let importance = todo.importance;
-        if (b.importanceLevel !== undefined) {
-          const next = agentImportancePatch(
-            todo.importance,
-            b.importanceLevel,
-            b.importanceRationale,
-            now,
-          );
-          if (next === undefined) {
-            await logEvent(ctx, "importance-skipped", normalized, {
-              level: b.importanceLevel,
-            });
-          } else if (
-            todo.importance?.setBy === "agent" &&
-            todo.importance.level === next.level &&
-            todo.importance.rationale === next.rationale
-          ) {
-            // Same agent value re-posted: keep the stored object (its setAt)
-            // so the unchanged check below can recognize a no-op run.
-          } else {
-            importance = next;
-          }
-        }
+        // Rewrite of what the batcher owns — but an ABSENT plan PRESERVES the
+        // stored value (internalStoreBriefs semantics: an LLM omission must
+        // not delete state); only an explicit plan overwrites.
         const projected = {
           statement: b.statement.trim(),
           brief: b.brief,
           members: b.members,
           plan: b.plan ?? todo.plan,
-          importance,
         };
         const stored = {
           statement: todo.statement,
           brief: todo.brief,
           members: todo.members,
           plan: todo.plan,
-          importance: todo.importance,
         };
         // No-op rewrite: nothing changed, so skip the patch entirely — a
         // 6-hourly re-post must not bump updatedAt and re-push every open
@@ -1902,15 +1829,6 @@ export const internalStoreBatches = internalMutation({
           brief: b.brief,
           members: b.members,
           plan: b.plan,
-          importance:
-            b.importanceLevel !== undefined
-              ? agentImportancePatch(
-                  undefined,
-                  b.importanceLevel,
-                  b.importanceRationale,
-                  now,
-                )
-              : undefined,
           readiness: "ready-for-tom",
           status: "active",
           timingClass: "whenever",
@@ -2037,6 +1955,12 @@ export const internalStorePlanGraph = internalMutation({
     statement: v.string(),
     groundUpExplanation: v.optional(v.string()),
     path: v.optional(BATCH_PATH),
+    // The repos this batch's work lives in (Tom's ruling 2026-08-30: a batch
+    // DECLARES its repos; the session scheduler no longer guesses them from a
+    // substring search). Normalized here — an unknown name is dropped rather
+    // than stored, so nothing downstream has to re-check it, and the planner
+    // naming a repo that does not exist costs a checkout, not a dead session.
+    repos: v.optional(v.array(v.string())),
     tasks: v.array(GRAPH_TASK),
     goalIds: v.optional(v.array(v.string())), // existing todos to bind as goals
     archive: v.optional(v.boolean()),
@@ -2337,11 +2261,16 @@ export const internalStorePlanGraph = internalMutation({
         groundUpExplanation:
           args.groundUpExplanation ?? batch.groundUpExplanation,
         path: args.path ?? batch.path,
+        repos:
+          args.repos === undefined
+            ? batch.repos
+            : normalizeSessionRepos(args.repos),
       };
       const stored = {
         statement: batch.statement,
         groundUpExplanation: batch.groundUpExplanation,
         path: batch.path,
+        repos: batch.repos,
       };
       if (JSON.stringify(projected) !== JSON.stringify(stored)) {
         await ctx.db.patch(batch._id, { ...projected, updatedAt: now });
@@ -2351,6 +2280,10 @@ export const internalStorePlanGraph = internalMutation({
         statement,
         groundUpExplanation: args.groundUpExplanation,
         path: args.path,
+        repos:
+          args.repos === undefined
+            ? undefined
+            : normalizeSessionRepos(args.repos),
         status: "active",
         createdAt: now,
         updatedAt: now,
@@ -2450,7 +2383,7 @@ export const internalStorePlanGraph = internalMutation({
     // ── Goals: existing todos bound to this batch ────────────────────────────
     // No updatedAt bump — binding is a structural annotation, and bumping it
     // would resurface already-ruled gates (the needs-me ruledAt<updatedAt
-    // predicate), exactly as importance-only writes must not.
+    // predicate).
     const goalIds = args.goalIds ?? [];
     // The rows a live v1 batch already claims. validateBatchMembers refuses a
     // v1 batch that claims a row inside a v2 batch; this is the same rule in
@@ -2701,6 +2634,106 @@ export const internalListTodos = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("dtsTodos").collect();
+  },
+});
+
+// ── The hourly update's three reads (Tom's ruling 2026-08-30) ────────────────
+// The hourly Slack update runs from a CRON, and every equivalent Tom-facing
+// query in this file is requireTomId-gated — a cron has no identity, so it
+// cannot call one. These are the internal twins, and they exist for exactly
+// that reason.
+
+/**
+ * What Tom is scheduled to be doing at `at`: the time blocks he placed, joined
+ * with their todos. The overlap predicate is listBlocks' own — every block
+ * starting before `at` fetched by index, then filtered to the ones that have
+ * not ended — so the calendar surface and the Slack line can never disagree
+ * about what "now" contains.
+ *
+ * The calendar-mirror half of the answer (ttsCalendarEvents) is read by the
+ * caller through ttsCalendar.internalListEventsInRange: it is a different
+ * table with its own index, and joining them here would hide which half was
+ * empty.
+ */
+export const internalScheduleAt = internalQuery({
+  args: { at: v.number() },
+  handler: async (ctx, { at }) => {
+    const blocks = await ctx.db
+      .query("dtsBlocks")
+      .withIndex("by_start", (q) => q.lte("start", at))
+      .collect();
+    const live = blocks.filter((b) => b.end > at);
+    return await Promise.all(
+      live.map(async (b) => ({
+        start: b.start,
+        end: b.end,
+        category: b.category,
+        note: b.note,
+        statement:
+          b.todoId === undefined
+            ? undefined
+            : (await ctx.db.get(b.todoId))?.statement,
+      })),
+    );
+  },
+});
+
+/**
+ * Everything dtsEvents recorded in [start, end). The window is what makes the
+ * hourly update's "what happened since last time" EXACT rather than
+ * approximate: the caller passes the timestamp of the last update it actually
+ * sent, so a missed cron tick loses nothing — the next one simply covers a
+ * longer window.
+ *
+ * Bounded by `limit` on top of the range, because dtsEvents is the system's
+ * busy append-only instrumentation and a long outage would otherwise make this
+ * read unbounded.
+ */
+export const internalEventsInRange = internalQuery({
+  args: { start: v.number(), end: v.number(), limit: v.optional(v.number()) },
+  handler: async (ctx, { start, end, limit }) => {
+    return await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at", (q) => q.gte("at", start).lt("at", end))
+      .order("desc")
+      .take(Math.min(limit ?? 500, 2000));
+  },
+});
+
+/**
+ * When an event of `kind` last happened, or null. The hourly update's own
+ * bookkeeping read: it writes an "hourly-update-sent" row after each send and
+ * reads the newest one back before composing, so its window is [last sent,
+ * now] and a MISSED cron tick loses nothing.
+ *
+ * Walks newest-first and stops at the first match. Bounded by HOURLY_SCAN
+ * because dtsEvents is busy: if the kind has not occurred inside that many
+ * rows, "never" is the honest answer and the caller falls back to its default
+ * window rather than reading the whole table.
+ */
+const EVENT_KIND_SCAN = 2000;
+export const internalLastEventAt = internalQuery({
+  args: { kind: v.string() },
+  handler: async (ctx, { kind }) => {
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at")
+      .order("desc")
+      .take(EVENT_KIND_SCAN);
+    return rows.find((e) => e.kind === kind)?.at ?? null;
+  },
+});
+
+/**
+ * The events pen for an ACTION. logEvent is a helper that needs a MutationCtx,
+ * and an internalAction has none — so the hourly update, which is an action
+ * (it does network I/O), records that it sent through here rather than
+ * reaching for a second event-writing path.
+ */
+export const internalLogEvent = internalMutation({
+  args: { kind: v.string(), data: v.optional(v.any()) },
+  handler: async (ctx, { kind, data }) => {
+    await logEvent(ctx, kind, undefined, data);
   },
 });
 
