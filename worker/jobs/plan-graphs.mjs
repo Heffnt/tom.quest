@@ -65,7 +65,15 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  clip,
+  MAX_LIFE_PER_RUN,
+  MAX_BRIEF_CHARS,
+} from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
 // Bump when the prompt changes semantics: it joins the input hash, so a new
@@ -73,14 +81,10 @@ const HASH_PATH = "/var/lib/tts/plan-input-hash";
 const PROMPT_VERSION = 2;
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
 
-// One run offers at most this many unbatched life todos as goal candidates
-// (oldest first) and clips each brief. An unbounded offer sank real
-// form-batches runs: at 122+ todos with full briefs the single completion blew
-// the timeout three runs in a row (2026-08-29). The 2-hourly cron drains any
-// backlog in slices — todos placed in a batch this run drop out of the next
-// run's offer.
-const MAX_LIFE_PER_RUN = 80;
-const MAX_BRIEF_CHARS = 400;
+// MAX_LIFE_PER_RUN (how many unbatched life todos one run offers as goal
+// candidates) and MAX_BRIEF_CHARS, together with clip(), are imported from
+// tts-lib.mjs, which is the one home for the brief-clipping rule shared with
+// the other planner, form-batches.mjs. Do not re-declare them here.
 // Full graphs shown per run, most-recently-updated first. EVERY active batch's
 // statement is listed regardless (one line each, so the planner cannot
 // recreate a grouping that already exists); only this many carry their whole
@@ -99,11 +103,6 @@ const MAX_PREVIEW_CHARS = 240;
 const MAX_BATCH_PREVIEW_CHARS = 600;
 const MAX_CODE_TODOS = 60;
 const NOTE_MAX = 20;
-
-function clip(text, max) {
-  if (typeof text !== "string" || text === "") return null;
-  return text.length > max ? `${text.slice(0, max)}…` : text;
-}
 
 /**
  * The readable text of a ground-up explanation, for preview only. An HTML

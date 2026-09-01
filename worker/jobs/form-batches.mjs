@@ -37,17 +37,21 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  clip,
+  MAX_LIFE_PER_RUN,
+  MAX_BRIEF_CHARS,
+} from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/batch-input-hash";
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
-// One run offers at most this many unbatched life todos (oldest first) and
-// clips each brief. An unbounded offer sank real runs: at 122+ todos with full
-// briefs the single full-set completion blew the 10-min timeout three runs in
-// a row (2026-08-29) and the backlog compounded. The 2h cron drains any
-// backlog in slices — todos batched this run drop out of the next run's offer.
-const MAX_LIFE_PER_RUN = 80;
-const MAX_BRIEF_CHARS = 400;
+// MAX_LIFE_PER_RUN, MAX_BRIEF_CHARS and clip() are imported from tts-lib.mjs,
+// which is the one home for the brief-clipping rule shared with the other
+// planner, plan-graphs.mjs. Do not re-declare them here.
 
 function prompt(ctx) {
   return [
@@ -243,7 +247,7 @@ async function main() {
     .map((t) => ({
       id: t._id,
       statement: t.statement,
-      brief: t.brief ? t.brief.slice(0, MAX_BRIEF_CHARS) : null,
+      brief: clip(t.brief, MAX_BRIEF_CHARS),
       category: t.category ?? null,
       dueAt: t.dueAt ?? null,
     }));

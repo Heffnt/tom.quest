@@ -293,6 +293,45 @@ export function runClaude(
   return answerText;
 }
 
+// ---------------------------------------------------------------------------
+// Planner input bounds and text clipping
+// ---------------------------------------------------------------------------
+
+// One planner run offers at most this many unbatched life todos (oldest
+// first), each with its brief clipped to MAX_BRIEF_CHARS. An unbounded offer
+// sank real form-batches runs: at 122+ todos with full briefs the single
+// completion blew the 10-min timeout three runs in a row (2026-08-29) and the
+// backlog compounded. The 2-hourly cron drains any backlog in slices — todos
+// placed in a batch this run drop out of the next run's offer.
+//
+// BOTH PLANNERS READ THESE FROM HERE. form-batches.mjs (v1 batches) and
+// plan-graphs.mjs (v2 graphs) run side by side until cutover and offer the
+// same todos to the same model; when they clipped with two separate copies of
+// this rule they had already drifted — one marked the cut and the other did
+// not, so the same brief reached the model in two forms depending on which job
+// read it. Do not re-declare either constant, and do not re-spell clip().
+export const MAX_LIFE_PER_RUN = 80;
+export const MAX_BRIEF_CHARS = 400;
+
+/**
+ * Shorten `text` to at most `max` characters for showing to a model.
+ *
+ * Anything that is not a non-empty string becomes null rather than an empty
+ * string, so a missing brief is absent from the JSON instead of present and
+ * blank — a blank field reads to the model as "this todo has an empty brief",
+ * which is a claim about the todo rather than about our input.
+ *
+ * A clipped result ends in an ellipsis character so the model can see the text
+ * was cut and does not treat a sentence that stops mid-clause as the whole
+ * brief. The ellipsis is appended AFTER the slice, so the returned string is
+ * max + 1 characters long; the limit bounds the source text we spend, not the
+ * output width.
+ */
+export function clip(text, max) {
+  if (typeof text !== "string" || text === "") return null;
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 // Pull the single JSON object out of a model answer: strip any code fences the
 // model added despite instructions, then take the outermost {...} span (first
 // "{" to last "}") and parse it. Throws when there is no object at all, with
