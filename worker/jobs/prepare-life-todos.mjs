@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 // prepare-life-todos.mjs — advance unprepared LIFE todos toward ready-for-tom.
 //
-// Run by cron every 2nd hour at :37 (see /etc/cron.d/tts). Manual run:
+// Run by cron EVERY 2 MINUTES — `*/2 * * * *` in /etc/cron.d/tts, written by
+// worker/setup.sh, under flock so a run can never overlap itself. Tom
+// 2026-08-30: #dump messages are processed immediately, so the threaded Slack
+// reply can state how TTS interpreted the message. The old :37 slot — which
+// existed so the Claude-calling jobs never shared a tick — was abandoned for
+// that; the consequence accepted is that this job can now overlap
+// brief-code-todos (:17), form-batches (:07) and plan-graphs (:27). It is
+// cheap because the job returns before any Claude call when there is nothing
+// to prepare, so an idle tick costs one HTTP read. Manual run:
 //   node /opt/tts/prepare-life-todos.mjs [--force]
 //
 // WHY: a thought Tom dumps into #dump (or a consolidation candidate) lands as

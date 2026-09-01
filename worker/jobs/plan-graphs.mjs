@@ -2,8 +2,10 @@
 // plan-graphs.mjs — THE PLANNER. Maintains the graph inside every batch via
 // headless Claude.
 //
-// Run by cron every 2 hours at :07 UTC (see /etc/cron.d/tts, where it replaces
-// form-batches.mjs at cutover). Manual run:
+// Run by cron every 2 hours at :27 UTC — `27 */2 * * *` in /etc/cron.d/tts,
+// written by worker/setup.sh. The :27 slot is its own: :07 is form-batches.mjs
+// (the v1 batcher this replaces at cutover), and :17/:37/:45 are taken, so the
+// offset keeps the two Claude calls off the same tick. Manual run:
 //   node /opt/tts/plan-graphs.mjs
 //
 // WHAT A BATCH IS NOW (schema v2, ratified 2026-08-29). A batch is NOT a todo.

@@ -1,11 +1,18 @@
 # The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
-(Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
-on a schedule:
+(Ubuntu 24.04, ARM64). `worker/setup.sh` writes `/etc/cron.d/tts`, which is the
+one place any cadence below is set; the four personal-todo jobs and three
+code-todo jobs named here are the ones worth naming, not the whole crontab:
 
-1. **poll-dump** (every 2 min) — reads new human messages from the Slack
-   `#dump` channel and submits each one to Convex as an unprepared todo.
+1. **poll-dump** (hourly, at :07) — reads new human messages from the Slack
+   `#dump` channel and submits each one to Convex as an unprepared todo. It is
+   the reconciliation backstop, not the main path: Slack pushes events to TTS at
+   `POST /slack/events` (Tom 2026-08-30), and this hourly run exists because
+   Slack's event delivery is best-effort, not guaranteed. Its cursor file in
+   `/var/lib/tts` is what makes a missed event recoverable, and captures are
+   idempotent on the Slack message ts server-side, so re-offering what the push
+   route already took costs nothing.
 2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
    Claude call per batch deciding which messages imply an action by Tom, then
    submits each of those to Convex as an unprepared todo with source `email`

@@ -30,5 +30,18 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  // ".claude/**" keeps agent worktrees (.claude/worktrees/*/) out of the
+  // program, the same fence eslint.config.mjs and vitest.config.mts carry.
+  // MEASURED REDUNDANT, kept for symmetry: TypeScript's own wildcard expansion
+  // already refuses any path segment starting with "." or named
+  // "node_modules", so "**/*.ts" never descends into .claude at all. With a
+  // worktree present (388 .ts/.tsx files on disk under .claude/worktrees/),
+  // `tsc --listFiles` reports the same 3203-file program with and without this
+  // entry, and the same ~21 s. A control file in a NON-dot directory does
+  // enter that program, which is what isolates the leading dot as the reason.
+  // So this line changes nothing today; what would make it load-bearing is
+  // moving worktrees to a non-dot path, or adding an explicit dot-path to
+  // "include" (".next/types/**/*.ts" above is exactly such a path, and it
+  // works — that is the mechanism this guards against).
+  "exclude": ["node_modules", ".claude/**"]
 }

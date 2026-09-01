@@ -68,13 +68,18 @@ pnpm lint             # ESLint
 
 ## Deployment
 
-Vercel is connected to the `main` branch. The build command is overridden to:
+Vercel is connected to the `main` branch. `vercel.json` sets `buildCommand` to `node scripts/vercel-build.mjs`, which picks one of two commands by reading `VERCEL_ENV` — the variable Vercel sets to `production`, `preview`, or `development` on every build:
 
 ```
-npx convex deploy --cmd 'pnpm build'
+VERCEL_ENV=production  →  npx convex deploy --cmd 'pnpm build'
+otherwise              →  pnpm build
 ```
 
-This pushes Convex functions to prod and builds Next.js with the correct `NEXT_PUBLIC_CONVEX_URL` injected at build time.
+The production command pushes Convex functions to prod and then builds Next.js with the correct `NEXT_PUBLIC_CONVEX_URL` injected at build time. Every other environment builds Next.js alone.
+
+The split exists because tom.quest has one Convex deployment (prod), so `CONVEX_DEPLOY_KEY` is a production key. Running `npx convex deploy` on a preview build would push an unmerged PR branch's functions straight to production; the Convex CLI refuses to do it, and that refusal is what turned the Vercel check red on every session PR. A permanently red check carries no signal, so preview now runs the half that can actually fail on a PR — the Next.js build — and reports on that. A preview still points at prod Convex, because that is the only deployment there is; `next dev` already has that posture. See the header comment in `scripts/vercel-build.mjs` for the full reasoning.
+
+If a build runs on Vercel with `VERCEL_ENV` unset, the script exits 1 rather than guess which branch to take.
 
 All env vars live in `secrets/next.env` (Vercel-side) and `secrets/convex.env` (Convex-side). `pnpm secrets:sync` is the only command that should write to Vercel or Convex env.
 
