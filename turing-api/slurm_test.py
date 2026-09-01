@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+import cluster_text
 import slurm
 
 
@@ -68,6 +69,9 @@ class SlurmTest(unittest.TestCase):
         self.assertEqual(jobs[0].gpu_type, "nvidia")
 
     def test_parse_time_to_seconds_treats_unknown_errors_as_zero(self) -> None:
+        # slurm.parse_time_to_seconds is now cluster_text's, re-exported, so
+        # this check covers the one body gpu_report.py calls as well.
+        self.assertIs(slurm.parse_time_to_seconds, cluster_text.parse_time_to_seconds)
         self.assertEqual(slurm.parse_time_to_seconds("[Unknown Error]"), 0)
 
     def test_extract_job_id_matches_canonical_salloc_lines(self) -> None:

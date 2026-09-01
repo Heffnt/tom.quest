@@ -2582,6 +2582,39 @@ describe("prospecting lane", () => {
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
   });
+
+  // witness: put the read-first step back behind `repo === "ComplexMultiTrigger"`
+  // and the tom.quest half goes red — which is exactly how it shipped, while
+  // the mirror cron read tom.quest's registry all along and /tts/state showed
+  // none of it. A prospector blind to that file re-captures decided work.
+  it("tells a prospector in EITHER registry repo to read vqc/todos.yaml first", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+
+    // One tick per repo (one mission per tick), so both prompts exist.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const prospectors = await prospectSessions(t);
+    expect(prospectors.map((s) => s.repo).sort()).toEqual([
+      "ComplexMultiTrigger",
+      "tom.quest",
+    ]);
+
+    for (const prospector of prospectors) {
+      const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+        sessionId: prospector._id,
+      });
+      const text = inbound[0].text ?? "";
+      expect(text).toContain("vqc/todos.yaml");
+      // Read the registry BEFORE the capture pen, like the /tts/state read.
+      expect(text.indexOf("vqc/todos.yaml")).toBeLessThan(
+        text.indexOf("/tts/capture"),
+      );
+      expect(text).toContain("drop any finding it already names");
+    }
+  });
 });
 
 // ── The frontier scheduler (schema v2, ratified 2026-08-29) ──────────────────

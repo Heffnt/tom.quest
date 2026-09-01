@@ -9,6 +9,22 @@
 // opens a note for that day ("sat 9–11 deep work"), a block's own note moves
 // it ("push this an hour"), and an agent applies them. Delete stays a
 // one-click button — it is an exact effect, not a time to parse.
+//
+// THE FIVE REMAINING `title=` ATTRIBUTES IN THIS FILE ARE NOT CAPTIONS, and
+// that is the reason they survived the caption migration of 2026-08-31 while
+// the day's `+` did not. A caption names a MECHANISM — what pressing this does
+// on the backend — and every one of those is now the ⓘ popover with a
+// ground-up document behind it (app/tts/components/info.tsx). The five here
+// echo the row's OWN DATA, which the chip is too narrow to show in full: the
+// block's exact span, the calendar event's feed and location, the due or wake
+// moment, the todo's whole statement. Replacing them with ⓘ controls would put
+// a second tap target on every chip in a seven-column grid and would carry no
+// explanation, because there is no mechanism to explain.
+//
+// The touch gap they leave is real and is covered elsewhere: a chip is itself
+// pressable and jumps to the item, where the same facts are shown in full. So
+// on a touch screen the data is reachable in one press, and the `title` is a
+// pointer-only shortcut on top of that rather than the only way in.
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
@@ -19,6 +35,11 @@ import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
 import { useOpenSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
+import {
+  BLOCKS_EXPLANATION,
+  SESSIONS_EXPLANATION,
+  TIME_NOTES_EXPLANATION,
+} from "../explanations";
 import RepeatsStrip from "./repeats-strip";
 import TimeNoteField, {
   groupTimeNotes,
@@ -142,7 +163,11 @@ function BlockChip({
             <button onClick={remove} disabled={busy} className={btnCls}>
               Delete
             </button>
-            <Info call="tts.deleteBlock({ id })">
+            <Info
+              call="tts.deleteBlock({ id })"
+              explanation={BLOCKS_EXPLANATION}
+              explanationTitle="blocks — a placed span of time"
+            >
               Removes this span from the calendar. The todo it was for is not
               touched — it simply stops having time set aside for it.
             </Info>
@@ -157,7 +182,11 @@ function BlockChip({
                 >
                   {sessionBusy ? "Opening…" : "Open block session"}
                 </button>
-                <Info call='claudeSessions.createSession({ kind: "block", blockCategory })'>
+                <Info
+                  call='claudeSessions.createSession({ kind: "block", blockCategory })'
+                  explanation={SESSIONS_EXPLANATION}
+                  explanationTitle="opening a session — what is created and where it runs"
+                >
                   Opens a Claude session on the Jarvis Box for this whole
                   category, with every active todo in it in the opening prompt.
                   It gets its own checkout of whatever repositories the work
@@ -184,30 +213,34 @@ export default function CalendarTab({
   /** Queue-chip click-through: the shell jumps to the item on the everything tab. */
   onOpenItem?: (todoId: string) => void;
 }) {
-  const { isTom } = useAuth();
+  const { canReadSurface } = useAuth();
+  // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
+  // session browses as. Every mutation on this surface stays Tom-only and is
+  // refused by Convex regardless of what renders here.
+  const canRead = canReadSurface("TTS");
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
   // Only the visible week's blocks ride the subscription (dtsBlocks grows
   // forever; the by_start index serves the range).
   const blocks = useQuery(
     api.tts.listBlocks,
-    isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+    canRead ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
-  const today = useQuery(api.tts.getToday, isTom ? {} : "skip");
+  const today = useQuery(api.tts.getToday, canRead ? {} : "skip");
   // External-calendar mirror rows (Google/Outlook/Canvas ICS feeds) for the
   // visible week — read-only schedule knowledge next to the blocks.
   const calendarEvents = useQuery(
     api.ttsCalendar.listCalendarEvents,
-    isTom ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+    canRead ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
   // ONE time-note subscription for the whole tab; days and blocks slice it.
-  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  const timeNotes = useQuery(api.tts.listTimeNotes, canRead ? {} : "skip");
   // The writing skill (WikiTom, synced into ttsSkills) that opens the block
   // session's prompt; unsynced leaves buildBlockSessionPrompt on its fallback.
   const writingSkill = useQuery(
     api.ttsSkills.getSkill,
-    isTom ? { name: WRITING_SKILL } : "skip",
+    canRead ? { name: WRITING_SKILL } : "skip",
   );
   const recordEvent = useMutation(api.tts.recordEvent);
   // The one launch hook owns the createSession arguments and the failure text;
@@ -362,15 +395,25 @@ export default function CalendarTab({
                   >
                     {dayHeading(day.start)}
                   </span>
-                  <button
-                    onClick={() =>
-                      setAddDay((d) => (d === day.key ? null : day.key))
-                    }
-                    className="text-xs text-text-faint hover:text-text px-1"
-                    title="time note for this day"
-                  >
-                    +
-                  </button>
+                  <span className="flex items-baseline gap-0.5">
+                    <button
+                      onClick={() =>
+                        setAddDay((d) => (d === day.key ? null : day.key))
+                      }
+                      className="text-xs text-text-faint hover:text-text px-1"
+                    >
+                      +
+                    </button>
+                    <Info
+                      call="tts.createTimeNote({ text, day })"
+                      explanation={TIME_NOTES_EXPLANATION}
+                      explanationTitle="time notes — one sentence about when"
+                    >
+                      Opens a box for one sentence about this calendar day. A
+                      job reads it within a couple of minutes and turns it into
+                      a date, a wait, or a span of time on the grid.
+                    </Info>
+                  </span>
                 </div>
 
                 {/* The day's time notes always show; `+` opens the input. */}

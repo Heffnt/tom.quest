@@ -5,15 +5,14 @@ import { load as loadYaml } from "js-yaml";
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
+  CODE_TODO_PATH,
+  CODE_TODO_REPOS,
   TTS_DIGEST_NY_HOUR,
   countdownText,
   ttsDayKey,
   ttsItemLink,
   nyLocalHour,
   nyOffsetHours,
-  SESSION_REPOS,
-  SESSION_REPO_NAMES,
-  SESSION_REPO_DEFAULT_BRANCH,
 } from "./ttsShared";
 import type { Doc } from "./_generated/dataModel";
 
@@ -397,22 +396,12 @@ export const sendHourlyUpdate = internalAction({
 // divergent copies) via the GitHub contents API. Link-by-id-never-copy: the
 // mirror stores only what the Inventory needs to display + deep-link. Silently
 // a no-op until GITHUB_MIRROR_TOKEN is configured.
-// Membership is DERIVED from the one home (SESSION_REPO_NAMES) minus an
-// exclusion list, the same shape PROSPECT_REPOS uses: a repo added to
-// SESSION_REPOS is mirrored by default, and one that should not be has to say
-// why here. A hand-written copy of the repo list would silently omit a new repo
-// instead; scripts/check-session-mirrors.mjs now fails the guardrails run on
-// one. Safe by construction: a repo with no vqc/todos.yaml 404s and is skipped
-// below.
-const MIRROR_EXCLUDED: readonly string[] = [
-  "WikiTom", // a prose vault, not a code repo — it carries no vqc/todos.yaml
-];
-const MIRROR_SOURCES = SESSION_REPO_NAMES.filter(
-  (repo) => !MIRROR_EXCLUDED.includes(repo),
-).map((repo) => ({
+// Which repos, and which branch each file is read from, comes from the one
+// home in ttsShared — the prospecting prompt reads the same list to know which
+// checkouts hold a registry a prospector must not re-capture from.
+const MIRROR_SOURCES = Object.entries(CODE_TODO_REPOS).map(([repo, branch]) => ({
   repo,
-  branch: SESSION_REPO_DEFAULT_BRANCH[repo] ?? "main",
-  github: SESSION_REPOS[repo],
+  branch,
 }));
 
 type VqcEntry = {
@@ -432,7 +421,7 @@ export const refreshMirror = internalAction({
     for (const { repo, branch, github } of MIRROR_SOURCES) {
       try {
         const res = await fetch(
-          `https://api.github.com/repos/${github}/contents/vqc/todos.yaml?ref=${branch}`,
+          `https://api.github.com/repos/Heffnt/${repo}/contents/${CODE_TODO_PATH}?ref=${branch}`,
           {
             headers: {
               Authorization: `Bearer ${token}`,
@@ -451,7 +440,7 @@ export const refreshMirror = internalAction({
           console.error(`TTS mirror: ${repo} vqc/todos.yaml is not a list`);
           continue;
         }
-        const url = `https://github.com/${github}/blob/${branch}/vqc/todos.yaml`;
+        const url = `https://github.com/Heffnt/${repo}/blob/${branch}/${CODE_TODO_PATH}`;
         const rows = (parsed as VqcEntry[])
           .filter((e) => typeof e?.id === "string")
           .map((e) => ({

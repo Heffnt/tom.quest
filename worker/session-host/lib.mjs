@@ -2,50 +2,27 @@
 // daemon (worker/session-host/). Companions: session.mjs (the per-session
 // class) and session-host.mjs (the poll loop).
 //
-// loadEnv is a minimal copy of worker/jobs/tts-lib.mjs's loadEnv (same file
-// format, same tolerances — attribution: that file is the original) rather
-// than a ../jobs relative import, because setup.sh installs the two
-// directories to DIFFERENT places on the Jarvis Box (/opt/tts vs
-// /opt/tts/session-host), so a relative import that resolves in the repo
-// would dangle after install. Divergence risk is tiny: the KEY=VALUE format
-// is frozen. The one real difference is the required-keys list — this daemon
-// needs CONVEX_SITE_URL + SESSIONS_WORKER_KEY and nothing else (GH_TOKEN is
-// optional: without it, repo clones fall back to anonymous https, which
-// works for public repos and fails loudly for private ones).
+// The env-file parsing itself is NOT here: it is worker-env.mjs, the one body
+// the cron jobs read too. It is reached through ./worker-env.mjs — a symlink
+// to ../jobs/worker-env.mjs — because setup.sh installs the two directories
+// to different depths (/opt/tts vs /opt/tts/session-host), so a spelled-out
+// ../jobs import would resolve in the repo and dangle after install. That
+// file's header carries the full reasoning.
+//
+// What stays here is this daemon's own required-key list: CONVEX_SITE_URL +
+// SESSIONS_WORKER_KEY and nothing else (GH_TOKEN is optional — without it,
+// repo clones fall back to anonymous https, which works for public repos and
+// fails loudly for private ones).
 
-import fs from "node:fs";
+import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
 
-export const ENV_PATH = "/etc/tts/worker.env";
+export { ENV_PATH };
 
-// Read /etc/tts/worker.env (KEY=VALUE lines; '#' comments and blank lines
-// ignored; optional leading "export " and optional surrounding quotes
-// tolerated so the same file can be `source`d from bash if ever needed).
 export function loadEnv(path = ENV_PATH) {
-  const env = {};
-  const text = fs.readFileSync(path, "utf8");
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq === -1) continue; // not KEY=VALUE — silently skip
-    let key = line.slice(0, eq).trim();
-    if (key.startsWith("export ")) key = key.slice("export ".length).trim();
-    let value = line.slice(eq + 1).trim();
-    if (
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      value = value.slice(1, -1);
-    }
-    env[key] = value;
-  }
-  for (const required of ["CONVEX_SITE_URL", "SESSIONS_WORKER_KEY"]) {
-    if (!env[required]) {
-      throw new Error(`missing ${required} in ${path} — fill in the env file`);
-    }
-  }
-  return env;
+  return loadWorkerEnv({
+    path,
+    require: ["CONVEX_SITE_URL", "SESSIONS_WORKER_KEY"],
+  });
 }
 
 // stdout with the daemon's prefix; journald adds timestamps, so we don't.

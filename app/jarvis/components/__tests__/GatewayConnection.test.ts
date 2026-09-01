@@ -203,6 +203,152 @@ describe("GatewayConnection", () => {
     });
   });
 
+  // "A stored device token the gateway refuses" — the one case that drops the
+  // token, and the four neighbouring refusals that must not. Before these,
+  // clearDeviceAuthToken had no production caller at all: a rejected token
+  // stayed in localStorage, buildConnectParams re-read it on every reconnect,
+  // and the only way out was clearing site data by hand. The narrowness
+  // matters as much as the drop: this deletion cannot be undone from a
+  // browser, so a refusal that does not name the credential leaves it alone.
+  async function refuseHandshake(
+    error: { code: string; message: string; details?: unknown },
+    options: { token?: string; password?: string } = {},
+  ) {
+    const { GatewayConnection } = await import("@/app/jarvis/components/GatewayConnection");
+    const connection = new GatewayConnection({
+      url: "wss://gateway.example/ws",
+      ...options,
+      websocketFactory: (url: string) => new MockWebSocket(url) as unknown as WebSocket,
+    });
+    connection.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.serverOpen();
+    socket.serverMessage({
+      type: "event",
+      event: "connect.challenge",
+      payload: { nonce: "nonce-123", ts: 1 },
+    });
+    await flushAsync();
+    socket.serverMessage({
+      type: "res",
+      id: socket.sentFrames[0]?.id,
+      ok: false,
+      error,
+    });
+    await flushAsync();
+    return { connection, socket };
+  }
+
+  it("drops a stored device token the gateway refuses, so the next handshake re-registers", async () => {
+    const { connection } = await refuseHandshake({
+      code: "UNAUTHORIZED",
+      message: "device token rejected",
+      details: { code: "AUTH_REQUIRED" },
+    });
+
+    expect(connection.connected).toBe(false);
+    expect(clearDeviceAuthToken).toHaveBeenCalledWith({
+      deviceId: "device-1",
+      role: "operator",
+    });
+
+    // The store is now empty, so the retry handshakes with no token at all —
+    // which is the request the gateway answers by issuing a fresh one.
+    loadDeviceAuthToken.mockReturnValue(null);
+    await vi.advanceTimersByTimeAsync(1000);
+    const retry = MockWebSocket.instances[1];
+    retry.serverOpen();
+    retry.serverMessage({
+      type: "event",
+      event: "connect.challenge",
+      payload: { nonce: "nonce-456", ts: 2 },
+    });
+    await flushAsync();
+    expect((retry.sentFrames[0]?.params as { auth?: unknown }).auth).toBeUndefined();
+  });
+
+  it("keeps the stored token when the refusal is a pairing refusal", async () => {
+    // PAIRING_REQUIRED says a human has not approved this device; deleting the
+    // token would not change that and would lose a token that still works once
+    // pairing lands.
+    const { connection } = await refuseHandshake({
+      code: "PAIRING_REQUIRED",
+      message: "pairing required",
+      details: { code: "PAIRING_REQUIRED" },
+    });
+
+    expect(connection.pairingRequired).toBe(true);
+    expect(clearDeviceAuthToken).not.toHaveBeenCalled();
+  });
+
+  it("keeps the stored token when UNAUTHORIZED does not name the credential", async () => {
+    // The connect frame stakes the token, the device signature and the
+    // requested scopes at once. A bare UNAUTHORIZED could be about any of
+    // them — a skewed signedAt, a scope the gateway will not grant — and
+    // deleting a good token on that evidence cannot be undone from a browser.
+    const { connection } = await refuseHandshake({
+      code: "UNAUTHORIZED",
+      message: "signature rejected",
+    });
+
+    expect(connection.connected).toBe(false);
+    expect(clearDeviceAuthToken).not.toHaveBeenCalled();
+  });
+
+  it("keeps the stored token when a password rides along with it", async () => {
+    // Two credentials in one frame, so the refusal does not say which one
+    // failed.
+    await refuseHandshake(
+      {
+        code: "UNAUTHORIZED",
+        message: "device token rejected",
+        details: { code: "AUTH_REQUIRED" },
+      },
+      { password: "hunter2" },
+    );
+
+    expect(clearDeviceAuthToken).not.toHaveBeenCalled();
+  });
+
+  it("drops the token when the refusal mentions pairing but names AUTH_REQUIRED", async () => {
+    // The message-substring pairing test would otherwise swallow this: the
+    // detail code is what says which credential was refused.
+    await refuseHandshake({
+      code: "UNAUTHORIZED",
+      message: "device token invalid; re-pairing may be required",
+      details: { code: "AUTH_REQUIRED" },
+    });
+
+    expect(clearDeviceAuthToken).toHaveBeenCalledWith({
+      deviceId: "device-1",
+      role: "operator",
+    });
+  });
+
+  it("keeps a token passed in by the caller — only the store's own token is dropped", async () => {
+    const { connection } = await refuseHandshake(
+      {
+        code: "UNAUTHORIZED",
+        message: "device token rejected",
+        details: { code: "AUTH_REQUIRED" },
+      },
+      { token: "caller-supplied-token" },
+    );
+
+    expect(connection.connected).toBe(false);
+    expect(clearDeviceAuthToken).not.toHaveBeenCalled();
+  });
+
+  it("keeps the stored token when the handshake fails for a non-auth reason", async () => {
+    const { connection } = await refuseHandshake({
+      code: "UNAVAILABLE",
+      message: "gateway restarting",
+    });
+
+    expect(connection.connected).toBe(false);
+    expect(clearDeviceAuthToken).not.toHaveBeenCalled();
+  });
+
   it("correlates outbound requests with matching responses", async () => {
     const { GatewayConnection } = await import("@/app/jarvis/components/GatewayConnection");
     const connection = new GatewayConnection({

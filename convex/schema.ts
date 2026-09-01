@@ -2,10 +2,14 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+// `agent` is not a rank between `user` and `admin`: it is a side branch that
+// reads the surfaces in convex/agentSurfaces.ts and writes nothing. See
+// roleAccess() in convex/authRoles.ts, which returns isAdmin:false for it.
 export const USER_ROLES = v.union(
   v.literal("user"),
   v.literal("admin"),
   v.literal("tom"),
+  v.literal("agent"),
 );
 
 export default defineSchema({
@@ -18,6 +22,12 @@ export default defineSchema({
     phone: v.optional(v.string()),
     phoneVerificationTime: v.optional(v.number()),
     isAnonymous: v.optional(v.boolean()),
+    // The role vocabulary has a twin: the UserRole TYPE in convex/authRoles.ts,
+    // which every gate (roleAccess, requireTom) branches on. A validator and a
+    // type cannot be one declaration, so adding a role means editing both — the
+    // USER_ROLES union above and UserRole there — or roleAccess silently
+    // treats the new role as "user". Absent role means "user"; see
+    // authRoles.roleAccess.
     role: v.optional(USER_ROLES),
   })
     .index("email", ["email"])
@@ -154,9 +164,11 @@ export default defineSchema({
     userId: v.id("users"),
     createdAt: v.number(),
     lastActivityAt: v.number(),
-  })
-    .index("by_canvas_activity", ["canvasId", "lastActivityAt"])
-    .index("by_user", ["userId"]),
+    // Chats are always reached through their canvas, never listed per user:
+    // convex/canvas.ts queries by_canvas_activity, and ownership is checked by
+    // ownChatOrThrow, which db.get()s the row and compares userId. A by_user
+    // index had no query and was removed. Re-add it only with a caller.
+  }).index("by_canvas_activity", ["canvasId", "lastActivityAt"]),
 
   canvasMessages: defineTable({
     chatId: v.id("canvasChats"),
@@ -223,6 +235,15 @@ export default defineSchema({
     memberKey: v.string(),
     name: v.string(),
     color: v.string(),
+    // DANGER — do not drop this column casually. Nothing reads or writes it any
+    // more: the member-icon upload path was removed because no client ever
+    // called it, and avatars are the initial-on-colour fallback. It stays
+    // because deleting a column is validated against every existing row on
+    // push, and this repo has ONE Convex deployment: if any perfumeMembers row
+    // in prod still carries an iconStorageId (set by an earlier version or by
+    // hand in the dashboard), the push is rejected and that failure blocks the
+    // whole site's deploy, not just /perfume. Read the prod table first, then
+    // drop it. An optional column no code touches costs nothing until then.
     iconStorageId: v.optional(v.id("_storage")),
     registeredAt: v.number(),
     lastSeenAt: v.number(),
@@ -507,7 +528,11 @@ export default defineSchema({
     // life path, the pens). A batch with this set is
     // FROZEN: the batcher job may never rewrite or retire it.
     tomTouchedAt: v.optional(v.number()),
-    source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
+    // "manual" | "slack-capture" | "consolidation" | "email" | "session-sweep"
+    // | "prospecting" | … Each name means ONE fact: the two Canvas producers
+    // are "canvas" (assignments, convex/ttsCanvas.ts) and "canvas-announcement"
+    // (worker/jobs/poll-canvas.mjs), never one shared name.
+    source: v.string(),
     provenance: v.optional(v.string()), // link/descriptor of where it came from
     // ── Slack coordinates of the #dump message this was captured from ────────
     // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
@@ -573,9 +598,11 @@ export default defineSchema({
     .index("by_status", ["status", "updatedAt"])
     .index("by_readiness", ["readiness"])
     .index("by_batch", ["batchId"])
-    // Ingestion lookups: the Canvas sync and the repeating-todo generator find
-    // their own rows by source ("canvas" / "repeating") + provenance match,
-    // without scanning the whole table.
+    // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
+    // generator find their own rows by source ("canvas" / "repeating") +
+    // provenance match, without scanning the whole table. The source alone is
+    // never the whole key — a reader that skips the provenance match adopts
+    // every other producer's rows under that name.
     .index("by_source", ["source"])
     // The Slack Events push route's dedupe read: Slack's delivery is
     // at-least-once and its retries carry the same message ts, so a capture
@@ -767,9 +794,11 @@ export default defineSchema({
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
   // a fallback cron builds a simple-rules queue if none arrived. The digest
-  // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
-  // and marks digestSentAt — so a missing digest means Convex/Slack breakage,
-  // a digest reporting missing prep means worker breakage.
+  // SEND is OFF since Tom's 2026-08-29 outbound-Slack ruling: the digest crons
+  // are unregistered (convex/crons.ts:32-35) and sendDigest returns on
+  // OUTBOUND_SLACK_ENABLED=false, so digestSentAt is no longer stamped and
+  // there is no send-or-silence monitoring signal. The queue and digest text
+  // are still written here every morning and read on the TTS pages.
   dtsDailyQueues: defineTable({
     day: v.string(),
     entries: v.array(
@@ -804,7 +833,7 @@ export default defineSchema({
   // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
   // when the entry changes upstream, the hash mismatch marks the brief stale
   // and the worker rewrites it. `recommendation` is the worker's read, never a
-  // verdict — Tom rules (dtsCodeRulings); `execClass` says where an approved
+  // verdict — Tom rules (dtsRulings); `execClass` says where an approved
   // item can run; `evidence` carries the commits/files that justify a
   // propose-archive.
   dtsCodeBriefs: defineTable({
@@ -838,11 +867,14 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // DEPRECATED (2026-08-28): superseded by the unified ttsRulings table above.
-  // Kept as read-only history — non-defer rows are copied into ttsRulings by
-  // ttsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
-  // stay here only (defer is no longer a verdict: not ruling IS deferring).
-  // No new writes. Remove in the tts→tts rename round.
+  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
+  // Read-only history, no new writes: non-defer rows are copied into dtsRulings
+  // by ttsRulings.internalMigrateCodeRulings (run once at deploy). "defer" rows
+  // are NOT copied — defer is no longer a verdict (not ruling IS deferring) —
+  // so for those rows this table is the only copy.
+  // Removing the declaration is tracked separately rather than deferred to a
+  // named round: it requires emptying the table first (which discards the defer
+  // history), and the schema pushes straight to the one prod deployment.
   dtsCodeRulings: defineTable({
     repo: v.string(),
     externalId: v.string(),

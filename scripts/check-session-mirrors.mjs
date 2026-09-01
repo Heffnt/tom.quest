@@ -4,9 +4,13 @@
 // daemon staleness window as the poll cadence it is derived from. This check
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
-import { readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 
+// Guardrail 2: some session vocabulary has no worker half at all — the
+// live-status list's other half is convex/schema.ts, and its failure mode is a
+// SECOND home in TypeScript rather than a stale literal in .mjs. Check 4 below
+// fences that pair the same way.
 const shared = readFileSync("convex/ttsShared.ts", "utf8");
 const sessionMjs = readFileSync("worker/session-host/session.mjs", "utf8");
 const hostMjs = readFileSync("worker/session-host/session-host.mjs", "utf8");
@@ -105,7 +109,115 @@ if (usageA && usageB) {
   }
 }
 
-// 4. No fourth copy of the repo list. SESSION_REPOS is the one home; before
+// 4. The live-status list: LIVE_STATUSES has ONE home (ttsShared.ts) and its
+// other half is the schema — "live" is defined as the claudeSessions.status
+// union minus the two terminal statuses, so adding a status to the schema
+// without deciding whether it is live fails here instead of silently being
+// treated as finished. The second half of the fence is a no-second-home check:
+// app/sessions/lib.ts and convex/claudeSessions.ts each carried their own copy
+// (with a comment claiming this file was the home), so the check refuses any
+// re-declaration outside ttsShared.ts.
+// witness: paste `const LIVE_STATUSES = [...]` back into claudeSessions.ts, or
+// write `const isLive = (s) => ...` in any app/ or convex/ file, or add a
+// status to the schema union without listing it here or as terminal.
+const TERMINAL_STATUSES = ["ended", "failed"];
+const liveBlock = shared.match(/export const LIVE_STATUSES = \[([^\]]+)\]/);
+const schemaTs = readFileSync("convex/schema.ts", "utf8");
+const sessionsTable = schemaTs.match(
+  /claudeSessions: defineTable\(\{[\s\S]*?\n {4}status: v\.union\(([\s\S]*?)\n {4}\),/,
+);
+if (!liveBlock) failures.push("ttsShared.ts: LIVE_STATUSES literal not found");
+if (!sessionsTable) {
+  failures.push("schema.ts: claudeSessions status union not found");
+}
+if (liveBlock && sessionsTable) {
+  const live = [...liveBlock[1].matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
+  const schemaStatuses = [
+    ...sessionsTable[1].matchAll(/v\.literal\("([\w-]+)"\)/g),
+  ].map((m) => m[1]);
+  const claimed = [...live, ...TERMINAL_STATUSES].sort().join("|");
+  const declared = [...schemaStatuses].sort().join("|");
+  if (claimed !== declared) {
+    failures.push(
+      `live-status list drifted from the schema union:\n  LIVE_STATUSES + terminal: ${claimed}\n  schema.ts claudeSessions:  ${declared}`,
+    );
+  }
+}
+// Every .ts/.tsx under app/ and convex/ is scanned, not just the two files
+// that held the old copies: a third home is exactly as bad, and the three
+// current isLive consumers (session-list, composer, session-view) are where
+// one would plausibly land. Tests are skipped — a test may legitimately stub
+// either name. Both the `function isLive(` and the `const isLive =` spellings
+// count; matching only the first let an arrow-function copy through.
+const declaresOwn = (text) => {
+  const found = [];
+  if (/(?:const|let|var)\s+LIVE_STATUSES\s*[:=]/.test(text)) {
+    found.push("LIVE_STATUSES");
+  }
+  if (/(?:function\s+isLive\s*\(|(?:const|let|var)\s+isLive\s*[:=])/.test(text)) {
+    found.push("isLive");
+  }
+  return found;
+};
+
+const walk = (dir) => {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === "_generated") continue;
+      if (entry.name === "__tests__") continue;
+      out.push(...walk(full));
+    } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+};
+
+for (const file of [...walk("app"), ...walk("convex")]) {
+  if (file === "convex/ttsShared.ts") continue; // the one home
+  for (const name of declaresOwn(readFileSync(file, "utf8"))) {
+    failures.push(
+      `${file}: declares its own ${name} — the one home is convex/ttsShared.ts`,
+    );
+  }
+}
+
+// 5. The worker env loader has ONE body. worker/jobs/worker-env.mjs is it;
+// worker/session-host/worker-env.mjs is a symlink to it, because setup.sh
+// installs jobs/ flat to /opt/tts and session-host/ to /opt/tts/session-host,
+// so a spelled-out ../jobs import resolves in the repo and dangles on the box
+// (that file's header carries the reasoning). Two ways to lose the one home:
+// replace the link with a second real file, or paste the KEY=VALUE parse back
+// into a caller. Both are checked.
+// witness: `rm worker/session-host/worker-env.mjs && cp worker/jobs/worker-env.mjs
+// worker/session-host/`, or copy the parse loop into lib.mjs.
+const ENV_LINK = "worker/session-host/worker-env.mjs";
+const ENV_LINK_TARGET = "../jobs/worker-env.mjs";
+try {
+  if (!lstatSync(ENV_LINK).isSymbolicLink()) {
+    failures.push(`${ENV_LINK} is a real file — it must stay a symlink to ${ENV_LINK_TARGET}`);
+  } else if (readlinkSync(ENV_LINK) !== ENV_LINK_TARGET) {
+    failures.push(
+      `${ENV_LINK} points at ${readlinkSync(ENV_LINK)}, not ${ENV_LINK_TARGET}`,
+    );
+  }
+} catch {
+  failures.push(`${ENV_LINK} is missing — the session-host daemon cannot read /etc/tts/worker.env`);
+}
+// The parse loop's own marker line, which must appear in exactly one file.
+const PARSE_MARKER = 'const eq = line.indexOf("=");';
+for (const [file, text] of [
+  ["worker/jobs/tts-lib.mjs", readFileSync("worker/jobs/tts-lib.mjs", "utf8")],
+  ["worker/session-host/lib.mjs", readFileSync("worker/session-host/lib.mjs", "utf8")],
+]) {
+  if (text.includes(PARSE_MARKER)) {
+    failures.push(`${file} parses worker.env itself again — import loadEnv from worker-env.mjs`);
+  }
+}
+
+// 6. No fourth copy of the repo list. SESSION_REPOS is the one home; before
 // PR #28 the same fact was hand-written three more times (AUTO_REPOS,
 // PROSPECT_REPOS, REPO_OPTIONS), so adding a repo in one place left the others
 // silently disagreeing. Those three are gone — two are now DERIVED from the one
@@ -125,6 +237,11 @@ const REPO_LIST_ALLOWED = new Set([
   "convex/ttsShared.ts", // the one home
   "worker/session-host/session.mjs", // the daemon mirror, fenced by check 2 above
   "scripts/check-session-mirrors.mjs", // this file
+  // Prose, like a comment, but inside template literals the comment strip
+  // cannot reach: this file is nothing but the HTML explanation documents
+  // the ⓘ popover renders, and one of them names the three known repos
+  // in a sentence. It carries no repo list that anything branches on.
+  "app/tts/explanations.ts",
 ]);
 const REPO_NAME_WINDOW = 300;
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
@@ -142,10 +259,10 @@ const SKIP_DIR = new Set([
 ]);
 
 const sourceFiles = [];
-const walk = (dir) => {
+const walkSources = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      if (!SKIP_DIR.has(entry.name)) walk(join(dir, entry.name));
+      if (!SKIP_DIR.has(entry.name)) walkSources(join(dir, entry.name));
     } else if (
       SCAN_EXT.test(entry.name) &&
       !/\.(test|spec)\.[a-z]+$/.test(entry.name)
@@ -180,7 +297,7 @@ if (sharedBlock) {
       name,
       re: new RegExp(`(?<![\\w.-])${name.replace(/\./g, "\\.")}(?![\\w-])`, "g"),
     }));
-    walk(".");
+    walkSources(".");
     for (const file of sourceFiles) {
       if (REPO_LIST_ALLOWED.has(file)) continue;
       const code = stripComments(readFileSync(file, "utf8"));

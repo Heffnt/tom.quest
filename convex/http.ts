@@ -713,7 +713,7 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
 // POST /tts/code-briefs — the worker's prepared briefs, upserted by
 // (repo, externalId). Body: { briefs: [{ repo, externalId, sourceHash, brief,
 // recommendation, execClass, evidence? }] }.
-const dtsCodeBriefs = httpAction(async (ctx, request) => {
+const ttsCodeBriefs = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
@@ -736,9 +736,9 @@ const dtsCodeBriefs = httpAction(async (ctx, request) => {
   return jsonResponse(200, { ok: true, count: briefs.length });
 });
 
-http.route({ path: "/tts/code-briefs", method: "POST", handler: dtsCodeBriefs });
+http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs });
 
-// GET /tts/code-rulings — the rulings a worker job should act on (unapplied
+// GET /tts/rulings — the rulings a worker job should act on (unapplied
 // and not superseded by a newer ruling on the same subject), from the unified
 // ttsRulings table. ALL THREE subject types ride the one feed: rows carry
 // subjectType ("code" → the apply job; "life" with verdict "revise" → the
@@ -746,7 +746,7 @@ http.route({ path: "/tts/code-briefs", method: "POST", handler: dtsCodeBriefs })
 // verdict "revise" → the planner, worker/jobs/plan-graphs.mjs). Each job
 // filters for its own kind and consumes only those. Each row carries its _id,
 // which the worker echoes back to /tts/ruling-applied.
-const dtsCodeRulings = httpAction(async (ctx, request) => {
+const ttsRulingsFeed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const pending = await ctx.runQuery(
@@ -756,11 +756,12 @@ const dtsCodeRulings = httpAction(async (ctx, request) => {
   return jsonResponse(200, { pending });
 });
 
-// Canonical path: /tts/rulings — the feed serves BOTH subject types, so the
-// old code-scoped name is kept only as an alias for not-yet-redeployed
-// workers (drop the alias in the tts→tts rename round).
-http.route({ path: "/tts/rulings", method: "GET", handler: dtsCodeRulings });
-http.route({ path: "/tts/code-rulings", method: "GET", handler: dtsCodeRulings });
+// /tts/rulings is the only path. The feed carries every subject type, so there
+// is no code-scoped variant: a /tts/code-rulings alias pointed at this same
+// handler for workers predating the unified feed, and was removed once all
+// five callers (apply-rulings, execute-approved, form-batches,
+// prepare-life-todos, plan-graphs) had moved to /tts/rulings.
+http.route({ path: "/tts/rulings", method: "GET", handler: ttsRulingsFeed });
 
 // POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
 // result } where result is a commit sha / PR url / error text.

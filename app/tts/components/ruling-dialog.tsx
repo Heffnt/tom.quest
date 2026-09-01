@@ -8,7 +8,7 @@
 //   (session is its own thing and opens directly, not through this dialog)
 // The dialog always states where the batch stands before asking for input.
 import { useState } from "react";
-import type { PlanStep } from "../lib";
+import { planNeedsYou, type PlanStep } from "../lib";
 import { nextStep, planProgress } from "./plan-bar";
 
 export type RulingVerdict = "approve" | "archive" | "edit";
@@ -61,9 +61,9 @@ export default function RulingDialog({
   const c = COPY[verdict];
   const { done, total } = planProgress(plan);
   const next = nextStep(plan);
-  const openTom = (plan ?? []).filter(
-    (s) => s.actor === "tom" && s.status === "open",
-  ).length;
+  // "open on you" means exactly what the card's needs-you strip means, so it
+  // is read from the same function rather than filtered again here.
+  const openTom = planNeedsYou(plan).count;
 
   return (
     <div

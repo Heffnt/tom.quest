@@ -78,9 +78,14 @@ export function clientMemberKey(m: Member): string {
 }
 
 /**
- * Open actor-"tom" steps — the card's "needs you" strip. Each step keeps its
- * index in the todo's plan array, because that index is what
- * tts.setPlanStep({index}) addresses.
+ * Open actor-"tom" steps — what a plan is waiting on Tom for. THE one home for
+ * that rule: ruling-dialog.tsx reads `count` for its "N open on you" line and
+ * must not filter the plan again itself.
+ *
+ * `steps` has no caller yet. It is the shape a "needs you" strip would read,
+ * and each entry keeps its index in the todo's plan array because that index
+ * is what tts.setPlanStep({index}) addresses — a strip that recomputed the
+ * index from a filtered list would check off the wrong step.
  */
 export function planNeedsYou(plan: PlanStep[] | undefined): {
   count: number;
@@ -135,13 +140,22 @@ export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
 
 // ── The needs-me selector (ONE definition; the tab renders it, the badge
 // counts it) ─────────────────────────────────────────────────────────────────
-// life: active + ready-for-tom, excluding todos whose live ruling is at least
-//   as new as the todo's last update — a ruled gate is answered until the
-//   preparer touches the todo again (re-prep bumps updatedAt past ruledAt).
-// code: open + briefed, where the live ruling is missing or OLDER than the
-//   brief — a re-brief after a revise ruling returns the item for a fresh
+// life: active + ready-for-tom, excluding todos whose live ruling is NEWER
+//   than the todo's last update — a ruled gate is answered until the preparer
+//   touches the todo again (re-prep bumps updatedAt to at least ruledAt).
+// code: open + briefed, where the live ruling is missing or NOT NEWER than
+//   the brief — a re-brief after a revise ruling returns the item for a fresh
 //   ruling (mirror of convex/ttsRulings.ts briefAwaitsRuling).
 // pending: live rulings not yet applied (the "ruled, applying" strip).
+//
+// BOTH COMPARISONS ARE `<=` ON PURPOSE — DO NOT TIGHTEN EITHER TO `<`.
+// ruledAt, updatedAt and preparedAt are whole-millisecond Date.now() values
+// written by separate mutations, so a ruling and a re-prep/re-brief CAN carry
+// the same number. Strict `<` reads that tie as "already answered" and drops
+// an item that genuinely changed after its ruling off Tom's pile, with
+// nothing to put it back; `<=` costs at most one extra look at an item he
+// just ruled. convex/ttsRulings.ts briefAwaitsRuling carries the same rule
+// and the same warning.
 
 export type NeedsMe = {
   lifeRows: Todo[];
@@ -162,7 +176,7 @@ export function selectNeedsMe(
     const ruling = live.get(
       rulingSubjectKey({ subjectType: "life", todoId: t._id }),
     );
-    return ruling === undefined || ruling.ruledAt < t.updatedAt;
+    return ruling === undefined || ruling.ruledAt <= t.updatedAt;
   });
 
   const briefByKey = new Map(
@@ -175,7 +189,7 @@ export function selectNeedsMe(
     const brief = briefByKey.get(key);
     if (!brief) continue;
     const ruling = live.get(key);
-    if (ruling === undefined || ruling.ruledAt < brief.preparedAt) {
+    if (ruling === undefined || ruling.ruledAt <= brief.preparedAt) {
       codeRows.push({ row, brief });
     }
   }

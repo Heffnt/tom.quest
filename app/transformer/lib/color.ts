@@ -22,15 +22,10 @@ export function heat(v: number): string {
   return rgb(lerp(COLD[0], HOT[0], g), lerp(COLD[1], HOT[1], g), lerp(COLD[2], HOT[2], g));
 }
 
-/** Signed value in [-1, 1] → blue / dark / amber. Used by weight heatmaps. */
-export function diverging(t: number): string {
-  const c = Math.max(-1, Math.min(1, t));
-  const a = Math.pow(Math.abs(c), 0.6);
-  const target = c < 0 ? NEG : HOT;
-  return rgb(lerp(ZERO[0], target[0], a), lerp(ZERO[1], target[1], a), lerp(ZERO[2], target[2], a));
-}
-
-/** Same as diverging() but returns [r,g,b] for ImageData writes. */
+/**
+ * Signed value in [-1, 1] → blue / dark / amber, returned as [r,g,b] channels
+ * for ImageData writes. Used by the weight heatmaps in weights-stratum.tsx.
+ */
 export function divergingRgb(t: number): [number, number, number] {
   const c = Math.max(-1, Math.min(1, t));
   const a = Math.pow(Math.abs(c), 0.6);
