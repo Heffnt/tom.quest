@@ -34,6 +34,8 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 
 // The staleness threshold lives in ttsShared (one home; the worker daemon's
 // literal mirror is fenced by scripts/check-session-mirrors.mjs), and so do
+// the live-status list this file scans by (LIVE_STATUSES / isLive, formerly
+// declared here AND in app/sessions/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
 // page, the planner, and the scheduler must all mean the same thing by
 // "ready". The writing standard the worker mission pastes into its prompt is
@@ -42,28 +44,18 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 import { skillText } from "./ttsSkills";
 import {
   DAEMON_STALE_MS,
+  LIVE_STATUSES,
   NO_REPO,
   SESSION_REPO_NAMES,
   WRITING_SKILL,
   WRITING_STANDARD,
   buildDoneSet,
   goalCheckable,
+  isLive,
   isReady,
   normalizeSessionRepos,
 } from "./ttsShared";
 export { DAEMON_STALE_MS };
-
-const LIVE_STATUSES = [
-  "requested",
-  "starting",
-  "idle",
-  "running",
-  "awaiting-permission",
-] as const;
-
-function isLive(status: Doc<"claudeSessions">["status"]): boolean {
-  return (LIVE_STATUSES as readonly string[]).includes(status);
-}
 
 // Un-acked permission decisions for a session, bounded: newest 25 per decided
 // status, filtered to appliedAt-unset. Correct in practice because un-acked

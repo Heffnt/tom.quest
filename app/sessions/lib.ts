@@ -17,22 +17,12 @@ export type DaemonHealth = Doc<"claudeDaemonHealth">;
 export type SessionStatus = Session["status"];
 
 // One home for the session constants: convex/ttsShared.ts (client-safe, no
-// server imports). The worker daemon's literal mirrors are fenced by
-// scripts/check-session-mirrors.mjs.
-export { DAEMON_STALE_MS } from "@/convex/ttsShared";
+// server imports) — the staleness window, and the live-status list this page
+// and convex/claudeSessions.ts must agree on. The worker daemon's literal
+// mirrors are fenced by scripts/check-session-mirrors.mjs, which also fails if
+// a second LIVE_STATUSES reappears here.
+export { DAEMON_STALE_MS, LIVE_STATUSES, isLive } from "@/convex/ttsShared";
 import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
-
-export const LIVE_STATUSES: readonly SessionStatus[] = [
-  "requested",
-  "starting",
-  "idle",
-  "running",
-  "awaiting-permission",
-];
-
-export function isLive(status: SessionStatus): boolean {
-  return LIVE_STATUSES.includes(status);
-}
 
 export const REPO_OPTIONS = [...SESSION_REPO_NAMES, NO_REPO] as const;
 
