@@ -29,6 +29,27 @@ const brief = (over: Partial<{
   ...over,
 });
 
+// Overwrite every brief's preparedAt and every ruling's ruledAt with values
+// the test chose. The awaiting-ruling predicate compares two whole-millisecond
+// Date.now() stamps written by different mutations, so a test that lets the
+// real clock set them is asserting how fast the machine ran, not what the
+// predicate says. Both fields are plain numbers on the row (convex/schema.ts
+// dtsCodeBriefs.preparedAt, dtsRulings.ruledAt), so writing them directly is
+// the whole mechanism.
+async function setTimes(
+  t: ReturnType<typeof convexTest>,
+  { preparedAt, ruledAt }: { preparedAt: number; ruledAt: number },
+) {
+  await t.run(async (ctx) => {
+    for (const b of await ctx.db.query("dtsCodeBriefs").collect()) {
+      await ctx.db.patch(b._id, { preparedAt });
+    }
+    for (const r of await ctx.db.query("dtsRulings").collect()) {
+      await ctx.db.patch(r._id, { ruledAt });
+    }
+  });
+}
+
 describe("TTS unified rulings", () => {
   // witness: remove the requireTom call from listRulings or recordRuling in
   // convex/ttsRulings.ts
@@ -288,6 +309,14 @@ describe("TTS unified rulings", () => {
 
   // witness: change briefAwaitsRuling back to "any ruling clears the item" in
   // convex/ttsRulings.ts — a revise→re-brief cycle would never return the item.
+  //
+  // Every timestamp below is WRITTEN, never sampled from the clock. The
+  // earlier version of this test recorded the ruling and the re-brief through
+  // their mutations and let both stamp Date.now(), which made the assertion
+  // depend on the two writes landing in different milliseconds: it failed once
+  // in a full run (expected 1, received 0) and passed on a rerun of the same
+  // tree. Same-millisecond ordering is now its own case below, asserted rather
+  // than occasionally sampled.
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -300,6 +329,8 @@ describe("TTS unified rulings", () => {
       verdict: "revise",
       sentence: "narrower scope",
     });
+    // Brief prepared at 1000, ruled at 2000: the ruling answers the brief.
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(0);
@@ -308,6 +339,35 @@ describe("TTS unified rulings", () => {
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: [brief({ externalId: "cycle", sourceHash: "hash-b" })],
     });
+    await setTimes(t, { preparedAt: 3000, ruledAt: 2000 });
+    expect(
+      await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
+    ).toBe(1);
+  });
+
+  // witness: change `ruling.ruledAt <= brief.preparedAt` back to `<` in
+  // briefAwaitsRuling (convex/ttsRulings.ts) — this case returns 0, and in
+  // production a re-briefed item silently leaves Tom's pile with nothing able
+  // to put it back.
+  it("a ruling and a re-brief in the SAME millisecond keep the item on the pile", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [brief({ externalId: "tie" })],
+    });
+    await tom.mutation(api.ttsRulings.recordRuling, {
+      repo: "ComplexMultiTrigger",
+      externalId: "tie",
+      verdict: "revise",
+      sentence: "narrower scope",
+    });
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [brief({ externalId: "tie", sourceHash: "hash-b" })],
+    });
+    // Both stamps are whole-millisecond Date.now() values written by two
+    // different mutations, so they can be equal. The tie is decided in favour
+    // of keeping the item in front of Tom.
+    await setTimes(t, { preparedAt: 1000, ruledAt: 1000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(1);
