@@ -24,10 +24,13 @@ on a schedule:
    restricts token creation; Tom's request form is pending).
 4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
-   Convex. If it fails, the Convex-side fallback prep (4:45) and the
-   always-sends 5 a.m. digest cover the day — a digest that reports missing
-   prep is the "worker is broken" signal; no digest at all means Convex/Slack
-   is broken. That split is the whole monitoring story.
+   Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
+   day's queue. The digest half of that split is OFF — Tom ruled outbound Slack
+   off on 2026-08-29, so the 5 a.m. digest crons are unregistered
+   (`convex/crons.ts:32-35`) and `sendDigest` returns on
+   `OUTBOUND_SLACK_ENABLED = false`. The queue and digest text are still
+   written and read in the app; nothing is sent, so there is no send-or-silence
+   monitoring signal today.
 5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
 6. **apply-rulings** (every 10 min) — see the ruling loop below.
 7. **execute-approved** (hourly at :45) — see the ruling loop below.
@@ -97,13 +100,37 @@ knowing interim: no other account exists yet, and a session that cannot see
 `/turing` cannot check its own work there. A session account with a narrower
 role is a captured TTS todo.
 
-**Not installed: any path from this box to the Turing cluster.** `ssh` exists
-but `turing.wpi.edu` is not reachable from here, and the session sandbox's own
-command policy refuses to open a remote shell. The cluster is reachable only
-as the HTTPS API at `turing.tom.quest`, and that API's key would grant
-`POST /sessions/{name}/run` — arbitrary commands on the cluster — so it is
-deliberately absent from `worker.env`. Adding it is a posture decision, not a
-setup step.
+## The cluster, read-only
+
+`ssh` exists on this box but `turing.wpi.edu` is not reachable from it, and the
+session sandbox's command policy refuses to open a remote shell anyway. The one
+door to the WPI Turing cluster is the HTTPS API at `turing.tom.quest`, and its
+`TURING_API_KEY` opens everything there — including `POST /sessions/{name}/run`,
+which types an arbitrary command into a tmux session under Tom's cluster
+account. That key is **deliberately absent from `worker.env`** and stays absent.
+
+Instead turing-api carries a **second credential**, `TURING_READ_KEY`
+(`verify_read_key` in `turing-api/main.py`), which opens three GETs and nothing
+else. `worker.env` holds that one, and one command spends it:
+
+```
+tts-turing health                    # is the API up (needs no key at all)
+tts-turing gpus                      # GET /gpu-report
+tts-turing jobs                      # GET /jobs
+tts-turing output <session> [lines]  # GET /sessions/<name>/output
+```
+
+**There is no write verb, by construction** — no allocate, no cancel, no run,
+no file read. A session that needs one of those asks Tom. Unlike the browser
+credentials above, this key's blast radius is the four lines printed here.
+
+The key is minted by Tom and must be installed on **both** sides — in
+`/etc/tts/worker.env` here and in `turing-api/.env` on the cluster login node
+(`secrets/turing-api.env.example`), each service restarted afterwards. Until
+both have it, `tts-turing health` works and every other verb reports 401 with
+that ambiguity spelled out. An unset `TURING_READ_KEY` on the API side is the
+fail-closed state: the read door does not exist and the three endpoints stay
+full-key-only.
 
 ## The no-state rule
 

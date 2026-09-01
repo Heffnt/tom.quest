@@ -255,24 +255,6 @@
     No `title=` attribute survives in app/tts outside genuine HTML semantics,
     Info's `label` shim prop is deleted, and every ⓘ carries plain language.
 
-- id: vercel-build-command-not-generated
-  kind: descent
-  created: 2026-08-30
-  cites: [C1, C6]
-  statement: >-
-    vercel.json now sets buildCommand to scripts/vercel-build.mjs, and that
-    script's production branch (`npx convex deploy --cmd 'pnpm build'`) is a
-    HAND-COPY of what the Vercel dashboard previously ran, transcribed from
-    AGENTS.md rather than read from the platform. Nothing checks the two agree,
-    and nothing can from inside the repo: reading the project's settings needs
-    Vercel credentials no session or CI job holds. If the dashboard command ever
-    differed from what AGENTS.md documents, this commit silently changed what
-    production builds.
-  graduates_when: >-
-    A production deploy has run through scripts/vercel-build.mjs successfully,
-    confirming the transcribed command is the right one — or the command is
-    read from a machine home instead of transcribed.
-
 - id: public-convex-url-two-spellings
   kind: descent
   created: 2026-08-30

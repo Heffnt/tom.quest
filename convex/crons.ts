@@ -16,7 +16,7 @@ crons.interval(
 );
 
 // ── TTS (spec: WikiTom tts/spec.md §7) ──────────────────────────────────────
-// The digest anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
+// The TTS day anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
 // each job fires at both possible UTC times (EDT/EST) and the handler's
 // local-hour guard lets exactly one proceed — DST needs no cron edits.
 

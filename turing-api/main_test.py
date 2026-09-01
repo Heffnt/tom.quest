@@ -204,6 +204,159 @@ class ListJobsTest(unittest.TestCase):
         self.assertEqual(body[0]["job_name"], "gpupool:nvidia:deadbeef")
 
 
+class ReadKeyTest(unittest.TestCase):
+    """TURING_READ_KEY opens three GETs and nothing else.
+
+    The point of the split: a holder of the read key can SEE the cluster
+    (GPU report, job list, session output) and cannot ACT on it. The write
+    verb this guards against is POST /sessions/{name}/run, which types an
+    arbitrary command into a tmux session under Tom's cluster account — the
+    full TURING_API_KEY authorizes it and the read key must never.
+    """
+
+    FULL = "full-key"
+    READ = "read-key"
+
+    def _with_keys(self, full: str = FULL, read: str = READ):
+        return (patch("main.API_KEY", full), patch("main.READ_KEY", read))
+
+    # -- the read key opens the three read endpoints ---------------------------
+
+    def test_read_key_opens_gpu_report(self) -> None:
+        full, read = self._with_keys()
+        with full, read, patch("main.format_gpu_report_v2", return_value={"nodes": []}):
+            res = _request("GET", "/gpu-report", headers={"X-API-Key": self.READ})
+        self.assertEqual(res.status_code, 200)
+
+    def test_read_key_opens_jobs(self) -> None:
+        full, read = self._with_keys()
+        with full, read, patch("main.get_user_jobs", return_value=[]):
+            res = _request("GET", "/jobs", headers={"X-API-Key": self.READ})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), [])
+
+    def test_read_key_opens_session_output(self) -> None:
+        full, read = self._with_keys()
+        with (
+            full,
+            read,
+            patch("main.session_exists", return_value=True),
+            patch("main.capture_output", return_value="hello"),
+        ):
+            res = _request(
+                "GET", "/sessions/1_alloc/output", headers={"X-API-Key": self.READ}
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["output"], "hello")
+
+    # -- and nothing else ------------------------------------------------------
+
+    def test_read_key_refused_on_run_command(self) -> None:
+        """The whole reason the split exists."""
+        full, read = self._with_keys()
+        with full, read, patch("main.send_to_session") as send:
+            res = _request(
+                "POST",
+                "/sessions/1_alloc/run",
+                json={"command": "nvidia-smi"},
+                headers={"X-API-Key": self.READ},
+            )
+        self.assertEqual(res.status_code, 401)
+        send.assert_not_called()
+
+    def test_read_key_refused_on_allocate(self) -> None:
+        full, read = self._with_keys()
+        with full, read, patch("main.allocate_gpu") as allocate_gpu:
+            res = _request(
+                "POST",
+                "/allocate",
+                json={"gpu_type": "nvidia", "time_mins": 30},
+                headers={"X-API-Key": self.READ},
+            )
+        self.assertEqual(res.status_code, 401)
+        allocate_gpu.assert_not_called()
+
+    def test_read_key_refused_on_job_cancel(self) -> None:
+        full, read = self._with_keys()
+        with full, read, patch("main.cancel_job") as cancel:
+            res = _request("DELETE", "/jobs/123", headers={"X-API-Key": self.READ})
+        self.assertEqual(res.status_code, 401)
+        cancel.assert_not_called()
+
+    def test_read_key_refused_on_file_read(self) -> None:
+        """/file is under the full key: it reaches the whole home directory."""
+        full, read = self._with_keys()
+        with full, read:
+            res = _request(
+                "GET", "/file", params={"path": "/tmp/x"}, headers={"X-API-Key": self.READ}
+            )
+        self.assertEqual(res.status_code, 401)
+
+    # -- the full key is unchanged --------------------------------------------
+
+    def test_full_key_still_opens_read_endpoints(self) -> None:
+        full, read = self._with_keys()
+        with full, read, patch("main.get_user_jobs", return_value=[]):
+            res = _request("GET", "/jobs", headers={"X-API-Key": self.FULL})
+        self.assertEqual(res.status_code, 200)
+
+    def test_full_key_still_opens_write_endpoints(self) -> None:
+        full, read = self._with_keys()
+        with (
+            full,
+            read,
+            patch("main.session_exists", return_value=True),
+            patch("main.send_to_session", return_value=True) as send,
+        ):
+            res = _request(
+                "POST",
+                "/sessions/1_alloc/run",
+                json={"command": "nvidia-smi"},
+                headers={"X-API-Key": self.FULL},
+            )
+        self.assertEqual(res.status_code, 200)
+        send.assert_called_once_with("1_alloc", "nvidia-smi")
+
+    # -- fail closed -----------------------------------------------------------
+
+    def test_unset_read_key_closes_the_read_door(self) -> None:
+        """An unset TURING_READ_KEY must not become a blank password: the read
+        endpoints go back to full-key-only, and an empty header is refused."""
+        full, read = self._with_keys(read="")
+        with full, read, patch("main.get_user_jobs", return_value=[]):
+            with_empty = _request("GET", "/jobs", headers={"X-API-Key": ""})
+            missing = _request("GET", "/jobs")
+            stale = _request("GET", "/jobs", headers={"X-API-Key": self.READ})
+            still_full = _request("GET", "/jobs", headers={"X-API-Key": self.FULL})
+        self.assertEqual(with_empty.status_code, 401)
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(stale.status_code, 401)
+        self.assertEqual(still_full.status_code, 200)
+
+    def test_wrong_key_is_refused_on_a_read_endpoint(self) -> None:
+        full, read = self._with_keys()
+        with full, read, patch("main.get_user_jobs", return_value=[]):
+            res = _request("GET", "/jobs", headers={"X-API-Key": "neither"})
+        self.assertEqual(res.status_code, 401)
+
+    def test_non_ascii_header_is_a_401_not_a_500(self) -> None:
+        """The header is caller-controlled; a constant-time compare over str
+        raises TypeError on non-ASCII, which would turn a refusal into a crash.
+        Sent as raw bytes because that is what a non-ASCII header IS on the
+        wire — Starlette decodes it latin-1 into a str the compare must survive."""
+        full, read = self._with_keys()
+        with full, read, patch("main.get_user_jobs", return_value=[]):
+            res = _request("GET", "/jobs", headers={"X-API-Key": "kéy".encode("latin-1")})
+        self.assertEqual(res.status_code, 401)
+
+    def test_health_needs_no_key_at_all(self) -> None:
+        """The one endpoint the worker box could already reach; unchanged."""
+        full, read = self._with_keys()
+        with full, read:
+            res = _request("GET", "/health")
+        self.assertEqual(res.status_code, 200)
+
+
 class EventLoopIsolationTest(unittest.TestCase):
     def test_slow_gpu_report_does_not_delay_health(self) -> None:
         report_started = threading.Event()
