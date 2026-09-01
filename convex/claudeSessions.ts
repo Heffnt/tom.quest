@@ -1602,6 +1602,17 @@ function promptFact(label: string, value: string | undefined): string | null {
  * per-caller because a groundwork mission and a worker mission mean different
  * things by "implement".
  */
+// The box's two read-only commands, named in every autonomous mission prompt.
+// An installed command no prompt names is not access: tts-browse sat on the
+// box unmentioned while sessions that changed a page still ended by asking
+// Tom to go and look (found 2026-08-30, salvaged from unmerged commit
+// 703f526 when #33 superseded that branch).
+const BOX_TOOLS_PARAGRAPH = [
+  "Two read-only commands exist on this box:",
+  "- `tts-browse <url> [--login] [--out /tmp/page.png]` opens a real browser on a page and prints its console errors and failed requests, then writes a screenshot you can read back. `--login` signs in with the agent account — every /turing and /tts page is role-gated, so an anonymous 200 can hide 401s underneath. LOOK at any page you changed instead of asking Tom to.",
+  "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key. It cannot allocate, cancel, run, or read files — those need Tom. A verb answering 401 means the read key is not installed yet; record that in your outcome instead of retrying.",
+].join("\n");
+
 function workspaceParagraph(
   repos: string[],
   sessionId: Id<"claudeSessions">,
@@ -1712,6 +1723,8 @@ function buildAutoMissionPrompt(
           "",
           `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
+    "",
+    BOX_TOOLS_PARAGRAPH,
     "",
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
@@ -1904,6 +1917,8 @@ function buildWorkerPrompt(args: {
           "",
           `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
+    "",
+    BOX_TOOLS_PARAGRAPH,
     "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
   );

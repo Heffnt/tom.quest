@@ -732,11 +732,19 @@ export class Session {
     // is nothing here to scrub. If a write verb is ever added to turing-api
     // under the read key, THIS inheritance is what makes it a session
     // capability; that widening is a decision, not a refactor.
+    //
+    // TURING_API_KEY is scrubbed even though it SHOULD never be in
+    // worker.env: on 2026-08-30 a session's shell held a stale copy
+    // inherited from exactly that file (three, in fact), and staleness is
+    // not a control — the key authorizes arbitrary command execution on the
+    // WPI cluster. The env file has been cleaned; this line is what makes
+    // the mistake unrepeatable instead of merely repaired.
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
       TOMQUEST_AGENT_USERNAME: _browseUser,
       TOMQUEST_AGENT_PASSWORD: _browsePassword,
+      TURING_API_KEY: _turingWriteKey,
       ...inheritedEnv
     } = process.env;
     this.queue = new TurnQueue();
@@ -1217,6 +1225,7 @@ export class Session {
               TTS_WORKER_KEY: _tts,
               TOMQUEST_AGENT_USERNAME: _browseUser,
               TOMQUEST_AGENT_PASSWORD: _browsePassword,
+              TURING_API_KEY: _turingWriteKey,
               ...rest
             } = process.env;
             return rest;
