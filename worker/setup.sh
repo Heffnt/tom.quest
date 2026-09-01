@@ -90,7 +90,7 @@ cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
-  /usr/local/bin/tts-git-credential
+  /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -331,6 +331,14 @@ NEXT STEPS (manual, in order):
       GH_TOKEN, SESSIONS_WORKER_KEY — the file explains each one. If
       SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
       filling it so the tts-session-host daemon gets enabled.)
+
+     TURING_READ_KEY is optional and READ-ONLY: it opens three GETs on the
+     cluster API (/gpu-report, /jobs, /sessions/{name}/output) for the
+     tts-turing command. It must match TURING_READ_KEY in turing-api/.env on
+     the login node. The full TURING_API_KEY does NOT belong in this file —
+     it authorizes POST /sessions/{name}/run, i.e. arbitrary cluster shell.
+     Restart tts-session-host after adding it, or running sessions won't see
+     it:  systemctl restart tts-session-host
 
   2. Log in both Claude Max accounts (interactive, over this SSH session —
      run it twice, switching the BROWSER profile between runs; each login is
