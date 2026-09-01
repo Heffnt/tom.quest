@@ -1583,8 +1583,6 @@ function brewSummary(brew: Doc<"perfumeBrews">) {
     owner: brew.owner,
     nickname: brew.nickname,
     seq: brew.seq,
-    itemCount: brew.items.length,
-    hasHypotheticals: brew.items.some((p) => !p.real),
     cauldronCount: brew.cauldron.reduce((n, o) => n + o.count, 0),
     // The pin is a target PERFUME now (DESIGN.md §5); any legacy `recipeIndex`
     // on un-migrated rows is ignored — normalize to the {perfumeId} shape.
