@@ -12,8 +12,11 @@ export type Ruling = Doc<"dtsRulings">;
 export type PlanStep = NonNullable<Todo["plan"]>[number];
 export type Member = NonNullable<Todo["members"]>[number];
 
-// The closed verdict set — convex/ttsRulings.ts owns the union; this is the
-// client's iterable of the same four values.
+// The closed verdict set — convex/ttsRulings.ts owns the union (it is what the
+// database validates against); this is the client's iterable of the same four
+// values. The batch dialog's chip set is a DIFFERENT set under a different name
+// (`RulingOption` in components/ruling-dialog.tsx: no "session", and "edit"
+// where this says "revise"); `storedVerdict` there is the one crossing.
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
 export const VERDICTS: RulingVerdict[] = [
   "approve",

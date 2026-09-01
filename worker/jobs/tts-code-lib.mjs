@@ -28,11 +28,46 @@ import { execFileSync } from "node:child_process";
 export const CMT_REPO = "ComplexMultiTrigger";
 export const CMT_DEFAULT_BRANCH = "master";
 export const CMT_CACHE_DIR = "/var/cache/tts/ComplexMultiTrigger";
-export const TODOS_PATH = "vqc/todos.yaml"; // relative to the repo root
-// The guard test for todos.yaml — run from the CMT repo root. This ONE test
-// module (not the whole guard suite) is the contract for "todos.yaml is still
-// well-formed after my surgery".
-export const TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
+// TWO REPOS KEEP A vqc/todos.yaml AT THE SAME PATH, AND THEY ARE NOT THE SAME
+// FILE. Every constant below is CMT's, and the CMT_ prefix is load-bearing:
+// resolving any of them against a tom.quest checkout reads the wrong file or
+// runs a test that is not there.
+//
+//   CMT (github.com/Heffnt/ComplexMultiTrigger, branch master)
+//     registry   vqc/todos.yaml — CMT_TODOS_PATH below
+//     closure    move the entry BELOW the closed-todos banner line
+//                (CMT_CLOSED_BANNER_PREFIX); everything under that line is
+//                intent history. The apply job's archive path refuses to run
+//                when the banner is absent, which is exactly what stops it
+//                from "archiving" into a file that closes some other way.
+//     guard      a pytest module — CMT_TODOS_GUARD_TEST below
+//
+//   tom.quest (github.com/Heffnt/tom.quest, branch main)
+//     registry   vqc/todos.yaml — SAME PATH, different contract
+//     closure    set `status: done | archived` and add `resolution:` in the
+//                same commit as the work; the entry STAYS where it is and
+//                there is no banner line in the file at all
+//     guard      vqc/todos.test.ts, run by vitest (`pnpm test:turing`), not
+//                by pytest
+//
+// These jobs only ever operate on the CMT cache clone (see cmtRepoDir), so
+// nothing here is resolved against tom.quest today. convex/ttsSync.ts
+// refreshMirror is the code that DOES read both, and it reads them over the
+// GitHub contents API with the repo named at each call — it shares no constant
+// with this file, by design.
+
+// CMT's registry path, relative to the CMT repo root.
+export const CMT_TODOS_PATH = "vqc/todos.yaml";
+
+// The guard test for CMT's todos.yaml — a pytest module path relative to the
+// CMT repo root, run with cwd at that root. This ONE test module (not the whole
+// guard suite) is the contract for "todos.yaml is still well-formed after my
+// surgery". It exists in CMT only; tom.quest's equivalent guard is
+// vqc/todos.test.ts under vitest, and pointing this at that file would hand a
+// TypeScript module to pytest. `todosGuardMissing` below turns a wrong or
+// renamed path into a message that says so, instead of a pytest usage error
+// that reads like a failing guard.
+export const CMT_TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
 
 export const BRIEF_HASHES_FILE = "/var/lib/tts/brief-hashes.json";
 export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
@@ -46,9 +81,22 @@ export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
 // private contract between apply-rulings and brief-code-todos.)
 export const REPLAN_SENTINEL = "replan-requested";
 
-// The first characters of the closed-todos banner line in vqc/todos.yaml.
+// The first characters of the closed-todos banner line in CMT's vqc/todos.yaml.
 // Everything below this line is intent HISTORY; the live surface is above it.
-export const CLOSED_BANNER_PREFIX = "# --- closed todos";
+// tom.quest's vqc/todos.yaml has no such line — it closes an entry in place
+// with status + resolution — so this prefix must never be searched for there.
+export const CMT_CLOSED_BANNER_PREFIX = "# --- closed todos";
+
+// A sentence naming what is wrong when CMT's guard module is not where
+// CMT_TODOS_GUARD_TEST says, or null when the file is there. pytest reports a
+// missing path as a usage error (exit 4) whose output reads like a failing
+// test; callers check this first so an operator is told "the guard file moved"
+// rather than "the guard is red".
+export function todosGuardMissing(repoDir) {
+  const abs = path.join(repoDir, CMT_TODOS_GUARD_TEST);
+  if (fs.existsSync(abs)) return null;
+  return `todos guard module not found: ${CMT_TODOS_GUARD_TEST} is absent from ${repoDir}. It is CMT's pytest guard; if it was renamed in CMT, update CMT_TODOS_GUARD_TEST in worker/jobs/tts-code-lib.mjs.`;
+}
 
 // ---------------------------------------------------------------------------
 // git plumbing
@@ -193,7 +241,7 @@ export function findEntryBlock(text, id) {
   if (start === -1) return null;
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
-    if (/^- id:/.test(lines[i]) || lines[i].startsWith(CLOSED_BANNER_PREFIX)) {
+    if (/^- id:/.test(lines[i]) || lines[i].startsWith(CMT_CLOSED_BANNER_PREFIX)) {
       end = i;
       break;
     }

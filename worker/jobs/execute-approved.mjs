@@ -36,8 +36,9 @@ import { loadEnv, convexFetch, runClaude } from "./tts-lib.mjs";
 import {
   CMT_REPO,
   CMT_DEFAULT_BRANCH,
-  TODOS_PATH,
-  TODOS_GUARD_TEST,
+  CMT_TODOS_PATH,
+  CMT_TODOS_GUARD_TEST,
+  todosGuardMissing,
   cmtRemoteUrl,
   briefCachePath,
   findEntryBlock,
@@ -56,7 +57,7 @@ function execPrompt(externalId, entryYaml, briefText) {
     `system); your job is to implement the todo's attached plan faithfully — the`,
     `plan is the ratified decision, not a suggestion. Follow the repo's AGENTS.md.`,
     ``,
-    `The todo entry (from ${TODOS_PATH}):`,
+    `The todo entry (from ${CMT_TODOS_PATH}):`,
     ``,
     "```yaml",
     entryYaml,
@@ -69,7 +70,7 @@ function execPrompt(externalId, entryYaml, briefText) {
     `Requirements:`,
     `- Implement the plan faithfully. Where the plan is silent, follow the repo's`,
     `  existing conventions; do not widen scope.`,
-    `- Close the todo entry in ${TODOS_PATH} per that file's own discipline, IN`,
+    `- Close the todo entry in ${CMT_TODOS_PATH} per that file's own discipline, IN`,
     `  THIS SAME body of work: move the entry below the closed-todos banner,`,
     `  keeping its full body, adding a \`closed: <today>\` date and a`,
     `  \`resolution:\` describing what landed.`,
@@ -128,9 +129,9 @@ async function main() {
     // The entry as it stands on master right now — if it vanished (archived
     // by a racing ruling, or renamed), executing the stale plan would be
     // wrong, so fail the ruling instead.
-    const todosText = fs.readFileSync(path.join(execDir, TODOS_PATH), "utf8");
+    const todosText = fs.readFileSync(path.join(execDir, CMT_TODOS_PATH), "utf8");
     const found = findEntryBlock(todosText, id);
-    if (!found) throw new Error(`todo entry ${id} not found in ${TODOS_PATH} on master`);
+    if (!found) throw new Error(`todo entry ${id} not found in ${CMT_TODOS_PATH} on master`);
     if (/^ {2}closed:/m.test(found.block)) throw new Error(`todo entry ${id} is already closed`);
 
     let briefText = null;
@@ -164,7 +165,9 @@ async function main() {
     // todo entry, and a malformed todos.yaml must never even reach a PR.
     // (Re-run here ourselves: the prompt asked the model to run tests, but a
     // gate you don't hold yourself is not a gate.)
-    execFileSync("python3", ["-m", "pytest", TODOS_GUARD_TEST, "-q"], {
+    const guardMissing = todosGuardMissing(execDir);
+    if (guardMissing) throw new Error(guardMissing);
+    execFileSync("python3", ["-m", "pytest", CMT_TODOS_GUARD_TEST, "-q"], {
       cwd: execDir,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

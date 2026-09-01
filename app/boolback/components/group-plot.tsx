@@ -47,7 +47,7 @@ import { resolveAxis, paramAxisOptions, type Axis } from "../lib/axes";
 import { plotDataCsv, plotCsvFilename, type ExportSeries } from "../lib/plot-export";
 import { groupRuns, collapsedGhosts, type RunPoint } from "../lib/aggregate";
 import {
-  buildRunSeries, groupSeries, trajectoryMetric,
+  buildRunSeries, groupSeries, trajectoryMetric, GHOST_LINE_CAP,
   type EpochMetric, type RunSeries,
 } from "../lib/trajectories";
 import { partitionBins } from "../lib/generators";
@@ -76,7 +76,6 @@ const MAX_FACETS = 150;
 /** Grid cardinality cap — rows × cols above this shows the warning instead of
  *  rendering (a crossed pair explodes much faster than a flat facet). */
 export const MAX_GRID_CELLS = 100;
-const GHOST_CAP = 500; // per-panel epoch ghost-line cap (as the main plot)
 
 type Extent = {
   x0: number; x1: number; y0: number; y1: number;
@@ -922,7 +921,7 @@ function buildEpochContent(pts: PanelPt[], ctx: PanelCtx): EpochContent | null {
 
   // Ghost run-lines (subsampled to the per-panel cap), colored by colorBy
   // (continuous) or the run's layer; carry runId + key for the hit-stroke.
-  const step = Math.max(1, Math.ceil(series.length / GHOST_CAP));
+  const step = Math.max(1, Math.ceil(series.length / GHOST_LINE_CAP));
   const ghostRuns: SurfaceGhostRun[] = [];
   for (let i = 0; i < series.length; i += step) {
     const s = series[i];

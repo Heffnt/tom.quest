@@ -13,6 +13,19 @@
 import type { RunRow } from "./types";
 import { mean, stdDev } from "./stats";
 
+/**
+ * Cap on EPOCH ghost run-LINES rendered in one plot — above this, callers step
+ * through `RunSeries[]` by `ceil(count / GHOST_LINE_CAP)` and draw every k-th
+ * run. One ghost line is a polyline plus an invisible fat hit-stroke, so it
+ * costs much more than a ghost point; the scatter budget is its own, larger
+ * constant (`GHOST_POINT_CAP` in ./aggregate).
+ *
+ * ONE home for this number: the main plot (components/plot-panel.tsx) and each
+ * small-multiple panel (components/group-plot.tsx) import it, so they cannot
+ * drift apart — the group panels' cap was written to match the main plot's.
+ */
+export const GHOST_LINE_CAP = 500;
+
 export const EPOCH_METRICS = ["plantedness", "asr", "ftr"] as const;
 export type EpochMetric = (typeof EPOCH_METRICS)[number];
 

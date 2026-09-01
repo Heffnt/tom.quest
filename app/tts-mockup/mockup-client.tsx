@@ -16,7 +16,7 @@ import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import PathsBar from "../tts/components/paths-bar";
 import BatchCard, { type BatchGraph } from "../tts/components/batch-card";
-import RulingDialog, { type RulingVerdict } from "../tts/components/ruling-dialog";
+import RulingDialog, { type RulingOption } from "../tts/components/ruling-dialog";
 import DetailDialog, { type DetailItem } from "../tts/components/detail-dialog";
 import GroundUpView from "../tts/components/ground-up-view";
 
@@ -109,7 +109,7 @@ export default function MockupClient() {
     fetched ?? (process.env.NODE_ENV === "development" && !isTom ? DEV_SAMPLE : null);
   const [selectedPath, setSelectedPath] = useState<string>("cmt paper");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [ruling, setRuling] = useState<{ graph: BatchGraph; verdict: RulingVerdict } | null>(null);
+  const [ruling, setRuling] = useState<{ graph: BatchGraph; option: RulingOption } | null>(null);
   const [detail, setDetail] = useState<DetailItem | null>(null);
   const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
@@ -167,7 +167,7 @@ export default function MockupClient() {
               graph={g}
               expanded={expanded.has(g.id)}
               onToggle={() => setExpanded((prev) => toggle(prev, g.id))}
-              onRule={(verdict) => setRuling({ graph: g, verdict })}
+              onRule={(option) => setRuling({ graph: g, option })}
               onDetail={setDetail}
               onGroundUp={(title, content) => setGroundUp({ title, content })}
               onOpenSession={() => {}}
@@ -178,7 +178,7 @@ export default function MockupClient() {
 
       {ruling && (
         <RulingDialog
-          verdict={ruling.verdict}
+          option={ruling.option}
           statement={ruling.graph.statement}
           brief={ruling.graph.groundUp}
           plan={ruling.graph.tasks.map((t) => ({

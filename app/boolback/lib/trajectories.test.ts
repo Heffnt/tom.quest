@@ -1,7 +1,13 @@
 // trajectories tests — null gaps, judge resolution, in-progress runs, grouping.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { buildRunSeries, groupSeries, trajectoryMetric, type RunSeries } from "./trajectories";
+import {
+  buildRunSeries, groupSeries, trajectoryMetric, GHOST_LINE_CAP,
+  type RunSeries,
+} from "./trajectories";
+import { GHOST_POINT_CAP } from "./aggregate";
 import type { RunRow } from "./types";
 
 // Minimal RunRow stand-in carrying only the fields the builder reads.
@@ -92,4 +98,30 @@ describe("groupSeries", () => {
     const gy = groups.find((g) => g.dims[0] === "y")!;
     expect(gy.points).toEqual([{ e: 1, y: 9, sd: null, n: 1 }]);
   });
+});
+
+// ── Ghost caps: one name, one number, one home ───────────────────────────────
+// Regression guard. GHOST_CAP once named two different limits: 2000 for scatter
+// ghost POINTS (lib/aggregate.ts) and 500 for epoch ghost LINES (group-plot),
+// and the 500 was re-spelled twice in plot-panel.tsx as a local and as a bare
+// comparison that imported nothing. If a plot's cap is written as a literal
+// again, the four sites can drift apart silently — so assert the components
+// carry no bare epoch-cap number and read the shared constant instead.
+describe("ghost caps", () => {
+  const src = (rel: string) =>
+    readFileSync(join(__dirname, "..", "components", rel), "utf8");
+
+  it("keeps the two caps distinct and separately named", () => {
+    expect(GHOST_LINE_CAP).not.toBe(GHOST_POINT_CAP);
+  });
+
+  for (const file of ["plot-panel.tsx", "group-plot.tsx"]) {
+    it(`${file} imports GHOST_LINE_CAP instead of respelling it`, () => {
+      const text = src(file);
+      expect(text).toContain("GHOST_LINE_CAP");
+      expect(text).not.toMatch(new RegExp(String(GHOST_LINE_CAP)));
+      // The old ambiguous name must not come back in either file.
+      expect(text).not.toMatch(/\bGHOST_CAP\b/);
+    });
+  }
 });

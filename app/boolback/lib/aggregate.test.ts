@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  groupRuns, makeXBucketer, collapsedGhosts, splitWorthiness, GHOST_CAP,
+  groupRuns, makeXBucketer, collapsedGhosts, splitWorthiness, GHOST_POINT_CAP,
   type RunPoint, type WorthinessRun,
 } from "./aggregate";
 
@@ -113,12 +113,12 @@ describe("groupRuns", () => {
     expect(points[0].c).toBeNull();
   });
 
-  it("subsamples ghosts deterministically above GHOST_CAP", () => {
-    const pts = Array.from({ length: GHOST_CAP * 3 }, (_, i) => pt(i % 5, i, [""], `r${i}`));
+  it("subsamples ghosts deterministically above GHOST_POINT_CAP", () => {
+    const pts = Array.from({ length: GHOST_POINT_CAP * 3 }, (_, i) => pt(i % 5, i, [""], `r${i}`));
     const a = groupRuns(pts, true);
     const b = groupRuns(pts, true);
     expect(a.ghostsSubsampled).toBe(true);
-    expect(a.ghosts.length).toBeLessThanOrEqual(GHOST_CAP);
+    expect(a.ghosts.length).toBeLessThanOrEqual(GHOST_POINT_CAP);
     expect(a.ghosts.map((g) => g.runId)).toEqual(b.ghosts.map((g) => g.runId)); // deterministic
   });
 });

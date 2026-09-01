@@ -38,10 +38,11 @@ import { loadEnv, convexFetch } from "./tts-lib.mjs";
 import {
   CMT_REPO,
   CMT_DEFAULT_BRANCH,
-  TODOS_PATH,
-  TODOS_GUARD_TEST,
+  CMT_TODOS_PATH,
+  CMT_TODOS_GUARD_TEST,
+  todosGuardMissing,
   REPLAN_SENTINEL,
-  CLOSED_BANNER_PREFIX,
+  CMT_CLOSED_BANNER_PREFIX,
   git,
   cmtRepoDir,
   readBriefHashes,
@@ -85,8 +86,12 @@ function wrapText(text, width) {
 // Run the todos guard test in the repo; {ok, tail} where tail is the last
 // chunk of pytest output for the failure report Tom will read in the UI.
 function runTodosGuard(repoDir) {
+  // A guard module that is not there is a DIFFERENT failure from a guard that
+  // ran and went red; say which one it is.
+  const missing = todosGuardMissing(repoDir);
+  if (missing) return { ok: false, tail: missing };
   try {
-    execFileSync("python3", ["-m", "pytest", TODOS_GUARD_TEST, "-q"], {
+    execFileSync("python3", ["-m", "pytest", CMT_TODOS_GUARD_TEST, "-q"], {
       cwd: repoDir,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -134,7 +139,7 @@ function applyRevise(ruling) {
 // tom.quest access, and its git history records what Tom was asked.
 function applySession(env, repoDir, ruling) {
   const id = ruling.externalId;
-  const todosText = fs.readFileSync(path.join(repoDir, TODOS_PATH), "utf8");
+  const todosText = fs.readFileSync(path.join(repoDir, CMT_TODOS_PATH), "utf8");
   const found = findEntryBlock(todosText, id);
   const cached = readBriefCache(id);
 
@@ -150,10 +155,10 @@ function applySession(env, repoDir, ruling) {
     `    claude "Run the TTS session in ${agendaRel}"`,
     ``,
     ...(ruling.sentence ? [`Tom's sentence with the ruling: ${ruling.sentence}`, ``] : []),
-    `## The todo entry (from ${TODOS_PATH})`,
+    `## The todo entry (from ${CMT_TODOS_PATH})`,
     ``,
     "```yaml",
-    found ? found.block : `# entry ${id} not found in ${TODOS_PATH} at apply time`,
+    found ? found.block : `# entry ${id} not found in ${CMT_TODOS_PATH} at apply time`,
     "```",
     ``,
     `## The brief`,
@@ -187,14 +192,14 @@ function applySession(env, repoDir, ruling) {
 // also keeps the diff a pure move-plus-two-fields, easy to review.
 function applyArchive(env, repoDir, ruling) {
   const id = ruling.externalId;
-  const todosFile = path.join(repoDir, TODOS_PATH);
+  const todosFile = path.join(repoDir, CMT_TODOS_PATH);
   const text = fs.readFileSync(todosFile, "utf8");
 
   const found = findEntryBlock(text, id);
-  if (!found) return `ARCHIVE FAILED: entry ${id} not found in ${TODOS_PATH}`;
+  if (!found) return `ARCHIVE FAILED: entry ${id} not found in ${CMT_TODOS_PATH}`;
   if (/^ {2}closed:/m.test(found.block)) return `already closed — nothing to do`;
-  if (!text.split("\n").some((l) => l.startsWith(CLOSED_BANNER_PREFIX))) {
-    return `ARCHIVE FAILED: no closed-todos banner in ${TODOS_PATH}`;
+  if (!text.split("\n").some((l) => l.startsWith(CMT_CLOSED_BANNER_PREFIX))) {
+    return `ARCHIVE FAILED: no closed-todos banner in ${CMT_TODOS_PATH}`;
   }
 
   // Build the archived block: `closed:` slots in right after `created:` (the
@@ -232,11 +237,11 @@ function applyArchive(env, repoDir, ruling) {
   // red; revert and surface the pytest tail to Tom in the UI.
   const guard = runTodosGuard(repoDir);
   if (!guard.ok) {
-    git(repoDir, "checkout", "--", TODOS_PATH);
+    git(repoDir, "checkout", "--", CMT_TODOS_PATH);
     return `GUARDS FAILED: ${guard.tail}`;
   }
 
-  git(repoDir, "add", TODOS_PATH);
+  git(repoDir, "add", CMT_TODOS_PATH);
   git(repoDir, "commit", "-m", `todo(${id}): closed — archived by TTS ruling`);
   git(repoDir, "push", "origin", CMT_DEFAULT_BRANCH);
   const sha = git(repoDir, "rev-parse", "HEAD").trim();
