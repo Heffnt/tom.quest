@@ -738,7 +738,7 @@ const dtsCodeBriefs = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/code-briefs", method: "POST", handler: dtsCodeBriefs });
 
-// GET /tts/code-rulings — the rulings a worker job should act on (unapplied
+// GET /tts/rulings — the rulings a worker job should act on (unapplied
 // and not superseded by a newer ruling on the same subject), from the unified
 // ttsRulings table. ALL THREE subject types ride the one feed: rows carry
 // subjectType ("code" → the apply job; "life" with verdict "revise" → the
@@ -746,7 +746,7 @@ http.route({ path: "/tts/code-briefs", method: "POST", handler: dtsCodeBriefs })
 // verdict "revise" → the planner, worker/jobs/plan-graphs.mjs). Each job
 // filters for its own kind and consumes only those. Each row carries its _id,
 // which the worker echoes back to /tts/ruling-applied.
-const dtsCodeRulings = httpAction(async (ctx, request) => {
+const ttsRulings = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const pending = await ctx.runQuery(
@@ -756,13 +756,9 @@ const dtsCodeRulings = httpAction(async (ctx, request) => {
   return jsonResponse(200, { pending });
 });
 
-// Canonical path: /tts/rulings — the feed serves BOTH subject types, so the
-// old code-scoped name is kept only as an alias for not-yet-redeployed
-// workers (drop the alias in the tts→tts rename round).
-http.route({ path: "/tts/rulings", method: "GET", handler: dtsCodeRulings });
-http.route({ path: "/tts/code-rulings", method: "GET", handler: dtsCodeRulings });
+http.route({ path: "/tts/rulings", method: "GET", handler: ttsRulings });
 
-// POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
+// POST /tts/ruling-applied — the worker's apply report. Body: { id,
 // result } where result is a commit sha / PR url / error text.
 const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -793,15 +789,8 @@ const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
   }
 });
 
-// Canonical path: /tts/ruling-applied (any subject type); old name aliased
-// for not-yet-redeployed workers.
 http.route({
   path: "/tts/ruling-applied",
-  method: "POST",
-  handler: ttsCodeRulingApplied,
-});
-http.route({
-  path: "/tts/code-ruling-applied",
   method: "POST",
   handler: ttsCodeRulingApplied,
 });
