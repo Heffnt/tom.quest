@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from cluster_text import UNKNOWN_VALUE_TOKENS, parse_time_to_seconds
 from shell import run, run_stdout
 
 UNAVAILABLE_STATE_TOKENS = {
@@ -47,19 +48,6 @@ _NODE_INFO_CACHE: dict[str, object] = {
     "value": None,
 }
 logger = logging.getLogger("tom.quest.gpu_report")
-UNKNOWN_VALUE_TOKENS = {
-    "",
-    "INVALID",
-    "N/A",
-    "[N/A]",
-    "NOT_SET",
-    "UNLIMITED",
-    "UNKNOWN",
-    "[UNKNOWN]",
-    "UNKNOWN ERROR",
-    "[UNKNOWN ERROR]",
-}
-
 
 @dataclass
 class GPUTypeInfo:
@@ -206,29 +194,6 @@ def compute_summary(nodes: list[NodeInfo], shared_only: bool = True) -> dict:
     }
 
 
-def _parse_time_to_seconds(time_str: str) -> int:
-    time_str = time_str.strip()
-    if time_str.upper() in UNKNOWN_VALUE_TOKENS:
-        return 0
-    total_seconds = 0
-    try:
-        if "-" in time_str:
-            days_part, time_part = time_str.split("-", 1)
-            total_seconds += int(days_part) * 86400
-            time_str = time_part
-        parts = time_str.split(":")
-        if len(parts) == 3:
-            total_seconds += int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-        elif len(parts) == 2:
-            total_seconds += int(parts[0]) * 60 + int(parts[1])
-        elif len(parts) == 1:
-            total_seconds += int(parts[0])
-    except ValueError:
-        logger.debug("Ignoring unparseable Slurm time value: %s", time_str)
-        return 0
-    return total_seconds
-
-
 def _parse_index_list(index_text: str) -> list[int]:
     values: list[int] = []
     cleaned = index_text.strip()
@@ -325,8 +290,8 @@ def _get_running_gpu_jobs() -> list[dict]:
         gpu_count = _extract_gpu_count(gres)
         if gpu_count <= 0:
             continue
-        limit_seconds = _parse_time_to_seconds(time_limit)
-        elapsed_seconds = _parse_time_to_seconds(time_elapsed)
+        limit_seconds = parse_time_to_seconds(time_limit)
+        elapsed_seconds = parse_time_to_seconds(time_elapsed)
         progress_pct = None
         if limit_seconds > 0:
             progress_pct = min(100, round((elapsed_seconds / limit_seconds) * 100))
