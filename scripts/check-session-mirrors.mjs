@@ -4,7 +4,7 @@
 // daemon staleness window as the poll cadence it is derived from. This check
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 
 const shared = readFileSync("convex/ttsShared.ts", "utf8");
 const sessionMjs = readFileSync("worker/session-host/session.mjs", "utf8");
@@ -101,6 +101,39 @@ if (usageA && usageB) {
         `usage-limit regex over-matches transient API weather: "${transient}" — a 529/429 must not stand the fleet down for 3h`,
       );
     }
+  }
+}
+
+// 4. The worker env loader has ONE body. worker/jobs/worker-env.mjs is it;
+// worker/session-host/worker-env.mjs is a symlink to it, because setup.sh
+// installs jobs/ flat to /opt/tts and session-host/ to /opt/tts/session-host,
+// so a spelled-out ../jobs import resolves in the repo and dangles on the box
+// (that file's header carries the reasoning). Two ways to lose the one home:
+// replace the link with a second real file, or paste the KEY=VALUE parse back
+// into a caller. Both are checked.
+// witness: `rm worker/session-host/worker-env.mjs && cp worker/jobs/worker-env.mjs
+// worker/session-host/`, or copy the parse loop into lib.mjs.
+const ENV_LINK = "worker/session-host/worker-env.mjs";
+const ENV_LINK_TARGET = "../jobs/worker-env.mjs";
+try {
+  if (!lstatSync(ENV_LINK).isSymbolicLink()) {
+    failures.push(`${ENV_LINK} is a real file — it must stay a symlink to ${ENV_LINK_TARGET}`);
+  } else if (readlinkSync(ENV_LINK) !== ENV_LINK_TARGET) {
+    failures.push(
+      `${ENV_LINK} points at ${readlinkSync(ENV_LINK)}, not ${ENV_LINK_TARGET}`,
+    );
+  }
+} catch {
+  failures.push(`${ENV_LINK} is missing — the session-host daemon cannot read /etc/tts/worker.env`);
+}
+// The parse loop's own marker line, which must appear in exactly one file.
+const PARSE_MARKER = 'const eq = line.indexOf("=");';
+for (const [file, text] of [
+  ["worker/jobs/tts-lib.mjs", readFileSync("worker/jobs/tts-lib.mjs", "utf8")],
+  ["worker/session-host/lib.mjs", readFileSync("worker/session-host/lib.mjs", "utf8")],
+]) {
+  if (text.includes(PARSE_MARKER)) {
+    failures.push(`${file} parses worker.env itself again — import loadEnv from worker-env.mjs`);
   }
 }
 
