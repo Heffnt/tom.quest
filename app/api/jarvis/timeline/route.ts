@@ -14,11 +14,15 @@ export async function GET(request: NextRequest) {
   if (auth instanceof Response) return auth;
   const { searchParams } = new URL(request.url);
   const center = searchParams.get("center") || currentDayKey();
-  const days = Math.max(1, Math.min(9, Number(searchParams.get("days") || "5")));
-  const half = Math.floor(days / 2);
+  const parsedDays = Number(searchParams.get("days") || "5");
+  if (!Number.isFinite(parsedDays)) {
+    return NextResponse.json({ error: "Invalid days parameter" }, { status: 400 });
+  }
+  const days = Math.max(1, Math.min(9, Math.trunc(parsedDays)));
+  const daysBeforeCenter = Math.floor((days - 1) / 2);
   const results: Array<Record<string, unknown>> = [];
 
-  for (let offset = -half; offset <= half; offset += 1) {
+  for (let offset = -daysBeforeCenter; offset < days - daysBeforeCenter; offset += 1) {
     const dayKey = shiftDay(center, offset);
     const relativePath = `memory/${dayKey}.md`;
     const absolutePath = resolveWorkspacePath(relativePath);
