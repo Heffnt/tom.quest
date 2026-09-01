@@ -30,6 +30,21 @@ check_acct() {
   esac
 }
 
+# Which email a slot's config dir is actually logged in as ("" if none).
+# The slot NAME is an intention; the OAuth page decides the fact — on
+# 2026-08-31 `login wpi` quietly landed the already-signed-in gmail account
+# in the wpi slot, so both slots held one account and the usage-limit
+# auto-switch switched to itself.
+slot_email() {
+  python3 - "$BASE/$1/.claude.json" 2>/dev/null <<'PY'
+import json, sys
+try:
+    print((json.load(open(sys.argv[1])).get("oauthAccount") or {}).get("emailAddress") or "")
+except Exception:
+    print("")
+PY
+}
+
 case "${1:-}" in
   use)
     check_acct "${2:-}"
@@ -43,12 +58,31 @@ case "${1:-}" in
     else
       echo "no active account set — run: tts-account use gmail|wpi"
     fi
+    # The fact per slot, not the intention: which email actually sits there.
+    for slot in gmail wpi; do
+      echo "  $slot slot: $(slot_email "$slot" | sed 's/^$/NOT LOGGED IN/')"
+    done
+    if [ -n "$(slot_email gmail)" ] && [ "$(slot_email gmail)" = "$(slot_email wpi)" ]; then
+      echo "  WARNING: both slots hold the SAME account — the usage-limit"
+      echo "  auto-switch is a no-op. Re-run: tts-account login <the other one>"
+      echo "  and pick the OTHER account on the browser's account chooser."
+    fi
     ;;
   login)
     check_acct "${2:-}"
     mkdir -p "$BASE/$2"
-    echo "Logging in the '$2' account (interactive — follow the prompts)…"
+    echo "Logging in the '$2' account (interactive — follow the prompts)."
+    echo "NOTE: the browser page may preselect whatever Google/Anthropic"
+    echo "account is already signed in — pick the $2 account explicitly."
     CLAUDE_CONFIG_DIR="$BASE/$2" claude /login
+    got="$(slot_email "$2")"
+    echo "the '$2' slot is now logged in as: ${got:-NOT LOGGED IN}"
+    other=$([ "$2" = gmail ] && echo wpi || echo gmail)
+    if [ -n "$got" ] && [ "$got" = "$(slot_email "$other")" ]; then
+      echo "WARNING: that is the SAME account the '$other' slot holds — the"
+      echo "usage-limit auto-switch now switches to itself. Re-run this login"
+      echo "and pick the other account on the browser's account chooser."
+    fi
     ;;
   *)
     usage
