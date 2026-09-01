@@ -833,7 +833,7 @@ export default defineSchema({
   // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
   // when the entry changes upstream, the hash mismatch marks the brief stale
   // and the worker rewrites it. `recommendation` is the worker's read, never a
-  // verdict — Tom rules (dtsCodeRulings); `execClass` says where an approved
+  // verdict — Tom rules (dtsRulings); `execClass` says where an approved
   // item can run; `evidence` carries the commits/files that justify a
   // propose-archive.
   dtsCodeBriefs: defineTable({
@@ -867,11 +867,14 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // DEPRECATED (2026-08-28): superseded by the unified ttsRulings table above.
-  // Kept as read-only history — non-defer rows are copied into ttsRulings by
-  // ttsRulings.internalMigrateCodeRulings (run once at deploy); "defer" rows
-  // stay here only (defer is no longer a verdict: not ruling IS deferring).
-  // No new writes. Remove in the tts→tts rename round.
+  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
+  // Read-only history, no new writes: non-defer rows are copied into dtsRulings
+  // by ttsRulings.internalMigrateCodeRulings (run once at deploy). "defer" rows
+  // are NOT copied — defer is no longer a verdict (not ruling IS deferring) —
+  // so for those rows this table is the only copy.
+  // Removing the declaration is tracked separately rather than deferred to a
+  // named round: it requires emptying the table first (which discards the defer
+  // history), and the schema pushes straight to the one prod deployment.
   dtsCodeRulings: defineTable({
     repo: v.string(),
     externalId: v.string(),
