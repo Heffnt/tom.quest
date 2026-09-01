@@ -2727,16 +2727,68 @@ describe("frontier scheduler", () => {
 
     expect(text).toContain('"${TMPDIR:-/tmp}/explanation.html"');
     expect(text).toContain('"${TMPDIR:-/tmp}/tts-body.json"');
-    // No naked /tmp path survives anywhere in the mission: every occurrence of
-    // "/tmp" must be the fallback inside that expansion. The fallback itself
-    // stays because this prompt is built in Convex while TMPDIR is set by the
-    // daemon, and the two are deployed separately — under an older daemon the
-    // bare "$TMPDIR/explanation.html" would expand to "/explanation.html" and
-    // write into the root of the box.
-    for (const at of [...text.matchAll(/\/tmp/g)].map((m) => m.index ?? 0)) {
-      expect(text.slice(Math.max(0, at - 12), at + 4)).toContain(
-        "${TMPDIR:-/tmp",
+    // No naked path UNDER /tmp survives anywhere in the mission: every
+    // occurrence of "/tmp/" must be the fallback inside that expansion. The
+    // fallback itself stays because this prompt is built in Convex while
+    // TMPDIR is set by the daemon, and the two are deployed separately — under
+    // an older daemon the bare "$TMPDIR/explanation.html" would expand to
+    // "/explanation.html" and write into the root of the box.
+    //
+    // The trailing slash is what makes this a check on PATHS rather than on
+    // the word: the mission also has to be able to say the word "/tmp" to
+    // forbid writing there (the sentence asserted in the test below), and
+    // scripts/check-session-mirrors.mjs draws the line in the same place.
+    for (const at of [...text.matchAll(/\/tmp\//g)].map((m) => m.index ?? 0)) {
+      expect(text.slice(Math.max(0, at - 12), at + 5)).toContain(
+        "${TMPDIR:-/tmp/",
       );
+    }
+  });
+
+  // ── Where scratch that is not code goes ──────────────────────────────────
+  // The pen block above moves the two payload files the SYSTEM writes. It does
+  // not reach the much larger class the agent writes for itself: measured on
+  // the box 2026-09-01, 3,081 MB of the 3,466 MB in /tmp was repository
+  // checkouts a session made by typing the path out in full, on a filesystem
+  // held in RAM. TMPDIR moves only programs that ask where scratch belongs,
+  // and the daemon's classifier denies creation under /tmp only after the
+  // command exists; the workspace paragraph is the one part that arrives
+  // before the agent picks a path, so it names the directory and forbids /tmp.
+  // Both workspace variants carry it — the single-repo mission is the common
+  // one, and the multi-repo mission is the one whose working directory is a
+  // parent rather than a checkout.
+  // witness: drop the scratch sentence from either branch of
+  // workspaceParagraph and the matching expectation below goes red.
+  it("names the session's own scratch directory in both workspace variants", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "one repo only",
+      repos: ["tom.quest"],
+      tasks: [{ statement: "do the one-repo thing", actor: "agent" }],
+    });
+    await storeGraph(t, {
+      statement: "two repos",
+      repos: ["tom.quest", "ComplexMultiTrigger"],
+      tasks: [{ statement: "do the two-repo thing", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(2);
+    const texts = await Promise.all(
+      sessions.map((s) => missionText(tom, s._id)),
+    );
+    const single = texts.find((x) => x.includes("fresh checkout of tom.quest"));
+    const multi = texts.find((x) => x.includes("2 fresh checkouts"));
+    expect(single).toBeDefined();
+    expect(multi).toBeDefined();
+    for (const text of [single!, multi!]) {
+      expect(text).toContain('goes under "$TMPDIR"');
+      expect(text).toContain("deleted when the session ends");
+      expect(text).toContain("Never create a file or directory under /tmp");
     }
   });
 

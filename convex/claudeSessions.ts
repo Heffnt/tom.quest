@@ -1640,11 +1640,21 @@ function workspaceParagraph(
   work: string,
 ): string {
   const branch = `session/${sessionId}`;
+  // WHERE SCRATCH THAT IS NOT CODE GOES, said BEFORE the agent picks a path.
+  // Measured on the Jarvis Box 2026-09-01 01:14 UTC: 3,081 MB of the 3,466 MB
+  // in /tmp was repository checkouts a session made by typing the path out in
+  // full (four copies of one 417 MB repository inside five minutes), 89
+  // percent of a filesystem that is held in RAM. The two mechanisms already
+  // here do not reach that: TMPDIR moves only programs that ASK where scratch
+  // belongs, and the daemon's classifier denies creating under /tmp only
+  // AFTER the agent has written the command. This sentence is the half that
+  // arrives first, and it costs one line against a denial round trip.
+  const scratch = `Scratch that is not part of a repository — a clone you make to compare against, a probe script, a measurement, the payload files the pens post — goes under "$TMPDIR", this session's own temporary-file directory, which is on the box's disk and is deleted when the session ends. Never create a file or directory under /tmp: on this box /tmp is a filesystem held in RAM, so anything left there costs the whole fleet memory until someone with root deletes it.`;
   if (repos.length === 1) {
-    return `The workspace: your working directory is a fresh checkout of ${repos[0]} on branch ${branch}. ${work} Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary.`;
+    return `The workspace: your working directory is a fresh checkout of ${repos[0]} on branch ${branch}. ${work} Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary. ${scratch}`;
   }
   const list = repos.map((r) => `\`./${r}\``).join(" and ");
-  return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary.`;
+  return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary. ${scratch}`;
 }
 
 // Opening prompt for an AUTONOMOUS session (house voice: the ground-up
