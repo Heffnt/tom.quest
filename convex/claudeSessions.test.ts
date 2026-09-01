@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { WRITING_STANDARD } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -45,11 +46,14 @@ async function insertPendingPermission(
   );
 }
 
-// The Slack event messages a mutation scheduled, read off the scheduler's own
+// The session event messages a mutation scheduled, read off the scheduler's own
 // system table — the observable effect of notifySessionEvent without reaching
 // into Slack. Rows persist through their run (convex-test patches state, never
-// deletes), so counting is stable whether or not the job has fired yet; the
-// action itself logs-and-returns with no Slack env configured.
+// deletes), so counting is stable whether or not the job has fired yet.
+// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+// These tests cover the EDGE-TRIGGER WIRING (which transitions schedule an event
+// and how many), which is unchanged; the scheduled action now returns before it
+// posts, so nothing here reaches Slack even with the env configured.
 async function sessionEventMessages(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
     (await ctx.db.system.query("_scheduled_functions").collect())
@@ -457,6 +461,151 @@ describe("claude sessions", () => {
 
   // witness: remove the ruling-marking branch from createSession in
   // convex/claudeSessions.ts and this test goes red.
+  // ── One creation path, one repo answer (Tom's rulings, 2026-08-30) ─────────
+  // The failure these pin: every session opened from a TTS button arrived with
+  // repo "none", so it could neither clone a private repo nor push anything —
+  // three of the four launch surfaces had no repo picker and passed the only
+  // value they could name.
+
+  // witness: make createSession's repo resolution `explicit ?? []` (drop the
+  // batch/todo fallback) and this goes red — the session gets no checkout.
+  it("a session inherits its batch's declared repos when the caller names none", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "Every surface TTS shows Tom",
+        repos: ["tom.quest", "WikiTom"],
+        status: "active" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "rewrite the popovers",
+    });
+    await t.run(async (ctx) => ctx.db.patch(todoId, { batchId }));
+
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "work the batch",
+      kind: "focus-item",
+      todoId,
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+    // `repo` stays written for every pre-ruling reader; it is repos[0].
+    expect(session?.repo).toBe("tom.quest");
+  });
+
+  // The batch-subject half (ledger graduation session-repos-need-batch-subject,
+  // 2026-08-31): a session opened ON a batch has no todo to reach the batch
+  // through — before batchId existed it was created with no subject at all,
+  // so the button Tom was most likely to press on a multi-repo batch was the
+  // one that could not inherit the declaration and started with no checkout.
+  // witness: in createSession, resolve the batch from `todo?.batchId` only
+  // (ignore the batchId arg) and this goes red.
+  it("a session opened ON a batch (batchId, no todo) inherits the batch's declared repos", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "The Turing pages",
+        repos: ["tom.quest", "WikiTom"],
+        status: "active" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "work the batch",
+      kind: "focus-item",
+      batchId,
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+    expect(session?.batchId).toBe(batchId);
+  });
+
+  // witness: drop the isSessionRepo filter from normalizeSessionRepos and the
+  // unknown name survives — the daemon then throws on its first turn and the
+  // session dies before doing anything.
+  it("normalizes an explicit repo list: unknown names dropped, order canonical", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "explicit",
+      kind: "adhoc",
+      repos: ["WikiTom", "NotARepo", "tom.quest", "WikiTom"],
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+  });
+
+  // "none" from the /sessions dropdown is an ANSWER, not an absence: Tom asked
+  // for an empty scratch workspace and must not be overridden by the batch.
+  // witness: change the resolver's `explicit !== undefined` test to a
+  // truthiness test on the normalized result and this goes red.
+  it("an explicit 'none' beats the batch declaration", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "a batch with repos",
+        repos: ["tom.quest"],
+        status: "active" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
+    await t.run(async (ctx) => ctx.db.patch(todoId, { batchId }));
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "scratch please",
+      kind: "focus-item",
+      repo: "none",
+      todoId,
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual([]);
+    expect(session?.repo).toBe("none");
+  });
+
+  // The multi-repo half of the ruling: the prompt must NAME each clone, or the
+  // agent cannot find the second checkout it was given.
+  // witness: collapse workspaceParagraph to its single-repo branch and this
+  // goes red — the prompt promises one checkout where two exist.
+  it("names every clone in the opening prompt of a multi-repo mission", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "two repos",
+      kind: "adhoc",
+      repos: ["tom.quest", "WikiTom"],
+      initialPrompt: "the mission",
+    });
+    const [inbound] = await t.run(async (ctx) =>
+      ctx.db
+        .query("claudeInbound")
+        .filter((q) => q.eq(q.field("sessionId"), sessionId))
+        .collect(),
+    );
+    // The interactive footer now carries the workspace paragraph too
+    // (2026-08-31): an interactive session that was never told the rules
+    // pushed `tts/verdict-and-names` on 2026-08-30 and burned turns against
+    // the command gate. The prompt must name each clone and the one
+    // sanctioned branch.
+    expect(inbound.text).toContain(sessionId);
+    expect(inbound.text).toContain("`./tom.quest`");
+    expect(inbound.text).toContain("`./WikiTom`");
+    expect(inbound.text).toContain(`session/${sessionId}`);
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+  });
+
   it("createSession with a todoId marks the live unapplied session ruling applied", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -940,7 +1089,7 @@ describe("claude sessions", () => {
     ).rejects.toThrow(/empty/);
   });
 
-  it("poll stores the box load and names each live session's posture", async () => {
+  it("poll stores the Jarvis Box load and names each live session's posture", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
@@ -1598,6 +1747,11 @@ describe("autonomous fleet config", () => {
   });
 });
 
+// The LEGACY world's walk: the five lanes that schedule rows with no batch
+// (block prep, v1 batches, dated, condition-bound, whenever). They are not
+// dead code and these are not stale tests — before the migration runs, the
+// graph is empty and these lanes are the only thing feeding the fleet. The
+// frontier tests that succeed them live in "frontier scheduler" below.
 describe("autonomous session scheduler", () => {
   // The eligible shape: active, whenever, unprepared, no category, no batch.
   async function eligibleTodo(
@@ -1669,7 +1823,7 @@ describe("autonomous session scheduler", () => {
 
   // witness: remove the load-admission guard and this test goes red — load is
   // the PRIMARY throttle, not the scalar caps.
-  it("stands down when per-cpu load or free memory says the box is busy", async () => {
+  it("stands down when per-cpu load or free memory says the Jarvis Box is busy", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await eligibleTodo(tom);
@@ -1695,7 +1849,7 @@ describe("autonomous session scheduler", () => {
     await eligibleTodo(tom);
     await enableAuto(t);
 
-    // No heartbeat at all: nothing on the box could start a session.
+    // No heartbeat at all: nothing on the Jarvis Box could start a session.
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(await autoSessions(t)).toHaveLength(0);
 
@@ -2005,10 +2159,11 @@ describe("autonomous session scheduler", () => {
     expect(sessions[0].blockCategory).toBe("chores");
   });
 
-  // witness: sort the batch lane `rank(a) - rank(b)`, or invert
-  // IMPORTANCE_RANK in convex/tts.ts, and this test goes red — the tick's one
-  // admission would go to the least important batch.
-  it("walks the most important batch first", async () => {
+  // Ordering comes from dates, never a rating (Tom's ruling 2026-08-29).
+  // witness: sort the batch lane `b.updatedAt - a.updatedAt` in
+  // convex/claudeSessions.ts and this test goes red — the tick's one admission
+  // would go to the freshest batch instead of the stalest.
+  it("walks the stalest batch first", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await enableAuto(t, { maxNewPerTick: 1 });
@@ -2020,29 +2175,30 @@ describe("autonomous session scheduler", () => {
         status: "open" as const,
       },
     ];
-    const lowMember = await eligibleTodo(tom, "low member");
-    const highMember = await eligibleTodo(tom, "high member");
-    // The low batch is created FIRST, so a stable sort leaves it in front
-    // unless the importance comparator actually moves it.
-    const low = await eligibleTodo(tom, "low batch");
-    const high = await eligibleTodo(tom, "high batch");
+    const staleMember = await eligibleTodo(tom, "stale member");
+    const freshMember = await eligibleTodo(tom, "fresh member");
+    // The FRESH batch is created first, so a stable sort leaves it in front
+    // unless the updatedAt comparator actually moves the stale one up.
+    const fresh = await eligibleTodo(tom, "fresh batch");
+    const stale = await eligibleTodo(tom, "stale batch");
     await tom.mutation(api.tts.updateTodo, {
-      id: low,
-      members: [{ todoId: lowMember }],
+      id: fresh,
+      members: [{ todoId: freshMember }],
       plan: openStep,
     });
     await tom.mutation(api.tts.updateTodo, {
-      id: high,
-      members: [{ todoId: highMember }],
+      id: stale,
+      members: [{ todoId: staleMember }],
       plan: openStep,
     });
-    await tom.mutation(api.tts.setImportance, { id: low, level: "low" });
-    await tom.mutation(api.tts.setImportance, { id: high, level: "high" });
+    await t.run(async (ctx) =>
+      ctx.db.patch(stale, { updatedAt: Date.now() - 60 * 60 * 1000 }),
+    );
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const sessions = await autoSessions(t);
     expect(sessions).toHaveLength(1);
-    expect(sessions[0].todoId).toBe(high);
+    expect(sessions[0].todoId).toBe(stale);
   });
 
   // witness: move the batch lane below the dated lane and this test goes red.
@@ -2205,7 +2361,7 @@ describe("autonomous session scheduler", () => {
 //
 // The rule these tests pin is Tom's amendment the same night: prospecting runs
 // IN PARALLEL with real todo work, spending whatever per-tick budget the work
-// walk left unspent, because keeping the box at full capacity overnight is the
+// walk left unspent, because keeping the Jarvis Box at full capacity overnight is the
 // top priority. It is NOT the last resort it was first built as.
 describe("prospecting lane", () => {
   // The two repos the lane may prospect. WikiTom is deliberately absent: it is
@@ -2304,8 +2460,11 @@ describe("prospecting lane", () => {
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const first = await prospectSessions(t);
     expect(first).toHaveLength(1);
-    // Never prospected beats never prospected on the order in the source.
-    expect(first[0].repo).toBe("ComplexMultiTrigger");
+    // Never prospected beats never prospected on the order in the source —
+    // which is now SESSION_REPOS' declaration order in convex/ttsShared.ts
+    // (PROSPECT_REPOS is derived from it, minus the excluded wiki, rather than
+    // hand-listed), so the first tick takes tom.quest.
+    expect(first[0].repo).toBe("tom.quest");
     await endSession(t, first[0]._id);
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
@@ -2318,7 +2477,7 @@ describe("prospecting lane", () => {
   // Two witnesses, one per half. Delete the cooldown skip and the first half
   // goes red — a third prospector would re-read a tree read moments ago. Widen
   // PROSPECT_COOLDOWN_MS back to six hours ("six hours is insane") and the
-  // second half goes red — the box would idle the night out on a repo it read
+  // second half goes red — the Jarvis Box would idle the night out on a repo it read
   // once. The last assertion is the fairness comparator's own: invert
   // `lastAt < repoLastAt` and the newest-read repo would win instead.
   it("declines while both repos are inside the cooldown, then takes the stalest", async () => {
@@ -2422,5 +2581,921 @@ describe("prospecting lane", () => {
     // reaches a model-reachable environment, so the prompt cannot name it.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+  });
+});
+
+// ── The frontier scheduler (schema v2, ratified 2026-08-29) ──────────────────
+// A BATCH IS NOT A TODO: it holds how a set of todos gets completed, and its
+// contents are dtsTodos rows pointing back at it as tasks (work) and goals (a
+// checkable state of the world). A todo is READY when every id in its `needs`
+// is done. The scheduler walks that frontier: it claims ONE ready, agent-
+// workable todo per session and hands the worker its neighbourhood.
+//
+// These tests replace the five-lane selection tests for the graph world. The
+// lane tests above are NOT stale — they cover the legacy rows that have no
+// batch, which the frontier deliberately leaves to them.
+
+describe("frontier scheduler", () => {
+  // One batch's graph, written through the planner's own pen — so these tests
+  // exercise the same rows production writes, not a hand-built shape.
+  async function storeGraph(
+    t: ReturnType<typeof convexTest>,
+    args: {
+      statement: string;
+      groundUpExplanation?: string;
+      path?: { name: string; index: number; edge?: "must" | "helps" };
+      tasks: {
+        statement: string;
+        actor: "tom" | "agent";
+        needs?: (string | number)[];
+        condition?: string;
+        groundUpExplanation?: string;
+        evidence?: string;
+        status?: "active" | "done";
+        model?: "fable";
+      }[];
+      goalIds?: string[];
+      repos?: string[];
+    },
+  ) {
+    const result = await t.mutation(internal.tts.internalStorePlanGraph, args);
+    expect(result.skipped).toEqual([]);
+    return result.batchId as Id<"batches">;
+  }
+
+  // The rows of one batch (the ttsGraph.test.ts reading of the same fact).
+  const batchTodos = (
+    t: ReturnType<typeof convexTest>,
+    batchId: Id<"batches">,
+  ) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("dtsTodos").collect()).filter(
+        (todo) => todo.batchId === batchId,
+      ),
+    );
+
+  const byStatement = (
+    rows: Awaited<ReturnType<typeof batchTodos>>,
+    statement: string,
+  ) => rows.find((r) => r.statement === statement)!;
+
+  async function missionText(
+    tom: Awaited<ReturnType<typeof withTom>>,
+    sessionId: Id<"claudeSessions">,
+  ) {
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    return inbound[0].text ?? "";
+  }
+
+  // ── The batch declares its repos (Tom, 2026-08-30) ───────────────────────
+  // This replaces pickMissionRepo, a case-sensitive substring search over the
+  // todo's and batch's words — the reason the "Every surface TTS shows Tom"
+  // batch's session arrived with no checkout at all.
+
+  // witness: drop the `batch` branch from resolveSessionRepos in
+  // convex/claudeSessions.ts and this goes red — the mission falls back to the
+  // substring guess, which cannot see WikiTom in a batch that never says it.
+  it("gives a mission the repos its batch declared, not a guess from its words", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "every surface it shows Tom",
+      // Neither the batch nor the task names a repo anywhere in its words, so
+      // the old substring guess would have produced no checkout.
+      repos: ["tom.quest", "WikiTom"],
+      tasks: [{ statement: "migrate the popovers", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].repos).toEqual(["tom.quest", "WikiTom"]);
+    expect(sessions[0].repo).toBe("tom.quest");
+
+    // And the prompt NAMES each clone — an agent that is not told the second
+    // checkout exists will never look for it.
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("./tom.quest");
+    expect(text).toContain("./WikiTom");
+    expect(text).toContain("2 fresh checkouts");
+  });
+
+  // The one-repo case keeps its old shape exactly: the working directory IS
+  // the checkout, because `gh pr create` fails outside a work tree and every
+  // prompt written before the ruling says so.
+  // witness: make ensureWorkdir/workspaceParagraph always use the parent and
+  // this goes red.
+  it("keeps the single-repo workspace wording when a batch declares one repo", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "one repo only",
+      repos: ["tom.quest"],
+      tasks: [{ statement: "do the thing", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("a fresh checkout of tom.quest");
+    expect(text).not.toContain("fresh checkouts");
+  });
+
+  // An explicitly EMPTY declaration is an answer: this batch needs no
+  // checkout. witness: test `batch.repos` for truthiness instead of
+  // `!== undefined` and this goes red — [] falls through to the guess, and a
+  // batch whose words happen to say "tom.quest" gets a clone it declined.
+  it("an explicitly empty declaration means no checkout, not a guess", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "read the tom.quest docs and decide",
+      repos: [],
+      tasks: [{ statement: "decide about tom.quest", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions[0].repos).toEqual([]);
+    expect(sessions[0].repo).toBe("none");
+  });
+
+  // witness: drop the isReady filter from the frontier walk in
+  // convex/claudeSessions.ts and this test goes red — the fleet would open a
+  // session on a task whose prerequisite has not been done, and the worker
+  // would find nothing to work from.
+  it("claims a ready todo and leaves the blocked one alone", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the reading-list batch",
+      tasks: [
+        { statement: "gather the sources", actor: "agent" },
+        { statement: "write the summary", actor: "agent", needs: [0] },
+      ],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+
+    const rows = await batchTodos(t, batchId);
+    const gather = byStatement(rows, "gather the sources");
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(gather._id);
+  });
+
+  // witness: delete the `status: "done"` branch from internalPrepareTodo in
+  // convex/tts.ts (or the isReady call here) and this test goes red — the
+  // graph would never advance past its first task, because nothing else can
+  // record a task done.
+  it("a task recorded done makes its dependent ready on the next tick", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the reading-list batch",
+      tasks: [
+        { statement: "gather the sources", actor: "agent" },
+        { statement: "write the summary", actor: "agent", needs: [0] },
+      ],
+    });
+    const rows = await batchTodos(t, batchId);
+    const gather = byStatement(rows, "gather the sources");
+    const summary = byStatement(rows, "write the summary");
+
+    // The worker's own pen, exactly as the mission prompt spells it.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: gather._id,
+      status: "done",
+      evidence: "branch session/abc, three sources in notes.md",
+    });
+    const closed = byStatement(
+      await batchTodos(t, batchId),
+      "gather the sources",
+    );
+    expect(closed.status).toBe("done");
+    expect(closed.evidence).toBe(
+      "branch session/abc, three sources in notes.md",
+    );
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(summary._id);
+    // The evidence of the need it no longer waits on rides into the mission.
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("branch session/abc");
+  });
+
+  // witness: remove the `todo.batchId === undefined` refusal from the pen's
+  // completion branch in convex/tts.ts and this test goes red — an agent
+  // could close a life todo of Tom's behind him.
+  it("the completion pen refuses a todo that is not inside a batch", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "call the landlord",
+    });
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: todoId,
+      status: "done",
+      evidence: "not the agent's to record",
+    });
+    const todo = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsTodos").collect()).find((r) => r._id === todoId),
+    );
+    expect(todo?.status).toBe("active");
+    const events = await t.run(async (ctx) =>
+      ctx.db.query("dtsEvents").collect(),
+    );
+    expect(events.some((e) => e.kind === "done-skipped")).toBe(true);
+  });
+
+  // witness: drop the `actor !== "tom"` test from agentWorkable in
+  // convex/claudeSessions.ts and this test goes red — a session would be
+  // opened on a merge or a ruling, which only Tom can do, and would either
+  // stall or invent the fact that it happened.
+  it("skips a ready task whose actor is Tom", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "the merge batch",
+      tasks: [{ statement: "merge the pull request", actor: "tom" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+  });
+
+  // witness: drop the goal branch from agentWorkable and this test goes red —
+  // a goal would never be checked, so a batch whose work is already done in
+  // the world would stay open with nobody looking.
+  it("claims a ready goal and briefs it to check, not to build", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "the lease is signed",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(goalId, {
+        condition: "a countersigned copy of the lease is in the shared folder",
+      }),
+    );
+    await storeGraph(t, {
+      statement: "the apartment batch",
+      tasks: [],
+      goalIds: [goalId],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(goalId);
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("kind: goal");
+    expect(text).toContain("CHECKING, not building");
+    expect(text).toContain("a countersigned copy of the lease");
+  });
+
+  // A goal with nothing checkable written on it is not a mission: there is no
+  // sentence to test the world against, so the session would have to invent
+  // what "met" means. witness: drop goalCheckable and this goes red.
+  it("skips a goal with no condition to check", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "the lease is signed",
+    });
+    await storeGraph(t, {
+      statement: "the apartment batch",
+      tasks: [],
+      goalIds: [goalId],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+  });
+
+  // witness: delete the path comparison from the frontier sort in
+  // convex/claudeSessions.ts and this test goes red — the tick's one admission
+  // would go to the later stage of the path, working ahead of the stage the
+  // path is actually waiting on.
+  it("walks the earlier position on a path first", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    // The LATER batch is created first, so an unsorted walk would reach it
+    // first and this test would be answered by insertion order.
+    await storeGraph(t, {
+      statement: "the second stage",
+      path: { name: "the release", index: 1, edge: "must" },
+      tasks: [{ statement: "cut the release notes", actor: "agent" }],
+    });
+    const firstBatch = await storeGraph(t, {
+      statement: "the first stage",
+      path: { name: "the release", index: 0 },
+      tasks: [{ statement: "freeze the branch", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    const freeze = byStatement(
+      await batchTodos(t, firstBatch),
+      "freeze the branch",
+    );
+    expect(sessions[0].todoId).toBe(freeze._id);
+    // The mission states where the batch sits, in the path vocabulary.
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain('path: "the release", position 0');
+  });
+
+  // witness: drop the pathed-before-unpathed clause (the `pa === undefined`
+  // test) and this goes red — stated sequencing would lose to a batch that
+  // states none.
+  it("walks a batch on a path before a batch on none", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "the unsequenced batch",
+      tasks: [{ statement: "read the inbox", actor: "agent" }],
+    });
+    const pathed = await storeGraph(t, {
+      statement: "the sequenced batch",
+      path: { name: "the release", index: 0 },
+      tasks: [{ statement: "freeze the branch", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    const freeze = byStatement(await batchTodos(t, pathed), "freeze the branch");
+    expect(sessions[0].todoId).toBe(freeze._id);
+  });
+
+  // witness: move the frontier walk below the legacy lanes in
+  // convex/claudeSessions.ts and this test goes red — graph work is the world
+  // the system is moving to, and a legacy row would take the tick's one slot.
+  it("walks graph candidates before legacy rows, and still feeds legacy ones", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const legacyId = await tom.mutation(api.tts.createTodo, {
+      statement: "draft the reading list",
+    });
+    const batchId = await storeGraph(t, {
+      statement: "the reading-list batch",
+      tasks: [{ statement: "gather the sources", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const gather = byStatement(
+      await batchTodos(t, batchId),
+      "gather the sources",
+    );
+    const first = await workSessions(t);
+    expect(first).toHaveLength(1);
+    expect(first[0].todoId).toBe(gather._id);
+
+    // The legacy row is not starved — it is simply second, and the next tick
+    // (its graph rival now held by a live session) reaches it.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const second = await workSessions(t);
+    expect(second).toHaveLength(2);
+    expect(second.some((s) => s.todoId === legacyId)).toBe(true);
+  });
+
+  // The pre-migration world, stated on its own: with no batches at all the
+  // frontier is empty and the legacy lanes carry the whole fleet. witness:
+  // delete the legacy lanes and this goes red.
+  it("feeds the fleet from legacy rows alone before any batch exists", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "draft the reading list",
+    });
+    const batches = await t.run(async (ctx) =>
+      ctx.db.query("batches").collect(),
+    );
+    expect(batches).toHaveLength(0);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(todoId);
+    // The legacy mission, not the worker one: its vocabulary is the plan.
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("open plan step");
+    expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
+  });
+
+  // witness: drop the batch-status test from the frontier walk and this goes
+  // red — the fleet would work the tasks of a batch Tom archived.
+  it("ignores the ready tasks of an archived batch", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the retired batch",
+      tasks: [{ statement: "gather the sources", actor: "agent" }],
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(batchId, { status: "archived" as const }),
+    );
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+  });
+
+  // A worker session that has run to a stop: it recorded its outcome and the
+  // daemon ended it. `at` is the END stamp, which is always later than every
+  // pen write the session made — the distinction the completed-backoff turns
+  // on.
+  async function finishSession(
+    t: ReturnType<typeof convexTest>,
+    id: Id<"claudeSessions">,
+    at: number = Date.now() + 1000,
+  ) {
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id,
+      outcome: "completed",
+      summary: "completed: one state advanced",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(id, { status: "ended" as const, statusChangedAt: at }),
+    );
+  }
+
+  // THE MULTI-SESSION TASK. The mission asks a worker for ONE STABLE STATE,
+  // "a state another session can pick up from cold" — so the backoff after a
+  // completed run has to admit that pickup. witness: measure the backoff
+  // against the session's END (statusChangedAt) instead of its start
+  // (createdAt) and the second half goes red: the end stamp lands after every
+  // pen write the session made, so the sessions that DID record progress are
+  // exactly the ones excluded, and a two-session task wedges forever with
+  // nothing saying so.
+  it("re-admits a completed task that advanced, and leaves a settled one alone", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the migration batch",
+      tasks: [{ statement: "write the migration", actor: "agent" }],
+    });
+    const task = byStatement(await batchTodos(t, batchId), "write the migration");
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const first = await workSessions(t);
+    expect(first).toHaveLength(1);
+
+    // It ended completed having written NOTHING to the row: settled work, not
+    // to be redone.
+    await finishSession(t, first[0]._id);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(1);
+
+    // Now a session that DID advance it: the pen writes during the session,
+    // and the end stamp lands after that write.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: task._id,
+      evidence: "branch session/x, schema written",
+    });
+    const second = await workSessions(t);
+    await finishSession(t, second[0]._id, Date.now() + 2000);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const third = await workSessions(t);
+    expect(third).toHaveLength(2);
+    expect(third.every((s) => s.todoId === task._id)).toBe(true);
+  });
+
+  // A GOAL IS A QUESTION, ASKED AGAIN. witness (first half): drop the
+  // work-first rule from the frontier walk and the goal is checked on the very
+  // first tick, before a single task has run, spending a session on a question
+  // whose answer is certainly "not yet". witness (second half): let the
+  // completed-backoff's row-changed test apply to a goal and the last
+  // assertion goes red — nothing bumps a goal's updatedAt (binding does not,
+  // and the planner never rewrites goals), so every goal would be checked
+  // exactly once, no batch would ever reach done, and anything needing a goal
+  // would block forever.
+  it("checks a goal after the work, and asks again the next day", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "the lease is signed",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(goalId, { condition: "the signed lease is in the folder" }),
+    );
+    const batchId = await storeGraph(t, {
+      statement: "the apartment batch",
+      tasks: [{ statement: "send the landlord the form", actor: "agent" }],
+      goalIds: [goalId],
+    });
+    const send = byStatement(
+      await batchTodos(t, batchId),
+      "send the landlord the form",
+    );
+
+    // The work goes first; the goal is not touched while a task can move.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const onWork = await workSessions(t);
+    expect(onWork).toHaveLength(1);
+    expect(onWork[0].todoId).toBe(send._id);
+
+    // The task lands, so nothing else in the batch is workable — now the goal
+    // is worth asking about.
+    await finishSession(t, onWork[0]._id);
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id: send._id,
+      status: "done",
+      evidence: "form posted",
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const onGoal = (await workSessions(t)).filter((s) => s.todoId === goalId);
+    expect(onGoal).toHaveLength(1);
+
+    // The answer was "not yet": an honest, complete session that changed
+    // nothing. Inside the day, the question is not re-asked.
+    await finishSession(t, onGoal[0]._id);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect((await workSessions(t)).filter((s) => s.todoId === goalId)).toHaveLength(1);
+
+    // A day later it is.
+    await t.run(async (ctx) =>
+      ctx.db.patch(onGoal[0]._id, {
+        statusChangedAt: Date.now() - 25 * 60 * 60 * 1000,
+      }),
+    );
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect((await workSessions(t)).filter((s) => s.todoId === goalId)).toHaveLength(2);
+  });
+
+  // witness: read `condition` as a completion test on every goal (drop the
+  // timingClass arm of goalCheckable in ttsShared.ts) and this goes red — a
+  // condition-bound todo's condition is its TRIGGER ("when the landlord sends
+  // the paperwork"), so a worker would find the trigger fired and close one of
+  // Tom's own todos, past the freeze every other agent write respects.
+  it("never hands a worker a condition-bound goal to check", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the apartment lease",
+      timingClass: "condition-bound",
+      condition: "the landlord sends the renewal paperwork",
+    });
+    await storeGraph(t, {
+      statement: "the lease batch",
+      tasks: [],
+      goalIds: [goalId],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+  });
+
+  // witness: filter the block lane on batchId (the plain legacy test) and this
+  // goes red — the planner binding one of Tom's todos as a goal would remove
+  // it from the block lane, from the frontier (a goal is only CHECKED, and
+  // only once the batch's work has stalled) and from the preparer at once,
+  // exactly when he has put committed time on it.
+  it("still prepares a bound goal Tom put committed time on", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "book the flights",
+    });
+    await storeGraph(t, {
+      statement: "the travel batch",
+      tasks: [],
+      goalIds: [goalId],
+    });
+    const now = Date.now();
+    await tom.mutation(api.tts.createBlock, {
+      start: now + 60 * 60 * 1000,
+      end: now + 2 * 60 * 60 * 1000,
+      todoId: goalId,
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(goalId);
+  });
+
+  // witness: push the frontier's candidates in with no quota (strict priority)
+  // and this goes red — once the planner has been running there are routinely
+  // more ready graph tasks than a tick has slots, and the walk never reaches
+  // the legacy lanes at all.
+  it("reserves a slot for the legacy lanes when the frontier overflows", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "the busy batch",
+      tasks: [
+        { statement: "one", actor: "agent" },
+        { statement: "two", actor: "agent" },
+        { statement: "three", actor: "agent" },
+        { statement: "four", actor: "agent" },
+      ],
+    });
+    const legacyId = await tom.mutation(api.tts.createTodo, {
+      statement: "draft the reading list",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.some((s) => s.todoId === legacyId)).toBe(true);
+  });
+
+  // witness: drop the batch-level ruling lookup from the frontier walk and
+  // this test goes red — Tom asked for a conversation about this batch, and
+  // the fleet would consume the request with a worker session instead.
+  it("never races a live ruling recorded against the batch", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the batch Tom spoke on",
+      tasks: [{ statement: "gather the sources", actor: "agent" }],
+    });
+    await tom.mutation(api.ttsRulings.recordRuling, {
+      batchId,
+      verdict: "session",
+      sentence: "let's talk about this one",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+
+    // witness: read that verdict as a permanent exclusion (appliedAt is never
+    // set on a batch `session` — claudeSessions has no batch subject) and the
+    // second half goes red: one conversation Tom meant to have would freeze
+    // every task in the batch forever, recoverable only by a second ruling
+    // nothing tells him to record. It is a PAUSE, and a day long.
+    const ruling = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsRulings").collect())[0],
+    );
+    await t.run(async (ctx) =>
+      ctx.db.patch(ruling._id, { ruledAt: Date.now() - 25 * 60 * 60 * 1000 }),
+    );
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(1);
+  });
+
+  // witness: drop the live-session exclusion (the claim) and this goes red —
+  // two sessions would hold the same todo and do the same work twice.
+  it("does not claim a todo a live session already holds", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the reading-list batch",
+      tasks: [{ statement: "gather the sources", actor: "agent" }],
+    });
+    const gather = byStatement(
+      await batchTodos(t, batchId),
+      "gather the sources",
+    );
+    await tom.mutation(api.claudeSessions.createSession, {
+      title: "a real conversation",
+      kind: "focus-item",
+      repo: "none",
+      todoId: gather._id,
+      initialPrompt: "let's talk",
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    // Tom's own session is interactive, so the only thing to count is the
+    // autonomous fleet: it admitted nothing, because the todo is claimed.
+    expect(await workSessions(t)).toHaveLength(0);
+  });
+
+  // witness: drop the model line from the session insert in
+  // convex/claudeSessions.ts and this test goes red — the daemon reads the
+  // tier off the session row (session-host.mjs claimSession/adoptSession pass
+  // row.model into the Session, which maps "fable" to the SDK model id in
+  // session.mjs), so a task the planner marked as needing the stronger model
+  // would silently run on the default one.
+  it("carries a task's model tier onto the session row and the poll", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the hard batch",
+      tasks: [
+        { statement: "prove the bound", actor: "agent", model: "fable" },
+        { statement: "tidy the notes", actor: "agent" },
+      ],
+    });
+    const rows = await batchTodos(t, batchId);
+    const hard = byStatement(rows, "prove the bound");
+    const ordinary = byStatement(rows, "tidy the notes");
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((s) => s.todoId === hard._id)?.model).toBe("fable");
+    // Absent is the default and the norm: an ordinary task writes nothing.
+    expect(sessions.find((s) => s.todoId === ordinary._id)?.model).toBe(
+      undefined,
+    );
+
+    const poll = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+      load: HEALTHY_LOAD,
+    });
+    const polled = poll.sessions as { todoId?: string; model?: string }[];
+    expect(polled.find((s) => s.todoId === hard._id)?.model).toBe("fable");
+  });
+
+  // The whole worker contract in one read: what it claimed, why it is ready,
+  // what waits on it, what is moving beside it, the standard it writes to, and
+  // the two pens. witness: remove any of these from buildWorkerPrompt in
+  // convex/claudeSessions.ts and the matching line goes red.
+  it("hands the worker its batch, its neighbourhood, and its pens", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the reading-list batch",
+      groundUpExplanation: "Tom wants one page of sources he can hand to a student.",
+      tasks: [
+        {
+          statement: "gather the sources",
+          actor: "agent",
+          status: "done",
+          evidence: "notes.md, eleven papers",
+        },
+        {
+          statement: "write the summary",
+          actor: "agent",
+          needs: [0],
+          groundUpExplanation: "One page, in his own vocabulary.",
+        },
+        { statement: "check the citations", actor: "agent" },
+        { statement: "publish the page", actor: "agent", needs: [1] },
+      ],
+    });
+    const rows = await batchTodos(t, batchId);
+    const summary = byStatement(rows, "write the summary");
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    // Two are ready (the summary and the citation check); the summary wins on
+    // staleness, and the other rides the prompt as a sibling.
+    expect(sessions[0].todoId).toBe(summary._id);
+    const text = await missionText(tom, sessions[0]._id);
+
+    // The batch it is inside, in both registers.
+    expect(text).toContain("the reading-list batch");
+    expect(text).toContain("hand to a student");
+    // The one todo it claimed, and the fact that it is one.
+    expect(text).toContain("YOU HAVE CLAIMED ONE TODO IN THIS BATCH");
+    expect(text).toContain("write the summary");
+    expect(text).toContain(summary._id);
+    // Its needs, done, with what they produced — the evidence is the whole
+    // reason the need is worth naming.
+    expect(text).toContain("ITS NEEDS (1");
+    expect(text).toContain("notes.md, eleven papers");
+    // What unblocks when it lands, and what else is moving beside it.
+    expect(text).toContain("WHAT NEEDS IT (1");
+    expect(text).toContain("publish the page");
+    expect(text).toContain("ALSO READY IN THIS BATCH RIGHT NOW (1");
+    expect(text).toContain("check the citations");
+    // The standard it writes to, verbatim from its one home.
+    expect(text).toContain(WRITING_STANDARD);
+    // The two pens, the four outcomes, and the wrong-edge channel.
+    expect(text).toContain("/tts/prepare-todo");
+    expect(text).toContain("/tts/session-outcome");
+    expect(text).toContain("planRepair");
+    expect(text).toContain("COMPLETED");
+    expect(text).toContain("DEFERRED");
+    expect(text).toContain("FAILED");
+    expect(text).toContain("ABANDONED");
+    expect(text).toContain("ready-for-tom");
+    // Same env contract as every autonomous mission: the ingest key never
+    // reaches a model-reachable environment.
+    expect(text).toContain("TTS_WORKER_KEY");
+    expect(text).not.toContain("SESSIONS_WORKER_KEY");
+  });
+
+  // witness: drop the extraText argument from the pickMissionRepo call in the
+  // admission loop and this test goes red — a graph task whose batch is
+  // plainly about a repo would open in an empty scratch directory with
+  // nothing to edit.
+  it("equips the workspace from the batch's words when the task's are silent", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "fix the tom.quest deploy check",
+      tasks: [{ statement: "read the failing job", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions[0].repo).toBe("tom.quest");
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("fresh checkout of tom.quest");
+    expect(text).toContain(`session/${sessions[0]._id}`);
+    expect(text).toContain("NEVER merge");
+  });
+
+  // witness: delete the planRepair block from internalRecordOutcome in
+  // convex/claudeSessions.ts and this test goes red — the only channel by
+  // which doing the work corrects the planning of it would be silent.
+  it("records a wrong-edge report as a plan-repair event naming its batch", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the reading-list batch",
+      tasks: [{ statement: "gather the sources", actor: "agent" }],
+    });
+    const gather = byStatement(
+      await batchTodos(t, batchId),
+      "gather the sources",
+    );
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessionId = (await workSessions(t))[0]._id;
+
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "completed",
+      summary: "completed: the sources are in notes.md",
+      planRepair:
+        "write the summary does not need gather the sources — the sources were already in the repo",
+    });
+
+    const events = await t.run(async (ctx) =>
+      ctx.db.query("dtsEvents").collect(),
+    );
+    const repairs = events.filter((e) => e.kind === "plan-repair");
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0].todoId).toBe(gather._id);
+    expect(repairs[0].data as { batchId: string; note: string }).toEqual({
+      sessionId,
+      batchId,
+      note: "write the summary does not need gather the sources — the sources were already in the repo",
+    });
+    // The planner reads them through its own bounded query.
+    const seen = await t.query(internal.tts.internalRecentPlanRepairs, {});
+    expect(seen).toHaveLength(1);
+
+    // An outcome with no report writes no event — the channel is for findings,
+    // not for every ending.
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "completed",
+      summary: "completed: nothing more to say",
+    });
+    const after = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsEvents").collect()).filter(
+        (e) => e.kind === "plan-repair",
+      ),
+    );
+    expect(after).toHaveLength(1);
   });
 });

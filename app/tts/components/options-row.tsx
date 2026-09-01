@@ -2,8 +2,8 @@
 
 // THE options surface for every /tts subject — a life todo, a batch (a batch
 // IS a life todo) or a code item. One compact wrap row at the top of an
-// expanded panel: the four verdict chips, the status chips a life todo carries
-// (done · archive) and the importance setter.
+// expanded panel: the four verdict chips and the status chips a life todo
+// carries (done · archive).
 //
 // The four verdicts are uniform (ratified 2026-08-29): clicking a chip selects
 // it and reveals ONE note input; confirming records the verdict with that note
@@ -11,10 +11,10 @@
 // unarchive condition (convex/ttsRulings.ts maps it), so one input serves all
 // four.
 //
-// This one component replaces VerdictButtons, StatusActions and
-// ImportanceButtons, so a control cannot drift between the batch card, the
-// generic todo row and the code row. There is no "commit time" control here —
-// anything about time is a time note now.
+// This one component replaces VerdictButtons and StatusActions, so a control
+// cannot drift between the batch card, the generic todo row and the code row.
+// There is no "commit time" control here — anything about time is a time note
+// now.
 //
 // Every control names the exact backend call it fires behind an ⓘ (UI = code).
 
@@ -27,108 +27,12 @@ import {
   type ReservedTab,
 } from "@/app/lib/use-open-todo-session";
 import type { LiveRulingContext } from "@/app/lib/tts-session-prompt";
-import {
-  errMessage,
-  IMPORTANCE_LEVELS,
-  VERDICTS,
-  type RulingVerdict,
-  type Todo,
-} from "../lib";
+import { errMessage, VERDICTS, type RulingVerdict, type Todo } from "../lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
-
-export type ImportanceLevel = (typeof IMPORTANCE_LEVELS)[number];
-
-/**
- * The stored importance object, read from the schema itself — dtsTodos and
- * dtsCodeBriefs share the shape, so neither is hand-copied here.
- */
-export type ImportanceValue = NonNullable<Todo["importance"]>;
-
-// ── The importance glyph ────────────────────────────────────────────────────
-// Three bars of rising height; the number FILLED is the level (1/2/3). Used as
-// a button here and as a display-only mark on the batch card, from this one
-// definition so the two cannot look different.
-
-const BAR_HEIGHTS = ["40%", "70%", "100%"];
-
-export function ImportanceBars({
-  level,
-  fillCls,
-}: {
-  level: ImportanceLevel;
-  /** Tailwind background for the filled bars (bg-accent / bg-warning / …). */
-  fillCls: string;
-}) {
-  const filled = IMPORTANCE_LEVELS.indexOf(level) + 1;
-  return (
-    <span className="inline-flex h-3 w-3.5 items-end gap-px align-middle">
-      {BAR_HEIGHTS.map((h, i) => (
-        <span
-          key={h}
-          style={{ height: h }}
-          className={`w-1 rounded-[1px] ${i < filled ? fillCls : "bg-border/40"}`}
-        />
-      ))}
-    </span>
-  );
-}
-
-function importanceTitle(current: ImportanceValue | undefined): string {
-  if (!current) return "importance";
-  const base = `${current.level} · ${current.setBy}`;
-  return current.rationale ? `${base} — ${current.rationale}` : base;
-}
-
-function ImportanceSetter({
-  current,
-  infoLabel,
-  disabled,
-  onSet,
-}: {
-  current: ImportanceValue | undefined;
-  infoLabel: string;
-  disabled: boolean;
-  onSet: (level: ImportanceLevel | null) => void;
-}) {
-  const [hover, setHover] = useState<ImportanceLevel | null>(null);
-  return (
-    <span
-      className="inline-flex items-center gap-0.5"
-      title={importanceTitle(current)}
-    >
-      {IMPORTANCE_LEVELS.map((lvl) => {
-        const isCurrent = current?.level === lvl;
-        const fill = isCurrent
-          ? "bg-accent"
-          : hover === lvl
-            ? "bg-text-faint"
-            : "bg-border";
-        return (
-          <button
-            key={lvl}
-            type="button"
-            disabled={disabled}
-            // Clicking the CURRENT level clears it (level: null).
-            onClick={() => onSet(isCurrent ? null : lvl)}
-            onMouseEnter={() => setHover(lvl)}
-            onMouseLeave={() => setHover(null)}
-            onFocus={() => setHover(lvl)}
-            onBlur={() => setHover(null)}
-            aria-label={isCurrent ? `clear importance ${lvl}` : lvl}
-            className="px-0.5 py-1 disabled:opacity-50 disabled:pointer-events-none"
-          >
-            <ImportanceBars level={lvl} fillCls={fill} />
-          </button>
-        );
-      })}
-      <Info label={infoLabel} />
-    </span>
-  );
-}
 
 // ── The row ─────────────────────────────────────────────────────────────────
 
@@ -143,20 +47,42 @@ const PLACEHOLDER: Record<Mode, string> = {
   "set-archived": "propose back when (optional)",
 };
 
-const INFO: Record<Mode, string> = {
-  approve: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
-  revise: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
-  session: 'ttsRulings.recordRuling({verdict:"session", sentence})',
-  archive: 'ttsRulings.recordRuling({verdict:"archive", sentence})',
-  done: 'tts.setStatus({status:"done", note})',
-  "set-archived": 'tts.setStatus({status:"archived", unarchiveCondition})',
+// One entry per verdict: the exact call, and what that verdict actually does
+// downstream. The plain half is the point — "recordRuling" says nothing about
+// which job wakes up next, and that is the thing worth knowing before pressing
+// it (one info mechanism, ratified 2026-08-29).
+const INFO: Record<Mode, { call: string; body: string }> = {
+  approve: {
+    call: 'ttsRulings.recordRuling({ verdict: "approve", sentence })',
+    body: "Marks this as decided your way. On a code todo the executor picks it up and does the work; on a life todo it simply records your call and stops asking.",
+  },
+  revise: {
+    call: 'ttsRulings.recordRuling({ verdict: "revise", sentence })',
+    body: "Sends it back to be prepared again, with your sentence as the redirection. The preparer re-writes the brief against what you said and returns it — your sentence is the whole instruction, so it has to stand on its own.",
+  },
+  session: {
+    call: 'ttsRulings.recordRuling({ verdict: "session", sentence })',
+    body: "Says this needs a conversation rather than a ruling. The ruling is consumed the moment you actually open a session on it — an autonomous run that happens to claim the same item never consumes it, so the conversation you asked for still happens.",
+  },
+  archive: {
+    call: 'ttsRulings.recordRuling({ verdict: "archive", sentence })',
+    body: "Sets it aside. Your sentence becomes the condition under which it should be proposed back, so nothing is lost — archived is a resting state, not a delete.",
+  },
+  done: {
+    call: 'tts.setStatus({ status: "done", note })',
+    body: "Closes it as finished, with your note as the record of how. It stays visible in the archive; nothing in TTS is ever deleted.",
+  },
+  "set-archived": {
+    call: 'tts.setStatus({ status: "archived", unarchiveCondition })',
+    body: "Sets it aside without ruling on it. Your sentence is the condition that should bring it back, so a thing put down on purpose can be picked up again.",
+  },
 };
 
 export type OptionsRowProps = {
   /** Life todo or batch row (a batch IS a life todo). Omit for code subjects. */
   todo?: Todo;
-  /** Code subject; importance for code lives on its brief. */
-  code?: { repo: string; externalId: string; importance?: ImportanceValue };
+  /** Code subject. */
+  code?: { repo: string; externalId: string };
   /** Show the four verdict chips. */
   rulable: boolean;
   /**
@@ -165,12 +91,6 @@ export type OptionsRowProps = {
    * prompt instead of Tom repeating himself).
    */
   afterSession?: (tab: ReservedTab, ruling: LiveRulingContext) => void;
-  /**
-   * Code subjects only: importance is stored on the brief, so a mirror row
-   * with no brief has nowhere to put it (ttsCode.setCodeImportance rejects).
-   * Defaults to shown.
-   */
-  showImportance?: boolean;
 };
 
 export default function OptionsRow({
@@ -178,29 +98,23 @@ export default function OptionsRow({
   code,
   rulable,
   afterSession,
-  showImportance = true,
 }: OptionsRowProps) {
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const setStatus = useMutation(api.tts.setStatus);
-  const setImportance = useMutation(api.tts.setImportance);
-  const setCodeImportance = useMutation(api.ttsCode.setCodeImportance);
 
   const [mode, setMode] = useState<Mode | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /** `clear` false keeps an open note draft alive (importance is a side click). */
-  const run = async (fn: () => Promise<unknown>, clear = true) => {
+  const run = async (fn: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
       await fn();
-      if (clear) {
-        setMode(null);
-        setNote("");
-      }
+      setMode(null);
+      setNote("");
     } catch (e) {
       setError(errMessage(e));
     } finally {
@@ -265,19 +179,6 @@ export default function OptionsRow({
     void run(() => record(mode, text));
   };
 
-  const applyImportance = (level: ImportanceLevel | null) =>
-    void run(
-      () =>
-        todo
-          ? setImportance({ id: todo._id, level })
-          : setCodeImportance({
-              repo: code!.repo,
-              externalId: code!.externalId,
-              level,
-            }),
-      false,
-    );
-
   if (!todo && !code) return null;
 
   const chips: { mode: Mode; label: string }[] = [];
@@ -293,12 +194,7 @@ export default function OptionsRow({
     chips.push({ mode: "set-archived", label: "archive" });
   }
 
-  const importance = todo ? todo.importance : code?.importance;
-  const importanceInfo = todo
-    ? 'tts.setImportance({level: "low"|"medium"|"high"|null})'
-    : 'ttsCode.setCodeImportance({repo, externalId, level: "low"|"medium"|"high"|null})';
-
-  if (chips.length === 0 && !showImportance) return null;
+  if (chips.length === 0) return null;
 
   return (
     <div className="space-y-2">
@@ -318,22 +214,6 @@ export default function OptionsRow({
             {c.label}
           </button>
         ))}
-
-        {showImportance && (
-          <>
-            {chips.length > 0 && (
-              <span className="text-xs text-text-faint" aria-hidden>
-                ·
-              </span>
-            )}
-            <ImportanceSetter
-              current={importance}
-              infoLabel={importanceInfo}
-              disabled={busy}
-              onSet={applyImportance}
-            />
-          </>
-        )}
       </div>
 
       {mode && (
@@ -358,7 +238,7 @@ export default function OptionsRow({
           >
             {mode === "set-archived" ? "archive" : mode}
           </button>
-          <Info label={INFO[mode]} />
+          <Info call={INFO[mode].call}>{INFO[mode].body}</Info>
         </form>
       )}
 

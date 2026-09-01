@@ -48,10 +48,61 @@ import {
   runClaude,
   extractJsonObject,
   nyNoonUtcMs,
+  slackPost,
 } from "./tts-lib.mjs";
 
 const BATCH_MAX = 10;
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
+
+// ── The one threaded reply per #dump message (Tom, 2026-08-30) ───────────────
+// EXACTLY ONE, and the guard has to be durable rather than a variable in this
+// run: this job re-prepares on --force and on every revise ruling, so a
+// per-run flag would post again each time Tom revised a brief.
+//
+// The reply is posted AFTER preparation lands, which is why it lives here and
+// not in poll-dump.mjs: it says how TTS INTERPRETED the message, and there is
+// nothing to say until there is a brief. It names the three things a reader
+// needs to know the message was understood — what TTS thinks it is, the
+// smallest way in, and whether it is waiting on Tom or on more agent work —
+// plus a deep link.
+//
+// Failure is reported, never fatal: the preparation already landed, and a todo
+// with no reply is a smaller loss than a run that stops.
+async function postThreadedReply(env, todo, parsed) {
+  if (todo.slackRepliedAt !== undefined) return; // already answered, once
+  if (!todo.slackChannel || !todo.slackTs) return; // not from a Slack message
+  const readiness =
+    parsed.readiness === "ready-for-tom"
+      ? "waiting on you"
+      : "still being prepared";
+  const text = [
+    `Captured as a todo — ${readiness}.`,
+    ``,
+    parsed.brief.trim(),
+    ``,
+    `Way in: ${parsed.entryAction.trim()}`,
+    `https://tom.quest/tts?item=${todo._id}`,
+  ].join("\n");
+  try {
+    const posted = await slackPost(env, "chat.postMessage", {
+      channel: todo.slackChannel,
+      thread_ts: todo.slackTs,
+      text,
+      unfurl_links: false,
+    });
+    // Record the reply BEFORE anything else can re-enter this todo. The server
+    // refuses a second stamp, so two racing runs still leave exactly one
+    // recorded reply.
+    await convexFetch(env, "/tts/slack-replied", {
+      id: todo._id,
+      replyTs: posted.ts,
+    });
+  } catch (err) {
+    console.error(
+      `[prepare-life-todos] ${todo._id} Slack reply failed: ${err.message}`,
+    );
+  }
+}
 
 function prompt(todo, reviseSentence, today) {
   return [
@@ -148,9 +199,22 @@ async function main() {
   //
   // members === undefined on BOTH branches: a members-bearing todo is a batch,
   // and batches are prepared (and re-formed on revise) by form-batches.mjs.
+  // A schema-v2 TASK (a row carrying batchId whose kind is not "goal") is
+  // excluded for the same reason one schema version later: it is a step inside
+  // a batches row, "unprepared" is this job's INBOX rather than a resting
+  // state, and briefing one would advance it to "ready-for-tom" and flood the
+  // needs-me feed with plan steps.
+  //
+  // A GOAL IS NOT EXCLUDED. A goal is one of Tom's own todos that the planner
+  // bound to a batch and otherwise left untouched — binding must not be what
+  // stops it getting prepared, or the planner would silently remove a todo
+  // from this job, from the legacy lanes, and from the frontier at once.
+  const isGraphTask = (t) =>
+    t.batchId !== undefined && t.batchId !== null && t.kind !== "goal";
   const targets = (state.todos ?? []).filter(
     (t) =>
       t.members === undefined &&
+      !isGraphTask(t) &&
       (reviseByTodo.has(t._id) ||
         (t.status === "active" &&
           (t.readiness === "unprepared" ||
@@ -211,6 +275,8 @@ async function main() {
         readiness: parsed.readiness,
         ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
       });
+      // The one threaded reply, after the preparation it describes has landed.
+      await postThreadedReply(env, todo, parsed);
       if (revise) {
         // The re-prep landed — consume the ruling so the UI shows the
         // outcome and the next run doesn't re-prepare on the same sentence.

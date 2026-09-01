@@ -78,7 +78,12 @@ function QuickAdd() {
         >
           Add
         </button>
-        <Info label="tts.createTodo" />
+        <Info call="tts.createTodo({ statement })">
+          Files what you typed as a new todo, unprepared and active. An agent
+          picks it up within a couple of minutes and writes its brief, its
+          smallest way in, and how much work it looks like — then it comes back
+          to you ready to rule on.
+        </Info>
       </form>
       {error && <div className="text-xs text-error mt-1">{error}</div>}
     </div>
@@ -196,14 +201,7 @@ export default function TtsClient() {
               }}
             />
           )}
-          {tab === "batches" && (
-            <BatchesTab
-              onOpenItem={(id) => {
-                setLink({ item: id, intent: null });
-                setTab("by-individual");
-              }}
-            />
-          )}
+          {tab === "batches" && <BatchesTab />}
           {tab === "by-individual" && (
             <EverythingTab link={link} onLinkCleared={clearLink} />
           )}

@@ -10,6 +10,7 @@ import {
   ttsDayKey,
   ttsItemLink,
   nyLocalHour,
+  nyOffsetHours,
 } from "./ttsShared";
 import type { Doc } from "./_generated/dataModel";
 
@@ -18,15 +19,27 @@ import type { Doc } from "./_generated/dataModel";
 
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 
+// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+// One switch for every chat.postMessage site in this file. The senders and their
+// composition logic stay intact (this is "off for now", not a removal); flip to
+// true to turn the messages back on, and re-register the digest crons in
+// convex/crons.ts. The INBOUND path (worker/jobs/poll-dump.mjs → /tts/capture)
+// is untouched.
+const OUTBOUND_SLACK_ENABLED: boolean = false;
+
 // ── Daily digest (spec §7) ───────────────────────────────────────────────────
 // Scheduled at two UTC times with a local-hour guard so DST needs no cron
 // edits; only the run landing in the 5 a.m. New York hour proceeds, and
-// digestSentAt makes it once-per-day. ALWAYS sends, even when empty
+// digestSentAt makes it once-per-day. ALWAYS sent, even when empty
 // (sends-even-when-empty rule): a missing digest means Convex/Slack breakage,
 // a digest that reports missing prep means worker breakage.
+// NOW OFF (see OUTBOUND_SLACK_ENABLED above): the crons are unregistered and
+// this returns before anything reads, so no digest is composed or posted.
 export const sendDigest = internalAction({
   args: { force: v.optional(v.boolean()) },
   handler: async (ctx, { force }) => {
+    // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+    if (!OUTBOUND_SLACK_ENABLED) return;
     const now = Date.now();
     if (!force && nyLocalHour(now) !== TTS_DIGEST_NY_HOUR) return;
     const day = ttsDayKey(now);
@@ -94,6 +107,10 @@ export const sendDigest = internalAction({
 export const internalSessionEventMessage = internalAction({
   args: { sessionId: v.string(), text: v.string() },
   handler: async (_ctx, { sessionId, text }) => {
+    // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
+    // Callers still SCHEDULE this action on their edge transitions (the trigger
+    // wiring is what the tests cover); it just posts nothing.
+    if (!OUTBOUND_SLACK_ENABLED) return;
     const token = process.env.SLACK_BOT_TOKEN;
     const channel = process.env.SLACK_TTS_CHANNEL_ID;
     if (!token || !channel) {
@@ -216,6 +233,161 @@ function composeFallbackDigest(
   if (note) lines.push("", note);
   return lines.join("\n");
 }
+
+// ── The hourly update (Tom's ruling 2026-08-30) ──────────────────────────────
+// Three parts, in this order, every hour:
+//   (a) what Tom is scheduled to be doing AT THAT MOMENT,
+//   (b) every agent currently working on TTS,
+//   (c) what has happened since the last update.
+//
+// SENDS EVEN WHEN EMPTY, on the same reasoning as the digest
+// (digest-env-missing-is-quiet, vqc/adoption.md): a quiet hour is a fact worth
+// stating, and the ABSENT message is then the alarm. An hour with nothing in
+// any of the three parts still posts "nothing scheduled / no agents / nothing
+// since the last update".
+//
+// ITS OWN SWITCH, deliberately not OUTBOUND_SLACK_ENABLED: Tom turned the 5 a.m.
+// digest off and this is a different message with a different ruling behind it,
+// so turning one on must not turn the other on.
+const HOURLY_UPDATE_ENABLED: boolean = false;
+
+// The window's own bookkeeping. A dtsEvents row is written after each send, and
+// the newest one is read before composing — so the window is [last sent, now]
+// and a MISSED cron tick loses nothing: the next update simply covers two
+// hours. Without it the window would be a hardcoded hour, and every skipped
+// tick would silently drop an hour of history.
+const HOURLY_UPDATE_SENT = "hourly-update-sent";
+// The first run has no marker to read back. One hour, so a fresh deployment's
+// first update is an ordinary one rather than a dump of all history.
+const HOURLY_UPDATE_FIRST_WINDOW_MS = 60 * 60 * 1000;
+
+function hhmm(at: number): string {
+  const offset = nyOffsetHours(at);
+  const d = new Date(at + offset * 3_600_000);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(
+    d.getUTCMinutes(),
+  ).padStart(2, "0")}`;
+}
+
+export const sendHourlyUpdate = internalAction({
+  args: { force: v.optional(v.boolean()) },
+  handler: async (ctx, { force }) => {
+    if (!HOURLY_UPDATE_ENABLED && !force) return;
+    const now = Date.now();
+
+    const token = process.env.SLACK_BOT_TOKEN;
+    const channel = process.env.SLACK_TTS_CHANNEL_ID;
+    if (!token || !channel) {
+      // Sanctioned log-and-return (ruling digest-env-missing-is-quiet): a cron
+      // that throws adds no louder channel than this line, and the missing
+      // message is itself the signal.
+      console.error(
+        "TTS hourly update: SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured",
+      );
+      return;
+    }
+
+    // ── The window ───────────────────────────────────────────────────────────
+    const lastSent = await ctx.runQuery(internal.tts.internalLastEventAt, {
+      kind: HOURLY_UPDATE_SENT,
+    });
+    const since = lastSent ?? now - HOURLY_UPDATE_FIRST_WINDOW_MS;
+
+    // ── (a) What Tom is scheduled to be doing right now ──────────────────────
+    // Two sources, read separately so an empty answer says WHICH half was
+    // empty: the blocks Tom placed, and the read-only ICS calendar mirror.
+    const blocks = await ctx.runQuery(internal.tts.internalScheduleAt, {
+      at: now,
+    });
+    const events = await ctx.runQuery(
+      internal.ttsCalendar.internalListEventsInRange,
+      { start: now, end: now + 1 },
+    );
+    const scheduleLines = [
+      ...blocks.map(
+        (b) =>
+          `- ${hhmm(b.start)}–${hhmm(b.end)} ${
+            b.statement ?? b.category ?? b.note ?? "block"
+          }`,
+      ),
+      ...events.map((e) => `- ${hhmm(e.start)}–${hhmm(e.end)} ${e.title}`),
+    ];
+
+    // ── (b) Every agent currently working on TTS ─────────────────────────────
+    const live = await ctx.runQuery(
+      internal.claudeSessions.internalListLive,
+      {},
+    );
+
+    // ── (c) What has happened since the last update ──────────────────────────
+    const since_events = await ctx.runQuery(internal.tts.internalEventsInRange, {
+      start: since,
+      end: now,
+    });
+    // The kinds worth a line in Slack. dtsEvents is busy instrumentation —
+    // every surfacing and queue cycle lands there — so reporting all of it
+    // would bury the three or four facts that matter in an hour.
+    const REPORTABLE: Record<string, string> = {
+      captured: "captured",
+      "session-created": "session opened",
+      "session-outcome": "session finished",
+      "session-ended": "session ended",
+      ruling: "you ruled",
+      "plan-repair": "plan repair reported",
+      "batches-stored": "batches re-formed",
+      "graph-batch-formed": "batch formed",
+    };
+    const counts = new Map<string, number>();
+    for (const e of since_events) {
+      const label = REPORTABLE[e.kind];
+      if (label === undefined) continue;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+
+    const text = [
+      `*TTS — ${hhmm(now)}*`,
+      ``,
+      `*Now*`,
+      ...(scheduleLines.length > 0 ? scheduleLines : ["- nothing scheduled"]),
+      ``,
+      `*Agents working*`,
+      ...(live.length > 0
+        ? live.map(
+            (s) =>
+              `- ${s.title} (${s.status}, ${s.mode}${
+                s.repos.length > 0 ? `, ${s.repos.join(" + ")}` : ""
+              })`,
+          )
+        : ["- none"]),
+      ``,
+      `*Since ${hhmm(since)}*`,
+      ...(counts.size > 0
+        ? [...counts].map(([label, n]) => `- ${label}: ${n}`)
+        : ["- nothing"]),
+    ].join("\n");
+
+    const res = await fetch(SLACK_POST_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({ channel, text, unfurl_links: false }),
+    });
+    const result = (await res.json()) as { ok: boolean; error?: string };
+    if (!result.ok) {
+      // The marker is NOT written on a failed send, on purpose: the next
+      // update then covers this window too, so a Slack outage delays the
+      // history rather than losing it.
+      console.error(`TTS hourly update: Slack rejected the post: ${result.error}`);
+      return;
+    }
+    await ctx.runMutation(internal.tts.internalLogEvent, {
+      kind: HOURLY_UPDATE_SENT,
+      data: { windowStart: since, windowEnd: now },
+    });
+  },
+});
 
 // ── Code-todo mirror refresh (spec §5.3) ─────────────────────────────────────
 // Reads each repo's vqc/todos.yaml from its DEFAULT branch (worktrees carry
