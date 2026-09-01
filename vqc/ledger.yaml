@@ -132,22 +132,6 @@
     consults the substring scan — at which point the fallback branch is deleted
     rather than left unreachable.
 
-- id: session-repos-need-batch-subject
-  kind: descent
-  created: 2026-08-30
-  cites: [C1, tts-spec:20]
-  statement: >-
-    A session opened on a BATCH (useOpenBatchSession, app/lib/
-    use-open-todo-session.ts) still gets no checkout even when the batch
-    declares repos. The server's resolver reaches a batch through its todo, and
-    a batch session is deliberately created with no subject id at all —
-    claudeSessions has no batch subject, so createSession's todoId cannot name
-    one. The button Tom is most likely to press on a multi-repo batch is
-    therefore the one that cannot inherit the declaration.
-  graduates_when: >-
-    claudeSessions carries a batch subject (batchId) and createSession resolves
-    repos from it, with a test that a batch-session inherits its batch's repos.
-
 - id: multi-repo-daemon-unproven-live
   kind: descent
   created: 2026-08-30
@@ -237,23 +221,6 @@
     session to any caller and whose daemon claims every "requested" row, so a
     second poller would double-run Tom's sessions.
 
-- id: session-has-no-ruling-pen
-  kind: descent
-  created: 2026-08-30
-  cites: [C3, tts-spec:15]
-  statement: >-
-    The session brief instructs the agent to record Tom's spoken verdicts via
-    ttsRulings:internalRecordRuling and status changes via tts:internalTriage,
-    but neither is reachable from a session: convex/http.ts exposes only GET
-    /tts/rulings and POST /tts/ruling-applied, and the recording mutations are
-    Tom-gated browser mutations. A session with no browser therefore cannot
-    persist a ruling Tom speaks in it — it survives only as captured todos and
-    the outcome summary. The prompt promises a pen that does not exist.
-  graduates_when: >-
-    Either a key-authed POST /tts/ruling route restricted to the session's own
-    subject exists, or the instruction is removed from
-    app/lib/tts-session-prompt.ts so the prompt stops promising it.
-
 - id: writing-standard-check-not-in-ci
   kind: pending-fence
   created: 2026-08-30
@@ -288,24 +255,6 @@
   graduates_when: >-
     No `title=` attribute survives in app/tts outside genuine HTML semantics,
     Info's `label` shim prop is deleted, and every ⓘ carries plain language.
-
-- id: vercel-build-command-not-generated
-  kind: descent
-  created: 2026-08-30
-  cites: [C1, C6]
-  statement: >-
-    vercel.json now sets buildCommand to scripts/vercel-build.mjs, and that
-    script's production branch (`npx convex deploy --cmd 'pnpm build'`) is a
-    HAND-COPY of what the Vercel dashboard previously ran, transcribed from
-    AGENTS.md rather than read from the platform. Nothing checks the two agree,
-    and nothing can from inside the repo: reading the project's settings needs
-    Vercel credentials no session or CI job holds. If the dashboard command ever
-    differed from what AGENTS.md documents, this commit silently changed what
-    production builds.
-  graduates_when: >-
-    A production deploy has run through scripts/vercel-build.mjs successfully,
-    confirming the transcribed command is the right one — or the command is
-    read from a machine home instead of transcribed.
 
 - id: public-convex-url-two-spellings
   kind: descent

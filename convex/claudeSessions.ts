@@ -311,6 +311,8 @@ type SessionSeed = {
   /** Already through resolveSessionRepos. Empty = the empty-scratch posture. */
   repos: string[];
   todoId?: Id<"dtsTodos">;
+  /** The batch this session was opened on, when its subject IS a batch. */
+  batchId?: Id<"batches">;
   blockCategory?: string;
   mode?: "interactive" | "autonomous";
   model?: "fable";
@@ -351,6 +353,7 @@ async function insertSession(
     repos,
     repo: repos[0] ?? NO_REPO,
     todoId: seed.todoId,
+    batchId: seed.batchId,
     blockCategory: seed.kind === "block" ? seed.blockCategory : undefined,
     mode: seed.mode,
     model: seed.model,
@@ -372,7 +375,7 @@ async function insertSession(
   }
   const text =
     seed.prompt(sessionId, repos) +
-    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId));
+    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind: "user-turn",
@@ -443,21 +446,31 @@ export const createSession = mutation({
     repos: v.optional(v.array(v.string())),
     repo: v.optional(v.string()),
     todoId: v.optional(v.id("dtsTodos")),
+    // A session opened ON a batch names the batch itself (ledger graduation
+    // session-repos-need-batch-subject): the resolver reads the batch's
+    // declared repos directly instead of hoping to reach it through a todo.
+    batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()),
     initialPrompt: v.string(),
   },
   handler: async (
     ctx,
-    { title, kind, repos, repo, todoId, blockCategory, initialPrompt },
+    { title, kind, repos, repo, todoId, batchId, blockCategory, initialPrompt },
   ) => {
     await requireTomId(ctx);
     if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
-    // A todo-scoped session with no repos named inherits the answer from its
-    // todo (and its batch) rather than silently landing on an empty scratch
-    // workspace — the failure this whole unification exists to stop.
+    // A todo- or batch-scoped session with no repos named inherits the answer
+    // from its subject rather than silently landing on an empty scratch
+    // workspace — the failure this whole unification exists to stop. The
+    // batch is reached directly when the session names one, and through the
+    // todo otherwise.
     const todo = todoId !== undefined ? await ctx.db.get(todoId) : null;
     const batch =
-      todo?.batchId !== undefined ? await ctx.db.get(todo.batchId) : null;
+      batchId !== undefined
+        ? await ctx.db.get(batchId)
+        : todo?.batchId !== undefined
+          ? await ctx.db.get(todo.batchId)
+          : null;
     return await insertSession(
       ctx,
       {
@@ -472,6 +485,7 @@ export const createSession = mutation({
             : "",
         }),
         todoId,
+        batchId,
         blockCategory,
         // The ratified rule is "every session ends with a written outcome
         // record". An INTERACTIVE session had no writer for its own outcome at
@@ -488,8 +502,26 @@ export const createSession = mutation({
 // variables the daemon injects; SESSIONS_WORKER_KEY never enters a
 // model-reachable environment). Kept verbatim-close to the autonomous wording
 // so the two prompts teach one command, not two.
-function outcomePenFooter(sessionId: Id<"claudeSessions">): string {
+//
+// The footer also carries the WORKSPACE contract when the session holds a
+// checkout. The client-built prompts cannot know it (repos are resolved
+// server-side, and the branch name needs the session id), and an interactive
+// session that was never told the rules pushed `tts/verdict-and-names` on
+// 2026-08-30 and burned turns against the command gate's denial.
+function outcomePenFooter(
+  sessionId: Id<"claudeSessions">,
+  repos: string[],
+): string {
+  const workspace =
+    repos.length > 0
+      ? `\n\n${workspaceParagraph(
+          repos,
+          sessionId,
+          `Work Tom asks for happens in this checkout, and session/${sessionId} is the ONLY branch this session may push — the command gate denies any other name.`,
+        )}`
+      : "";
   return (
+    workspace +
     `\n\n---\nThis session's id: ${sessionId}. When the session's work concludes (or you and Tom agree it is done), record the outcome:\n` +
     `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what happened"}'\n` +
     `("completed" = the session's purpose was met; otherwise "errored" with what blocked it. CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment.)`
@@ -2124,12 +2156,17 @@ const AUTO_BATCH_SESSION_PAUSE_MS = 24 * 60 * 60 * 1000;
 // Usage-pressure fingerprints in an ending's own words — daemon endedReason
 // or agent outcomeSummary. LOCKSTEP with worker/session-host/session.mjs
 // USAGE_LIMIT_RE: both sides carry exactly this regex, narrowed on purpose to
-// account usage caps ("usage limit", "limit reached") — transient API weather
-// ("rate limit", "overloaded") must not stand the fleet down for 3h. The
-// daemon routes SDK error text into outcomeSummary on any abnormal autonomous
-// turn end ("autonomous turn failed: …"), which is what makes this breaker
-// live: the usage-limit wording actually reaches the fields tested below.
-const AUTO_USAGE_RE = /usage.?limit|limit reached/i;
+// account usage caps — transient API weather ("rate limit", "overloaded")
+// must not stand the fleet down for 3h. "session limit" is here from
+// observation: the CLI's live cap text on 2026-08-30 was "You've hit your
+// session limit · resets 8:10am (UTC)", which matched neither original
+// alternative, so the breaker never tripped and the scheduler burned a dozen
+// launches against a wall for an hour. The daemon routes SDK error text into
+// outcomeSummary on any abnormal autonomous turn end ("autonomous turn
+// failed: …"), which is what makes this breaker live: the usage-limit
+// wording actually reaches the fields tested below.
+// scripts/check-session-mirrors.mjs fails the build when the two homes drift.
+const AUTO_USAGE_RE = /usage.?limit|limit reached|session limit/i;
 
 // "This session RAN as an autonomous one" — the question every history read
 // below is actually asking. `mode` alone answers it wrongly for a reopened

@@ -767,9 +767,11 @@ export default defineSchema({
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
   // a fallback cron builds a simple-rules queue if none arrived. The digest
-  // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
-  // and marks digestSentAt — so a missing digest means Convex/Slack breakage,
-  // a digest reporting missing prep means worker breakage.
+  // SEND is OFF since Tom's 2026-08-29 outbound-Slack ruling: the digest crons
+  // are unregistered (convex/crons.ts:32-35) and sendDigest returns on
+  // OUTBOUND_SLACK_ENABLED=false, so digestSentAt is no longer stamped and
+  // there is no send-or-silence monitoring signal. The queue and digest text
+  // are still written here every morning and read on the TTS pages.
   dtsDailyQueues: defineTable({
     day: v.string(),
     entries: v.array(
@@ -895,6 +897,14 @@ export default defineSchema({
       v.literal("block"), // works through a SET of items (a category block)
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
+    // The BATCH subject (ledger graduation session-repos-need-batch-subject,
+    // 2026-08-31). A batch is its own row, not a dtsTodos row, so a session
+    // opened ON a batch could name no subject at all — and the repo resolver,
+    // which reaches a batch only THROUGH a todo, could not see the batch's
+    // declared repos. The button most likely pressed on a multi-repo batch
+    // was the one that started with no checkout. createSession resolves repos
+    // from this id directly.
+    batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
     // ── The repos this session works in ──────────────────────────────────────
     // `repos` is the LIVE field (Tom's ruling 2026-08-30: a session must be

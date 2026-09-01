@@ -114,6 +114,9 @@ export function useOpenSession() {
     kind: "gate" | "focus-item" | "weekly" | "adhoc" | "block";
     initialPrompt: string;
     todoId?: Id<"dtsTodos">;
+    /** The batch this session is opened ON — its subject, so the server
+     * resolves the batch's declared repos directly. */
+    batchId?: Id<"batches">;
     blockCategory?: string;
     /** Only when the caller genuinely knows — otherwise the server resolves. */
     repos?: string[];
@@ -137,6 +140,7 @@ export function useOpenSession() {
         title: args.title,
         kind: args.kind,
         todoId: args.todoId,
+        batchId: args.batchId,
         blockCategory: args.blockCategory,
         repos: args.repos,
         initialPrompt: args.initialPrompt,
@@ -154,16 +158,11 @@ export function useOpenSession() {
 }
 
 // The batch twin of useOpenTodoSession (schema v2). A batch is its own row, not
-// a dtsTodos row, so it cannot go through `open` below: createSession's todoId
-// names a todo, and claudeSessions has no batch subject yet. The session is
-// therefore opened WITHOUT a subject id — its whole subject is the graph, which
-// rides in the prompt.
-//
-// Consequence of having no subject id, and the reason this is a ledger entry
-// (session-repos-need-batch-subject) rather than finished work: the server's
-// repo resolver reaches a batch THROUGH its todo, so a session opened on the
-// batch itself cannot inherit the batch's declared repos and still starts with
-// no checkout. Closing that needs a batch subject on claudeSessions.
+// a dtsTodos row, so it cannot go through `open` below with a todoId — its
+// subject is the batch itself, passed as batchId (claudeSessions.batchId,
+// ledger graduation session-repos-need-batch-subject 2026-08-31), so the
+// server's repo resolver reads the batch's declared repos directly and the
+// session starts with the checkout the batch's work needs.
 export function useOpenBatchSession() {
   const writingSkill = useWritingSkill();
   const { open: openSession, busy, error } = useOpenSession();
@@ -172,6 +171,7 @@ export function useOpenBatchSession() {
     await openSession({
       title: batch.statement,
       kind: "focus-item",
+      batchId: batch.id,
       initialPrompt: buildBatchSessionPrompt(batch, writingSkill),
     });
   };

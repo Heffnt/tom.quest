@@ -186,6 +186,56 @@ const ttsCapture = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 
+// POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
+// to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this
+// route only carries the traffic). Body: { title, start, end, description?,
+// location?, recurrence?, calendarId? } — start/end epoch ms.
+const ttsCalendarEvent = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.title !== "string" || b.title.trim() === "") {
+    return jsonResponse(400, { error: "title (non-empty string) required" });
+  }
+  if (typeof b.start !== "number" || typeof b.end !== "number") {
+    return jsonResponse(400, { error: "start and end (epoch ms) required" });
+  }
+  const recurrence = Array.isArray(b.recurrence)
+    ? b.recurrence.filter((r): r is string => typeof r === "string")
+    : undefined;
+  try {
+    const created = await ctx.runAction(
+      internal.ttsCalendarWrite.internalCreateEvent,
+      {
+        title: b.title,
+        start: b.start,
+        end: b.end,
+        description: typeof b.description === "string" ? b.description : undefined,
+        location: typeof b.location === "string" ? b.location : undefined,
+        recurrence,
+        calendarId: typeof b.calendarId === "string" ? b.calendarId : undefined,
+      },
+    );
+    return jsonResponse(200, { ok: true, ...created });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/tts/calendar-event",
+  method: "POST",
+  handler: ttsCalendarEvent,
+});
+
 // POST /tts/slack-replied — the worker reports that it posted its ONE threaded
 // reply to the #dump message a todo came from. Body: { id, replyTs? }. Separate
 // from /tts/prepare-todo because the reply happens AFTER preparation lands: the

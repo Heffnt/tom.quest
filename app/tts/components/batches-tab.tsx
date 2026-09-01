@@ -129,6 +129,7 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
     evidence: t.evidence,
   });
   return {
+    id: batch._id,
     statement: batch.statement,
     groundUp: batch.groundUpExplanation,
     path: batch.path
