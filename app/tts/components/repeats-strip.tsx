@@ -121,8 +121,12 @@ function RepeatRow({ rule }: { rule: Repeat }) {
 }
 
 export default function RepeatsStrip() {
-  const { isTom } = useAuth();
-  const repeats = useQuery(api.ttsRepeats.listRepeats, isTom ? {} : "skip");
+  const { canReadSurface } = useAuth();
+  // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
+  // session browses as. Every mutation on this surface stays Tom-only and is
+  // refused by Convex regardless of what renders here.
+  const canRead = canReadSurface("TTS");
+  const repeats = useQuery(api.ttsRepeats.listRepeats, canRead ? {} : "skip");
   const createRepeat = useMutation(api.ttsRepeats.createRepeat);
   const [open, setOpen] = useState(false);
   const [statement, setStatement] = useState("");

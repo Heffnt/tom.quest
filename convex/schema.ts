@@ -2,10 +2,14 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+// `agent` is not a rank between `user` and `admin`: it is a side branch that
+// reads the surfaces in convex/agentSurfaces.ts and writes nothing. See
+// roleAccess() in convex/authRoles.ts, which returns isAdmin:false for it.
 export const USER_ROLES = v.union(
   v.literal("user"),
   v.literal("admin"),
   v.literal("tom"),
+  v.literal("agent"),
 );
 
 export default defineSchema({

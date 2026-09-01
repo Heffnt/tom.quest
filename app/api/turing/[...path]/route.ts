@@ -1,11 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/app/lib/convex-server";
+import { requireAdmin, requireAdminOrAgent } from "@/app/lib/convex-server";
 import { forwardToTuringApi } from "@/app/lib/turing";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
+// THE GATE IS PER-METHOD, AND THAT IS THE POINT. This one function used to put
+// a single requireAdmin in front of GET, POST and DELETE alike, so any account
+// that could LOOK at /turing could also allocate GPUs and cancel running jobs
+// — including a TTS session, which browses as a real signed-in account. GET
+// (list GPUs, list jobs) now takes the read gate, which also admits the
+// read-only `agent` role; POST (allocate) and DELETE (cancel) keep requireAdmin
+// and are closed to it. Anything added here that changes cluster state must go
+// through a method that keeps requireAdmin.
 async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "DELETE") {
-  const auth = await requireAdmin(request);
+  const auth =
+    method === "GET"
+      ? await requireAdminOrAgent(request, "Turing")
+      : await requireAdmin(request);
   if (auth instanceof Response) return auth;
   const { path } = await ctx.params;
   const search = new URL(request.url).search;

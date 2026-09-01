@@ -92,13 +92,26 @@ without them, because every `/turing` and `/tts` page is role-gated: browsing
 one anonymously returns a 200 with 401s underneath, which reads as "page is
 fine" to a session that only checked the status.
 
-**Those two keys hold Tom's own account** (ratified 2026-08-30), so every
-session browses at role `tom`. Nothing scrubs them from a session's shell —
-`session.mjs` drops exactly `SESSIONS_WORKER_KEY` and `GH_TOKEN` and inherits
-the rest — so the account's role is the role every session holds. This is a
-knowing interim: no other account exists yet, and a session that cannot see
-`/turing` cannot check its own work there. A session account with a narrower
-role is a captured TTS todo.
+**Those two keys hold an account at role `agent`** — tom.quest's fourth role,
+which exists for this and nothing else. It reads `/turing` and `/tts`; it
+writes nothing anywhere; and it sees no other page, including `/sessions`,
+`/forge`, `/jarvis` and `/canvas`. On `/turing` it gets the `GET` that lists
+GPUs and jobs, but not the `POST` that allocates, the `DELETE` that cancels,
+or the terminal's credential endpoint. The single list that defines the reach
+is `convex/agentSurfaces.ts`; widening it is adding one name there.
+
+So a Tom-only page browsed with `--login` shows the restricted card. That is
+the correct result for this account, not a bug in the page.
+
+The two names are **deleted from a session's shell** (`session.mjs` drops them
+alongside `SESSIONS_WORKER_KEY` and `GH_TOKEN`), so no `env` or `echo` can
+write the password into a transcript Convex stores forever; `tts-browse` reads
+them back out of `/etc/tts/worker.env` itself, running as the same user. The
+scrub and the narrow role are independent: the role means a leak costs little,
+the scrub means there is nothing to leak.
+
+These held Tom's own account as a knowing interim, ratified 2026-08-30, until
+the `agent` role existed.
 
 ## The cluster, read-only
 
