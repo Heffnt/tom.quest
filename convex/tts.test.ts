@@ -365,7 +365,12 @@ describe("TTS todos", () => {
       slackChannel: "C0DUMP",
       slackTs: "1787875674.496329",
     });
-    expect(second).toBe(first);
+    expect(second.id).toBe(first.id);
+    // The refusal is REPORTED, not silent: poll-dump.mjs logs it as a refused
+    // duplicate, which is the only place on the box where the push route's hit
+    // rate shows up.
+    expect(first.duplicate).toBe(false);
+    expect(second.duplicate).toBe(true);
     const todos = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todos).toHaveLength(1);
     expect(todos[0].slackTs).toBe("1787875674.496329");
@@ -392,7 +397,7 @@ describe("TTS todos", () => {
   // the ts of the reply that actually exists in Slack.
   it("records the threaded reply once and never re-points it", async () => {
     const t = convexTest({ schema, modules });
-    const id = await t.mutation(internal.tts.internalCapture, {
+    const { id } = await t.mutation(internal.tts.internalCapture, {
       statement: "reply to me",
       source: "slack-capture",
       slackChannel: "C0DUMP",

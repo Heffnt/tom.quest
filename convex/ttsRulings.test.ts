@@ -303,6 +303,14 @@ describe("TTS unified rulings", () => {
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(0);
+    // Both timestamps come from Date.now() at write time and briefAwaitsRuling
+    // compares them STRICTLY (ruledAt < preparedAt). In this in-memory test the
+    // ruling above and the re-brief below can land in the SAME millisecond,
+    // which reads as "not newer" and made this test flake under a loaded full
+    // run. Waiting for the clock to tick makes the re-brief unambiguously
+    // later, which is what the real sequence (worker re-briefs minutes after
+    // the revise is applied) always is.
+    await new Promise((resolve) => setTimeout(resolve, 2));
     // The worker re-briefs after applying the revise — the fresh brief's
     // preparedAt is newer than the ruling, so the item awaits a fresh ruling.
     await t.mutation(internal.ttsCode.internalStoreBriefs, {

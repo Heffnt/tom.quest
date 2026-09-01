@@ -1385,12 +1385,17 @@ export const internalCapture = internalMutation({
     // Slack retry and every overlap between the two would mint a duplicate
     // todo. Returning the EXISTING id rather than throwing is what lets the
     // push route answer 200 to a retry, which is what stops Slack retrying.
+    //
+    // `duplicate` is reported rather than swallowed so the caller can SAY what
+    // happened: poll-dump.mjs, the backstop, logs a refused duplicate as a
+    // distinct line, which is the only place the push route's hit rate is
+    // visible from the box.
     if (slackTs !== undefined) {
       const existing = await ctx.db
         .query("dtsTodos")
         .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
         .first();
-      if (existing) return existing._id;
+      if (existing) return { id: existing._id, duplicate: true };
     }
     const id = await ctx.db.insert("dtsTodos", {
       statement: statement.trim(),
@@ -1405,7 +1410,7 @@ export const internalCapture = internalMutation({
       updatedAt: now,
     });
     await logEvent(ctx, "captured", id, { source });
-    return id;
+    return { id, duplicate: false };
   },
 });
 

@@ -1,21 +1,34 @@
 #!/usr/bin/env node
-// poll-dump.mjs — poll the Slack #dump channel and submit every new human
-// message to Convex as an unprepared TTS capture.
+// poll-dump.mjs — the RECONCILIATION BACKSTOP behind the Slack push route.
+// It polls the Slack #dump channel and offers every new human message to
+// Convex as an unprepared TTS capture.
 //
-// Run by cron every 2 minutes (see /etc/cron.d/tts). Also runnable by hand:
+// NOT the fast path anymore. Tom ruled 2026-08-30 that Slack PUSHES each
+// #dump message to Convex at POST /slack/events, which captures it about a
+// second after it is typed. This job stays because Slack's event delivery is
+// best-effort, not guaranteed: an event Slack drops, or one that arrives while
+// Convex is unreachable, exists nowhere else. So this is the slower loop whose
+// only job is to notice what the fast path dropped.
+//
+// Run by cron HOURLY (see /etc/cron.d/tts). Also runnable by hand:
 //   node /opt/tts/poll-dump.mjs
 //
 // STATE: the ONLY local state on the Jarvis Box is the cursor file
-// /var/lib/tts/dump-cursor, holding the Slack ts of the last captured
-// message. Everything durable lives in Convex (the no-state rule). Losing
-// the cursor is harmless-by-design: on the next run with no cursor we only
-// look back 24 hours, so at worst the last day of #dump messages is captured
-// AGAIN as duplicate todos, which Tom can simply archive. That trade
-// (rare, visible, manually fixable duplication) is deliberately preferred
-// over any clever server-side dedup machinery.
+// /var/lib/tts/dump-cursor, holding the Slack ts of the last message this job
+// offered. Everything durable lives in Convex (the no-state rule). The cursor
+// advances on messages THIS job files, so it lags behind the push route and
+// this job re-offers what the push route already took — which is fine and
+// intended, because captures are idempotent on the Slack message ts server-side
+// (convex/tts.ts internalCapture, index by_slackTs). The server returns the
+// existing todo and reports duplicate: true; nothing is minted twice.
 //
-// The cursor is advanced after EVERY successful capture (not once at the
-// end), so a crash mid-batch re-captures at most one message.
+// That same guard is what makes losing the cursor a non-event: with no cursor
+// we look back 24 hours and re-offer that whole day, and every message already
+// captured is refused. (Before the dedupe guard existed this produced a day of
+// duplicate todos Tom archived by hand.)
+//
+// The cursor is advanced after EVERY successful offer (not once at the end),
+// so a crash mid-batch re-offers at most one message.
 
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -30,14 +43,18 @@ const MAX_PAGES = 10; // safety bound; 10 pages x 200 msgs is far beyond a day o
 // rather than this file's GET-only copy plus a second one (VQC C1).
 const slack = slackGet;
 
-// Preparation is spawned DETACHED after a run that captured anything, so a
-// dumped thought is prepared on this same tick instead of waiting for the next
-// prepare-life-todos cron tick. flock -n is what makes that safe: this spawn
-// and the cron take the same lock, and whichever loses simply exits.
+// Preparation is spawned DETACHED after a run that captured something NEW, so
+// a message the push route missed is prepared on this same run instead of
+// waiting for the next prepare-life-todos cron tick. flock -n is what makes
+// that safe: this spawn and the cron take the same lock, and whichever loses
+// simply exits.
 //
-// HONEST LATENCY: this is not "immediate". End to end it is one poll tick plus
-// one Claude call. What it removes is the wait for the NEXT preparation tick,
-// which used to be up to two hours.
+// HONEST LATENCY, end to end, for a message the push route DID take (the
+// normal case): captured about a second after it is typed, then prepared after
+// up to one 2-minute prepare-life-todos tick plus one Claude call. "Captured
+// instantly, prepared within a few minutes" is the true sentence; "instant" on
+// its own is not. For a message only this backstop catches, add up to an hour
+// for the poll tick.
 function spawnPreparation() {
   try {
     const child = spawn(
@@ -105,10 +122,17 @@ async function main() {
     .sort((a, b) => Number(a.ts) - Number(b.ts));
 
   if (human.length === 0) {
-    // Nothing new. Exit 0 quietly so the every-2-minutes cron stays silent
-    // in the logs when the world is idle.
+    // Nothing new. Exit 0 quietly so the hourly cron stays silent in the logs
+    // when the world is idle.
     return;
   }
+
+  // How many of this run's offers the server actually turned into todos. In
+  // the healthy state this is ZERO on almost every run: the push route got
+  // there first and every offer below is refused as a duplicate. A run with a
+  // non-zero count is this job doing the one thing it exists for — catching an
+  // event Slack never delivered.
+  let captured = 0;
 
   for (const m of human) {
     // Provenance: a permalink lets Tom jump from a todo back to the original
@@ -137,24 +161,41 @@ async function main() {
       slackTs: m.ts,
     });
 
-    // Advance the cursor IMMEDIATELY after each successful capture, so a
-    // crash between messages never re-captures more than the one in flight.
+    // Advance the cursor IMMEDIATELY after each successful offer, so a crash
+    // between messages never re-offers more than the one in flight.
     fs.writeFileSync(CURSOR_FILE, m.ts);
 
-    console.log(
-      `[poll-dump] captured ts=${m.ts} id=${result.id ?? "?"} ` +
-        `"${m.text.slice(0, 60).replace(/\s+/g, " ")}"`,
-    );
+    const excerpt = `"${m.text.slice(0, 60).replace(/\s+/g, " ")}"`;
+    if (result.duplicate) {
+      // The normal, healthy line: the push route already captured this
+      // message and the server refused a second one. Logged rather than
+      // silent because these two lines are how the log says which path is
+      // doing the work.
+      console.log(
+        `[poll-dump] duplicate refused ts=${m.ts} id=${result.id ?? "?"} ` +
+          `(already captured by /slack/events) ${excerpt}`,
+      );
+    } else {
+      captured += 1;
+      console.log(
+        `[poll-dump] captured ts=${m.ts} id=${result.id ?? "?"} ` +
+          `(push route missed it) ${excerpt}`,
+      );
+    }
   }
 
   // One spawn for the whole run, not one per message: preparation processes a
   // batch, so a second overlapping run would only lose its lock and exit.
-  spawnPreparation();
+  //
+  // Only when something NEW landed. A run that refused every offer as a
+  // duplicate has created no unprepared todo, and the push route's own
+  // captures are already served by the prepare-life-todos cron tick.
+  if (captured > 0) spawnPreparation();
 }
 
 main().catch((err) => {
   // Any hard failure (env missing, Slack down, Convex rejecting) lands here.
-  // Log and exit 1 — cron will simply try again in 2 minutes, and the cursor
+  // Log and exit 1 — cron will simply try again next hour, and the cursor
   // guarantees we pick up exactly where we left off.
   console.error(`[poll-dump] FAILED: ${err.message}`);
   process.exit(1);

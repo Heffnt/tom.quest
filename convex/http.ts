@@ -171,17 +171,25 @@ const ttsCapture = httpAction(async (ctx, request) => {
   if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
     return jsonResponse(400, { error: "statement (non-empty string) required" });
   }
-  const id = await ctx.runMutation(internal.tts.internalCapture, {
-    statement: b.statement,
-    source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
-    provenance: typeof b.provenance === "string" ? b.provenance : undefined,
-    // The Slack coordinates, when the caller is a Slack producer. They are
-    // what the threaded reply is addressed to and what the push route dedupes
-    // on; a caller that has none simply omits them.
-    slackChannel: typeof b.slackChannel === "string" ? b.slackChannel : undefined,
-    slackTs: typeof b.slackTs === "string" ? b.slackTs : undefined,
-  });
-  return jsonResponse(200, { ok: true, id });
+  const { id, duplicate } = await ctx.runMutation(
+    internal.tts.internalCapture,
+    {
+      statement: b.statement,
+      source:
+        typeof b.source === "string" && b.source ? b.source : "slack-capture",
+      provenance: typeof b.provenance === "string" ? b.provenance : undefined,
+      // The Slack coordinates, when the caller is a Slack producer. They are
+      // what the threaded reply is addressed to and what the push route dedupes
+      // on; a caller that has none simply omits them.
+      slackChannel:
+        typeof b.slackChannel === "string" ? b.slackChannel : undefined,
+      slackTs: typeof b.slackTs === "string" ? b.slackTs : undefined,
+    },
+  );
+  // `duplicate` tells poll-dump.mjs — the hourly backstop, which re-offers
+  // messages the /slack/events push route already took — that this offer was
+  // refused, so its log can name that rather than claiming a fresh capture.
+  return jsonResponse(200, { ok: true, id, duplicate });
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
@@ -392,14 +400,18 @@ const slackEvents = httpAction(async (ctx, request) => {
   // one todo. No permalink call here: fetching one is a second network round
   // trip inside the 3-second budget, and poll-dump's provenance is not worth
   // the risk of a retry storm. The ts IS the address until then.
-  const id = await ctx.runMutation(internal.tts.internalCapture, {
-    statement: text,
-    source: "slack-capture",
-    provenance: `slack:#dump ts=${ts}`,
-    slackChannel: typeof event.channel === "string" ? event.channel : undefined,
-    slackTs: ts,
-  });
-  return jsonResponse(200, { ok: true, id });
+  const { id, duplicate } = await ctx.runMutation(
+    internal.tts.internalCapture,
+    {
+      statement: text,
+      source: "slack-capture",
+      provenance: `slack:#dump ts=${ts}`,
+      slackChannel:
+        typeof event.channel === "string" ? event.channel : undefined,
+      slackTs: ts,
+    },
+  );
+  return jsonResponse(200, { ok: true, id, duplicate });
 });
 
 http.route({ path: "/slack/events", method: "POST", handler: slackEvents });

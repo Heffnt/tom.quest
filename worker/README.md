@@ -4,8 +4,19 @@ The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
 (Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
 on a schedule:
 
-1. **poll-dump** (every 2 min) — reads new human messages from the Slack
-   `#dump` channel and submits each one to Convex as an unprepared todo.
+1. **poll-dump** (hourly at :07) — the reconciliation backstop behind the Slack
+   push route. `#dump` messages no longer arrive here first: Tom ruled
+   2026-08-30 that Slack PUSHES each one to Convex at `POST /slack/events`
+   (signature-verified, captured inline), so this job exists to catch what
+   Slack's best-effort delivery drops. It reads new human messages from `#dump`
+   and offers each to Convex; offers the push route already took come back
+   `duplicate: true` (captures are idempotent on the Slack message ts) and the
+   log names them as refused. **Honest end-to-end latency:** a `#dump` message
+   is captured about a second after it is typed, and prepared — brief and entry
+   action written by one headless Claude call — after up to one 2-minute
+   `prepare-life-todos` tick plus that call. "Captured instantly, prepared
+   within a few minutes"; not "instant". A message only this backstop catches
+   waits up to an hour for capture instead.
 2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
    Claude call per batch deciding which messages imply an action by Tom, then
    submits each of those to Convex as an unprepared todo with source `email`
@@ -111,8 +122,10 @@ setup step.
 (and, for code todos, in the CMT repo itself). The local files with memory
 are all harmless to lose:
 
-- `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-captures up to
-  24 hours of `#dump` messages as duplicates Tom can archive.
+- `/var/lib/tts/dump-cursor` — Slack poll cursor, and the reason a `#dump`
+  message Slack failed to push is recoverable rather than lost. Losing the file
+  re-offers up to 24 hours of `#dump` messages; none of them duplicate, because
+  captures are idempotent on the Slack message ts (`by_slackTs`).
 - `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
   processed (captured or skipped); losing it re-examines the last 24 hours,
   at worst re-capturing a few emails as duplicates Tom can archive.
@@ -177,7 +190,7 @@ tts-account use wpi      # switch; takes effect on the next job run
 ## Testing jobs by hand
 
 ```
-node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
+node /opt/tts/poll-dump.mjs               # reconcile #dump against Convex now
 node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
