@@ -90,7 +90,8 @@ cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
-  /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential
+  /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
+  /usr/local/bin/tts-vercel
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -129,6 +130,48 @@ EOF
 else
   echo "  GH_TOKEN not set in /etc/tts/worker.env — gh stays unauthenticated"
   echo "  and private-repo clones will fail; fill it in and re-run setup.sh."
+fi
+
+# Vercel credential for sessions (tts-vercel: read a failed build's log).
+# Same shape as the gh block above and for the same reason, which is worth
+# spelling out because it differs from TURING_READ_KEY: Vercel has no
+# read-only token. One privilege level, no way to reduce it — scoping a token
+# to a team or a single project narrows which RESOURCES it reaches, never
+# which verbs — so the token that reads a build log can also delete the
+# deployment and rewrite the project's env vars.
+#
+# It therefore must not sit in a session's environment (session.mjs drops
+# VERCEL_TOKEN alongside GH_TOKEN). This DERIVED file, outside every work
+# tree, is where tts-vercel reads it instead; that command issues only GETs.
+# Regenerated on every run — never hand-edit it, edit worker.env.
+VERCEL_TOKEN_VALUE="$(sed -n 's/^VERCEL_TOKEN=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
+VERCEL_PROJECT_VALUE="$(sed -n 's/^VERCEL_PROJECT=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
+VERCEL_TEAM_ID_VALUE="$(sed -n 's/^VERCEL_TEAM_ID=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
+if [ -n "$VERCEL_TOKEN_VALUE" ]; then
+  # Written before the chmod so the token is never briefly world-readable.
+  install -m 600 /dev/null /etc/tts/vercel.conf
+  {
+    echo "# DERIVED from /etc/tts/worker.env by worker/setup.sh — do not edit."
+    printf "VERCEL_TOKEN='%s'\n" "$VERCEL_TOKEN_VALUE"
+    printf "VERCEL_PROJECT='%s'\n" "${VERCEL_PROJECT_VALUE:-tom.quest}"
+    # NOT `[ -n … ] && printf …`: that is the last command in this group, so
+    # under `set -e` an unset team id (the ordinary case for a personal
+    # account) would make the group exit nonzero and abort all of setup.sh.
+    if [ -n "$VERCEL_TEAM_ID_VALUE" ]; then
+      printf "VERCEL_TEAM_ID='%s'\n" "$VERCEL_TEAM_ID_VALUE"
+    fi
+  } > /etc/tts/vercel.conf
+  echo "  tts-vercel credential written to /etc/tts/vercel.conf"
+  if [ -z "$VERCEL_PROJECT_VALUE" ]; then
+    echo "  (VERCEL_PROJECT unset — defaulted to 'tom.quest'; if tts-vercel"
+    echo "  answers 404, set the real Vercel project name in worker.env.)"
+  fi
+else
+  # Absent is a supported state, not a broken one: every other job runs fine,
+  # and tts-vercel says exactly what is missing when a session reaches for it.
+  rm -f /etc/tts/vercel.conf
+  echo "  VERCEL_TOKEN not set in /etc/tts/worker.env — tts-vercel stays off"
+  echo "  (sessions cannot read their own Vercel build logs until it is set)."
 fi
 
 # Env file: seed from the template ONLY if absent — a re-run must never

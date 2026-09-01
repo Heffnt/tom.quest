@@ -690,16 +690,31 @@ export class Session {
 
   startQuery({ resume } = {}) {
     // The daemon's own secrets, dropped from the env the session's shell
-    // inherits. Under systemd both arrive via EnvironmentFile=/etc/tts/
+    // inherits. Under systemd they all arrive via EnvironmentFile=/etc/tts/
     // worker.env, so without this destructure-drop `env` in any Bash call
     // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
-    // confused session could rewrite ANY transcript) and GH_TOKEN is repo
-    // write for the whole account. Neither is reachable through the
-    // sanctioned pens, so nothing legitimate needs them IN THE ENV: git
-    // authenticates through the global credential helper and gh through
-    // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
-    // every work tree), so `git push` and `gh pr create` work in a shell
-    // that cannot print the token with `env`.
+    // confused session could rewrite ANY transcript), GH_TOKEN is repo write
+    // for the whole account, and VERCEL_TOKEN is write on the deployment that
+    // serves tom.quest. None of the three is reachable through the sanctioned
+    // pens, so nothing legitimate needs them IN THE ENV: git authenticates
+    // through the global credential helper, gh through
+    // /root/.config/gh/hosts.yml, and tts-vercel through
+    // /etc/tts/vercel.conf (all installed by setup.sh, all outside every work
+    // tree), so `git push`, `gh pr create` and `tts-vercel logs` work in a
+    // shell that cannot print any of the tokens with `env`.
+    //
+    // VERCEL_TOKEN is dropped for the same reason as GH_TOKEN, and the reason
+    // is worth stating because it is the OPPOSITE of the Turing case below:
+    // Vercel sells no read-only credential. A Vercel access token carries one
+    // privilege level with no way to reduce it — scoping it to a team or to a
+    // single project narrows WHICH resources it reaches, never which verbs —
+    // so the token that reads a build log can also DELETE that deployment and
+    // rewrite the project's environment variables. A session therefore never
+    // gets to hold it: `tts-vercel` reads it from a root-owned
+    // /etc/tts/vercel.conf that setup.sh derives from worker.env, and that
+    // command issues only GETs. If a Vercel credential is ever needed IN a
+    // session's env, that is a decision about handing every session
+    // production write, not a refactor.
     //
     // TURING_READ_KEY is deliberately NOT dropped. It is the cluster API's
     // read-only credential (turing-api's verify_read_key: GET /gpu-report,
@@ -714,6 +729,7 @@ export class Session {
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
+      VERCEL_TOKEN: _vercelToken,
       ...inheritedEnv
     } = process.env;
     this.queue = new TurnQueue();
@@ -1190,6 +1206,7 @@ export class Session {
             const {
               SESSIONS_WORKER_KEY: _ingest,
               GH_TOKEN: _gh,
+              VERCEL_TOKEN: _vercel,
               TTS_WORKER_KEY: _tts,
               ...rest
             } = process.env;

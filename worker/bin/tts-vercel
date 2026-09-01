@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# tts-vercel — read this project's Vercel deployments and build logs from the
+# Jarvis Box.
+#
+# WHY THIS EXISTS: a Vercel build failure is the one CI signal that actually
+# gates merging here, and until now a TTS session could not read it. The GitHub
+# check surfaces through the sanctioned `gh` path, but a failed Vercel check's
+# detail is the sentence "run `npx vercel inspect --logs <url>`" — a command
+# that needs a Vercel credential the box did not have. So a session that broke
+# the build could see THAT it broke and never WHY, and had to hand the failure
+# back to Tom with nothing attached.
+#
+#   tts-vercel deployments [--branch B]   recent deployments, newest first
+#   tts-vercel inspect [ID] [--branch B]  one deployment: state, error, commit
+#   tts-vercel logs [ID] [--branch B]     its build log
+#
+# With no ID and no --branch, all three act on the CURRENT GIT BRANCH's most
+# recent deployment — in a session that is `session/<id>`, i.e. exactly the
+# build the session itself just caused.
+#
+# ── WHY THE CREDENTIAL IS NOT IN THE SESSION'S ENVIRONMENT ───────────────────
+#
+# TURING_READ_KEY sits in a session's env, and that is safe because turing-api
+# was CHANGED to mint a genuinely read-only credential (verify_read_key: three
+# GETs, no write verb). Vercel offers no such thing. Its access tokens carry
+# one privilege level and no way to reduce it: a token can be scoped to an
+# account, a team, or (with project-scoped tokens) a single project, but within
+# that scope it always reads AND writes. The same token that reads this build
+# log can DELETE /v13/deployments/{id}, rewrite the project's environment
+# variables, and promote a deployment to production.
+#
+# So there is no read-only Vercel token to hand a session, and the read-only
+# half has to be built here instead. Two things enforce it:
+#
+#   1. The token is NOT in the session's environment. It lives in a root-owned
+#      /etc/tts/vercel.conf (mode 600) that setup.sh regenerates from
+#      worker.env, and session.mjs drops VERCEL_TOKEN from the env a session
+#      inherits — the same treatment GH_TOKEN gets, for the same reason.
+#   2. THIS FILE ISSUES ONLY GETs. `vget` is the single function that reaches
+#      the API and it hardcodes -X GET; there is no verb here that deletes,
+#      redeploys, promotes, or writes an environment variable, and none is
+#      coming. Adding one would hand every session the ability to delete a
+#      production deployment.
+#
+# Be honest about what that buys: a session runs as root on this box, so this
+# raises the COST of reaching the token (an /etc/ path in a command is a
+# classifier verdict, like any other box-configuration touch) rather than making
+# it unreachable. That is the same bargain already struck for GH_TOKEN, and it
+# is why the read-only-ness lives in this file's shape.
+#
+# Exit codes: 0 ok · 2 usage · 3 no credential configured · 4 the API refused
+#             or failed · 5 no deployment matched.
+set -euo pipefail
+
+CONF="${TTS_VERCEL_CONF:-/etc/tts/vercel.conf}"
+API="${VERCEL_API_URL:-https://api.vercel.com}"
+LIMIT=""
+BRANCH=""
+ERRORS_ONLY=0
+RAW=0
+DEPLOYMENT=""
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: tts-vercel <verb> [ID] [--branch B] [--limit N] [--errors] [--raw]
+
+  deployments   recent deployments for this project, newest first
+  inspect [ID]  one deployment: state, error code/message, commit, inspector URL
+  logs [ID]     one deployment's build log
+
+  ID is a deployment id (dpl_...) or a deployment hostname. Omit it and the
+  most recent deployment for --branch is used; omit --branch too and the
+  current git branch is used.
+
+  --limit N   deployments: how many to list (default 10)
+              logs: how many of the LAST log events to print (default 200)
+  --errors    logs: only stderr and fatal events, and anything marked error
+  --raw       print the API's JSON exactly as received
+
+Reads its credential from /etc/tts/vercel.conf, never from the environment.
+Only ever issues GET; there is no write verb here.
+USAGE
+  exit 2
+}
+
+# Scratch file for handing a response body to python3. Using a file rather than
+# a pipe is what lets every formatter below be a QUOTED heredoc: no shell
+# expansion happens inside them, so the Python can use whichever quotes it
+# likes without a layer of backslashes.
+TMP="$(mktemp)"
+cleanup() { rm -f "$TMP"; }
+trap cleanup EXIT
+
+# ── config ───────────────────────────────────────────────────────────────────
+# VERCEL_TOKEN is the credential. VERCEL_PROJECT names the project to look at
+# (its Vercel project name or id). VERCEL_TEAM_ID is needed only if the project
+# lives under a team rather than a personal account.
+load_conf() {
+  if [ ! -r "$CONF" ]; then
+    cat >&2 <<MISSING
+tts-vercel: no credential at ${CONF}.
+
+That file is DERIVED — setup.sh regenerates it from /etc/tts/worker.env on
+every run, so the fix is to fill in worker.env and re-run setup.sh, not to
+hand-edit it:
+
+  VERCEL_TOKEN=...        vercel.com -> Account Settings -> Tokens
+  VERCEL_PROJECT=...      the project name, e.g. tom-quest
+  VERCEL_TEAM_ID=...      only if the project is under a team
+
+Minting the token is Tom's to do: it is an account credential, and typing one
+into a session would write it into a stored transcript.
+MISSING
+    exit 3
+  fi
+  # shellcheck disable=SC1090
+  . "$CONF"
+  [ -n "${VERCEL_TOKEN:-}" ] || {
+    echo "tts-vercel: ${CONF} exists but sets no VERCEL_TOKEN" >&2
+    exit 3
+  }
+  [ -n "${VERCEL_PROJECT:-}" ] || {
+    echo "tts-vercel: ${CONF} exists but sets no VERCEL_PROJECT" >&2
+    exit 3
+  }
+}
+
+# ── the request ──────────────────────────────────────────────────────────────
+# GET, always. The token reaches curl through a --config file on stdin rather
+# than an -H argument, because argv is world-readable through /proc: a `ps aux`
+# from anything else on the box would otherwise show the token in full.
+vget() {
+  local path="$1" body status
+  body="$(
+    printf 'header = "Authorization: Bearer %s"\n' "$VERCEL_TOKEN" \
+      | curl -sS --max-time 60 -X GET -K - -w $'\n%{http_code}' "${API}${path}"
+  )" || {
+    echo "tts-vercel: could not reach ${API}" >&2
+    exit 4
+  }
+  status="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+  if [ "$status" != "200" ]; then
+    echo "tts-vercel: GET ${path%%\?*} answered ${status}" >&2
+    case "$status" in
+      401) echo "  The token in ${CONF} is not valid, or has been revoked." >&2 ;;
+      403) echo "  The token is valid but not scoped to this project. A project-scoped" >&2
+           echo "  token reaches exactly one project; check VERCEL_PROJECT, and if the" >&2
+           echo "  project is under a team, that VERCEL_TEAM_ID is set." >&2 ;;
+      404) echo "  No such project or deployment (check VERCEL_PROJECT and the id)." >&2 ;;
+    esac
+    printf '%s\n' "$body" >&2
+    exit 4
+  fi
+  printf '%s' "$body"
+}
+
+# Join non-empty k=v pairs into a query string, so no call site has to invent a
+# filler param just to have something for "&teamId=" to hang off.
+build_query() {
+  local out="" p
+  for p in "$@"; do
+    [ -n "$p" ] || continue
+    out="${out:+${out}&}${p}"
+  done
+  [ -z "$out" ] || printf '?%s' "$out"
+}
+
+team_q() {
+  [ -z "${VERCEL_TEAM_ID:-}" ] || printf 'teamId=%s' "$VERCEL_TEAM_ID"
+}
+
+urlenc() {
+  python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
+
+# The branch to act on when the caller named neither a deployment nor a branch.
+# In a TTS session this is session/<id> — the branch whose build the session
+# itself just triggered, which is the whole point of this command.
+current_branch() {
+  git rev-parse --abbrev-ref HEAD 2>/dev/null || true
+}
+
+# ── argument parse ───────────────────────────────────────────────────────────
+VERB="${1:-}"
+[ -n "$VERB" ] || usage
+shift || true
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --branch) shift || usage; BRANCH="${1:-}" ;;
+    --limit)  shift || usage; LIMIT="${1:-}" ;;
+    --errors) ERRORS_ONLY=1 ;;
+    --raw)    RAW=1 ;;
+    -h|--help) usage ;;
+    -*) echo "tts-vercel: unknown flag $1" >&2; usage ;;
+    *)
+      [ -z "$DEPLOYMENT" ] || { echo "tts-vercel: unexpected argument $1" >&2; usage; }
+      DEPLOYMENT="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -n "$LIMIT" ]; then
+  case "$LIMIT" in
+    ''|*[!0-9]*) echo "tts-vercel: --limit must be a number, got '${LIMIT}'" >&2; exit 2 ;;
+  esac
+fi
+
+load_conf
+
+# ── listing ──────────────────────────────────────────────────────────────────
+list_json() {
+  local n="${1:-10}" branch_q=""
+  [ -z "$BRANCH" ] || branch_q="branch=$(urlenc "$BRANCH")"
+  vget "/v7/deployments$(build_query \
+    "projectId=$(urlenc "$VERCEL_PROJECT")" "limit=${n}" "$branch_q" "$(team_q)")"
+}
+
+# Resolve the deployment to act on: an explicit id wins; otherwise the newest
+# deployment on the branch. Exits 5 rather than falling back to some other
+# branch's build — reading the wrong build log is worse than reading none.
+resolve_deployment() {
+  if [ -n "$DEPLOYMENT" ]; then
+    printf '%s' "$DEPLOYMENT"
+    return
+  fi
+  if [ -z "$BRANCH" ]; then
+    BRANCH="$(current_branch)"
+    if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
+      echo "tts-vercel: no deployment id given and the current git branch could not" >&2
+      echo "be determined — pass an id or --branch." >&2
+      exit 2
+    fi
+  fi
+  list_json 1 > "$TMP"
+  local id
+  id="$(python3 - "$TMP" <<'PY'
+import json, sys
+
+deployments = json.load(open(sys.argv[1])).get("deployments") or []
+print(deployments[0]["uid"] if deployments else "")
+PY
+)"
+  if [ -z "$id" ]; then
+    echo "tts-vercel: no deployment found for branch '${BRANCH}' in project" >&2
+    echo "'${VERCEL_PROJECT}'. A branch that was never pushed, or was pushed before" >&2
+    echo "Vercel's git integration saw it, has no deployment to read." >&2
+    exit 5
+  fi
+  printf '%s' "$id"
+}
+
+case "$VERB" in
+  deployments)
+    [ -z "$DEPLOYMENT" ] || { echo "tts-vercel: deployments takes no id" >&2; usage; }
+    list_json "${LIMIT:-10}" > "$TMP"
+    if [ "$RAW" = "1" ]; then cat "$TMP"; echo; exit 0; fi
+    python3 - "$TMP" <<'PY'
+import datetime, json, sys
+
+deployments = json.load(open(sys.argv[1])).get("deployments") or []
+if not deployments:
+    print("(no deployments)")
+    raise SystemExit(0)
+
+
+def when(ms):
+    if not ms:
+        return "-"
+    return datetime.datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
+
+
+rows = []
+for d in deployments:
+    meta = d.get("meta") or {}
+    rows.append((
+        d.get("readyState") or d.get("state") or "?",
+        d.get("target") or "preview",
+        meta.get("githubCommitRef") or "-",
+        when(d.get("created") or d.get("createdAt")),
+        d.get("uid") or "-",
+    ))
+
+widths = [max(len(r[i]) for r in rows) for i in range(4)]
+for state, target, ref, created, uid in rows:
+    print(
+        f"{state:<{widths[0]}}  {target:<{widths[1]}}  "
+        f"{ref:<{widths[2]}}  {created:<{widths[3]}}  {uid}"
+    )
+PY
+    ;;
+
+  inspect)
+    id="$(resolve_deployment)"
+    vget "/v13/deployments/$(urlenc "$id")$(build_query "$(team_q)")" > "$TMP"
+    if [ "$RAW" = "1" ]; then cat "$TMP"; echo; exit 0; fi
+    python3 - "$TMP" <<'PY'
+import datetime, json, sys
+
+d = json.load(open(sys.argv[1]))
+meta = d.get("meta") or {}
+
+
+def when(ms):
+    if not ms:
+        return "-"
+    return datetime.datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+print("id:        " + str(d.get("id") or d.get("uid") or "-"))
+print("state:     " + str(d.get("readyState") or d.get("status") or "?"))
+print("target:    " + str(d.get("target") or "preview"))
+print("branch:    " + str(meta.get("githubCommitRef") or "-"))
+print(
+    "commit:    "
+    + str(meta.get("githubCommitSha") or "-")[:12]
+    + "  "
+    + str(meta.get("githubCommitMessage") or "")
+)
+print("created:   " + when(d.get("createdAt") or d.get("created")))
+print("url:       " + ("https://" + d["url"] if d.get("url") else "-"))
+if d.get("inspectorUrl"):
+    print("inspector: " + d["inspectorUrl"])
+
+# The two fields that say WHY a build failed, printed last so they are the last
+# thing on screen whenever they exist.
+if d.get("errorCode") or d.get("errorMessage"):
+    print("errorCode: " + str(d.get("errorCode") or "-"))
+    print("error:     " + str(d.get("errorMessage") or "-"))
+PY
+    ;;
+
+  logs)
+    id="$(resolve_deployment)"
+    n="${LIMIT:-200}"
+    # direction=backward + limit asks for the LAST n events, which is where a
+    # build failure's cause is. They arrive newest-first and are reordered
+    # below, so the output still reads top-to-bottom like a build log.
+    vget "/v3/deployments/$(urlenc "$id")/events$(build_query \
+      "builds=1" "direction=backward" "limit=${n}" "$(team_q)")" > "$TMP"
+    if [ "$RAW" = "1" ]; then cat "$TMP"; echo; exit 0; fi
+    ERRORS_ONLY="$ERRORS_ONLY" python3 - "$TMP" <<'PY'
+import json, os, sys
+
+errors_only = os.environ.get("ERRORS_ONLY") == "1"
+events = json.load(open(sys.argv[1]))
+if isinstance(events, dict):
+    events = events.get("events") or []
+
+
+# Two response shapes are documented for this endpoint: the fields at the top
+# level, or nested under "payload". Read both rather than guessing which one a
+# given deployment produced.
+def field(e, name):
+    if name in e:
+        return e[name]
+    return (e.get("payload") or {}).get(name)
+
+
+lines = []
+for e in events:
+    if not isinstance(e, dict):
+        continue
+    kind = e.get("type") or ""
+    text = field(e, "text")
+    if text is None:
+        continue
+    is_error = kind in ("stderr", "fatal") or e.get("level") == "error"
+    if errors_only and not is_error:
+        continue
+    for line in str(text).rstrip("\n").split("\n"):
+        lines.append(("! " if is_error else "  ") + line)
+
+# Newest-first from the API; printed oldest-first so it reads as a build log.
+for line in reversed(lines):
+    print(line)
+if not lines:
+    print("(no matching log events)" if errors_only else "(no log events)")
+PY
+    ;;
+
+  *)
+    echo "tts-vercel: unknown verb '${VERB}'" >&2
+    usage
+    ;;
+esac

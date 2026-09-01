@@ -129,6 +129,48 @@ that ambiguity spelled out. An unset `TURING_READ_KEY` on the API side is the
 fail-closed state: the read door does not exist and the three endpoints stay
 full-key-only.
 
+## The build log, read-only
+
+A failed Vercel build is the CI signal that gates merging here, and its GitHub
+check detail is only the sentence "run `npx vercel inspect --logs`". So a
+session could see **that** it broke the build and never **why**, and had to
+hand the failure back to Tom with nothing attached. `tts-vercel` closes that:
+
+```
+tts-vercel deployments [--branch B]   # recent deployments, newest first
+tts-vercel inspect [ID]               # state, errorCode, error message, commit
+tts-vercel logs [ID] [--errors]       # the build log; --errors is stderr+fatal
+```
+
+With no `ID` and no `--branch` all three act on the **current git branch's**
+most recent deployment — in a session that is `session/<id>`, i.e. the build
+the session itself just caused. So the whole loop is `git push` → wait →
+`tts-vercel logs --errors`.
+
+**This credential is handled differently from `TURING_READ_KEY`, and the
+difference is the point.** turing-api was *changed* to mint a genuinely
+read-only key, so that key can safely sit in a session's environment. Vercel
+sells no such thing: an access token has one privilege level and no way to
+reduce it. Scoping it to a team, or to a single project, narrows which
+*resources* it reaches — never which *verbs*. The token that reads a build log
+can also `DELETE /v13/deployments/{id}` and rewrite the project's environment
+variables.
+
+So the read-only half is built here, in two places:
+
+- `session.mjs` **drops `VERCEL_TOKEN`** from every session's environment, the
+  same treatment `GH_TOKEN` gets.
+- `setup.sh` derives a root-owned `/etc/tts/vercel.conf` (mode 600) from
+  `worker.env`, and `tts-vercel` reads the token from there. **That command
+  issues only GETs**, and has no write verb by construction. Adding one would
+  hand every session the ability to delete a production deployment.
+
+Be honest about the limit: a session runs as root here, so this raises the
+*cost* of reaching the token (an `/etc/` path in a command is a classifier
+verdict) rather than making it unreachable — the same bargain already struck
+for `GH_TOKEN`. Mint the token as **project-scoped** if possible; it still
+writes this project, but it cannot touch any other.
+
 ## The no-state rule
 
 **The Jarvis Box owns no durable state.** Everything that matters lives in Convex
