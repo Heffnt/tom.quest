@@ -15,6 +15,8 @@
 // test is what holds them to the rule, one case per exported document, so a
 // new caption added by the migration cannot land unchecked.
 
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as explanations from "./explanations";
 
@@ -91,6 +93,92 @@ describe("caption ground-up explanations", () => {
       // of white at the moment it is opened. Checking for the background is
       // enough to catch a page written to some other palette wholesale.
       expect(html).toContain("#0a0e17");
+    });
+  }
+});
+
+// ── THE OTHER HALF OF THE MIGRATION ─────────────────────────────────────────
+//
+// The rule above is about the documents. This one is about the call sites: as
+// of 2026-08-31 every caption in app/tts carries a ground-up document, and a
+// new caption that forgets one is the regression this catches. It is a source
+// scan rather than a render test because there is no single screen that mounts
+// all of them, and mounting each surface to count its captions would test the
+// surfaces rather than the rule.
+//
+// `<Info>` is the caption control (./components/info); `<Caption>` is the thin
+// wrapper todo-row.tsx puts around it. Both are checked. info.tsx itself is
+// skipped — it DEFINES the prop — and so are the tests.
+
+/** Every .tsx under app/tts that is not a test and not the control itself. */
+function captionSources(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) {
+      out.push(...captionSources(full));
+    } else if (
+      name.endsWith(".tsx") &&
+      !name.endsWith(".test.tsx") &&
+      name !== "info.tsx"
+    ) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * The text of the opening tag starting at `from`, which is the index of the
+ * "<". Ends at the first ">" that is not inside a string or a braced
+ * expression — children can contain ">", so the first ">" in the file is not
+ * good enough.
+ */
+function openingTag(src: string, from: number): string {
+  let depth = 0;
+  let quote = "";
+  for (let i = from; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === quote) quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (c === "{") depth++;
+    else if (c === "}") depth--;
+    else if (c === ">" && depth === 0) return src.slice(from, i + 1);
+  }
+  return src.slice(from);
+}
+
+describe("every caption in app/tts carries a ground-up explanation", () => {
+  const files = captionSources(join(__dirname));
+
+  it("finds the caption call sites at all", () => {
+    // A scan that matches nothing would pass every assertion below while
+    // checking nothing at all.
+    const total = files.reduce(
+      (n, f) => n + (readFileSync(f, "utf8").match(/<(Info|Caption)[\s>]/g)?.length ?? 0),
+      0,
+    );
+    expect(total).toBeGreaterThan(10);
+  });
+
+  for (const file of files) {
+    const src = readFileSync(file, "utf8");
+    const short = file.slice(file.indexOf("app/tts"));
+    const tags: string[] = [];
+    for (let i = src.indexOf("<Info"); i !== -1; i = src.indexOf("<Info", i + 1)) {
+      if (/[\s>]/.test(src[i + 5] ?? "")) tags.push(openingTag(src, i));
+    }
+    for (let i = src.indexOf("<Caption"); i !== -1; i = src.indexOf("<Caption", i + 1)) {
+      if (/[\s>]/.test(src[i + 8] ?? "")) tags.push(openingTag(src, i));
+    }
+    if (tags.length === 0) continue;
+
+    it(`${short} passes explanation= on all ${tags.length}`, () => {
+      const missing = tags.filter((t) => !t.includes("explanation="));
+      expect(missing).toEqual([]);
     });
   }
 });

@@ -21,7 +21,13 @@ import { api } from "@/convex/_generated/api";
 import { countdownText } from "@/convex/ttsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
-import { READINESS_EXPLANATION } from "../explanations";
+import {
+  LINK_INTENT_EXPLANATION,
+  READINESS_EXPLANATION,
+  SESSIONS_EXPLANATION,
+  STATUS_EXPLANATION,
+  TODO_FIELDS_EXPLANATION,
+} from "../explanations";
 import OptionsRow from "./options-row";
 import TimeNoteField, { type TimeNote } from "./time-note-field";
 import {
@@ -46,11 +52,9 @@ const chipCls =
  * The ⓘ beside a control, naming the mutation it fires.
  *
  * `children` is the call; `explains` is the plain-language half the ratified
- * info rule requires. A caller with no `explains` renders the call alone —
- * honest about being unmigrated rather than inventing prose (ledger:
- * info-captions-unmigrated). The two remaining such callers pass their caption
- * down through props from several surfaces at once, which is why they are debt
- * rather than an oversight.
+ * info rule requires. Every caller in app/tts now passes both halves plus an
+ * `explanation`, so a caption rendering the bare call no longer exists — a new
+ * caller with no `explains` is an oversight rather than acknowledged debt.
  *
  * `explanation` is the second register: one complete HTML document (see
  * ../explanations) shown fullscreen behind the popover's "more" control, for
@@ -80,15 +84,23 @@ function Caption({
 }
 
 // ── Small inline field editor ───────────────────────────────────────────────
+// All five fields this renders are the same mechanism — one updateTodo call
+// writing one text field, with the same two invisible consequences (the row is
+// stamped as Tom-touched, which freezes its grouping; its update time bumps,
+// which can reopen a ruled item). So the ground-up document is fixed here and
+// only `explains` differs per field.
 function FieldEditor({
   label,
   caption,
+  explains,
   value,
   multiline,
   onSave,
 }: {
   label: string;
   caption: string;
+  /** The plain half: what this one field is for. */
+  explains: string;
   value: string | undefined;
   multiline?: boolean;
   onSave: (next: string) => Promise<unknown>;
@@ -111,7 +123,13 @@ function FieldEditor({
     <div className="space-y-1">
       <div className="flex items-baseline gap-2">
         <span className="text-xs text-text-faint">{label}</span>
-        <Caption>{caption}</Caption>
+        <Caption
+          explains={explains}
+          explanation={TODO_FIELDS_EXPLANATION}
+          explanationTitle="the five text fields of a todo"
+        >
+          {caption}
+        </Caption>
       </div>
       <div className="flex gap-2 items-start">
         {multiline ? (
@@ -338,7 +356,13 @@ export default function TodoRow({
                 >
                   Confirm {intent}
                 </button>
-                <Caption>{intentCaption}</Caption>
+                <Caption
+                  explains="Carries out what the link proposed. The link itself changed nothing — an address that is merely fetched must never change stored data, or a chat client generating a preview would mark this done for you."
+                  explanation={LINK_INTENT_EXPLANATION}
+                  explanationTitle="the intent bar — a link that proposes an action"
+                >
+                  {intentCaption}
+                </Caption>
               </div>
               <button
                 onClick={onIntentCleared}
@@ -365,7 +389,11 @@ export default function TodoRow({
                 >
                   Open session
                 </button>
-                <Caption explains="Opens a Claude session on the Jarvis Box with this item, its brief and its plan already in the opening prompt. It checks out whatever repositories its batch declares, and can only push to its own branch — merging stays yours.">
+                <Caption
+                  explains="Opens a Claude session on the Jarvis Box with this item, its brief and its plan already in the opening prompt. It checks out whatever repositories its batch declares, and can only push to its own branch — merging stays yours."
+                  explanation={SESSIONS_EXPLANATION}
+                  explanationTitle="opening a session — what is created and where it runs"
+                >
                   {`claudeSessions.createSession({ kind: "${
                     todo.readiness === "ready-for-tom" ? "gate" : "focus-item"
                   }" })`}
@@ -415,18 +443,21 @@ export default function TodoRow({
                 <FieldEditor
                   label="statement"
                   caption="tts.updateTodo({statement})"
+                  explains="The one line naming this todo, shown wherever it appears and read into the opening prompt of any session on it. The scan that guesses which repositories a session checks out reads this text too, so a repository named here is a repository the session gets."
                   value={todo.statement}
                   onSave={(v) => updateTodo({ id: todo._id, statement: v })}
                 />
                 <FieldEditor
                   label="entry action"
                   caption="tts.updateTodo({entryAction})"
+                  explains="The smallest concrete next step, as one sentence — not a plan. It is printed verbatim in the opening prompt of a session that works a whole category, so it is read as an instruction rather than as a note."
                   value={todo.entryAction}
                   onSave={(v) => updateTodo({ id: todo._id, entryAction: v })}
                 />
                 <FieldEditor
                   label="body"
                   caption="tts.updateTodo({body})"
+                  explains="Free text about the todo: whatever does not fit the one-line statement. Read alongside the statement by the scan that guesses repositories."
                   value={todo.body}
                   multiline
                   onSave={(v) => updateTodo({ id: todo._id, body: v })}
@@ -434,6 +465,7 @@ export default function TodoRow({
                 <FieldEditor
                   label="work description"
                   caption="tts.updateTodo({workDescription})"
+                  explains="What the work involves, in words. Never a number of hours or a points estimate — that is a standing rule, not a convention."
                   value={todo.workDescription}
                   multiline
                   onSave={(v) =>
@@ -443,6 +475,7 @@ export default function TodoRow({
                 <FieldEditor
                   label="category"
                   caption="tts.updateTodo({category})"
+                  explains="A free-text tag. It is what lets one span of calendar time cover a set of todos at once. The single reserved value is “code”, which removes the todo from the picker that starts sessions on its own."
                   value={todo.category}
                   onSave={(v) =>
                     updateTodo({ id: todo._id, category: v.trim() || null })
@@ -504,7 +537,9 @@ export default function TodoRow({
                       Set waiting
                     </button>
                     <Caption
-                      explains="Parks it until the date or condition you gave. It leaves your active list and comes back on its own — the 4 a.m. run wakes anything whose wait is over."
+                      explains="Parks it until the date or condition you gave. It leaves your active list, and the 4:45 a.m. run brings back anything whose stored wake TIME has arrived — a condition in words alone has nothing for that job to act on, so it waits for you."
+                      explanation={STATUS_EXPLANATION}
+                      explanationTitle="status — the four states a todo can be in"
                     >
                       {'tts.setStatus({ status: "waiting" })'}
                     </Caption>
@@ -526,7 +561,9 @@ export default function TodoRow({
                     Set active
                   </button>
                   <Caption
-                    explains="Brings it back onto the active list now, before whatever it was waiting for. The condition it was parked under is cleared."
+                    explains="Brings it back onto the active list now, before whatever it was waiting for. Five fields are cleared as part of reopening: the completion and archive times, the unarchive condition, and both halves of the wait."
+                    explanation={STATUS_EXPLANATION}
+                    explanationTitle="status — the four states a todo can be in"
                   >
                     {'tts.setStatus({ status: "active" })'}
                   </Caption>

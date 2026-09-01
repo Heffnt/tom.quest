@@ -35,9 +35,19 @@
 //     which is what GroundUpView (./ground-up-view) already renders for a
 //     todo's own explanation — the same renderer, the same sandboxed iframe,
 //     reached here from the "more" control inside the popover.
-// A caption with no `explanation` is not broken; it is a caption whose
-// mechanism has not been written up yet. The captions carrying one grow as the
-// migration proceeds (ledger: info-captions-unmigrated).
+// MIGRATION COMPLETE (2026-08-31). Every caption in app/tts now passes both
+// registers, and the last two native `title=` captions — the repeats strip's
+// calendar-skip label and the calendar's per-day plus — were moved onto this
+// component in the same change. `explanation` stays optional because the type
+// cannot express "required at every current call site", but a new caption
+// without one is now an omission rather than acknowledged debt.
+//
+// ONE MECHANISM, ONE DOCUMENT. Ten captions share five documents: the four
+// repeats captions all open the repeats document, the six verdict and status
+// chips all open the verdicts document, and so on. A document per caption would
+// teach a fragment each and none of them would be self-contained, which is the
+// one thing the writing standard forbids. What differs per caption is the
+// display text.
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -48,7 +58,6 @@ export default function Info({
   children,
   explanation,
   explanationTitle,
-  label,
 }: {
   /** The exact backend call the neighbouring control fires (UI = code). */
   call?: string;
@@ -63,14 +72,6 @@ export default function Info({
   explanation?: string;
   /** The line at the top of the fullscreen view. Defaults to the call. */
   explanationTitle?: string;
-  /**
-   * MIGRATION SHIM. The pre-popover call sites passed only `label`, holding
-   * the function call and nothing else. A site still using it renders the call
-   * with no explanation — honest about being unmigrated rather than inventing
-   * prose for it. Delete this prop when the last one is gone (ledger:
-   * info-captions-unmigrated).
-   */
-  label?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState(false);
@@ -110,8 +111,6 @@ export default function Info({
     return () => document.removeEventListener("keydown", onKey);
   }, [full]);
 
-  const callText = call ?? label;
-
   return (
     <span ref={wrapRef} className="relative inline-flex items-baseline">
       <button
@@ -147,13 +146,13 @@ export default function Info({
               {children}
             </span>
           )}
-          {callText && (
+          {call && (
             <span
               className={`block font-mono text-[10px] leading-snug text-text-muted break-all ${
                 children ? "mt-2 pt-2 border-t border-border" : ""
               }`}
             >
-              {callText}
+              {call}
             </span>
           )}
           {explanation && (
@@ -190,7 +189,7 @@ export default function Info({
         createPortal(
           <div onClick={(e) => e.stopPropagation()}>
             <GroundUpView
-              title={explanationTitle ?? callText ?? "explanation"}
+              title={explanationTitle ?? call ?? "explanation"}
               content={explanation}
               onClose={() => setFull(false)}
             />
