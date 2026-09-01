@@ -3,7 +3,8 @@
 // Jarvis Box (WPI restricts access-token creation) — so the request it BUILDS
 // is the only thing that can be checked, and it is exactly what was wrong:
 // the announcements request named its course filter "context_code[]", Canvas
-// answered 400 for "no context", and the job threw on every single run.
+// saw no context (the docs make context_codes[] required), answered non-ok,
+// and the job threw on every single run.
 //
 // Importing the job module is safe: it only calls main() when node was pointed
 // at the file (the `invokedDirectly` guard at the bottom of poll-canvas.mjs).

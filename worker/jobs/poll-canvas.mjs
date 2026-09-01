@@ -60,10 +60,11 @@ export const ANNOUNCEMENT_SOURCE = "canvas-announcement";
 // The announcements endpoint names its course filter in the PLURAL
 // (GET /api/v1/announcements?context_codes[]=course_17). The singular spelling
 // looks right because the RESPONSE field is singular — each announcement
-// carries one `context_code` — and it fails LOUDLY but blindly: Canvas sees no
-// context at all, answers 400, and canvas() below throws, so the job dies at
-// the same place a missing course would kill it. Kept as a named constant so
-// the plural is stated once and testable (poll-canvas.test.ts).
+// carries one `context_code` — and the failure names nothing: Canvas sees no
+// context at all (the docs make context_codes[] required), answers non-ok, and
+// canvas() below throws the same "-> HTTP <status>" a missing course would
+// throw. Kept as a named constant so the plural is stated once and testable
+// (poll-canvas.test.ts).
 export const ANNOUNCEMENTS_CONTEXT_PARAM = "context_codes[]";
 /** Announcements accepted per request by Canvas. */
 export const ANNOUNCEMENTS_CONTEXT_LIMIT = 10;
