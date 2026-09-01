@@ -109,6 +109,7 @@ function claimSession(env, sessions, row) {
   const s = new Session({
     id: row.id,
     repo: row.repo,
+    repos: row.repos,
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
@@ -171,6 +172,7 @@ function adoptSession(env, sessions, row) {
   const s = new Session({
     id: row.id,
     repo: row.repo,
+    repos: row.repos,
     env,
     nextSeq: row.nextSeq,
     mode: row.mode,
@@ -323,7 +325,9 @@ async function main() {
       ) {
         // Fresh session — or one a previous daemon died on before the SDK
         // ever reported an id (nothing to resume; start over cleanly).
-        log(`claiming session ${row.id} (repo: ${row.repo})`);
+        log(
+          `claiming session ${row.id} (repos: ${(row.repos ?? [row.repo]).join(", ") || "none"})`,
+        );
         claimSession(env, sessions, row);
       } else {
         log(

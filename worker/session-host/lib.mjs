@@ -75,7 +75,7 @@ export async function sessionsFetch(env, path, body, { timeoutMs } = {}) {
       "X-Sessions-Key": env.SESSIONS_WORKER_KEY,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: redactGitHubTokens(JSON.stringify(body)),
     ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   const text = await res.text();
@@ -86,6 +86,23 @@ export async function sessionsFetch(env, path, body, { timeoutMs } = {}) {
     throw err;
   }
   return JSON.parse(text);
+}
+
+// Last line of defense against a GitHub token landing in a transcript row.
+// On 2026-08-30 a session read the token out of its clone's .git/config and
+// typed it inline in gh commands, and the classifier's verdict rows carried
+// it verbatim into Convex — where a transcript lives forever. The token no
+// longer sits in the clone (credential helper) or the shell env (scrub), but
+// this daemon persists model-authored text, so the ingest body itself is the
+// one choke point every row passes through. GitHub token shapes are prefixed
+// and unambiguous (gh?[pousr]_… / github_pat_…), so the replacement cannot
+// hit ordinary prose; the character class is JSON-escape-free, so replacing
+// inside a serialized string never breaks the JSON.
+export function redactGitHubTokens(text) {
+  return text.replace(
+    /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g,
+    "[REDACTED-GITHUB-TOKEN]",
+  );
 }
 
 // Retry delay: 1s, 2s, 4s, ... capped at 30s, with ±25% jitter so a fleet of

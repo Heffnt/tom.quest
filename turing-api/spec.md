@@ -41,10 +41,20 @@ tom.Quest never needs to signal, drain, or inspect it — only to choose how man
 FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared tunnel
 `turing.tom.quest`. Refuses to start without `TURING_API_KEY`; CORS `*`; SIGHUP ignored.
 
-- **Auth:** a single shared `X-API-Key` header dependency (`verify_api_key`) on every
-  non-WS endpoint (`main.py:54`). The terminal WebSocket is *not* under that dependency;
-  it authenticates with a short-lived HMAC token signed with the **same** `API_KEY`
-  (`ws.py:27`, `ws.py:124`).
+- **Auth:** one `X-API-Key` header, checked by **two** dependencies over **two** keys.
+  `verify_api_key` (`TURING_API_KEY`) is the default and guards every non-WS endpoint —
+  the whole surface, write verbs included. `verify_read_key` (`TURING_READ_KEY`) guards
+  exactly three: `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output`. It accepts
+  **either** key, so full-key callers (the Next proxy, the Convex reconciler) are unaffected,
+  while a read-key holder can look at the cluster and cannot act on it. Both compares are
+  constant-time over bytes. **Fail closed:** an unset `TURING_READ_KEY` means the read door
+  does not exist and those three go back to full-key-only — a blank env var never becomes a
+  blank password. The split exists because `POST /sessions/{name}/run` is arbitrary shell as
+  `ntheffernan`, so "read the GPU report" and "run anything on the cluster" must not be the
+  same credential; the read key is what TTS sessions on the Jarvis Box hold
+  (`worker/bin/tts-turing`). The terminal WebSocket is under neither dependency; it
+  authenticates with a short-lived HMAC token signed with the **same** full `API_KEY`
+  (`ws.py:27`, `ws.py:124`) — the read key signs nothing.
 - **Allocation model:** `POST /allocate` loops `count` times, one **single-GPU**
   `salloc --no-shell --gres=gpu:<type>:1 --time=<mins> --mem=<mb> --job-name=<name>` per
   GPU (`slurm.py:123`). **No `--partition` is ever passed** → everything lands on the

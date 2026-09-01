@@ -16,7 +16,7 @@ crons.interval(
 );
 
 // ── TTS (spec: WikiTom tts/spec.md §7) ──────────────────────────────────────
-// The digest anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
+// The TTS day anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
 // each job fires at both possible UTC times (EDT/EST) and the handler's
 // local-hour guard lets exactly one proceed — DST needs no cron edits.
 
@@ -33,6 +33,19 @@ crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFal
 // The 5 a.m. digest crons ("0 9" EDT / "0 10" EST → internal.ttsSync.sendDigest)
 // are unregistered; sendDigest itself also returns early. Re-add these two lines
 // to restore the sends-even-when-empty digest.
+
+// The HOURLY UPDATE (Tom's ruling 2026-08-30): schedule + agents working +
+// what happened since the last one. Registered here but gated by its OWN
+// switch inside the action (HOURLY_UPDATE_ENABLED in convex/ttsSync.ts) — a
+// separate switch from the 5 a.m. digest's, so turning this on does not turn
+// that back on. Plain interval, not a cron pair: this message has no local-hour
+// anchor to defend against DST.
+crons.interval(
+  "tts hourly update",
+  { hours: 1 },
+  internal.ttsSync.sendHourlyUpdate,
+  {},
+);
 
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});

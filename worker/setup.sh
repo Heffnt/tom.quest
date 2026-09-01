@@ -89,7 +89,47 @@ echo "== [6/9] install worker files =="
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
-chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse
+chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
+  /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential
+
+# GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
+# 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
+#
+#   git — the global credential.helper below. Clones and pushes use CLEAN
+#     https URLs; the helper hands git the token at ask time, so no work tree
+#     or `git remote -v` ever contains it.
+#   gh  — /root/.config/gh/hosts.yml, REGENERATED from worker.env on every
+#     run (a derived file, never hand-edited), so `gh pr create` works in a
+#     session shell whose env is scrubbed of GH_TOKEN. The file sits outside
+#     every work tree; reading /root paths from a session pays a classifier
+#     verdict like any other box-configuration touch.
+#
+# Ordering note: session.mjs clones with clean URLs and RELIES on this
+# helper — both roll out in the same setup.sh run, so there is no window
+# where private-repo clones lack credentials.
+#
+# SYSTEM level (/etc/gitconfig), not --global: the daemon runs under systemd,
+# which sets no HOME, and git only finds ~/.gitconfig through $HOME — the
+# first post-rollout clones failed with "could not read Username" because the
+# global entry was invisible to the service. /etc/gitconfig is read
+# regardless. (A stray --global entry from the first rollout is removed so
+# the fact has one home.)
+git config --system credential.helper /usr/local/bin/tts-git-credential
+git config --global --unset-all credential.helper 2>/dev/null || true
+GH_TOKEN_VALUE="$(sed -n 's/^GH_TOKEN=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
+if [ -n "$GH_TOKEN_VALUE" ]; then
+  mkdir -p /root/.config/gh
+  cat > /root/.config/gh/hosts.yml <<EOF
+github.com:
+    oauth_token: $GH_TOKEN_VALUE
+    git_protocol: https
+EOF
+  chmod 600 /root/.config/gh/hosts.yml
+  echo "  gh authenticated from worker.env (hosts.yml regenerated)"
+else
+  echo "  GH_TOKEN not set in /etc/tts/worker.env — gh stays unauthenticated"
+  echo "  and private-repo clones will fail; fill it in and re-run setup.sh."
+fi
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
@@ -110,14 +150,26 @@ cat > /etc/cron.d/tts <<'CRON'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Poll the Slack #dump channel for new captures every 2 minutes.
-*/2 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
+# Poll the Slack #dump channel for new captures — HOURLY, as the reconciliation
+# BACKSTOP behind the push route (Tom 2026-08-30: Slack pushes events to TTS at
+# POST /slack/events instead of TTS polling). Slack's event delivery is
+# best-effort, not guaranteed, so this stays: its cursor file in /var/lib/tts is
+# what makes a missed event recoverable. Captures are idempotent on the Slack
+# message ts server-side, so re-offering what the push route already took costs
+# nothing.
+7 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
 
 # Poll Gmail for action-implying mail every 10 minutes (quiet no-op until the
 # GMAIL_* keys exist in worker.env — see poll-gmail.mjs's header for the
 # one-time credential mint). flock: the batch's Claude triage call can outlast
 # a tick, and two overlapping runs would capture the same emails twice.
 */10 * * * * root /usr/bin/flock -n /var/lock/tts-poll-gmail.lock /usr/bin/node /opt/tts/poll-gmail.mjs >> /var/log/tts/poll-gmail.log 2>&1
+
+# Poll Canvas course announcements every 30 minutes at :13/:43 (odd minutes;
+# no collision with the other jobs' slots). Quiet no-op until CANVAS_TOKEN
+# exists in worker.env (WPI token request pending). Same flock reasoning as
+# poll-gmail: the Claude triage call can outlast a tick.
+13,43 * * * * root /usr/bin/flock -n /var/lock/tts-poll-canvas.lock /usr/bin/node /opt/tts/poll-canvas.mjs >> /var/log/tts/poll-canvas.log 2>&1
 
 # Read Tom's freeform TIME NOTES (the only time input left on the /tts page)
 # and turn each into concrete date/block changes, every 2 minutes so a note he
@@ -149,8 +201,19 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Prepare unprepared LIFE todos (#dump captures, consolidation candidates)
 # via headless Claude: ground-up brief + smallest entry action + work
 # description, readiness advanced — so raw captures reach Tom pre-chewed.
-# Every 2nd hour at :37 (odd minute; no collision with the other jobs).
-37 */2 * * * root /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
+#
+# EVERY 2 MINUTES (Tom 2026-08-30: #dump messages are processed immediately, so
+# the threaded Slack reply can state how TTS interpreted the message). Safe and
+# cheap because the job returns BEFORE any Claude call when there is nothing to
+# prepare ("if (targets.length === 0) return; // quiet when idle"), so an idle
+# tick costs one HTTP read.
+#
+# CONSEQUENCE ACCEPTED, STATED: the old :37 slot existed so the Claude-calling
+# jobs never shared a tick. At */2 this job can now overlap brief-code-todos
+# (:17), form-batches (:07) and plan-graphs (:27). flock guards it only against
+# ITSELF — which is also the lock poll-dump.mjs takes when it spawns this job
+# straight after a capture, so the spawn and the cron can never both run.
+*/2 * * * * root /usr/bin/flock -n /var/lock/tts-prepare-life-todos.lock /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
 
 # ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
 # These two jobs are the OLD and the NEW way of doing the same thing, and they
@@ -233,6 +296,10 @@ ExecStart=/usr/bin/node /opt/tts/session-host/session-host.mjs
 WorkingDirectory=/opt/tts/session-host
 EnvironmentFile=/etc/tts/worker.env
 Environment=CLAUDE_CONFIG_DIR=/root/.claude-accounts/active
+# systemd sets no HOME for system services. Every session shell inherits this
+# env, and gh only finds its auth (/root/.config/gh/hosts.yml) through $HOME —
+# without it `gh pr create` cannot see the credential setup.sh installed.
+Environment=HOME=/root
 Restart=always
 RestartSec=5
 
@@ -265,9 +332,19 @@ NEXT STEPS (manual, in order):
       SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
       filling it so the tts-session-host daemon gets enabled.)
 
-  2. Log in both Claude Max accounts (interactive, over this SSH session):
-       tts-account login gmail
-       tts-account login wpi
+     TURING_READ_KEY is optional and READ-ONLY: it opens three GETs on the
+     cluster API (/gpu-report, /jobs, /sessions/{name}/output) for the
+     tts-turing command. It must match TURING_READ_KEY in turing-api/.env on
+     the login node. The full TURING_API_KEY does NOT belong in this file —
+     it authorizes POST /sessions/{name}/run, i.e. arbitrary cluster shell.
+     Restart tts-session-host after adding it, or running sessions won't see
+     it:  systemctl restart tts-session-host
+
+  2. Log in both Claude Max accounts (interactive, over this SSH session —
+     run it twice, switching the BROWSER profile between runs; each login is
+     filed into the slot matching the account that actually signed in):
+       tts-account login
+       tts-account login
 
   3. Pick the account the jobs run under:
        tts-account use gmail

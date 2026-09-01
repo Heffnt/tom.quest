@@ -158,6 +158,54 @@ export async function convexFetch(env, path, body = undefined) {
   return JSON.parse(text);
 }
 
+// ---------------------------------------------------------------------------
+// Slack Web API
+// ---------------------------------------------------------------------------
+// ONE HOME for both verbs (VQC C1). poll-dump.mjs carried a GET-only helper of
+// its own; prepare-life-todos.mjs needs the POST half for the threaded reply,
+// and a second copy is exactly the drift this rule exists to stop.
+//
+// The bot token goes in the Authorization header, never in the URL — a URL
+// lands in logs and in Slack's own error reports.
+
+/** Slack read methods (conversations.history, chat.getPermalink): GET + query. */
+export async function slackGet(env, method, params) {
+  const url = new URL(`https://slack.com/api/${method}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) url.searchParams.set(k, String(v));
+  }
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` },
+  });
+  if (!res.ok) throw new Error(`slack ${method} -> HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(`slack ${method} -> ${data.error}`);
+  return data;
+}
+
+/**
+ * Slack write methods (chat.postMessage, chat.update): POST + JSON body.
+ *
+ * Needs the bot token to hold chat:write. Nothing in this repo PROVES it does
+ * (worker.env.example claims only history-read), so a caller treats a
+ * `missing_scope` failure as a real, reportable condition rather than a
+ * transient — see the ledger entry slack-chat-write-scope-unverified.
+ */
+export async function slackPost(env, method, body) {
+  const res = await fetch(`https://slack.com/api/${method}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`slack ${method} -> HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(`slack ${method} -> ${data.error}`);
+  return data;
+}
+
 // The message the server put in a rejection body ({ "error": "..." }), for
 // re-filing a refused item with the server's OWN words rather than an HTTP
 // line. Falls back to the error message when the body is not that shape.

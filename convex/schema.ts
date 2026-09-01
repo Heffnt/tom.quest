@@ -380,6 +380,15 @@ export default defineSchema({
     // the dtsTodos field of the same name, same meaning. On an archive ruling
     // the sentence IS this condition, so a batch set aside can come back.
     unarchiveCondition: v.optional(v.string()),
+    // The repos this batch's work lives in — names from SESSION_REPOS
+    // (convex/ttsShared.ts). Tom's ruling 2026-08-30: A BATCH DECLARES ITS
+    // REPOS, set at batch formation, instead of the scheduler guessing them
+    // from a case-sensitive substring search over the batch's and todo's
+    // words. Every session opened for this batch or for a todo inside it
+    // checks out exactly this set. Absent (not empty) = never declared, and
+    // the resolver falls back to the legacy guess; an explicit [] means the
+    // batch genuinely needs no checkout.
+    repos: v.optional(v.array(v.string())),
     // Stamped by the Tom doors (a ruling on the batch, the pens). Same freeze
     // semantics as dtsTodos.tomTouchedAt: a batch with this set is FROZEN —
     // the planner (tts.internalStorePlanGraph) may never rewrite it.
@@ -500,6 +509,21 @@ export default defineSchema({
     tomTouchedAt: v.optional(v.number()),
     source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
     provenance: v.optional(v.string()), // link/descriptor of where it came from
+    // ── Slack coordinates of the #dump message this was captured from ────────
+    // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
+    // message, saying how it processed that message. Answering "which message
+    // do I reply to?" needs the channel and the message ts as MACHINE fields.
+    //
+    // DELIBERATELY NOT overloaded into `provenance`: Tom reads provenance, it
+    // holds a permalink for him, and parsing a ts back out of a URL would make
+    // his field load-bearing for a machine.
+    //
+    // slackTs is also the DEDUPE key for the Slack Events push route (Slack
+    // retries deliver the same event more than once) — see by_slackTs below.
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
+    slackReplyTs: v.optional(v.string()), // ts of OUR reply, so it can be edited
+    slackRepliedAt: v.optional(v.number()), // the "replied once" guard
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
@@ -552,7 +576,12 @@ export default defineSchema({
     // Ingestion lookups: the Canvas sync and the repeating-todo generator find
     // their own rows by source ("canvas" / "repeating") + provenance match,
     // without scanning the whole table.
-    .index("by_source", ["source"]),
+    .index("by_source", ["source"])
+    // The Slack Events push route's dedupe read: Slack's delivery is
+    // at-least-once and its retries carry the same message ts, so a capture
+    // looks itself up by ts before inserting. A scan would be a full-table
+    // read on the hot path of a route that must answer within 3 seconds.
+    .index("by_slackTs", ["slackTs"]),
 
   // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
   // Read-only mirror of Tom's external calendars, ingested from ICS feeds
@@ -738,9 +767,11 @@ export default defineSchema({
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
   // a fallback cron builds a simple-rules queue if none arrived. The digest
-  // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
-  // and marks digestSentAt — so a missing digest means Convex/Slack breakage,
-  // a digest reporting missing prep means worker breakage.
+  // SEND is OFF since Tom's 2026-08-29 outbound-Slack ruling: the digest crons
+  // are unregistered (convex/crons.ts:32-35) and sendDigest returns on
+  // OUTBOUND_SLACK_ENABLED=false, so digestSentAt is no longer stamped and
+  // there is no send-or-silence monitoring signal. The queue and digest text
+  // are still written here every morning and read on the TTS pages.
   dtsDailyQueues: defineTable({
     day: v.string(),
     entries: v.array(
@@ -866,7 +897,24 @@ export default defineSchema({
       v.literal("block"), // works through a SET of items (a category block)
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
+    // The BATCH subject (ledger graduation session-repos-need-batch-subject,
+    // 2026-08-31). A batch is its own row, not a dtsTodos row, so a session
+    // opened ON a batch could name no subject at all — and the repo resolver,
+    // which reaches a batch only THROUGH a todo, could not see the batch's
+    // declared repos. The button most likely pressed on a multi-repo batch
+    // was the one that started with no checkout. createSession resolves repos
+    // from this id directly.
+    batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
+    // ── The repos this session works in ──────────────────────────────────────
+    // `repos` is the LIVE field (Tom's ruling 2026-08-30: a session must be
+    // able to hold more than one repo — a batch spanning tom.quest and WikiTom
+    // cannot be worked in one session otherwise). `repo` is the pre-ruling
+    // single-string field, KEPT because prod schema is additive-only: every
+    // existing row has it and nothing backfills. Both are written on every new
+    // row by buildSessionRow (convex/claudeSessions.ts — the one insert path),
+    // with repo = repos[0] ?? "none"; readers prefer `repos ?? [repo]`.
+    repos: v.optional(v.array(v.string())),
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
     // Session posture (P3, ratified 2026-08-28): absent = "interactive" (a
     // Tom-driven chat). "autonomous" = fleet-scheduled groundwork with no one
