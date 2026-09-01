@@ -31,7 +31,9 @@ const COPY: Record<
   },
   edit: {
     does: "Say anything about this batch — reschedule it, reorder or drop steps, split it, reword it, move it to another path. An agent reads your words and applies them; the result shows here when it lands.",
-    call: 'ttsRulings.recordRuling({verdict:"edit", sentence})',
+    // The chip says "edit" (Tom's word); the stored verdict is still named
+    // "revise" — the mono line shows the CALL, so it shows the true name.
+    call: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
     placeholder: "e.g. after the paper batch · drop step 3 · not until saturday · split the turing items out",
     confirm: "send edit",
   },
@@ -42,15 +44,20 @@ export default function RulingDialog({
   statement,
   brief,
   plan,
+  onConfirm,
   onClose,
 }: {
   verdict: RulingVerdict;
   statement: string;
   brief?: string;
   plan?: PlanStep[];
+  /** Records the ruling. Absent = the dialog only closes (the mockup route). */
+  onConfirm?: (sentence: string) => Promise<unknown> | unknown;
   onClose: () => void;
 }) {
   const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const c = COPY[verdict];
   const { done, total } = planProgress(plan);
   const next = nextStep(plan);
@@ -104,18 +111,38 @@ export default function RulingDialog({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-border px-3 py-1 text-[13px] text-text-muted"
+            className="rounded-md border border-border px-3 py-1 text-[13px] text-text-muted hover:text-text"
           >
             cancel
           </button>
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-md border border-accent bg-accent-dim px-3 py-1 text-[13px] text-accent"
+            // "edit" stores the revise verdict, which REQUIRES its sentence —
+            // the server refuses an empty one, so the button is not offered.
+            disabled={busy || (verdict === "edit" && text.trim() === "")}
+            onClick={() => {
+              if (!onConfirm) {
+                onClose();
+                return;
+              }
+              setBusy(true);
+              setError(null);
+              void (async () => {
+                try {
+                  await onConfirm(text.trim());
+                  onClose();
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                  setBusy(false);
+                }
+              })();
+            }}
+            className="rounded-md border border-accent bg-accent-dim px-3 py-1 text-[13px] text-accent hover:opacity-80 disabled:opacity-40 disabled:pointer-events-none"
           >
             {c.confirm}
           </button>
         </div>
+        {error && <div className="mt-2 text-xs text-error">{error}</div>}
       </div>
     </div>
   );

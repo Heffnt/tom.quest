@@ -24,8 +24,8 @@ export default function PathsBar({
             onClick={() => onSelect(p.name)}
             className={`rounded-md border px-2.5 py-1 text-xs ${
               on
-                ? "border-accent/60 bg-accent-dim text-text"
-                : "border-border bg-surface text-text-muted hover:text-text"
+                ? "border-accent/60 bg-accent-dim text-text hover:border-accent"
+                : "border-border bg-surface text-text-muted hover:border-text-faint hover:text-text"
             }`}
           >
             {p.name}

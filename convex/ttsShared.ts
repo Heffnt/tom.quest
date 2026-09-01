@@ -1,6 +1,6 @@
 // TTS time helpers — the 5 a.m. America/New_York day boundary (spec §7).
 // Implemented without Intl so behavior is identical in the Convex runtime,
-// Node (worker box), and the browser. US DST rules: clocks spring forward at
+// Node (the Jarvis Box), and the browser. US DST rules: clocks spring forward at
 // 2:00 EST (07:00 UTC) on the second Sunday of March and fall back at 2:00 EDT
 // (06:00 UTC) on the first Sunday of November.
 //
@@ -110,6 +110,35 @@ export function ttsDayBoundsUtc(day: string): { start: number; end: number } {
 }
 
 /**
+ * The UTC instant of a NY wall-clock time on a YYYY-MM-DD calendar date —
+ * minute precision. Same one-correction DST logic as nyHourUtcMs. The
+ * repeating-todo generator uses this to place an instance's dueAt at the
+ * rule's timeOfDay ("18:30") on the day it is generating.
+ */
+export function nyTimeUtcMs(day: string, hour: number, minute = 0): number {
+  const naive = Date.parse(day) + hour * HOUR_MS + minute * 60_000;
+  const guess = naive - nyOffsetHours(naive) * HOUR_MS;
+  return naive - nyOffsetHours(guess) * HOUR_MS;
+}
+
+/** Plain lowercase weekday word ("monday"…"sunday") of a YYYY-MM-DD date. */
+export const WEEKDAY_WORDS = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+] as const;
+export type WeekdayWord = (typeof WEEKDAY_WORDS)[number];
+export function weekdayWordOf(day: string): WeekdayWord {
+  // Date.parse("YYYY-MM-DD") is UTC midnight of that calendar date; its UTC
+  // weekday IS the calendar date's weekday — no timezone shift involved.
+  return WEEKDAY_WORDS[new Date(Date.parse(day)).getUTCDay()];
+}
+
+/**
  * UTC bounds [start, end) of a CALENDAR day in New York: local midnight to the
  * next local midnight. This is the window a /tts calendar COLUMN covers — the
  * day-scoped time note carries that column's YYYY-MM-DD label (schema:
@@ -192,10 +221,170 @@ export function frontier<T extends GraphTodo>(todos: readonly T[]): T[] {
   return todos.filter((t) => isReady(t, doneSet));
 }
 
+/** The slice of a todo the goal-condition rule reads. */
+export type GoalTodo = {
+  kind?: "task" | "goal";
+  condition?: string;
+  timingClass?: "dated" | "condition-bound" | "whenever";
+  codeRepo?: string;
+  codeExternalId?: string;
+};
+
+/**
+ * CHECKABLE — a goal an agent may go and verify, and therefore a goal a worker
+ * session may record done. ONE HOME, because two callers must never disagree
+ * about it: the scheduler decides what to hand a worker (claudeSessions), and
+ * the pen decides what a worker's `status: "done"` may close (tts).
+ *
+ * The bar is a GOAL CONDITION — a sentence about the world that is either true
+ * yet or not ("the lease is signed"), or a code subject whose upstream status
+ * answers the same question. `condition` is a TWO-READING field (schema.ts):
+ * on a `timingClass: "condition-bound"` row it is the TRIGGER that says when
+ * the todo may start ("when the landlord sends the paperwork"), which is not a
+ * completion test at all. Reading a trigger as a completion test is how an
+ * agent closes one of Tom's own todos the moment the trigger fires — so a
+ * condition-bound row is checkable ONLY through a code subject.
+ */
+export function goalCheckable(todo: GoalTodo): boolean {
+  if (todo.kind !== "goal") return false;
+  if (todo.codeRepo !== undefined && todo.codeExternalId !== undefined) {
+    return true;
+  }
+  if (todo.timingClass === "condition-bound") return false;
+  return (todo.condition ?? "").trim() !== "";
+}
+
+// ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
+// EVERY piece of natural language TTS shows Tom — a batch statement, a task
+// statement, a ground-up explanation, a digest line, a decision list — is
+// written to this standard.
+//
+// THE LIVE SOURCE IS NO LONGER THIS STRING. It is the WikiTom skill
+// model-of-tom/skills/writing-to-tom/SKILL.md, synced into the ttsSkills table
+// by the cron in convex/ttsSkills.ts; the durable reasoning behind the rules —
+// the mined evidence, the session cites — is WikiTom model-of-tom/writing.md,
+// which that skill is the operative form of. Every consumer prefers the synced
+// row: GET /tts/batch-context (which is how the Node ESM planner on the worker
+// box gets it — it can neither import .ts nor read a git checkout), the worker
+// mission prompt in convex/claudeSessions.ts, and the session-prompt builders
+// in app/lib/tts-session-prompt.ts.
+//
+// This copy is what those consumers use when the table is empty — before the
+// first sync, and while GITHUB_MIRROR_TOKEN is still scoped away from WikiTom.
+// It is a snapshot, so it drifts: when the skill changes, update it here too.
+
+/** The ttsSkills row every writing consumer prefers over the fallback below. */
+export const WRITING_SKILL = "writing-to-tom";
+export const WRITING_STANDARD = `WRITING STANDARD — every sentence TTS shows Tom obeys this.
+
+THE TWO REGISTERS. All natural language here is one of exactly two kinds, and
+you always know which one you are writing.
+
+Display text is what is always on screen: a batch statement, a task statement,
+a goal condition. It is short and it assumes Tom's background — it does not
+teach, it names. One line, no trailing period needed, no preamble.
+
+A ground-up explanation is the layer behind a "more" control on any line of
+display text. It is self-contained: it defines every term at first use and is
+complete without any external reference, because Tom forwards these to other
+people and other agents verbatim. Assume the reader has no memory of any prior
+session and no knowledge of anything an agent made — files, branches,
+directories, jobs, and artifacts an agent created are unknown to him by name
+and must be described before they are used.
+
+THE FORM OF A GROUND-UP EXPLANATION: A COMPLETE HTML DOCUMENT. Rendered as
+paragraphs of prose, a ground-up explanation is an incomprehensible wall of
+text — Tom's own words, 2026-08-29, and the reason for this rule. So every one
+you write is a complete, self-contained HTML document, opening at
+<!DOCTYPE html> and closing at </html>, and it is shown FULLSCREEN. Hard
+constraints, because it renders inside a sandbox with no scripting and no
+network:
+- No <script>, no inline event handlers, and no external stylesheet, font,
+  image, or URL of any kind. Everything is inline: one <style> block in the
+  <head> and plain markup in the <body>. Nothing loads from outside; anything
+  external renders as a hole in the page.
+- The dark palette of the page it opens over: background #0a0e17, body text
+  #e2e8f0, secondary text #94a3b8, one accent #e8a040 for headings and key
+  terms, #1e293b for borders and rules. No other colors unless a diagram
+  genuinely needs one.
+- Readable type: about 15px body text, 1.65 line height, a column no wider
+  than roughly 760px centered with generous padding, a system sans stack
+  (-apple-system, "Segoe UI", Roboto, sans-serif) for prose and a monospace
+  stack (ui-monospace, "SF Mono", Menlo, monospace) for identifiers, paths,
+  ids, and code.
+- Real headings — one <h1> naming the subject, an <h2> per section — and short
+  sections. The reader must be able to find the part he wants without reading
+  the rest.
+
+STRUCTURE OVER WALLS. Inside that document, pick the form that fits the fact:
+- Enumerable facts go in a <table>: the terms and their definitions, the
+  options and what each one costs, the fields and what they mean, the states
+  and what each one implies. One fact per row, a real <th> header row.
+- Steps, states, and dependencies go in a simple visual structure built from
+  styled <div> boxes — a border, some padding, and an arrow (→ or ↓) between
+  them. Boxes, borders, and arrows only; no diagramming library, and SVG only
+  where plain shapes say it better than boxes would.
+- Everything else is short paragraphs under a heading, plus lists where the
+  items really are a list.
+
+WHAT THE DOCUMENT MUST COVER. It exists so a reader arriving with no context
+can understand the one line of display text it sits behind, and it must cover
+all of it: what this is; why it exists, meaning the end state it serves; what
+every term in the display text means, defined at first use; where the thing
+stands right now; what happens next and who does it; and — whenever Tom's
+ruling is the missing piece — exactly what he would be deciding, written as
+the numbered decision list described below, with the options and your
+recommendation.
+
+HTML is the form; everything else in this standard is still the writing. The
+rules on vocabulary, analogies, invented names, sentence construction, and
+tone all apply inside the document unchanged.
+
+WHO YOU ARE WRITING FOR. Tom is an AI PhD student. Assume fluent, and never
+define: machine learning at PhD level (transformer structure, training,
+evaluation), his own boolean-backdoor research vocabulary (triggers, arity,
+truth tables, activating combinations, poisoning, dormancy, detector classes,
+AUROC and the related rates), agent operations (subagents, worktrees,
+branches, merges, model tiers, crons, SLURM, GPUs, ssh), and git. Assume
+absent, and always define inline at first use: web-development jargon of every
+kind, the statistics of causality and inference, Boolean Fourier analysis, the
+internals of anything an agent created, and his own older prose and rules.
+
+NO LOAD-BEARING ANALOGIES. Do not explain one thing by mapping it onto
+another. The cost is the mapping itself: an analogy makes him understand a
+second domain and then transfer it, which is more work than understanding the
+thing directly. One orienting pointer to a system he already knows (his own
+code, something he built) is allowed as a single sentence. The test is
+deletion: remove the pointer, and if the explanation still teaches completely,
+it was a pointer; if the explanation collapses, it was a load-bearing analogy
+and is banned.
+
+NO INVENTED NAMES. Do not coin nouns, single letters, stage letters, numbered
+codenames, umbrella labels, or clever shorthands. Every one of these produces
+a "what is that?" stall. Use hyphenated plain words instead. Do not introduce a
+term that collides with something already in his head, and do not invent a
+synonym for a word he already uses — reuse his word exactly.
+
+HOW TO BUILD A SENTENCE. Complete sentences, never telegraphic fragments. One
+idea per paragraph. Concrete before abstract: state the specific case first,
+then the rule it illustrates. Every fact you include carries its relevance on
+its face — if the reader cannot see why a sentence is there, cut it or say
+why. Simple means fewer and more fundamental pieces at full technical
+precision, never fewer technical terms. Err toward over-explaining: he would
+rather skim background he already has than stop and ask.
+
+DESCRIPTIVE, NEVER EVALUATIVE. State what is. No praise, no urgency, no
+ceremony, no hedging, no selling.
+
+DECISIONS. When something needs Tom's ruling, write it as a numbered list.
+Each numbered item is one sentence of situation, then the options, then your
+recommendation. He replies by number, so an item that cannot be read on its
+own comes back unruled.`;
+
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
 // app/sessions and convex/claudeSessions import these directly. The worker
-// daemon CANNOT (only worker/ is deployed to the box, and Node does not load
+// daemon CANNOT (only worker/ is deployed to the Jarvis Box, and Node does not load
 // .ts), so it carries its own halves: session.mjs's REPO_GITHUB is a literal
 // mirror of SESSION_REPOS, while session-host.mjs has no DAEMON_STALE_MS at
 // all — its POLL_IDLE_MS cadence is the other half of a DERIVED contract
@@ -213,6 +402,41 @@ export const SESSION_REPOS = {
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
 } as const;
+
+/** The sentinel repo value meaning "no checkout, an empty scratch workspace".
+ * Written into claudeSessions.repo when a session holds no repos at all. */
+export const NO_REPO = "none";
+
+/** Every repo name a session may hold, in declaration order. THE list — the
+ * auto-scheduler, the prospecting lane and the browser's picker all read it
+ * rather than keeping hand-written copies (VQC C1: one home). */
+export const SESSION_REPO_NAMES = Object.keys(
+  SESSION_REPOS,
+) as (keyof typeof SESSION_REPOS)[];
+
+export function isSessionRepo(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
+}
+
+/**
+ * The ONE normalizer for a session's repo list. Everything a caller might hand
+ * us — a single legacy string, "none", an array with duplicates, a repo the
+ * daemon does not know — collapses here into the canonical form: known repos
+ * only, deduped, in SESSION_REPOS declaration order so two sessions asking for
+ * the same set get byte-identical rows.
+ *
+ * An unknown name is DROPPED rather than thrown on: the daemon throws on a repo
+ * it cannot clone, and a session that dies on its first turn is worse than a
+ * session that starts with an empty scratch workspace.
+ */
+export function normalizeSessionRepos(
+  input: readonly string[] | string | undefined,
+): string[] {
+  const raw =
+    input === undefined ? [] : typeof input === "string" ? [input] : input;
+  const wanted = new Set(raw.map((r) => r.trim()).filter(isSessionRepo));
+  return SESSION_REPO_NAMES.filter((name) => wanted.has(name));
+}
 
 /**
  * The browser treats the session daemon as unreachable past this heartbeat

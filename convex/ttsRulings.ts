@@ -8,7 +8,7 @@ import {
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { applyStatusChange, logEvent } from "./tts";
+import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -180,8 +180,21 @@ async function insertRuling(
           unarchiveCondition: unarchiveCondition ?? trimmed,
           updatedAt: now,
         });
+        // The contents go where the batch's disappearance sends them: its
+        // tasks are archived with it, its goals (Tom's own todos) are unbound
+        // and returned to the pool. Patching only the batch row leaves its
+        // unfinished tasks active with a batchId no scheduler will ever admit
+        // again — open work invisible to the frontier, the lanes, and the
+        // preparer alike.
+        const emptied = await archiveBatchContents(
+          ctx,
+          batchId,
+          "Tom archived the batch",
+        );
         appliedAt = now;
-        applyResult = "batch archived";
+        applyResult =
+          `batch archived (${emptied.archivedTasks} task(s) archived, ` +
+          `${emptied.unboundGoals} goal(s) returned)`;
       }
       if (verdict === "approve") {
         // Nothing executes a batch on its own — approving is ratification of
@@ -205,7 +218,11 @@ async function insertRuling(
       // subject. NOTE (known gap, not a defect of this path): claudeSessions
       // has no batch subject yet, so markLiveSessionRulingApplied cannot see
       // this ruling — a batch "session" verdict stays pending until sessions
-      // can target a batch.
+      // can target a batch. Because it can never be applied, the scheduler
+      // reads it as a TIMED PAUSE on the batch's graph rather than as a
+      // freeze (AUTO_BATCH_SESSION_PAUSE_MS in claudeSessions.ts): an
+      // applied-forever test at the batch level would strand every task in the
+      // graph on one conversation Tom meant to have.
     }
 
     const id = await ctx.db.insert("dtsRulings", {
@@ -251,7 +268,7 @@ export const recordRuling = mutation({
 // A live session's ruling pen (tts.internalTriage pattern): internal so the
 // session agent can record Tom's spoken verdicts via `npx convex run
 // ttsRulings:internalRecordRuling` with deploy credentials — recordRuling
-// above requires Tom's browser identity, which the box does not hold. Only
+// above requires Tom's browser identity, which the Jarvis Box does not hold. Only
 // ever run while Tom is present and ruling; it is his pen, not a policy actor.
 export const internalRecordRuling = internalMutation({
   args: {

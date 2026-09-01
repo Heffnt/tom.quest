@@ -2,9 +2,9 @@
 // prepare-queue.mjs, and the code-todo jobs brief-code-todos.mjs /
 // apply-rulings.mjs / execute-approved.mjs). Plain Node ESM, ZERO npm
 // dependencies: node:fs, node:child_process and the global fetch (Node >= 18,
-// this box runs Node 22) are all we use.
+// the Jarvis Box runs Node 22) are all we use.
 //
-// WHY no dependencies: the box owns no state and must be rebuildable by one
+// WHY no dependencies: the Jarvis Box owns no state and must be rebuildable by one
 // script with nothing but Node itself. No node_modules means no lockfile, no
 // install step, no supply-chain surface — setup.sh just copies these files
 // into /opt/tts/ and cron runs them.
@@ -59,8 +59,8 @@ export function loadEnv(path = "/etc/tts/worker.env") {
 // America/New_York wall-clock hour (for the cron DST guard only)
 // ---------------------------------------------------------------------------
 //
-// We implement NY time by hand rather than trusting the box's TZ database or
-// timezone config, because the box must be rebuildable from a bare Ubuntu
+// We implement NY time by hand rather than trusting the Jarvis Box's TZ database
+// or timezone config, because it must be rebuildable from a bare Ubuntu
 // image with zero manual configuration (the no-state rule). US DST rules,
 // fixed in law since 2007:
 //   EDT (UTC-4): from the second Sunday of March 07:00 UTC (2 a.m. EST)
@@ -158,6 +158,54 @@ export async function convexFetch(env, path, body = undefined) {
   return JSON.parse(text);
 }
 
+// ---------------------------------------------------------------------------
+// Slack Web API
+// ---------------------------------------------------------------------------
+// ONE HOME for both verbs (VQC C1). poll-dump.mjs carried a GET-only helper of
+// its own; prepare-life-todos.mjs needs the POST half for the threaded reply,
+// and a second copy is exactly the drift this rule exists to stop.
+//
+// The bot token goes in the Authorization header, never in the URL — a URL
+// lands in logs and in Slack's own error reports.
+
+/** Slack read methods (conversations.history, chat.getPermalink): GET + query. */
+export async function slackGet(env, method, params) {
+  const url = new URL(`https://slack.com/api/${method}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) url.searchParams.set(k, String(v));
+  }
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` },
+  });
+  if (!res.ok) throw new Error(`slack ${method} -> HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(`slack ${method} -> ${data.error}`);
+  return data;
+}
+
+/**
+ * Slack write methods (chat.postMessage, chat.update): POST + JSON body.
+ *
+ * Needs the bot token to hold chat:write. Nothing in this repo PROVES it does
+ * (worker.env.example claims only history-read), so a caller treats a
+ * `missing_scope` failure as a real, reportable condition rather than a
+ * transient — see the ledger entry slack-chat-write-scope-unverified.
+ */
+export async function slackPost(env, method, body) {
+  const res = await fetch(`https://slack.com/api/${method}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`slack ${method} -> HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(`slack ${method} -> ${data.error}`);
+  return data;
+}
+
 // The message the server put in a rejection body ({ "error": "..." }), for
 // re-filing a refused item with the server's OWN words rather than an HTTP
 // line. Falls back to the error message when the body is not that shape.
@@ -178,7 +226,7 @@ export function serverErrorMessage(err) {
 // ---------------------------------------------------------------------------
 
 // The "active" account symlink managed by the tts-account CLI helper — every
-// headless Claude invocation on this box goes through it, so switching Max
+// headless Claude invocation on the Jarvis Box goes through it, so switching Max
 // accounts is one `tts-account use` away and no job hardcodes an account.
 export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 
