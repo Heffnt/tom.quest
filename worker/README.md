@@ -17,10 +17,12 @@ on a schedule:
 3. **poll-canvas** (every 30 min) — lists new Canvas course announcements and
    spends ONE headless Claude call per batch deciding which imply an action
    by Tom (schedule changes, sign-ups, required responses), then submits
-   those to Convex as unprepared todos with source `canvas`, linked to the
-   announcement. Assignments are NOT this job's business — the Convex-side
-   sync (convex/ttsCanvas.ts) owns those, with due dates and auto-done on
-   submission. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
+   those to Convex as unprepared todos with source `canvas-announcement`,
+   linked to the announcement. Assignments are NOT this job's business — the
+   Convex-side sync (convex/ttsCanvas.ts) owns those under the source `canvas`,
+   with due dates and auto-done on submission. Two producers, two source names:
+   they shared `canvas` until the sync was found reading every announcement row
+   and dropping it without a word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
    restricts token creation; Tom's request form is pending).
 4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
