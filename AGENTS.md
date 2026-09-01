@@ -86,7 +86,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Use Sentry for error capture, performance, and session replay.
 - Use Convex Dashboard for server state, function logs, and query performance.
 - Use Zustand devtools for client UI state inspection.
-- Never log secrets, tokens, signatures, or large sensitive payloads.
+- Never log secrets, tokens, signatures, or large sensitive payloads. There is no exemption for one-time credential helpers: they write minted values to an owner-only file (`worker/jobs/credential-file.mjs`) and print only that file's path and the variable names, because an agent session stores its own standard output.
 
 ## Project Style
 

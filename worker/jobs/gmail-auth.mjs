@@ -14,15 +14,20 @@
 //   node worker/jobs/gmail-auth.mjs <client_id> <client_secret>
 //
 // It opens a local port, prints a Google URL to visit, and after you approve
-// gmail.readonly access it prints the refresh token. Put all three values in
-// /etc/tts/worker.env on the Jarvis Box (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET,
-// GMAIL_REFRESH_TOKEN). The token never expires while the app has access;
-// revoke any time at myaccount.google.com/permissions.
+// gmail.readonly access it WRITES the three values (GMAIL_CLIENT_ID,
+// GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) to an owner-only file in your home
+// directory and prints only that file's path. Copy the file onto the Jarvis
+// Box, append it to /etc/tts/worker.env, and delete both copies — the terminal
+// commands are printed for you. Nothing secret ever reaches stdout, because
+// AGENTS.md forbids logging secrets and an agent session stores its own stdout.
+// The token never expires while the app has access; revoke any time at
+// myaccount.google.com/permissions.
 //
-// Zero dependencies: node:http + global fetch.
+// Zero npm dependencies: node:http + global fetch.
 
 import http from "node:http";
 import crypto from "node:crypto";
+import { writeCredentialFile, credentialFileNotice } from "./credential-file.mjs";
 
 const [clientId, clientSecret] = process.argv.slice(2);
 if (!clientId || !clientSecret) {
@@ -75,11 +80,26 @@ const server = http.createServer(async (req, res) => {
       throw new Error(`no refresh_token in response: ${JSON.stringify(tokens).slice(0, 300)}`);
     }
     res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("Done — the refresh token is printed in your terminal. Close this tab.");
-    console.log("\nAdd these lines to /etc/tts/worker.env on the Jarvis Box:\n");
-    console.log(`GMAIL_CLIENT_ID=${clientId}`);
-    console.log(`GMAIL_CLIENT_SECRET=${clientSecret}`);
-    console.log(`GMAIL_REFRESH_TOKEN=${tokens.refresh_token}`);
+    res.end("Done — your terminal has the path of the credentials file. Close this tab.");
+    // DECISION (AGENTS.md "never log secrets"): these three values are NOT
+    // printed. They go to an owner-only file and stdout gets its path plus the
+    // variable names, so running this helper inside an agent session cannot
+    // write a credential into the stored session transcript. There is no
+    // exemption for this helper — if you add a step here, it keeps this shape.
+    const vars = {
+      GMAIL_CLIENT_ID: clientId,
+      GMAIL_CLIENT_SECRET: clientSecret,
+      GMAIL_REFRESH_TOKEN: tokens.refresh_token,
+    };
+    const file = writeCredentialFile("tts-gmail-credentials.env", vars);
+    console.log(
+      credentialFileNotice(file, Object.keys(vars), [
+        "Append them to /etc/tts/worker.env on the Jarvis Box (substitute your host):",
+        `  scp ${file} root@<jarvis-box>:/tmp/gmail-credentials.env`,
+        "  ssh root@<jarvis-box> 'cat /tmp/gmail-credentials.env >> /etc/tts/worker.env" +
+          " && rm /tmp/gmail-credentials.env'",
+      ]),
+    );
   } catch (err) {
     res.writeHead(500).end(String(err.message));
     console.error(`token exchange failed: ${err.message}`);
