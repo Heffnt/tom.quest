@@ -244,10 +244,15 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # no-ops. This line REPLACES the form-batches line above at cutover.
 27 */2 * * * root /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
 
-# Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
-# propose-archive) every 10 minutes, so a ruling made in the UI takes effect
-# within minutes. The job serializes itself via /var/lib/tts/apply.lock —
-# overlapping cron ticks exit immediately instead of double-applying.
+# Apply Tom's non-execution rulings every 10 minutes, so a ruling made in the
+# UI takes effect within minutes. The ruling VERDICT vocabulary is four closed
+# words — approve / revise / session / archive — and this job acts on three:
+# approve is skipped and left pending, because execute-approved.mjs owns it.
+# (Do not confuse those with the brief RECOMMENDATION words the briefer emits,
+# approve / stale-replan / needs-session / propose-archive; there is no
+# "defer" verdict — not ruling IS deferring.) The job serializes itself via
+# /var/lib/tts/apply.lock — overlapping cron ticks exit immediately instead of
+# double-applying.
 */10 * * * * root /usr/bin/node /opt/tts/apply-rulings.mjs >> /var/log/tts/apply-rulings.log 2>&1
 
 # Execute ONE approved plan per hour at :45 (agentic Claude in a throwaway

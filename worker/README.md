@@ -38,27 +38,55 @@ CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
 `vqc/todos.yaml`; the Jarvis Box turns that file into rulings Tom can make from the
 tom.quest UI in seconds:
 
+Two different word-lists run through this loop, and they are NOT the same
+list. A **recommendation** is the briefing job's read on a todo; a **verdict**
+is Tom's ruling on it. They are stored in different fields, and only the
+verdict decides what happens.
+
 - **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
   OPEN todo entry whose YAML changed since its last brief (sha256 cursor in
   `/var/lib/tts/brief-hashes.json`), has headless Claude write a ground-up
-  brief against the current tree and a recommendation — `propose-archive`
-  (already done/moot, with evidence), `stale-replan` (intent live, plan
-  stale), `needs-session` (open judgment call; all tier C), or `approve` —
-  plus an exec class (`box` vs `needs-turing`). Briefs POST to Convex and are
-  also cached locally under `/var/cache/tts/briefs/`.
-- Tom rules on each brief in the UI; Convex queues the rulings.
-- **apply-rulings** carries out the non-execution rulings: `defer` records
-  it; `stale-replan` queues a re-brief that must propose a fresh plan;
-  `needs-session` pushes a session-agenda file to CMT master; and
-  `propose-archive` closes the entry in `vqc/todos.yaml` (text surgery, then
-  CMT's own todos guard test — a red guard reverts and reports instead of
-  pushing).
+  brief against the current tree plus a **recommendation** and an exec class
+  (`box` vs `needs-turing`). The recommendation vocabulary is four words —
+  `propose-archive` (already done/moot, with evidence), `stale-replan` (intent
+  live, plan stale), `needs-session` (open judgment call; all tier C), or
+  `approve` — declared in `convex/ttsCode.ts`, in the `dtsCodeBriefs`
+  `recommendation` union in `convex/schema.ts`, and in `CODE_RECOMMENDATIONS`
+  in `convex/http.ts`. All four are live and current. Briefs POST to Convex
+  and are also cached locally under `/var/cache/tts/briefs/`.
+- Tom rules on each brief in the UI; Convex queues the rulings. A ruling
+  carries a **verdict**, and that is a different, closed four-word vocabulary
+  (the `dtsRulings` `verdict` union in `convex/schema.ts`): `approve`,
+  `revise`, `session`, `archive`. The two vocabularies line up one-to-one —
+  `stale-replan`→`revise`, `needs-session`→`session`,
+  `propose-archive`→`archive`, `approve`→`approve` — which is the same mapping
+  `convex/ttsRulings.ts` used to migrate the old per-code rulings table.
+  **There is no `defer` verdict:** not ruling IS deferring, and a timing change
+  is a reschedule rather than a ruling.
+- **apply-rulings** carries out the non-execution verdicts: `revise` queues a
+  re-brief that must propose a fresh plan, carrying Tom's sentence into the
+  re-brief prompt; `session` pushes a session-agenda file to CMT master; and
+  `archive` closes the entry in `vqc/todos.yaml` (text surgery, then CMT's own
+  todos guard test — a red guard reverts and reports instead of pushing).
+  `approve` is **skipped, not applied** — the row has to stay pending because
+  execute-approved owns it. Any other value is marked applied with the text
+  `unsupported verdict: <v>`, so a verdict newer than the deployed worker
+  cannot clog the queue.
 - **execute-approved** takes ONE pending `approve` per hour, runs agentic
   Claude in a throwaway full clone on a `tts/<id>` branch, verifies commits +
   the todos guard, pushes, and opens a PR. **Merging the PR is the human
   gate** — nothing lands on master autonomously.
 
-To start a `needs-session` working session, from any CMT checkout:
+One caution on the word `needs-session`: it carries three unrelated meanings on
+this box. It is a brief recommendation (above); it is what the `session`
+verdict was called in the deprecated `dtsCodeRulings` table, before the
+migration renamed it; and it is a status value on Tom's freeform time notes
+(the `dtsTimeNotes` `status` union in `convex/schema.ts`), meaning
+apply-time-notes could not resolve the note and Tom has to. Nothing is shared
+across the three.
+
+To start the working session a `session` verdict pushed an agenda for, from
+any CMT checkout:
 
 ```
 claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
