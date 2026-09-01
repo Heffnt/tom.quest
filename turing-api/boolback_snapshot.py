@@ -25,14 +25,14 @@ import os
 import subprocess
 from pathlib import Path
 
+from cmt_repo import cmt_repo_dir
 from dirs import resolve_within_root
 
-# The conda env the CMT builder lives in + where it is checked out (overridable).
+# The conda env the CMT builder lives in. Where it is CHECKED OUT comes from
+# cmt_repo.cmt_repo_dir() — the one reader of BOOLEAN_BACKDOOR_REPO, shared with the
+# Forge surface. This module used to read a second name, BOOLBACK_BUILDER_REPO_DIR,
+# for the same directory; nothing reads that name any more.
 BUILDER_CONDA_ENV = os.environ.get("BOOLBACK_BUILDER_CONDA_ENV", "boolback")
-BUILDER_REPO_DIR = os.environ.get(
-    "BOOLBACK_BUILDER_REPO_DIR",
-    str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
-)
 # Built .gz snapshots + per-dir submit markers live here.
 CACHE_DIR = Path(
     os.environ.get("BOOLBACK_CACHE_DIR", str(Path.home() / ".cache" / "boolback-snapshots"))
@@ -232,10 +232,14 @@ def submit_build(resolved: Path) -> dict:
         return {"status": "submitted", "job_id": prev, "coalesced": True}
 
     out_path = cache_path(resolved, newest_done_mtime(resolved))
+    # The checkout is passed as an ARGUMENT as well as being the submitting cwd:
+    # boolback_build.sbatch puts it (and its tom.quest/ subdir) on PYTHONPATH, and a
+    # job inherits the submitter's cwd only by accident of SLURM's --chdir default.
+    repo_dir = str(cmt_repo_dir())
     try:
         proc = subprocess.run(
-            ["sbatch", "--parsable", str(BUILD_SBATCH), str(resolved), str(out_path)],
-            cwd=BUILDER_REPO_DIR, shell=False, capture_output=True, text=True,
+            ["sbatch", "--parsable", str(BUILD_SBATCH), str(resolved), str(out_path), repo_dir],
+            cwd=repo_dir, shell=False, capture_output=True, text=True,
             timeout=60, check=True,
         )
     except FileNotFoundError:
