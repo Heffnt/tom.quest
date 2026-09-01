@@ -2,7 +2,8 @@
 // poll-dump.mjs — poll the Slack #dump channel and submit every new human
 // message to Convex as an unprepared TTS capture.
 //
-// Run by cron every 2 minutes (see /etc/cron.d/tts). Also runnable by hand:
+// Run by cron hourly at :07 (see /etc/cron.d/tts) as the reconciliation
+// backstop behind the Slack push route. Also runnable by hand:
 //   node /opt/tts/poll-dump.mjs
 //
 // STATE: the ONLY local state on the Jarvis Box is the cursor file

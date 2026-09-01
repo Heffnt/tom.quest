@@ -1089,7 +1089,13 @@ describe("claude sessions", () => {
     ).rejects.toThrow(/empty/);
   });
 
-  it("poll stores the Jarvis Box load and names each live session's posture", async () => {
+  // witness: re-add `todoId: s.todoId` (or kind/title/blockCategory) to the
+  // per-session object in internalPoll and this test goes red. The payload is
+  // bounded to what some line under worker/session-host/ actually reads —
+  // posture (mode, model) and protocol (ids, seq, epoch, pending rows) — and
+  // the session's SUBJECT is not among them: the daemon runs a session, the
+  // /tts UI describes one, and the UI queries the row directly.
+  it("poll stores the Jarvis Box load and names each live session's posture, not its subject", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
@@ -1116,11 +1122,21 @@ describe("claude sessions", () => {
 
     const polled = poll.sessions[0] as {
       mode?: string;
+      kind?: string;
+      title?: string;
       todoId?: string;
       blockCategory?: string;
     };
     expect(polled.mode).toBe("autonomous");
-    expect(polled.todoId).toBe(todoId);
+    expect(polled.todoId).toBeUndefined();
+    expect(polled.blockCategory).toBeUndefined();
+    expect(polled.kind).toBeUndefined();
+    expect(polled.title).toBeUndefined();
+    // The subject still lives on the row itself — only the poll stops sending
+    // it, so nothing the UI reads is lost.
+    const row = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(row?.todoId).toBe(todoId);
+    expect(row?.title).toBe("auto-ish session");
   });
 });
 
@@ -3342,8 +3358,11 @@ describe("frontier scheduler", () => {
       daemonStartedAt: 1,
       load: HEALTHY_LOAD,
     });
-    const polled = poll.sessions as { todoId?: string; model?: string }[];
-    expect(polled.find((s) => s.todoId === hard._id)?.model).toBe("fable");
+    // The poll payload carries no todoId (it carries only what the daemon
+    // reads), so the session is found by its own row id.
+    const hardSessionId = sessions.find((s) => s.todoId === hard._id)?._id;
+    const polled = poll.sessions as { id?: string; model?: string }[];
+    expect(polled.find((s) => s.id === hardSessionId)?.model).toBe("fable");
   });
 
   // The whole worker contract in one read: what it claimed, why it is ready,

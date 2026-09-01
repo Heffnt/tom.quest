@@ -38,6 +38,21 @@ function fact(label: string, value: string | undefined): string | null {
 // a deliberate boundary, not a gap.
 const RULING_PEN = `When Tom rules or decides something out loud, record it IMMEDIATELY with the capture pen: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom ruled: <the decision, verbatim, with its subject named>", "source": "session"}' (both variables are already set in this session's environment). The capture reaches the pile as a fact for Tom to confirm in the UI — the session itself has no direct ruling pen, on purpose. A ruling that lives only in chat is lost.`;
 
+// The calendar pen. Tom ruled 2026-08-31: "we need to automate this so that
+// you and tom.quest sessions can add things to my calendar." The door exists
+// (POST /tts/calendar-event, convex/http.ts; the ONE write path is
+// convex/ttsCalendarWrite.ts) and the key that opens it is already in every
+// session's shell — TTS_WORKER_KEY, injected by the session-host daemon. What
+// was missing was a session ever being TOLD, so the ruled-for capability sat
+// unreachable in practice. Naming it here is what hands it out.
+//
+// It is deliberately fenced to an instruction Tom gives in the session: a
+// calendar write is a real-world side effect on his actual calendar, and the
+// interactive prompts are the only ones with a Tom present to give that
+// instruction. Autonomous mission prompts (convex/claudeSessions.ts) do not
+// carry this pen.
+const CALENDAR_PEN = `When Tom asks in this session for something to go on his calendar, write it there before the session ends: curl -s -X POST "$CONVEX_SITE_URL/tts/calendar-event" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"title": "...", "start": <epoch ms>, "end": <epoch ms>, "description": "...", "location": "...", "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO"]}' (title/start/end required, the rest optional; times are America/New_York). Write only what Tom asked for in words — never infer an event from an item's due date or from what a plan implies. Read the created event's title and time back to him.`;
+
 // Opening prompt for a BLOCK session: committed time over a category of
 // todos, not a single item. Same contract; the session works the set with
 // Tom one item at a time and records his spoken rulings as they land.
@@ -49,7 +64,7 @@ export function buildBlockSessionPrompt(
   const lines: string[] = [
     opening(writingSkill),
     "",
-    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. ${RULING_PEN}`,
+    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. ${RULING_PEN} ${CALENDAR_PEN}`,
     "",
   ];
   if (category === "code") {
@@ -171,6 +186,7 @@ export function buildBatchSessionPrompt(
     '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
     '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
     `- ${RULING_PEN}`,
+    `- ${CALENDAR_PEN}`,
   );
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -248,6 +264,7 @@ export function buildTodoSessionPrompt(
       '- At each OPEN step with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
       `- Record plan progress the moment a step closes: curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}' — the full plan array, never a diff.`,
       `- ${RULING_PEN}`,
+      `- ${CALENDAR_PEN}`,
     );
   }
   return lines.join("\n");

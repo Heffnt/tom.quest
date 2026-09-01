@@ -738,6 +738,12 @@ export const forceClose = mutation({
 // every non-terminal session — full state each time, no cursors: the payload
 // is small (a handful of sessions, pending rows only) and idempotent pulls
 // make daemon restarts a non-event (the no-state rule).
+//
+// "Needs" is literal: a field belongs in the per-session object below only if
+// some line under worker/session-host/ reads it. The session's SUBJECT (kind,
+// title, todoId, blockCategory) rode along until 2026-09-01 and no line ever
+// read it — the daemon runs a session, it does not describe one; describing is
+// the /tts UI's job, and the UI queries the row directly.
 
 export const internalPoll = internalMutation({
   args: {
@@ -823,19 +829,14 @@ export const internalPoll = internalMutation({
         sessions.push({
           id: s._id,
           status: s.status,
-          kind: s.kind,
-          title: s.title,
           // Both repo fields. `repos` is what the daemon clones from; `repo`
           // rides along for rows written before the multi-repo ruling, whose
           // `repos` is absent (the daemon reads `repos ?? [repo]`).
           repos: s.repos,
           repo: s.repo,
-          // Posture + subject: the daemon needs mode at claim/adopt (an
-          // autonomous session gets the auto-end + wall-clock-cap path) and
-          // todoId/blockCategory to name what it is working on.
+          // Posture: the daemon reads mode at claim and at adopt (an
+          // autonomous session gets the auto-end + wall-clock-cap path).
           mode: s.mode,
-          todoId: s.todoId,
-          blockCategory: s.blockCategory,
           // The model tier, when the claimed task asked for one. Absent is the
           // default and the norm (a worker runs Opus); the daemon reads this
           // and passes it to the SDK.
