@@ -550,8 +550,17 @@ export class Session {
     // `git push` in its shell.
     const url = `https://github.com/${gh}.git`;
     const branch = `session/${this.id}`;
+    // GIT_LFS_SKIP_SMUDGE=1 makes git write the ~130-byte Git LFS pointer text
+    // instead of downloading the object it names. Inert today (tom.quest has no
+    // LFS objects, and git-lfs is not installed on the Jarvis Box), and it is
+    // here for the day public/data/clouds/*.bin — 67.5 MB of point cloud that no
+    // session reads — moves to LFS: GitHub meters LFS bandwidth against a
+    // 10 GiB/month allowance, so a session-per-todo cadence would spend the whole
+    // month's allowance in ~150 clones on bytes nothing in the session touches.
+    // Anything that DOES need the real bytes runs `git lfs pull` itself.
     await execFile("git", ["clone", "--depth", "1", url, dir], {
       maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, GIT_LFS_SKIP_SMUDGE: "1" },
     });
     if (forResume) {
       // If earlier work on this session was pushed, pick the branch back up;

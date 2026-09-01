@@ -108,7 +108,14 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - `pnpm test` runs Vitest unit/component tests.
 - `pnpm test:e2e` runs Playwright E2E tests.
 - `pnpm lint` runs ESLint.
+- `pnpm check:guardrails` runs the static boundary checks that CI enforces on every pull request.
 - Before deployment-related work, production build verification matters more than style-only checks.
+
+## Binary Assets
+
+- A file over 50 MiB makes every push print GitHub's GH001 warning; over 100 MiB GitHub refuses the push. Both thresholds apply to the blob forever, so a single commit of a large file is only taken back by rewriting all of history.
+- `scripts/check-large-files.mjs` fails the build when a tracked file crosses 50 MiB without being Git LFS tracked. Files already over the line are named in its `KNOWN_LARGE` map with the reason.
+- Large binaries go to Git LFS or outside the repo, never into ordinary git history.
 
 ## Agent Context System
 
