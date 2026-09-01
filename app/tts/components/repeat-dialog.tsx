@@ -18,6 +18,7 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
 import Info from "./info";
+import { REPEATS_EXPLANATION } from "../explanations";
 import { errMessage } from "../lib";
 
 type Repeat = Doc<"ttsRepeats">;
@@ -188,7 +189,11 @@ export default function RepeatDialog({
         </div>
         <div className="mt-1 flex items-center gap-1 text-[10px] text-text-faint">
           skip when calendar has
-          <Info call="ttsRepeats.internalGenerateRepeats — skipWhenCalendarHas">
+          <Info
+            call="ttsRepeats.internalGenerateRepeats — skipWhenCalendarHas"
+            explanation={REPEATS_EXPLANATION}
+            explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+          >
             No instance is minted on a day whose calendar already holds an
             event with this text in its title. The 4:30 a.m. run records a
             repeat-skipped event naming that event instead of writing a todo.

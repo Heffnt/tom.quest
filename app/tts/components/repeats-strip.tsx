@@ -100,7 +100,11 @@ function RepeatRow({
         <button className={btnCls} onClick={onEdit}>
           Edit
         </button>
-        <Info call="ttsRepeats.updateRepeat({ id, statement, daysOfWeek, timeOfDay, … })">
+        <Info
+          call="ttsRepeats.updateRepeat({ id, statement, daysOfWeek, timeOfDay, … })"
+          explanation={REPEATS_EXPLANATION}
+          explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+        >
           Opens this rule’s nine fields for rewriting in place. The rule keeps
           its id, so the todos it has already minted stay attached to it —
           delete-and-recreate would break that thread.
@@ -176,7 +180,11 @@ export default function RepeatsStrip() {
         <button className={btnCls} onClick={() => setEditing("new")}>
           New repeat
         </button>
-        <Info call="ttsRepeats.createRepeat({ statement, daysOfWeek, … })">
+        <Info
+          call="ttsRepeats.createRepeat({ statement, daysOfWeek, … })"
+          explanation={REPEATS_EXPLANATION}
+          explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+        >
           Opens the same nine-field form the Edit button opens, empty. The rule
           starts minting from the next 4:30 a.m. run — nothing appears today.
         </Info>
