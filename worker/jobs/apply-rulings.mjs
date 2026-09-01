@@ -7,7 +7,7 @@
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
 // open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
 // this job GETs /tts/rulings — a UNIFIED feed whose rows carry
-// subjectType "life"|"code" and verdict "approve"|"revise"|"session"|
+// identifierType "life"|"code" and verdict "approve"|"revise"|"session"|
 // "archive" — takes only the CODE rows (life rows belong to
 // prepare-life-todos.mjs), applies each pending one, then POSTs
 // /tts/ruling-applied so the UI shows the outcome. The verdicts:
@@ -34,7 +34,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadEnv, convexFetch } from "./tts-lib.mjs";
+import { loadEnv, convexFetch, identifierTypeOf } from "./tts-lib.mjs";
 import {
   CMT_REPO,
   CMT_DEFAULT_BRANCH,
@@ -258,7 +258,7 @@ async function main() {
     // the executor's, so it neither acts nor marks; it must STAY pending for
     // execute-approved.mjs.
     const actionable = pending.filter(
-      (r) => r.subjectType === "code" && r.verdict !== "approve",
+      (r) => identifierTypeOf(r) === "code" && r.verdict !== "approve",
     );
     if (actionable.length === 0) return;
 

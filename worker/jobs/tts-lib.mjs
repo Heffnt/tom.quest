@@ -306,3 +306,20 @@ export function extractJsonObject(answerText) {
   }
   return JSON.parse(stripped.slice(first, last + 1));
 }
+
+// ── Ruling identifier ────────────────────────────────────────────────────────
+// TRANSITIONAL (widen step of the dtsRulings subjectType → identifierType
+// rename). The stored field name is the WIRE field name, and this box rolls
+// over on `git pull` + worker/setup.sh — a schedule that never moves with the
+// Convex push. During the widen the feed emits BOTH names, so this box works
+// either way; reading through here also means a box that pulled LATE than the
+// narrow still gates correctly.
+//
+// WHY THIS MATTERS MORE THAN IT LOOKS: every gate below is a filter, not an
+// assertion. A row whose discriminator this function cannot find fails
+// `=== "code"` / `!== "life"` silently — the job skips it, the ruling is never
+// applied, appliedAt stays unset, and NOTHING throws. Divergence here is a
+// ruling that quietly sits there, not an error anyone would see.
+export function identifierTypeOf(r) {
+  return r.identifierType ?? r.subjectType;
+}

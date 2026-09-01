@@ -712,10 +712,19 @@ export default defineSchema({
   // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
   // reschedule, not a ruling.)
   dtsRulings: defineTable({
-    subjectType: v.union(
-      v.literal("life"),
-      v.literal("code"),
-      v.literal("batch"),
+    // WIDEN STEP of the subjectType → identifierType rename. BOTH are optional
+    // for exactly one deploy: `subjectType` must be optional in the schema
+    // before any mutation may patch it to `undefined`, and `identifierType`
+    // must exist in the schema before any mutation may write it. Every write
+    // sets BOTH; every read goes through identifierTypeOf() in ttsRulings.ts.
+    // The narrow step (after `npx convex run
+    // ttsRulings:internalMigrateIdentifierType`) deletes `subjectType` and
+    // makes `identifierType` required.
+    identifierType: v.optional(
+      v.union(v.literal("life"), v.literal("code"), v.literal("batch")),
+    ),
+    subjectType: v.optional(
+      v.union(v.literal("life"), v.literal("code"), v.literal("batch")),
     ),
     todoId: v.optional(v.id("dtsTodos")), // life subjects
     repo: v.optional(v.string()), // code subjects…

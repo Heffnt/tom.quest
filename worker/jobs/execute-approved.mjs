@@ -7,7 +7,7 @@
 // THE EXECUTION HALF of the ruling loop: when Tom's verdict is "approve" on a
 // briefed CMT todo, the plan attached to that todo is cleared for autonomous
 // execution. This job reads the unified /tts/rulings feed (rows carry
-// subjectType "life"|"code"), takes the OLDEST pending CODE approval, runs AGENTIC
+// identifierType "life"|"code"), takes the OLDEST pending CODE approval, runs AGENTIC
 // headless Claude inside a throwaway full clone, and turns the result into a
 // PR on github.com/Heffnt/ComplexMultiTrigger. MERGING THE PR IS THE HUMAN
 // GATE — nothing this job does lands on master by itself, which is why
@@ -32,7 +32,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { loadEnv, convexFetch, runClaude } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  identifierTypeOf,
+} from "./tts-lib.mjs";
 import {
   CMT_REPO,
   CMT_DEFAULT_BRANCH,
@@ -106,7 +111,9 @@ async function main() {
     const approvals = (Array.isArray(pending) ? pending : [])
       .filter(
         (r) =>
-          r.subjectType === "code" && r.repo === CMT_REPO && r.verdict === "approve",
+          identifierTypeOf(r) === "code" &&
+          r.repo === CMT_REPO &&
+          r.verdict === "approve",
       )
       .sort((a, b) => (a.ruledAt ?? 0) - (b.ruledAt ?? 0));
     if (approvals.length === 0) return; // quiet when idle

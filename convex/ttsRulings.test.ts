@@ -396,6 +396,130 @@ describe("TTS unified rulings", () => {
     );
   });
 
+  // ── The subjectType → identifierType widen ─────────────────────────────────
+  // These four pin the crossing itself: rows of BOTH vintages coexist between
+  // the widen push and the backfill, and the failure mode of getting it wrong
+  // is a ruling silently skipped, never an error. Delete them with the narrow.
+
+  // witness: drop the `?? row.subjectType` fallback from identifierTypeOf in
+  // convex/ttsRulings.ts — an old-vintage row then keys as
+  // `code undefined undefined` and stops being found as its own subject.
+  it("a row carrying ONLY identifierType is keyed and served like an old one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "life" });
+    const base = Date.now();
+    // Post-backfill vintage: identifierType only, no subjectType at all.
+    const newVintage = await t.run(async (ctx) =>
+      ctx.db.insert("dtsRulings", {
+        identifierType: "life",
+        todoId,
+        verdict: "approve",
+        ruledAt: base,
+      }),
+    );
+    // Pre-backfill vintage on the SAME subject, older — must be superseded by
+    // the new-vintage row, which only happens if both key to `life <todoId>`.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsRulings", {
+        subjectType: "life",
+        todoId,
+        verdict: "approve",
+        ruledAt: base - 1000,
+      }),
+    );
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => r._id)).toEqual([newVintage]);
+  });
+
+  // witness: drop `.map(withIdentifierAlias)` from internalPendingRulings —
+  // the worker box, which rolls over on its own schedule, then reads
+  // `undefined` from whichever name its checkout predates and skips the row.
+  it("both feeds emit BOTH names, so either worker vintage can gate", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "life" });
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsRulings", {
+        identifierType: "life",
+        todoId,
+        verdict: "revise",
+        sentence: "narrow it",
+        ruledAt: Date.now(),
+      }),
+    );
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending).toHaveLength(1);
+    expect(pending[0].identifierType).toBe("life");
+    expect(pending[0].subjectType).toBe("life");
+    const recent = await t.query(internal.ttsRulings.internalRecentRulings, {});
+    expect(recent[0].identifierType).toBe("life");
+    expect(recent[0].subjectType).toBe("life");
+  });
+
+  // witness: drop `subjectType` from the insert in insertRuling — a freshly
+  // recorded ruling then goes dark to every worker checkout that has not yet
+  // pulled, and its verdict is never applied.
+  it("recordRuling dual-writes both names during the widen", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "life" });
+    await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId,
+      verdict: "revise",
+      sentence: "say it plainer",
+    });
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsRulings").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].identifierType).toBe("life");
+    expect(rows[0].subjectType).toBe("life");
+  });
+
+  // witness: drop the `if (row.subjectType === undefined) continue` guard from
+  // internalMigrateIdentifierType — a second run then re-patches every row and
+  // `patched` stops being a truthful count of what remained to migrate.
+  it("the backfill carries the value over, removes the old name, and is idempotent", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "life" });
+    const base = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsRulings", {
+        subjectType: "life",
+        todoId,
+        verdict: "approve",
+        ruledAt: base,
+        appliedAt: base,
+      });
+      // An unapplied row: a worker job may be mid-flight on it, which is what
+      // `stillPending` exists to report before the narrowing push.
+      await ctx.db.insert("dtsRulings", {
+        subjectType: "code",
+        repo: "ComplexMultiTrigger",
+        externalId: "cmt-009",
+        verdict: "approve",
+        ruledAt: base,
+      });
+    });
+
+    const first = await t.mutation(
+      internal.ttsRulings.internalMigrateIdentifierType,
+      {},
+    );
+    expect(first).toEqual({ scanned: 2, patched: 2, stillPending: 1 });
+
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsRulings").collect());
+    // The narrowing push FAILS if any row still carries subjectType.
+    expect(rows.every((r) => r.subjectType === undefined)).toBe(true);
+    expect(rows.map((r) => r.identifierType).sort()).toEqual(["code", "life"]);
+
+    const second = await t.mutation(
+      internal.ttsRulings.internalMigrateIdentifierType,
+      {},
+    );
+    expect(second).toEqual({ scanned: 2, patched: 0, stillPending: 1 });
+  });
+
   // witness: replace `normalized` with the raw string id in
   // internalMarkRulingApplied's patch call in convex/ttsRulings.ts
   it("marks a ruling applied and rejects a bad id by name", async () => {

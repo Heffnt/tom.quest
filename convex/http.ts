@@ -741,7 +741,7 @@ http.route({ path: "/tts/code-briefs", method: "POST", handler: dtsCodeBriefs })
 // GET /tts/code-rulings — the rulings a worker job should act on (unapplied
 // and not superseded by a newer ruling on the same subject), from the unified
 // ttsRulings table. ALL THREE subject types ride the one feed: rows carry
-// subjectType ("code" → the apply job; "life" with verdict "revise" → the
+// identifierType ("code" → the apply job; "life" with verdict "revise" → the
 // preparer, or form-batches when the subject is a v1 batch; "batch" with
 // verdict "revise" → the planner, worker/jobs/plan-graphs.mjs). Each job
 // filters for its own kind and consumes only those. Each row carries its _id,

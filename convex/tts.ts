@@ -105,7 +105,7 @@ const GRAPH_TASK = v.object({
 
 type Member = { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string };
 
-// Same identity convention as ttsRulings.subjectKey — one vocabulary for
+// Same identity convention as ttsRulings.identifierKey — one vocabulary for
 // "which subject is this" everywhere.
 export function memberKey(m: Member): string {
   return m.todoId !== undefined

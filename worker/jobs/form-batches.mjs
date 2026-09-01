@@ -37,7 +37,13 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import {
+  loadEnv,
+  convexFetch,
+  runClaude,
+  extractJsonObject,
+  identifierTypeOf,
+} from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/batch-input-hash";
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
@@ -163,7 +169,8 @@ async function main() {
   // belongs to prepare-life-todos.mjs, which reads the same feed.
   const revises = [];
   for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
+    if (identifierTypeOf(r) !== "life" || r.verdict !== "revise" || !r.todoId)
+      continue;
     const batch = batchById.get(r.todoId);
     if (batch) {
       revises.push({ ruling: r, statement: batch.statement, sentence: r.sentence ?? "" });
@@ -191,7 +198,7 @@ async function main() {
     .map((r) => ({
       verdict: r.verdict,
       subject:
-        r.subjectType === "life"
+        identifierTypeOf(r) === "life"
           ? `life "${all.find((t) => t._id === r.todoId)?.statement ?? r.todoId}"`
           : `code ${r.repo} ${r.externalId}`,
       sentence: r.sentence.trim(),
@@ -311,7 +318,7 @@ async function main() {
       revises,
       notes,
       recentRulings: recent.map((r) => ({
-        subjectType: r.subjectType,
+        identifierType: identifierTypeOf(r),
         todoId: r.todoId ?? null,
         repo: r.repo ?? null,
         externalId: r.externalId ?? null,
