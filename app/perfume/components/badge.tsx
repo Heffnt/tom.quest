@@ -33,7 +33,6 @@
 // layout) is NOT baked in here — callers compose it via `className`, since it
 // never collides with the badge's own color/border/type utilities.
 
-import type { ReactNode } from "react";
 import { cn } from "./ui";
 
 export type CountBadgeVariant = "chip" | "frame";
@@ -55,7 +54,9 @@ export interface CountBadgeProps {
   /** aria-hidden by default (the mark is decorative next to a labeled icon);
    *  pass false when the badge is the only carrier of the count. */
   "aria-hidden"?: boolean;
-  children?: ReactNode;
+  // NO `children`. The body below renders a fixed "×{count}" and nothing else,
+  // so a declared children prop would have been silently dropped by anything
+  // that passed one. All four call sites are self-closing; keep them that way.
 }
 
 /** The shared "×n" stack-count mark — see file header for the variant/size

@@ -91,8 +91,11 @@ export function grabHandlers(spec: GrabSpec) {
 }
 
 // ── shared visual atoms ──────────────────────────────────────────────────────
-// The ×n badge is item-frame's FrameCountBadge — the single source of truth,
-// used here through <ItemFrame count=…>; the catalog rows import it directly.
+// The ×n badge is CountBadge (components/badge.tsx), variant "frame" — the one
+// home for that mark. This file reaches it through <ItemFrame count=…>, and
+// item-frame.tsx is one of its four callers, not its owner (the others are
+// cursors.tsx, lib/use-hand.tsx and brew-graph.tsx, all on the default "chip"
+// variant).
 // The send arrow is the shared SendGlyph (components/glyphs.tsx).
 
 // ── the grid ─────────────────────────────────────────────────────────────────
