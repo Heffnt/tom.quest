@@ -12,6 +12,14 @@
 // NAME NOTE: convex/canvas.ts is the design-canvas page (unrelated). This is
 // ttsCanvas on purpose.
 //
+// SOURCE NOTE (2026-09-01): this file owns the source "canvas" and it means
+// exactly one thing — a Canvas ASSIGNMENT, provenance `canvas:assignment:<id>
+// <url>`. Canvas ANNOUNCEMENTS are a different fact from a different producer
+// (worker/jobs/poll-canvas.mjs) and carry their own source,
+// "canvas-announcement". They shared the name until the read below — which
+// keys every "canvas" row by the assignment provenance shape — was found to
+// be reading announcements on every sync and dropping them without a word.
+//
 // Env (Convex deployment): CANVAS_TOKEN (personal access token — Canvas →
 // Account → Settings → "+ New access token"), CANVAS_BASE_URL (defaults to
 // https://canvas.wpi.edu). Missing token = quiet no-op, so the cron ships
@@ -43,6 +51,9 @@ export type AssignmentInput = {
   dueAt: number;
   submitted: boolean;
 };
+
+/** The source this file writes and reads. Assignments only — see SOURCE NOTE. */
+export const ASSIGNMENT_SOURCE = "canvas";
 
 export function canvasProvenance(externalId: string, htmlUrl: string): string {
   return `canvas:assignment:${externalId} ${htmlUrl}`;
@@ -120,7 +131,15 @@ export function mapCanvasAssignments(
 // returned ctx.runMutation(internal.ttsCanvas.…) result would create.
 type RefreshResult =
   | { skipped: string }
-  | { seen: number; created: number; completed: number; dateMoved: number };
+  | {
+      seen: number;
+      created: number;
+      completed: number;
+      dateMoved: number;
+      // Rows under source "canvas" that are not assignments — see the
+      // narrowed read in internalSyncCanvasTodos. Expected 0.
+      foreign: number;
+    };
 
 export const internalRefreshCanvas = internalAction({
   args: {},
@@ -164,14 +183,29 @@ export const internalSyncCanvasTodos = internalMutation({
   args: { assignments: v.array(ASSIGNMENT_INPUT) },
   handler: async (ctx, { assignments }) => {
     const now = Date.now();
-    const existing = await ctx.db
+    const sourceRows = await ctx.db
       .query("dtsTodos")
-      .withIndex("by_source", (q) => q.eq("source", "canvas"))
+      .withIndex("by_source", (q) => q.eq("source", ASSIGNMENT_SOURCE))
       .collect();
+    // Narrowed to the ASSIGNMENT provenance shape, and the rows that fail that
+    // shape are counted rather than dropped in silence. Under one source that
+    // means one thing this count is 0 forever; if it is not, something else is
+    // writing "canvas" and the sync would otherwise treat those rows as
+    // assignments it has never seen (and, in any future write path over this
+    // collection, write to them).
+    const assignmentRows: typeof sourceRows = [];
+    let foreign = 0;
+    for (const row of sourceRows) {
+      if (provenanceExternalId(row.provenance) === null) foreign++;
+      else assignmentRows.push(row);
+    }
+    if (foreign > 0) {
+      console.error(
+        `TTS canvas sync: ${foreign} row(s) under source "${ASSIGNMENT_SOURCE}" carry no canvas:assignment: provenance — not assignments, skipped.`,
+      );
+    }
     const byExternalId = new Map(
-      existing
-        .map((t) => [provenanceExternalId(t.provenance), t] as const)
-        .filter((pair): pair is [string, (typeof existing)[number]] => pair[0] !== null),
+      assignmentRows.map((t) => [provenanceExternalId(t.provenance) as string, t]),
     );
 
     let created = 0;
@@ -193,12 +227,12 @@ export const internalSyncCanvasTodos = internalMutation({
           kind: "task",
           actor: "tom",
           entryAction: a.htmlUrl ? `Open ${a.htmlUrl}` : undefined,
-          source: "canvas",
+          source: ASSIGNMENT_SOURCE,
           provenance: canvasProvenance(a.externalId, a.htmlUrl),
           createdAt: now,
           updatedAt: now,
         });
-        await logEvent(ctx, "captured", id, { source: "canvas" });
+        await logEvent(ctx, "captured", id, { source: ASSIGNMENT_SOURCE });
         created++;
         continue;
       }
@@ -242,6 +276,6 @@ export const internalSyncCanvasTodos = internalMutation({
         completed++;
       }
     }
-    return { seen: assignments.length, created, completed, dateMoved };
+    return { seen: assignments.length, created, completed, dateMoved, foreign };
   },
 });

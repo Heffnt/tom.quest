@@ -43,6 +43,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // fallback.
 import { skillText } from "./ttsSkills";
 import {
+  CODE_TODO_PATH,
   DAEMON_STALE_MS,
   LIVE_STATUSES,
   NO_REPO,
@@ -54,6 +55,7 @@ import {
   isLive,
   isReady,
   normalizeSessionRepos,
+  tracksCodeTodos,
 } from "./ttsShared";
 export { DAEMON_STALE_MS };
 
@@ -2001,13 +2003,24 @@ function buildProspectMissionPrompt(
     "```",
     'The response carries every item in the system under "todos". Read their statements. Never capture a finding that restates one of them, or that an item plainly already covers — a duplicate costs Tom a triage he has already done.',
   ];
-  // ComplexMultiTrigger tracks its own code todos in-repo (vqc/todos.yaml is
-  // the file the dtsCodeTodoMirror cron reads from each repo's default
-  // branch). Those are already-tracked work and must not be re-captured.
-  if (repo === "ComplexMultiTrigger") {
+  // A repo that governs itself by an in-repo code-todo registry holds
+  // already-tracked work a prospector must not re-capture. WHICH repos those
+  // are comes from the one home the mirror cron reads (ttsShared
+  // .CODE_TODO_REPOS) — this was hand-written as `repo === "ComplexMultiTrigger"`
+  // and went stale the moment tom.quest grew a registry of its own: the cron
+  // mirrored tom.quest's 15 entries while tom.quest prospectors were never told
+  // the file existed.
+  //
+  // The CHECKOUT, not /tts/state, is what the prospector reads. /tts/state
+  // answers "what items does TTS hold" (dtsTodos); these entries are not items
+  // — dtsCodeTodoMirror is a link-by-id-never-copy reflection of a file the
+  // repo owns, refreshed from the DEFAULT branch, so it is stale exactly when
+  // a prospector's own branch has moved. The file in front of the prospector
+  // is the fresher and more authoritative copy of the same fact.
+  if (tracksCodeTodos(repo)) {
     lines.push(
       "",
-      `This repo also tracks its own code todos in \`vqc/todos.yaml\` in your checkout. Read that file too, and drop any finding it already names.`,
+      `This repo also tracks its own code todos in \`${CODE_TODO_PATH}\` in your checkout — a governed registry of work already decided on. Read that file too, and drop any finding it already names.`,
     );
   }
   lines.push(

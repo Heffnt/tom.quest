@@ -418,6 +418,32 @@ export function isSessionRepo(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
 }
 
+/** The path, inside a repo, of the code-todo registry a repo governs itself by. */
+export const CODE_TODO_PATH = "vqc/todos.yaml";
+
+/**
+ * The repos that keep their own code todos in CODE_TODO_PATH, mapped to the
+ * DEFAULT branch that copy is read from. THE list, with two readers that must
+ * agree (VQC C1: one home):
+ *   - the mirror cron (convex/ttsSync.ts refreshMirror) fetches each repo's
+ *     file from that branch into dtsCodeTodoMirror;
+ *   - the prospecting prompt (convex/claudeSessions.ts) tells a prospector in
+ *     one of these checkouts to READ that file before capturing, so it cannot
+ *     hand Tom a finding the repo already tracks.
+ * They drifted once: only ComplexMultiTrigger was named in the prompt, while
+ * the cron mirrored tom.quest too, so tom.quest prospectors were blind to
+ * tom.quest's own registry.
+ */
+export const CODE_TODO_REPOS = {
+  ComplexMultiTrigger: "master",
+  "tom.quest": "main",
+} as const;
+
+/** Whether a repo tracks its own code todos in CODE_TODO_PATH. */
+export function tracksCodeTodos(repo: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CODE_TODO_REPOS, repo);
+}
+
 /**
  * The ONE normalizer for a session's repo list. Everything a caller might hand
  * us — a single legacy string, "none", an array with duplicates, a repo the
