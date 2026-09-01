@@ -24,7 +24,7 @@ import { createPortal } from "react-dom";
 import { Popover, useDismissable, type PopoverAnchor } from "./popover";
 import { btn, cn } from "./ui";
 import ItemFrame, { type FrameItem } from "./item-frame";
-import { FrequencyGlyph, ChargeSymbol, STRIKE, NAMED_GREEN } from "../lib/frequencies";
+import { FrequencyGlyph, STRIKE, NAMED_GREEN } from "../lib/frequencies";
 import { PerfumeGlyph } from "./perfume-glyph";
 import { SendGlyph } from "./glyphs";
 import { blendTint } from "../lib/brew-graph-layout";

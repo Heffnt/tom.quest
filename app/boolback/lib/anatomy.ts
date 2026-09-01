@@ -591,7 +591,7 @@ export function blowUp(focus: Focus, path: string, shape: ModelShape): Focus {
  * Expand every distinct layer a circuit's nodes touch, evenly, so together
  * they hold ~FIT_SHARE of the pane. Fresh focus, like blowUp.
  */
-export function fitCircuit(focus: Focus, nodes: CircuitNode[], shape: ModelShape): Focus {
+export function fitCircuit(_focus: Focus, nodes: CircuitNode[], shape: ModelShape): Focus {
   const nL = sanitizeCount(shape.nLayers, MAX_MODEL_LAYERS) ?? 1;
   const layers = [
     ...new Set(
