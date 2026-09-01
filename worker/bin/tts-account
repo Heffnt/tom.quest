@@ -29,6 +29,15 @@
 #                                 the wrong account into the named slot.)
 set -euo pipefail
 
+# The account store. THIS SCRIPT'S ONLY SPELLING of the path (the header above
+# repeats it in prose for a reader; the code below goes through $BASE).
+#
+# It cannot be shared: this script is installed to /usr/local/bin and runs on
+# the box with no repo checkout and nothing to source. Two other homes exist,
+# and moving the store means editing all three:
+#   worker/jobs/claude-accounts.mjs — the Node readers (cron jobs + daemon)
+#   worker/setup.sh (ACCOUNTS_DIR)  — the mkdir that creates these slots and
+#                                     the systemd unit's CLAUDE_CONFIG_DIR
 BASE=/root/.claude-accounts
 
 usage() {

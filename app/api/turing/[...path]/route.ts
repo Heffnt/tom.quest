@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, requireAdminOrAgent } from "@/app/lib/convex-server";
-import { forwardToTuringApi } from "@/app/lib/turing";
+import { forwardToTuringApi, upstreamReason } from "@/app/lib/turing";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
@@ -60,7 +60,7 @@ async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "D
       const error =
         looksLikeHtml || contentType.includes("text/html")
           ? `Turing API returned ${res.status} (non-JSON body); the API may be down or misconfigured.`
-          : text || `Turing request failed: ${res.status}`;
+          : upstreamReason(text, res.status);
       return NextResponse.json(
         { error },
         { status: res.ok ? 502 : res.status === 401 || res.status === 403 ? res.status : 502 },

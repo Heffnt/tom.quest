@@ -11,6 +11,7 @@
 
 import { execFileSync } from "node:child_process";
 import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
+import { CLAUDE_CONFIG_DIR } from "./claude-accounts.mjs";
 
 export { ENV_PATH };
 
@@ -207,7 +208,11 @@ export function serverErrorMessage(err) {
 // The "active" account symlink managed by the tts-account CLI helper — every
 // headless Claude invocation on the Jarvis Box goes through it, so switching Max
 // accounts is one `tts-account use` away and no job hardcodes an account.
-export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
+//
+// The path itself lives in claude-accounts.mjs (its header lists the other two
+// homes the literal has, in setup.sh and bin/tts-account); re-exported here
+// because runClaude below is what puts it in every cron job's env.
+export { CLAUDE_CONFIG_DIR };
 
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
 // (the envelope is unwrapped here; parsing the answer is the caller's job —

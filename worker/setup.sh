@@ -23,6 +23,17 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# The Claude Max account store: one Claude Code config dir per account inside
+# it, plus an "active" symlink (managed by tts-account) naming the one in use.
+# THIS SCRIPT'S ONLY SPELLING of that path — used by the mkdir in step 5 and by
+# the session-host systemd unit's Environment=CLAUDE_CONFIG_DIR in step 9.
+# Two other homes exist, in two other languages, because nothing can import
+# across them; move the store and all three change together:
+#   worker/jobs/claude-accounts.mjs — the Node readers (cron jobs + daemon)
+#   worker/bin/tts-account (BASE)   — the switcher, which runs on the box with
+#                                     no repo present and nothing to source
+ACCOUNTS_DIR=/root/.claude-accounts
+
 echo "== [1/9] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -78,11 +89,10 @@ echo "== [5/9] directories =="
 #     markdown copies, and the executor's throwaway full clones
 # /etc/tts            — worker.env (secrets; mode 600)
 # /var/log/tts        — cron output
-# /root/.claude-accounts/{gmail,wpi} — one Claude Code config dir per Max
-#     account; an "active" symlink (managed by tts-account) picks which one
-#     the jobs use.
+# $ACCOUNTS_DIR/{gmail,wpi} — one Claude Code config dir per Max account; an
+#     "active" symlink (managed by tts-account) picks which one the jobs use.
 mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
-  /root/.claude-accounts/gmail /root/.claude-accounts/wpi
+  "$ACCOUNTS_DIR/gmail" "$ACCOUNTS_DIR/wpi"
 
 echo "== [6/9] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
@@ -300,7 +310,7 @@ Type=simple
 ExecStart=/usr/bin/node /opt/tts/session-host/session-host.mjs
 WorkingDirectory=/opt/tts/session-host
 EnvironmentFile=/etc/tts/worker.env
-Environment=CLAUDE_CONFIG_DIR=/root/.claude-accounts/active
+Environment=CLAUDE_CONFIG_DIR=@ACCOUNTS_DIR@/active
 # systemd sets no HOME for system services. Every session shell inherits this
 # env, and gh only finds its auth (/root/.config/gh/hosts.yml) through $HOME —
 # without it `gh pr create` cannot see the credential setup.sh installed.
@@ -311,6 +321,11 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
+# The heredoc above is QUOTED ('UNIT') on purpose: the unit's own comments
+# contain a literal $HOME and literal backticks, which an unquoted heredoc
+# would expand away. So the one line that must track $ACCOUNTS_DIR is written
+# as a placeholder and filled in here instead.
+sed -i "s|@ACCOUNTS_DIR@|$ACCOUNTS_DIR|" /etc/systemd/system/tts-session-host.service
 systemctl daemon-reload
 # Only enable the daemon once its key exists — a daemon started with an empty
 # SESSIONS_WORKER_KEY would just spin on 503s. On re-runs (key present) the

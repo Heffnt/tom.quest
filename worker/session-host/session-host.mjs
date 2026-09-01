@@ -31,6 +31,7 @@ import {
   truncated,
   ERROR_TEXT_LIMIT,
 } from "./lib.mjs";
+import { CLAUDE_CONFIG_DIR } from "./claude-accounts.mjs";
 import { Session, gitErrorText } from "./session.mjs";
 
 const VERSION = "0.2.0";
@@ -56,10 +57,12 @@ const HOT_WINDOW_MS = 30_000;
 
 // Which Claude Max account the SDK runs under — the Jarvis Box's "active" symlink
 // (managed by tts-account; CLAUDE_CONFIG_DIR in the systemd unit points at
-// it). Reported to the server as a display fact only.
+// it). Reported to the server as a display fact only. The path comes from
+// claude-accounts.mjs (a symlink to ../jobs/, like worker-env.mjs) so this
+// daemon and the cron jobs cannot drift onto different directories.
 function readActiveAccount() {
   try {
-    return path.basename(fs.readlinkSync("/root/.claude-accounts/active"));
+    return path.basename(fs.readlinkSync(CLAUDE_CONFIG_DIR));
   } catch {
     return undefined; // not a symlink / not set up — simply don't report
   }

@@ -22,6 +22,30 @@ export async function forwardToTuringApi(path: string, init?: RequestInit): Prom
   });
 }
 
+// ONE FIELD NAME FOR A FAILED REQUEST, AND IT IS `error`. Every proxy route
+// under /api that fronts the Turing API — app/api/turing/[...path] and
+// app/api/boolback/{node,file,blob} — answers a failure as {"error": string},
+// so a reader never has to guess between two spellings of the same fact.
+//
+// Upstream states its reason differently: FastAPI's HTTPException serialises
+// as {"detail": "..."} (and, for request-validation failures, a list under the
+// same key). That body used to be re-wrapped whole, so `error` carried the
+// literal string '{"detail":"no such dir"}' and a reader looking for `detail`
+// on the OUTER object found nothing. This unwraps it: the reason text arrives
+// under the one name, and nothing downstream parses JSON twice.
+export function upstreamReason(text: string, status: number): string {
+  if (!text.trim()) return `Turing request failed: ${status}`;
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown } | null;
+    const detail = parsed?.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    if (detail !== undefined && detail !== null) return JSON.stringify(detail);
+  } catch {
+    // Not JSON — the body text is itself the reason.
+  }
+  return text;
+}
+
 export type WsCredentials = {
   wsUrl: string;
   token: string;

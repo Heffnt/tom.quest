@@ -18,8 +18,12 @@ import { humanSize } from "../lib/format";
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: "no-store" });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string; detail?: string } | null;
-    throw new Error(body?.error ?? body?.detail ?? `request failed: ${res.status}`);
+    // `error` is the one field name every /api proxy route writes on failure
+    // (app/api/boolback/*, and app/api/turing/[...path], which unwraps
+    // FastAPI's `detail` into it). The `?? body?.detail` fallback that used to
+    // stand here read a name nothing writes.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `request failed: ${res.status}`);
   }
   return (await res.json()) as T;
 }
