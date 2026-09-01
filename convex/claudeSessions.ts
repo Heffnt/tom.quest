@@ -34,6 +34,8 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 
 // The staleness threshold lives in ttsShared (one home; the worker daemon's
 // literal mirror is fenced by scripts/check-session-mirrors.mjs), and so do
+// the live-status list this file scans by (LIVE_STATUSES / isLive, formerly
+// declared here AND in app/sessions/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
 // page, the planner, and the scheduler must all mean the same thing by
 // "ready". The writing standard the worker mission pastes into its prompt is
@@ -41,29 +43,21 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // fallback.
 import { skillText } from "./ttsSkills";
 import {
+  CODE_TODO_PATH,
   DAEMON_STALE_MS,
+  LIVE_STATUSES,
   NO_REPO,
   SESSION_REPO_NAMES,
   WRITING_SKILL,
   WRITING_STANDARD,
   buildDoneSet,
   goalCheckable,
+  isLive,
   isReady,
   normalizeSessionRepos,
+  tracksCodeTodos,
 } from "./ttsShared";
 export { DAEMON_STALE_MS };
-
-const LIVE_STATUSES = [
-  "requested",
-  "starting",
-  "idle",
-  "running",
-  "awaiting-permission",
-] as const;
-
-function isLive(status: Doc<"claudeSessions">["status"]): boolean {
-  return (LIVE_STATUSES as readonly string[]).includes(status);
-}
 
 // Un-acked permission decisions for a session, bounded: newest 25 per decided
 // status, filtered to appliedAt-unset. Correct in practice because un-acked
@@ -1602,6 +1596,17 @@ function promptFact(label: string, value: string | undefined): string | null {
  * per-caller because a groundwork mission and a worker mission mean different
  * things by "implement".
  */
+// The box's two read-only commands, named in every autonomous mission prompt.
+// An installed command no prompt names is not access: tts-browse sat on the
+// box unmentioned while sessions that changed a page still ended by asking
+// Tom to go and look (found 2026-08-30, salvaged from unmerged commit
+// 703f526 when #33 superseded that branch).
+const BOX_TOOLS_PARAGRAPH = [
+  "Two read-only commands exist on this box:",
+  "- `tts-browse <url> [--login] [--out /tmp/page.png]` opens a real browser on a page and prints its console errors and failed requests, then writes a screenshot you can read back. `--login` signs in with the agent account — every /turing and /tts page is role-gated, so an anonymous 200 can hide 401s underneath. LOOK at any page you changed instead of asking Tom to.",
+  "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key. It cannot allocate, cancel, run, or read files — those need Tom. A verb answering 401 means the read key is not installed yet; record that in your outcome instead of retrying.",
+].join("\n");
+
 function workspaceParagraph(
   repos: string[],
   sessionId: Id<"claudeSessions">,
@@ -1712,6 +1717,8 @@ function buildAutoMissionPrompt(
           "",
           `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
+    "",
+    BOX_TOOLS_PARAGRAPH,
     "",
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
@@ -1905,6 +1912,8 @@ function buildWorkerPrompt(args: {
           `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
     "",
+    BOX_TOOLS_PARAGRAPH,
+    "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
   );
   return lines.filter((l): l is string => l !== null).join("\n");
@@ -1994,13 +2003,24 @@ function buildProspectMissionPrompt(
     "```",
     'The response carries every item in the system under "todos". Read their statements. Never capture a finding that restates one of them, or that an item plainly already covers — a duplicate costs Tom a triage he has already done.',
   ];
-  // ComplexMultiTrigger tracks its own code todos in-repo (vqc/todos.yaml is
-  // the file the dtsCodeTodoMirror cron reads from each repo's default
-  // branch). Those are already-tracked work and must not be re-captured.
-  if (repo === "ComplexMultiTrigger") {
+  // A repo that governs itself by an in-repo code-todo registry holds
+  // already-tracked work a prospector must not re-capture. WHICH repos those
+  // are comes from the one home the mirror cron reads (ttsShared
+  // .CODE_TODO_REPOS) — this was hand-written as `repo === "ComplexMultiTrigger"`
+  // and went stale the moment tom.quest grew a registry of its own: the cron
+  // mirrored tom.quest's 15 entries while tom.quest prospectors were never told
+  // the file existed.
+  //
+  // The CHECKOUT, not /tts/state, is what the prospector reads. /tts/state
+  // answers "what items does TTS hold" (dtsTodos); these entries are not items
+  // — dtsCodeTodoMirror is a link-by-id-never-copy reflection of a file the
+  // repo owns, refreshed from the DEFAULT branch, so it is stale exactly when
+  // a prospector's own branch has moved. The file in front of the prospector
+  // is the fresher and more authoritative copy of the same fact.
+  if (tracksCodeTodos(repo)) {
     lines.push(
       "",
-      `This repo also tracks its own code todos in \`vqc/todos.yaml\` in your checkout. Read that file too, and drop any finding it already names.`,
+      `This repo also tracks its own code todos in \`${CODE_TODO_PATH}\` in your checkout — a governed registry of work already decided on. Read that file too, and drop any finding it already names.`,
     );
   }
   lines.push(

@@ -746,29 +746,6 @@ async function removeMemberByKey(
   if (inv) await ctx.db.delete(inv._id);
 }
 
-// Storage upload flow: the client asks for a short-lived upload URL, PUTs the
-// image, then calls setMemberIcon with the returned storageId.
-export const generateIconUploadUrl = mutation({
-  args: {},
-  handler: async (ctx) => {
-    await identify(ctx);
-    return await ctx.storage.generateUploadUrl();
-  },
-});
-
-export const setMemberIcon = mutation({
-  args: { storageId: v.id("_storage") },
-  handler: async (ctx, { storageId }) => {
-    const actor = await identify(ctx);
-    const member = await requireMember(ctx, actor);
-    // Replace any prior icon so storage does not leak.
-    if (member.iconStorageId && member.iconStorageId !== storageId) {
-      await ctx.storage.delete(member.iconStorageId);
-    }
-    await ctx.db.patch(member._id, { iconStorageId: storageId });
-  },
-});
-
 // Presence + activity heartbeat. Upserts the caller's cursor on a brew (by
 // clientId), refreshes their member lastSeen, and opportunistically sweeps
 // cursor rows stale past PRESENCE_SWEEP_MS for the same brew.
@@ -1493,23 +1470,19 @@ export const listMembers = query({
   handler: async (ctx) => {
     const now = Date.now();
     const members = await ctx.db.query("perfumeMembers").collect();
-    // The client can never resolve a storageId to a servable URL — only the
-    // Convex runtime can (ctx.storage.getUrl). Resolve each uploaded icon here so
-    // avatars render the image; members with no icon carry a null url.
-    return await Promise.all(
-      members.map(async (m) => ({
-        memberKey: m.memberKey,
-        name: m.name,
-        color: m.color,
-        iconStorageId: m.iconStorageId ?? null,
-        iconUrl: m.iconStorageId
-          ? await ctx.storage.getUrl(m.iconStorageId)
-          : null,
-        registeredAt: m.registeredAt,
-        lastSeenAt: m.lastSeenAt,
-        fresh: m.lastSeenAt > now - MEMBER_FRESH_MS,
-      })),
-    );
+    // A member's avatar is their initial on their colour. There is no icon
+    // here: the upload path (an upload-url mutation + a setMemberIcon mutation)
+    // existed server-side but no client ever called either, so it was removed.
+    // The perfumeMembers.iconStorageId column is still in the schema — see the
+    // note there for why dropping a column is a separate, riskier change.
+    return members.map((m) => ({
+      memberKey: m.memberKey,
+      name: m.name,
+      color: m.color,
+      registeredAt: m.registeredAt,
+      lastSeenAt: m.lastSeenAt,
+      fresh: m.lastSeenAt > now - MEMBER_FRESH_MS,
+    }));
   },
 });
 
@@ -1583,8 +1556,6 @@ function brewSummary(brew: Doc<"perfumeBrews">) {
     owner: brew.owner,
     nickname: brew.nickname,
     seq: brew.seq,
-    itemCount: brew.items.length,
-    hasHypotheticals: brew.items.some((p) => !p.real),
     cauldronCount: brew.cauldron.reduce((n, o) => n + o.count, 0),
     // The pin is a target PERFUME now (DESIGN.md §5); any legacy `recipeIndex`
     // on un-migrated rows is ignored — normalize to the {perfumeId} shape.

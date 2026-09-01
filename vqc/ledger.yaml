@@ -11,7 +11,8 @@
 #   id              stable kebab-case id, never reused
 #   kind            descent | alignment | pending-fence | steering-graduation | scratch-graduation
 #   created         YYYY-MM-DD
-#   cites           constitution article ids (A*/C1-C9/D1-D28) or tts-spec:<section>
+#   cites           constitution article ids (A*/C*/D*) or tts-spec:<section>
+#                   — the resolution set has one home: vqc/cites.ts
 #   statement       the discovered fact, one short paragraph
 #   graduates_when  the checkable condition under which the entry is deleted
 #
@@ -220,27 +221,6 @@
     session to any caller and whose daemon claims every "requested" row, so a
     second poller would double-run Tom's sessions.
 
-- id: sessions-pr-credential-rollout-unproven
-  kind: descent
-  created: 2026-08-31
-  cites: [D8, tts-spec:20]
-  statement: >-
-    Sessions could not open pull requests (gh logged into no host — GH_TOKEN
-    scrubbed on purpose) while the same token rode every clone's remote URL,
-    readable from .git/config; found live 2026-08-30/31 (autonomous outcome
-    "PR NOT opened — gh has no credential"; also recorded on unmerged session
-    branch q974bmhy... as ledger entry sessions-cannot-open-prs, which this
-    entry supersedes — drop that one if that branch merges). The fix is in
-    the tree: session.mjs clones clean URLs, setup.sh installs the
-    tts-git-credential helper as git's global credential.helper and
-    regenerates /root/.config/gh/hosts.yml from worker.env, and the daemon's
-    command gate now buys a classifier verdict on every gh call (merge stays
-    denied — Tom's gate). None of it is LIVE until setup.sh runs on the
-    Jarvis Box, and no test stands under the box's git/gh config.
-  graduates_when: >-
-    After a setup.sh rollout, a session pushes session/<id> and opens a pull
-    request with gh, and its clone's .git/config contains no token.
-
 - id: writing-standard-check-not-in-ci
   kind: pending-fence
   created: 2026-08-30
@@ -276,24 +256,6 @@
     No `title=` attribute survives in app/tts outside genuine HTML semantics,
     Info's `label` shim prop is deleted, and every ⓘ carries plain language.
 
-- id: vercel-build-command-not-generated
-  kind: descent
-  created: 2026-08-30
-  cites: [C1, C6]
-  statement: >-
-    vercel.json now sets buildCommand to scripts/vercel-build.mjs, and that
-    script's production branch (`npx convex deploy --cmd 'pnpm build'`) is a
-    HAND-COPY of what the Vercel dashboard previously ran, transcribed from
-    AGENTS.md rather than read from the platform. Nothing checks the two agree,
-    and nothing can from inside the repo: reading the project's settings needs
-    Vercel credentials no session or CI job holds. If the dashboard command ever
-    differed from what AGENTS.md documents, this commit silently changed what
-    production builds.
-  graduates_when: >-
-    A production deploy has run through scripts/vercel-build.mjs successfully,
-    confirming the transcribed command is the right one — or the command is
-    read from a machine home instead of transcribed.
-
 - id: public-convex-url-two-spellings
   kind: descent
   created: 2026-08-30
@@ -322,3 +284,63 @@
     directly with npx convex env set. (Also surfaced as a task chip.)
   graduates_when: >-
     pnpm secrets:sync completes end-to-end against the current Vercel CLI.
+
+- id: no-suite-time-budget
+  kind: descent
+  created: 2026-08-31
+  cites: [D21, C8]
+  statement: >-
+    D21 binds here (the repo has a verification suite) but nothing measures
+    it. There is no registered wall-time meter per cadence tier and no budget
+    gate: vitest, Playwright and the CI jobs in vqc/adoption.md's Cadences
+    table can each grow without a check, and the structural escape D21 names —
+    demotion to a slower tier, never deletion — has no tier to demote into,
+    because the tiers are jobs in CI config rather than a registry. Recorded
+    when the applies_when table was completed against the constitution
+    2026-08-31; not previously carried because the article had no row.
+  graduates_when: >-
+    Suite wall time per cadence tier is recorded to a store the suite's own
+    runner reads, with a gate that fails the tier when its budget is exceeded
+    and a demotion path that keeps the demoted check running.
+
+- id: no-recurrence-corpus
+  kind: descent
+  created: 2026-08-31
+  cites: [D23, D27]
+  statement: >-
+    D23 binds here (every commit is agent work) and its anti-Goodhart clause
+    requires recurrence to be MEASURED, not asserted — read from the
+    correction registry and an annotated corpus of past sessions. vqc/
+    steering.yaml exists and is the registry half; the corpus half does not
+    exist, so "has this correction stopped recurring?" is answerable only by
+    someone's memory, and D27's annotated corpus has no artifact in this repo
+    either. Recorded when the applies_when table was completed against the
+    constitution 2026-08-31; not previously carried because the article had no
+    row.
+  graduates_when: >-
+    A queryable corpus of this repo's agent sessions exists and each
+    vqc/steering.yaml entry's `incidents` count is derived from it rather than
+    hand-typed.
+
+- id: sessions-cannot-open-prs
+  kind: descent
+  created: 2026-08-31
+  cites: [A3, tts-spec:20]
+  statement: >-
+    An autonomous session is told in prose to finish with `gh pr create`, and
+    cannot: the daemon scrubs GH_TOKEN from the session env on purpose
+    (worker/session-host/session.mjs:680-684) and never configures gh, so gh
+    is logged into no host and every `gh` call fails. `git push` still works
+    because the token rides in the clone's remote URL (:520-524) — which means
+    the scrub is also porous: any session can read the account-wide repo-write
+    token out of .git/config, so the env scrub raises the cost of reaching it
+    without removing it. One cause, two consequences: the instructed final
+    step is impossible, and the secret it was withheld to protect is present
+    anyway. Found 2026-08-31 by session
+    q974bmhy7zb7cj5xcm6va5qyts8dg9h7, whose branch pushed and whose PR did
+    not open.
+  graduates_when: >-
+    A session can open a pull request for a repo it was given, and the
+    account-wide token is not readable from the session's checkout — the token
+    reaches git through a credential helper or askpath outside the work tree
+    rather than through the remote URL, and gh authenticates the same way.

@@ -2,23 +2,29 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { Manrope } from "next/font/google";
-import TomSymbol, { type TomSymbolOptions, type TomSymbolParams } from "./tom-symbol";
+import TomSymbol, {
+  DEFAULT_TOM_PARAMS,
+  tomSymbolMetrics,
+  type TomSymbolOptions,
+  type TomSymbolParams,
+} from "./tom-symbol";
 
 const manrope = Manrope({ subsets: ["latin"], weight: ["700"], display: "swap" });
 const MANROPE_FAMILY = manrope.style.fontFamily;
 
-/* Cropped symbol viewBox — matches default stroke=43.
-   y=78.5 is circle-top outer edge; y=461.5 is baseline; width 500 pads the
-   dot/tail extent (x∈[103,552] → [70,570]).                               */
-const SYMBOL_VB_X = 70;
-const SYMBOL_VB_Y = 78.5;
-const SYMBOL_VB_W = 500;
-const SYMBOL_VB_H = 383;
+/* Horizontal crop of the symbol viewBox: x=70..570 pads the dot/tail extent,
+   which at the default params runs x∈[103,552]. This one is a padding choice
+   and is not derived. The VERTICAL crop is not a choice — it must touch the
+   circle's outer edges so the symbol's baseline lands on the wordmark's — so
+   it comes from tomSymbolMetrics() and moves with the params.
 
-const TOP_BAR_FRAC    = 269.5 / 383;
-const STROKE_VB       = 43;
-const STROKE_FRAC     = STROKE_VB / SYMBOL_VB_H;
-const SYMBOL_AR       = SYMBOL_VB_W / SYMBOL_VB_H;
+   DANGER: do not reintroduce constants for the stroke width, the t-bar height
+   or the viewBox height. Those are functions of symbolParams, and freezing
+   them at their default values is what made the /logo page's bars variant
+   render a composition no slider setting produces.                          */
+const SYMBOL_VB_X = 70;
+const SYMBOL_VB_W = 500;
+
 const SYMBOL_HEIGHT_EM = 1.04;
 const FONT_WEIGHT      = 700;
 
@@ -97,10 +103,15 @@ export default function TomLogo({
     </span>
   );
 
+  // Every number below is the symbol's own geometry scaled into logo space, so
+  // the bars variant tracks the stroke and t-bar sliders instead of the
+  // defaults those sliders start from.
+  const geo      = tomSymbolMetrics(symbolParams ?? DEFAULT_TOM_PARAMS);
   const symbolH  = SYMBOL_HEIGHT_EM * fontSize;
-  const symbolW  = symbolH * SYMBOL_AR;
-  const barThick = STROKE_FRAC   * symbolH;
-  const topBarY  = TOP_BAR_FRAC  * symbolH;
+  const scale    = symbolH / geo.height;
+  const symbolW  = SYMBOL_VB_W * scale;
+  const barThick = geo.stroke * scale;
+  const topBarY  = (geo.baseY - geo.barY) * scale;
   const stemW    = barThick;
 
   const padX = barThick * 0.25;
@@ -156,7 +167,7 @@ export default function TomLogo({
             y={baselineY - symbolH}
             width={symbolW}
             height={symbolH}
-            viewBox={`${SYMBOL_VB_X} ${SYMBOL_VB_Y} ${SYMBOL_VB_W} ${SYMBOL_VB_H}`}
+            viewBox={`${SYMBOL_VB_X} ${geo.topY} ${SYMBOL_VB_W} ${geo.height}`}
             overflow="visible"
           >
             <TomSymbol params={symbolParams} options={symbolOptions} />

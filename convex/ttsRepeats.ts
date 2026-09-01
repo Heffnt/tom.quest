@@ -13,7 +13,7 @@
 
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
 import {
   TTS_PREP_NY_HOUR,
@@ -53,6 +53,26 @@ const RULE_FIELDS = {
   body: v.optional(v.string()),
 };
 
+/**
+ * Is the incoming value the same fact as the stored one? Every rule field is a
+ * string, an optional string, or the weekday array — and the weekday array is
+ * compared as a SET, because the day picker emits days in tap order while the
+ * row was stored in whatever order an earlier tap produced, and "monday,friday"
+ * versus "friday,monday" is not an edit.
+ */
+function sameValue(stored: unknown, next: unknown): boolean {
+  if (Array.isArray(stored) && Array.isArray(next)) {
+    // Sorted-join, not set-membership: membership plus equal length would call
+    // ["monday","friday"] and ["monday","monday"] the same, and drop that edit
+    // silently. The day picker cannot produce a duplicate, but `npx convex run
+    // ttsRepeats:updateRepeat` — a documented pen for this table — can.
+    return (
+      [...stored].sort().join("\u0000") === [...next].sort().join("\u0000")
+    );
+  }
+  return stored === next;
+}
+
 function validateRule(args: { daysOfWeek: string[]; timeOfDay?: string; statement: string }) {
   if (args.statement.trim() === "") throw new Error("Statement is required");
   if (args.daysOfWeek.length === 0) {
@@ -68,7 +88,7 @@ function validateRule(args: { daysOfWeek: string[]; timeOfDay?: string; statemen
 export const listRepeats = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     return await ctx.db.query("ttsRepeats").collect();
   },
 });
@@ -116,10 +136,33 @@ export const updateRepeat = mutation({
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
     const fields: string[] = [];
     for (const [key, value] of Object.entries(updates)) {
+      // Three cases, and the middle one is why the arg types are
+      // `optional(union(T, null))`: ABSENT means "leave it alone", null means
+      // "clear it" (stored as undefined — Convex's absent-field spelling), and
+      // any other value means "set it to this".
       if (value === undefined) continue;
-      patch[key] = value === null ? undefined : value;
+      const next =
+        value === null
+          ? undefined
+          : key === "statement"
+            ? (value as string).trim()
+            : value;
+      // The edit dialog sends every field it holds on every save, so most of
+      // them arrive equal to what is already stored. Only the ones that
+      // actually move are patched and named in the event — otherwise a save
+      // with one weekday changed would record all nine as changed, and the
+      // event log would stop being evidence of anything.
+      if (sameValue(rule[key as keyof typeof rule], next)) continue;
+      patch[key] = next;
       fields.push(key);
     }
+    // Nothing moved: no write and no event. A no-op save leaves no trace
+    // rather than a repeat-updated with an empty field list.
+    if (fields.length === 0) return { changed: [] };
+    // Sorted, because the unsorted order is whatever order the arguments
+    // arrived in — a property of the caller, not a fact about the rule, and
+    // two identical edits would log two different-looking events.
+    fields.sort();
     validateRule({
       statement: (patch.statement as string) ?? rule.statement,
       daysOfWeek: (patch.daysOfWeek as string[]) ?? rule.daysOfWeek,
@@ -128,6 +171,7 @@ export const updateRepeat = mutation({
     });
     await ctx.db.patch(id, patch);
     await logEvent(ctx, "repeat-updated", undefined, { repeatId: id, fields });
+    return { changed: fields };
   },
 });
 

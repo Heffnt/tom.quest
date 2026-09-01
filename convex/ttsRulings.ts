@@ -7,7 +7,7 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -70,7 +70,7 @@ export const subjectKey = (row: {
 export const listRulings = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     return await ctx.db.query("dtsRulings").collect();
   },
 });
@@ -388,10 +388,21 @@ export const internalMarkRulingApplied = internalMutation({
 });
 
 // Digest input: how many briefed code todos await a ruling. A brief awaits
-// when its live ruling is missing OR OLDER than the brief — a re-brief after
-// a revise ruling puts the item back on Tom's plate (the fresh plan needs a
-// fresh ruling). The client-side needs-me selector (app/tts/lib.ts) mirrors
-// this predicate.
+// when its live ruling is missing OR NOT NEWER than the brief — a re-brief
+// after a revise ruling puts the item back on Tom's plate (the fresh plan
+// needs a fresh ruling). The client-side needs-me selector (app/tts/lib.ts)
+// mirrors this predicate.
+//
+// THE TIE IS DELIBERATE — DO NOT TIGHTEN `<=` BACK TO `<`. ruledAt (set at
+// :236) and preparedAt (set in ttsCode.ts internalStoreBriefs) are both
+// whole-millisecond Date.now() values written by two different mutations, so
+// a ruling and a re-brief CAN carry the same number. A strict `<` reads that
+// tie as "the ruling answers the brief" and silently drops a genuinely
+// re-briefed item off Tom's pile with nothing to put it back; `<=` reads it
+// as "still awaiting", whose worst case is one extra look at an item Tom just
+// ruled. Same reasoning as liveRulings above, which breaks its own
+// same-millisecond tie on _creationTime rather than pretending ties cannot
+// happen.
 export function briefAwaitsRuling(
   brief: { repo: string; externalId: string; preparedAt: number },
   live: Map<string, Doc<"dtsRulings">>,
@@ -403,7 +414,7 @@ export function briefAwaitsRuling(
       externalId: brief.externalId,
     }),
   );
-  return ruling === undefined || ruling.ruledAt < brief.preparedAt;
+  return ruling === undefined || ruling.ruledAt <= brief.preparedAt;
 }
 
 // Batcher context (GET /tts/batch-context): what Tom ruled lately, newest
