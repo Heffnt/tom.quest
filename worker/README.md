@@ -4,8 +4,14 @@ The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
 (Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
 on a schedule:
 
-1. **poll-dump** (every 2 min) — reads new human messages from the Slack
-   `#dump` channel and submits each one to Convex as an unprepared todo.
+1. **poll-dump** (hourly, at :07) — reads new human messages from the Slack
+   `#dump` channel and submits each one to Convex as an unprepared todo. It is
+   the reconciliation BACKSTOP behind the push route (Tom 2026-08-30: Slack
+   pushes events to `POST /slack/events` instead of TTS polling). Slack's
+   delivery is best-effort, so the hourly sweep and its cursor file in
+   `/var/lib/tts` are what make a missed event recoverable; captures are
+   idempotent on the Slack message ts server-side, so re-offering what the push
+   route already took costs nothing.
 2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
    Claude call per batch deciding which messages imply an action by Tom, then
    submits each of those to Convex as an unprepared todo with source `email`

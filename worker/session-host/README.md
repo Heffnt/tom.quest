@@ -118,7 +118,11 @@ systemctl start tts-session-host
 ```
 
 It reads `/etc/tts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
-`GH_TOKEN` optional but needed for private-repo clones) and expects
+`GH_TOKEN` optional but needed for private-repo clones; `TTS_WORKER_KEY`
+optional to the daemon itself but the key `session.mjs` injects into every
+session's shell — without it a session's pens, which are key-authed curls,
+have nothing to authenticate with and the session can record nothing) and
+expects
 `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active` (baked into the systemd
 unit) so `tts-account use` switches which Max account sessions run under.
 

@@ -9,9 +9,19 @@
 // /opt/tts/session-host), so a relative import that resolves in the repo
 // would dangle after install. Divergence risk is tiny: the KEY=VALUE format
 // is frozen. The one real difference is the required-keys list — this daemon
-// needs CONVEX_SITE_URL + SESSIONS_WORKER_KEY and nothing else (GH_TOKEN is
-// optional: without it, repo clones fall back to anonymous https, which
-// works for public repos and fails loudly for private ones).
+// hard-requires CONVEX_SITE_URL + SESSIONS_WORKER_KEY (the two names in
+// REQUIRED below). Two further keys are READ off the same file and tolerated
+// absent:
+//   - GH_TOKEN — without it, repo clones fall back to anonymous https, which
+//     works for public repos and fails loudly for private ones.
+//   - TTS_WORKER_KEY — session.mjs reads it here and injects it into every
+//     session's shell (session.mjs, the `env:` block of the SDK query) as the
+//     ONE write key a session gets. The pens are key-authed curls
+//     (POST /tts/capture, /tts/prepare-todo, /tts/session-outcome), so a box
+//     provisioned from the REQUIRED list alone runs sessions that can record
+//     nothing.
+// Both stay out of REQUIRED on purpose: their absence costs one surface, and
+// stopping the daemon over it would cost every session.
 
 import fs from "node:fs";
 
