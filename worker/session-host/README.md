@@ -1,6 +1,6 @@
 # TTS session-host
 
-The daemon that runs real Claude Code sessions on the worker box and streams
+The daemon that runs real Claude Code sessions on the Jarvis Box and streams
 them into tom.quest. Convex is the message bus: the browser writes commands
 (`claudeInbound` rows: user-turn / interrupt / stop) and permission
 decisions; this daemon polls `/sessions/poll`, runs the actual sessions via
@@ -33,7 +33,12 @@ owns retries. The agent records its own outcome via the key-authed pen
 via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key) — the daemon passes
 CONVEX_SITE_URL and TTS_WORKER_KEY (only — the sessions ingest key never
 enters a model-reachable shell) into every session's environment so those
-curls work. A daemon-stamped outcome (time cap, turn failure, restart)
+curls work. Those two are the only keys passed EXPLICITLY; the rest of the
+daemon's env is inherited minus `SESSIONS_WORKER_KEY` and `GH_TOKEN`, so a
+session also sees `TURING_READ_KEY` when the box has one — the cluster API's
+read-only credential behind `tts-turing` (three GETs, no write verb; the full
+`TURING_API_KEY` is not on this box at all). A daemon-stamped outcome (time
+cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an
 outcome already exists.
 
@@ -58,7 +63,7 @@ surfaces the decision in the PR, rather than stopping to wait.
   every allowed call lands as a transcript row. Two per-call checks survive
   that structure, because a shell is neither a file nor a branch (spec §20.2):
   the out-of-workdir edit denial, and a classifier verdict on Bash commands
-  matching the danger fingerprint (pushing, remote access, box configuration,
+  matching the danger fingerprint (pushing, remote access, Jarvis Box configuration,
   credential names, uploading request bodies, deleting by absolute path) —
   verdicts land in the transcript as rows, allow and deny alike, are memoized
   per session so an agentic loop pays once, and the classifier is FAIL-OPEN
@@ -67,7 +72,7 @@ surfaces the decision in the PR, rather than stopping to wait.
 
 ## The no-state rule, as applied here
 
-The box owns no durable state; everything this daemon creates is harmless to
+The Jarvis Box owns no durable state; everything this daemon creates is harmless to
 lose:
 
 - `/opt/tts/session-host/` (incl. `node_modules`) — a copy of this directory;
@@ -89,11 +94,11 @@ on turn boundaries / tool calls / permissions / errors).
 
 ## The one-dependency exception
 
-The worker box's standing rule is ZERO npm dependencies (a copy is a deploy;
+The Jarvis Box's standing rule is ZERO npm dependencies (a copy is a deploy;
 no lockfile, no install step, no supply-chain surface — see
 `worker/jobs/tts-lib.mjs`). This package is the single sanctioned exception:
 `@anthropic-ai/claude-agent-sdk` (pinned to 0.3.250, the version whose
-behavior was validated on this box), because interactive sessions need the
+behavior was validated on the Jarvis Box), because interactive sessions need the
 SDK's streaming input, `interrupt()`, `canUseTool`, and resume-by-id — none
 of which the `claude -p` CLI wrapping used by the cron jobs can provide.
 `setup.sh` runs `npm install --omit=dev` in `/opt/tts/session-host/` as part
@@ -121,6 +126,27 @@ It reads `/etc/tts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
 `GH_TOKEN` optional but needed for private-repo clones) and expects
 `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active` (baked into the systemd
 unit) so `tts-account use` switches which Max account sessions run under.
+
+## GitHub credentials (2026-08-31)
+
+The token never rides in a clone's remote URL and never enters a session's
+shell env. `GH_TOKEN` in worker.env stays the one home; two derived doors
+serve it (both installed by `setup.sh`, both outside every work tree):
+
+- **git** — `/usr/local/bin/tts-git-credential`, git's global
+  credential.helper: clones and pushes use clean `https://github.com/...`
+  URLs and git asks the helper at connect time, so `.git/config` and
+  `git remote -v` hold no secret.
+- **gh** — `/root/.config/gh/hosts.yml`, regenerated from worker.env on
+  every setup.sh run, so `gh pr create` works — the sanctioned way a session
+  finishes. Every `gh` call pays a classifier verdict (`gh pr merge` and API
+  writes past the session's own PR are denied — merging is Tom's gate).
+
+A GitHub-token-shaped string that still reaches an ingest payload is
+redacted by the daemon (`redactGitHubTokens` in lib.mjs) before it can land
+in a transcript row — on 2026-08-30 a session read the token out of
+.git/config, typed it inline, and the classifier's own verdict rows carried
+it verbatim into Convex.
 
 ## Restart semantics
 

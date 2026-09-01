@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { buildEventBody } from "./ttsCalendarWrite";
 import { expandIcsText } from "./ttsCalendarExpand";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -385,5 +386,31 @@ describe("listCalendarEvents", () => {
       end: Date.UTC(2026, 9, 11, 4),
     });
     expect(rows).toEqual([]);
+  });
+});
+
+describe("buildEventBody (the calendar write door)", () => {
+  it("builds a Google Calendar insert body with the NY time zone", () => {
+    const body = buildEventBody({
+      title: "  Climbing Team Practice  ",
+      start: Date.UTC(2026, 8, 7, 21), // Mon Sep 7, 17:00 EDT
+      end: Date.UTC(2026, 9, 8, 0),
+      recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"],
+    });
+    expect(body.summary).toBe("Climbing Team Practice"); // trimmed
+    expect(body.start).toEqual({
+      dateTime: "2026-09-07T21:00:00.000Z",
+      timeZone: "America/New_York",
+    });
+    expect(body.recurrence).toEqual(["RRULE:FREQ=WEEKLY;BYDAY=MO"]);
+  });
+
+  it("rejects an empty title and a non-positive duration", () => {
+    expect(() =>
+      buildEventBody({ title: "  ", start: 1, end: 2 }),
+    ).toThrow(/title/);
+    expect(() =>
+      buildEventBody({ title: "x", start: 2, end: 2 }),
+    ).toThrow(/end must be after start/);
   });
 });

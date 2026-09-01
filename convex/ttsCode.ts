@@ -1,14 +1,9 @@
 import { v } from "convex/values";
-import {
-  internalMutation,
-  internalQuery,
-  mutation,
-  query,
-} from "./_generated/server";
+import { internalMutation, internalQuery, query } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { IMPORTANCE_LEVEL, agentImportancePatch, logEvent } from "./tts";
+import { logEvent } from "./tts";
 
-// TTS code-todo BRIEFS — the worker box writes ground-up briefs for each open
+// TTS code-todo BRIEFS — the Jarvis Box writes ground-up briefs for each open
 // code todo (from the dtsCodeTodoMirror's repos); Tom's rulings on them live in
 // the unified ttsRulings table (ttsRulings.ts, ratified 2026-08-28), and worker
 // jobs read pending rulings back from there to apply/execute them. Tom-facing
@@ -35,37 +30,6 @@ export const listCodeBriefs = query({
   },
 });
 
-// Tom's importance override for a CODE todo — it lives on the brief (the
-// stable home; mirror rows are deleted on upstream close). null clears the
-// whole object; setBy "tom" makes every agent write a no-op until cleared.
-export const setCodeImportance = mutation({
-  args: {
-    repo: v.string(),
-    externalId: v.string(),
-    level: v.union(IMPORTANCE_LEVEL, v.null()),
-  },
-  handler: async (ctx, { repo, externalId, level }) => {
-    await requireTom(ctx, "TTS");
-    const brief = await ctx.db
-      .query("dtsCodeBriefs")
-      .withIndex("by_repo_external", (q) =>
-        q.eq("repo", repo).eq("externalId", externalId),
-      )
-      .first();
-    if (!brief) throw new Error("Code brief not found");
-    await ctx.db.patch(brief._id, {
-      importance:
-        level === null ? undefined : { level, setBy: "tom", setAt: Date.now() },
-    });
-    await logEvent(ctx, "importance-set", undefined, {
-      repo,
-      externalId,
-      level,
-      setBy: "tom",
-    });
-  },
-});
-
 // ── Internal: worker paths (via key-authed http.ts /tts/code-* routes) ───────
 
 // Upsert by (repo, externalId): the brief table holds the CURRENT brief per
@@ -82,56 +46,25 @@ export const internalStoreBriefs = internalMutation({
         recommendation: RECOMMENDATION,
         execClass: EXEC_CLASS,
         evidence: v.optional(v.string()),
-        importanceLevel: v.optional(IMPORTANCE_LEVEL),
-        importanceRationale: v.optional(v.string()),
       }),
     ),
   },
   handler: async (ctx, { briefs }) => {
     const now = Date.now();
-    let importanceSkipped = 0;
-    // importanceLevel/importanceRationale are transport fields, not schema
-    // fields — stripped here so only the assembled `importance` object lands.
-    for (const { importanceLevel, importanceRationale, ...brief } of briefs) {
+    for (const brief of briefs) {
       const existing = await ctx.db
         .query("dtsCodeBriefs")
         .withIndex("by_repo_external", (q) =>
           q.eq("repo", brief.repo).eq("externalId", brief.externalId),
         )
         .first();
-      let importance: ReturnType<typeof agentImportancePatch>;
-      if (importanceLevel !== undefined) {
-        // Agent importance never overwrites Tom's — the ONE guard
-        // implementation (tts.agentImportancePatch) decides.
-        importance = agentImportancePatch(
-          existing?.importance,
-          importanceLevel,
-          importanceRationale,
-          now,
-        );
-        if (importance === undefined) importanceSkipped++;
-      }
       if (existing) {
-        await ctx.db.patch(
-          existing._id,
-          importance !== undefined
-            ? { ...brief, importance, preparedAt: now }
-            : { ...brief, preparedAt: now },
-        );
+        await ctx.db.patch(existing._id, { ...brief, preparedAt: now });
       } else {
-        await ctx.db.insert("dtsCodeBriefs", {
-          ...brief,
-          importance,
-          preparedAt: now,
-        });
+        await ctx.db.insert("dtsCodeBriefs", { ...brief, preparedAt: now });
       }
     }
     await logEvent(ctx, "code-briefed", undefined, { count: briefs.length });
-    if (importanceSkipped > 0) {
-      await logEvent(ctx, "importance-skipped", undefined, {
-        count: importanceSkipped,
-      });
-    }
   },
 });
 

@@ -14,9 +14,10 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
+import { WRITING_SKILL } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
-import { reserveSessionTab } from "@/app/lib/use-open-todo-session";
+import { useOpenSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
 import RepeatsStrip from "./repeats-strip";
 import TimeNoteField, {
@@ -141,7 +142,10 @@ function BlockChip({
             <button onClick={remove} disabled={busy} className={btnCls}>
               Delete
             </button>
-            <Info label="tts.deleteBlock({id})" />
+            <Info call="tts.deleteBlock({ id })">
+              Removes this span from the calendar. The todo it was for is not
+              touched — it simply stops having time set aside for it.
+            </Info>
           </div>
           {isCategory && (
             <div>
@@ -153,7 +157,13 @@ function BlockChip({
                 >
                   {sessionBusy ? "Opening…" : "Open block session"}
                 </button>
-                <Info label='claudeSessions.createSession({kind:"block"})' />
+                <Info call='claudeSessions.createSession({ kind: "block", blockCategory })'>
+                  Opens a Claude session on the Jarvis Box for this whole
+                  category, with every active todo in it in the opening prompt.
+                  It gets its own checkout of whatever repositories the work
+                  needs, and can only push to its own branch — merging stays
+                  yours.
+                </Info>
               </div>
               {sessionError && (
                 <div className="text-xs text-error">{sessionError}</div>
@@ -193,16 +203,23 @@ export default function CalendarTab({
   );
   // ONE time-note subscription for the whole tab; days and blocks slice it.
   const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
-  const createSession = useMutation(api.claudeSessions.createSession);
+  // The writing skill (WikiTom, synced into ttsSkills) that opens the block
+  // session's prompt; unsynced leaves buildBlockSessionPrompt on its fallback.
+  const writingSkill = useQuery(
+    api.ttsSkills.getSkill,
+    isTom ? { name: WRITING_SKILL } : "skip",
+  );
   const recordEvent = useMutation(api.tts.recordEvent);
+  // The one launch hook owns the createSession arguments and the failure text;
+  // this surface only remembers WHICH block the last attempt was for, so the
+  // error renders under the chip that fired it.
+  const { open: openSession, error: sessionError } = useOpenSession();
   const [addDay, setAddDay] = useState<string | null>(null); // "YYYY-MM-DD"
   const [sessionBusyId, setSessionBusyId] = useState<Id<"dtsBlocks"> | null>(
     null,
   );
-  const [sessionError, setSessionError] = useState<{
-    blockId: Id<"dtsBlocks">;
-    message: string;
-  } | null>(null);
+  const [sessionErrorBlockId, setSessionErrorBlockId] =
+    useState<Id<"dtsBlocks"> | null>(null);
 
   const todosById = useMemo(
     () => new Map((todos ?? []).map((t) => [t._id as string, t])),
@@ -233,31 +250,26 @@ export default function CalendarTab({
     [timeNotes],
   );
 
-  // Same idiom as use-open-todo-session: reserve the tab inside the click (no
-  // await before window.open), create, then point the tab at the session;
-  // failures close it again and land in state under the button that fired it.
+  // The one launch hook (useOpenSession) owns the tab reservation, the
+  // createSession arguments and the repo question; this surface only says WHAT
+  // it is opening and where its per-block error text goes.
   const openBlockSession = async (block: Block) => {
     const category = block.category;
     if (category === undefined || sessionBusyId !== null) return;
-    const tab = reserveSessionTab();
     setSessionBusyId(block._id);
-    setSessionError(null);
-    try {
-      const matching = activeTodos.filter((t) => t.category === category);
-      const id = await createSession({
-        title: `Block: ${category}`,
-        kind: "block",
-        repo: "none",
-        blockCategory: category,
-        initialPrompt: buildBlockSessionPrompt(category, matching),
-      });
-      tab.goto(id);
-    } catch (e) {
-      tab.close();
-      setSessionError({ blockId: block._id, message: errMessage(e) });
-    } finally {
-      setSessionBusyId(null);
-    }
+    setSessionErrorBlockId(block._id);
+    const matching = activeTodos.filter((t) => t.category === category);
+    await openSession({
+      title: `Block: ${category}`,
+      kind: "block",
+      blockCategory: category,
+      initialPrompt: buildBlockSessionPrompt(
+        category,
+        matching,
+        writingSkill?.body,
+      ),
+    });
+    setSessionBusyId(null);
   };
 
   if (todos === undefined || blocks === undefined) {
@@ -394,9 +406,7 @@ export default function CalendarTab({
                     onOpenSession={() => void openBlockSession(b)}
                     sessionBusy={sessionBusyId === b._id}
                     sessionError={
-                      sessionError && sessionError.blockId === b._id
-                        ? sessionError.message
-                        : null
+                      sessionErrorBlockId === b._id ? sessionError : null
                     }
                   />
                 ))}
