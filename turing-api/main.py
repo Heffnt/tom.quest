@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 import shlex
@@ -29,6 +30,14 @@ from ws import router as ws_router
 load_dotenv()
 API_PORT = int(os.getenv("API_PORT", "8000"))
 API_KEY = os.environ.get("TURING_API_KEY", "")
+# The SECOND credential. TURING_API_KEY opens the whole surface, including
+# POST /sessions/{name}/run — an arbitrary command typed into a tmux session on
+# this cluster, under this account. TURING_READ_KEY opens only the three
+# endpoints listed under verify_read_key below, so a caller that needs to LOOK
+# at the cluster (a TTS session on the worker box) can be handed a credential
+# that cannot act on it. Unset means the read door does not exist: only the
+# full key opens anything.
+READ_KEY = os.environ.get("TURING_READ_KEY", "")
 LOG_PATH = "turing-api.log"
 # Upper bound on a single /allocate request. Guards against a typo (or a
 # declarative caller) asking for far more GPUs than the partition holds.
@@ -55,12 +64,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _matches(presented: str | None, expected: str) -> bool:
+    """Constant-time equality for a presented header against a configured key.
+
+    Compares BYTES, not str: hmac.compare_digest raises TypeError on a str
+    holding a non-ASCII character, and a header is caller-controlled — a
+    comparison that can be made to raise turns a 401 into a 500.
+    """
+    if not expected:
+        return False
+    return hmac.compare_digest((presented or "").encode("utf-8"), expected.encode("utf-8"))
+
+
 async def verify_api_key(x_api_key: str = Header(None)):
+    """The FULL surface: everything this API can do, including write verbs.
+
+    An unset TURING_API_KEY means no auth at all — the module's __main__ guard
+    refuses to start in that state, so it happens only under test.
+    """
     if not API_KEY:
         return True
-    if x_api_key != API_KEY:
+    if not _matches(x_api_key, API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
+
+
+async def verify_read_key(x_api_key: str = Header(None)):
+    """The READ door: GET /gpu-report, GET /jobs, GET /sessions/{name}/output.
+
+    Accepts EITHER the full key (which opens everything anyway, so the existing
+    callers — the Next proxy, the Convex reconciler — are unaffected) OR the
+    narrower TURING_READ_KEY.
+
+    FAIL CLOSED: when TURING_READ_KEY is unset, `_matches` returns False for it
+    and these endpoints behave exactly as they did before this split — full key
+    only. A blank env var never becomes a blank password.
+    """
+    if not API_KEY:
+        return True
+    if _matches(x_api_key, API_KEY) or _matches(x_api_key, READ_KEY):
+        return True
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 app.include_router(ws_router)
@@ -180,8 +224,13 @@ async def transformer_trace(path: str, request: Request) -> Response:
 # freezes the event loop and starves every other request, including /health.
 # That starvation took down the whole API during the June 2026 outage.
 
+# THE READ DOOR (three endpoints, marked by Depends(verify_read_key)):
+# /gpu-report, /jobs, /sessions/{name}/output. Adding a fourth means widening
+# what every TURING_READ_KEY holder can see — including TTS sessions on the
+# worker box — so the dependency is chosen per endpoint, deliberately, and the
+# default for anything new stays verify_api_key.
 @app.get("/gpu-report")
-def gpu_report(auth: bool = Depends(verify_api_key)) -> dict:
+def gpu_report(auth: bool = Depends(verify_read_key)) -> dict:
     try:
         return format_gpu_report_v2()
     except Exception as e:
@@ -376,7 +425,7 @@ def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -
     )
 
 @app.get("/jobs", response_model=list[JobResponse])
-def list_jobs(auth: bool = Depends(verify_api_key)) -> list[JobResponse]:
+def list_jobs(auth: bool = Depends(verify_read_key)) -> list[JobResponse]:
     jobs = get_user_jobs()
     return [
         JobResponse(
@@ -410,7 +459,7 @@ def delete_job(job_id: str, auth: bool = Depends(verify_api_key)) -> dict[str, o
     raise HTTPException(status_code=400, detail=error or f"Failed to cancel job {job_id}")
 
 @app.get("/sessions/{session_name}/output")
-def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
+def get_session_output(session_name: str, lines: int = 500, auth: bool = Depends(verify_read_key)) -> dict[str, str]:
     if not session_exists(session_name):
         raise HTTPException(status_code=404, detail=f"Session '{session_name}' not found")
     output = capture_output(session_name, lines)
@@ -446,5 +495,9 @@ if __name__ == "__main__":
     if not API_KEY:
         raise SystemExit("TURING_API_KEY is not set. Configure turing-api/.env before starting.")
     print(f"\nTuring API listening on 127.0.0.1:{API_PORT}")
+    print(
+        "Read door (/gpu-report, /jobs, /sessions/{name}/output): "
+        + ("TURING_READ_KEY configured" if READ_KEY else "TURING_READ_KEY unset — full key only")
+    )
     print("Bound to localhost: reachable only through the co-located cloudflared tunnel, not the shared cluster LAN.\n")
     uvicorn.run(app, host="127.0.0.1", port=API_PORT, access_log=True, log_config=None)

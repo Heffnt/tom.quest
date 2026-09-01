@@ -1,0 +1,277 @@
+#!/usr/bin/env node
+// tts-browse — open a real headless Chromium at a URL, report what the page
+// did, and leave a screenshot behind.
+//
+// WHY THIS EXISTS: a TTS session can change a tom.quest page but, until now,
+// could not look at the result — it had to end by asking Tom to tap through
+// the change himself. This is the "look at it" tool. It is deliberately one
+// command with a flat set of flags rather than a library, because the caller
+// is a model in a shell, not another program.
+//
+// WHAT IT REPORTS, and why each line is worth printing:
+//   status  — the HTTP status of the top-level navigation.
+//   title   — cheap confirmation the right page rendered and not an error shell.
+//   console — console errors only. Silent breakage in a React tree shows up
+//             here and nowhere else.
+//   failed  — requests that errored or answered 4xx/5xx. A whole class of
+//             tom.quest bug is "a request that should never have been sent"
+//             (an id still resolving, a placeholder segment); this is the line
+//             that makes such a request visible instead of inferred.
+//   shot    — path to the PNG, for reading with the Read tool.
+//
+// USAGE
+//   tts-browse <url> [--out FILE] [--login] [--wait SEL] [--click SEL]...
+//              [--type SEL=TEXT]... [--viewport WxH] [--full] [--settle MS]
+//              [--json]
+//
+//   --login    sign in first, using TOMQUEST_AGENT_USERNAME /
+//              TOMQUEST_AGENT_PASSWORD from the environment (systemd passes
+//              /etc/tts/worker.env into the session-host, which passes them
+//              on). Without those two keys the flag fails loudly rather than
+//              silently browsing as an anonymous visitor and reporting an
+//              empty page — every /turing and /tts page is role-gated, so an
+//              anonymous read of one is a false negative, not a result.
+//   --settle   extra idle wait after load, default 1500ms. Convex-backed pages
+//              paint twice: once from cache, once from the live query.
+//
+// ZERO-DEPS NOTE: the worker box's job scripts take no npm dependencies, but
+// Playwright is installed GLOBALLY by worker/setup.sh (step 4) precisely so
+// this file can require it without a per-session install. If the require
+// below fails, setup.sh has not been re-run on this box.
+
+const { execSync } = require("node:child_process");
+
+function loadPlaywright() {
+  const candidates = ["playwright"];
+  try {
+    candidates.push(
+      require("node:path").join(execSync("npm root -g", { encoding: "utf8" }).trim(), "playwright"),
+    );
+  } catch {
+    /* npm missing; fall through to the plain require */
+  }
+  candidates.push("/usr/lib/node_modules/playwright");
+  for (const c of candidates) {
+    try {
+      return require(c);
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  console.error(
+    "tts-browse: cannot load playwright. Run `bash worker/setup.sh` on this box " +
+      "(step 4 installs it globally and downloads Chromium).",
+  );
+  process.exit(3);
+}
+
+function parseArgs(argv) {
+  const opts = {
+    url: null,
+    out: "/tmp/tts-browse.png",
+    login: false,
+    wait: null,
+    clicks: [],
+    types: [],
+    viewport: { width: 390, height: 844 },
+    full: false,
+    settle: 1500,
+    json: false,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const next = () => {
+      const v = argv[++i];
+      if (v === undefined) {
+        console.error(`tts-browse: ${a} needs a value`);
+        process.exit(2);
+      }
+      return v;
+    };
+    if (a === "--out") opts.out = next();
+    else if (a === "--login") opts.login = true;
+    else if (a === "--wait") opts.wait = next();
+    else if (a === "--click") opts.clicks.push(next());
+    else if (a === "--type") opts.types.push(next());
+    else if (a === "--full") opts.full = true;
+    else if (a === "--json") opts.json = true;
+    else if (a === "--settle") opts.settle = Number(next());
+    else if (a === "--viewport") {
+      const [w, h] = next().split("x").map(Number);
+      if (!w || !h) {
+        console.error("tts-browse: --viewport wants WxH, e.g. 390x844");
+        process.exit(2);
+      }
+      opts.viewport = { width: w, height: h };
+    } else if (a === "--help" || a === "-h") {
+      console.log(
+        "tts-browse <url> [--out FILE] [--login] [--wait SEL] [--click SEL]... " +
+          "[--type SEL=TEXT]... [--viewport WxH] [--full] [--settle MS] [--json]",
+      );
+      process.exit(0);
+    } else if (a.startsWith("-")) {
+      console.error(`tts-browse: unknown flag ${a}`);
+      process.exit(2);
+    } else if (opts.url === null) opts.url = a;
+    else {
+      console.error(`tts-browse: unexpected argument ${a}`);
+      process.exit(2);
+    }
+  }
+  if (!opts.url) {
+    console.error("tts-browse: a url is required");
+    process.exit(2);
+  }
+  if (!/^https?:\/\//.test(opts.url)) opts.url = "https://" + opts.url;
+  return opts;
+}
+
+// Sign in through the same widget a person uses, rather than forging a session
+// cookie: the login path is itself something a session may have broken, and a
+// forged cookie would hide that.
+//
+// `origin` MUST be the origin the target URL actually lands on, not the one
+// that was typed. tom.quest 307-redirects the apex to www, and the auth token
+// is origin-scoped — so signing in at https://tom.quest and then opening
+// https://www.tom.quest/turing produces the worst possible result: a page that
+// looks signed in, with the username in the corner, whose every data call is
+// 401. The caller resolves the landing origin by navigating first.
+async function signIn(page, origin) {
+  const username = process.env.TOMQUEST_AGENT_USERNAME;
+  const password = process.env.TOMQUEST_AGENT_PASSWORD;
+  if (!username || !password) {
+    console.error(
+      "tts-browse: --login needs TOMQUEST_AGENT_USERNAME and TOMQUEST_AGENT_PASSWORD " +
+        "in the environment (add them to /etc/tts/worker.env).",
+    );
+    process.exit(4);
+  }
+  await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 30000 });
+  // `domcontentloaded` fires before React hydrates, and a click that lands in
+  // that window is swallowed with no error — the button is in the DOM, it just
+  // has no handler yet. Measured: 2 failures in 5 runs when clicking straight
+  // away, 0 in 6 when something delayed the click. So click, wait briefly for
+  // the field, and click again — up to four times — instead of trusting one.
+  const loginButton = page.getByRole("button", { name: "Log in" });
+  await loginButton.waitFor({ timeout: 30000 });
+  for (let attempt = 1; ; attempt++) {
+    await loginButton.click();
+    try {
+      await page.getByLabel("Username").waitFor({ timeout: 5000 });
+      break;
+    } catch (e) {
+      if (attempt >= 4) throw e;
+      await page.waitForTimeout(1000);
+    }
+  }
+  await page.getByLabel("Username").fill(username);
+  await page.getByLabel("Password").fill(password);
+  await page.getByRole("button", { name: "Sign In" }).click();
+  // The header button carrying the username is the human-visible proof of a
+  // completed sign-in, and it is what we wait for. But on a slow sign-in the
+  // auth token lands in localStorage before React repaints the header, and a
+  // run that failed here would be reported as "login broken" when the session
+  // is in fact authenticated. So the token is accepted as the fallback proof —
+  // and only as a fallback, so a genuinely broken header still gets noticed
+  // by anything reading the screenshot.
+  try {
+    await page.getByRole("button", { name: username }).waitFor({ timeout: 30000 });
+  } catch (e) {
+    const authed = await page.evaluate(() =>
+      Object.keys(window.localStorage).some((k) => k.startsWith("__convexAuthJWT")),
+    );
+    if (!authed) throw e;
+  }
+  return username;
+}
+
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  const { chromium } = loadPlaywright();
+  const consoleErrors = [];
+  const failed = [];
+
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: opts.viewport });
+  const page = await context.newPage();
+
+  page.on("console", (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text().slice(0, 300));
+  });
+  // A failure that a later identical request succeeds at is a retry, not a
+  // defect — an admin page that fires before its auth token resolves takes a
+  // 401 and recovers. Reporting that the same way as a real failure trains the
+  // reader to ignore the line, so successes are tracked and used to annotate.
+  const succeeded = new Set();
+  page.on("requestfailed", (req) =>
+    failed.push({
+      url: req.url(),
+      text: `${req.method()} ${req.url()} — ${req.failure()?.errorText ?? "failed"}`,
+    }),
+  );
+  page.on("response", (res) => {
+    const url = res.url();
+    if (res.status() >= 400) {
+      failed.push({ url, text: `${res.status()} ${res.request().method()} ${url}` });
+    } else if (res.status() < 300) {
+      succeeded.add(url);
+    }
+  });
+
+  let signedInAs = null;
+  try {
+    if (opts.login) {
+      // Probe navigation, only to learn where the URL actually lands after any
+      // redirect. Sign in on THAT origin (see signIn's note), then throw away
+      // everything the probe recorded — its 401s are expected and reporting
+      // them would bury the ones that matter.
+      await page.goto(opts.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+      signedInAs = await signIn(page, new URL(page.url()).origin);
+      consoleErrors.length = 0;
+      failed.length = 0;
+    }
+
+    const res = await page.goto(opts.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+    if (opts.wait) await page.waitForSelector(opts.wait, { timeout: 30000 });
+    for (const sel of opts.clicks) await page.click(sel, { timeout: 15000 });
+    for (const t of opts.types) {
+      const eq = t.indexOf("=");
+      await page.fill(t.slice(0, eq), t.slice(eq + 1), { timeout: 15000 });
+    }
+    if (opts.settle > 0) await page.waitForTimeout(opts.settle);
+    await page.screenshot({ path: opts.out, fullPage: opts.full });
+
+    const failedRequests = failed.map((f) =>
+      succeeded.has(f.url) ? `${f.text}  (a later identical request succeeded)` : f.text,
+    );
+    const result = {
+      url: page.url(),
+      status: res?.status() ?? null,
+      title: await page.title(),
+      signedInAs,
+      consoleErrors,
+      failedRequests,
+      screenshot: opts.out,
+    };
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`url:     ${result.url}`);
+      console.log(`status:  ${result.status}`);
+      console.log(`title:   ${result.title}`);
+      if (signedInAs) console.log(`signed:  ${signedInAs}`);
+      console.log(`console: ${consoleErrors.length ? "" : "(no errors)"}`);
+      for (const e of consoleErrors) console.log(`  ! ${e}`);
+      console.log(`failed:  ${failedRequests.length ? "" : "(none)"}`);
+      for (const f of failedRequests) console.log(`  ! ${f}`);
+      console.log(`shot:    ${result.screenshot}`);
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch((err) => {
+  console.error(`tts-browse: ${err?.message ?? err}`);
+  process.exit(1);
+});

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // gmail-auth.mjs — ONE-TIME helper, run by Tom ON HIS OWN MACHINE (not the
-// box), to mint the GMAIL_REFRESH_TOKEN that poll-gmail.mjs needs.
+// Jarvis Box), to mint the GMAIL_REFRESH_TOKEN that poll-gmail.mjs needs.
 //
 // Prerequisite (~10 minutes, once):
 //   1. console.cloud.google.com → create/pick any project.
@@ -15,7 +15,7 @@
 //
 // It opens a local port, prints a Google URL to visit, and after you approve
 // gmail.readonly access it prints the refresh token. Put all three values in
-// /etc/tts/worker.env on the box (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET,
+// /etc/tts/worker.env on the Jarvis Box (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET,
 // GMAIL_REFRESH_TOKEN). The token never expires while the app has access;
 // revoke any time at myaccount.google.com/permissions.
 //
@@ -76,7 +76,7 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("Done — the refresh token is printed in your terminal. Close this tab.");
-    console.log("\nAdd these lines to /etc/tts/worker.env on the box:\n");
+    console.log("\nAdd these lines to /etc/tts/worker.env on the Jarvis Box:\n");
     console.log(`GMAIL_CLIENT_ID=${clientId}`);
     console.log(`GMAIL_CLIENT_SECRET=${clientSecret}`);
     console.log(`GMAIL_REFRESH_TOKEN=${tokens.refresh_token}`);

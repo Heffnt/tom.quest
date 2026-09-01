@@ -27,7 +27,10 @@ export default function ChatPanel({
   const isReady = job?.serveStatus === "ready";
 
   // Poll serve readiness until the vLLM server reports up; stop once ready.
-  const serve = useTuring<ServeStatus>(runId ? `/forge/serve/${runId}` : "/forge/serve/_", {
+  // The path is null until the Convex job query resolves runId: a placeholder
+  // segment would be a real request for a run that does not exist, and its 404
+  // would surface below as serve.error on every mount.
+  const serve = useTuring<ServeStatus>(runId ? `/forge/serve/${runId}` : null, {
     refreshInterval: runId && !isReady ? SERVE_POLL_SECONDS : undefined,
   });
 

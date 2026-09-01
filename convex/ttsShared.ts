@@ -1,6 +1,6 @@
 // TTS time helpers — the 5 a.m. America/New_York day boundary (spec §7).
 // Implemented without Intl so behavior is identical in the Convex runtime,
-// Node (worker box), and the browser. US DST rules: clocks spring forward at
+// Node (the Jarvis Box), and the browser. US DST rules: clocks spring forward at
 // 2:00 EST (07:00 UTC) on the second Sunday of March and fall back at 2:00 EDT
 // (06:00 UTC) on the first Sunday of November.
 //
@@ -254,22 +254,27 @@ export function goalCheckable(todo: GoalTodo): boolean {
   return (todo.condition ?? "").trim() !== "";
 }
 
-// ── The writing standard (one home; ratified 2026-08-29) ────────────────────
+// ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
 // EVERY piece of natural language TTS shows Tom — a batch statement, a task
 // statement, a ground-up explanation, a digest line, a decision list — is
-// written to this standard. It lives here as a plain string because its ONE
-// consumer that cannot import anything is a worker prompt: the planner job
-// (worker/jobs/plan-graphs.mjs) is Node ESM on a box that never loads .ts, so
-// it fetches this text over HTTP (GET /tts/batch-context, which reads it from
-// right here) and pastes it into the prompt verbatim. Any TypeScript caller
-// imports it directly. Two copies of a writing standard drift within a week;
-// this is the only copy in the codebase.
+// written to this standard.
 //
-// The DURABLE home of the reasoning behind it — the mined evidence, the
-// session cites, the full calibration — is the WikiTom page tts/model-of-tom.md
-// (read via git; see tts/spec.md §18). What follows is the operative summary
-// that ships in prompts; when the wiki page changes, this string changes with
-// it.
+// THE LIVE SOURCE IS NO LONGER THIS STRING. It is the WikiTom skill
+// model-of-tom/skills/writing-to-tom/SKILL.md, synced into the ttsSkills table
+// by the cron in convex/ttsSkills.ts; the durable reasoning behind the rules —
+// the mined evidence, the session cites — is WikiTom model-of-tom/writing.md,
+// which that skill is the operative form of. Every consumer prefers the synced
+// row: GET /tts/batch-context (which is how the Node ESM planner on the worker
+// box gets it — it can neither import .ts nor read a git checkout), the worker
+// mission prompt in convex/claudeSessions.ts, and the session-prompt builders
+// in app/lib/tts-session-prompt.ts.
+//
+// This copy is what those consumers use when the table is empty — before the
+// first sync, and while GITHUB_MIRROR_TOKEN is still scoped away from WikiTom.
+// It is a snapshot, so it drifts: when the skill changes, update it here too.
+
+/** The ttsSkills row every writing consumer prefers over the fallback below. */
+export const WRITING_SKILL = "writing-to-tom";
 export const WRITING_STANDARD = `WRITING STANDARD — every sentence TTS shows Tom obeys this.
 
 THE TWO REGISTERS. All natural language here is one of exactly two kinds, and
@@ -379,7 +384,7 @@ own comes back unruled.`;
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
 // app/sessions and convex/claudeSessions import these directly. The worker
-// daemon CANNOT (only worker/ is deployed to the box, and Node does not load
+// daemon CANNOT (only worker/ is deployed to the Jarvis Box, and Node does not load
 // .ts), so it carries its own halves: session.mjs's REPO_GITHUB is a literal
 // mirror of SESSION_REPOS, while session-host.mjs has no DAEMON_STALE_MS at
 // all — its POLL_IDLE_MS cadence is the other half of a DERIVED contract
@@ -397,6 +402,41 @@ export const SESSION_REPOS = {
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
 } as const;
+
+/** The sentinel repo value meaning "no checkout, an empty scratch workspace".
+ * Written into claudeSessions.repo when a session holds no repos at all. */
+export const NO_REPO = "none";
+
+/** Every repo name a session may hold, in declaration order. THE list — the
+ * auto-scheduler, the prospecting lane and the browser's picker all read it
+ * rather than keeping hand-written copies (VQC C1: one home). */
+export const SESSION_REPO_NAMES = Object.keys(
+  SESSION_REPOS,
+) as (keyof typeof SESSION_REPOS)[];
+
+export function isSessionRepo(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
+}
+
+/**
+ * The ONE normalizer for a session's repo list. Everything a caller might hand
+ * us — a single legacy string, "none", an array with duplicates, a repo the
+ * daemon does not know — collapses here into the canonical form: known repos
+ * only, deduped, in SESSION_REPOS declaration order so two sessions asking for
+ * the same set get byte-identical rows.
+ *
+ * An unknown name is DROPPED rather than thrown on: the daemon throws on a repo
+ * it cannot clone, and a session that dies on its first turn is worse than a
+ * session that starts with an empty scratch workspace.
+ */
+export function normalizeSessionRepos(
+  input: readonly string[] | string | undefined,
+): string[] {
+  const raw =
+    input === undefined ? [] : typeof input === "string" ? [input] : input;
+  const wanted = new Set(raw.map((r) => r.trim()).filter(isSessionRepo));
+  return SESSION_REPO_NAMES.filter((name) => wanted.has(name));
+}
 
 /**
  * The browser treats the session daemon as unreachable past this heartbeat
