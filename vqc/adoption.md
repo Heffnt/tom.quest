@@ -58,7 +58,7 @@ conditions are not restated here beyond the phrase needed to identify the row.
 | Mechanism | Cadence |
 |---|---|
 | `npx tsc --noEmit` (type rung) | commit (CI `tests` job) |
-| `pnpm test:turing` (vitest: convex + vqc guards) | commit (CI `tests` job) |
+| `pnpm test` (vitest: the whole suite) | commit (CI `tests` job) |
 | `pnpm check:guardrails` (contract fences) | commit (CI `static-boundaries` job) |
 | `pnpm build` (production build) | commit (CI `tests` job) |
 | gitleaks | commit (CI `secret-scan` job) |
