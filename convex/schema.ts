@@ -507,7 +507,11 @@ export default defineSchema({
     // life path, the pens). A batch with this set is
     // FROZEN: the batcher job may never rewrite or retire it.
     tomTouchedAt: v.optional(v.number()),
-    source: v.string(), // "manual" | "slack-capture" | "consolidation" | later: "email" | "canvas" | "session-sweep"
+    // "manual" | "slack-capture" | "consolidation" | "email" | "session-sweep"
+    // | "prospecting" | … Each name means ONE fact: the two Canvas producers
+    // are "canvas" (assignments, convex/ttsCanvas.ts) and "canvas-announcement"
+    // (worker/jobs/poll-canvas.mjs), never one shared name.
+    source: v.string(),
     provenance: v.optional(v.string()), // link/descriptor of where it came from
     // ── Slack coordinates of the #dump message this was captured from ────────
     // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
@@ -573,9 +577,11 @@ export default defineSchema({
     .index("by_status", ["status", "updatedAt"])
     .index("by_readiness", ["readiness"])
     .index("by_batch", ["batchId"])
-    // Ingestion lookups: the Canvas sync and the repeating-todo generator find
-    // their own rows by source ("canvas" / "repeating") + provenance match,
-    // without scanning the whole table.
+    // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
+    // generator find their own rows by source ("canvas" / "repeating") +
+    // provenance match, without scanning the whole table. The source alone is
+    // never the whole key — a reader that skips the provenance match adopts
+    // every other producer's rows under that name.
     .index("by_source", ["source"])
     // The Slack Events push route's dedupe read: Slack's delivery is
     // at-least-once and its retries carry the same message ts, so a capture

@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import {
+  ASSIGNMENT_SOURCE,
   type AssignmentInput,
   canvasProvenance,
   mapCanvasAssignments,
@@ -199,6 +200,44 @@ describe("internalSyncCanvasTodos", () => {
         (e) => e.kind === "date-outcome" && e.todoId === todo._id,
       ),
     ).toBe(true);
+  });
+
+  // The label defect this file was fixed for: worker/jobs/poll-canvas.mjs used
+  // to capture Canvas ANNOUNCEMENTS under this same source, so every sync read
+  // them, failed to key them, and dropped them without a word. Announcements
+  // now carry "canvas-announcement"; a row under "canvas" that is not an
+  // assignment is a fact the sync REPORTS instead of swallowing.
+  it("reports, and never adopts, a source-canvas row that is not an assignment", async () => {
+    const t = convexTest({ schema, modules });
+    const strayId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "Sign up for the CS4241 demo slot",
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        kind: "task",
+        actor: "tom",
+        source: ASSIGNMENT_SOURCE,
+        provenance: "https://canvas.wpi.edu/courses/1/discussion_topics/991",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+
+    const result = await sync(t, [assignment()]);
+    expect(result).toMatchObject({ created: 1, foreign: 1 });
+
+    // The stray row is untouched — not completed, not re-dated, not re-minted
+    // as an assignment — and the real assignment still got its own row.
+    const stray = await t.run(async (ctx) => ctx.db.get(strayId));
+    expect(stray).toMatchObject({ status: "active", timingClass: "whenever" });
+    expect(await allTodos(t)).toHaveLength(2);
+  });
+
+  it("counts no foreign rows when every canvas row is an assignment", async () => {
+    const t = convexTest({ schema, modules });
+    await sync(t, [assignment()]);
+    expect(await sync(t, [assignment()])).toMatchObject({ foreign: 0 });
   });
 
   it("leaves an already-done todo untouched on later syncs", async () => {
