@@ -135,15 +135,29 @@ git clone https://github.com/<owner>/tom.quest
 bash tom.quest/worker/setup.sh
 # 3. Fill the secrets (the file documents each key):
 nano /etc/tts/worker.env
-# 4. Log in both Claude Max accounts (interactive), pick one:
+# 4. Re-run setup.sh — THIS is the step that enables the session-host daemon:
+bash tom.quest/worker/setup.sh
+systemctl status tts-session-host    # expect: active (running)
+# 5. Log in both Claude Max accounts (interactive), pick one:
 tts-account login gmail
 tts-account login wpi
 tts-account use gmail
 # Done. Cron is installed; the digest resumes tomorrow at 5.
 ```
 
-`setup.sh` is idempotent — re-running it is also how updated job scripts are
-rolled out after a `git pull`.
+Step 4 is not optional and cannot be folded into step 2. `tts-session-host` is
+the always-on systemd daemon that runs the Claude Code sessions behind
+tom.quest (`worker/session-host/README.md`); `setup.sh` enables and starts it
+only when `SESSIONS_WORKER_KEY` is already non-empty in
+`/etc/tts/worker.env`, because a daemon started without that key would spin on
+503s. On the first run that file has just been created from the template, so
+the key is empty and the daemon is installed but left disabled — skipping the
+re-run leaves it that way permanently, with cron jobs running and every
+session on the site stuck unclaimed. `systemctl enable --now tts-session-host`
+is the equivalent one-liner if the re-run is inconvenient.
+
+`setup.sh` is idempotent — re-running it is also how updated job scripts and
+updated session-host code are rolled out after a `git pull`.
 
 ## Gmail credentials (one-time)
 
