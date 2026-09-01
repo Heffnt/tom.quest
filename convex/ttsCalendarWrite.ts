@@ -4,7 +4,11 @@
 //   - interactive Claude sessions on Tom's machine: `npx convex run
 //     ttsCalendarWrite:internalCreateEvent '<json>'` (deploy credentials —
 //     a pen, used while Tom is present or on his instruction)
-//   - Jarvis Box jobs and sessions: POST /tts/calendar-event (TTS_WORKER_KEY)
+//   - Jarvis Box jobs and interactive sessions: POST /tts/calendar-event
+//     (TTS_WORKER_KEY). The pen is handed to sessions in
+//     app/lib/tts-session-prompt.ts (CALENDAR_PEN) — the key is in every
+//     session's shell already, so naming it there is what makes the door
+//     reachable. No worker job under worker/jobs/ calls the route yet.
 // Credentials (Convex env): GOOGLE_CALENDAR_CLIENT_ID / _CLIENT_SECRET /
 // _REFRESH_TOKEN — minted once by Tom with worker/jobs/calendar-auth.mjs,
 // scope calendar.events only (event CRUD, no calendar admin). Deliberately a
