@@ -108,27 +108,35 @@ function readErrorDetailCode(details: unknown): string | null {
   return typeof code === "string" && code.trim().length > 0 ? code : null;
 }
 
-// The gateway's rejection vocabulary as this repo has seen it: an
-// "UNAUTHORIZED" response code carrying detail code "AUTH_REQUIRED" (the frame
-// shape asserted in __tests__/GatewayConnection.test.ts). Either spelling is
-// accepted in either position, because only their pairing has been observed,
-// not which side owns which word.
-const AUTH_REJECTED_CODES = new Set(["UNAUTHORIZED", "AUTH_REQUIRED"]);
+// The one auth-refusal frame this repo has actually observed: response code
+// UNAUTHORIZED carrying detail code AUTH_REQUIRED (asserted in
+// __tests__/GatewayConnection.test.ts). Deleting a credential is destructive
+// and unrecoverable from the browser, so the test is the narrow one — the
+// DETAIL code — not the response code alone.
+//
+// Why not `UNAUTHORIZED` on its own: the connect frame stakes three things at
+// once, the stored token, the Ed25519 signature over signedAt+nonce, and
+// optionally a password. A gateway rejecting a skewed signedAt, a wrong
+// password, or a scope it will not grant answers UNAUTHORIZED too, and
+// deleting a good token on that evidence leaves the browser worse off than the
+// retry loop this exists to break — the reconnect then sends no credential at
+// all, and nothing can put one back.
+const AUTH_REJECTED_DETAIL_CODE = "AUTH_REQUIRED";
 
 /**
- * Did the gateway refuse the credentials we sent, as opposed to refusing the
- * device itself? Pairing is excluded on purpose: PAIRING_REQUIRED says a human
- * has not approved this device yet, which no amount of re-registering fixes,
- * and the stored token is not what is wrong.
+ * Did the gateway say, in the one way it has been seen to say it, that the
+ * credential we sent is not accepted?
+ *
+ * Note what this deliberately does NOT catch: a gateway that refuses by
+ * CLOSING the socket instead of answering the connect request. That rejects
+ * the pending handshake with a plain Error via rejectAllPending, so no token
+ * is dropped and the retry loop survives for that shape. Widening to it means
+ * telling a close frame's auth refusal apart from an ordinary disconnect,
+ * which the close codes here do not currently distinguish.
  */
 function isAuthRejection(error: unknown): boolean {
   if (!(error instanceof GatewayRequestError)) return false;
-  if (isPairingError(error)) return false;
-  const detail = readErrorDetailCode(error.details);
-  return (
-    AUTH_REJECTED_CODES.has(error.gatewayCode.toUpperCase()) ||
-    (detail !== null && AUTH_REJECTED_CODES.has(detail.toUpperCase()))
-  );
+  return readErrorDetailCode(error.details) === AUTH_REJECTED_DETAIL_CODE;
 }
 
 function isPairingError(error: unknown): boolean {
@@ -323,11 +331,14 @@ export class GatewayConnection {
       ? loadDeviceAuthToken({ deviceId: identity.deviceId, role: CONNECT_ROLE })?.token
       : undefined;
     const authToken = this.token ?? storedToken;
-    // Which token this handshake is staking, so the failure arm knows whether
-    // a rejection is the STORE's fault. A token passed into the constructor is
-    // the caller's and is not ours to delete.
+    // Is the stored token the ONLY credential this handshake stakes? Only then
+    // does a refusal name it. A token passed into the constructor is the
+    // caller's and is not ours to delete; and when a password rides along, an
+    // auth refusal may be about the password, so the token is left alone.
     const usedStoredToken =
-      this.token === undefined && storedToken !== undefined;
+      this.token === undefined &&
+      this.password === undefined &&
+      storedToken !== undefined;
     const authPassword = this.password;
     const device = identity
       ? await buildConnectDevice({
@@ -408,8 +419,10 @@ export class GatewayConnection {
       // reconnect and the loop never ends without clearing site data by hand,
       // so it is dropped here; the reconnect below then handshakes with no
       // token and the gateway issues a fresh one (the storeDeviceAuthToken arm
-      // above). Only the token WE loaded is dropped, and never on a pairing
-      // refusal.
+      // above). Two narrowings, because this deletion cannot be undone from
+      // the browser: the refusal must name the credential (isAuthRejection),
+      // and the token must be the only credential we staked
+      // (usedStoredToken).
       if (plan?.identity && plan.usedStoredToken && isAuthRejection(error)) {
         clearDeviceAuthToken({
           deviceId: plan.identity.deviceId,

@@ -13,7 +13,7 @@
 // Fixed overlay, per the ratified UI rules: nothing on the page behind it
 // moves, and no form appears inline between controls.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
@@ -72,6 +72,7 @@ export default function RepeatDialog({
   const [body, setBody] = useState(rule?.body ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const backdropPress = useRef(false);
 
   const editing = rule !== undefined;
 
@@ -116,8 +117,17 @@ export default function RepeatDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      // The press must BEGIN on the backdrop, not merely end there. A `click`
+      // is dispatched to the nearest common ancestor of mousedown and mouseup,
+      // so selecting text in one of the three textareas and releasing past the
+      // card edge would otherwise close the dialog and throw the edit away.
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) backdropPress.current = true;
+      }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        const fromBackdrop = backdropPress.current;
+        backdropPress.current = false;
+        if (e.target === e.currentTarget && fromBackdrop) onClose();
       }}
     >
       <div className="max-h-[85vh] w-[480px] max-w-full overflow-y-auto rounded-xl border border-[#3b4a66] bg-surface p-4">

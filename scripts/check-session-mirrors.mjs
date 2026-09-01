@@ -4,7 +4,7 @@
 // daemon staleness window as the poll cadence it is derived from. This check
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 // Guardrail 2: some session vocabulary has no worker half at all — the
 // live-status list's other half is convex/schema.ts, and its failure mode is a
@@ -117,7 +117,8 @@ if (usageA && usageB) {
 // (with a comment claiming this file was the home), so the check refuses any
 // re-declaration outside ttsShared.ts.
 // witness: paste `const LIVE_STATUSES = [...]` back into claudeSessions.ts, or
-// add a status to the schema union without listing it here or as terminal.
+// write `const isLive = (s) => ...` in any app/ or convex/ file, or add a
+// status to the schema union without listing it here or as terminal.
 const TERMINAL_STATUSES = ["ended", "failed"];
 const liveBlock = shared.match(/export const LIVE_STATUSES = \[([^\]]+)\]/);
 const schemaTs = readFileSync("convex/schema.ts", "utf8");
@@ -141,16 +142,43 @@ if (liveBlock && sessionsTable) {
     );
   }
 }
-for (const file of ["app/sessions/lib.ts", "convex/claudeSessions.ts"]) {
-  const text = readFileSync(file, "utf8");
+// Every .ts/.tsx under app/ and convex/ is scanned, not just the two files
+// that held the old copies: a third home is exactly as bad, and the three
+// current isLive consumers (session-list, composer, session-view) are where
+// one would plausibly land. Tests are skipped — a test may legitimately stub
+// either name. Both the `function isLive(` and the `const isLive =` spellings
+// count; matching only the first let an arrow-function copy through.
+const declaresOwn = (text) => {
+  const found = [];
   if (/(?:const|let|var)\s+LIVE_STATUSES\s*[:=]/.test(text)) {
-    failures.push(
-      `${file}: declares its own LIVE_STATUSES — the one home is convex/ttsShared.ts`,
-    );
+    found.push("LIVE_STATUSES");
   }
-  if (/function\s+isLive\s*\(/.test(text)) {
+  if (/(?:function\s+isLive\s*\(|(?:const|let|var)\s+isLive\s*[:=])/.test(text)) {
+    found.push("isLive");
+  }
+  return found;
+};
+
+const walk = (dir) => {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === "_generated") continue;
+      if (entry.name === "__tests__") continue;
+      out.push(...walk(full));
+    } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+};
+
+for (const file of [...walk("app"), ...walk("convex")]) {
+  if (file === "convex/ttsShared.ts") continue; // the one home
+  for (const name of declaresOwn(readFileSync(file, "utf8"))) {
     failures.push(
-      `${file}: declares its own isLive — the one home is convex/ttsShared.ts`,
+      `${file}: declares its own ${name} — the one home is convex/ttsShared.ts`,
     );
   }
 }

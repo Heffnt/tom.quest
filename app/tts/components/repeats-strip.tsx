@@ -30,11 +30,21 @@ function daysLabel(days: readonly Weekday[]): string {
     .join(" ");
 }
 
-function RepeatRow({ rule }: { rule: Repeat }) {
+// DANGER: the dialog is NOT rendered from here. A paused row carries
+// opacity-60, and opacity below 1 both dims its whole subtree and opens a
+// stacking context — a modal mounted inside it would render dimmer than the
+// page it is supposed to dim, and its z-50 would be trapped under the nav bar.
+// So the row only reports that Edit was pressed; RepeatsStrip owns the dialog.
+function RepeatRow({
+  rule,
+  onEdit,
+}: {
+  rule: Repeat;
+  onEdit: () => void;
+}) {
   const updateRepeat = useMutation(api.ttsRepeats.updateRepeat);
   const deleteRepeat = useMutation(api.ttsRepeats.deleteRepeat);
   const [busy, setBusy] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -80,7 +90,7 @@ function RepeatRow({ rule }: { rule: Repeat }) {
         <span className="text-[10px] text-text-faint">paused</span>
       )}
       <span className="ml-auto flex items-center gap-1">
-        <button className={btnCls} onClick={() => setEditing(true)}>
+        <button className={btnCls} onClick={onEdit}>
           Edit
         </button>
         <Info call="ttsRepeats.updateRepeat({ id, statement, daysOfWeek, timeOfDay, … })">
@@ -117,9 +127,6 @@ function RepeatRow({ rule }: { rule: Repeat }) {
         </Info>
       </span>
       {error && <div className="w-full text-xs text-error">{error}</div>}
-      {editing && (
-        <RepeatDialog rule={rule} onClose={() => setEditing(false)} />
-      )}
     </div>
   );
 }
@@ -127,7 +134,10 @@ function RepeatRow({ rule }: { rule: Repeat }) {
 export default function RepeatsStrip() {
   const { isTom } = useAuth();
   const repeats = useQuery(api.ttsRepeats.listRepeats, isTom ? {} : "skip");
-  const [creating, setCreating] = useState(false);
+  // null = closed, "new" = the empty form, a Repeat = that rule's form. Held
+  // here rather than per row, so the overlay is never a descendant of a dimmed
+  // or stacking-context-forming row.
+  const [editing, setEditing] = useState<Repeat | "new" | null>(null);
 
   if (repeats === undefined) return null;
 
@@ -140,7 +150,7 @@ export default function RepeatsStrip() {
           names, at 4:30 a.m. New York, just before the day&apos;s queue is
           built — so a repeat is in the corpus by the time anything reads it.
         </Info>
-        <button className={btnCls} onClick={() => setCreating(true)}>
+        <button className={btnCls} onClick={() => setEditing("new")}>
           New repeat
         </button>
         <Info call="ttsRepeats.createRepeat({ statement, daysOfWeek, … })">
@@ -153,10 +163,18 @@ export default function RepeatsStrip() {
         <div className="text-[11px] text-text-faint">no repeating todos</div>
       )}
       {repeats.map((r) => (
-        <RepeatRow key={r._id} rule={r} />
+        <RepeatRow key={r._id} rule={r} onEdit={() => setEditing(r)} />
       ))}
 
-      {creating && <RepeatDialog onClose={() => setCreating(false)} />}
+      {editing !== null && (
+        <RepeatDialog
+          // Remounts when the rule changes, so the form always starts from the
+          // rule it was opened on rather than the previous one's state.
+          key={editing === "new" ? "new" : editing._id}
+          rule={editing === "new" ? undefined : editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }

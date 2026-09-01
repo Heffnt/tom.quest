@@ -218,6 +218,24 @@ describe("ttsRepeats CRUD", () => {
       ).toBe("06:00");
     });
 
+    it("does not mistake a duplicate-bearing weekday list for the same set", async () => {
+      // The day picker cannot emit a duplicate, but `npx convex run
+      // ttsRepeats:updateRepeat` — a documented pen for this table — can, and
+      // a same-length membership test would call this a no-op and drop it.
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t); // monday + friday
+
+      expect(
+        await tom.mutation(api.ttsRepeats.updateRepeat, {
+          id,
+          daysOfWeek: ["monday", "monday"],
+        }),
+      ).toEqual({ changed: ["daysOfWeek"] });
+      expect(
+        await t.run(async (ctx) => (await ctx.db.get(id))?.daysOfWeek),
+      ).toEqual(["monday", "monday"]);
+    });
+
     it("writes nothing and logs nothing when no field moves", async () => {
       const t = convexTest({ schema, modules });
       const { tom, id } = await seed(t);
