@@ -49,13 +49,20 @@ export async function skillText(
   return body === "" ? fallback : body;
 }
 
-export const internalGetSkill = internalQuery({
-  args: { name: v.string() },
-  handler: async (ctx, { name }) => {
-    return await ctx.db
-      .query("ttsSkills")
-      .withIndex("by_name", (q) => q.eq("name", name))
-      .unique();
+/**
+ * `skillText` for callers that have no database. An ACTION CTX has no `ctx.db`
+ * — an action runs outside the transaction — so an httpAction cannot call
+ * `skillText` directly and must reach the table through `ctx.runQuery`. This is
+ * that door, and it goes through `skillText` itself, so an action gets the same
+ * one read as every in-transaction caller rather than re-deciding what "prefer
+ * the skill, fall back to the hardcoded copy" means. Returning the ROW instead
+ * would hand the caller back that decision, which is how GET /tts/batch-context
+ * came to spell the rule a second time.
+ */
+export const internalSkillText = internalQuery({
+  args: { name: v.string(), fallback: v.string() },
+  handler: async (ctx, { name, fallback }) => {
+    return await skillText(ctx, name, fallback);
   },
 });
 

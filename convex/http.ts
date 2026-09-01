@@ -936,15 +936,16 @@ http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
 // pastes into its prompt the same text every TypeScript caller reads.
 //
 // ITS SOURCE is the synced WikiTom skill (ttsSkills, name "writing-to-tom"),
-// with ttsShared.WRITING_STANDARD as the fallback until the sync has run. The
-// field name and type do not change: worker/jobs/plan-graphs.mjs treats a
-// missing `writingStandard` as fatal and form-batches.mjs reads the same
-// payload.
+// with ttsShared.WRITING_STANDARD as the fallback until the sync has run. That
+// choice is NOT made here: ttsSkills.internalSkillText hands the decision to
+// skillText, the one read every consumer shares. The field name and type do not
+// change: worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as
+// fatal and form-batches.mjs reads the same payload.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   // Seven independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingSkill] =
+  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard] =
     await Promise.all([
       ctx.runQuery(internal.tts.internalListTodos, {}),
       ctx.runQuery(internal.tts.internalListMirror, {}),
@@ -952,9 +953,11 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
       ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
-      ctx.runQuery(internal.ttsSkills.internalGetSkill, { name: WRITING_SKILL }),
+      ctx.runQuery(internal.ttsSkills.internalSkillText, {
+        name: WRITING_SKILL,
+        fallback: WRITING_STANDARD,
+      }),
     ]);
-  const synced = writingSkill?.body.trim() ?? "";
   return jsonResponse(200, {
     todos,
     mirror,
@@ -962,7 +965,7 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     recentRulings,
     batches,
     planRepairs,
-    writingStandard: synced === "" ? WRITING_STANDARD : synced,
+    writingStandard,
     // The repo names a batch may declare. Served for the SAME reason as
     // writingStandard above: the planner is Node ESM on a box that never loads
     // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's
