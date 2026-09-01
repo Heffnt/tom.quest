@@ -700,6 +700,17 @@ export class Session {
     // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
     // every work tree), so `git push` and `gh pr create` work in a shell
     // that cannot print the token with `env`.
+    //
+    // TURING_READ_KEY is deliberately NOT dropped. It is the cluster API's
+    // read-only credential (turing-api's verify_read_key: GET /gpu-report,
+    // GET /jobs, GET /sessions/{name}/output and nothing else), and the
+    // `tts-turing` command a session runs reads it straight from this env.
+    // That is the whole reason a second key exists: the full TURING_API_KEY
+    // also authorizes POST /sessions/{name}/run — arbitrary commands on the
+    // cluster — and must stay out of /etc/tts/worker.env entirely, so there
+    // is nothing here to scrub. If a write verb is ever added to turing-api
+    // under the read key, THIS inheritance is what makes it a session
+    // capability; that widening is a decision, not a refactor.
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,

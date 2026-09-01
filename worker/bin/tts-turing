@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# tts-turing — read the WPI Turing cluster from the Jarvis Box.
+#
+# WHY THIS EXISTS: a TTS session could not see the cluster at all. `ssh` is
+# refused by the session sandbox and `turing.wpi.edu` is unreachable from this
+# box anyway; the one open door is the HTTPS API at turing.tom.quest, and until
+# now the only credential that opened it was TURING_API_KEY — the key that also
+# authorizes POST /sessions/{name}/run, i.e. arbitrary commands on the cluster.
+#
+# So this command carries the OTHER key. TURING_READ_KEY (turing-api's
+# verify_read_key) opens exactly three endpoints, and this script has exactly
+# four verbs, one per open endpoint plus the unauthenticated health probe:
+#
+#   tts-turing health                    GET /health                (no key)
+#   tts-turing gpus                      GET /gpu-report
+#   tts-turing jobs                      GET /jobs
+#   tts-turing output <session> [lines]  GET /sessions/<name>/output
+#
+# THERE IS NO WRITE VERB, BY CONSTRUCTION. Allocating a GPU, cancelling a job,
+# running a command in a session, and reading files off the cluster all stay
+# behind the full key, which is deliberately absent from /etc/tts/worker.env.
+# A session that needs one of those asks Tom; it does not reach for a curl.
+#
+# Flags:
+#   --raw        print the response body exactly as received (default is
+#                pretty-printed JSON when python3 is available)
+#   --url BASE   override the API origin (default $TURING_BASE_URL, else
+#                https://turing.tom.quest)
+#
+# Exit codes: 0 ok · 2 usage · 3 no TURING_READ_KEY in the environment ·
+#             4 the API refused or failed (its status and body are printed).
+set -euo pipefail
+
+BASE="${TURING_BASE_URL:-https://turing.tom.quest}"
+RAW=0
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: tts-turing <verb> [args] [--raw] [--url BASE]
+
+  health                    is the cluster API up (needs no key)
+  gpus                      GPU report: nodes, free GPUs by type, GPU jobs
+  jobs                      this account's SLURM jobs
+  output <session> [lines]  last N lines (default 500) of a tmux session
+
+Reads TURING_READ_KEY from the environment. That key opens these endpoints
+and nothing else — there is no write verb here and none is coming.
+USAGE
+  exit 2
+}
+
+# ── argument parse ───────────────────────────────────────────────────────────
+VERB="${1:-}"
+[ -n "$VERB" ] || usage
+shift || true
+
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --raw) RAW=1 ;;
+    --url)
+      shift || { echo "tts-turing: --url needs a value" >&2; exit 2; }
+      BASE="$1"
+      ;;
+    -h|--help) usage ;;
+    -*) echo "tts-turing: unknown flag $1" >&2; exit 2 ;;
+    *) ARGS+=("$1") ;;
+  esac
+  shift
+done
+
+BASE="${BASE%/}"
+
+# ── the request ──────────────────────────────────────────────────────────────
+# Only ever a GET, and the key goes in a header rather than the URL so it never
+# lands in a log line or a shell history entry.
+request() {
+  local path="$1" needs_key="$2"
+  local -a auth=()
+  if [ "$needs_key" = "key" ]; then
+    if [ -z "${TURING_READ_KEY:-}" ]; then
+      cat >&2 <<'MISSING'
+tts-turing: TURING_READ_KEY is not set in this environment.
+
+It belongs in /etc/tts/worker.env on this box (see worker/worker.env.example),
+and the value is minted by Tom — only he holds shell on the cluster login node,
+where the same value goes into turing-api/.env. Until both sides have it,
+`tts-turing health` still works and every other verb is a 401.
+MISSING
+      exit 3
+    fi
+    auth=(-H "X-API-Key: ${TURING_READ_KEY}")
+  fi
+
+  local body status
+  # -w writes the status on its own last line; --max-time bounds a hung tunnel.
+  body="$(curl -sS --max-time 60 -w $'\n%{http_code}' "${auth[@]}" "${BASE}${path}")" || {
+    echo "tts-turing: could not reach ${BASE} (is the cloudflared tunnel up? try: tts-turing health)" >&2
+    exit 4
+  }
+  status="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+
+  if [ "$status" != "200" ]; then
+    echo "tts-turing: ${BASE}${path} answered ${status}" >&2
+    if [ "$status" = "401" ]; then
+      cat >&2 <<'UNAUTH'
+  A 401 here means one of two things, and they are worth telling apart:
+    - the TURING_READ_KEY on this box does not match the one in
+      turing-api/.env on the login node, or
+    - turing-api is running a build/config without TURING_READ_KEY set, in
+      which case the read door does not exist yet and only Tom's full key
+      opens these endpoints. Both fixes are his: edit the .env, restart the
+      service.
+UNAUTH
+    fi
+    printf '%s\n' "$body" >&2
+    exit 4
+  fi
+
+  if [ "$RAW" = "1" ] || ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$body"
+  else
+    printf '%s' "$body" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$body"
+  fi
+}
+
+# URL-encode one path segment: a tmux session name is caller-supplied and can
+# carry characters that would otherwise change which path is requested.
+encode_segment() {
+  python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1" \
+    2>/dev/null || printf '%s' "$1"
+}
+
+case "$VERB" in
+  health)
+    [ "${#ARGS[@]}" -eq 0 ] || usage
+    request "/health" nokey
+    ;;
+  gpus)
+    [ "${#ARGS[@]}" -eq 0 ] || usage
+    request "/gpu-report" key
+    ;;
+  jobs)
+    [ "${#ARGS[@]}" -eq 0 ] || usage
+    request "/jobs" key
+    ;;
+  output)
+    [ "${#ARGS[@]}" -ge 1 ] || usage
+    session="$(encode_segment "${ARGS[0]}")"
+    lines="${ARGS[1]:-500}"
+    case "$lines" in
+      ''|*[!0-9]*) echo "tts-turing: lines must be a number, got '${lines}'" >&2; exit 2 ;;
+    esac
+    request "/sessions/${session}/output?lines=${lines}" key
+    ;;
+  *)
+    echo "tts-turing: unknown verb '${VERB}'" >&2
+    usage
+    ;;
+esac
