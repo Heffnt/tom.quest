@@ -36,6 +36,10 @@
 #   2. Run this script to install it (no restart, nothing dies).
 #   3. Deploy the clean-URL code with setup.sh at a quiet moment; that restart
 #      is what stops new copies of any token being written into remote URLs.
+#      setup.sh also runs scrub-token-urls.sh, which rewrites the remote URLs
+#      of checkouts that already exist — deploying alone would leave those
+#      copies of the old value on disk, including the ones under /tmp that
+#      outlive the session that made them.
 #   4. Run `--audit` until it says the old token is unused, then revoke it in
 #      GitHub.
 #
@@ -112,6 +116,10 @@ audit() {
     printf '%s\n' "$checkouts" | sed 's/^/  /'
     echo "  (each of these authenticates with whatever token was current when it"
     echo "   was cloned; revoking that token breaks their fetches and pushes)"
+    echo "  To empty this list without deleting anyone's work, run"
+    echo "  'bash $WORKER_DIR/scrub-token-urls.sh' — it rewrites each of those"
+    echo "  remote URLs to its plain form, after which the credential helper"
+    echo "  supplies the token instead. It restarts nothing."
   fi
 
   pid="$(daemon_pid)"

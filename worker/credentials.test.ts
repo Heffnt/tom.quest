@@ -1,4 +1,6 @@
+import { execFileSync } from "child_process";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
@@ -43,6 +45,7 @@ const WORKER_DIR = path.resolve(__dirname);
 const SETUP_SH = path.join(WORKER_DIR, "setup.sh");
 const INSTALL_SH = path.join(WORKER_DIR, "install-git-credentials.sh");
 const ROTATE_SH = path.join(WORKER_DIR, "rotate-github-token.sh");
+const SCRUB_SH = path.join(WORKER_DIR, "scrub-token-urls.sh");
 
 // A remote URL that carries a credential: anything between "//" and "@github.com".
 const TOKENISED_REMOTE = /https?:\/\/[^\s"'`]*@github\.com/;
@@ -66,6 +69,49 @@ function codeFiles(dir: string): string[] {
     }
   }
   return out;
+}
+
+// A stand-in for the real token, used only inside fixture checkouts created
+// under the system temp directory and deleted at the end of each test.
+const FIXTURE_TOKEN = "ghp_FIXTURE_NOT_A_REAL_TOKEN";
+
+// git is asked to ignore the system and per-user configuration files. Two
+// reasons: the fixture must behave the same on a laptop and on the Jarvis Box
+// (where the credential helper IS registered system-wide once setup.sh has
+// run), and no test may depend on, or disturb, the box's real git settings.
+const ISOLATED_GIT = {
+  ...process.env,
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+};
+
+function git(args: string[], cwd?: string): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", env: ISOLATED_GIT }).trim();
+}
+
+function gitConfig(configFile: string, key: string): string {
+  return git(["config", "--file", configFile, "--get", key]);
+}
+
+// A directory holding one checkout whose origin URL carries a credential and
+// whose second remote does not.
+function makeFixture(): { root: string; config: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-scrub-fixture-"));
+  const repo = path.join(root, "checkout");
+  git(["init", "-q", repo]);
+  git(
+    ["remote", "add", "origin", `https://x-access-token:${FIXTURE_TOKEN}@github.com/Heffnt/tom.quest.git`],
+    repo,
+  );
+  git(["remote", "add", "upstream", "https://github.com/Heffnt/ComplexMultiTrigger.git"], repo);
+  return { root, config: path.join(repo, ".git", "config") };
+}
+
+function runScrub(args: string[]): string {
+  return execFileSync("bash", [SCRUB_SH, ...args], {
+    encoding: "utf8",
+    env: ISOLATED_GIT,
+  });
 }
 
 describe("worker credentials", () => {
@@ -191,6 +237,103 @@ describe("worker credentials", () => {
     expect(rotate).toContain('bash "$WORKER_DIR/install-git-credentials.sh"');
     // The read-only report that answers "can the old token be revoked yet?".
     expect(rotate).toContain("--audit");
+  });
+
+  // Deploying the clean-URL code stops NEW copies of the token being written
+  // into remote URLs. It does not remove the copies already on disk, and
+  // nothing else does: a session's clone under /tmp outlives the session that
+  // made it. scrub-token-urls.sh is the operation that empties that set —
+  // measured on the Jarvis Box 2026-09-01 00:29 UTC, 17 checkouts of 32
+  // scanned still carried a credential, 9 of them under /tmp, across three
+  // repositories. The tests below run the script for real against fixture
+  // checkouts, because the properties that matter are behavioural.
+  it("the scrub rewrites a credentialed remote URL and leaves the rest alone", () => {
+    const fx = makeFixture();
+    try {
+      const out = runScrub(["--force", fx.root]);
+      // The value is gone from the file...
+      expect(fs.readFileSync(fx.config, "utf8")).not.toContain(FIXTURE_TOKEN);
+      // ...replaced by the same URL without a credential in front of the host,
+      // which is what the credential helper is able to serve.
+      expect(gitConfig(fx.config, "remote.origin.url")).toBe(
+        "https://github.com/Heffnt/tom.quest.git",
+      );
+      // A remote that never carried a credential is not touched, and neither
+      // is any other setting in the file.
+      expect(gitConfig(fx.config, "remote.upstream.url")).toBe(
+        "https://github.com/Heffnt/ComplexMultiTrigger.git",
+      );
+      expect(gitConfig(fx.config, "core.repositoryformatversion")).toBe("0");
+      // Nothing it prints may contain the credential: this output is read in a
+      // terminal, lands in a session transcript, and is exactly the leak the
+      // whole change exists to close.
+      expect(out).not.toContain(FIXTURE_TOKEN);
+      expect(out).toContain("rewrote remote.origin.url");
+      // Running it twice is a no-op rather than an error.
+      expect(runScrub(["--force", fx.root])).toContain("0 remote URLs rewritten");
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("the scrub refuses to run when no credential helper is registered", () => {
+    const fx = makeFixture();
+    try {
+      // A cleaned URL can ONLY authenticate through the helper, so scrubbing a
+      // box that has none takes working checkouts and breaks them. The two
+      // GIT_CONFIG_* variables point git's system and per-user configuration
+      // at an empty file, so this asserts the same thing on a developer laptop
+      // and on the Jarvis Box after the helper is installed.
+      let failed = false;
+      try {
+        runScrub([fx.root]);
+      } catch (err) {
+        failed = true;
+        const e = err as { status?: number; stderr?: string };
+        expect(e.status).toBe(1);
+        expect(e.stderr).toContain("refusing to scrub");
+      }
+      expect(failed).toBe(true);
+      expect(fs.readFileSync(fx.config, "utf8")).toContain(FIXTURE_TOKEN);
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("the scrub's --dry-run changes nothing", () => {
+    const fx = makeFixture();
+    try {
+      const out = runScrub(["--dry-run", fx.root]);
+      expect(out).toContain("would rewrite remote.origin.url");
+      expect(out).not.toContain(FIXTURE_TOKEN);
+      expect(fs.readFileSync(fx.config, "utf8")).toContain(FIXTURE_TOKEN);
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("setup.sh scrubs old checkouts, after the helper and after the new code", () => {
+    const setup = fs.readFileSync(SETUP_SH, "utf8");
+    const credentials = setup.indexOf('bash "$WORKER_DIR/install-git-credentials.sh"');
+    const jobs = setup.indexOf('cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/');
+    const scrub = setup.indexOf('bash "$WORKER_DIR/scrub-token-urls.sh"');
+    expect(scrub).toBeGreaterThan(-1);
+    // After the helper: a cleaned URL with no helper cannot authenticate.
+    expect(scrub).toBeGreaterThan(credentials);
+    // After the new code: scrubbing before it would be undone by the next
+    // clone the old code makes.
+    expect(scrub).toBeGreaterThan(jobs);
+  });
+
+  it("the scrub and the audit look in the same directories", () => {
+    // rotate-github-token.sh --audit counts the checkouts; scrub-token-urls.sh
+    // empties that set. If the two lists drifted apart, the audit could report
+    // a clean box while credentials sat in a directory only it knows about.
+    const line = /^SCAN_DIRS=\(.*\)$/m;
+    const inScrub = fs.readFileSync(SCRUB_SH, "utf8").match(line);
+    const inRotate = fs.readFileSync(ROTATE_SH, "utf8").match(line);
+    expect(inScrub).not.toBeNull();
+    expect(inRotate?.[0]).toBe(inScrub?.[0]);
   });
 
   it("the helper answers only `get`, only for github.com, and never writes", () => {

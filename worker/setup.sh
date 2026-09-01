@@ -125,6 +125,18 @@ bash "$WORKER_DIR/install-git-credentials.sh"
 # and refuse to run without it.
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 
+# Checkouts this box made BEFORE the clean-URL change still carry the token in
+# their remote URLs, and installing new code does not touch them: it only
+# stops new copies being made. Rewrite the old ones to clean URLs now — one
+# config value per checkout, nothing deleted, no session's work disturbed.
+# Placed after install-git-credentials.sh on purpose: a cleaned URL can only
+# authenticate through that helper, so scrubbing first would break every
+# checkout it touched. Measured on the Jarvis Box 2026-09-01 00:29 UTC before
+# any rollout: 17 checkouts of 32 scanned carried a credential, 9 of them
+# under /tmp where nothing else would ever have removed them.
+bash "$WORKER_DIR/scrub-token-urls.sh" \
+  || echo "  scrub-token-urls.sh did not finish — run it by hand and read its output"
+
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
 if [ ! -f /etc/tts/worker.env ]; then
