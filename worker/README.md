@@ -166,6 +166,8 @@ have their own script and `setup.sh` calls it:
 ```
 bash tom.quest/worker/install-git-credentials.sh          # install / re-install
 bash tom.quest/worker/install-git-credentials.sh --check   # report only, no secret printed
+bash tom.quest/worker/install-git-credentials.sh --verify-clean-url
+                                                           # can the daemon's git authenticate?
 ```
 
 It installs `/usr/local/bin/tts-git-credential`, registers it as git's
@@ -186,6 +188,30 @@ every session clones, and cannot push to either repository. (Measured
 2026-09-01: an unauthenticated API read of ComplexMultiTrigger returns 404 and
 an anonymous `ls-remote` of it fails, while tom.quest returns 200 and clones
 anonymously — tom.quest is public, so only its pushes need the credential.)
+
+`--verify-clean-url` is that failure turned into a check. It reads
+ComplexMultiTrigger through a clean URL with `HOME` removed from the
+environment, which is how the daemon's git runs, and `setup.sh` calls it right
+after the install — before the scrub, and long before the daemon restart in
+step 8. A non-zero exit stops the deploy. Two branches, because two situations
+look the same to a bare read failure: with a token set in `worker.env` the
+credential path is broken and the deploy must not continue, while with no token
+set the box is simply not finished being built, so the check says what is
+missing and lets the install run on. `TTS_SKIP_CLEAN_URL_CHECK=1` deploys
+anyway, for a rebuild while GitHub itself is unreachable.
+
+Why the check drops `HOME` rather than trusting the daemon's `HOME=/root`: a
+helper registered with `git config --global` writes `$HOME/.gitconfig`, works
+for the person running `setup.sh`, and is invisible to a service started
+without a `HOME`. Dropping `HOME` is what tells those two states apart.
+Measured on the Jarvis Box 2026-09-01 00:44 UTC, this is not hypothetical —
+`main` was in exactly that state: `session.mjs` there already clones with clean
+URLs, `/etc/gitconfig` held no `credential.helper` at all (only the git-lfs
+filters), the running daemon's environment had no `HOME`, and an anonymous
+clean-URL read of both private repositories failed with "could not read
+Username". Deploying `main` as it stood would have restarted the daemon onto
+clean-URL code with nothing able to authenticate, which stops every session
+start on the box.
 
 ### Rotating the GitHub token
 

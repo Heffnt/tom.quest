@@ -422,6 +422,15 @@ describe("worker credentials", () => {
       expect(r.status).toBe(0);
       expect(r.stdout).toContain("with no HOME: yes");
       expect(r.stdout).not.toContain(FIXTURE_TOKEN);
+      // The repository it reads by default has to be the PRIVATE one. Reading
+      // the public repository would succeed with no credentials at all, so the
+      // check would pass on a box where nothing works and the guard would be
+      // worth nothing.
+      const install = fs.readFileSync(INSTALL_SH, "utf8");
+      expect(install).toContain("PRIVATE_REPO=Heffnt/ComplexMultiTrigger");
+      expect(install).toContain(
+        'remote="${TTS_VERIFY_REMOTE:-https://github.com/$PRIVATE_REPO.git}"',
+      );
     } finally {
       fs.rmSync(fx.root, { recursive: true, force: true });
     }

@@ -320,7 +320,39 @@
     be revoked any earlier: the running daemon keeps minting tokenised URLs
     from the value it read at startup until it is restarted. Five more
     assertions in worker/credentials.test.ts, three of them running the script
-    against fixture checkouts, mutation-checked six ways.
+    against fixture checkouts, mutation-checked six ways. The rollout's danger
+    was then found to be LIVE ON MAIN rather than waiting on a merge
+    (2026-09-01, session q979xfef...): main at 52120a9 already contains the
+    clean-URL session.mjs — the branch adds the helper install, the cron-job
+    clones, the rotation and the scrub, not the clean URL — while the box has
+    no helper at all. Measured 00:44-00:50 UTC: /etc/gitconfig holds only the
+    git-lfs filters, /usr/local/bin/tts-git-credential does not exist, the
+    running daemon (pid 1917087, started 08-31 17:03:38) has NO HOME in its
+    environment, git with HOME unset ignores a per-user credential.helper (a
+    fixture home registering one: prints it with HOME set, prints nothing and
+    exits 1 with HOME unset), and an anonymous clean-URL ls-remote of
+    ComplexMultiTrigger and of WikiTom fails "could not read Username" while
+    tom.quest succeeds. So running setup.sh from main — for the /tmp scratch
+    work or any other reason — would restart the daemon onto clean-URL code
+    with nothing able to authenticate and stop every session start, and main's
+    setup.sh registers the helper with `git config --global`, which the daemon
+    cannot read. The guard for that is install-git-credentials.sh
+    --verify-clean-url: it reads the PRIVATE repository through a clean URL
+    with HOME removed, which is how the daemon's git runs, so a per-user
+    registration counts as missing; setup.sh calls it right after the install,
+    before the scrub and long before the restart, and a non-zero exit stops the
+    deploy. Two branches, because a bare read failure cannot tell a broken
+    credential path (token set in worker.env — refuse) from an unfinished box
+    (no token yet — report and continue, since setup.sh seeds worker.env after
+    this point). TTS_SKIP_CLEAN_URL_CHECK=1 deploys anyway. Six more assertions
+    in worker/credentials.test.ts, four of them running the script against a
+    local fixture repository, mutation-checked five ways (honour HOME; failure
+    branch returns 0; no-token branch returns 1; move the setup.sh call after
+    the scrub; point the default read at the public repository — each fails,
+    each revert passes). Re-measured with the scrub's own --dry-run at 00:59
+    UTC the same day: 22 checkouts of 32 now carry a credential, up from 17
+    thirty minutes earlier — 9 under /tmp and 13 under /var/cache/tts, of which
+    12 are work trees of 7 live sessions.
   graduates_when: >-
     After a setup.sh rollout, a session pushes session/<id> and opens a pull
     request with gh, and its clone's .git/config contains no token; and one
