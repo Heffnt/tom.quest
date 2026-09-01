@@ -33,7 +33,12 @@ owns retries. The agent records its own outcome via the key-authed pen
 via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key) — the daemon passes
 CONVEX_SITE_URL and TTS_WORKER_KEY (only — the sessions ingest key never
 enters a model-reachable shell) into every session's environment so those
-curls work. A daemon-stamped outcome (time cap, turn failure, restart)
+curls work. Those two are the only keys passed EXPLICITLY; the rest of the
+daemon's env is inherited minus `SESSIONS_WORKER_KEY` and `GH_TOKEN`, so a
+session also sees `TURING_READ_KEY` when the box has one — the cluster API's
+read-only credential behind `tts-turing` (three GETs, no write verb; the full
+`TURING_API_KEY` is not on this box at all). A daemon-stamped outcome (time
+cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an
 outcome already exists.
 
@@ -63,6 +68,20 @@ surfaces the decision in the PR, rather than stopping to wait.
   verdicts land in the transcript as rows, allow and deny alike, are memoized
   per session so an agentic loop pays once, and the classifier is FAIL-OPEN
   (unreachable ⇒ allowed, and the transcript says so).
+- `banned-tools.mjs` — the tools no session may call at all, and the sentence
+  the model reads when it tries. One member: `AskUserQuestion`, whose whole
+  purpose is a multiple-choice picker a human clicks. tom.quest's transcript
+  renders every tool call as a name plus an input preview and has no picker,
+  and an autonomous session has no human at all — so under the auto-allow
+  posture the call did not park and wait, it returned with no chosen option
+  and the model carried on as if it had consulted someone. The daemon passes
+  the list to the SDK as `disallowedTools` (removed from the model's context)
+  and denies it again at the permission gate, with a mode-aware corrective
+  message: interactive ⇒ ask Tom in reply text, autonomous ⇒ decide and
+  surface the alternatives where the work persists. Its own dependency-free
+  file so the repo's vitest can execute the rule
+  (`__tests__/banned-tools.test.mjs`) — `session.mjs` cannot be imported
+  there, since the SDK is installed only on the box.
 - `lib.mjs` — env parsing, `sessionsFetch`, backoff, 32KB truncation.
 
 ## The no-state rule, as applied here

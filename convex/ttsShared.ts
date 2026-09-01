@@ -418,6 +418,32 @@ export function isSessionRepo(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
 }
 
+/** The path, inside a repo, of the code-todo registry a repo governs itself by. */
+export const CODE_TODO_PATH = "vqc/todos.yaml";
+
+/**
+ * The repos that keep their own code todos in CODE_TODO_PATH, mapped to the
+ * DEFAULT branch that copy is read from. THE list, with two readers that must
+ * agree (VQC C1: one home):
+ *   - the mirror cron (convex/ttsSync.ts refreshMirror) fetches each repo's
+ *     file from that branch into dtsCodeTodoMirror;
+ *   - the prospecting prompt (convex/claudeSessions.ts) tells a prospector in
+ *     one of these checkouts to READ that file before capturing, so it cannot
+ *     hand Tom a finding the repo already tracks.
+ * They drifted once: only ComplexMultiTrigger was named in the prompt, while
+ * the cron mirrored tom.quest too, so tom.quest prospectors were blind to
+ * tom.quest's own registry.
+ */
+export const CODE_TODO_REPOS = {
+  ComplexMultiTrigger: "master",
+  "tom.quest": "main",
+} as const;
+
+/** Whether a repo tracks its own code todos in CODE_TODO_PATH. */
+export function tracksCodeTodos(repo: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CODE_TODO_REPOS, repo);
+}
+
 /**
  * The ONE normalizer for a session's repo list. Everything a caller might hand
  * us — a single legacy string, "none", an array with duplicates, a repo the
@@ -443,6 +469,35 @@ export function normalizeSessionRepos(
  * age; forceClose is allowed only past it. 90s = 3 missed 30s idle polls.
  */
 export const DAEMON_STALE_MS = 90_000;
+
+/**
+ * The session statuses that mean "this session is still a going concern" —
+ * every status in the claudeSessions.status union (convex/schema.ts) except
+ * the two terminal ones, "ended" and "failed".
+ *
+ * ONE HOME. Before this, app/sessions/lib.ts and convex/claudeSessions.ts each
+ * carried their own copy of this list and their own isLive, while the comment
+ * above each copy said this file was the home — so the page's "live" and the
+ * server's "live" were two facts that happened to agree. They are now one.
+ * scripts/check-session-mirrors.mjs fences it: the list plus {ended, failed}
+ * must equal the schema union, and no other file may declare a LIVE_STATUSES
+ * of its own.
+ */
+export const LIVE_STATUSES = [
+  "requested",
+  "starting",
+  "idle",
+  "running",
+  "awaiting-permission",
+] as const;
+
+export type LiveSessionStatus = (typeof LIVE_STATUSES)[number];
+
+/** Takes a plain string so both sides can pass their own status type (the
+ * browser's Doc<"claudeSessions">["status"], the server's) without a cast. */
+export function isLive(status: string): boolean {
+  return (LIVE_STATUSES as readonly string[]).includes(status);
+}
 
 /** Deep link to one item on the /tts page (Everything tab), optionally
  * carrying an intent the page confirms before acting (state changes only on

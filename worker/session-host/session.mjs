@@ -25,6 +25,7 @@ import {
   truncated,
   ERROR_TEXT_LIMIT,
 } from "./lib.mjs";
+import { BANNED_TOOLS, bannedToolDenial } from "./banned-tools.mjs";
 
 const execFile = promisify(execFileCb);
 
@@ -67,6 +68,12 @@ const FLUSH_THROTTLE_MS = 400;
 // of tool as Edit in current CLIs.
 const EDIT_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
 
+// …and one class of tool is banned outright rather than judged per call:
+// BANNED_TOOLS in banned-tools.mjs (currently AskUserQuestion alone), whose
+// header says why. It is passed to the SDK as `disallowedTools` in
+// startQuery — which removes it from the model's context — and denied again
+// in #canUseTool for any path that reaches the gate anyway.
+
 // ── The Bash classifier (Tom's ruling 2026-08-29, adoption.md
 //    `session-permission-posture`) ──────────────────────────────────────────
 // Auto mode still parks NOTHING on Tom. But the structural boundary above is
@@ -105,7 +112,14 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 //   sudo / systemctl / crontab — box-level privilege and persistence
 //   /etc/ /root/    — the Jarvis Box's own configuration, outside every workdir
 //   .claude-accounts — the Max-account credential store the CLI reads
-//   GH_TOKEN / WORKER_KEY — the two secret names that exist in this env
+//   GH_TOKEN / WORKER_KEY / TOMQUEST_AGENT — the secret names that exist in
+//     this env. This list said "the two" and named the first two until the
+//     browse credentials were added to /etc/tts/worker.env in the same commit
+//     that added tts-browse, at which point `echo $TOMQUEST_AGENT_PASSWORD`
+//     matched no alternative here and took the unclassified fast path. The
+//     names are scrubbed from a session's env now (startQuery below), so a
+//     command naming one gets nothing — but the classifier should still see
+//     the attempt, because trying is what is worth noticing.
 //   gh              — authenticated GitHub CLI: `gh pr create` on the session
 //                     branch is the sanctioned finish, but the same auth
 //                     reaches `gh pr merge` and API writes to any branch, so
@@ -121,7 +135,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // span backslash-newline continuations. Over-matching only costs a classifier
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
-  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|TOMQUEST_AGENT|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -543,8 +557,17 @@ export class Session {
     // `git push` in its shell.
     const url = `https://github.com/${gh}.git`;
     const branch = `session/${this.id}`;
+    // GIT_LFS_SKIP_SMUDGE=1 makes git write the ~130-byte Git LFS pointer text
+    // instead of downloading the object it names. Inert today (tom.quest has no
+    // LFS objects, and git-lfs is not installed on the Jarvis Box), and it is
+    // here for the day public/data/clouds/*.bin — 67.5 MB of point cloud that no
+    // session reads — moves to LFS: GitHub meters LFS bandwidth against a
+    // 10 GiB/month allowance, so a session-per-todo cadence would spend the whole
+    // month's allowance in ~150 clones on bytes nothing in the session touches.
+    // Anything that DOES need the real bytes runs `git lfs pull` itself.
     await execFile("git", ["clone", "--depth", "1", url, dir], {
       maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, GIT_LFS_SKIP_SMUDGE: "1" },
     });
     if (forResume) {
       // If earlier work on this session was pushed, pick the branch back up;
@@ -690,7 +713,7 @@ export class Session {
 
   startQuery({ resume } = {}) {
     // The daemon's own secrets, dropped from the env the session's shell
-    // inherits. Under systemd both arrive via EnvironmentFile=/etc/tts/
+    // inherits. Under systemd they all arrive via EnvironmentFile=/etc/tts/
     // worker.env, so without this destructure-drop `env` in any Bash call
     // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
     // confused session could rewrite ANY transcript) and GH_TOKEN is repo
@@ -700,9 +723,44 @@ export class Session {
     // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
     // every work tree), so `git push` and `gh pr create` work in a shell
     // that cannot print the token with `env`.
+    //
+    // TOMQUEST_AGENT_USERNAME/PASSWORD are the tom.quest sign-in the browser
+    // uses, and they are dropped for a DIFFERENT reason than the two above:
+    // not because a session must not act as that account — tts-browse still
+    // signs in as it — but because the password must not be printable. A
+    // session's whole transcript is stored in Convex, so one `env` or `echo`
+    // would write it there in plaintext, where narrowing the account's role
+    // later cannot take it back. tts-browse reads /etc/tts/worker.env itself
+    // (it runs as the same user), so the flag keeps working with the names
+    // absent from this env.
+    //
+    // The scrub and the role are INDEPENDENT defences and neither replaces
+    // the other: the role means a leak costs little, the scrub means there is
+    // nothing to leak.
+    //
+    // TURING_READ_KEY is deliberately NOT dropped. It is the cluster API's
+    // read-only credential (turing-api's verify_read_key: GET /gpu-report,
+    // GET /jobs, GET /sessions/{name}/output and nothing else), and the
+    // `tts-turing` command a session runs reads it straight from this env.
+    // That is the whole reason a second key exists: the full TURING_API_KEY
+    // also authorizes POST /sessions/{name}/run — arbitrary commands on the
+    // cluster — and must stay out of /etc/tts/worker.env entirely, so there
+    // is nothing here to scrub. If a write verb is ever added to turing-api
+    // under the read key, THIS inheritance is what makes it a session
+    // capability; that widening is a decision, not a refactor.
+    //
+    // TURING_API_KEY is scrubbed even though it SHOULD never be in
+    // worker.env: on 2026-08-30 a session's shell held a stale copy
+    // inherited from exactly that file (three, in fact), and staleness is
+    // not a control — the key authorizes arbitrary command execution on the
+    // WPI cluster. The env file has been cleaned; this line is what makes
+    // the mistake unrepeatable instead of merely repaired.
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
+      TOMQUEST_AGENT_USERNAME: _browseUser,
+      TOMQUEST_AGENT_PASSWORD: _browsePassword,
+      TURING_API_KEY: _turingWriteKey,
       ...inheritedEnv
     } = process.env;
     this.queue = new TurnQueue();
@@ -714,6 +772,12 @@ export class Session {
         cwd: this.workdir,
         includePartialMessages: true,
         permissionMode: "default",
+        // Banned tools, removed from the model's context by the SDK ("These
+        // tools will be removed from the model's context and cannot be used,
+        // even if they would otherwise be allowed" — sdk.d.ts). The gate's
+        // matching deny is the backstop, not the mechanism: a tool the model
+        // never sees is a tool it never spends a turn on.
+        disallowedTools: BANNED_TOOLS,
         abortController: this.abort,
         canUseTool: (toolName, input, opts) =>
           this.#canUseTool(toolName, input, opts),
@@ -726,10 +790,11 @@ export class Session {
         // enters a session's shell — its write surface (capture, prep,
         // briefs, batches, ruling-applied, session-outcome) is the same one
         // the cron jobs' agentic runs already expose to a model.
-        // SESSIONS_WORKER_KEY and GH_TOKEN are SCRUBBED above (inheritedEnv):
-        // inheriting them is not hypothetical — systemd puts both in this
-        // process's env — and an ingest key reachable from the session's
-        // shell would let a confused session corrupt any transcript.
+        // SESSIONS_WORKER_KEY, GH_TOKEN and the two TOMQUEST_AGENT_* browse
+        // credentials are SCRUBBED above (inheritedEnv): inheriting them is
+        // not hypothetical — systemd puts all four in this process's env —
+        // and an ingest key reachable from the session's shell would let a
+        // confused session corrupt any transcript.
         env: {
           ...inheritedEnv,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
@@ -1066,6 +1131,22 @@ export class Session {
     // session/<id> branch namespace, Tom's merge gate, Tom-only ruling pens
     // — and every allowed call still lands as a tool-call transcript row.
     // The one kept per-call check: edit tools must target the workdir.
+    //
+    // Before it, the flat ban. `disallowedTools` already keeps these out of
+    // the model's context, so reaching here means some path put the call
+    // through anyway (a resumed session carrying an older tool list, a
+    // subagent, an SDK change). Denying with a corrective message — and a
+    // system row, same failure-honesty reason as the edit denial below — is
+    // strictly better than the allow, which would return no chosen option and
+    // let the model continue as if it had asked someone.
+    const banned = bannedToolDenial(toolName, this.mode);
+    if (banned !== null) {
+      this.finalizeRow("system", {
+        text: `auto-denied ${toolName}: banned in tom.quest sessions (no surface answers it) — a corrective message was sent to the model`,
+      });
+      this.requestFlush(false);
+      return { behavior: "deny", message: banned };
+    }
     if (EDIT_TOOLS.has(toolName)) {
       const target =
         typeof input?.file_path === "string"
@@ -1180,6 +1261,9 @@ export class Session {
               SESSIONS_WORKER_KEY: _ingest,
               GH_TOKEN: _gh,
               TTS_WORKER_KEY: _tts,
+              TOMQUEST_AGENT_USERNAME: _browseUser,
+              TOMQUEST_AGENT_PASSWORD: _browsePassword,
+              TURING_API_KEY: _turingWriteKey,
               ...rest
             } = process.env;
             return rest;

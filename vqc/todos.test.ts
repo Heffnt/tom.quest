@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import { describe, expect, it } from "vitest";
+import { ARTICLE_OR_SPEC } from "./cites";
 
 // Shape guard for vqc/todos.yaml (the contract is documented in the file's
 // header). Runs in CI via test:turing — a malformed entry breaks the build,
@@ -21,10 +22,6 @@ type Entry = {
 
 const READINESS = ["unprepared", "preparing", "ready-for-tom"];
 const STATUS = ["active", "waiting", "archived", "done"];
-
-// The cite resolution set (vqc/adoption.md): constitution article ids,
-// tts-spec section refs, or open ledger entry ids.
-const ARTICLE_OR_SPEC = /^(A\d+|C[1-9]|D\d+|tts-spec:\d+(\.\d+)?)$/;
 
 function openLedgerIds(): Set<string> {
   const raw = readFileSync(join(__dirname, "ledger.yaml"), "utf8");

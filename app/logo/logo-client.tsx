@@ -2,7 +2,12 @@
 
 import { useState } from "react";
 import TomLogo from "../components/tom-logo";
-import TomSymbol, { type TomSymbolOptions, type TomSymbolParams } from "../components/tom-symbol";
+import TomSymbol, {
+  DEFAULT_TOM_OPTIONS,
+  DEFAULT_TOM_PARAMS,
+  type TomSymbolOptions,
+  type TomSymbolParams,
+} from "../components/tom-symbol";
 
 const SIZES = [24, 36, 48, 72, 120];
 const SWATCHES = [
@@ -12,19 +17,6 @@ const SWATCHES = [
   { label: "inverted", bg: "var(--color-text)", color: "var(--color-bg)", symbol: "var(--color-bg)" },
   { label: "accent bg", bg: "var(--color-accent)", color: "var(--color-bg)", symbol: "var(--color-bg)" },
 ];
-
-const DEFAULT_PARAMS: TomSymbolParams = {
-  tHeight: -78,
-  mAngle: 38,
-  stroke: 43,
-  dotSize: 60,
-};
-
-const DEFAULT_OPTIONS: TomSymbolOptions = {
-  dotShape: "circle",
-  tailCut: "horizontal",
-  showBaseline: "off",
-};
 
 function ParamSlider({
   label,
@@ -58,8 +50,8 @@ function ParamSlider({
 }
 
 export default function LogoLab() {
-  const [params, setParams] = useState<TomSymbolParams>(DEFAULT_PARAMS);
-  const [options, setOptions] = useState<TomSymbolOptions>(DEFAULT_OPTIONS);
+  const [params, setParams] = useState<TomSymbolParams>(DEFAULT_TOM_PARAMS);
+  const [options, setOptions] = useState<TomSymbolOptions>(DEFAULT_TOM_OPTIONS);
 
   const updateParam = (key: keyof TomSymbolParams, value: number) => {
     setParams((current) => ({ ...current, [key]: value }));

@@ -91,8 +91,11 @@ function QuickAdd() {
 }
 
 export default function TtsClient() {
-  // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
-  const { isTom } = useAuth();
+  // canRead gates the queries ("skip" idiom); TomGate owns the gate JSX.
+  // isTom stays separate and gates the WRITES below — the read-only `agent`
+  // role a TTS session browses as passes canRead and fails isTom.
+  const { isTom, canReadSurface } = useAuth();
+  const canRead = canReadSurface("TTS");
   const router = useRouter();
   const recordEvent = useMutation(api.tts.recordEvent);
 
@@ -136,20 +139,29 @@ export default function TtsClient() {
 
   // Instrumentation: one tts-opened per load, once data is here.
   // Fire-and-forget — never blocks the UI.
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
+  //
+  // isTom, NOT canRead, and that is a claim about meaning as much as about
+  // permission: this event records that TOM OPENED HIS TODOS. A headless
+  // screenshot taken by a TTS session is not that, and counting it would put
+  // noise into the very signal the daily digest reads. Permission agrees —
+  // recordEvent is a mutation and Convex refuses it for `agent` — and a
+  // refused mutation prints a console error, which tts-browse reports under
+  // its `console` line as a page failure. Left ungated this would be a false
+  // positive on every screenshot of /tts.
+  const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
   const openedRef = useRef(false);
   useEffect(() => {
-    if (openedRef.current || todos === undefined) return;
+    if (!isTom || openedRef.current || todos === undefined) return;
     openedRef.current = true;
     void recordEvent({ kind: "tts-opened" }).catch(() => {});
-  }, [todos, recordEvent]);
+  }, [isTom, todos, recordEvent]);
 
   // Batches badge: the SAME selector the tab renders (app/tts/lib.ts
   // selectBatches) so the count and the rows cannot drift. Same subscriptions
   // the tabs hold — Convex dedupes.
-  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
-  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
+  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
 
   const batchesCount = useMemo(() => {
     const { batches, unbatchedLife, unbatchedCode } = selectBatches(

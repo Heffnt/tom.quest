@@ -2,7 +2,9 @@
 
 Authoritative spec for the `/perfume` page. Read this fully before editing
 anything under `app/perfume/`, `convex/brews.ts`, or the sync/data artifacts.
-The companion execution plan is `app/perfume/SIMPLIFICATION-PLAN.md`.
+`app/perfume/SIMPLIFICATION-PLAN.md` is the execution plan that produced this
+spec's current state; it ran to completion on 2026-07-08 and is kept only as a
+historical record, so nothing in it is an instruction to carry out.
 
 **This file is the enforcement point against vocabulary drift.** Every term
 below has exactly one meaning, in both the lore shown to players and the

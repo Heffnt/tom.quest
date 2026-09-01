@@ -90,7 +90,7 @@ cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
-  /usr/local/bin/tts-git-credential
+  /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -107,7 +107,15 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
 # Ordering note: session.mjs clones with clean URLs and RELIES on this
 # helper — both roll out in the same setup.sh run, so there is no window
 # where private-repo clones lack credentials.
-git config --global credential.helper /usr/local/bin/tts-git-credential
+#
+# SYSTEM level (/etc/gitconfig), not --global: the daemon runs under systemd,
+# which sets no HOME, and git only finds ~/.gitconfig through $HOME — the
+# first post-rollout clones failed with "could not read Username" because the
+# global entry was invisible to the service. /etc/gitconfig is read
+# regardless. (A stray --global entry from the first rollout is removed so
+# the fact has one home.)
+git config --system credential.helper /usr/local/bin/tts-git-credential
+git config --global --unset-all credential.helper 2>/dev/null || true
 GH_TOKEN_VALUE="$(sed -n 's/^GH_TOKEN=//p' /etc/tts/worker.env 2>/dev/null | tail -1)"
 if [ -n "$GH_TOKEN_VALUE" ]; then
   mkdir -p /root/.config/gh
@@ -293,6 +301,10 @@ ExecStart=/usr/bin/node /opt/tts/session-host/session-host.mjs
 WorkingDirectory=/opt/tts/session-host
 EnvironmentFile=/etc/tts/worker.env
 Environment=CLAUDE_CONFIG_DIR=/root/.claude-accounts/active
+# systemd sets no HOME for system services. Every session shell inherits this
+# env, and gh only finds its auth (/root/.config/gh/hosts.yml) through $HOME —
+# without it `gh pr create` cannot see the credential setup.sh installed.
+Environment=HOME=/root
 Restart=always
 RestartSec=5
 
@@ -321,13 +333,34 @@ NEXT STEPS (manual, in order):
   1. Fill in the secrets:
        nano /etc/tts/worker.env
      (CONVEX_SITE_URL, TTS_WORKER_KEY, SLACK_BOT_TOKEN, SLACK_DUMP_CHANNEL_ID,
-      GH_TOKEN, SESSIONS_WORKER_KEY — the file explains each one. If
+      GH_TOKEN, SESSIONS_WORKER_KEY, TOMQUEST_AGENT_USERNAME,
+      TOMQUEST_AGENT_PASSWORD — the file explains each one. If
       SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
       filling it so the tts-session-host daemon gets enabled.)
 
-  2. Log in both Claude Max accounts (interactive, over this SSH session):
-       tts-account login gmail
-       tts-account login wpi
+     The two TOMQUEST_AGENT_* values are the tom.quest account a session's
+     browser signs in as (tts-browse --login). They are LISTED HERE because
+     leaving them blank fails quietly: the session-host runs, sessions start,
+     and --login just refuses — a rebuilt box whose sessions can no longer
+     look at their own work. The account must hold the `agent` role, which
+     reads /turing and /tts and writes nothing; grant it from the Convex
+     dashboard with users.setRoleByUsername({ username, role: "agent" }).
+     Do NOT put Tom's own account here: everything the account can do, every
+     session can do.
+
+     TURING_READ_KEY is optional and READ-ONLY: it opens three GETs on the
+     cluster API (/gpu-report, /jobs, /sessions/{name}/output) for the
+     tts-turing command. It must match TURING_READ_KEY in turing-api/.env on
+     the login node. The full TURING_API_KEY does NOT belong in this file —
+     it authorizes POST /sessions/{name}/run, i.e. arbitrary cluster shell.
+     Restart tts-session-host after adding it, or running sessions won't see
+     it:  systemctl restart tts-session-host
+
+  2. Log in both Claude Max accounts (interactive, over this SSH session —
+     run it twice, switching the BROWSER profile between runs; each login is
+     filed into the slot matching the account that actually signed in):
+       tts-account login
+       tts-account login
 
   3. Pick the account the jobs run under:
        tts-account use gmail

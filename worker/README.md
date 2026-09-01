@@ -17,17 +17,22 @@ on a schedule:
 3. **poll-canvas** (every 30 min) — lists new Canvas course announcements and
    spends ONE headless Claude call per batch deciding which imply an action
    by Tom (schedule changes, sign-ups, required responses), then submits
-   those to Convex as unprepared todos with source `canvas`, linked to the
-   announcement. Assignments are NOT this job's business — the Convex-side
-   sync (convex/ttsCanvas.ts) owns those, with due dates and auto-done on
-   submission. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
+   those to Convex as unprepared todos with source `canvas-announcement`,
+   linked to the announcement. Assignments are NOT this job's business — the
+   Convex-side sync (convex/ttsCanvas.ts) owns those under the source `canvas`,
+   with due dates and auto-done on submission. Two producers, two source names:
+   they shared `canvas` until the sync was found reading every announcement row
+   and dropping it without a word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
    restricts token creation; Tom's request form is pending).
 4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
-   Convex. If it fails, the Convex-side fallback prep (4:45) and the
-   always-sends 5 a.m. digest cover the day — a digest that reports missing
-   prep is the "worker is broken" signal; no digest at all means Convex/Slack
-   is broken. That split is the whole monitoring story.
+   Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
+   day's queue. The digest half of that split is OFF — Tom ruled outbound Slack
+   off on 2026-08-29, so the 5 a.m. digest crons are unregistered
+   (`convex/crons.ts:32-35`) and `sendDigest` returns on
+   `OUTBOUND_SLACK_ENABLED = false`. The queue and digest text are still
+   written and read in the app; nothing is sent, so there is no send-or-silence
+   monitoring signal today.
 5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
 6. **apply-rulings** (every 10 min) — see the ruling loop below.
 7. **execute-approved** (hourly at :45) — see the ruling loop below.
@@ -89,21 +94,58 @@ without them, because every `/turing` and `/tts` page is role-gated: browsing
 one anonymously returns a 200 with 401s underneath, which reads as "page is
 fine" to a session that only checked the status.
 
-**Those two keys hold Tom's own account** (ratified 2026-08-30), so every
-session browses at role `tom`. Nothing scrubs them from a session's shell —
-`session.mjs` drops exactly `SESSIONS_WORKER_KEY` and `GH_TOKEN` and inherits
-the rest — so the account's role is the role every session holds. This is a
-knowing interim: no other account exists yet, and a session that cannot see
-`/turing` cannot check its own work there. A session account with a narrower
-role is a captured TTS todo.
+**Those two keys hold an account at role `agent`** — tom.quest's fourth role,
+which exists for this and nothing else. It reads `/turing` and `/tts`; it
+writes nothing anywhere; and it sees no other page, including `/sessions`,
+`/forge`, `/jarvis` and `/canvas`. On `/turing` it gets the `GET` that lists
+GPUs and jobs, but not the `POST` that allocates, the `DELETE` that cancels,
+or the terminal's credential endpoint. The single list that defines the reach
+is `convex/agentSurfaces.ts`; widening it is adding one name there.
 
-**Not installed: any path from this box to the Turing cluster.** `ssh` exists
-but `turing.wpi.edu` is not reachable from here, and the session sandbox's own
-command policy refuses to open a remote shell. The cluster is reachable only
-as the HTTPS API at `turing.tom.quest`, and that API's key would grant
-`POST /sessions/{name}/run` — arbitrary commands on the cluster — so it is
-deliberately absent from `worker.env`. Adding it is a posture decision, not a
-setup step.
+So a Tom-only page browsed with `--login` shows the restricted card. That is
+the correct result for this account, not a bug in the page.
+
+The two names are **deleted from a session's shell** (`session.mjs` drops them
+alongside `SESSIONS_WORKER_KEY` and `GH_TOKEN`), so no `env` or `echo` can
+write the password into a transcript Convex stores forever; `tts-browse` reads
+them back out of `/etc/tts/worker.env` itself, running as the same user. The
+scrub and the narrow role are independent: the role means a leak costs little,
+the scrub means there is nothing to leak.
+
+These held Tom's own account as a knowing interim, ratified 2026-08-30, until
+the `agent` role existed.
+
+## The cluster, read-only
+
+`ssh` exists on this box but `turing.wpi.edu` is not reachable from it, and the
+session sandbox's command policy refuses to open a remote shell anyway. The one
+door to the WPI Turing cluster is the HTTPS API at `turing.tom.quest`, and its
+`TURING_API_KEY` opens everything there — including `POST /sessions/{name}/run`,
+which types an arbitrary command into a tmux session under Tom's cluster
+account. That key is **deliberately absent from `worker.env`** and stays absent.
+
+Instead turing-api carries a **second credential**, `TURING_READ_KEY`
+(`verify_read_key` in `turing-api/main.py`), which opens three GETs and nothing
+else. `worker.env` holds that one, and one command spends it:
+
+```
+tts-turing health                    # is the API up (needs no key at all)
+tts-turing gpus                      # GET /gpu-report
+tts-turing jobs                      # GET /jobs
+tts-turing output <session> [lines]  # GET /sessions/<name>/output
+```
+
+**There is no write verb, by construction** — no allocate, no cancel, no run,
+no file read. A session that needs one of those asks Tom. Unlike the browser
+credentials above, this key's blast radius is the four lines printed here.
+
+The key is minted by Tom and must be installed on **both** sides — in
+`/etc/tts/worker.env` here and in `turing-api/.env` on the cluster login node
+(`secrets/turing-api.env.example`), each service restarted afterwards. Until
+both have it, `tts-turing health` works and every other verb reports 401 with
+that ambiguity spelled out. An unset `TURING_READ_KEY` on the API side is the
+fail-closed state: the read door does not exist and the three endpoints stay
+full-key-only.
 
 ## The no-state rule
 
@@ -136,8 +178,10 @@ bash tom.quest/worker/setup.sh
 # 3. Fill the secrets (the file documents each key):
 nano /etc/tts/worker.env
 # 4. Log in both Claude Max accounts (interactive), pick one:
-tts-account login gmail
-tts-account login wpi
+# run twice, switching the BROWSER profile between runs — each login is
+# filed into the slot matching the account that actually signed in
+tts-account login
+tts-account login
 tts-account use gmail
 # Done. Cron is installed; the digest resumes tomorrow at 5.
 ```
@@ -164,6 +208,45 @@ It prints a Google URL, and after read-only Gmail access (`gmail.readonly`) is
 approved it prints all three lines ready to paste into `worker.env`. The token
 lasts until it is revoked at `myaccount.google.com/permissions`. The script's
 own header carries the ten-minute console walkthrough.
+
+## Calendar credentials (one-time)
+
+The calendar WRITE door — `convex/ttsCalendarWrite.ts`, reached as
+`POST /tts/calendar-event` from Jarvis Box jobs and sessions, or as
+`npx convex run ttsCalendarWrite:internalCreateEvent` from Tom's machine —
+needs three values named `GOOGLE_CALENDAR_CLIENT_ID`,
+`GOOGLE_CALENDAR_CLIENT_SECRET` and `GOOGLE_CALENDAR_REFRESH_TOKEN`. Without
+all three it throws "Calendar write is not configured" on every call.
+
+Those three live on the **Convex deployment**, not in `/etc/tts/worker.env`,
+because the Google call is made by a Convex action rather than by anything on
+this box. Nothing in this directory reads them; the Jarvis Box only posts to
+Convex and lets Convex hold the credential.
+
+The client id and secret are the SAME "Desktop app" OAuth client as the Gmail
+section above (same Google Cloud project, with the Google Calendar API enabled
+alongside the Gmail API). The refresh token is a separate one, minted ONCE on
+Tom's own machine because approving it needs a browser, and scoped to
+`calendar.events` only — event create/edit/delete, no calendar admin and no
+mail, so one leaked credential does not open the other surface:
+
+```
+node worker/jobs/calendar-auth.mjs <client_id> <client_secret>
+```
+
+Run it from a tom.quest checkout: it prints a Google URL, and after
+calendar-events access is approved it runs `npx convex env set` for all three
+values itself, using the deploy key in that checkout's `.env.local`. The token
+goes Google → script → Convex without being pasted anywhere. If the env set
+fails (no deploy key in reach), it prints the three lines instead, for the
+Convex dashboard → Production → Settings → Environment Variables.
+
+One follow-up, because `npx convex env set` writes past the usual door: copy
+the three values into `secrets/convex.env`, which is the source of truth the
+repo pushes from. `pnpm secrets:sync` sends every key in that file to Convex
+including the empty ones, so a `GOOGLE_CALENDAR_CLIENT_ID=` left blank there —
+the shape it has in `secrets/convex.env.example` — silently overwrites a
+working token with an empty string on the next sync.
 
 ## Switching Claude accounts
 

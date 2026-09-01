@@ -1,4 +1,98 @@
-# /perfume simplification — technical execution plan
+# /perfume simplification — technical execution plan (EXECUTED — historical record)
+
+## Status: executed 2026-07-08. Nothing here is a live instruction.
+
+This plan ran to completion on 2026-07-08. Every phase P0–P8 landed on `main`
+as eleven phase commits plus one polish fix, all twelve of them ancestors of
+`origin/main` today. Do not run
+anything this document names — in particular `npx convex run perfumeMigration`
+(§P2.4, §P8.3), which ran once against prod on 2026-07-08 and whose files were
+deleted in the same session as spent. The text below the horizontal rule is the
+plan as approved, preserved as the record of what was intended, with bracketed
+`[SHIPPED …]` / `[DID NOT SHIP …]` notes added 2026-08-30 at the points that
+otherwise read as pending instructions.
+
+### The commits
+
+| Phase | Commit | Subject |
+| --- | --- | --- |
+| P0 | `bbc449d` | `feat(perfume): P0 — spec sync (DESIGN.md rewrite + execution plan)` |
+| P1 | `d728296` | `feat(perfume): P1 — frontend deletions` |
+| P2 | `c770e95` | `feat(perfume): P2 — backend contraction (login-only, flat provenance, cores)` |
+| P3a | `21f05e8` | `feat(perfume): P3a — shared UI primitive modules (create stage)` |
+| P3b | `de6244c` | `feat(perfume): P3b — adopt shared primitives, delete duplicates` |
+| P4a | `2381ff6` | `feat(perfume): P4a — closestPath pin solver in the engine` |
+| P4b | `643077c` | `feat(perfume): P4b — pin a target perfume; ghosts from closestPath` |
+| P5 | `984ef77` | `feat(perfume): P5 — icon-only frames, tan/grey grounds, marks outside, wild search, import catalog, effect` |
+| P5 fix | `98e0f7d` | `fix(perfume): hide ×1 count badge on solo brew-graph items (P5 polish)` |
+| P6 | `7c5ede0` | `feat(perfume): P6 — outline-free ingredient art, trimmed emblems, tan token` |
+| P7 | `4245f9e` | `feat(perfume): P7 — stage help popup (legend + walkthrough + rules)` |
+| P8 | `f416d7b` | `chore(perfume): P8 post-ship cleanup — tighten schema, drop compat shims` |
+
+Net across `app/ convex/ e2e/ scripts/`, excluding markdown, `bbc449d^..f416d7b`:
+47 files, +3,327 / −3,041. The plan's own estimate of ≈ −3,500 / +1,200 was
+wrong in both direction and size; the deletions happened, and the rewrites
+(help popup, primitives, `closestPath`, frame overhaul) cost more than the plan
+allowed for.
+
+### What shipped, spot-checked against the tree on 2026-08-30
+
+- **Login-only identity.** `app/perfume/lib/anon.ts` and
+  `components/profile-prompt.tsx` are gone; no `anonId` argument survives.
+- **No event log.** The `perfumeEvents` table and `logEvent` are absent from
+  `convex/`. (`logEvent` in `convex/tts.ts` is an unrelated function of the
+  same name belonging to the todo system.)
+- **Flat provenance and the tightened schema.** `convex/schema.ts` has
+  `pinned: v.union(v.object({ perfumeId: v.string() }), v.null())` — no
+  `recipeIndex` — and `cauldron` is required, with the legacy `outputs`,
+  `provenance`/`owners` chains, `giftEvents` and `contributorName` removed.
+- **The migration is spent and deleted.** `convex/perfumeMigration.ts` and
+  `convex/perfumeMigration.test.ts` were added in `c770e95` and deleted in
+  `f416d7b`, whose message records the run: "Prod is fully migrated
+  (perfumeMigration ran, idempotent rerun 0/0/0)". No file of that name exists
+  anywhere in `convex/` and none is owed.
+- **Shared primitives exist and are adopted.** `components/popover.tsx`,
+  `badge.tsx`, `glyphs.tsx`, `item-art.tsx`, `lib/color.ts`, `lib/filters.ts`,
+  `lib/frequency-label.ts`, plus `components/frequency-search.tsx` extracted in
+  P5.
+- **Vocabulary sweep is clean but for one wire literal.** `phial`, `bottle`,
+  `bench`, `pot`, `tuning` and `transfer` return zero hits across
+  `app/perfume/**` and `convex/brews.ts` (outside DESIGN.md's history notes);
+  `components/phial.tsx` is gone and `PerfumeGlyph` replaced `PhialGlyph`.
+  `book` survives — see below.
+- **Help popup.** `components/help-popup.tsx` exists behind the stage `?`.
+- **Art pipeline.** `--pf-real: #ebd3b6` in `app/globals.css` carries the
+  comment citing the Byobu page-ground sample; 96 ingredient PNGs were
+  regenerated in `7c5ede0`.
+
+### What the plan called for and did not ship
+
+1. **The Playwright rebuild (§P8.1).** `e2e/perfume.spec.ts:29-30` still reads
+   `// TODO(P8): rebuild against convex dev — practice mode removed in P1`
+   above `test.describe.skip("perfume brew — local mode", …)`, so lines 30–311
+   of that file — the whole single-user suite — have not run since P1. The
+   second describe, "perfume brew — live sync", is separately gated behind
+   `E2E_CONVEX=1`. No `testSeed` mutation was ever written.
+2. **The `book` presence-surface literal (§P0, §P5.5).** `book` was declared a
+   dead word, but it is still the wire value: `convex/brews.ts:780` accepts
+   `v.literal("book")`, `app/perfume/lib/brew-types.ts:248` declares
+   `PresenceSurface = "input" | "stage" | "book"`, and
+   `components/perfume-panel.tsx:389` emits `data-pf-surface="book"`. The
+   comment at `brew-types.ts:247` promises that "the backend migration
+   (SIMPLIFICATION-PLAN P8) renames the literal on both sides" — that migration
+   ran without renaming it and has since been deleted, so that comment now
+   points at nothing.
+3. **The `brew-graph.tsx` file split (§P5.3).** The plan called for a split into
+   `brew-graph/{stage-header,cauldron,ceremony,nodes,wild-picker}.tsx`. No such
+   directory exists and `components/brew-graph.tsx` is a single 1,374-line file.
+   The P5 commit message does not claim the split either.
+
+The Byobu-side commits and push (§P6) are in a different repository and cannot
+be checked from here; the tom.quest side of P6 landed in `7c5ede0`.
+
+---
+
+## The plan as approved, 2026-07-08
 
 Approved by Tom 2026-07-08. The UX target is the "Perfumer UX Suite" artifact
 (60daeab2); after Phase 0 its content is law via DESIGN.md. This file is the
@@ -8,6 +102,8 @@ Branch: `claude/perfume-simplification-47875c`. One commit per phase,
 message `feat(perfume): P<n> — <title>`. Gates (run by the orchestrator
 inline, never trusted from agent claims): `pnpm exec tsc --noEmit` and
 `pnpm vitest run`. Playwright is skipped from P1 until rebuilt in P8.
+*[DID NOT SHIP — the P8 rebuild never happened; `e2e/perfume.spec.ts` has been
+skipped since P1 and still is.]*
 
 ## Workflow conventions (all phases)
 
@@ -104,6 +200,9 @@ schema + tests; no parallel editing):
    stacks/perfumes, reassign brews + items' contributorKey, delete anon row),
    strip deprecated fields, convert `pinned {perfumeId, recipeIndex}` →
    `{perfumeId}`. Written now, **run only at P8 with Tom's explicit go**.
+   *[SHIPPED AND SPENT — written in `c770e95` (with
+   `convex/perfumeMigration.test.ts`), run once against prod on 2026-07-08, both
+   files deleted in `f416d7b`. There is nothing to run and nothing to write.]*
 
 Stage "Verify": rewrite `convex/brews.test.ts` alongside each step (same
 agent); final adversarial opus reviewer prompted to construct action
@@ -183,6 +282,9 @@ Sequential opus chunks (files interlock), then a sonnet sweep:
    (absorbing `moveHome`/shift semantics); `brew-graph.tsx` splits into
    `brew-graph/{stage-header,cauldron,ceremony,nodes,wild-picker}.tsx`;
    pure helpers (`perfumeTint`, `frequencyName`, `hash01`) move to libs.
+   *[PARTLY SHIPPED — the frame/art reroute and `grabHandlers` landed; the file
+   split did not. `components/brew-graph.tsx` is still one 1,374-line file and
+   no `brew-graph/` directory exists.]*
 4. **panels** (opus): rename perfume book → perfume panel (components,
    copy, testids); extract `FrequencySearch` from `frequency-filter.tsx` and
    reuse it as the wild picker (wild excluded) AND the Frequencies-tab
@@ -215,6 +317,11 @@ Tom may veto styling; P6 proceeds meanwhile (different repo).
   docs/SYSTEM.md:365); remind Tom the Byobu remote push is still his.
 - Commits land in Byobu (Tom pushes) and tom.quest (sync artifacts).
 
+*[SHIPPED on the tom.quest side in `7c5ede0` — 96 regenerated ingredient PNGs,
+trimmed emblems, `--pf-real: #ebd3b6` set from the sampled tan, and the
+`scripts/sync-perfume-data.mjs` validation update. The Byobu-repo commits and
+push are in a different repository and cannot be verified from this one.]*
+
 ## Phase 7 — Help popup (workflow `perfume-p7-help`)
 
 1. **build** (opus): `components/help-popup.tsx` behind the stage-corner `?`
@@ -239,13 +346,20 @@ Stage "Verify": screenshots to Tom. Gate + commit.
    grammar (click-one) and testids. Coverage: the §4 permissions matrix,
    brew→ceremony→take, gift, pin ghosts, undo, import (paste + GUI), help
    popup opens.
+   *[DID NOT SHIP — no `testSeed` mutation was written and no spec was
+   rebuilt. `e2e/perfume.spec.ts:30` is still `test.describe.skip`.]*
 2. **full gates** (inline, me): tsc, vitest, playwright, plus a manual drive
    of the real flow via preview tools; final screenshot set to Tom.
+   *[SHIPPED WITHOUT PLAYWRIGHT, which had nothing to run — see item 1.]*
 3. **ship** (inline, me): Tom sign-off → push main (standing OK) → **explicit
    go/no-go** → `npx convex run perfumeMigration` with the member-merge
    mapping → verify prod (function spec, site 200, member list shows ONE
    Tom, brews intact) → follow-up commit deleting the migration + the
    optional-deprecated schema fields.
+   *[SHIPPED — every phase commit is an ancestor of `origin/main`, the
+   migration ran on 2026-07-08 (idempotent rerun reported 0/0/0), and `f416d7b`
+   is the follow-up commit that deleted the migration files and the
+   optional-deprecated schema fields. This step is finished; do not run it.]*
 
 ## Sequencing & risk notes
 
@@ -257,5 +371,7 @@ Stage "Verify": screenshots to Tom. Gate + commit.
   nothing is pushed to main until P8.
 - The duplicate-Tom merge mapping requires reading prod member rows
   (dashboard or query) before P8; captured as a migration ARG, never
-  hardcoded.
-- Expected net diff: ≈ −3,500 / +1,200 lines.
+  hardcoded. *[DONE — the mapping was read and passed as an argument at the
+  2026-07-08 run.]*
+- Expected net diff: ≈ −3,500 / +1,200 lines. *[Actual: +3,327 / −3,041 across
+  `app/ convex/ e2e/ scripts/` excluding markdown.]*
