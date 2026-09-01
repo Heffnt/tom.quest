@@ -418,7 +418,7 @@ export const refreshMirror = internalAction({
   handler: async (ctx) => {
     const token = process.env.GITHUB_MIRROR_TOKEN;
     if (!token) return;
-    for (const { repo, branch, github } of MIRROR_SOURCES) {
+    for (const { repo, branch } of MIRROR_SOURCES) {
       try {
         const res = await fetch(
           `https://api.github.com/repos/Heffnt/${repo}/contents/${CODE_TODO_PATH}?ref=${branch}`,
