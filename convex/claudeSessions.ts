@@ -44,6 +44,7 @@ import {
   DAEMON_STALE_MS,
   NO_REPO,
   SESSION_REPO_NAMES,
+  VQC_TODO_REPOS,
   WRITING_SKILL,
   WRITING_STANDARD,
   buildDoneSet,
@@ -1994,13 +1995,17 @@ function buildProspectMissionPrompt(
     "```",
     'The response carries every item in the system under "todos". Read their statements. Never capture a finding that restates one of them, or that an item plainly already covers — a duplicate costs Tom a triage he has already done.',
   ];
-  // ComplexMultiTrigger tracks its own code todos in-repo (vqc/todos.yaml is
-  // the file the dtsCodeTodoMirror cron reads from each repo's default
-  // branch). Those are already-tracked work and must not be re-captured.
-  if (repo === "ComplexMultiTrigger") {
+  // Both ComplexMultiTrigger and tom.quest track their own code todos in-repo
+  // (vqc/todos.yaml is the file the dtsCodeTodoMirror cron reads from each
+  // repo's default branch — VQC_TODO_REPOS is that list's one home). Those are
+  // already-tracked work and must not be re-captured, and /tts/state above
+  // cannot show them: it answers from dtsTodos (TTS's own items) and never
+  // includes the mirror, so the file in the checkout is the prospector's only
+  // sight of them.
+  if (VQC_TODO_REPOS.includes(repo)) {
     lines.push(
       "",
-      `This repo also tracks its own code todos in \`vqc/todos.yaml\` in your checkout. Read that file too, and drop any finding it already names.`,
+      `This repo also tracks code todos of its own, in \`vqc/todos.yaml\` in your checkout — work it already holds. The /tts/state response above does NOT carry those entries; it answers with TTS's own items only, so that file is the one place this mission can see them. Read it too, and drop any finding it already names.`,
     );
   }
   lines.push(

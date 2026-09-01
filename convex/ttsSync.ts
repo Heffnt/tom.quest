@@ -6,6 +6,7 @@ import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
   TTS_DIGEST_NY_HOUR,
+  VQC_TODO_SOURCES,
   countdownText,
   ttsDayKey,
   ttsItemLink,
@@ -394,10 +395,11 @@ export const sendHourlyUpdate = internalAction({
 // divergent copies) via the GitHub contents API. Link-by-id-never-copy: the
 // mirror stores only what the Inventory needs to display + deep-link. Silently
 // a no-op until GITHUB_MIRROR_TOKEN is configured.
-const MIRROR_SOURCES = [
-  { repo: "ComplexMultiTrigger", branch: "master" },
-  { repo: "tom.quest", branch: "main" },
-];
+//
+// WHICH repos and which branch comes from VQC_TODO_SOURCES in ttsShared.ts —
+// the one home for "this repo tracks its own code todos", shared with the
+// prospecting prompt that tells a prospector of such a repo to read the file
+// in its checkout.
 
 type VqcEntry = {
   id?: unknown;
@@ -413,7 +415,7 @@ export const refreshMirror = internalAction({
   handler: async (ctx) => {
     const token = process.env.GITHUB_MIRROR_TOKEN;
     if (!token) return;
-    for (const { repo, branch } of MIRROR_SOURCES) {
+    for (const { repo, branch } of VQC_TODO_SOURCES) {
       try {
         const res = await fetch(
           `https://api.github.com/repos/Heffnt/${repo}/contents/vqc/todos.yaml?ref=${branch}`,

@@ -2582,6 +2582,48 @@ describe("prospecting lane", () => {
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
   });
+
+  // A CODE TODO is an entry in a repo's own vqc/todos.yaml — work that repo
+  // already tracks. ttsSync mirrors that file from BOTH prospected repos
+  // (VQC_TODO_SOURCES), and /tts/state answers from dtsTodos alone and never
+  // carries the mirror, so the file in the checkout is the only place a
+  // prospector can see those entries.
+  //
+  // witness: narrow the instruction back to `repo === "ComplexMultiTrigger"`
+  // and this test goes red on the tom.quest prospector — it would be told to
+  // dedupe against /tts/state only, and could capture work tom.quest's own
+  // registry already names.
+  it("points each repo that keeps code todos at its own vqc/todos.yaml", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+
+    // One mission per tick, so two ticks to reach both repos; the first is
+    // ended so the live-prospector cap is not what admits the second.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const first = (await prospectSessions(t))[0];
+    await endSession(t, first._id);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+
+    const sessions = await prospectSessions(t);
+    expect(sessions.map((s) => s.repo).sort()).toEqual(
+      [...PROSPECT_REPOS].sort(),
+    );
+    for (const s of sessions) {
+      const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+        sessionId: s._id,
+      });
+      const text = inbound[0].text ?? "";
+      expect(text).toContain("vqc/todos.yaml");
+      // The instruction says WHY the file is the only sight of those entries,
+      // and sits after the /tts/state read it qualifies.
+      expect(text).toContain("does NOT carry those entries");
+      expect(text.indexOf("/tts/state")).toBeLessThan(
+        text.indexOf("vqc/todos.yaml"),
+      );
+    }
+  });
 });
 
 // ── The frontier scheduler (schema v2, ratified 2026-08-29) ──────────────────

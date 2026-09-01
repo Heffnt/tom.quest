@@ -419,6 +419,31 @@ export function isSessionRepo(name: string): boolean {
 }
 
 /**
+ * The repos that keep their own CODE TODOS — entries in the repo's own
+ * `vqc/todos.yaml` registry, work that repo already tracks — with the DEFAULT
+ * branch that file is read from (a worktree carries a divergent copy).
+ *
+ * ONE home, because two readers must agree on it: the mirror refresh in
+ * convex/ttsSync.ts fetches these files into dtsCodeTodoMirror, and the
+ * prospecting prompt in convex/claudeSessions.ts tells a prospector of such a
+ * repo to read the file in its checkout before capturing anything. While only
+ * ttsSync knew the list, the prompt named ComplexMultiTrigger alone, so a
+ * tom.quest prospector was never pointed at tom.quest's own entries and could
+ * capture work already tracked. A repo absent from this list gets neither the
+ * mirror row nor the instruction — WikiTom is a wiki and carries no such file.
+ */
+export const VQC_TODO_SOURCES = [
+  { repo: "ComplexMultiTrigger", branch: "master" },
+  { repo: "tom.quest", branch: "main" },
+] as const;
+
+/** Just the repo names of VQC_TODO_SOURCES — the answer to "does this repo
+ * track its own code todos in vqc/todos.yaml?". */
+export const VQC_TODO_REPOS: readonly string[] = VQC_TODO_SOURCES.map(
+  (s) => s.repo,
+);
+
+/**
  * The ONE normalizer for a session's repo list. Everything a caller might hand
  * us — a single legacy string, "none", an array with duplicates, a repo the
  * daemon does not know — collapses here into the canonical form: known repos
