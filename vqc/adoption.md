@@ -35,7 +35,7 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
 | File classification (C9) | `vqc/classification.yaml` (enforcement: ledger `classification-unenforced`) |
 | Cite resolution set | constitution article ids (`A*`, `C1`–`C9`, `D1`–`D28`), `tts-spec:<section>` (sections of WikiTom `tts/spec.md`), and open ledger entry ids — enforced by `vqc/todos.test.ts` |
 | Registries (C7) | `app/components/page-routes.ts` (pages); Convex schema (`convex/schema.ts`) |
-| Contract fences | `scripts/check-auth-boundary.mjs`, `scripts/check-heavy-libs.mjs` |
+| Contract fences | the four scripts `pnpm check:guardrails` runs: `scripts/check-auth-boundary.mjs`, `scripts/check-heavy-libs.mjs`, `scripts/check-session-mirrors.mjs` (session constants mirrored out of `convex/ttsShared.ts`), `scripts/check-worker-time-mirror.mjs` (the NY DST rule mirrored out of the same file into `worker/jobs/tts-lib.mjs`, fenced by running both copies) |
 | Layer DAG (D5) | none yet — ledger `no-layer-dag` |
 | Rulings log | below, this file, append-only |
 | Scratch roots (D26) | `tts/` (declared in classification.yaml) |

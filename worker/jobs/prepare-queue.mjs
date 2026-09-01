@@ -22,7 +22,7 @@
 import {
   loadEnv,
   convexFetch,
-  nyHour,
+  nyLocalHour,
   runClaude,
   extractJsonObject,
 } from "./tts-lib.mjs";
@@ -37,9 +37,9 @@ async function main() {
   // Cron can't express "4:30 a.m. New York" directly (system cron is UTC and
   // ignores DST), so it fires at both 08:30 and 09:30 UTC and we keep only
   // the run that lands inside the 4 a.m. NY hour.
-  if (!force && nyHour(now) !== 4) {
+  if (!force && nyLocalHour(now) !== 4) {
     console.log(
-      `[prepare-queue] NY hour is ${nyHour(now)}, not 4 — this is the ` +
+      `[prepare-queue] NY hour is ${nyLocalHour(now)}, not 4 — this is the ` +
         `off-season cron slot, exiting (use --force to override)`,
     );
     return;

@@ -22,6 +22,14 @@ export const DAY_MS = 86_400_000;
 export const TTS_PREP_NY_HOUR = 4; // prep jobs run in the 4 a.m. hour
 export const TTS_DIGEST_NY_HOUR = 5; // the digest sends at 5 — the day boundary
 
+// THE ONE HOME for the NY offset rule (vqc/adoption.md ruling
+// tts-shared-time-edge) — and it has one sanctioned mirror. The TTS cron jobs
+// on the Jarvis Box run as plain Node from /opt/tts with no checkout of
+// convex/, so worker/jobs/tts-lib.mjs restates nthSundayUtcMs, nyOffsetHours
+// and nyLocalHour by hand under the same names. Editing the three functions
+// below means editing that file in the same commit:
+// scripts/check-worker-time-mirror.mjs runs both copies against each other over
+// every hour of 2020-2035 and turns `pnpm check:guardrails` red otherwise.
 function nthSundayUtcMs(year: number, monthIndex: number, n: number): number {
   const first = Date.UTC(year, monthIndex, 1);
   const firstDow = new Date(first).getUTCDay(); // 0 = Sunday

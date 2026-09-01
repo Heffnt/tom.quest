@@ -44,7 +44,7 @@ import {
   serverErrorMessage,
   runClaude,
   extractJsonObject,
-  nyUtcOffsetHours,
+  nyOffsetHours,
   nyNoonUtcMs,
 } from "./tts-lib.mjs";
 
@@ -57,12 +57,13 @@ const MODEL = "claude-sonnet-5"; // mechanical parsing — no need for a big mod
 // ---------------------------------------------------------------------------
 // The model reads and writes LOCAL wall-clock strings, never epoch ms: asking
 // a model for a millisecond timestamp is asking for an off-by-a-timezone bug.
-// The DST rules live in tts-lib (nyUtcOffsetHours); nothing is reimplemented.
+// The DST rules live in tts-lib (nyOffsetHours, itself the fenced worker-side
+// mirror of convex/ttsShared.ts); nothing is reimplemented here.
 
 /** "YYYY-MM-DD HH:MM" in New York for an epoch-ms instant. */
 function nyLocal(ms) {
   if (typeof ms !== "number") return null;
-  const shifted = new Date(ms + nyUtcOffsetHours(ms) * 3_600_000);
+  const shifted = new Date(ms + nyOffsetHours(ms) * 3_600_000);
   return shifted.toISOString().slice(0, 16).replace("T", " ");
 }
 
@@ -76,7 +77,7 @@ function fromNyLocal(text) {
   if (Number.isNaN(asUtc)) throw new Error(`unparseable local time: ${text}`);
   // Offset sampled at the same instant read as UTC — within a few hours of the
   // real one, which only matters inside the 1-hour DST seam.
-  return asUtc - nyUtcOffsetHours(asUtc) * 3_600_000;
+  return asUtc - nyOffsetHours(asUtc) * 3_600_000;
 }
 
 // ---------------------------------------------------------------------------

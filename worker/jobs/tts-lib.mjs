@@ -56,50 +56,59 @@ export function loadEnv(path = "/etc/tts/worker.env") {
 }
 
 // ---------------------------------------------------------------------------
-// America/New_York wall-clock hour (for the cron DST guard only)
+// America/New_York offset and wall-clock hour — MIRROR of convex/ttsShared.ts
 // ---------------------------------------------------------------------------
 //
-// We implement NY time by hand rather than trusting the Jarvis Box's TZ database
-// or timezone config, because it must be rebuildable from a bare Ubuntu
-// image with zero manual configuration (the no-state rule). US DST rules,
-// fixed in law since 2007:
+// convex/ttsShared.ts is THE ONE HOME for TTS time math (vqc/adoption.md ruling
+// tts-shared-time-edge). These jobs cannot import it and never will be able to:
+// worker/setup.sh copies only worker/jobs/*.mjs into /opt/tts, the Jarvis Box
+// holds no checkout of convex/, there is no build step or node_modules on the
+// box, and a cron-started plain-Node process loads no .ts. So the offset rule
+// is duplicated here as a hand translation, name for name and line for line
+// with ttsShared.ts:24-42, so the two read as the same code:
+//   nthSundayUtcMs, nyOffsetHours, nyLocalHour.
+//
+// THE FENCE that keeps the copy honest: scripts/check-worker-time-mirror.mjs
+// imports BOTH modules and runs them against each other over every hour of
+// 2020-2035 plus every transition instant, so a change on either side that
+// moves a single hour turns `pnpm check:guardrails` red on the next PR. Names
+// are fenced too: that check reads these exports by the one-home names and
+// fails if a second name for the offset reappears.
+//
+// We compute NY time by hand on both sides rather than trusting a TZ database,
+// because the box must be rebuildable from a bare Ubuntu image with zero manual
+// configuration (the no-state rule) and the Convex runtime has no Intl
+// timezone data. US DST rules, fixed in law since 2007:
 //   EDT (UTC-4): from the second Sunday of March 07:00 UTC (2 a.m. EST)
 //                until the first Sunday of November 06:00 UTC (2 a.m. EDT)
 //   EST (UTC-5): the rest of the year.
 
-// Epoch ms of the DST-start instant (2nd Sunday of March, 07:00 UTC) for a year.
-function dstStartUtcMs(year) {
-  const march1 = new Date(Date.UTC(year, 2, 1));
-  // Day-of-month of the first Sunday of March (getUTCDay(): 0 = Sunday).
-  const firstSunday = 1 + ((7 - march1.getUTCDay()) % 7);
-  return Date.UTC(year, 2, firstSunday + 7, 7, 0, 0);
+const HOUR_MS = 3_600_000;
+
+// Epoch ms of UTC midnight on the nth Sunday of a month (monthIndex: 0 = Jan).
+function nthSundayUtcMs(year, monthIndex, n) {
+  const first = Date.UTC(year, monthIndex, 1);
+  const firstDow = new Date(first).getUTCDay(); // 0 = Sunday
+  const firstSundayDate = 1 + ((7 - firstDow) % 7);
+  return Date.UTC(year, monthIndex, firstSundayDate + (n - 1) * 7);
 }
 
-// Epoch ms of the DST-end instant (1st Sunday of November, 06:00 UTC) for a year.
-function dstEndUtcMs(year) {
-  const nov1 = new Date(Date.UTC(year, 10, 1));
-  const firstSunday = 1 + ((7 - nov1.getUTCDay()) % 7);
-  return Date.UTC(year, 10, firstSunday, 6, 0, 0);
+/** UTC offset of America/New_York in hours (-4 in EDT, -5 in EST). */
+export function nyOffsetHours(utcMs) {
+  const year = new Date(utcMs).getUTCFullYear();
+  const springMs = nthSundayUtcMs(year, 2, 2) + 7 * HOUR_MS; // 2:00 EST
+  const fallMs = nthSundayUtcMs(year, 10, 1) + 6 * HOUR_MS; // 2:00 EDT
+  return utcMs >= springMs && utcMs < fallMs ? -4 : -5;
 }
 
-// UTC offset of America/New_York at a given instant: -4 (EDT) or -5 (EST).
-export function nyUtcOffsetHours(ms) {
-  const year = new Date(ms).getUTCFullYear();
-  return ms >= dstStartUtcMs(year) && ms < dstEndUtcMs(year) ? -4 : -5;
-}
-
-// A Date whose getUTC*() fields read as NY wall-clock time for the instant.
-// (We shift the epoch value and then read UTC fields — the Date object itself
-// is "wrong" as an instant, which is why it stays private to this module.)
-function nyWallClock(ms) {
-  return new Date(ms + nyUtcOffsetHours(ms) * 3_600_000);
-}
-
-// NY wall-clock hour (0-23) at the given instant. Used by prepare-queue.mjs
-// as the DST guard: cron fires at both 08:30 and 09:30 UTC, and exactly one
-// of those is the 4 a.m. NY hour depending on the season.
-export function nyHour(ms) {
-  return nyWallClock(ms).getUTCHours();
+/**
+ * Local wall-clock hour (0-23) in America/New_York. Used by prepare-queue.mjs
+ * as the DST guard: cron fires at both 08:30 and 09:30 UTC, and exactly one of
+ * those is the 4 a.m. NY hour depending on the season. (The shifted Date is
+ * "wrong" as an instant — we read its UTC fields and never return it.)
+ */
+export function nyLocalHour(utcMs) {
+  return new Date(utcMs + nyOffsetHours(utcMs) * HOUR_MS).getUTCHours();
 }
 
 // Epoch ms of NOON New York on a YYYY-MM-DD calendar date. THE storage
@@ -107,15 +116,21 @@ export function nyHour(ms) {
 // UTC midnight still reads as the previous NY evening and reports a day early,
 // so every writer normalizes to local noon. Callers hand this a plain calendar
 // date — the only date form a model is ever asked to produce.
+//
+// The one home's general form is nyTimeUtcMs(day, hour, minute), which samples
+// the offset twice (once at the naive instant, once at the candidate) because
+// an arbitrary hour can sit on the far side of the 2 a.m. switch from its own
+// naive guess. At noon the two samples can never disagree — noon UTC minus 4 or
+// 5 hours stays inside 12:00-17:00 UTC, and both transitions happen at 06:00 or
+// 07:00 UTC — so one sampling is enough here. check-worker-time-mirror.mjs
+// asserts that equality date by date rather than leaving it as an argument.
 export function nyNoonUtcMs(dayKey) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
     throw new Error(`not a YYYY-MM-DD date: ${dayKey}`);
   }
   const utcNoon = Date.parse(`${dayKey}T12:00:00Z`);
   if (Number.isNaN(utcNoon)) throw new Error(`unparseable date: ${dayKey}`);
-  // Offset sampled at that day's midday, so a DST transition (2 a.m.) can't
-  // skew it.
-  return utcNoon - nyUtcOffsetHours(utcNoon) * 3_600_000;
+  return utcNoon - nyOffsetHours(utcNoon) * HOUR_MS;
 }
 
 // NOTE: this module deliberately has NO day-key function. The TTS day key

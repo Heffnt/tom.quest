@@ -4,6 +4,11 @@
 // daemon staleness window as the poll cadence it is derived from. This check
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
+//
+// This file covers the SESSION-SURFACE mirrors only. The TTS cron jobs carry a
+// second mirror of the same one home — the America/New_York DST rule in
+// worker/jobs/tts-lib.mjs — and it is fenced by behavior, not by source text,
+// in scripts/check-worker-time-mirror.mjs. Both run in `pnpm check:guardrails`.
 import { readFileSync } from "node:fs";
 
 const shared = readFileSync("convex/ttsShared.ts", "utf8");

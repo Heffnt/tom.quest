@@ -26,7 +26,7 @@
     "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
     "check:secrets": "gitleaks detect --source . --no-banner --redact",
     "check:writing": "node scripts/check-writing-standard.mjs",
-    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs"
+    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-worker-time-mirror.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.92",
