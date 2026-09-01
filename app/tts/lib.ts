@@ -35,8 +35,8 @@ export function rulingSubjectKey(r: {
   batchId?: string;
 }): string {
   if (r.subjectType === "life") return `life ${r.todoId}`;
-  if (r.subjectType === "batch") return `batch ${r.batchId}`;
-  return `code ${r.repo} ${r.externalId}`;
+  if (r.subjectType === "batch") return batchSubjectKey(r.batchId!);
+  return codeSubjectKey(r.repo!, r.externalId!);
 }
 
 export function codeSubjectKey(repo: string, externalId: string): string {
