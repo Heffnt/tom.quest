@@ -1,0 +1,1242 @@
+From bf268ce37000a0b03994764a9c71533b39353de4 Mon Sep 17 00:00:00 2001
+From: "tom.quest session agent" <heffnt@gmail.com>
+Date: Sat, 29 Aug 2026 06:23:40 +0000
+Subject: [PATCH] tom_quest: render.py reads view-spec v4
+ (layers/facet-object/plot-level style)
+
+The dashboard's view-spec moved to v4 on 2026-07-08 (app/boolback/lib/spec.ts);
+render.py still read the v3 shape, so a spec copied out of the browser rendered
+a figure that was not the view it came from -- and did so silently, since the
+old reader has no version gate and every v4-only field is one it simply does
+not look at.
+
+Synced field for field:
+
+  * `layers` replaces `split`. One series per layer, each with its own `facets`
+    (equality) and `ranges` (numeric); a GROUP layer draws the union of its
+    `members`, deduped by run identity.
+  * top-level `filters` is table-only; plot equality selections live per layer.
+  * top-level `ranges` is plot-level and ANDs onto every layer.
+  * `facet` is a groupplot-only OBJECT: layer / param / grid / bins.
+  * `size` / `opacity` plot-level multipliers and per-layer `style`
+    (shape + dash) are honored, mirroring styling.ts and glyph.tsx.
+  * `sorts` entries are {col, dir}, not {key, desc}.
+  * `color_by` only when there is exactly one layer.
+  * omitted fields take DEFAULT_PLOT's values, mirrored as literals.
+  * bin edges mirror bins.ts computeBinEdges/bucketOf, keeping duplicate edges
+    instead of np.unique collapsing them (which changed the bucket count and
+    every label on a tied distribution).
+  * a non-v4 spec now raises, as parseSpec rejects one.
+
+The test fixture grew a per-run avg_sensitivity row: the old one carried that
+metric only on a function-level row, so an avg_sensitivity-vs-asr plot pivoted
+onto disjoint rows and rendered zero points -- which the non-empty-file
+assertions could not see. Tests now read panel titles, series labels and
+per-series point counts off the figure.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ tom.quest/tom_quest/render.py            | 678 ++++++++++++++++-------
+ tom.quest/tom_quest/tests/render_test.py | 325 ++++++++++-
+ 2 files changed, 776 insertions(+), 227 deletions(-)
+
+diff --git a/tom.quest/tom_quest/render.py b/tom.quest/tom_quest/render.py
+index da9a2a3f..aa41949f 100644
+--- a/tom.quest/tom_quest/render.py
++++ b/tom.quest/tom_quest/render.py
+@@ -1,4 +1,4 @@
+-"""View-spec → paper-quality matplotlib figure (config-panel rework Phase 0, task 6).
++"""View-spec v4 → paper-quality matplotlib figure.
+ 
+ ``python -m tom_quest.render <spec.json> -o <out.pdf>``
+ 
+@@ -6,30 +6,51 @@ The ONLY plotting that survives in the CMT-adjacent code: ``cmt.analysis`` shed
+ ``digest.py`` entirely (all figures now come from a saved view-spec), and this renderer lives in the
+ tom_quest DISPLAY package — never under ``cmt/`` — so the CMT analysis layer stays matplotlib-free.
+ 
+-The view-spec is the SAME JSON the browser copy/pastes and Convex presets store (plan Phase 5)::
++The view-spec is the SAME JSON the browser copy/pastes and Convex presets store. Its definition is
++``app/boolback/lib/spec.ts`` in the tom.quest repo; this module is its second consumer and must
++track it field for field. Shape (v4)::
+ 
+-    { "v": 3, "view": "plot|groupplot|table",
++    { "v": 4, "view": "plot|groupplot|table",
+       "x": "avg_sensitivity", "y": "asr", "log": ["x"],
+-      "filters": {"base_model": ["Llama-3.2-1B"], "judge": ["kw"]},
++      "layers": [ {"name": "sst2", "color": "#e8a040", "style": {"shape": 1, "dash": 0},
++                   "facets": {"dataset": ["sst2"]},
++                   "ranges": [{"metric": "plantedness", "min": 0.9, "max": 1}]},
++                  {"name": "pooled", "color": "#38bdf8",
++                   "members": [{"name": "a", "facets": {}}, {"name": "b", "facets": {}}]} ],
+       "ranges": [{"metric": "plantedness", "min": 0.9, "max": 1}],
+-      "split": [{"param": "arity", "channel": "color"},
+-                 {"param": "fourier_degree", "bins": {"n": 4, "method": "quantile"}}],
+-      "color_by": null, "facet": "trigger_form",
+-      "band": true, "ghosts": true, "trend": false,
+-      "columns": null, "sorts": null }
+-
+-Mapping (plan Phase 5): ``split[0]`` → categorical color series (or ``color_by`` for a continuous
+-viridis colormap); ``facet`` → small-multiples grid; ``filters`` → equality (value ∈ list) filters;
+-``ranges`` → numeric range filters; a binned split (``split[i].bins = {n, method:
+-quantile|width|custom, edges?}``) → the same bucket edges the browser computes, its buckets treated
+-as a categorical series; ``band`` → ±1 SD; ``ghosts`` → faint underlying runs; ``trend`` → an OLS
+-line. ``view == "table"`` renders a table figure (``columns`` / ``sorts``).
++      "color_by": null,
++      "facet": {"kind": "param", "key": "trigger_form"},
++      "size": 1, "opacity": 1, "band": true, "ghosts": true, "trend": false,
++      "filters": {"base_model": ["Llama-3.2-1B"]},
++      "columns": ["headline.asr"], "sorts": [{"col": "headline.asr", "dir": "desc"}] }
++
++The v3→v4 reshape this module tracks (the browser landed it 2026-07-08):
++
++* ``layers`` REPLACED ``split``. A LAYER is one saved selection across all parameters and draws as
++  exactly ONE series; several traces come from several layers, never from an in-layer split. A layer
++  carries its own ``facets`` (equality) and ``ranges`` (numeric). A GROUP layer carries ``members``
++  (exactly one level deep) and draws the UNION of its members' rows, deduped by run identity, under
++  the group's own name/color/style.
++* Top-level ``filters`` is TABLE-ONLY. On a plot/groupplot the equality selections live per layer.
++* Top-level ``ranges`` is PLOT-LEVEL and ANDs onto every layer on top of that layer's own ranges.
++* ``facet`` became a GROUP-PLOT-ONLY OBJECT — ``{kind: layer | param | grid | bins}`` — where v3
++  had a bare facet-column string.
++* ``size`` / ``opacity`` (plot-level style multipliers) and per-layer ``style`` (shape + dash) are
++  new; a layer's ``color`` is a first-class field, not a palette position.
++* ``sorts`` entries are ``{col, dir: "asc"|"desc"}``; v3 read ``{key, desc}``.
++* ``color_by`` is honored ONLY when there is exactly one layer (``PlotConfig.colorBy``'s contract).
++* Omitted fields take the browser's DEFAULT_PLOT values (``app/boolback/lib/types.ts``), which this
++  module mirrors below — a spec omits defaults, so a renderer that defaults differently silently
++  draws a different figure than the dashboard did.
++* ``v`` is REQUIRED and must be 4: ``parseSpec`` hard-rejects any other version (no back-compat), so
++  this renderer rejects too rather than misreading a v3 spec as a layerless, unfiltered plot.
+ 
+ The renderer reuses the tidy READ layer (``cmt.analysis.friendly.with_friendly_names`` + polars): the
+ spec names TIDY columns (the snake_case unification), and ``x`` / ``y`` / ``color_by`` /
+ ``ranges[].metric`` may name either a tidy column (a parameter/facet) OR a long-form ``metric_name``
+-(pivoted to a column here). matplotlib is imported LAZILY inside :func:`_pyplot` (as the deleted
+-``plots.py`` did) so importing this module is cheap and CMT stays matplotlib-free.
++(pivoted to a column here). Browser TABLE column ids are dotted (``headline.asr``); :func:`_tidy_col`
++bridges those to their bare tidy names. matplotlib is imported LAZILY inside :func:`_pyplot` (as the
++deleted ``plots.py`` did) so importing this module is cheap and CMT stays matplotlib-free.
+ """
+ from __future__ import annotations
+ 
+@@ -42,13 +63,42 @@ from typing import Any
+ import numpy as np
+ import polars as pl
+ 
++SPEC_VERSION = 4
++
+ # Columns that are per-measurement, NOT part of a run/point identity: dropped from the pivot index so
+ # each metric collapses onto one point (per-presence-row metrics are mean-aggregated).
+ _NON_IDENTITY_COLS = frozenset(
+     {"metric_name", "value", "tt_row", "layer", "role", "null_control"}
+ )
+ _GHOST_KW = {"alpha": 0.12, "s": 8, "linewidths": 0, "zorder": 1}
+-_MAX_CATEGORICAL_SERIES = 24  # a legend cap (matches the browser's ~16-value guard, with headroom)
++_MAX_PANELS = 24  # a small-multiples cap (a facet over a high-cardinality key stays printable)
++
++# ---- Mirrors of the browser's visual encoding (app/boolback/lib/styling.ts, components/glyph.tsx).
++# Kept as literals, not derived: the figure must match what the dashboard drew, so these change only
++# when styling.ts changes.
++_CATEGORY_PALETTE = [
++    "#e8a040", "#38bdf8", "#4ade80", "#e879f9",
++    "#f87171", "#facc15", "#2dd4bf", "#a78bfa",
++    "#fb7185", "#a3e635", "#22d3ee", "#f472b6",
++    "#94a3b8", "#c9b35f", "#6fb6a6", "#b48ad6",
++    "#fca5a5", "#86efac", "#7dd3fc", "#f0abfc",
++]
++# glyph.tsx shape cycle: 0 circle, 1 square, 2 triangle-up, 3 diamond, 4 triangle-down, 5 x-cross.
++_SHAPE_MARKERS = ["o", "s", "^", "D", "v", "x"]
++# styling.ts DASH_PATTERNS as SVG stroke-dasharray -> the matplotlib linestyle equivalents.
++_DASH_STYLES: list[Any] = ["-", (0, (6, 3)), (0, (2, 3)), (0, (8, 3, 2, 3))]
++
++# ---- Mirrors of DEFAULT_PLOT (app/boolback/lib/types.ts). A spec OMITS default fields, so these are
++# what an absent field means. xDomain/yDomain and layer ids are display-only and never serialized.
++_DEFAULT_X = "epoch"
++_DEFAULT_Y = "plantedness"
++_DEFAULT_SIZE = 1.0
++_DEFAULT_OPACITY = 1.0
++_DEFAULT_BAND = True
++_DEFAULT_GHOSTS = True
++_DEFAULT_TREND = False
++_DEFAULT_LAYER_NAME = "all runs"
++_DEFAULT_LAYER_COLOR = _CATEGORY_PALETTE[0]
+ 
+ 
+ def _pyplot():
+@@ -62,6 +112,73 @@ def _pyplot():
+     return plt
+ 
+ 
++# --------------------------------------------------------------------------------------------------
++# Spec access: version gate, defaults, layers, and the dotted-column bridge.
++# --------------------------------------------------------------------------------------------------
++
++
++def require_v4(spec: dict[str, Any]) -> None:
++    """Reject any spec that is not v4.
++
++    ``parseSpec`` (spec.ts) returns null for ``v !== 4`` by design — there is NO back-compat chain.
++    Rendering fails the same way rather than reading a v3 spec as a layerless, unfiltered plot with a
++    facet string it silently ignores (which is exactly what the pre-v4 renderer did)."""
++    v = spec.get("v")
++    if v != SPEC_VERSION:
++        raise ValueError(
++            f"view-spec version {v!r} is not supported: this renderer reads v{SPEC_VERSION} only "
++            f"(app/boolback/lib/spec.ts parseSpec rejects every other version too — re-copy the "
++            f"spec from the dashboard)"
++        )
++
++
++def _tidy_col(df: pl.DataFrame, col: Any) -> str | None:
++    """The tidy column a spec column id names, or None.
++
++    Plot axes and ranges name metric_schema/tidy names directly (``asr``, ``avg_sensitivity``).
++    TABLE ``columns``/``sorts`` carry the browser's INTERNAL dotted ids (``headline.asr``,
++    ``function.arity``, ``dataset.dataset``), whose last segment is the tidy name."""
++    if not isinstance(col, str):
++        return None
++    if col in df.columns:
++        return col
++    if "." in col:
++        tail = col.rsplit(".", 1)[1]
++        if tail in df.columns:
++            return tail
++    return None
++
++
++def _layers(spec: dict[str, Any]) -> list[dict[str, Any]]:
++    """The spec's layers, or the implicit default single unfiltered "all runs" layer.
++
++    ``layersToSpec`` omits the layers list entirely when it IS the pristine default, so an absent
++    ``layers`` means one unfiltered layer — NOT "no layers" and NOT "no filtering intended"."""
++    raw = spec.get("layers")
++    if not isinstance(raw, list) or not raw:
++        return [{"name": _DEFAULT_LAYER_NAME, "color": _DEFAULT_LAYER_COLOR}]
++    out: list[dict[str, Any]] = []
++    for i, layer in enumerate(raw):
++        if not isinstance(layer, dict) or not isinstance(layer.get("name"), str):
++            continue
++        entry = dict(layer)
++        # Color is written by the browser for every layer; palette-cycle by ordinal if it is absent.
++        if not isinstance(entry.get("color"), str):
++            entry["color"] = _CATEGORY_PALETTE[i % len(_CATEGORY_PALETTE)]
++        out.append(entry)
++    return out or [{"name": _DEFAULT_LAYER_NAME, "color": _DEFAULT_LAYER_COLOR}]
++
++
++def _layer_style(layer: dict[str, Any]) -> tuple[str, Any]:
++    """``(marker, linestyle)`` for a layer's ``style`` (both channels default to index 0)."""
++    style = layer.get("style") if isinstance(layer.get("style"), dict) else {}
++    shape = style.get("shape", 0)
++    dash = style.get("dash", 0)
++    shape = int(shape) if isinstance(shape, (int, float)) else 0
++    dash = int(dash) if isinstance(dash, (int, float)) else 0
++    return _SHAPE_MARKERS[shape % len(_SHAPE_MARKERS)], _DASH_STYLES[dash % len(_DASH_STYLES)]
++
++
+ # --------------------------------------------------------------------------------------------------
+ # Tidy read + reshape.
+ # --------------------------------------------------------------------------------------------------
+@@ -73,24 +190,42 @@ def _load_tidy(tidy_path: Path) -> pl.DataFrame:
+     return with_friendly_names(pl.read_parquet(tidy_path))
+ 
+ 
+-def _needed_metrics(df: pl.DataFrame, spec: dict[str, Any]) -> list[str]:
+-    """The value-names the spec references that are NOT already tidy columns (⇒ must be pivoted in).
++def _spec_metric_refs(spec: dict[str, Any]) -> list[str]:
++    """Every metric/column name the spec references, from EVERY place v4 can put one.
+ 
+-    ``x`` / ``y`` / ``color_by`` and every ``ranges[].metric`` that is a long-form ``metric_name``
+-    rather than a raw column becomes its own wide column via :func:`_widen`."""
++    v3 looked only at ``x``/``y``/``color_by`` and top-level ``ranges``. v4 also carries ranges
++    inside each layer (and inside a GROUP's members) and a metric on a ``bins`` facet; a reference
++    missed here never gets pivoted in, so its filter/panel silently matches nothing."""
+     refs: list[str] = []
+     for key in ("x", "y", "color_by"):
+         v = spec.get(key)
+         if isinstance(v, str):
+             refs.append(v)
+-    for r in spec.get("ranges") or []:
+-        m = r.get("metric")
+-        if isinstance(m, str):
+-            refs.append(m)
++
++    def collect_ranges(ranges: Any) -> None:
++        if isinstance(ranges, list):
++            for r in ranges:
++                if isinstance(r, dict) and isinstance(r.get("metric"), str):
++                    refs.append(r["metric"])
++
++    collect_ranges(spec.get("ranges"))
++    for layer in _layers(spec):
++        collect_ranges(layer.get("ranges"))
++        for member in layer.get("members") or []:
++            if isinstance(member, dict):
++                collect_ranges(member.get("ranges"))
++    facet = spec.get("facet")
++    if isinstance(facet, dict) and facet.get("kind") == "bins" and isinstance(facet.get("metric"), str):
++        refs.append(facet["metric"])
++    return refs
++
++
++def _needed_metrics(df: pl.DataFrame, spec: dict[str, Any]) -> list[str]:
++    """The referenced value-names that are NOT already tidy columns (⇒ must be pivoted in)."""
+     cols = set(df.columns)
+     seen: set[str] = set()
+     out: list[str] = []
+-    for r in refs:
++    for r in _spec_metric_refs(spec):
+         if r not in cols and r not in seen:
+             out.append(r)
+             seen.add(r)
+@@ -131,111 +266,241 @@ def _coerce_numeric(series: pl.Series) -> tuple[np.ndarray, list[str] | None]:
+ 
+ 
+ # --------------------------------------------------------------------------------------------------
+-# Filters / ranges / bins.
++# Selection: facets (equality), ranges (numeric), layers, and the GROUP union.
+ # --------------------------------------------------------------------------------------------------
+ 
+ 
+-def _apply_filters(df: pl.DataFrame, filters: dict[str, list[Any]] | None) -> pl.DataFrame:
+-    """Equality filters: keep rows whose column value is in the allowed list (spec ``filters``)."""
+-    if not filters:
+-        return df
+-    for col, allowed in filters.items():
+-        if col in df.columns and allowed:
+-            df = df.filter(pl.col(col).cast(pl.Utf8).is_in([str(a) for a in allowed]))
+-    return df
++def _all_true(df: pl.DataFrame) -> pl.Series:
++    return pl.Series([True] * df.height, dtype=pl.Boolean)
+ 
+ 
+-def _apply_ranges(df: pl.DataFrame, ranges: list[dict[str, Any]] | None) -> pl.DataFrame:
+-    """Numeric range filters on a metric/parameter column (spec ``ranges``: min ≤ v ≤ max)."""
+-    if not ranges:
+-        return df
++def _all_false(df: pl.DataFrame) -> pl.Series:
++    return pl.Series([False] * df.height, dtype=pl.Boolean)
++
++
++def _facet_mask(df: pl.DataFrame, facets: Any) -> pl.Series:
++    """Equality selections: a row is kept when EVERY named column's value is in its allowed list.
++
++    This is the v4 per-layer ``facets`` object (and the table's top-level ``filters``): facet keys are
++    CMT tidy snake_case, values compared as strings (the browser stringifies numeric facets)."""
++    mask = _all_true(df)
++    if not isinstance(facets, dict):
++        return mask
++    for col, allowed in facets.items():
++        if col not in df.columns or not isinstance(allowed, list) or not allowed:
++            continue
++        hit = df.get_column(col).cast(pl.Utf8).is_in([str(a) for a in allowed])
++        mask = mask & hit.fill_null(False)
++    return mask
++
++
++def _range_mask(df: pl.DataFrame, ranges: Any) -> pl.Series:
++    """Numeric range selections (``min <= v <= max``), ANDed.
++
++    A range on an absent column is ignored (the metric never landed in the pivot). A null value in a
++    present column drops the row, as the browser's numeric filter does."""
++    mask = _all_true(df)
++    if not isinstance(ranges, list):
++        return mask
+     for r in ranges:
++        if not isinstance(r, dict):
++            continue
+         col = r.get("metric")
+-        if col not in df.columns:
++        if not isinstance(col, str) or col not in df.columns:
+             continue
+         if r.get("min") is not None:
+-            df = df.filter(pl.col(col) >= float(r["min"]))
++            mask = mask & (df.get_column(col) >= float(r["min"])).fill_null(False)
+         if r.get("max") is not None:
+-            df = df.filter(pl.col(col) <= float(r["max"]))
+-    return df
+-
+-
+-def _bin_edges(vals: np.ndarray, n: int, method: str, edges: list[float] | None) -> np.ndarray:
+-    """The bucket edges for a binned split — the SAME edges the browser computes (plan Phase 5).
+-
+-    ``quantile`` → ``n+1`` evenly-spaced quantiles; ``width`` → ``n+1`` equal-width edges over the
+-    observed range; ``custom`` → the provided ``edges`` verbatim. Computed over the (already
+-    filtered) values, so labels show absolute bucket bounds (self-describing plots)."""
+-    finite = vals[np.isfinite(vals)]
+-    if method == "custom" and edges:
+-        return np.asarray(sorted(edges), dtype=float)
+-    if finite.size == 0:
+-        return np.array([0.0, 1.0])
+-    if method == "quantile":
+-        qs = np.linspace(0.0, 1.0, n + 1)
+-        return np.unique(np.quantile(finite, qs))
+-    # width (default): equal-width edges over the observed range.
+-    lo, hi = float(finite.min()), float(finite.max())
++            mask = mask & (df.get_column(col) <= float(r["max"])).fill_null(False)
++    return mask
++
++
++def _layer_mask(df: pl.DataFrame, layer: dict[str, Any]) -> pl.Series:
++    """The rows one layer selects.
++
++    A PLAIN layer ANDs its ``facets`` and its ``ranges``. A GROUP layer (``members`` present) ignores
++    its own facets/ranges — the sanitizer forces them empty — and takes the UNION (OR) of its member
++    masks. Because the union is a row mask over one frame, a row matched by two members appears once:
++    that IS the "deduped by run identity" rule, a tidy row being one run/point."""
++    members = layer.get("members")
++    if isinstance(members, list) and members:
++        mask = _all_false(df)
++        for member in members:
++            if isinstance(member, dict):
++                mask = mask | (
++                    _facet_mask(df, member.get("facets")) & _range_mask(df, member.get("ranges"))
++                )
++        return mask
++    return _facet_mask(df, layer.get("facets")) & _range_mask(df, layer.get("ranges"))
++
++
++# --------------------------------------------------------------------------------------------------
++# Binning — mirrors app/boolback/lib/bins.ts so a "bins" facet cuts the SAME buckets the browser did.
++# --------------------------------------------------------------------------------------------------
++
++
++def _clamp_bin_count(n: Any) -> int:
++    """``clampBinCount``: a bucket count clamped to 1..8 (2 when not a finite number)."""
++    try:
++        v = float(n)
++    except (TypeError, ValueError):
++        return 2
++    if not np.isfinite(v):
++        return 2
++    return max(1, min(8, int(v)))
++
++
++def _quantile(sorted_vals: list[float], q: float) -> float:
++    """``bins.ts quantile``: linear interpolation between order statistics of an ASCENDING array.
++
++    NOT ``np.quantile`` + ``np.unique``: the browser keeps duplicate edges (so ``n`` buckets stay
++    ``n`` buckets on a tied distribution), and de-duplicating them changed both the bucket count and
++    every bucket's label relative to the dashboard."""
++    m = len(sorted_vals)
++    if m == 0:
++        return 0.0
++    if m == 1:
++        return sorted_vals[0]
++    pos = q * (m - 1)
++    lo, hi = int(np.floor(pos)), int(np.ceil(pos))
+     if lo == hi:
+-        hi = lo + 1.0
+-    return np.linspace(lo, hi, n + 1)
++        return sorted_vals[lo]
++    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
++
++
++def compute_bin_edges(values: np.ndarray, n: Any, mode: str) -> list[float]:
++    """``computeBinEdges``: ``n+1`` ascending boundaries for ``n`` buckets over the finite values.
++
++    ``quantile`` → equal-count buckets; ``width`` → equal-width over [min, max]. Fewer than two
++    distinct finite values yields a degenerate all-equal edge list (one flat bucket)."""
++    k = _clamp_bin_count(n)
++    clean = sorted(float(v) for v in np.asarray(values, dtype=float) if np.isfinite(v))
++    if not clean:
++        return [0.0] * (k + 1)
++    lo, hi = clean[0], clean[-1]
++    if len(clean) == 1 or hi - lo < 1e-12:
++        return [lo] * (k + 1)
++    if mode == "width":
++        step = (hi - lo) / k
++        return [hi if i == k else lo + i * step for i in range(k + 1)]
++    edges = [_quantile(clean, i / k) for i in range(k + 1)]
++    edges[0], edges[k] = lo, hi
++    return edges
++
++
++def bucket_of(value: float, edges: list[float]) -> int:
++    """``bucketOf``: the 0-based bucket for ``value`` (``<= e0`` → 0; ``>= en`` → the last)."""
++    n = len(edges) - 1
++    if n < 1:
++        return 0
++    if value <= edges[0]:
++        return 0
++    if value >= edges[n]:
++        return n - 1
++    for i in range(n):
++        if value < edges[i + 1]:
++            return i
++    return n - 1
++
++
++def _edge_label(v: float) -> str:
++    """``edgeLabel``: compact edge text (trims trailing zeros; scientific at the extremes)."""
++    if not np.isfinite(v):
++        return "—"
++    if v == 0:
++        return "0"
++    a = abs(v)
++    if a >= 1000 or a < 0.001:
++        return f"{v:.1e}"
++    return f"{float(f'{v:.3f}'):g}"
++
++
++def _bin_label(edges: list[float], i: int) -> str:
++    """``binLabel``: the closed-open interval text for bucket ``i`` (e.g. ``"0.12–0.35"``)."""
++    if i < 0 or i + 1 >= len(edges):
++        return "—"
++    return f"{_edge_label(edges[i])}–{_edge_label(edges[i + 1])}"
+ 
+ 
+-def _bucket_labels(vals: np.ndarray, edges: np.ndarray) -> list[str | None]:
+-    """Assign each value to a bucket ``"lo–hi"`` label (the categorical series a binned split
+-    becomes). Out-of-range / non-finite values get ``None`` (dropped from the series)."""
+-    labels: list[str | None] = []
+-    for v in vals:
+-        if not np.isfinite(v):
+-            labels.append(None)
+-            continue
+-        # ``.item()``, not ``[0]``: stub-robust under BOTH numpy stub generations. Under the repo
+-        # mypy config (follow_imports=skip, python_version 3.11) the 1.26 stubs resolve digitize to
+-        # its SCALAR overload (signedinteger — not indexable); ``.item()`` typechecks on the scalar
+-        # and the array alike, and at runtime the 1-element array's item() is exactly old ``[0]``.
+-        idx = int(np.digitize([v], edges[1:-1]).item()) if len(edges) > 2 else 0
+-        idx = max(0, min(idx, len(edges) - 2))
+-        labels.append(f"{edges[idx]:.3g}–{edges[idx + 1]:.3g}")
+-    return labels
+-
+-
+-def _series_column(df: pl.DataFrame, spec: dict[str, Any]) -> tuple[pl.DataFrame, str | None]:
+-    """Derive the categorical SERIES column from ``split`` (color channel + binned splits).
+-
+-    ``split[0]`` (or the first split whose ``channel == "color"``) is the primary categorical series;
+-    a split carrying ``bins`` is bucketed to a categorical label column via :func:`_bin_edges`. Every
+-    contributing split is combined into one ``_series`` label so a point's series reflects all of
+-    them. Returns ``(df_with__series, series_col_name_or_None)``."""
+-    splits = spec.get("split") or []
+-    if not splits:
+-        return df, None
+-    parts: list[str] = []
+-    for s in splits:
+-        param = s.get("param")
+-        if not isinstance(param, str) or param not in df.columns:
+-            continue
+-        bins = s.get("bins")
+-        if bins:
+-            vals, _ = _coerce_numeric(df.get_column(param))
+-            edges = _bin_edges(
+-                vals, int(bins.get("n", 4)), str(bins.get("method", "quantile")),
+-                bins.get("edges"),
+-            )
+-            labels = _bucket_labels(vals, edges)
+-            col = f"_bin_{param}"
+-            df = df.with_columns(pl.Series(col, labels))
+-            parts.append(col)
+-        else:
+-            parts.append(param)
+-    if not parts:
+-        return df, None
+-    if len(parts) == 1:
+-        df = df.with_columns(pl.col(parts[0]).cast(pl.Utf8).alias("_series"))
+-    else:
+-        df = df.with_columns(
+-            pl.concat_str([pl.col(p).cast(pl.Utf8) for p in parts], separator=" · ").alias("_series")
++# --------------------------------------------------------------------------------------------------
++# Panels — the group-plot facet OBJECT decides how the figure is cut into small multiples.
++# --------------------------------------------------------------------------------------------------
++
++# One panel: its title (None = the single unfacetted panel) and the per-layer masks within it.
++Panel = tuple[str | None, list[tuple[dict[str, Any], pl.Series]]]
++
++
++def _panels(
++    df: pl.DataFrame, spec: dict[str, Any], layer_masks: list[tuple[dict[str, Any], pl.Series]]
++) -> list[Panel]:
++    """``[(panel_title, [(layer, mask_within_panel), …]), …]`` for the spec's facet.
++
++    v3 read ``facet`` as a bare column name and produced one panel per distinct value. v4 makes it a
++    GROUP-PLOT-ONLY object with four kinds; a plot (non-groupplot) view is always one panel::
++
++        {"kind": "layer"}                                one panel per layer
++        {"kind": "param", "key": "trigger_form"}         one panel per distinct value
++        {"kind": "grid", "row": "…", "col": "…"}         one panel per NON-EMPTY row×col cell
++        {"kind": "bins", "metric": "…", "n": 4, "mode": "quantile"|"width"}   one panel per bucket
++    """
++    facet = spec.get("facet")
++    if spec.get("view") != "groupplot" or not isinstance(facet, dict):
++        return [(None, layer_masks)]
++    kind = facet.get("kind")
++
++    if kind == "layer":
++        return [(layer["name"], [(layer, mask)]) for layer, mask in layer_masks][:_MAX_PANELS]
++
++    if kind == "param":
++        key = _tidy_col(df, facet.get("key"))
++        if key is None:
++            return [(None, layer_masks)]
++        col = df.get_column(key)
++        values = [v for v in dict.fromkeys(col.to_list()) if v is not None][:_MAX_PANELS]
++        return [
++            (f"{key} = {v}", [(layer, mask & (col == v)) for layer, mask in layer_masks])
++            for v in values
++        ]
++
++    if kind == "grid":
++        row_key = _tidy_col(df, facet.get("row"))
++        col_key = _tidy_col(df, facet.get("col"))
++        if row_key is None or col_key is None:
++            return [(None, layer_masks)]
++        rows, cols = df.get_column(row_key), df.get_column(col_key)
++        out: list[Panel] = []
++        for rv in [v for v in dict.fromkeys(rows.to_list()) if v is not None]:
++            for cv in [v for v in dict.fromkeys(cols.to_list()) if v is not None]:
++                cell = (rows == rv) & (cols == cv)
++                if not cell.any():
++                    continue  # non-empty cells only
++                out.append((f"{rv} × {cv}", [(layer, mask & cell) for layer, mask in layer_masks]))
++        return out[:_MAX_PANELS] or [(None, layer_masks)]
++
++    if kind == "bins":
++        metric = _tidy_col(df, facet.get("metric"))
++        if metric is None:
++            return [(None, layer_masks)]
++        # Edges come from the LAYERS' UNION (the rows actually plotted), not the whole frame: the
++        # panel bounds must describe the plotted population, as the dashboard's do.
++        union = _all_false(df)
++        for _, mask in layer_masks:
++            union = union | mask
++        vals, _ = _coerce_numeric(df.get_column(metric))
++        edges = compute_bin_edges(
++            vals[np.asarray(union.to_list(), dtype=bool)],
++            facet.get("n"),
++            str(facet.get("mode", "quantile")),
+         )
+-    return df, "_series"
++        bucket = np.array([bucket_of(v, edges) if np.isfinite(v) else -1 for v in vals], dtype=int)
++        out = []
++        for i in range(len(edges) - 1):
++            cell = pl.Series((bucket == i).tolist(), dtype=pl.Boolean)
++            out.append((f"{metric} {_bin_label(edges, i)}",
++                        [(layer, mask & cell) for layer, mask in layer_masks]))
++        return out[:_MAX_PANELS]
++
++    return [(None, layer_masks)]
+ 
+ 
+ # --------------------------------------------------------------------------------------------------
+@@ -243,32 +508,42 @@ def _series_column(df: pl.DataFrame, spec: dict[str, Any]) -> tuple[pl.DataFrame
+ # --------------------------------------------------------------------------------------------------
+ 
+ 
+-def _draw_panel(ax, panel: pl.DataFrame, spec: dict[str, Any], series_col: str | None,
++def _draw_panel(ax, df: pl.DataFrame, spec: dict[str, Any],
++                layer_masks: list[tuple[dict[str, Any], pl.Series]],
++                x_all: np.ndarray, y_all: np.ndarray,
++                x_name: str, y_name: str,
+                 x_ticks: list[str] | None, y_ticks: list[str] | None) -> None:
+-    """Draw one facet panel: scatter (+ optional ghosts / band / trend), colored by series or color_by."""
+-    x_name, y_name = spec["x"], spec["y"]
+-    color_by = spec.get("color_by")
+-    x_vals, _ = _coerce_numeric(panel.get_column(x_name))
+-    y_vals, _ = _coerce_numeric(panel.get_column(y_name))
+-    # Categorical axes get a small deterministic jitter so overlapping discrete positions separate.
+-    if x_ticks is not None:
+-        x_vals = x_vals + np.random.default_rng(0).uniform(-0.12, 0.12, size=x_vals.shape)
+-    if y_ticks is not None:
+-        y_vals = y_vals + np.random.default_rng(1).uniform(-0.12, 0.12, size=y_vals.shape)
+-
+-    if spec.get("ghosts"):
+-        ax.scatter(x_vals, y_vals, color="0.6", **_GHOST_KW)
+-
+-    if color_by and color_by in panel.columns:
+-        # Continuous colormap on the color channel (viridis) + a colorbar (plan Phase 5).
+-        c_vals, _ = _coerce_numeric(panel.get_column(color_by))
+-        sc = ax.scatter(x_vals, y_vals, c=c_vals, cmap="viridis", s=22, zorder=3)
++    """Draw one panel: one series PER LAYER (+ optional ghosts / band / trend).
++
++    ``color_by`` (continuous viridis + colorbar) replaces the per-layer coloring, and ONLY when there
++    is exactly one layer — ``PlotConfig.colorBy``'s stated contract ("only honored when
++    layers.length === 1")."""
++    size = float(spec.get("size", _DEFAULT_SIZE))
++    opacity = min(1.0, max(0.0, float(spec.get("opacity", _DEFAULT_OPACITY))))
++
++    if spec.get("ghosts", _DEFAULT_GHOSTS):
++        # Ghosts are the FULL point cloud behind the layers (the faint "everything else" reference).
++        ax.scatter(x_all, y_all, color="0.6", **_GHOST_KW)
++
++    color_by = _tidy_col(df, spec.get("color_by")) if len(layer_masks) == 1 else None
++    if color_by is not None:
++        sel = np.asarray(layer_masks[0][1].fill_null(False).to_list(), dtype=bool)
++        c_vals, _ = _coerce_numeric(df.get_column(color_by))
++        sc = ax.scatter(x_all[sel], y_all[sel], c=c_vals[sel], cmap="viridis",
++                        s=22 * size, alpha=opacity, zorder=3)
+         ax.figure.colorbar(sc, ax=ax, label=color_by, fraction=0.046, pad=0.04)
+-    elif series_col is not None:
+-        _draw_series(ax, panel, x_vals, y_vals, series_col, spec)
++        _band_and_trend(ax, x_all[sel], y_all[sel], spec, color=None, dash="-")
+     else:
+-        ax.scatter(x_vals, y_vals, s=22, zorder=3)
+-        _band_and_trend(ax, x_vals, y_vals, spec, color=None)
++        for layer, mask in layer_masks:
++            sel = np.asarray(mask.fill_null(False).to_list(), dtype=bool)
++            if not sel.any():
++                continue
++            marker, dash = _layer_style(layer)
++            ax.scatter(x_all[sel], y_all[sel], color=layer["color"], marker=marker,
++                       s=22 * size, alpha=opacity, label=layer["name"], zorder=3)
++            _band_and_trend(ax, x_all[sel], y_all[sel], spec, color=layer["color"], dash=dash)
++        if len(layer_masks) > 1:
++            ax.legend(fontsize=7, framealpha=0.85)
+ 
+     if "x" in (spec.get("log") or []):
+         ax.set_xscale("log")
+@@ -284,50 +559,49 @@ def _draw_panel(ax, panel: pl.DataFrame, spec: dict[str, Any], series_col: str |
+         ax.set_yticklabels(y_ticks, fontsize=7)
+ 
+ 
+-def _draw_series(ax, panel: pl.DataFrame, x_vals: np.ndarray, y_vals: np.ndarray,
+-                 series_col: str, spec: dict[str, Any]) -> None:
+-    """Draw one categorical color series per distinct ``series_col`` value (+ its band/trend)."""
+-    labels = panel.get_column(series_col).to_list()
+-    uniq = [u for u in dict.fromkeys(str(v) for v in labels if v is not None)]
+-    plt = _pyplot()
+-    cmap = plt.get_cmap("tab10" if len(uniq) <= 10 else "tab20")
+-    for i, s in enumerate(uniq[:_MAX_CATEGORICAL_SERIES]):
+-        mask = np.array([str(v) == s for v in labels])
+-        color = cmap(i % cmap.N)
+-        ax.scatter(x_vals[mask], y_vals[mask], color=color, s=22, label=s, zorder=3)
+-        _band_and_trend(ax, x_vals[mask], y_vals[mask], spec, color=color)
+-    ax.legend(fontsize=7, framealpha=0.85, title=series_col.lstrip("_"))
+-
++def _band_and_trend(ax, x: np.ndarray, y: np.ndarray, spec: dict[str, Any], color: Any,
++                    dash: Any = "-") -> None:
++    """The ±1 SD band (spec ``band``) and OLS trend line (spec ``trend``) for one layer's cloud.
+ 
+-def _band_and_trend(ax, x: np.ndarray, y: np.ndarray, spec: dict[str, Any], color: Any) -> None:
+-    """The ±1 SD band (spec ``band``) and OLS trend line (spec ``trend``) for one point cloud."""
++    The trend line takes the LAYER's dash pattern, so the layer's dash channel reads on the figure the
++    way it reads in the browser (v3 hard-coded one dashed trend for every series)."""
+     finite = np.isfinite(x) & np.isfinite(y)
+     x, y = x[finite], y[finite]
+     if x.size < 2:
+         return
+     order = np.argsort(x)
+     x, y = x[order], y[order]
+-    if spec.get("band"):
++    if spec.get("band", _DEFAULT_BAND):
+         # ±1 SD around the per-unique-x mean (a self-describing spread band).
+         xs = np.unique(x)
+         mean = np.array([y[x == xv].mean() for xv in xs])
+         sd = np.array([y[x == xv].std() for xv in xs])
+         ax.fill_between(xs, mean - sd, mean + sd, color=color or "0.5", alpha=0.15, zorder=2)
+-    if spec.get("trend") and x.size >= 2 and np.ptp(x) > 0:
++    if spec.get("trend", _DEFAULT_TREND) and x.size >= 2 and np.ptp(x) > 0:
+         slope, intercept = np.polyfit(x, y, 1)
+         xs = np.array([x.min(), x.max()])
+-        ax.plot(xs, slope * xs + intercept, color=color or "0.2", lw=1.5, ls="--", zorder=4)
++        ax.plot(xs, slope * xs + intercept, color=color or "0.2", lw=1.5, ls=dash, zorder=4)
+ 
+ 
+ def _render_table(spec: dict[str, Any], df: pl.DataFrame, out_path: Path) -> Path:
+-    """Render a ``view == "table"`` spec: the selected ``columns`` sorted by ``sorts`` as a figure."""
++    """Render a ``view == "table"`` spec: the selected ``columns`` sorted by ``sorts`` as a figure.
++
++    v4 ``sorts`` entries are ``{col, dir: "asc"|"desc"}`` — the v3 ``{key, desc}`` reader ignored
++    every v4 sort and left the frame in read order. ``columns`` are the browser's internal ids,
++    bridged to tidy names by :func:`_tidy_col`."""
+     plt = _pyplot()
+-    columns = spec.get("columns") or [c for c in df.columns if not c.startswith("_")][:8]
+-    columns = [c for c in columns if c in df.columns]
++    requested = spec.get("columns")
++    columns: list[str] = []
++    if isinstance(requested, list) and requested:
++        columns = [c for c in (_tidy_col(df, c) for c in requested) if c is not None]
++    if not columns:
++        columns = [c for c in df.columns if not c.startswith("_")][:8]
+     for s in spec.get("sorts") or []:
+-        col = s.get("key") if isinstance(s, dict) else s
+-        if col in df.columns:
+-            df = df.sort(col, descending=bool(isinstance(s, dict) and s.get("desc")))
++        if not isinstance(s, dict):
++            continue
++        col = _tidy_col(df, s.get("col"))
++        if col is not None:
++            df = df.sort(col, descending=s.get("dir") == "desc")
+     df = df.select(columns).head(50)
+     fig, ax = plt.subplots(figsize=(min(2 + 1.6 * len(columns), 16), min(1 + 0.3 * df.height, 12)))
+     ax.axis("off")
+@@ -349,51 +623,59 @@ def _render_table(spec: dict[str, Any], df: pl.DataFrame, out_path: Path) -> Pat
+ 
+ 
+ def render_spec(spec: dict[str, Any], tidy_path: Path, out_path: Path) -> Path:
+-    """Render ``spec`` against ``tidy_path`` to ``out_path`` (the file format follows the suffix).
++    """Render a v4 ``spec`` against ``tidy_path`` to ``out_path`` (format follows the suffix).
+ 
+-    A ``view == "table"`` spec renders a table figure; a plot/groupplot spec renders a scatter with
+-    ``facet`` → small-multiples, ``split[0]``/``color_by`` → color, and band/ghosts/trend overlays."""
++    A ``view == "table"`` spec renders a table figure. A plot/groupplot spec renders one series per
++    LAYER, with the group-plot ``facet`` object cutting small multiples and band/ghosts/trend as
++    plot-level overlays."""
++    require_v4(spec)
+     df = _load_tidy(Path(tidy_path))
+-    df = _apply_filters(df, spec.get("filters"))
+     df = _widen(df, _needed_metrics(df, spec))
+-    df = _apply_ranges(df, spec.get("ranges"))
+ 
+     if spec.get("view") == "table":
+-        return _render_table(spec, df, Path(out_path))
++        # Table ONLY: top-level `filters` + `ranges` are the table's own filter state.
++        return _render_table(
++            spec,
++            df.filter(_facet_mask(df, spec.get("filters")) & _range_mask(df, spec.get("ranges"))),
++            Path(out_path),
++        )
+ 
+-    x_name, y_name = spec.get("x"), spec.get("y")
+-    if not x_name or not y_name:
+-        raise ValueError("a plot/groupplot spec must name both 'x' and 'y'")
+-    if x_name not in df.columns or y_name not in df.columns:
++    # PLOT-LEVEL ranges AND onto every layer, so they narrow the frame before any layer resolves.
++    df = df.filter(_range_mask(df, spec.get("ranges")))
++
++    x_name = _tidy_col(df, spec.get("x", _DEFAULT_X))
++    y_name = _tidy_col(df, spec.get("y", _DEFAULT_Y))
++    if x_name is None or y_name is None:
+         raise ValueError(
+-            f"spec x={x_name!r}/y={y_name!r} not found as tidy columns or metric_names "
+-            f"(available metrics/columns: {sorted(c for c in df.columns if not c.startswith('_'))})"
++            f"spec x={spec.get('x', _DEFAULT_X)!r}/y={spec.get('y', _DEFAULT_Y)!r} not found as tidy "
++            f"columns or metric_names (available: "
++            f"{sorted(c for c in df.columns if not c.startswith('_'))})"
+         )
+     # Drop points with no x or y (e.g. a function-level-only metric row that never got the other axis).
+     df = df.filter(pl.col(x_name).is_not_null() & pl.col(y_name).is_not_null())
+ 
+-    df, series_col = _series_column(df, spec)
+-    # Tick labels for categorical axes (computed over the whole frame so facets share positions).
+-    _, x_ticks = _coerce_numeric(df.get_column(x_name)) if df.height else (None, None)
+-    _, y_ticks = _coerce_numeric(df.get_column(y_name)) if df.height else (None, None)
++    layer_masks = [(layer, _layer_mask(df, layer)) for layer in _layers(spec)]
++    # Tick labels for categorical axes (computed over the whole frame so panels share positions).
++    x_all, x_ticks = _coerce_numeric(df.get_column(x_name))
++    y_all, y_ticks = _coerce_numeric(df.get_column(y_name))
++    # Categorical axes get a small deterministic jitter so overlapping discrete positions separate.
++    if x_ticks is not None:
++        x_all = x_all + np.random.default_rng(0).uniform(-0.12, 0.12, size=x_all.shape)
++    if y_ticks is not None:
++        y_all = y_all + np.random.default_rng(1).uniform(-0.12, 0.12, size=y_all.shape)
+ 
++    panels = _panels(df, spec, layer_masks) or [(None, layer_masks)]
+     plt = _pyplot()
+-    facet = spec.get("facet")
+-    if facet and facet in df.columns and df.height:
+-        facet_vals = [v for v in dict.fromkeys(df.get_column(facet).to_list()) if v is not None]
+-    else:
+-        facet_vals = [None]
+-    ncols = min(len(facet_vals), 3) or 1
+-    nrows = (len(facet_vals) + ncols - 1) // ncols
++    ncols = min(len(panels), 3) or 1
++    nrows = (len(panels) + ncols - 1) // ncols
+     fig, axes = plt.subplots(nrows, ncols, figsize=(5.2 * ncols, 4.2 * nrows), squeeze=False)
+-    for i, fv in enumerate(facet_vals):
++    for i, (title, panel_masks) in enumerate(panels):
+         ax = axes[i // ncols][i % ncols]
+-        panel = df.filter(pl.col(facet) == fv) if fv is not None else df
+-        if panel.height:
+-            _draw_panel(ax, panel, spec, series_col, x_ticks, y_ticks)
+-        if fv is not None:
+-            ax.set_title(f"{facet} = {fv}", fontsize=9)
+-    for j in range(len(facet_vals), nrows * ncols):  # blank any unused grid cells
++        if df.height:
++            _draw_panel(ax, df, spec, panel_masks, x_all, y_all, x_name, y_name, x_ticks, y_ticks)
++        if title is not None:
++            ax.set_title(title, fontsize=9)
++    for j in range(len(panels), nrows * ncols):  # blank any unused grid cells
+         axes[j // ncols][j % ncols].axis("off")
+     fig.tight_layout()
+     fig.savefig(Path(out_path), bbox_inches="tight")
+@@ -403,7 +685,7 @@ def render_spec(spec: dict[str, Any], tidy_path: Path, out_path: Path) -> Path:
+ 
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(prog="python -m tom_quest.render")
+-    parser.add_argument("spec", type=Path, help="the view-spec JSON (plan Phase 5 shape)")
++    parser.add_argument("spec", type=Path, help="the view-spec JSON (v4; app/boolback/lib/spec.ts)")
+     parser.add_argument("-o", "--out", type=Path, required=True, help="output figure (.pdf / .png / …)")
+     parser.add_argument("--tidy", type=Path, default=None,
+                         help="path to tidy.parquet (defaults to $CMT_OUTPUT/tidy/tidy.parquet)")
+diff --git a/tom.quest/tom_quest/tests/render_test.py b/tom.quest/tom_quest/tests/render_test.py
+index 34e5fa98..f71870b5 100644
+--- a/tom.quest/tom_quest/tests/render_test.py
++++ b/tom.quest/tom_quest/tests/render_test.py
+@@ -1,29 +1,44 @@
+-"""Smoke test for the view-spec renderer (``tom_quest.render``, config-panel rework Phase 0 task 6).
++"""Tests for the view-spec v4 renderer (``tom_quest.render``).
+ 
+-Renders a minimal spec against a tiny fixture ``tidy.parquet`` to a temp file and asserts the file is
+-non-empty — the renderer exercises the read layer, the metric pivot, an equality filter, a
+-categorical color split, a binned split, ghosts, a ±1 SD band, and an OLS trend without raising.
+-matplotlib is a tom_quest (display-layer) dependency; the test skips if it is not installed."""
++Two jobs. The SMOKE tests render a spec end to end and assert a non-empty figure — the renderer
++exercises the read layer, the metric pivot, per-layer facet/range selection, a GROUP layer's union,
++each of the four group-plot facet kinds, ghosts, a ±1 SD band and an OLS trend without raising. The
++CONTRACT tests pin the four places where the pre-2026-07-08 (v3) renderer silently disagreed with the
++browser, so a regression is a failure and not a quietly different figure:
++
++  1. a non-v4 spec is REJECTED (v3 rendered as a layerless, unfiltered plot);
++  2. per-layer ``facets`` actually select (v3 had no layers, so every layer's selection was ignored);
++  3. a GROUP layer is the UNION of its members;
++  4. ``compute_bin_edges`` matches ``app/boolback/lib/bins.ts`` (including TIED values, where the
++     old ``np.unique(np.quantile(...))`` collapsed edges and changed the bucket count).
++
++matplotlib is a tom_quest (display-layer) dependency; the smoke tests skip if it is not installed.
++"""
+ from __future__ import annotations
+ 
+ from pathlib import Path
+ from typing import Any
+ 
++import numpy as np
+ import polars as pl
+ import pytest
+ 
+-matplotlib = pytest.importorskip("matplotlib")
+-
+ from tom_quest import render
+ 
++matplotlib = pytest.importorskip("matplotlib")
++
+ 
+ def _fixture_tidy(tmp_path: Path) -> Path:
+-    """A tiny long-form tidy: two functions × two arities, each with an ``asr`` node-level metric row
+-    and a function-level ``avg_sensitivity`` metric row, across two base_models. Enough to exercise
+-    the pivot (asr / avg_sensitivity → columns), an equality filter, and a categorical color split."""
++    """A tiny long-form tidy: two functions × two base_models.
++
++    Each RUN carries both an ``asr`` row and an ``avg_sensitivity`` row under the SAME identity
++    columns, so the pivot lands both metrics on one row and an ``avg_sensitivity`` vs ``asr`` plot
++    actually has points. (A function-level-only row — epoch null, no model — is kept alongside so the
++    null-drop still has something to drop; a fixture with ONLY that row silently rendered an empty
++    figure, which a non-empty-file assertion cannot catch.)"""
+     rows: list[dict[str, Any]] = []
+     for fi, (tt, sens) in enumerate([("0001", 0.4), ("0111", 0.8)]):
+-        # function-level complexity metric row (epoch null).
++        # function-level complexity metric row (epoch null) — pivots to its own, axis-incomplete row.
+         rows.append({
+             "function_hash": f"f{fi}", "dataset_hash": "-", "training_hash": "-",
+             "truth_table": tt, "arity": 2, "base_model": "-", "trigger_form": "-",
+@@ -31,27 +46,38 @@ def _fixture_tidy(tmp_path: Path) -> Path:
+             "value": sens,
+         })
+         for mi, model in enumerate(["Llama-3.2-1B", "Qwen-0.5B"]):
+-            rows.append({
++            identity = {
+                 "function_hash": f"f{fi}", "dataset_hash": f"d{mi}", "training_hash": f"t{fi}{mi}",
+                 "truth_table": tt, "arity": 2, "base_model": model,
+                 "trigger_form": "insertion" if fi == 0 else "affix",
+-                "epoch": 2, "seed": "0/0/0", "tt_row": "-", "metric_name": "asr",
+-                "value": 0.5 + 0.1 * fi + 0.05 * mi,
+-            })
++                "epoch": 2, "seed": "0/0/0", "tt_row": "-",
++            }
++            rows.append({**identity, "metric_name": "asr", "value": 0.5 + 0.1 * fi + 0.05 * mi})
++            # the function's complexity broadcast onto the run, so both axes exist on one row
++            rows.append({**identity, "metric_name": "avg_sensitivity", "value": sens})
+     p = tmp_path / "tidy.parquet"
+     pl.DataFrame(rows, infer_schema_length=None).write_parquet(p)
+     return p
+ 
+ 
+-def test_render_minimal_spec_writes_nonempty(tmp_path: Path) -> None:
++# --------------------------------------------------------------------------------------------------
++# Smoke: every v4 surface renders.
++# --------------------------------------------------------------------------------------------------
++
++
++def test_render_layered_spec_writes_nonempty(tmp_path: Path) -> None:
++    """Two plain layers with their own facets + ranges, plus plot-level style and overlays."""
+     tidy = _fixture_tidy(tmp_path)
+     spec = {
+-        "v": 3, "view": "plot",
+-        "x": "arity", "y": "asr", "log": [],
+-        "filters": {"base_model": ["Llama-3.2-1B", "Qwen-0.5B"]},
+-        "ranges": [],
+-        "split": [{"param": "base_model", "channel": "color"}],
+-        "color_by": None, "facet": "trigger_form",
++        "v": 4, "view": "plot",
++        "x": "arity", "y": "asr",
++        "layers": [
++            {"name": "llama", "color": "#e8a040", "facets": {"base_model": ["Llama-3.2-1B"]}},
++            {"name": "qwen", "color": "#38bdf8", "style": {"shape": 1, "dash": 1},
++             "facets": {"base_model": ["Qwen-0.5B"]}},
++        ],
++        "ranges": [{"metric": "asr", "min": 0.0, "max": 1.0}],
++        "size": 1.4, "opacity": 0.8,
+         "band": True, "ghosts": True, "trend": True,
+     }
+     out = tmp_path / "fig.pdf"
+@@ -59,16 +85,257 @@ def test_render_minimal_spec_writes_nonempty(tmp_path: Path) -> None:
+     assert out.exists() and out.stat().st_size > 0
+ 
+ 
+-def test_render_binned_split_and_continuous_color(tmp_path: Path) -> None:
+-    """A binned split (quantile buckets → categorical series) and a continuous color_by both render."""
++def test_render_default_spec_writes_nonempty(tmp_path: Path) -> None:
++    """The tiniest spec a default view serializes to: no layers, no axes, no toggles.
++
++    Everything comes from the DEFAULT_PLOT mirror — including the implicit single "all runs" layer.
++    x defaults to "epoch" and y to "plantedness"; this fixture has no plantedness, so the axis
++    override is explicit while the rest stays defaulted."""
++    tidy = _fixture_tidy(tmp_path)
++    out = tmp_path / "default.png"
++    render.render_spec({"v": 4, "view": "plot", "x": "arity", "y": "asr"}, tidy, out)
++    assert out.exists() and out.stat().st_size > 0
++
++
++@pytest.mark.parametrize("facet", [
++    {"kind": "layer"},
++    {"kind": "param", "key": "trigger_form"},
++    {"kind": "grid", "row": "trigger_form", "col": "base_model"},
++    {"kind": "bins", "metric": "avg_sensitivity", "n": 2, "mode": "quantile"},
++])
++def test_render_each_groupplot_facet_kind(tmp_path: Path, facet: dict[str, Any]) -> None:
++    """All four v4 facet kinds cut panels and render. v3 read `facet` as a bare column name, so every
++    one of these objects fell through its `facet in df.columns` test and drew a single panel."""
++    tidy = _fixture_tidy(tmp_path)
++    spec = {
++        "v": 4, "view": "groupplot", "x": "avg_sensitivity", "y": "asr",
++        "layers": [{"name": "all", "color": "#e8a040"}],
++        "facet": facet, "band": False, "ghosts": False, "trend": False,
++    }
++    out = tmp_path / f"{facet['kind']}.png"
++    render.render_spec(spec, tidy, out)
++    assert out.exists() and out.stat().st_size > 0
++
++
++def test_render_table_spec_with_v4_sorts(tmp_path: Path) -> None:
++    """A table spec: top-level `filters`, dotted `columns`, and `{col, dir}` sorts."""
++    tidy = _fixture_tidy(tmp_path)
++    spec = {
++        "v": 4, "view": "table",
++        "filters": {"base_model": ["Llama-3.2-1B"]},
++        "columns": ["function.truth_table", "training.base_model", "asr"],
++        "sorts": [{"col": "asr", "dir": "desc"}],
++    }
++    out = tmp_path / "table.png"
++    render.render_spec(spec, tidy, out)
++    assert out.exists() and out.stat().st_size > 0
++
++
++def _figure_report(spec: dict[str, Any], tidy: Path, out: Path) -> list[dict[str, Any]]:
++    """Render, then read the FIGURE back: ``[{title, series: [{label, points}]}, …]``.
++
++    A "the file is non-empty" assertion passes on a figure with no points in it, which is exactly how
++    an axis pairing that the pivot cannot satisfy stays invisible. This inspects the drawn artists."""
++    import matplotlib
++    matplotlib.use("Agg")
++    import matplotlib.pyplot as plt
++
++    plt.close("all")
++    keep = plt.close
++    plt.close = lambda *a, **k: None  # hold the figure open for inspection
++    try:
++        render.render_spec(spec, tidy, out)
++        fig = plt.figure(plt.get_fignums()[-1])
++        panels = []
++        for ax in fig.axes:
++            if not ax.collections and not ax.lines:
++                continue
++            panels.append({
++                "title": ax.get_title(),
++                "series": [
++                    {"label": c.get_label(), "points": int(np.asarray(c.get_offsets()).shape[0])}
++                    for c in ax.collections if not c.get_label().startswith("_")
++                ],
++            })
++        return panels
++    finally:
++        plt.close = keep
++        plt.close("all")
++
++
++def test_groupplot_figure_has_one_panel_per_facet_value_and_one_series_per_layer(
++    tmp_path: Path,
++) -> None:
++    """The whole v4 reshape, read off the rendered figure rather than the file size.
++
++    Two layers (one a GROUP) and a ``{kind: param}`` facet over ``trigger_form`` must produce one
++    panel per trigger_form value, each carrying one labelled series per layer, each series holding
++    only the rows ITS layer selects. The v3 renderer drew one panel with one unlabelled scatter over
++    every row: no facet object support, no layers, no per-layer selection."""
+     tidy = _fixture_tidy(tmp_path)
+     spec = {
+-        "v": 3, "view": "plot",
+-        "x": "avg_sensitivity", "y": "asr",
+-        "split": [{"param": "avg_sensitivity", "bins": {"n": 2, "method": "quantile"}}],
+-        "color_by": None,
++        "v": 4, "view": "groupplot", "x": "avg_sensitivity", "y": "asr",
++        "layers": [
++            {"name": "llama", "color": "#e8a040", "facets": {"base_model": ["Llama-3.2-1B"]}},
++            {"name": "pooled", "color": "#38bdf8", "style": {"shape": 1, "dash": 1},
++             "members": [
++                 {"name": "insertion", "facets": {"trigger_form": ["insertion"]}},
++                 {"name": "qwen", "facets": {"base_model": ["Qwen-0.5B"]}},
++             ]},
++        ],
++        "facet": {"kind": "param", "key": "trigger_form"},
+         "band": False, "ghosts": False, "trend": False,
+     }
+-    out = tmp_path / "binned.png"
++    panels = _figure_report(spec, tidy, tmp_path / "grouped.png")
++
++    # 4 runs: (f0,llama,insertion) (f0,qwen,insertion) (f1,llama,affix) (f1,qwen,affix).
++    assert [p["title"] for p in panels] == [
++        "trigger_form = insertion", "trigger_form = affix",
++    ]
++    assert [[s["label"] for s in p["series"]] for p in panels] == [
++        ["llama", "pooled"], ["llama", "pooled"],
++    ]
++    counts = {p["title"]: {s["label"]: s["points"] for s in p["series"]} for p in panels}
++    # insertion panel: llama selects 1 run; pooled = insertion(2) ∪ qwen(1 here) = both runs.
++    assert counts["trigger_form = insertion"] == {"llama": 1, "pooled": 2}
++    # affix panel: llama selects 1 run; pooled = insertion(0 here) ∪ qwen(1) = 1 run.
++    assert counts["trigger_form = affix"] == {"llama": 1, "pooled": 1}
++
++
++def test_render_color_by_single_layer(tmp_path: Path) -> None:
++    """`color_by` draws the continuous colormap + colorbar when there is exactly one layer."""
++    tidy = _fixture_tidy(tmp_path)
++    spec = {
++        "v": 4, "view": "plot", "x": "avg_sensitivity", "y": "asr",
++        "color_by": "avg_sensitivity", "band": False, "ghosts": False, "trend": False,
++    }
++    out = tmp_path / "colorby.png"
+     render.render_spec(spec, tidy, out)
+     assert out.exists() and out.stat().st_size > 0
++
++
++# --------------------------------------------------------------------------------------------------
++# Contract: the four places the v3 renderer silently disagreed with the browser.
++# --------------------------------------------------------------------------------------------------
++
++
++def test_non_v4_spec_is_rejected(tmp_path: Path) -> None:
++    """A v3 spec RAISES instead of rendering.
++
++    parseSpec (spec.ts) hard-rejects `v !== 4`; the v3 renderer had no version gate at all, so a v4
++    spec pasted into it drew an unfiltered, layerless plot that LOOKED like a real figure."""
++    tidy = _fixture_tidy(tmp_path)
++    v3 = {"v": 3, "view": "plot", "x": "arity", "y": "asr",
++          "split": [{"param": "base_model", "channel": "color"}], "facet": "trigger_form"}
++    with pytest.raises(ValueError, match="v4"):
++        render.render_spec(v3, tidy, tmp_path / "nope.png")
++
++
++def test_layer_facets_actually_select() -> None:
++    """A layer's own `facets` narrow that layer's rows — the whole point of the v4 reshape."""
++    df = pl.DataFrame({"base_model": ["a", "a", "b"], "asr": [0.1, 0.2, 0.3]})
++    mask = render._layer_mask(df, {"name": "only-a", "facets": {"base_model": ["a"]}})
++    assert mask.to_list() == [True, True, False]
++
++
++def test_layer_ranges_and_facets_are_anded() -> None:
++    """A plain layer ANDs its facets with its ranges (and a null in a ranged column drops the row)."""
++    df = pl.DataFrame({"base_model": ["a", "a", "b"], "asr": [0.1, 0.9, 0.9]})
++    mask = render._layer_mask(df, {
++        "name": "a-and-high", "facets": {"base_model": ["a"]},
++        "ranges": [{"metric": "asr", "min": 0.5, "max": 1.0}],
++    })
++    assert mask.to_list() == [False, True, False]
++
++
++def test_group_layer_is_the_union_of_its_members() -> None:
++    """A GROUP layer draws the UNION of its members and ignores its own (empty) facets/ranges.
++
++    A row matched by BOTH members appears once: the mask is a row selector over one frame, which is
++    the "deduped by run identity" rule for a tidy frame whose row IS one run/point."""
++    df = pl.DataFrame({"base_model": ["a", "b", "c"], "trigger_form": ["x", "x", "y"]})
++    mask = render._layer_mask(df, {
++        "name": "pooled", "color": "#38bdf8",
++        "members": [
++            {"name": "m1", "facets": {"base_model": ["a"]}},
++            {"name": "m2", "facets": {"trigger_form": ["x"]}},  # also matches row 0
++        ],
++    })
++    assert mask.to_list() == [True, True, False]
++    assert mask.sum() == 2  # row 0 matched twice, counted once
++
++
++def test_absent_layers_means_one_unfiltered_layer() -> None:
++    """An omitted `layers` is the pristine default single "all runs" layer, not "no layers"."""
++    layers = render._layers({"v": 4, "view": "plot"})
++    assert [l["name"] for l in layers] == ["all runs"]
++    assert layers[0]["color"] == "#e8a040"  # CATEGORY_PALETTE[0]
++
++
++def test_bin_edges_match_the_browser_on_ties() -> None:
++    """`compute_bin_edges` keeps DUPLICATE edges, as bins.ts computeBinEdges does.
++
++    The old renderer ran `np.unique(np.quantile(...))`, which collapsed tied edges: a 4-bucket
++    request over a tied distribution silently became fewer buckets with different labels."""
++    values = np.array([0.0, 0.0, 0.0, 1.0])
++    edges = render.compute_bin_edges(values, 4, "quantile")
++    assert len(edges) == 5  # n+1 boundaries for n=4, ties and all
++    assert edges[0] == 0.0 and edges[-1] == 1.0
++    assert edges[1] == 0.0  # the tied edge SURVIVES
++
++
++def test_bin_edges_width_mode_is_equal_width() -> None:
++    edges = render.compute_bin_edges(np.array([0.0, 1.0, 2.0, 3.0, 4.0]), 4, "width")
++    assert edges == [0.0, 1.0, 2.0, 3.0, 4.0]
++
++
++def test_bin_count_is_clamped_to_one_through_eight() -> None:
++    """clampBinCount: 1..8, and a non-finite request falls back to 2."""
++    assert len(render.compute_bin_edges(np.array([0.0, 1.0]), 99, "width")) == 9   # clamped to 8
++    assert len(render.compute_bin_edges(np.array([0.0, 1.0]), 0, "width")) == 2    # clamped to 1
++    assert len(render.compute_bin_edges(np.array([0.0, 1.0]), "x", "width")) == 3  # default 2
++
++
++def test_bucket_of_matches_bucket_semantics() -> None:
++    """bucketOf: [e_i, e_i+1) with the last bucket closed on the right; out-of-range clamps."""
++    edges = [0.0, 1.0, 2.0]
++    assert render.bucket_of(-5.0, edges) == 0
++    assert render.bucket_of(0.5, edges) == 0
++    assert render.bucket_of(1.0, edges) == 1
++    assert render.bucket_of(2.0, edges) == 1
++    assert render.bucket_of(99.0, edges) == 1
++
++
++def test_dotted_table_column_ids_bridge_to_tidy_names() -> None:
++    """Browser table column ids are dotted; the tidy frame names them bare."""
++    df = pl.DataFrame({"asr": [0.1], "base_model": ["a"]})
++    assert render._tidy_col(df, "headline.asr") == "asr"
++    assert render._tidy_col(df, "training.base_model") == "base_model"
++    assert render._tidy_col(df, "asr") == "asr"
++    assert render._tidy_col(df, "headline.nope") is None
++
++
++def test_layer_style_maps_shape_and_dash_channels() -> None:
++    """shape/dash indices mirror styling.ts + glyph.tsx and cycle, never raise."""
++    assert render._layer_style({"name": "d"}) == ("o", "-")
++    assert render._layer_style({"name": "s", "style": {"shape": 1}})[0] == "s"
++    assert render._layer_style({"name": "c", "style": {"shape": 6}})[0] == "o"  # SHAPE_COUNT wrap
++    assert render._layer_style({"name": "x", "style": {"dash": 1}})[1] == (0, (6, 3))
++
++
++def test_spec_metric_refs_reach_layer_and_facet_metrics() -> None:
++    """Every place v4 can name a metric is collected, so the pivot brings all of them in.
++
++    v3 read only x/y/color_by and the TOP-LEVEL ranges, so a metric named only inside a layer's
++    ranges, a group member's ranges, or a bins facet never got pivoted — its filter matched nothing
++    and its panels collapsed, with no error."""
++    refs = set(render._spec_metric_refs({
++        "v": 4, "view": "groupplot", "x": "a", "y": "b", "color_by": "c",
++        "ranges": [{"metric": "top", "min": 0, "max": 1}],
++        "layers": [
++            {"name": "l", "ranges": [{"metric": "in_layer", "min": 0, "max": 1}]},
++            {"name": "g", "members": [{"name": "m", "ranges": [{"metric": "in_member", "min": 0, "max": 1}]}]},
++        ],
++        "facet": {"kind": "bins", "metric": "in_facet", "n": 2, "mode": "quantile"},
++    }))
++    assert {"a", "b", "c", "top", "in_layer", "in_member", "in_facet"} <= refs
+-- 
+2.53.0
+
