@@ -222,6 +222,40 @@ audit prints the deployed code's state and every `.git/config` on the box that
 still carries a credential in its remote URL (paths only, never contents); it
 exits non-zero while any of them remain.
 
+### Clearing the token copies that already exist
+
+```
+bash tom.quest/worker/scrub-token-urls.sh --dry-run   # report only
+bash tom.quest/worker/scrub-token-urls.sh             # rewrite them
+```
+
+Deploying the clean-URL code stops NEW copies of the token being written into
+remote URLs. It does not remove the copies already on disk, and nothing else
+does. Measured on the Jarvis Box at 00:29 UTC on 2026-09-01, before any of
+this was deployed: 17 checkouts of 32 scanned carried a credential in a remote
+URL — 8 under `/var/cache/tts` and 9 under `/tmp` — across three repositories
+(ComplexMultiTrigger 8, tom.quest 7, WikiTom 2). The ones under
+`/var/cache/tts/sessions` disappear when their session ends, and the cron
+jobs' cache clone repairs its own URL on the next tick, but a clone a session
+made for itself under `/tmp` outlives that session and no cleanup rule touches
+its contents.
+
+`scrub-token-urls.sh` rewrites each of those remote URLs to its plain form in
+place, deleting nothing; the checkout keeps working because the credential
+helper supplies the token at ask time instead. It refuses to run unless
+`/usr/local/bin/tts-git-credential` is installed AND registered as git's
+effective `credential.helper`, because a cleaned URL has no other way to
+authenticate (`--force` overrides that, and is meant for fixtures and for a
+box being taken out of service). It prints paths and cleaned URLs only, never
+a line that still holds a credential. `setup.sh` runs it automatically, after
+installing the helper and after copying the new job scripts into place.
+
+It does not make revoking the old token safe on its own: the running daemon
+holds the value it read at startup and keeps writing it into new session
+clones until it is restarted, so scrubbing at 12:00 says nothing about the
+clone minted at 12:01. The revocation still waits for the deploy, and
+`rotate-github-token.sh --audit` is what says when.
+
 ## Gmail credentials (one-time)
 
 poll-gmail needs three keys in `/etc/tts/worker.env` — `GMAIL_CLIENT_ID`,

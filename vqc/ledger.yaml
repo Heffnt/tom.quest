@@ -301,7 +301,26 @@
     reported /opt/tts still tokenised and 19 .git/config files (10 under
     /var/cache/tts, 9 under /tmp) still carrying a credential, so the answer
     today is no. Four assertions in worker/credentials.test.ts guard it,
-    mutation-checked six ways.
+    mutation-checked six ways. One thing neither half removes was found
+    2026-09-01 (session q97bfet3...): the rollout stops NEW tokenised URLs
+    being written and leaves every copy already on disk. Measured 00:29 UTC
+    that day, 17 checkouts of 32 scanned still carried a credential — 8 under
+    /var/cache/tts and 9 under /tmp — across THREE repositories, not two
+    (ComplexMultiTrigger 8, tom.quest 7, WikiTom 2; WikiTom is private too,
+    unauthenticated API read 404). The work trees under /var/cache/tts/sessions
+    die with their session and the cron cache clone repairs its own URL, but a
+    clone a session made for itself under /tmp outlives it and nothing touches
+    its contents — four such clones of ComplexMultiTrigger were created between
+    23:04 and 23:09 the previous evening, so the set refills while the rollout
+    waits. worker/scrub-token-urls.sh rewrites those remote URLs in place to
+    their plain form, deleting nothing, and refuses unless the credential
+    helper is installed AND registered (a cleaned URL has no other way to
+    authenticate); setup.sh calls it after the helper and after the new job
+    scripts, and the --audit output points at it. It does not let the old token
+    be revoked any earlier: the running daemon keeps minting tokenised URLs
+    from the value it read at startup until it is restarted. Five more
+    assertions in worker/credentials.test.ts, three of them running the script
+    against fixture checkouts, mutation-checked six ways.
   graduates_when: >-
     After a setup.sh rollout, a session pushes session/<id> and opens a pull
     request with gh, and its clone's .git/config contains no token; and one
