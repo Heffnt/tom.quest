@@ -25,10 +25,17 @@ choice:
   - "vqc/todos.yaml" # decided intent (the todo file IS a choice-file)
   - "vqc/steering.yaml"
   - ".claude/launch.json"
+  # The jargon an agent may use without defining it — Tom's ruling, read by
+  # scripts/grade-writing-standard.mjs. Not written yet; the rule that reads it
+  # stays ungraded until it is.
+  - "vqc/known-jargon.txt"
 
 derived:
   - "convex/_generated/**"
   - "pnpm-lock.yaml"
+  # Written only by `pnpm grade:writing`. Hand-editing it would shrink the
+  # rewrite backlog without any prose having been rewritten.
+  - "vqc/writing-standard-findings.json"
 
 scratch:
   - "tts/**" # design-history docs; the living spec is WikiTom tts/spec.md

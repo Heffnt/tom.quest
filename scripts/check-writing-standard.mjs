@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// check-writing-standard.mjs — how many stored briefs and ground-up
-// explanations fail WRITING_STANDARD, and which ones.
+// check-writing-standard.mjs — how many stored ground-up explanations fail the
+// SHAPE rules of WRITING_STANDARD, and which ones.
 //
 //   node scripts/check-writing-standard.mjs           # report + ratchet gate
 //   node scripts/check-writing-standard.mjs --list     # name every failure
@@ -21,10 +21,23 @@
 //
 // NOT A CI GATE, on purpose: it reads PROD Convex over the network and needs
 // TTS_WORKER_KEY, which CI does not hold. It is a reporting rung, run on
-// demand and before touching prose in bulk. Everything it checks is a
-// MECHANICAL rule of the standard — the semantic ones ("defines every term at
-// first use", "describes an artifact before naming it") are not scriptable,
-// and this script never claims a passing document is well written.
+// demand and before touching prose in bulk.
+//
+// WHAT IT DOES NOT GRADE, AND WHERE THAT LIVES NOW. Everything below is a rule
+// about the SHAPE of a document — decidable by matching a pattern against the
+// raw characters. The rules about MEANING ("defines every term at first use",
+// "describes an artifact before naming it", "no pronoun where a name belongs")
+// are decidable by nothing of the kind, so scripts/grade-writing-standard.mjs
+// grades them by asking a language model and writes a dated advisory list. Two
+// scripts, two numbers, on purpose: a language model can grade the same
+// unchanged text differently on two runs, so its count can rise with no prose
+// having changed, and a ratchet must never do that. THIS count is the ratchet.
+// A document passing here is not thereby well written.
+//
+// STORED BRIEFS ARE OUTSIDE THIS COUNT. A brief is markdown by design and
+// every rule below describes an HTML document, so no rule here binds a brief.
+// Inventing markdown shape rules would enforce rules the standard does not
+// state. The meaning-based grader reads briefs and explanations both.
 
 const SITE = process.env.CONVEX_SITE_URL;
 const KEY = process.env.TTS_WORKER_KEY;
@@ -38,8 +51,8 @@ const KEY = process.env.TTS_WORKER_KEY;
 //
 // Raising it is not a fix. A failing count means prose was written to no
 // standard; the answer is to rewrite that prose, not to move the line.
-// (Zero of 372 stored briefs fail — briefs are markdown by design and no
-// mechanical rule of the standard binds them.)
+// (Stored briefs are not read at all — see the header: no shape rule binds
+// markdown, and the meaning-based grader is where briefs are graded.)
 const BASELINE = 0;
 
 // The mechanically checkable half of "A GROUND-UP EXPLANATION IS A COMPLETE
