@@ -181,8 +181,46 @@ does not have it yet. Until the new daemon and job code are deployed the box
 still clones with the token in the remote URL, and git prefers a credential
 embedded in the URL over any helper, so installing the helper early changes
 nothing that already works. The other order fails: clean-URL code on a box
-with no helper cannot clone or push at all, because both repositories are
-private.
+with no helper cannot clone ComplexMultiTrigger, which is private and which
+every session clones, and cannot push to either repository. (Measured
+2026-09-01: an unauthenticated API read of ComplexMultiTrigger returns 404 and
+an anonymous `ls-remote` of it fails, while tom.quest returns 200 and clones
+anonymously — tom.quest is public, so only its pushes need the credential.)
+
+### Rotating the GitHub token
+
+```
+bash tom.quest/worker/rotate-github-token.sh --audit   # read-only report
+bash tom.quest/worker/rotate-github-token.sh           # install a new token
+```
+
+The script reads the new token from stdin — never from an argument, which
+`ps` can read — checks it against both repositories BEFORE writing anything,
+replaces only the `GH_TOKEN` line of `/etc/tts/worker.env` by atomic rename,
+leaves no backup copy of the old value, re-runs `install-git-credentials.sh`
+so `gh`'s file is regenerated, and restarts nothing.
+
+Revoke the old token LAST, not first. Three consumers pick a new value up at
+different moments: the cron jobs read `worker.env` once per run (live at the
+next tick), the git credential helper re-reads it on every git request (live
+immediately), but the session-host daemon calls `loadEnv()` once in `main()`
+and keeps that object for its whole life. On a box still running the
+tokenised-URL code the daemon therefore writes the value it read at startup
+into every session clone's remote URL, and keeps using it until it is
+restarted — which ends every live autonomous session. Measured 2026-09-01:
+when a remote URL carries a credential and GitHub rejects it, git calls the
+credential helper with `erase` and never with `get`, so a helper does not
+rescue a checkout whose URL holds a revoked token. Revoking first would break
+every live session's push and every new private-repo clone until the daemon
+restarted.
+
+The order that costs nothing: create the replacement while the old token is
+still valid → run this script → deploy the clean-URL code with `setup.sh` at a
+quiet moment → run `--audit` until it reports that nothing on the box still
+authenticates with an older token → then revoke the old one in GitHub. The
+audit prints the deployed code's state and every `.git/config` on the box that
+still carries a credential in its remote URL (paths only, never contents); it
+exits non-zero while any of them remain.
 
 ## Gmail credentials (one-time)
 

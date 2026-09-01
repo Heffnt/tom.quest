@@ -281,7 +281,27 @@
     credential embedded in a remote URL over any helper, so the helper is
     inert on a box still running the old tokenised-URL code. Still not done,
     and both are Tom's: the token is NOT rotated (worker.env unchanged since
-    17:02 UTC) and nothing is deployed (/opt/tts dated 17:03 UTC).
+    17:02 UTC) and nothing is deployed (/opt/tts dated 17:03 UTC). The
+    ROTATION half was measured 2026-09-01 (session q97ejb4p...) and it does
+    not commute with the rollout: session-host.mjs calls loadEnv() ONCE in
+    main() and hands that object to every Session, so a daemon running the
+    tokenised-URL code keeps minting clone URLs from the token it read at
+    startup until it is restarted; and a probe with bogus tokens showed git
+    does NOT fall back to a credential helper when a URL-embedded credential
+    is rejected (helper called with `erase`, never `get`), so the installed
+    helper cannot rescue those checkouts. Revoking before the rollout would
+    therefore break every live session's push and every new private-repo
+    clone. Also corrected by measurement: tom.quest is PUBLIC (API 200,
+    anonymous ls-remote succeeds) — it is ComplexMultiTrigger's privacy alone
+    that makes a missing helper fatal. New worker/rotate-github-token.sh
+    installs a replacement token (stdin only, verified against both repos
+    before anything is written, atomic rename of the GH_TOKEN line, no backup
+    copy, no restart) and carries a read-only --audit that answers "can the
+    old token be revoked yet?": run on the Jarvis Box 2026-09-01 00:15 UTC it
+    reported /opt/tts still tokenised and 19 .git/config files (10 under
+    /var/cache/tts, 9 under /tmp) still carrying a credential, so the answer
+    today is no. Four assertions in worker/credentials.test.ts guard it,
+    mutation-checked six ways.
   graduates_when: >-
     After a setup.sh rollout, a session pushes session/<id> and opens a pull
     request with gh, and its clone's .git/config contains no token; and one

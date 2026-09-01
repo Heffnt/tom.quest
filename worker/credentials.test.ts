@@ -22,8 +22,12 @@ import { describe, expect, it } from "vitest";
 //      (/etc/gitconfig), NOT `--global` ($HOME/.gitconfig) — the daemon and
 //      every process it starts run with no HOME, and `git config --global` is
 //      a fatal error in that case, so a globally registered helper would be
-//      invisible exactly where the clean URLs are used, and both repositories
-//      are private, so every clone and push would fail;
+//      invisible exactly where the clean URLs are used, and every session
+//      clones ComplexMultiTrigger, which is private (measured 2026-09-01: an
+//      unauthenticated API read of it returns 404 and an anonymous ls-remote
+//      fails, while tom.quest reads 200 and clones anonymously — so it is the
+//      private repository, not "both of them", that makes a missing helper
+//      fatal), so every clone of it and every push to either would fail;
 //   3. the systemd unit and the cron file state HOME=/root, because `gh`
 //      resolves its configuration directory from HOME and cannot find its
 //      credential file without one.
@@ -38,6 +42,7 @@ import { describe, expect, it } from "vitest";
 const WORKER_DIR = path.resolve(__dirname);
 const SETUP_SH = path.join(WORKER_DIR, "setup.sh");
 const INSTALL_SH = path.join(WORKER_DIR, "install-git-credentials.sh");
+const ROTATE_SH = path.join(WORKER_DIR, "rotate-github-token.sh");
 
 // A remote URL that carries a credential: anything between "//" and "@github.com".
 const TOKENISED_REMOTE = /https?:\/\/[^\s"'`]*@github\.com/;
@@ -126,6 +131,66 @@ describe("worker credentials", () => {
     expect(code).not.toMatch(/systemctl|service\s+\w+\s+restart/);
     // A report-only mode, so a box can be asked whether it is ready.
     expect(install).toContain('if [ "${1:-}" = "--check" ]');
+  });
+
+  // Rotating the token is the other half of the same defect: the value that
+  // was written into remote URLs has to be replaced, and the replacement must
+  // not itself leak or break the box. rotate-github-token.sh does that, and
+  // each property below is one way it could silently stop being safe.
+  it("the rotation script takes the token on stdin, never as an argument", () => {
+    const rotate = fs.readFileSync(ROTATE_SH, "utf8");
+    expect(rotate).toMatch(/IFS= read -rs? NEW_TOKEN/);
+    // Every place the value reaches another program, it goes through the
+    // environment or through stdin. argv is readable by `ps` for as long as
+    // the command runs, and a token on a command line is the same class of
+    // exposure as a token in a remote URL.
+    expect(rotate).toContain("GIT_ASKPASS=");             // git: env, not argv
+    expect(rotate).toContain("curl -fsS -K -");           // curl: stdin, not -H
+    expect(rotate).not.toMatch(/NEW_TOKEN="\$[1-9]/);
+    expect(rotate).not.toMatch(/-H "Authorization: Bearer \$NEW_TOKEN"/);
+  });
+
+  it("the rotation script proves the new token works before it writes it", () => {
+    const rotate = fs.readFileSync(ROTATE_SH, "utf8");
+    const checked = rotate.indexOf("ls-remote --heads");
+    const written = rotate.indexOf('mv -f "$TMP_ENV" "$ENV_FILE"');
+    expect(checked).toBeGreaterThan(-1);
+    expect(written).toBeGreaterThan(-1);
+    // A token that cannot read the private repository stops every session
+    // start; installing it and finding out later costs a fleet outage.
+    expect(checked).toBeLessThan(written);
+  });
+
+  it("the rotation script writes the env file atomically and keeps no backup", () => {
+    const rotate = fs.readFileSync(ROTATE_SH, "utf8");
+    expect(rotate).toContain('TMP_ENV="$(mktemp "$ENV_FILE.new.XXXXXX")"');
+    expect(rotate).toContain('chmod 600 "$TMP_ENV"');
+    expect(rotate).toContain('mv -f "$TMP_ENV" "$ENV_FILE"');
+    // A backup would be a second plaintext home for the value being retired,
+    // which is the thing this whole change exists to stop. Comments are
+    // dropped first: the script SAYS it keeps no backup, and naming the thing
+    // it declines to write must not be what fails the test.
+    const code = rotate
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    expect(code).not.toMatch(/cp\s+"?\$ENV_FILE"?\s|\.bak\b/);
+  });
+
+  it("the rotation script restarts nothing and regenerates gh through the installer", () => {
+    const rotate = fs.readFileSync(ROTATE_SH, "utf8");
+    const code = rotate
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    // Same reason as the installer: a restart here would end every live
+    // autonomous session, and rotation needs none — the helper re-reads
+    // worker.env on every git request.
+    expect(code).not.toMatch(/systemctl|service\s+\w+\s+restart/);
+    // One copy of the credential procedure, not two.
+    expect(rotate).toContain('bash "$WORKER_DIR/install-git-credentials.sh"');
+    // The read-only report that answers "can the old token be revoked yet?".
+    expect(rotate).toContain("--audit");
   });
 
   it("the helper answers only `get`, only for github.com, and never writes", () => {
