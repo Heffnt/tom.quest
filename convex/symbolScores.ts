@@ -1,6 +1,6 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { requireViewerId } from "./authRoles";
 
 export const topScores = query({
   args: { limit: v.optional(v.number()) },
@@ -22,8 +22,7 @@ export const topScores = query({
 export const submitScore = mutation({
   args: { username: v.string(), timeMs: v.number() },
   handler: async (ctx, { username, timeMs }) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Authentication required");
+    const userId = await requireViewerId(ctx);
     return await ctx.db.insert("symbolScores", {
       userId,
       username,
