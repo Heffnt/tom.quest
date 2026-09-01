@@ -332,9 +332,11 @@ NEXT STEPS (manual, in order):
       SESSIONS_WORKER_KEY was empty during this run, re-run setup.sh after
       filling it so the tts-session-host daemon gets enabled.)
 
-  2. Log in both Claude Max accounts (interactive, over this SSH session):
-       tts-account login gmail
-       tts-account login wpi
+  2. Log in both Claude Max accounts (interactive, over this SSH session —
+     run it twice, switching the BROWSER profile between runs; each login is
+     filed into the slot matching the account that actually signed in):
+       tts-account login
+       tts-account login
 
   3. Pick the account the jobs run under:
        tts-account use gmail

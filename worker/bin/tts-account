@@ -10,16 +10,29 @@
 #
 # Usage:
 #   tts-account use gmail|wpi     repoint the active symlink
-#   tts-account status            show which account is active
-#   tts-account login gmail|wpi   interactive `claude /login` for that account
-#                                 (run this OVER SSH, interactively — it opens
-#                                 a browser-auth flow; not for cron)
+#   tts-account status            show which account is active, and which
+#                                 email each slot actually holds
+#   tts-account login             interactive `claude /login`; the credentials
+#                                 are FILED into the slot matching the account
+#                                 that actually signed in (@wpi.edu -> wpi,
+#                                 @gmail.com -> gmail). Run OVER SSH,
+#                                 interactively — it opens a browser-auth
+#                                 flow; not for cron. An optional gmail|wpi
+#                                 argument is only a stated expectation: the
+#                                 command says so if a different account
+#                                 landed, but files it correctly either way.
+#                                 (Merged 2026-09-01: `login wpi` and `login
+#                                 gmail` ran the identical browser flow, and
+#                                 which account landed was decided by the
+#                                 browser's signed-in session, not the
+#                                 argument — so the argument silently filed
+#                                 the wrong account into the named slot.)
 set -euo pipefail
 
 BASE=/root/.claude-accounts
 
 usage() {
-  echo "usage: tts-account use gmail|wpi | tts-account status | tts-account login gmail|wpi" >&2
+  echo "usage: tts-account use gmail|wpi | tts-account status | tts-account login [gmail|wpi]" >&2
   exit 1
 }
 
@@ -30,19 +43,32 @@ check_acct() {
   esac
 }
 
-# Which email a slot's config dir is actually logged in as ("" if none).
-# The slot NAME is an intention; the OAuth page decides the fact — on
-# 2026-08-31 `login wpi` quietly landed the already-signed-in gmail account
-# in the wpi slot, so both slots held one account and the usage-limit
-# auto-switch switched to itself.
-slot_email() {
-  python3 - "$BASE/$1/.claude.json" 2>/dev/null <<'PY'
+# Which email a config dir is actually logged in as ("" if none). The slot
+# NAME is an intention; the OAuth page decides the fact — on 2026-08-31
+# `login wpi` quietly landed the already-signed-in gmail account in the wpi
+# slot, so both slots held one account and the usage-limit auto-switch
+# switched to itself. That is why login now files by this fact.
+dir_email() {
+  python3 - "$1/.claude.json" 2>/dev/null <<'PY'
 import json, sys
 try:
     print((json.load(open(sys.argv[1])).get("oauthAccount") or {}).get("emailAddress") or "")
 except Exception:
     print("")
 PY
+}
+
+slot_email() {
+  dir_email "$BASE/$1"
+}
+
+# Which slot an email belongs in ("" if it matches no known account).
+email_slot() {
+  case "$1" in
+    *@wpi.edu) echo wpi ;;
+    heffnt@gmail.com|*@gmail.com) echo gmail ;;
+    *) echo "" ;;
+  esac
 }
 
 case "${1:-}" in
@@ -69,19 +95,34 @@ case "${1:-}" in
     fi
     ;;
   login)
-    check_acct "${2:-}"
-    mkdir -p "$BASE/$2"
-    echo "Logging in the '$2' account (interactive — follow the prompts)."
-    echo "NOTE: the browser page may preselect whatever Google/Anthropic"
-    echo "account is already signed in — pick the $2 account explicitly."
-    CLAUDE_CONFIG_DIR="$BASE/$2" claude /login
-    got="$(slot_email "$2")"
-    echo "the '$2' slot is now logged in as: ${got:-NOT LOGGED IN}"
-    other=$([ "$2" = gmail ] && echo wpi || echo gmail)
-    if [ -n "$got" ] && [ "$got" = "$(slot_email "$other")" ]; then
-      echo "WARNING: that is the SAME account the '$other' slot holds — the"
-      echo "usage-limit auto-switch now switches to itself. Re-run this login"
-      echo "and pick the other account on the browser's account chooser."
+    # One flow, filed by outcome. An argument is only an expectation.
+    expect="${2:-}"
+    if [ -n "$expect" ]; then check_acct "$expect"; fi
+    echo "Logging in (interactive — follow the prompts)."
+    echo "NOTE: the browser signs in whatever account ITS profile holds —"
+    echo "switch the browser profile first if you want the other account."
+    tmp="$(mktemp -d "$BASE/login.XXXXXX")"
+    CLAUDE_CONFIG_DIR="$tmp" claude /login || { rm -rf "$tmp"; exit 1; }
+    got="$(dir_email "$tmp")"
+    if [ -z "$got" ]; then
+      rm -rf "$tmp"
+      echo "no account landed (login aborted?) — nothing changed" >&2
+      exit 1
+    fi
+    slot="$(email_slot "$got")"
+    if [ -z "$slot" ]; then
+      rm -rf "$tmp"
+      echo "signed in as '$got', which matches no known slot (wpi = *@wpi.edu," >&2
+      echo "gmail = *@gmail.com) — discarded; nothing changed" >&2
+      exit 1
+    fi
+    rm -rf "$BASE/$slot"
+    mv "$tmp" "$BASE/$slot"
+    echo "filed into the '$slot' slot: $got"
+    if [ -n "$expect" ] && [ "$expect" != "$slot" ]; then
+      echo "NOTE: you asked to log in '$expect' but the browser signed in the"
+      echo "$slot account — filed where it belongs. To fill the '$expect'"
+      echo "slot, switch the browser profile and run: tts-account login"
     fi
     ;;
   *)
