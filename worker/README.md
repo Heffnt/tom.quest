@@ -24,10 +24,13 @@ on a schedule:
    restricts token creation; Tom's request form is pending).
 4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
-   Convex. If it fails, the Convex-side fallback prep (4:45) and the
-   always-sends 5 a.m. digest cover the day — a digest that reports missing
-   prep is the "worker is broken" signal; no digest at all means Convex/Slack
-   is broken. That split is the whole monitoring story.
+   Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
+   day's queue. The digest half of that split is OFF — Tom ruled outbound Slack
+   off on 2026-08-29, so the 5 a.m. digest crons are unregistered
+   (`convex/crons.ts:32-35`) and `sendDigest` returns on
+   `OUTBOUND_SLACK_ENABLED = false`. The queue and digest text are still
+   written and read in the app; nothing is sent, so there is no send-or-silence
+   monitoring signal today.
 5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
 6. **apply-rulings** (every 10 min) — see the ruling loop below.
 7. **execute-approved** (hourly at :45) — see the ruling loop below.
