@@ -89,6 +89,15 @@ fi
 # Trading a full tmpfs for a full root filesystem would be a worse failure:
 # a full / breaks the daemon, the logs and the package manager, not just
 # scratch. Refuse rather than create that.
+#
+# This floor is only the check AT INSTALL TIME. The continuous guard is in the
+# scheduler: session-host.mjs reports free root-filesystem space as
+# load.freeDiskMb and the autonomous admission gate stops admitting sessions
+# below claudeAutoConfig.minFreeDiskMb, whose default is this same 10 GB. That
+# guard exists because the tmpfs's own 3.8 GB size WAS the bound on runaway
+# scratch, and this script removes it: measured 2026-09-01, files created in
+# /tmp within one hour totalled 1.9 GB, none of it old enough for the two-day
+# age rule to touch.
 FREE_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
 if [ "${FREE_GB:-0}" -lt "$MIN_FREE_GB" ]; then
   echo "  REFUSING: only ${FREE_GB} GB free on /, below the ${MIN_FREE_GB} GB floor." >&2

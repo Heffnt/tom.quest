@@ -211,6 +211,35 @@ runaway scratch now fills the root filesystem instead of the tmpfs, which is
 the worse failure of the two; the script refuses below 10 GB free, and the
 budget is 12x larger than the tmpfs it replaces.
 
+Writing to disk instead of RAM is not a speed problem here: `/dev/sda1` is
+non-rotational, and 512 MB written with `conv=fdatasync` measured 1.8 GB/s
+against 3.4 GB/s on a tmpfs (2026-09-01).
+
+### The disk floor in the scheduler, which is what makes losing the tmpfs safe
+
+The 3.8 GB tmpfs was itself a bound on runaway scratch: a session that wrote
+without limit hit `ENOSPC` in `/tmp` and broke only scratch. On the root
+filesystem the bound is 75 GB and what breaks is the box — the daemon, the
+journal and the package manager all live there. Measured 2026-09-01 at 00:05
+UTC, files in `/tmp` created within the preceding hour totalled 1.9 GB, and
+within the preceding six hours 2.8 GB; the two-day age rule deletes none of
+that, because none of it is two days old. So the age rule cannot be the only
+thing standing between agent scratch and a full root filesystem.
+
+The scheduler therefore gates on free disk exactly as it already gates on free
+memory. `session-host.mjs` reports `load.freeDiskMb` (`statfs("/")`, `bavail`,
+so the ext4 reserve is not counted as usable) and
+`claudeAutoConfig.minFreeDiskMb` — default 10240, the same 10 GB
+`tmp-on-disk.sh` refuses to install below — stops new autonomous admissions
+under it. Sessions already running are left alone. A **missing** `freeDiskMb`
+never refuses admission: a daemon older than the field would otherwise hold the
+fleet shut permanently, which is worse than the failure being guarded. Both
+halves are pinned by `convex/claudeSessions.test.ts` ("stands down on low free
+disk, but not when free disk is unreported").
+
+This lands with the merge and starts working at the daemon's next start, which
+is the same reboot that moves `/tmp` off RAM.
+
 Exemptions, if a path in `/tmp` must be spared, go in a *separate*
 `/etc/tmpfiles.d/` file as `x /tmp/<path>` lines — never in `tmp.conf`, which
 `setup.sh` rewrites on every run.

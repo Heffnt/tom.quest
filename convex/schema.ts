@@ -1095,6 +1095,11 @@ export default defineSchema({
         cpus: v.number(),
         freeMemMb: v.number(),
         totalMemMb: v.number(),
+        // Free space on the box's ROOT filesystem. OPTIONAL because a daemon
+        // older than this field reports without it, and because the daemon
+        // omits it when the reading itself fails; the scheduler treats an
+        // absent value as no signal rather than as zero.
+        freeDiskMb: v.optional(v.number()),
         liveSessions: v.number(),
       }),
     ),
@@ -1110,6 +1115,10 @@ export default defineSchema({
     enabled: v.boolean(),
     maxLoadPerCpu: v.number(), // admit while loadavg1 / cpus <= this
     minFreeMemMb: v.number(), // admit while freeMemMb >= this
+    // Admit while freeDiskMb >= this. OPTIONAL so the config rows written
+    // before the field existed still validate; the scheduler falls back to the
+    // default when it is absent.
+    minFreeDiskMb: v.optional(v.number()),
     maxLiveAutonomous: v.number(),
     maxNewPerTick: v.number(),
     updatedAt: v.number(),

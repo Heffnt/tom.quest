@@ -70,6 +70,7 @@ const HEALTHY_LOAD = {
   cpus: 8,
   freeMemMb: 8192,
   totalMemMb: 16384,
+  freeDiskMb: 40960,
   liveSessions: 0,
 };
 
@@ -91,6 +92,7 @@ async function enableAuto(
     enabled: boolean;
     maxLoadPerCpu: number;
     minFreeMemMb: number;
+    minFreeDiskMb: number;
     maxLiveAutonomous: number;
     maxNewPerTick: number;
   }> = {},
@@ -1841,6 +1843,54 @@ describe("autonomous session scheduler", () => {
     });
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     expect(await autoSessions(t)).toHaveLength(0);
+  });
+
+  // witness: remove the freeDiskMb clause from the admission gate and the first
+  // half goes red; make a MISSING freeDiskMb refuse admission and the second
+  // half goes red. Both halves matter. /tmp is no longer a filesystem in RAM
+  // whose own 3.8 GB size bounded runaway agent scratch (worker/tmp-on-disk.sh)
+  // — scratch lands on the root filesystem now, so the scheduler has to watch
+  // it; and a daemon too old to report the number must not be read as a box
+  // with no disk, which would hold the fleet shut forever.
+  it("stands down on low free disk, but not when free disk is unreported", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await eligibleTodo(tom);
+    await enableAuto(t);
+
+    await heartbeat(t, { ...HEALTHY_LOAD, freeDiskMb: 2048 }); // under 10 GB
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await autoSessions(t)).toHaveLength(0);
+
+    // The same box with the field absent entirely: admission proceeds.
+    const { freeDiskMb: _omitted, ...noDiskReport } = HEALTHY_LOAD;
+    await t.run(async (ctx) => {
+      const health = await ctx.db.query("claudeDaemonHealth").first();
+      if (health) await ctx.db.patch(health._id, { load: noDiskReport });
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(1);
+  });
+
+  // Not a mutation witness: it pins the Convex behaviour the code depends on,
+  // that an omitted optional argument arrives with its key absent rather than
+  // present-and-undefined. A patch DOES delete a field whose value is
+  // explicitly undefined, so if that ever changed, a caller written before
+  // this field existed would silently clear a floor Tom had set.
+  it("keeps a stored minFreeDiskMb when a caller omits the field", async () => {
+    const t = convexTest({ schema, modules });
+    await enableAuto(t, { minFreeDiskMb: 20480 });
+    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
+      enabled: true,
+      maxLoadPerCpu: 0.8,
+      minFreeMemMb: 1024,
+      maxLiveAutonomous: 8,
+      maxNewPerTick: 2,
+    });
+    const row = await t.run(
+      async (ctx) => await ctx.db.query("claudeAutoConfig").first(),
+    );
+    expect(row?.minFreeDiskMb).toBe(20480);
   });
 
   it("stands down when the daemon heartbeat is stale or absent", async () => {

@@ -27,6 +27,7 @@ type Draft = {
   enabled: boolean;
   maxLoadPerCpu: string;
   minFreeMemMb: string;
+  minFreeDiskMb: string;
   maxLiveAutonomous: string;
   maxNewPerTick: string;
 };
@@ -78,6 +79,7 @@ function AutoFleetStrip() {
       enabled: config.enabled,
       maxLoadPerCpu: String(config.maxLoadPerCpu),
       minFreeMemMb: String(config.minFreeMemMb),
+      minFreeDiskMb: String(config.minFreeDiskMb),
       maxLiveAutonomous: String(config.maxLiveAutonomous),
       maxNewPerTick: String(config.maxNewPerTick),
     });
@@ -88,6 +90,7 @@ function AutoFleetStrip() {
     const numbers = {
       maxLoadPerCpu: Number(draft.maxLoadPerCpu),
       minFreeMemMb: Number(draft.minFreeMemMb),
+      minFreeDiskMb: Number(draft.minFreeDiskMb),
       maxLiveAutonomous: Number(draft.maxLiveAutonomous),
       maxNewPerTick: Number(draft.maxNewPerTick),
     };
@@ -120,8 +123,11 @@ function AutoFleetStrip() {
         {load && (
           <span className="font-mono text-[10px] text-text-faint">
             load {load.loadavg1.toFixed(2)}/{load.cpus} ·{" "}
-            {(load.freeMemMb / 1024).toFixed(1)} GB free · {load.liveSessions}{" "}
-            sessions
+            {(load.freeMemMb / 1024).toFixed(1)} GB free ·{" "}
+            {load.freeDiskMb === undefined
+              ? "disk unreported"
+              : `${(load.freeDiskMb / 1024).toFixed(0)} GB disk`}{" "}
+            · {load.liveSessions} sessions
           </span>
         )}
         <button
@@ -158,6 +164,11 @@ function AutoFleetStrip() {
             onChange={(v) => setDraft({ ...draft, minFreeMemMb: v })}
           />
           <NumField
+            label="minFreeDiskMb"
+            value={draft.minFreeDiskMb}
+            onChange={(v) => setDraft({ ...draft, minFreeDiskMb: v })}
+          />
+          <NumField
             label="maxLiveAutonomous"
             value={draft.maxLiveAutonomous}
             onChange={(v) => setDraft({ ...draft, maxLiveAutonomous: v })}
@@ -176,11 +187,13 @@ function AutoFleetStrip() {
             >
               Save
             </button>
-            <Info call="claudeSessions.setAutoConfig({ enabled, maxLoadPerCpu, minFreeMemMb, maxLiveAutonomous, maxNewPerTick })">
+            <Info call="claudeSessions.setAutoConfig({ enabled, maxLoadPerCpu, minFreeMemMb, minFreeDiskMb, maxLiveAutonomous, maxNewPerTick })">
               How hard the fleet is allowed to work. Every five minutes the
               scheduler walks your open work and opens sessions for it, but
-              only while the Jarvis Box is under these load and memory numbers —
-              load is the real throttle, the two counts are runaway failsafes.
+              only while the Jarvis Box is under these load, memory and free
+              disk numbers — load is the real throttle, free disk keeps agent
+              scratch from filling the one filesystem the box has, and the two
+              counts are runaway failsafes.
             </Info>
           </div>
           {error && <div className="text-xs text-error">{error}</div>}

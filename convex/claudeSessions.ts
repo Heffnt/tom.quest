@@ -756,6 +756,9 @@ export const internalPoll = internalMutation({
         cpus: v.number(),
         freeMemMb: v.number(),
         totalMemMb: v.number(),
+        // Free root-filesystem space; optional because a daemon predating the
+        // field does not send it (see schema.ts for why that matters).
+        freeDiskMb: v.optional(v.number()),
         liveSessions: v.number(),
       }),
     ),
@@ -1508,6 +1511,16 @@ const AUTO_DEFAULTS = {
   enabled: false,
   maxLoadPerCpu: 0.8,
   minFreeMemMb: 1024,
+  // Free root-filesystem floor, in MB. 10 GB, the same number
+  // worker/tmp-on-disk.sh refuses to install below, so the box has one
+  // disk-headroom figure rather than two. It exists because /tmp is no longer
+  // a filesystem in RAM with a 3.8 GB ceiling: scratch now lands on the root
+  // filesystem, and the measured burst rate (1.9 GB of files created in one
+  // hour, 2026-09-01) means the reaper's two-day age rule cannot be the only
+  // bound. Below this floor the fleet stops admitting sessions instead of
+  // letting the filesystem that carries the daemon, the journal and the
+  // package manager run to zero.
+  minFreeDiskMb: 10240,
   maxLiveAutonomous: 8,
   maxNewPerTick: 2,
 } as const;
@@ -1516,6 +1529,10 @@ const AUTO_CONFIG_FIELDS = {
   enabled: v.boolean(),
   maxLoadPerCpu: v.number(),
   minFreeMemMb: v.number(),
+  // Optional in the pen as well as the schema: a caller written before this
+  // field existed — the CLI pen in a runbook, a saved command — keeps working
+  // and leaves the stored value alone rather than clearing it.
+  minFreeDiskMb: v.optional(v.number()),
   maxLiveAutonomous: v.number(),
   maxNewPerTick: v.number(),
 };
@@ -1526,11 +1543,19 @@ async function upsertAutoConfig(
     enabled: boolean;
     maxLoadPerCpu: number;
     minFreeMemMb: number;
+    minFreeDiskMb?: number;
     maxLiveAutonomous: number;
     maxNewPerTick: number;
   },
 ): Promise<void> {
   const existing = await ctx.db.query("claudeAutoConfig").first();
+  // Plain spread. A caller that omits the optional minFreeDiskMb reaches this
+  // function with the KEY ABSENT, not present-and-undefined, so the patch
+  // leaves any stored floor standing rather than deleting it — which a patch
+  // would do if the value were explicitly undefined. That is pinned by a test
+  // rather than assumed ("keeps a stored minFreeDiskMb when a caller omits the
+  // field"); a defensive branch here was removed after the mutation check
+  // showed no input can reach it.
   const row = { ...fields, updatedAt: Date.now() };
   if (existing) {
     await ctx.db.patch(existing._id, row);
@@ -1544,8 +1569,15 @@ export const getAutoConfig = query({
   handler: async (ctx) => {
     await requireTomId(ctx);
     const row = await ctx.db.query("claudeAutoConfig").first();
+    // A row written before minFreeDiskMb existed answers with the default the
+    // scheduler is actually using, so the editor never shows an empty box for
+    // a floor that is in force.
     return row
-      ? { ...row, fromDefaults: false }
+      ? {
+          ...row,
+          minFreeDiskMb: row.minFreeDiskMb ?? AUTO_DEFAULTS.minFreeDiskMb,
+          fromDefaults: false,
+        }
       : { ...AUTO_DEFAULTS, fromDefaults: true };
   },
 });
@@ -2193,13 +2225,24 @@ export const internalAutoSchedule = internalMutation({
     if (!health || now - health.lastSeenAt > DAEMON_STALE_MS) return;
 
     // (c) LOAD-BASED ADMISSION — the primary throttle: no load report, high
-    // per-cpu load, or low free memory all mean no new admissions this tick.
+    // per-cpu load, low free memory, or low free disk all mean no new
+    // admissions this tick.
+    //
+    // The disk floor arrived with /tmp moving off the RAM-backed filesystem
+    // (worker/tmp-on-disk.sh): scratch that used to be bounded by a 3.8 GB
+    // tmpfs now lands on the root filesystem, where running out breaks the
+    // daemon rather than only breaking scratch. A MISSING freeDiskMb is not a
+    // refusal — a daemon older than the field would otherwise wedge the fleet
+    // permanently shut, which is a worse failure than the one being guarded.
     const load = health.load;
     if (
       !load ||
       load.cpus <= 0 ||
       load.loadavg1 / load.cpus > config.maxLoadPerCpu ||
-      load.freeMemMb < config.minFreeMemMb
+      load.freeMemMb < config.minFreeMemMb ||
+      (load.freeDiskMb !== undefined &&
+        load.freeDiskMb <
+          (config.minFreeDiskMb ?? AUTO_DEFAULTS.minFreeDiskMb))
     ) {
       return;
     }

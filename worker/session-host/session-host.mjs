@@ -244,6 +244,32 @@ function adoptSession(env, sessions, row) {
   s.processServerState(row);
 }
 
+// Free space on the ROOT filesystem, in MB, for the scheduler's disk-admission
+// guard. Root rather than any other path because that is the filesystem whose
+// exhaustion breaks the box rather than only breaking scratch: the daemon, the
+// journal and the package manager all live on it.
+//
+// This became an admission input when /tmp stopped being a tmpfs
+// (worker/tmp-on-disk.sh). While /tmp was a 3.8 GB filesystem in RAM, its own
+// size was the ceiling on runaway scratch and the failure was confined to
+// scratch. With /tmp on /, the ceiling is 75 GB of root filesystem and the
+// failure is the box. Measured 2026-09-01: files in /tmp created within the
+// preceding hour totalled 1.9 GB, so the gap between this floor and zero is
+// hours, not days, and nothing else watches it.
+//
+// bavail (blocks free to an UNPRIVILEGED user) rather than bfree, so the
+// ext4 reserved-blocks fraction is not counted as usable. Any failure to read
+// it returns undefined, which the gate treats as "no signal" and ignores —
+// a health reading that cannot be taken must never wedge the fleet shut.
+function freeRootDiskMb() {
+  try {
+    const s = fs.statfsSync("/");
+    return Math.round((Number(s.bavail) * Number(s.bsize)) / 1048576);
+  } catch {
+    return undefined;
+  }
+}
+
 // ── the main loop ────────────────────────────────────────────────────────────
 
 async function main() {
@@ -280,6 +306,7 @@ async function main() {
           cpus: os.cpus().length,
           freeMemMb: Math.round(os.freemem() / 1048576),
           totalMemMb: Math.round(os.totalmem() / 1048576),
+          freeDiskMb: freeRootDiskMb(),
           liveSessions: sessions.size,
         },
         ...(lastIngestError !== undefined ? { lastIngestError } : {}),
