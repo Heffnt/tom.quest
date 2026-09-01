@@ -6,6 +6,10 @@
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
 import { readFileSync } from "node:fs";
 
+// Guardrail 2: some session vocabulary has no worker half at all — the
+// live-status list's other half is convex/schema.ts, and its failure mode is a
+// SECOND home in TypeScript rather than a stale literal in .mjs. Check 4 below
+// fences that pair the same way.
 const shared = readFileSync("convex/ttsShared.ts", "utf8");
 const sessionMjs = readFileSync("worker/session-host/session.mjs", "utf8");
 const hostMjs = readFileSync("worker/session-host/session-host.mjs", "utf8");
@@ -101,6 +105,53 @@ if (usageA && usageB) {
         `usage-limit regex over-matches transient API weather: "${transient}" — a 529/429 must not stand the fleet down for 3h`,
       );
     }
+  }
+}
+
+// 4. The live-status list: LIVE_STATUSES has ONE home (ttsShared.ts) and its
+// other half is the schema — "live" is defined as the claudeSessions.status
+// union minus the two terminal statuses, so adding a status to the schema
+// without deciding whether it is live fails here instead of silently being
+// treated as finished. The second half of the fence is a no-second-home check:
+// app/sessions/lib.ts and convex/claudeSessions.ts each carried their own copy
+// (with a comment claiming this file was the home), so the check refuses any
+// re-declaration outside ttsShared.ts.
+// witness: paste `const LIVE_STATUSES = [...]` back into claudeSessions.ts, or
+// add a status to the schema union without listing it here or as terminal.
+const TERMINAL_STATUSES = ["ended", "failed"];
+const liveBlock = shared.match(/export const LIVE_STATUSES = \[([^\]]+)\]/);
+const schemaTs = readFileSync("convex/schema.ts", "utf8");
+const sessionsTable = schemaTs.match(
+  /claudeSessions: defineTable\(\{[\s\S]*?\n {4}status: v\.union\(([\s\S]*?)\n {4}\),/,
+);
+if (!liveBlock) failures.push("ttsShared.ts: LIVE_STATUSES literal not found");
+if (!sessionsTable) {
+  failures.push("schema.ts: claudeSessions status union not found");
+}
+if (liveBlock && sessionsTable) {
+  const live = [...liveBlock[1].matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
+  const schemaStatuses = [
+    ...sessionsTable[1].matchAll(/v\.literal\("([\w-]+)"\)/g),
+  ].map((m) => m[1]);
+  const claimed = [...live, ...TERMINAL_STATUSES].sort().join("|");
+  const declared = [...schemaStatuses].sort().join("|");
+  if (claimed !== declared) {
+    failures.push(
+      `live-status list drifted from the schema union:\n  LIVE_STATUSES + terminal: ${claimed}\n  schema.ts claudeSessions:  ${declared}`,
+    );
+  }
+}
+for (const file of ["app/sessions/lib.ts", "convex/claudeSessions.ts"]) {
+  const text = readFileSync(file, "utf8");
+  if (/(?:const|let|var)\s+LIVE_STATUSES\s*[:=]/.test(text)) {
+    failures.push(
+      `${file}: declares its own LIVE_STATUSES — the one home is convex/ttsShared.ts`,
+    );
+  }
+  if (/function\s+isLive\s*\(/.test(text)) {
+    failures.push(
+      `${file}: declares its own isLive — the one home is convex/ttsShared.ts`,
+    );
   }
 }
 

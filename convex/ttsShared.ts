@@ -444,6 +444,35 @@ export function normalizeSessionRepos(
  */
 export const DAEMON_STALE_MS = 90_000;
 
+/**
+ * The session statuses that mean "this session is still a going concern" —
+ * every status in the claudeSessions.status union (convex/schema.ts) except
+ * the two terminal ones, "ended" and "failed".
+ *
+ * ONE HOME. Before this, app/sessions/lib.ts and convex/claudeSessions.ts each
+ * carried their own copy of this list and their own isLive, while the comment
+ * above each copy said this file was the home — so the page's "live" and the
+ * server's "live" were two facts that happened to agree. They are now one.
+ * scripts/check-session-mirrors.mjs fences it: the list plus {ended, failed}
+ * must equal the schema union, and no other file may declare a LIVE_STATUSES
+ * of its own.
+ */
+export const LIVE_STATUSES = [
+  "requested",
+  "starting",
+  "idle",
+  "running",
+  "awaiting-permission",
+] as const;
+
+export type LiveSessionStatus = (typeof LIVE_STATUSES)[number];
+
+/** Takes a plain string so both sides can pass their own status type (the
+ * browser's Doc<"claudeSessions">["status"], the server's) without a cast. */
+export function isLive(status: string): boolean {
+  return (LIVE_STATUSES as readonly string[]).includes(status);
+}
+
 /** Deep link to one item on the /tts page (Everything tab), optionally
  * carrying an intent the page confirms before acting (state changes only on
  * the confirmed click — Slack's link-preview crawler fetches URLs, spec §7).

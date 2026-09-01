@@ -3,6 +3,7 @@
 import { debug, type DebugRequestDone } from "@/app/lib/debug";
 import {
   buildConnectDevice,
+  clearDeviceAuthToken,
   loadDeviceAuthToken,
   loadOrCreateDeviceIdentity,
   storeDeviceAuthToken,
@@ -105,6 +106,29 @@ function readErrorDetailCode(details: unknown): string | null {
   if (!details || typeof details !== "object" || Array.isArray(details)) return null;
   const code = (details as { code?: unknown }).code;
   return typeof code === "string" && code.trim().length > 0 ? code : null;
+}
+
+// The gateway's rejection vocabulary as this repo has seen it: an
+// "UNAUTHORIZED" response code carrying detail code "AUTH_REQUIRED" (the frame
+// shape asserted in __tests__/GatewayConnection.test.ts). Either spelling is
+// accepted in either position, because only their pairing has been observed,
+// not which side owns which word.
+const AUTH_REJECTED_CODES = new Set(["UNAUTHORIZED", "AUTH_REQUIRED"]);
+
+/**
+ * Did the gateway refuse the credentials we sent, as opposed to refusing the
+ * device itself? Pairing is excluded on purpose: PAIRING_REQUIRED says a human
+ * has not approved this device yet, which no amount of re-registering fixes,
+ * and the stored token is not what is wrong.
+ */
+function isAuthRejection(error: unknown): boolean {
+  if (!(error instanceof GatewayRequestError)) return false;
+  if (isPairingError(error)) return false;
+  const detail = readErrorDetailCode(error.details);
+  return (
+    AUTH_REJECTED_CODES.has(error.gatewayCode.toUpperCase()) ||
+    (detail !== null && AUTH_REJECTED_CODES.has(detail.toUpperCase()))
+  );
 }
 
 function isPairingError(error: unknown): boolean {
@@ -299,6 +323,11 @@ export class GatewayConnection {
       ? loadDeviceAuthToken({ deviceId: identity.deviceId, role: CONNECT_ROLE })?.token
       : undefined;
     const authToken = this.token ?? storedToken;
+    // Which token this handshake is staking, so the failure arm knows whether
+    // a rejection is the STORE's fault. A token passed into the constructor is
+    // the caller's and is not ours to delete.
+    const usedStoredToken =
+      this.token === undefined && storedToken !== undefined;
     const authPassword = this.password;
     const device = identity
       ? await buildConnectDevice({
@@ -314,6 +343,7 @@ export class GatewayConnection {
     return {
       identity,
       role: CONNECT_ROLE,
+      usedStoredToken,
       params: {
         minProtocol: PROTOCOL_VERSION,
         maxProtocol: PROTOCOL_VERSION,
@@ -340,8 +370,10 @@ export class GatewayConnection {
   private async sendConnect() {
     if (this.connectSent) return;
     this.connectSent = true;
+    // Held outside the try so the failure arm can see WHICH token was staked.
+    let plan: Awaited<ReturnType<typeof this.buildConnectParams>> | null = null;
     try {
-      const plan = await this.buildConnectParams();
+      plan = await this.buildConnectParams();
       gatewayLog.log("Connect handshake sent", {
         role: plan.role,
         hasDevice: Boolean(plan.params.device),
@@ -371,6 +403,23 @@ export class GatewayConnection {
       this.connected = false;
       this.error = error instanceof Error ? error.message : "Connect failed";
       this.pairingRequired = isPairingError(error);
+      // A stored device token the gateway refuses is refused every time. Left
+      // in the store, buildConnectParams reads the same dead token on every
+      // reconnect and the loop never ends without clearing site data by hand,
+      // so it is dropped here; the reconnect below then handshakes with no
+      // token and the gateway issues a fresh one (the storeDeviceAuthToken arm
+      // above). Only the token WE loaded is dropped, and never on a pairing
+      // refusal.
+      if (plan?.identity && plan.usedStoredToken && isAuthRejection(error)) {
+        clearDeviceAuthToken({
+          deviceId: plan.identity.deviceId,
+          role: plan.role,
+        });
+        gatewayLog.log("Stored device token rejected -- cleared for re-registration", {
+          deviceId: plan.identity.deviceId,
+          role: plan.role,
+        });
+      }
       gatewayLog.error("Connect handshake failed", {
         error: error instanceof Error ? error.message : String(error),
       });
