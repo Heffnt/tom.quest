@@ -613,7 +613,8 @@ export default defineSchema({
 
   // ── Repeating todos (integrations round, 2026-08-29) ─────────────────────
   // One row = one standing rule that mints a real dtsTodos row on each of its
-  // weekdays (the 4:30 a.m. generator, internal.ttsRepeats.generate). The
+  // weekdays (the 4:30 a.m. generator, ttsRepeats.internalGenerateRepeats,
+  // which is the name convex/crons.ts registers for both DST firings). The
   // rule is schedule mechanics like dtsBlocks — editable and deletable freely
   // (deletion is logged to dtsEvents) — while every minted INSTANCE is a real
   // todo and gets the full nothing-ever-lost treatment: dated, self-imposed,
