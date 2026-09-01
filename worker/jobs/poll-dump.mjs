@@ -61,7 +61,10 @@ function spawnPreparation() {
 }
 
 async function main() {
-  const env = loadEnv();
+  // The only job that reads Slack, so the only one that demands the two Slack
+  // keys — every other caller gets the CONVEX_SITE_URL + TTS_WORKER_KEY pair
+  // tts-lib.mjs requires of all of them and nothing more.
+  const env = loadEnv({ require: ["SLACK_BOT_TOKEN", "SLACK_DUMP_CHANNEL_ID"] });
 
   // Cursor: Slack ts (e.g. "1724750000.123456") of the last captured message.
   // conversations.history with oldest=<ts> is EXCLUSIVE of oldest by default,

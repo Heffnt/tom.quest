@@ -280,6 +280,11 @@ echo "== [8/9] session-host daemon =="
 # + unit rewrite + restart is exactly how updated daemon code rolls out after
 # a git pull.
 mkdir -p /opt/tts/session-host
+# worker-env.mjs in this glob is a SYMLINK to ../jobs/worker-env.mjs (the one
+# env-file reader, shared with the cron jobs). Plain `cp` follows it, so the
+# install dir gets a real file at a path the daemon's "./worker-env.mjs"
+# import resolves — which a spelled-out ../jobs import could not, since jobs
+# land flat in /opt/tts and this daemon lives one level down.
 cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
   /opt/tts/session-host/
 (cd /opt/tts/session-host && npm install --omit=dev)

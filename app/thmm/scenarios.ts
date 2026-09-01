@@ -15,7 +15,7 @@ import {
   XOR_THCC,
 } from "./programs";
 import type { VarBinding } from "./thcc";
-import { buildCaesarSource, decryptCaesar } from "./lib/caesar";
+import { buildCaesarSource, caesarCipherFromSource, decryptCaesar } from "./lib/caesar";
 import { readVarLiteral } from "./lib/source-edit";
 
 // ---------------------------------------------------------------------------
@@ -68,18 +68,6 @@ function caesarOutputNames(varMap: VarBinding[]): string[] {
   }
   ps.sort((a, b) => a.n - b.n);
   return ps.map(p => p.name);
-}
-
-/** Extract the Caesar ciphertext that the source bakes in. */
-function caesarCipherFromSource(source: string): string {
-  const re = /^\s*int\s+c(\d+)\s*=\s*(\d+)\s*;/gm;
-  const matches: { idx: number; byte: number }[] = [];
-  for (const m of source.matchAll(re)) {
-    matches.push({ idx: parseInt(m[1], 10), byte: parseInt(m[2], 10) });
-  }
-  if (matches.length === 0) return "";
-  matches.sort((a, b) => a.idx - b.idx);
-  return matches.map(m => String.fromCharCode(m.byte)).join("");
 }
 
 function namesByPrefix(varMap: VarBinding[], prefix: string): string[] {

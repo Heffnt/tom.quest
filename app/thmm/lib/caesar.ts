@@ -93,6 +93,24 @@ ${decryptLines}
 `;
 }
 
+/**
+ * Read back the ciphertext a source bakes in — the inverse of the `int c<i> =
+ * <byte>;` lines buildCaesarSource writes above, which is why it lives here
+ * beside them: the format has one writer and now one reader. Lines may appear
+ * in any order; the c-index decides the position. A source with no such lines
+ * (any program that is not the Caesar one) reads as "".
+ */
+export function caesarCipherFromSource(source: string): string {
+  const re = /^\s*int\s+c(\d+)\s*=\s*(\d+)\s*;/gm;
+  const matches: { idx: number; byte: number }[] = [];
+  for (const m of source.matchAll(re)) {
+    matches.push({ idx: parseInt(m[1], 10), byte: parseInt(m[2], 10) });
+  }
+  if (matches.length === 0) return "";
+  matches.sort((a, b) => a.idx - b.idx);
+  return matches.map(m => String.fromCharCode(m.byte)).join("");
+}
+
 function pad3(n: number): string {
   return n.toString().padStart(3, " ");
 }

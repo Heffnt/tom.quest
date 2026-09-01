@@ -6,6 +6,9 @@ import subprocess
 import threading
 from dataclasses import dataclass
 
+# parse_time_to_seconds is re-exported, not redefined: gpu_report.py reads the
+# same Slurm durations, and one body means one set of placeholder tokens.
+from cluster_text import parse_time_to_seconds
 from job_screens import get_screen_name
 from shell import run
 
@@ -20,18 +23,6 @@ JOB_ID_PATTERNS = [
 ]
 _SALLOC_PROCESSES: dict[str, subprocess.Popen[str]] = {}
 _SALLOC_LOCK = threading.Lock()
-UNKNOWN_TIME_TOKENS = {
-    "",
-    "INVALID",
-    "N/A",
-    "[N/A]",
-    "NOT_SET",
-    "UNLIMITED",
-    "UNKNOWN",
-    "[UNKNOWN]",
-    "UNKNOWN ERROR",
-    "[UNKNOWN ERROR]",
-}
 
 
 @dataclass
@@ -239,24 +230,3 @@ def get_user_jobs() -> list[JobInfo]:
         )
     return jobs
 
-
-def parse_time_to_seconds(time_str: str) -> int:
-    time_str = time_str.strip()
-    if time_str.upper() in UNKNOWN_TIME_TOKENS:
-        return 0
-    total_seconds = 0
-    try:
-        if "-" in time_str:
-            days_part, time_part = time_str.split("-", 1)
-            total_seconds += int(days_part) * 86400
-            time_str = time_part
-        parts = time_str.split(":")
-        if len(parts) == 3:
-            total_seconds += int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-        elif len(parts) == 2:
-            total_seconds += int(parts[0]) * 60 + int(parts[1])
-        elif len(parts) == 1:
-            total_seconds += int(parts[0])
-    except ValueError:
-        return 0
-    return total_seconds
