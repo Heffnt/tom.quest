@@ -101,6 +101,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - `pnpm build` verifies the production build (works from a bare checkout — the public Convex URLs are in the committed `.env`). CI runs it on every PR.
 - `pnpm test` runs Vitest unit/component tests.
 - `pnpm test:e2e` runs Playwright E2E tests.
+- `scripts/terminal-surfaces-live.sh` opens both Turing terminal surfaces against a real tmux session on this machine and compares connecting, resizing and one forced reconnect on each. `e2e/terminal-surfaces.spec.ts` skips itself unless `E2E_TERMINAL_LIVE=1`, so a plain `pnpm test:e2e` never runs it; that script is what sets the variable, along with the local `turing-api/` copy and tmux session the check needs.
 - `pnpm lint` runs ESLint.
 - Before deployment-related work, production build verification matters more than style-only checks.
 
