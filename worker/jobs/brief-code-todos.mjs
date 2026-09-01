@@ -29,7 +29,7 @@ import path from "node:path";
 import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 import {
   CMT_REPO,
-  TODOS_PATH,
+  CMT_TODOS_PATH,
   REPLAN_SENTINEL,
   cmtRepoDir,
   yamlToJson,
@@ -128,11 +128,11 @@ async function main() {
   // Refresh the cache clone — the brief must describe the CURRENT tree, and
   // Claude's read tools get this directory as cwd.
   const repoDir = cmtRepoDir(env);
-  const todosFile = path.join(repoDir, TODOS_PATH);
+  const todosFile = path.join(repoDir, CMT_TODOS_PATH);
   const todosText = fs.readFileSync(todosFile, "utf8");
   const entries = yamlToJson(todosFile);
   if (!Array.isArray(entries)) {
-    throw new Error(`${TODOS_PATH} did not parse to a list`);
+    throw new Error(`${CMT_TODOS_PATH} did not parse to a list`);
   }
 
   // Open = no `closed` field. (The file also keeps closed entries below a

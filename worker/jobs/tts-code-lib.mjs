@@ -28,11 +28,26 @@ import { execFileSync } from "node:child_process";
 export const CMT_REPO = "ComplexMultiTrigger";
 export const CMT_DEFAULT_BRANCH = "master";
 export const CMT_CACHE_DIR = "/var/cache/tts/ComplexMultiTrigger";
-export const TODOS_PATH = "vqc/todos.yaml"; // relative to the repo root
-// The guard test for todos.yaml — run from the CMT repo root. This ONE test
-// module (not the whole guard suite) is the contract for "todos.yaml is still
-// well-formed after my surgery".
-export const TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
+// EVERY constant below is CMT's, not tom.quest's — hence the CMT_ prefix on
+// all of them. The trap they guard against: tom.quest ALSO has a file at the
+// literal path "vqc/todos.yaml" (this repo's own governed todo registry), and
+// the two files disagree about what "closed" means. CMT closes a todo by
+// moving its block below a banner line (CMT_CLOSED_BANNER_PREFIX); tom.quest
+// closes one in place by setting `status` and adding `resolution`, guarded by
+// vqc/todos.test.ts under vitest, with no banner anywhere in the file. These
+// jobs only ever run inside a CMT clone (CMT_CACHE_DIR, or a fresh clone in
+// the executor) and refuse rulings whose `repo` is not CMT_REPO, so an
+// unprefixed name here would read, in a tom.quest checkout, as if it pointed
+// at the tom.quest file — which would be wrong on both the path and the
+// closure rule.
+export const CMT_TODOS_PATH = "vqc/todos.yaml"; // relative to the CMT repo root
+// CMT's guard test for its todos.yaml — a python3/pytest module, run with the
+// CMT repo root as cwd. (tom.quest's equivalent guard is vqc/todos.test.ts,
+// run by vitest; the two are separate files in separate repos and neither job
+// here ever runs the tom.quest one.) This ONE test module, not the whole
+// tests/guards suite, is the contract for "todos.yaml is still well-formed
+// after my surgery".
+export const CMT_TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
 
 export const BRIEF_HASHES_FILE = "/var/lib/tts/brief-hashes.json";
 export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
@@ -46,9 +61,13 @@ export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
 // private contract between apply-rulings and brief-code-todos.)
 export const REPLAN_SENTINEL = "replan-requested";
 
-// The first characters of the closed-todos banner line in vqc/todos.yaml.
-// Everything below this line is intent HISTORY; the live surface is above it.
-export const CLOSED_BANNER_PREFIX = "# --- closed todos";
+// The first characters of the closed-todos banner line in CMT's
+// vqc/todos.yaml. Everything below this line is intent HISTORY; the live
+// surface is above it. tom.quest's vqc/todos.yaml has no such banner — it
+// keeps closed entries in place with `status` + `resolution` — so a banner
+// search against that file finds nothing, which is why applyArchive's
+// "no closed-todos banner" failure is a real signal only in CMT.
+export const CMT_CLOSED_BANNER_PREFIX = "# --- closed todos";
 
 // ---------------------------------------------------------------------------
 // git plumbing
@@ -193,7 +212,7 @@ export function findEntryBlock(text, id) {
   if (start === -1) return null;
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
-    if (/^- id:/.test(lines[i]) || lines[i].startsWith(CLOSED_BANNER_PREFIX)) {
+    if (/^- id:/.test(lines[i]) || lines[i].startsWith(CMT_CLOSED_BANNER_PREFIX)) {
       end = i;
       break;
     }
