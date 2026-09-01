@@ -27,6 +27,15 @@
 // the rest of the graph still lands, cycles are dropped, and the per-batch
 // skip report comes back here to be logged.
 //
+// GROUND-UP EXPLANATIONS ARE HTML DOCUMENTS (Tom, 2026-08-29: rendered as
+// prose they are "an incomprehensible wall of text"). Every explanation this
+// job writes — the batch's and each task's — is a complete self-contained HTML
+// page, which the /tts page shows fullscreen in a sandboxed, script-less
+// iframe. The form is specified once, in the writing standard that rides in on
+// /tts/batch-context; the prompt below only names the requirement and the
+// palette. Stored explanations come back into the prompt as extracted-text
+// PREVIEWS, never as markup.
+//
 // SUCCESSOR TO form-batches.mjs. That job groups todos into v1 batches (a
 // dtsTodos row carrying `members`); this one maintains v2 graphs. They run
 // side by side until cutover, and they cannot collide: the server refuses a v1
@@ -59,6 +68,9 @@ import { createHash } from "node:crypto";
 import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
+// Bump when the prompt changes semantics: it joins the input hash, so a new
+// prompt re-plans even inputs that have not changed.
+const PROMPT_VERSION = 2;
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
 
 // One run offers at most this many unbatched life todos as goal candidates
@@ -74,16 +86,53 @@ const MAX_BRIEF_CHARS = 400;
 // recreate a grouping that already exists); only this many carry their whole
 // task list. Same bounding logic as the life slice, applied to the other axis.
 const MAX_GRAPHS_PER_RUN = 20;
-// Task ground-up explanations are shown CLIPPED, under a field name that is
-// not an output field (`groundUpExplanationPreview`), so a clipped copy can
-// never be pasted back as the real value and truncate it.
+// Ground-up explanations are shown CLIPPED, under a field name that is not an
+// output field (`groundUpExplanationPreview`), so a clipped copy can never be
+// pasted back as the real value and truncate it. Since 2026-08-29 every stored
+// explanation is a COMPLETE HTML DOCUMENT (Tom's ruling: prose renders as an
+// incomprehensible wall of text, so the "more" layer is a fullscreen page), so
+// both the batch's and the task's are previewed, and the preview is built from
+// text EXTRACTED from the document — clipping raw HTML yields 240 characters
+// of doctype and <style>, which tells the planner nothing about the content
+// and would show it a half-open tag as if it were prose.
 const MAX_PREVIEW_CHARS = 240;
+const MAX_BATCH_PREVIEW_CHARS = 600;
 const MAX_CODE_TODOS = 60;
 const NOTE_MAX = 20;
 
 function clip(text, max) {
   if (typeof text !== "string" || text === "") return null;
   return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * The readable text of a ground-up explanation, for preview only. An HTML
+ * document (anything whose first non-space character is "<") is reduced to its
+ * prose: head matter dropped, tags removed, whitespace collapsed, the handful
+ * of entities that survive that unescaped. Legacy plain-text explanations pass
+ * through untouched. Lossy on purpose — nothing built here is ever stored.
+ */
+function explanationText(value) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  if (!value.trimStart().startsWith("<")) return value;
+  return value
+    .replace(/<!DOCTYPE[^>]*>/gi, " ")
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, " ")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** An explanation as the planner sees it: extracted text, clipped. */
+function explanationPreview(value, max) {
+  return clip(explanationText(value), max);
 }
 
 function prompt(ctx) {
@@ -109,17 +158,27 @@ function prompt(ctx) {
     `- path — the sequence BETWEEN batches. A batch sits at an index on a named`,
     `  path, and its edge to the previous batch is either "must" (that batch`,
     `  has to land first) or "helps" (it only makes this one easier).`,
+    `- repos — the repositories a batch's work lives in, DECLARED by you on`,
+    `  the batch. Every session TTS opens for this batch or for a task inside`,
+    `  it checks out exactly this set, so a batch whose work touches two`,
+    `  repositories declares both and gets one session holding both checkouts.`,
+    `  The only legal names are ${ctx.sessionRepos.join(", ")}; a batch whose`,
+    `  work needs no repository declares [].`,
     `- display text — the short line always on screen (a statement).`,
     `- ground-up explanation — the self-contained layer behind a "more"`,
-    `  control.`,
+    `  control. It is a COMPLETE HTML DOCUMENT, rendered fullscreen; the`,
+    `  writing standard below gives its exact form.`,
     ``,
     ctx.writingStandard,
     ``,
     `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
-    `groundUpExplanation, path, frozen, tasks, goals. A task carries id,`,
-    `statement, actor, status, needs, condition, evidence, model, and`,
-    `groundUpExplanationPreview — that preview is CLIPPED text for your`,
-    `orientation only and must never be copied into your output:`,
+    `groundUpExplanationPreview, path, repos, frozen, tasks, goals. A task`,
+    `carries id,`,
+    `statement, actor, status, needs, condition, evidence, model, and its own`,
+    `groundUpExplanationPreview. EVERY "...Preview" value is readable text`,
+    `EXTRACTED from a stored HTML document and then CLIPPED — it is there so`,
+    `you know what an explanation already covers, it is not the document, and`,
+    `it must never be copied into your output:`,
     JSON.stringify(ctx.graphs, null, 2),
     ``,
     ...(ctx.graphsHeldBack > 0
@@ -138,8 +197,7 @@ function prompt(ctx) {
     `never output its id and never archive it.`,
     ``,
     `TODOS NOT IN ANY BATCH — your candidate GOALS (JSON; each: id, statement,`,
-    `brief, category, importance, dueAt — dueAt is epoch ms or null; brief is`,
-    `clipped):`,
+    `brief, category, dueAt — dueAt is epoch ms or null; brief is clipped):`,
     JSON.stringify(ctx.candidates, null, 2),
     ``,
     ...(ctx.candidatesHeldBack > 0
@@ -151,7 +209,7 @@ function prompt(ctx) {
         ]
       : []),
     `OPEN CODE TODOS in Tom's repos, with prepared briefs (JSON; each: repo,`,
-    `externalId, statement, importance). CONTEXT ONLY — these are entries in`,
+    `externalId, statement). CONTEXT ONLY — these are entries in`,
     `repo todo files, not todo rows, so they cannot be bound as goals. Use them`,
     `to know what work exists when you write tasks and explanations:`,
     JSON.stringify(ctx.code, null, 2),
@@ -198,6 +256,14 @@ function prompt(ctx) {
     ``,
     `TASK — output the batches whose graphs you are writing this run. Rules:`,
     ``,
+    `EVERY BATCH CARRIES A PATH — no exceptions. Paths are the independent`,
+    `lanes of work; keep the set of path names SMALL and STABLE (reuse the`,
+    `names already on existing batches before inventing one), give each batch`,
+    `its index in its lane, and mark its edge to the previous batch "must"`,
+    `(has to land first) or "helps" (only makes this one easier). A batch`,
+    `without a path renders in an "unpathed" bucket Tom has told us he does`,
+    `not want to live in.`,
+    ``,
     `GOALS ARE THE ACCUMULATED TODOS. A goal is an END STATE Tom wanted, and`,
     `it already exists as a todo — put its id in "goalIds". Never write a goal`,
     `as a task. A batch with no goal is a batch with no reason to exist.`,
@@ -214,13 +280,29 @@ function prompt(ctx) {
     `by listing steps in the order you thought of them, and it makes the ready`,
     `set one task wide when the real frontier is four.`,
     ``,
+    `DE-CHAIN EVERY MIGRATED GRAPH YOU TOUCH. The graphs migrated from the`,
+    `old system are single chains BY CONSTRUCTION — their edges record the`,
+    `order steps were once written down, not real prerequisites. When a batch`,
+    `you output has OPEN tasks forming one straight line, that structure is`,
+    `presumed wrong: re-emit every open task (by id, statement verbatim) with`,
+    `its needs REBUILT from actual dependencies. Most batches should come out`,
+    `with several parallel branches; keep a chain only where each task truly`,
+    `consumes the previous one's output. Preserve-by-omission does not apply`,
+    `to this audit — an untouched chain is a chain you are asserting is real.`,
+    ``,
     `CARRY DONE TASKS FORWARD UNTOUCHED. A task with "status": "done" already`,
     `happened. Re-emit it with its id, its statement verbatim, and its needs`,
     `unchanged. Never reword it, never re-open it, never drop it.`,
     ``,
     `PRESERVE BY OMISSION. Any field you leave out keeps the value already`,
     `stored. Omit a field rather than guessing at it, and never copy back a`,
-    `"...Preview" value — those are clipped.`,
+    `"...Preview" value — those are extracted text, not the stored document.`,
+    ``,
+    `WITH ONE EXCEPTION: "statement" IS ALWAYS REQUIRED. Every batch object you`,
+    `output carries its statement, and every task object carries its own, even`,
+    `when neither has changed — repeat the stored text verbatim. A batch with`,
+    `no statement cannot be stored at all, and the whole graph under it is`,
+    `lost.`,
     ``,
     `IDS. Echo "batchId" and a task "id" whenever you are rewriting something`,
     `from the lists above; omit them for anything new. A task's "needs" holds`,
@@ -234,19 +316,44 @@ function prompt(ctx) {
     ``,
     `WRITING. Every "statement" is display text: short, names the thing, no`,
     `explanation. Every "groundUpExplanation" obeys the WRITING STANDARD`,
-    `above, in full.`,
+    `above, in full — which means it is a COMPLETE, SELF-CONTAINED HTML`,
+    `DOCUMENT, from "<!DOCTYPE html>" to "</html>", carrying its own inline`,
+    `<style> and nothing external: no script, no event handler, no stylesheet,`,
+    `font, image, or URL loaded from anywhere. It renders fullscreen in a`,
+    `sandbox with no scripting and no network, so anything external is a hole`,
+    `in the page. Palette #0a0e17 background, #e2e8f0 text, #94a3b8 secondary,`,
+    `#e8a040 accent, #1e293b borders; ~15px body type, real <h1>/<h2>`,
+    `headings, short sections, a <table> for enumerable facts, and bordered`,
+    `<div> boxes with → or ↓ arrows where a shape helps. Write the whole`,
+    `document as the JSON string value, escaped as JSON requires.`,
+    ``,
+    `WRITE AN EXPLANATION ONLY WHEN YOU MEAN TO REPLACE ONE. A batch or task`,
+    `whose explanation is already right keeps it by OMISSION — leave the field`,
+    `out. When you do include it, you are writing the entire document fresh;`,
+    `there is no way to amend one, and a fragment overwrites a whole page.`,
+    ``,
+    `EVERY NEW TASK AND EVERY NEW BATCH GETS ONE. Tom rules from that document`,
+    `and nothing else, so it must stand alone: what this is, why it exists,`,
+    `what each term in the statement means, where it stands now, what happens`,
+    `next and who does it, and — for a task whose actor is "tom" — exactly`,
+    `what he is deciding, as the numbered decision list the standard`,
+    `describes.`,
     ``,
     `ARCHIVE. Set "archive": true on a batch whose goals are all reached or`,
     `abandoned. Never on a frozen one.`,
     ``,
-    `Answer ONLY a JSON object, no prose, no code fences:`,
+    `Answer ONLY a JSON object, no prose, no code fences. Both`,
+    `"groundUpExplanation" fields hold a whole HTML document as one JSON`,
+    `string (shown here abbreviated):`,
     `{"batches": [{"batchId": "...", "statement": "...",`,
-    ` "groundUpExplanation": "...",`,
+    ` "groundUpExplanation": "<!DOCTYPE html><html><head><style>…</style>`,
+    `</head><body>…</body></html>",`,
     ` "path": {"name": "...", "index": 0, "edge": "must"},`,
+    ` "repos": ["tom.quest"],`,
     ` "tasks": [{"id": "...", "statement": "...", "actor": "agent",`,
     `            "needs": ["<todo id>", 0], "condition": "...",`,
-    `            "groundUpExplanation": "...", "status": "active",`,
-    `            "model": "fable"}],`,
+    `            "groundUpExplanation": "<!DOCTYPE html>…</html>",`,
+    `            "status": "active", "model": "fable"}],`,
     ` "goalIds": ["..."], "archive": false}]}`,
   ].join("\n");
 }
@@ -261,15 +368,30 @@ async function main() {
 
   const all = Array.isArray(todos) ? todos : [];
   const batchRows = Array.isArray(batches) ? batches : [];
-  // The writing standard has ONE home (convex/ttsShared.ts WRITING_STANDARD)
-  // and rides this payload because this file is Node ESM on a box that never
-  // loads TypeScript. A run without it would quietly produce prose written to
-  // no standard at all, which is worse than not running — so it is fatal.
+  // The writing standard is the WikiTom skill model-of-tom/skills/writing-to-tom
+  // (synced into Convex; convex/ttsShared.ts WRITING_STANDARD is the fallback
+  // copy), and it rides this payload because this file is Node ESM on the
+  // Jarvis Box, which never loads TypeScript and holds no WikiTom checkout. A run without it
+  // would quietly produce prose written to no standard at all, which is worse
+  // than not running — so it is fatal.
   const writingStandard = context.writingStandard;
   if (typeof writingStandard !== "string" || writingStandard.trim() === "") {
     throw new Error(
       "/tts/batch-context returned no writingStandard — the server half of the " +
         "one-home rule is missing; refusing to write prose to no standard",
+    );
+  }
+
+  // The repo names a batch may declare, from the one home (convex/ttsShared.ts)
+  // via the payload — same reason writingStandard rides it. Fatal if missing
+  // for the same reason too: a planner guessing repo names would declare ones
+  // the daemon cannot clone, and every session on that batch would die on its
+  // first turn.
+  const sessionRepos = context.sessionRepos;
+  if (!Array.isArray(sessionRepos) || sessionRepos.length === 0) {
+    throw new Error(
+      "/tts/batch-context returned no sessionRepos — refusing to let the " +
+        "planner guess which repositories exist",
     );
   }
 
@@ -359,8 +481,13 @@ async function main() {
     if (!contentsByBatch.has(todo.batchId)) contentsByBatch.set(todo.batchId, []);
     contentsByBatch.get(todo.batchId).push(todo);
   }
+  // STALEST FIRST. A stored batch's updatedAt moves when a run lands changes,
+  // so recency-first re-showed the same freshly-planned batches every run and
+  // the tail never entered the slice — the de-chain sweep starved. Stalest
+  // first makes the slice a rotation: every landed update sends that batch to
+  // the back of the line and the least-recently-planned graph is always next.
   const graphsOrdered = [...activeBatches].sort(
-    (a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+    (a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0),
   );
   const graphsHeldBack = Math.max(0, graphsOrdered.length - MAX_GRAPHS_PER_RUN);
   const graphs = graphsOrdered.slice(0, MAX_GRAPHS_PER_RUN).map((b) => {
@@ -368,8 +495,19 @@ async function main() {
     return {
       id: b._id,
       statement: b.statement,
-      groundUpExplanation: b.groundUpExplanation ?? null,
+      // Preview, not the value. A batch explanation is now a whole HTML
+      // document; pasting twenty of them into one prompt is what blew the
+      // completion timeout on the life slice, and the planner never needs the
+      // markup back — PRESERVE BY OMISSION keeps a document it does not
+      // rewrite, and a document it does rewrite it writes from scratch.
+      groundUpExplanationPreview: explanationPreview(
+        b.groundUpExplanation,
+        MAX_BATCH_PREVIEW_CHARS,
+      ),
       path: b.path ?? null,
+      // null = never declared (omitting "repos" preserves that); [] = declared
+      // as needing no checkout. The planner has to be able to tell them apart.
+      repos: b.repos ?? null,
       frozen: b.tomTouchedAt !== undefined,
       tasks: contents
         .filter((t) => t.kind !== "goal")
@@ -382,7 +520,7 @@ async function main() {
           condition: t.condition ?? null,
           evidence: t.evidence ?? null,
           model: t.model ?? null,
-          groundUpExplanationPreview: clip(
+          groundUpExplanationPreview: explanationPreview(
             t.groundUpExplanation,
             MAX_PREVIEW_CHARS,
           ),
@@ -428,13 +566,6 @@ async function main() {
     statement: t.statement,
     brief: clip(t.brief, MAX_BRIEF_CHARS),
     category: t.category ?? null,
-    importance: t.importance
-      ? {
-          level: t.importance.level,
-          setBy: t.importance.setBy,
-          rationale: t.importance.rationale ?? null,
-        }
-      : null,
     dueAt: t.dueAt ?? null,
   }));
 
@@ -453,13 +584,6 @@ async function main() {
           repo: m.repo,
           externalId: m.externalId,
           statement: m.statement,
-          importance: brief.importance
-            ? {
-                level: brief.importance.level,
-                setBy: brief.importance.setBy,
-                rationale: brief.importance.rationale ?? null,
-              }
-            : null,
         },
       ];
     })
@@ -477,6 +601,7 @@ async function main() {
   const inputHash = createHash("sha256")
     .update(
       JSON.stringify({
+        promptVersion: PROMPT_VERSION,
         graphs,
         activeStatements,
         candidates,
@@ -486,6 +611,7 @@ async function main() {
         reviseSentences,
         notes,
         writingStandard,
+        sessionRepos,
       }),
     )
     .digest("hex");
@@ -493,7 +619,7 @@ async function main() {
   try {
     storedHash = fs.readFileSync(HASH_PATH, "utf8").trim();
   } catch {
-    // no cursor yet — first run, or the box was rebuilt
+    // no cursor yet — first run, or the Jarvis Box was rebuilt
   }
   if (inputHash === storedHash && revises.length === 0) return; // quiet when idle
 
@@ -506,6 +632,7 @@ async function main() {
   const answer = runClaude(
     prompt({
       writingStandard,
+      sessionRepos,
       graphs,
       graphsHeldBack,
       activeStatements,
@@ -552,10 +679,30 @@ async function main() {
   const served = new Set();
   let failed = 0;
   for (const batch of parsed.batches) {
-    const statement =
+    let statement =
       typeof batch?.statement === "string" ? batch.statement.trim() : "";
+    // PRESERVE BY OMISSION vs. a REQUIRED field. The prompt tells the planner
+    // that any field it leaves out keeps the stored value, so on a batch it is
+    // only re-planning the tasks of, omitting `statement` is exactly what that
+    // rule asks for — but the pen's `statement` is required (v.string()), so
+    // the whole graph was being dropped here instead. On 2026-08-29 that cost
+    // one entire run: 8 batches emitted, 8 dropped, 0 stored. When the model
+    // named the batch by id, the stored statement IS the preserved value, so
+    // fill it in and ship the graph. Only a batch that is both nameless and
+    // unidentifiable is genuinely unusable.
+    if (statement === "" && typeof batch?.batchId === "string") {
+      const known = batchById.get(batch.batchId);
+      if (known) {
+        statement = known.statement;
+        batch.statement = known.statement;
+      }
+    }
     if (statement === "") {
-      console.log(`[plan-graphs] dropped a batch with no statement`);
+      console.log(
+        `[plan-graphs] dropped a batch with no statement and no known id ` +
+          `(batchId: ${JSON.stringify(batch?.batchId ?? null)}, ` +
+          `${Array.isArray(batch?.tasks) ? batch.tasks.length : 0} task(s))`,
+      );
       failed++;
       continue;
     }
@@ -642,6 +789,20 @@ async function main() {
 
   // Hash written LAST (Convex-first durability ordering): a crash anywhere
   // above leaves no cursor, so the next cron run simply redoes the work.
+  //
+  // AND NOT AT ALL WHEN THE RUN STORED NOTHING while losing batches. The
+  // cursor's promise is "these inputs have been planned"; a run whose every
+  // batch was refused planned none of them, and writing the cursor there is
+  // what turns one bad completion into silence — the next run sees the same
+  // hash and returns immediately, so the graphs stay unplanned until some
+  // unrelated todo changes the inputs. Seen 2026-08-29 (8 emitted, 8 lost).
+  if (served.size === 0 && failed > 0) {
+    console.log(
+      `[plan-graphs] cursor NOT advanced: ${failed} batch(es) lost and none ` +
+        `stored — the next run retries these same inputs`,
+    );
+    return;
+  }
   fs.writeFileSync(HASH_PATH, inputHash + "\n");
 }
 

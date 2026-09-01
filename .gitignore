@@ -39,6 +39,11 @@ turing-api/*.log
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...and we do opt in for exactly one: .env holds the NEXT_PUBLIC_* Convex
+# deployment identity, which Next.js inlines into the browser bundle and is
+# therefore public by construction. Committing it is what makes a bare checkout
+# buildable without Vercel credentials. Secrets stay in secrets/ (below).
+!.env
 
 # Tom-only secrets directory; only .example templates are committed.
 /secrets/*

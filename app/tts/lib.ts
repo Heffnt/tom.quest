@@ -9,11 +9,8 @@ export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
 export type Ruling = Doc<"dtsRulings">;
 
-export type Importance = NonNullable<Todo["importance"]>;
 export type PlanStep = NonNullable<Todo["plan"]>[number];
 export type Member = NonNullable<Todo["members"]>[number];
-
-export const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
@@ -197,8 +194,6 @@ export function selectNeedsMe(
 //   by any non-terminal batch (and minus the batch rows themselves).
 // pending: passed through from selectNeedsMe.
 
-const IMPORTANCE_RANK = { low: 1, medium: 2, high: 3 } as const;
-
 export type BatchesSelection = {
   batches: { todo: Todo; awaitingRuling: boolean }[];
   unbatchedLife: Todo[];
@@ -230,19 +225,10 @@ export function selectBatches(
   const batchIds = new Set<string>(batchTodos.map((t) => t._id as string));
   const lifeIds = new Set<string>(lifeRows.map((t) => t._id as string));
 
-  // Importance desc (unset last), tie createdAt asc.
+  // Oldest first — order comes from dates, never a rating.
   const batches = batchTodos
     .map((todo) => ({ todo, awaitingRuling: lifeIds.has(todo._id as string) }))
-    .sort((a, b) => {
-      const ra = a.todo.importance
-        ? IMPORTANCE_RANK[a.todo.importance.level]
-        : 0;
-      const rb = b.todo.importance
-        ? IMPORTANCE_RANK[b.todo.importance.level]
-        : 0;
-      if (ra !== rb) return rb - ra;
-      return a.todo.createdAt - b.todo.createdAt;
-    });
+    .sort((a, b) => a.todo.createdAt - b.todo.createdAt);
 
   const unbatchedLife = lifeRows.filter(
     (t) =>
@@ -296,4 +282,38 @@ export function ageText(ms: number, now: number): string {
   const days = Math.floor(hours / 24);
   if (days === 1) return "1 day ago";
   return `${days} days ago`;
+}
+
+// ── Ground-up explanation teasers ────────────────────────────────────────────
+// Since 2026-08-29 a stored ground-up explanation is a COMPLETE HTML DOCUMENT
+// (Tom: rendered as prose it is an incomprehensible wall of text), shown
+// fullscreen in a sandboxed iframe by components/ground-up-view.tsx. Anywhere
+// a surface prints a taste of one inline — the batch card face, the batch
+// detail dialog — it must print the document's readable TEXT, or the card
+// shows a doctype and a stylesheet. The HTML test is the same single rule
+// GroundUpView uses: a leading "<".
+
+/**
+ * The readable text of an explanation, clipped for an inline teaser. Legacy
+ * plain-text explanations pass through unchanged. Lossy on purpose — the
+ * fullscreen view is where the document itself is read.
+ */
+export function groundUpTeaser(content: string, maxChars = 220): string {
+  const text = content.trimStart().startsWith("<")
+    ? content
+        .replace(/<!DOCTYPE[^>]*>/gi, " ")
+        .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, " ")
+        .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+        .replace(/<[^>]*>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, " ")
+        .trim()
+    : content.trim();
+  if (text === "") return "";
+  return text.length > maxChars ? `${text.slice(0, maxChars).trimEnd()}…` : text;
 }

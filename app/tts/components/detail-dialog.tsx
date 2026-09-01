@@ -4,6 +4,7 @@
 // everything known about the item, with its ground-up explanation, in one
 // fixed dialog. Understanding never requires opening a session.
 import type { BatchGraph, GraphGoal, GraphTask } from "./batch-card";
+import { groundUpTeaser } from "../lib";
 
 export type DetailItem =
   | { kind: "task"; batchStatement: string; task: GraphTask; waitingOn: string[] }
@@ -24,9 +25,11 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export default function DetailDialog({
   item,
   onClose,
+  onGroundUp,
 }: {
   item: DetailItem;
   onClose: () => void;
+  onGroundUp: (title: string, content: string) => void;
 }) {
   return (
     <div
@@ -66,9 +69,13 @@ export default function DetailDialog({
               </Row>
             )}
             {item.task.groundUp !== undefined && (
-              <p className="mt-1 border-t border-border pt-2 text-[13px] text-text-muted">
-                {item.task.groundUp}
-              </p>
+              <button
+                type="button"
+                onClick={() => onGroundUp(item.task.statement, item.task.groundUp ?? "")}
+                className="mt-1 self-start text-[13px] text-accent underline underline-offset-2 hover:text-text"
+              >
+                ground-up explanation
+              </button>
             )}
           </div>
         )}
@@ -88,9 +95,13 @@ export default function DetailDialog({
               </Row>
             )}
             {item.goal.groundUp !== undefined && (
-              <p className="mt-1 border-t border-border pt-2 text-[13px] text-text-muted">
-                {item.goal.groundUp}
-              </p>
+              <button
+                type="button"
+                onClick={() => onGroundUp(item.goal.statement, item.goal.groundUp ?? "")}
+                className="mt-1 self-start text-[13px] text-accent underline underline-offset-2 hover:text-text"
+              >
+                ground-up explanation
+              </button>
             )}
           </div>
         )}
@@ -98,7 +109,19 @@ export default function DetailDialog({
         {item.kind === "batch" && (
           <div className="flex flex-col gap-2">
             <h3 className="text-[15px] font-semibold">{item.graph.statement}</h3>
-            <p className="text-[13px] text-text-muted">{item.graph.groundUp}</p>
+            {/* The teaser, not the value: an explanation is a whole HTML
+                document now, and the document itself is read fullscreen. */}
+            {item.graph.groundUp !== undefined && (
+              <button
+                type="button"
+                onClick={() =>
+                  onGroundUp(item.graph.statement, item.graph.groundUp ?? "")
+                }
+                className="self-start text-left text-[13px] text-text-muted hover:text-text"
+              >
+                {groundUpTeaser(item.graph.groundUp)}
+              </button>
+            )}
             <Row label="tasks">{item.graph.tasks.length}</Row>
             <Row label="goals">{item.graph.goals.length}</Row>
           </div>

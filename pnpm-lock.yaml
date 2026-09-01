@@ -41,6 +41,9 @@ importers:
       next:
         specifier: 16.1.4
         version: 16.1.4(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.59.1)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      node-ical:
+        specifier: ^0.27.1
+        version: 0.27.1
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -3805,6 +3808,10 @@ packages:
     resolution: {integrity: sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
+  node-ical@0.27.1:
+    resolution: {integrity: sha512-5fiKuh/h2HrWKzFt20LtRQdjtjdGfijGfDnCfdAEc++SFX9gA6sa7xwj7/BJmRfWtW/NJWBenN4tOJhg0vM3pg==}
+    engines: {node: '>=22'}
+
   node-releases@2.0.38:
     resolution: {integrity: sha512-3qT/88Y3FbH/Kx4szpQQ4HzUbVrHPKTLVpVocKiLfoYvw9XSGOX2FmD2d6DrXbVYyAQTF2HeF6My8jmzx7/CRw==}
 
@@ -4148,6 +4155,9 @@ packages:
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
     hasBin: true
 
+  rrule-temporal@2.2.2:
+    resolution: {integrity: sha512-Jou/SRm7afcxolCjfsL8CwklY7z4I34jV03X7yH2HdyGtvp08pf+3MRRmzkrFXO7pp+KNsSbB4fQ88fptMdLdA==}
+
   rrweb-cssom@0.7.1:
     resolution: {integrity: sha512-TrEMa7JGdVm0UThDJSx7ddw5nVm3UJS9o9CCIZ72B1vSyEZoziDqBYP3XIoi/12lKrJR8rE3jeFHMok2F/Mnsg==}
 
@@ -4393,6 +4403,15 @@ packages:
   tapable@2.3.3:
     resolution: {integrity: sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A==}
     engines: {node: '>=6'}
+
+  temporal-polyfill@1.0.4:
+    resolution: {integrity: sha512-MLEU0qOD2uXlz24oINNtdLZQl8RgmMxSnRtKEGZGGetTJjlRwQJjk+VsJ4EREaUoiaTb8NJOcUiKtoAiWn9EBg==}
+
+  temporal-spec@1.0.1:
+    resolution: {integrity: sha512-wxVoanmDeavXie1vu2JaQ3WIc3JZnWAOYFBsJyATaVsXsycKYUflGsyBmrRSnoCpZJpwPyr38VpgSUlQ8CbFxg==}
+
+  temporal-utils@1.0.2:
+    resolution: {integrity: sha512-1B8Dl4KzrOvsNUlpoWGno2VLQlxroLjDgc5NBjVC9ax9ymdo+ezfyvhyjEMx+IVfhINr6CIG2gcnlP95iRrybQ==}
 
   terser-webpack-plugin@5.5.0:
     resolution: {integrity: sha512-UYhptBwhWvfIjKd/UuFo6D8uq9xpGLDK+z8EDsj/zWhrTaH34cKEbrkMKfV5YWqGBvAYA3tlzZbs2R+qYrbQJA==}
@@ -9052,6 +9071,11 @@ snapshots:
       fetch-blob: 3.2.0
       formdata-polyfill: 4.0.10
 
+  node-ical@0.27.1:
+    dependencies:
+      rrule-temporal: 2.2.2
+      temporal-polyfill: 1.0.4
+
   node-releases@2.0.38: {}
 
   nwsapi@2.2.23: {}
@@ -9452,6 +9476,10 @@ snapshots:
       '@rollup/rollup-win32-x64-msvc': 4.60.3
       fsevents: 2.3.3
 
+  rrule-temporal@2.2.2:
+    dependencies:
+      temporal-spec: 1.0.1
+
   rrweb-cssom@0.7.1: {}
 
   rrweb-cssom@0.8.0: {}
@@ -9750,6 +9778,15 @@ snapshots:
   tailwindcss@4.2.4: {}
 
   tapable@2.3.3: {}
+
+  temporal-polyfill@1.0.4:
+    dependencies:
+      temporal-spec: 1.0.1
+      temporal-utils: 1.0.2
+
+  temporal-spec@1.0.1: {}
+
+  temporal-utils@1.0.2: {}
 
   terser-webpack-plugin@5.5.0(esbuild@0.27.0)(webpack@5.106.2(esbuild@0.27.0)):
     dependencies:

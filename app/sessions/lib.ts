@@ -1,5 +1,5 @@
 // Shared types + helpers for the TTS Sessions surface (headless Claude Code
-// sessions on the worker box; convex/claudeSessions.ts is the contract).
+// sessions on the Jarvis Box; convex/claudeSessions.ts is the contract).
 // Copy rules: descriptive never evaluative, plain hyphenated vocabulary.
 
 import type { Doc } from "@/convex/_generated/dataModel";
@@ -20,7 +20,7 @@ export type SessionStatus = Session["status"];
 // server imports). The worker daemon's literal mirrors are fenced by
 // scripts/check-session-mirrors.mjs.
 export { DAEMON_STALE_MS } from "@/convex/ttsShared";
-import { SESSION_REPOS } from "@/convex/ttsShared";
+import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 
 export const LIVE_STATUSES: readonly SessionStatus[] = [
   "requested",
@@ -34,7 +34,7 @@ export function isLive(status: SessionStatus): boolean {
   return LIVE_STATUSES.includes(status);
 }
 
-export const REPO_OPTIONS = [...Object.keys(SESSION_REPOS), "none"] as const;
+export const REPO_OPTIONS = [...SESSION_REPO_NAMES, NO_REPO] as const;
 
 /** Token classes for the status chip — dark tokens only. */
 export function statusChipClass(status: SessionStatus): string {

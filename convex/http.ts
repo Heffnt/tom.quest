@@ -4,7 +4,14 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
 import { nowContext } from "./tts";
-import { WRITING_STANDARD, ttsPrepDay } from "./ttsShared";
+import {
+  DAY_MS,
+  SESSION_REPO_NAMES,
+  WRITING_SKILL,
+  WRITING_STANDARD,
+  nyCalendarDayBoundsUtc,
+  ttsPrepDay,
+} from "./ttsShared";
 
 const http = httpRouter();
 
@@ -139,7 +146,7 @@ const poolRead = httpAction(async (ctx, request) => {
 http.route({ path: "/pool", method: "GET", handler: poolRead });
 
 // ── TTS worker endpoints (spec: WikiTom tts/spec.md) ─────────────────────────
-// The worker box's narrow, key-authed path into TTS, mirroring the /pool
+// The Jarvis Box's narrow, key-authed path into TTS, mirroring the /pool
 // pattern: TTS_WORKER_KEY lives only in the Convex env and shares nothing with
 // the other keys. The worker may capture items, post the day's prepared
 // queue+digest, and read state to prepare from — never rule, archive, or
@@ -168,11 +175,234 @@ const ttsCapture = httpAction(async (ctx, request) => {
     statement: b.statement,
     source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
+    // The Slack coordinates, when the caller is a Slack producer. They are
+    // what the threaded reply is addressed to and what the push route dedupes
+    // on; a caller that has none simply omits them.
+    slackChannel: typeof b.slackChannel === "string" ? b.slackChannel : undefined,
+    slackTs: typeof b.slackTs === "string" ? b.slackTs : undefined,
   });
   return jsonResponse(200, { ok: true, id });
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
+
+// POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
+// to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this
+// route only carries the traffic). Body: { title, start, end, description?,
+// location?, recurrence?, calendarId? } — start/end epoch ms.
+const ttsCalendarEvent = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.title !== "string" || b.title.trim() === "") {
+    return jsonResponse(400, { error: "title (non-empty string) required" });
+  }
+  if (typeof b.start !== "number" || typeof b.end !== "number") {
+    return jsonResponse(400, { error: "start and end (epoch ms) required" });
+  }
+  const recurrence = Array.isArray(b.recurrence)
+    ? b.recurrence.filter((r): r is string => typeof r === "string")
+    : undefined;
+  try {
+    const created = await ctx.runAction(
+      internal.ttsCalendarWrite.internalCreateEvent,
+      {
+        title: b.title,
+        start: b.start,
+        end: b.end,
+        description: typeof b.description === "string" ? b.description : undefined,
+        location: typeof b.location === "string" ? b.location : undefined,
+        recurrence,
+        calendarId: typeof b.calendarId === "string" ? b.calendarId : undefined,
+      },
+    );
+    return jsonResponse(200, { ok: true, ...created });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/tts/calendar-event",
+  method: "POST",
+  handler: ttsCalendarEvent,
+});
+
+// POST /tts/slack-replied — the worker reports that it posted its ONE threaded
+// reply to the #dump message a todo came from. Body: { id, replyTs? }. Separate
+// from /tts/prepare-todo because the reply happens AFTER preparation lands: the
+// reply names the brief, so it cannot be written before there is one.
+const ttsSlackReplied = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.id !== "string" || b.id === "") {
+    return jsonResponse(400, { error: "id (non-empty string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.tts.internalMarkSlackReplied, {
+      id: b.id,
+      replyTs: typeof b.replyTs === "string" ? b.replyTs : undefined,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/tts/slack-replied",
+  method: "POST",
+  handler: ttsSlackReplied,
+});
+
+// ── POST /slack/events — Slack PUSHES #dump messages to TTS ──────────────────
+// Tom's ruling 2026-08-30: Slack pushes instead of TTS polling every two
+// minutes. worker/jobs/poll-dump.mjs STAYS as the reconciliation backstop
+// (Slack's delivery is best-effort, not guaranteed) at an hourly cadence; its
+// cursor file is what makes a missed event recoverable.
+//
+// This route is unlike every other one in this file: it is the only PUBLIC one
+// (Slack cannot present X-TTS-Key), so its authentication IS the signature
+// check below. Three requirements Slack imposes, each load-bearing:
+//
+//  1. The one-time url_verification handshake — echo `challenge` or the
+//     subscription cannot be enabled at all.
+//  2. Signature verification. HMAC-SHA256 over the literal string
+//     `v0:<X-Slack-Request-Timestamp>:<raw body>`, keyed by SLACK_SIGNING_SECRET,
+//     compared to X-Slack-Signature. The RAW body is what is signed, so it is
+//     read as text once and parsed after — re-serializing the parsed object
+//     would change the bytes and every request would fail.
+//  3. 200 within 3 seconds or Slack retries. The capture is a single
+//     idempotent insert, so it happens inline and nothing else does.
+//
+// Replay window: 5 minutes, standard for this scheme. It bounds how long a
+// captured request stays useful to an attacker who has the bytes but not the
+// secret; without it a signed request is valid forever.
+const SLACK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+
+// Constant-time hex compare of our computed signature against the presented
+// one. Reuses timingSafeEqual above for the same reason it exists there.
+async function slackSignatureValid(
+  secret: string,
+  timestamp: string,
+  rawBody: string,
+  presented: string,
+): Promise<boolean> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`v0:${timestamp}:${rawBody}`),
+  );
+  const expected =
+    "v0=" +
+    Array.from(new Uint8Array(mac))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  return timingSafeEqual(expected, presented);
+}
+
+const slackEvents = httpAction(async (ctx, request) => {
+  const secret = process.env.SLACK_SIGNING_SECRET;
+  if (!secret) {
+    // Fail LOUD-but-safe: refuse rather than accept unverified writes. 503
+    // matches the unconfigured-key posture of keyAuth above, and Slack shows
+    // the failure in the app's event-delivery panel.
+    return jsonResponse(503, { error: "SLACK_SIGNING_SECRET not configured" });
+  }
+  // The raw bytes are what Slack signed — read once, verify, then parse.
+  const rawBody = await request.text();
+  const timestamp = request.headers.get("X-Slack-Request-Timestamp") ?? "";
+  const signature = request.headers.get("X-Slack-Signature") ?? "";
+  const age = Math.abs(Date.now() - Number(timestamp) * 1000);
+  if (!Number.isFinite(age) || age > SLACK_REPLAY_WINDOW_MS) {
+    return jsonResponse(401, { error: "stale or missing timestamp" });
+  }
+  if (!(await slackSignatureValid(secret, timestamp, rawBody, signature))) {
+    return jsonResponse(401, { error: "bad signature" });
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = (JSON.parse(rawBody) ?? {}) as Record<string, unknown>;
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+
+  // (1) The handshake. Echoed as PLAIN TEXT, which is what Slack's verifier
+  // accepts most reliably.
+  if (body.type === "url_verification") {
+    return new Response(String(body.challenge ?? ""), {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
+  if (body.type !== "event_callback") return jsonResponse(200, { ok: true });
+  const event = (body.event ?? {}) as Record<string, unknown>;
+
+  // The SAME filter poll-dump.mjs applies, and it must stay the same filter:
+  // bot_id skips our own posts (including the threaded replies this whole
+  // feature adds — otherwise every reply would capture itself), subtype skips
+  // joins/edits/thread-broadcasts, and empty text has nothing to capture.
+  const dumpChannel = process.env.SLACK_DUMP_CHANNEL_ID;
+  const text = typeof event.text === "string" ? event.text : "";
+  const ts = typeof event.ts === "string" ? event.ts : "";
+  if (
+    event.type !== "message" ||
+    event.bot_id !== undefined ||
+    event.subtype !== undefined ||
+    // A threaded reply is not a capture — Tom's replies to our own reply would
+    // otherwise become todos.
+    event.thread_ts !== undefined ||
+    text.trim() === "" ||
+    ts === "" ||
+    (dumpChannel !== undefined && event.channel !== dumpChannel)
+  ) {
+    // Acknowledged and ignored: anything but a 200 makes Slack retry an event
+    // we have already decided we do not want.
+    return jsonResponse(200, { ok: true, ignored: true });
+  }
+
+  // The capture itself — one idempotent insert keyed on the message ts, so
+  // Slack's at-least-once retries and poll-dump's backstop pass converge on
+  // one todo. No permalink call here: fetching one is a second network round
+  // trip inside the 3-second budget, and poll-dump's provenance is not worth
+  // the risk of a retry storm. The ts IS the address until then.
+  const id = await ctx.runMutation(internal.tts.internalCapture, {
+    statement: text,
+    source: "slack-capture",
+    provenance: `slack:#dump ts=${ts}`,
+    slackChannel: typeof event.channel === "string" ? event.channel : undefined,
+    slackTs: ts,
+  });
+  return jsonResponse(200, { ok: true, id });
+});
+
+http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 
 // POST /tts/prep — the worker's Claude-prepared daily queue + digest text.
 // Body: { day, todoIds: string[], reasons?: string[], digestText? }.
@@ -218,7 +448,7 @@ http.route({ path: "/tts/prep", method: "POST", handler: ttsPrep });
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
 // Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, importanceLevel?, importanceRationale?, plan? }.
+// dateKind?, plan? }.
 const ttsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -271,11 +501,8 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       // the real gate: a first date only, never over an existing one.
       dueAt: b.dueAt as number | undefined,
       dateKind: b.dateKind as "external" | "self-imposed" | undefined,
-      // The newer preparer args (importance + plan) ride through loose-shape;
-      // the mutation's arg validators are the final gate and a mismatch
-      // surfaces as a named 400 below.
-      importanceLevel: b.importanceLevel as never,
-      importanceRationale: str(b.importanceRationale),
+      // The plan rides through loose-shape; the mutation's arg validators are
+      // the final gate and a mismatch surfaces as a named 400 below.
       plan: b.plan as never,
       // The graph worker's three: the artifact that shows the work happened,
       // the self-contained "more" layer, and the completion itself.
@@ -305,11 +532,25 @@ const ttsState = httpAction(async (ctx, request) => {
     new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
   const queue = await ctx.runQuery(internal.tts.internalGetDay, { day });
+  // The coming week of external-calendar mirror rows (ttsCalendarEvents):
+  // schedule knowledge for realistic queueing — the prep prompt shows them as
+  // context, never as queueable items.
+  const dayStart = nyCalendarDayBoundsUtc(day).start;
+  const calendarEvents = await ctx.runQuery(
+    internal.ttsCalendar.internalListEventsInRange,
+    { start: dayStart, end: dayStart + 7 * DAY_MS },
+  );
   // nowContext carries the NY calendar date too — a different question from
   // prepDay (which rolls at 5 a.m.) and the one a preparer needs to resolve
   // "sept 3" or "Friday" in a statement. Same rule either way: the server owns
   // the clock, the worker repeats it back.
-  return jsonResponse(200, { todos, queue, prepDay: day, ...nowContext(Date.now()) });
+  return jsonResponse(200, {
+    todos,
+    queue,
+    calendarEvents,
+    prepDay: day,
+    ...nowContext(Date.now()),
+  });
 });
 
 http.route({ path: "/tts/state", method: "GET", handler: ttsState });
@@ -576,13 +817,8 @@ http.route({
 // shape-invalid scalars are dropped, never rejected, because one stray LLM
 // key must not abort the whole POST. The mutation's arg validators stay the
 // final gate (anything still malformed lands in its per-batch skip report).
-const IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
 const PLAN_ACTORS = ["tom", "agent"] as const;
 const PLAN_STATUSES = ["open", "done"] as const;
-
-function sanitizeString(x: unknown): string | undefined {
-  return typeof x === "string" ? x : undefined;
-}
 
 function sanitizeMember(m: unknown): Record<string, unknown> {
   // A non-object or key-less member survives as {} — validateBatchMembers
@@ -640,21 +876,12 @@ function sanitizeBatch(item: unknown): Record<string, unknown> | undefined {
   if (typeof r.id === "string") out.id = r.id;
   const plan = sanitizePlan(r.plan);
   if (plan !== undefined) out.plan = plan;
-  if (
-    IMPORTANCE_LEVELS.includes(
-      r.importanceLevel as (typeof IMPORTANCE_LEVELS)[number],
-    )
-  ) {
-    out.importanceLevel = r.importanceLevel;
-    const rationale = sanitizeString(r.importanceRationale);
-    if (rationale !== undefined) out.importanceRationale = rationale;
-  }
   return out;
 }
 
 // POST /tts/batches — the batcher's desired batch set. Body: { batches:
-// [{ id?, statement, brief, members, plan?, importanceLevel?,
-// importanceRationale? }], archiveIds? }. Sanitized (drop-don't-reject)
+// [{ id?, statement, brief, members, plan? }], archiveIds? }.
+// Sanitized (drop-don't-reject)
 // before the mutation; the mutation's per-batch skip report is the response.
 const ttsBatches = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -704,16 +931,21 @@ http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
 // plan-repair events (a worker found an edge wrong; the planner fixes the
 // structure), and `writingStandard`.
 //
-// WHY THE WRITING STANDARD RIDES THIS PAYLOAD: it has exactly ONE home,
-// ttsShared.WRITING_STANDARD, and the planner is Node ESM on a box that never
-// loads TypeScript — it cannot import it. Serving it here is what keeps the
-// text the planner pastes into its prompt the same text every TypeScript
-// caller imports.
+// WHY THE WRITING STANDARD RIDES THIS PAYLOAD: the planner is Node ESM on a box
+// that never loads TypeScript — it cannot import the text and it cannot read a
+// git checkout of WikiTom. Serving it here is what keeps the text the planner
+// pastes into its prompt the same text every TypeScript caller reads.
+//
+// ITS SOURCE is the synced WikiTom skill (ttsSkills, name "writing-to-tom"),
+// with ttsShared.WRITING_STANDARD as the fallback until the sync has run. The
+// field name and type do not change: worker/jobs/plan-graphs.mjs treats a
+// missing `writingStandard` as fatal and form-batches.mjs reads the same
+// payload.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  // Six independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, batches, planRepairs] =
+  // Seven independent reads — issued in parallel, not awaited one by one.
+  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingSkill] =
     await Promise.all([
       ctx.runQuery(internal.tts.internalListTodos, {}),
       ctx.runQuery(internal.tts.internalListMirror, {}),
@@ -721,7 +953,9 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
       ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
+      ctx.runQuery(internal.ttsSkills.internalGetSkill, { name: WRITING_SKILL }),
     ]);
+  const synced = writingSkill?.body.trim() ?? "";
   return jsonResponse(200, {
     todos,
     mirror,
@@ -729,7 +963,13 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     recentRulings,
     batches,
     planRepairs,
-    writingStandard: WRITING_STANDARD,
+    writingStandard: synced === "" ? WRITING_STANDARD : synced,
+    // The repo names a batch may declare. Served for the SAME reason as
+    // writingStandard above: the planner is Node ESM on a box that never loads
+    // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's
+    // value is what stops a fourth hand-written copy of the repo list
+    // appearing in worker/ (VQC C1).
+    sessionRepos: SESSION_REPO_NAMES,
   });
 });
 
@@ -869,6 +1109,14 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
           ? b.groundUpExplanation
           : undefined,
       path: path as never,
+      // The batch's declared repos (Tom 2026-08-30). Absent PRESERVES the
+      // stored value, the same rule every other field on this pen follows —
+      // so a planner run that says nothing about repos never erases a
+      // declaration. A non-array is treated as absent rather than rejected:
+      // one malformed field must not cost the whole graph.
+      repos: Array.isArray(b.repos)
+        ? b.repos.filter((x): x is string => typeof x === "string")
+        : undefined,
       tasks: tasks as never,
       goalIds: Array.isArray(b.goalIds)
         ? b.goalIds.filter((x): x is string => typeof x === "string")
@@ -1013,7 +1261,7 @@ const sessionsPoll = httpAction(async (ctx, request) => {
       typeof b.lastIngestError === "string"
         ? b.lastIngestError.slice(0, 2000)
         : undefined,
-    // Box load snapshot, loose-shape: the mutation's arg validator is the
+    // Jarvis Box load snapshot, loose-shape: the mutation's arg validator is the
     // final gate; a malformed report surfaces as a validator error.
     load:
       typeof b.load === "object" && b.load !== null
