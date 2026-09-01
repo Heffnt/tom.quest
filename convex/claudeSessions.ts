@@ -1974,7 +1974,7 @@ function buildProspectMissionPrompt(
   const lines: string[] = [
     `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
     "",
-    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for CONCRETE, ACTIONABLE issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
+    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for CONCRETE, ACTIONABLE issues worth carrying as items in TTS, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
     "",
     "What counts as a finding:",
     "- a failing or skipped test — name the test and the file it lives in",

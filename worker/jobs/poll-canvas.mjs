@@ -116,7 +116,7 @@ async function main() {
     .slice(0, MAX_CANDIDATES);
   if (candidates.length === 0) return;
 
-  const prompt = `You triage Canvas course announcements for Tom's todo system (TTS).
+  const prompt = `You triage Canvas course announcements for TTS (Toms Todo System).
 Below is a JSON array of new announcements (course, title, first 500 characters
 of the body). Decide which ones imply an ACTION BY TOM — something he must
 submit, respond to, sign up for, prepare, bring, attend at a changed time, or

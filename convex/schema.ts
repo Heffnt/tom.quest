@@ -327,7 +327,7 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_brew", ["brewId"]),
 
-  // ── TTS (Delegated Todo System) ──────────────────────────────────────────────
+  // ── TTS (Toms Todo System) ───────────────────────────────────────────────────
   // Spec: WikiTom tts/spec.md (canonical). Life todos live HERE (system of
   // record); code todos stay in each repo's vqc/todos.yaml and are only
   // mirrored (dtsCodeTodoMirror). Single-user by design: every function in

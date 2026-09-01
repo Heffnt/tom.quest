@@ -137,7 +137,7 @@ function explanationPreview(value, max) {
 
 function prompt(ctx) {
   return [
-    `You are the PLANNER for TTS, Tom's todo system. Your job is to maintain`,
+    `You are the PLANNER for TTS, Toms Todo System. Your job is to maintain`,
     `the GRAPH inside each batch. You propose structure; Tom rules. Nothing`,
     `you output executes anything.`,
     ``,

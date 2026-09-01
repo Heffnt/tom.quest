@@ -23,7 +23,7 @@ import {
   ttsPrepDay,
 } from "./ttsShared";
 
-// TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
+// TTS (Toms Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
 // Tom-gated (forge.ts pattern); everything the Jarvis Box or crons touch goes
 // through internal functions (http.ts routes are key-authed with TTS_WORKER_KEY).

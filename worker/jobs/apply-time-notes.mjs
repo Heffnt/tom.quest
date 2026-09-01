@@ -153,7 +153,7 @@ function prompt(note, clock) {
       ? `The note is about the calendar day ${note.day} (New York).`
       : null;
   return [
-    `You are reading ONE "time note" in TTS, Tom's personal todo system. A`,
+    `You are reading ONE "time note" in TTS, Toms Todo System. A`,
     `time note is a sentence Tom wrote about time — a due date, a wake time, a`,
     `block of committed time on his calendar. Your job is to turn that one`,
     `sentence into concrete actions, or to say plainly that you cannot.`,

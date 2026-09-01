@@ -7,7 +7,7 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 
 // The opening has two halves. The FRAMING says what this session is and how
 // wide it is; it is only true here, so it lives only here.
-const FRAMING = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output.`;
+const FRAMING = `You are working inside TTS (Toms Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output.`;
 
 // The WRITING half is the same standard every other TTS prompt carries, and
 // its live source is the WikiTom skill "writing-to-tom" (synced into

@@ -113,7 +113,7 @@ async function main() {
   candidates.sort((a, b) => a.internalDate - b.internalDate);
   const batch = candidates.slice(0, MAX_CANDIDATES);
 
-  const prompt = `You triage Tom's Gmail inbox for his todo system (TTS).
+  const prompt = `You triage Tom's Gmail inbox for TTS (Toms Todo System).
 Below is a JSON array of new emails (headers + a ~100-character snippet).
 Decide which ones imply an ACTION BY TOM — something he must reply to, submit,
 schedule, pay, sign, decide, or follow up on. Skip newsletters, promotions,

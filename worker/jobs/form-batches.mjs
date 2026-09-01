@@ -51,7 +51,7 @@ const MAX_BRIEF_CHARS = 400;
 
 function prompt(ctx) {
   return [
-    `You are the batcher for TTS, Tom's personal todo system. A "batch" is a`,
+    `You are the batcher for TTS, Toms Todo System. A "batch" is a`,
     `grouping of several todos — life todos (personal tasks) and code todos`,
     `(entries in his repos' todo files) — that one working session with Tom can`,
     `advance together, because they share the context he would have to load`,

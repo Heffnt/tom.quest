@@ -106,7 +106,7 @@ async function postThreadedReply(env, todo, parsed) {
 
 function prompt(todo, reviseSentence, today) {
   return [
-    `You are preparing one item in TTS, Tom's personal todo system. It was`,
+    `You are preparing one item in TTS, Toms Todo System. It was`,
     `captured as a raw thought; your job is to make it arrive pre-chewed.`,
     ``,
     `The item (JSON):`,

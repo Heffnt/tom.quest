@@ -52,9 +52,9 @@ const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000;
 function execPrompt(externalId, entryYaml, briefText) {
   return [
     `You are executing an APPROVED plan in the ComplexMultiTrigger repo. Tom has`,
-    `ruled "approve" on the code todo below through TTS (his delegated todo`,
-    `system); your job is to implement the todo's attached plan faithfully — the`,
-    `plan is the ratified decision, not a suggestion. Follow the repo's AGENTS.md.`,
+    `ruled "approve" on the code todo below through TTS (Toms Todo System); your`,
+    `job is to implement the todo's attached plan faithfully — the plan is the`,
+    `ratified decision, not a suggestion. Follow the repo's AGENTS.md.`,
     ``,
     `The todo entry (from ${TODOS_PATH}):`,
     ``,

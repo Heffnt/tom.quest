@@ -110,7 +110,7 @@ async function main() {
   // the "repeat daily but reworded, never copy-pasted" rule against the
   // actual previous wording instead of from scratch.
   const prompt = [
-    `You are preparing today's queue and daily digest for TTS, Tom's personal todo system.`,
+    `You are preparing today's queue and daily digest for TTS, Toms Todo System.`,
     ``,
     `Today's day key: ${day}. Current time in epoch ms: ${now}. All dueAt/latestSafeAt/updatedAt values are epoch ms.`,
     ``,
