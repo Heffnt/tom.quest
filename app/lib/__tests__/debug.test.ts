@@ -40,21 +40,20 @@ describe("debug core", () => {
     expect(lines[1]).toContain("[api] <- GET /foo 123ms status=200");
   });
 
-  it("dedupes identical successes when configured", async () => {
+  it("logs every identical success — there is no success dedupe", async () => {
+    // Guards the deletion of `dedupeSuccessForMs`: repeated identical requests
+    // each get their own pair of lines. The option had no caller and existed
+    // only for the test that exercised it; if a polling surface ever needs its
+    // success lines quieted, the suppression and its caller land together.
     const log = debug.scoped("poll");
 
-    const first = log.req("GET /poll", undefined, { dedupeSuccessForMs: 1000, defer: true });
+    const first = log.req("GET /poll", undefined, { defer: true });
     first({ status: 200 });
     expect(debug.getLines()).toHaveLength(2);
 
     await vi.advanceTimersByTimeAsync(500);
-    const second = log.req("GET /poll", undefined, { dedupeSuccessForMs: 1000, defer: true });
+    const second = log.req("GET /poll", undefined, { defer: true });
     second({ status: 200 });
-    expect(debug.getLines()).toHaveLength(2);
-
-    await vi.advanceTimersByTimeAsync(1001);
-    const third = log.req("GET /poll", undefined, { dedupeSuccessForMs: 1000, defer: true });
-    third({ status: 200 });
     expect(debug.getLines()).toHaveLength(4);
   });
 

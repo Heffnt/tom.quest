@@ -6,11 +6,13 @@
 //
 // THE RULING LOOP: brief-code-todos.mjs posts a brief + recommendation per
 // open CMT todo; Tom rules in the tom.quest UI; Convex queues the ruling;
-// this job GETs /tts/rulings — a UNIFIED feed whose rows carry
-// subjectType "life"|"code" and verdict "approve"|"revise"|"session"|
-// "archive" — takes only the CODE rows (life rows belong to
-// prepare-life-todos.mjs), applies each pending one, then POSTs
-// /tts/ruling-applied so the UI shows the outcome. The verdicts:
+// this job GETs /tts/rulings — ONE unified feed carrying all THREE subject
+// types, whose rows carry subjectType "life"|"code"|"batch" and verdict
+// "approve"|"revise"|"session"|"archive". This job takes only the CODE rows
+// and passes over the other two: "life" rows belong to
+// prepare-life-todos.mjs, "batch" rows to plan-graphs.mjs. It applies each
+// pending code ruling, then POSTs /tts/ruling-applied so the UI shows the
+// outcome. The verdicts:
 //   revise   -> Tom's sentence redirects the plan: force a re-brief that
 //               proposes a fresh one
 //   session  -> push a session-agenda file to CMT master for Tom to open a

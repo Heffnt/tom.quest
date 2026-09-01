@@ -6,8 +6,11 @@
 //
 // THE EXECUTION HALF of the ruling loop: when Tom's verdict is "approve" on a
 // briefed CMT todo, the plan attached to that todo is cleared for autonomous
-// execution. This job reads the unified /tts/rulings feed (rows carry
-// subjectType "life"|"code"), takes the OLDEST pending CODE approval, runs AGENTIC
+// execution. This job reads the unified /tts/rulings feed — one feed carrying
+// all three subject types, rows carrying subjectType "life"|"code"|"batch" —
+// and takes the OLDEST pending CODE approval, passing over the "life" rows
+// (prepare-life-todos.mjs) and the "batch" rows (plan-graphs.mjs), and passing
+// over non-"approve" code verdicts too (apply-rulings.mjs). It runs AGENTIC
 // headless Claude inside a throwaway full clone, and turns the result into a
 // PR on github.com/Heffnt/ComplexMultiTrigger. MERGING THE PR IS THE HUMAN
 // GATE — nothing this job does lands on master by itself, which is why

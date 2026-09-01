@@ -7,7 +7,18 @@ import type { Doc } from "@/convex/_generated/dataModel";
 // Age text is shared with the Inventory surface — one definition.
 export { ageText } from "../tts/lib";
 
-export type Session = Doc<"claudeSessions">;
+/**
+ * A session AS THE BROWSER RECEIVES IT — the stored document plus the one
+ * thing listSessions/getSession add: `repos` always present, never optional.
+ *
+ * Typing this as the bare `Doc` is what let both session screens read the
+ * legacy single-string `repo` and show one repository for a session holding
+ * several — the schema states "readers prefer `repos ?? [repo]`", but a type
+ * saying `repos?: string[]` invites the reader to reach for `repo` instead.
+ * The queries project the fallback once (convex/claudeSessions.ts), and this
+ * type is where that guarantee reaches the screens.
+ */
+export type Session = Doc<"claudeSessions"> & { repos: string[] };
 export type Message = Doc<"claudeMessages">;
 export type StreamBuf = Doc<"claudeStreamBuf">;
 export type InboundRow = Doc<"claudeInbound">;

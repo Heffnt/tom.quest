@@ -50,6 +50,7 @@ import {
   goalCheckable,
   isReady,
   normalizeSessionRepos,
+  sessionRepos,
 } from "./ttsShared";
 export { DAEMON_STALE_MS };
 
@@ -137,13 +138,28 @@ function outcomeEventText(
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
 
+/**
+ * Both Tom-facing session reads return the row with `repos` ALWAYS PRESENT —
+ * `sessionRepos` applied once here rather than `repos ?? [repo]` respelled at
+ * every screen that renders a session. The schema states the rule; stating it
+ * at the boundary means a future reader inherits it instead of having to know
+ * it, and it is the same expression internalListLive already projects, so the
+ * browser and the cron see one shape. Everything else is the raw document.
+ */
+function withRepos<T extends Doc<"claudeSessions">>(
+  session: T,
+): T & { repos: string[] } {
+  return { ...session, repos: sessionRepos(session) };
+}
+
 export const listSessions = query({
   args: {},
   handler: async (ctx) => {
     await requireTomId(ctx);
     // Newest first; the session list is human-scale (take, not collect —
     // ledger tts-collect-pagination discipline).
-    return await ctx.db.query("claudeSessions").order("desc").take(100);
+    const rows = await ctx.db.query("claudeSessions").order("desc").take(100);
+    return rows.map(withRepos);
   },
 });
 
@@ -151,7 +167,8 @@ export const getSession = query({
   args: { id: v.id("claudeSessions") },
   handler: async (ctx, { id }) => {
     await requireTomId(ctx);
-    return await ctx.db.get(id);
+    const session = await ctx.db.get(id);
+    return session === null ? null : withRepos(session);
   },
 });
 
@@ -427,7 +444,7 @@ export const internalListLive = internalQuery({
         status: s.status,
         kind: s.kind,
         mode: s.mode ?? "interactive",
-        repos: s.repos ?? (s.repo === NO_REPO ? [] : [s.repo]),
+        repos: sessionRepos(s),
         createdAt: s.createdAt,
         lastSdkEventAt: s.lastSdkEventAt,
       }));

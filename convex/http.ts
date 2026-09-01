@@ -756,7 +756,8 @@ const dtsCodeRulings = httpAction(async (ctx, request) => {
   return jsonResponse(200, { pending });
 });
 
-// Canonical path: /tts/rulings — the feed serves BOTH subject types, so the
+// Canonical path: /tts/rulings — the feed serves all three subject types
+// ("life", "code", "batch"; see the comment above the handler), so the
 // old code-scoped name is kept only as an alias for not-yet-redeployed
 // workers (drop the alias in the tts→tts rename round).
 http.route({ path: "/tts/rulings", method: "GET", handler: dtsCodeRulings });

@@ -424,7 +424,9 @@ export default function SessionList({
                       autonomous
                     </span>
                   )}
-                  <span>{s.repo}</span>
+                  {/* Every repository the session holds; listSessions projects
+                      `repos` for every row. */}
+                  <span>{s.repos.length === 0 ? NO_REPO : s.repos.join(", ")}</span>
                   <span>{ageText(s.statusChangedAt, now)}</span>
                 </div>
                 {/* What an ended session came to, in the row itself. */}

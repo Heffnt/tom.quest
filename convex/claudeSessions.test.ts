@@ -606,6 +606,67 @@ describe("claude sessions", () => {
     expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
   });
 
+  // The reads the browser actually uses hand back `repos` for EVERY row,
+  // including rows written before the multi-repo ruling that carry only the
+  // single-string `repo`. Both session screens render that list; while the
+  // queries returned raw documents, both screens read `repo` and a session
+  // holding two repositories displayed one.
+  // witness: drop the `withRepos` projection from getSession/listSessions and
+  // this goes red — the legacy row comes back with `repos` undefined.
+  it("getSession and listSessions always return repos, legacy rows included", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    // A pre-ruling row: `repo` only, no `repos` — what every session inserted
+    // before 2026-08-30 looks like in prod, and nothing backfills them.
+    const legacyId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeSessions", {
+        title: "written before the multi-repo ruling",
+        kind: "adhoc" as const,
+        repo: "tom.quest",
+        status: "ended" as const,
+        statusChangedAt: Date.now(),
+        nextSeq: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const legacy = await tom.query(api.claudeSessions.getSession, {
+      id: legacyId,
+    });
+    expect(legacy?.repos).toEqual(["tom.quest"]);
+
+    // A no-checkout row: "none" is the sentinel, not a repository name.
+    const noneId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeSessions", {
+        title: "no checkout, pre-ruling",
+        kind: "adhoc" as const,
+        repo: "none",
+        status: "ended" as const,
+        statusChangedAt: Date.now(),
+        nextSeq: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    expect(
+      (await tom.query(api.claudeSessions.getSession, { id: noneId }))?.repos,
+    ).toEqual([]);
+
+    // And a live multi-repo row keeps both repositories through the list read.
+    const multiId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "two repos",
+      kind: "adhoc",
+      repos: ["tom.quest", "WikiTom"],
+      initialPrompt: "the mission",
+    });
+    const listed = await tom.query(api.claudeSessions.listSessions, {});
+    expect(listed.find((s) => s._id === multiId)?.repos).toEqual([
+      "tom.quest",
+      "WikiTom",
+    ]);
+    expect(listed.find((s) => s._id === legacyId)?.repos).toEqual([
+      "tom.quest",
+    ]);
+  });
+
   it("createSession with a todoId marks the live unapplied session ruling applied", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);

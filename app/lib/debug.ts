@@ -7,8 +7,18 @@ export type ConsoleDiagnosticEvent = {
   timestamp: number;
 };
 
+// `defer` holds the "-> method" line back until the request finishes, so a
+// request that is never awaited leaves no half-line in the log.
+//
+// There was also a `dedupeSuccessForMs` here, suppressing a repeated identical
+// success line within a window. It is gone: no caller ever passed it, and none
+// of the four log.req sites (jarvis config, gateway RPC, ws-credentials,
+// canvas agent) repeats a fixed request — each fires once per user action or
+// carries a distinct id in its summary, so the two lines it would collapse
+// never occurred. If a polling surface is ever added and its success lines
+// crowd the diagnostic panel, bring it back with that caller in the same
+// change.
 export type DebugRequestOptions = {
-  dedupeSuccessForMs?: number;
   defer?: boolean;
 };
 
@@ -34,7 +44,6 @@ let consoleCaptureInstalled = false;
 
 const subscribers = new Set<() => void>();
 const stateProviders = new Map<string, DebugStateProvider>();
-const successDedupeCache = new Map<string, { signature: string; loggedAt: number }>();
 
 function pad(value: number, width = 2): string {
   return String(value).padStart(width, "0");
@@ -151,28 +160,6 @@ function captureConsoleEvent(level: ConsoleDiagnosticEvent["level"], args: unkno
   pushLine(buildLine("console", level, { message }));
 }
 
-function clearSuccessCacheFor(source: string, method: string) {
-  successDedupeCache.delete(`${source}|${method}`);
-}
-
-function shouldSuppressSuccess(
-  source: string,
-  method: string,
-  summary: DebugFields | undefined,
-  dedupeSuccessForMs: number | undefined,
-): boolean {
-  if (!dedupeSuccessForMs || dedupeSuccessForMs <= 0) return false;
-  const now = Date.now();
-  const key = `${source}|${method}`;
-  const signature = formatFields(summary);
-  const previous = successDedupeCache.get(key);
-  if (previous && previous.signature === signature && now - previous.loggedAt < dedupeSuccessForMs) {
-    return true;
-  }
-  successDedupeCache.set(key, { signature, loggedAt: now });
-  return false;
-}
-
 function createRequestDone(
   source: string,
   method: string,
@@ -193,16 +180,12 @@ function createRequestDone(
 
   const done = ((summary?: DebugFields) => {
     const durationMs = Date.now() - startedAt;
-    if (shouldSuppressSuccess(source, method, summary, options?.dedupeSuccessForMs)) {
-      return;
-    }
     ensureRequestLine();
     pushLine(buildLine(source, `<- ${method} ${durationMs}ms`, summary));
   }) as DebugRequestDone;
 
   done.error = (message: string, errorData?: DebugFields) => {
     const durationMs = Date.now() - startedAt;
-    clearSuccessCacheFor(source, method);
     ensureRequestLine();
     pushLine(buildLine(source, `ERROR ${method} ${message} (${durationMs}ms)`, errorData));
   };
@@ -262,7 +245,6 @@ export function snapshot(): string {
 export function clear() {
   lines = [];
   consoleEvents = [];
-  successDedupeCache.clear();
   emit();
 }
 

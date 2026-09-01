@@ -439,6 +439,29 @@ export function normalizeSessionRepos(
 }
 
 /**
+ * THE reader for a session row's repositories — the one spelling of the rule
+ * the schema states ("readers prefer `repos ?? [repo]`", convex/schema.ts).
+ *
+ * `repos` is the live field and `repo` the pre-ruling single string, both
+ * written on every new row; but rows inserted before the 2026-08-30 multi-repo
+ * ruling have only `repo`, so a reader that takes `repo` alone shows one
+ * repository for a session that holds several, and a reader that takes `repos`
+ * alone shows none at all for an old row. This takes `repos` when it exists and
+ * reconstructs it from `repo` when it does not, mapping the "none" sentinel to
+ * the empty list so "holds no repositories" has exactly one representation.
+ *
+ * Callers that must DISPLAY the empty case render NO_REPO themselves; this
+ * returns data, not a label.
+ */
+export function sessionRepos(session: {
+  repos?: readonly string[];
+  repo: string;
+}): string[] {
+  if (session.repos !== undefined) return [...session.repos];
+  return session.repo === NO_REPO ? [] : [session.repo];
+}
+
+/**
  * The browser treats the session daemon as unreachable past this heartbeat
  * age; forceClose is allowed only past it. 90s = 3 missed 30s idle polls.
  */
