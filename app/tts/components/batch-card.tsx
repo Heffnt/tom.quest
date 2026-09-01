@@ -11,7 +11,7 @@
 import PlanBar from "./plan-bar";
 import GraphView from "./graph-view";
 import { groundUpTeaser } from "../lib";
-import type { RulingVerdict } from "./ruling-dialog";
+import type { RulingOption } from "./ruling-dialog";
 import type { DetailItem } from "./detail-dialog";
 
 export type GraphTask = {
@@ -78,7 +78,7 @@ export default function BatchCard({
   graph: BatchGraph;
   expanded: boolean;
   onToggle: () => void;
-  onRule: (verdict: RulingVerdict) => void;
+  onRule: (option: RulingOption) => void;
   onDetail: (item: DetailItem) => void;
   onGroundUp: (title: string, content: string) => void;
   onOpenSession: () => void;

@@ -34,7 +34,7 @@ import BatchCard, {
   type BatchGraph,
   type GraphTask,
 } from "./batch-card";
-import RulingDialog, { type RulingVerdict } from "./ruling-dialog";
+import RulingDialog, { storedVerdict, type RulingOption } from "./ruling-dialog";
 import DetailDialog, { type DetailItem } from "./detail-dialog";
 import GroundUpView from "./ground-up-view";
 import TimeNoteField, {
@@ -250,7 +250,9 @@ export default function BatchesTab() {
   const [ruling, setRuling] = useState<{
     batchId: Id<"batches">;
     graph: BatchGraph;
-    verdict: RulingVerdict;
+    /** The chip clicked — a dialog option, translated to a stored verdict by
+     *  `storedVerdict` at the moment it is recorded. */
+    option: RulingOption;
   } | null>(null);
   const [detail, setDetail] = useState<DetailItem | null>(null);
   const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
@@ -410,8 +412,8 @@ export default function BatchesTab() {
                     }).catch(() => {});
                   })
                 }
-                onRule={(verdict) =>
-                  setRuling({ batchId: batch._id, graph, verdict })
+                onRule={(option) =>
+                  setRuling({ batchId: batch._id, graph, option })
                 }
                 onDetail={setDetail}
                 onGroundUp={(title, content) => setGroundUp({ title, content })}
@@ -504,7 +506,7 @@ export default function BatchesTab() {
 
       {ruling && (
         <RulingDialog
-          verdict={ruling.verdict}
+          option={ruling.option}
           statement={ruling.graph.statement}
           brief={
             ruling.graph.groundUp !== undefined
@@ -519,9 +521,7 @@ export default function BatchesTab() {
           onConfirm={(sentence) =>
             recordRuling({
               batchId: ruling.batchId,
-              // The chip says "edit" (Tom's word for it); the stored verdict
-              // is still named "revise".
-              verdict: ruling.verdict === "edit" ? "revise" : ruling.verdict,
+              verdict: storedVerdict(ruling.option),
               sentence: sentence || undefined,
             })
           }

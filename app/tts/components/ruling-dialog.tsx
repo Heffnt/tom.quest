@@ -8,13 +8,35 @@
 //   (session is its own thing and opens directly, not through this dialog)
 // The dialog always states where the batch stands before asking for input.
 import { useState } from "react";
-import type { PlanStep } from "../lib";
+import type { PlanStep, RulingVerdict } from "../lib";
 import { nextStep, planProgress } from "./plan-bar";
 
-export type RulingVerdict = "approve" | "archive" | "edit";
+/**
+ * What the CHIPS offer — the dialog's own option set, which is NOT the stored
+ * verdict union. `RulingVerdict` (app/tts/lib.ts, mirroring the union
+ * convex/ttsRulings.ts validates against) is "approve" | "revise" | "session" |
+ * "archive". This set differs from it twice over: "session" is absent (it opens
+ * a session directly, never through this dialog), and "edit" is the chip word
+ * for the stored "revise" (it absorbs revise, schedule, reshaping, re-pathing).
+ *
+ * The two names are deliberately apart so that following either one lands on
+ * the right thing. `storedVerdict` below is the ONE crossing between them.
+ */
+export type RulingOption = "approve" | "archive" | "edit";
+
+/**
+ * The chip word a batch ruling is stored under. The chips say "edit" (Tom's
+ * word); the database column says "revise". Every caller that records a ruling
+ * from this dialog goes through here, so the crossing has one home — and a
+ * later rename of the stored vocabulary is a one-line change at this function
+ * rather than a hunt for inline ternaries.
+ */
+export function storedVerdict(option: RulingOption): RulingVerdict {
+  return option === "edit" ? "revise" : option;
+}
 
 const COPY: Record<
-  RulingVerdict,
+  RulingOption,
   { does: string; call: string; placeholder: string; confirm: string }
 > = {
   approve: {
@@ -40,14 +62,15 @@ const COPY: Record<
 };
 
 export default function RulingDialog({
-  verdict,
+  option,
   statement,
   brief,
   plan,
   onConfirm,
   onClose,
 }: {
-  verdict: RulingVerdict;
+  /** The chip that was clicked — a dialog OPTION, not a stored verdict. */
+  option: RulingOption;
   statement: string;
   brief?: string;
   plan?: PlanStep[];
@@ -58,7 +81,7 @@ export default function RulingDialog({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const c = COPY[verdict];
+  const c = COPY[option];
   const { done, total } = planProgress(plan);
   const next = nextStep(plan);
   const openTom = (plan ?? []).filter(
@@ -73,7 +96,7 @@ export default function RulingDialog({
       }}
     >
       <div className="w-[440px] max-w-full rounded-xl border border-[#3b4a66] bg-surface p-4">
-        <h3 className="text-[15px] font-semibold">{verdict}</h3>
+        <h3 className="text-[15px] font-semibold">{option}</h3>
         <p className="mt-0.5 text-sm text-text">{statement}</p>
 
         <div className="mt-2 rounded-md bg-surface-alt/60 px-2.5 py-2 text-xs text-text-muted">
@@ -103,7 +126,7 @@ export default function RulingDialog({
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={c.placeholder}
-          autoFocus={verdict === "edit"}
+          autoFocus={option === "edit"}
           className="mt-2.5 min-h-16 w-full resize-y rounded-md border border-border bg-bg px-2.5 py-1.5 text-[13px] text-text placeholder:text-text-faint"
         />
 
@@ -119,7 +142,7 @@ export default function RulingDialog({
             type="button"
             // "edit" stores the revise verdict, which REQUIRES its sentence —
             // the server refuses an empty one, so the button is not offered.
-            disabled={busy || (verdict === "edit" && text.trim() === "")}
+            disabled={busy || (option === "edit" && text.trim() === "")}
             onClick={() => {
               if (!onConfirm) {
                 onClose();
