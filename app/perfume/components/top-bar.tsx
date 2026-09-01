@@ -209,7 +209,6 @@ function MemberGroup({
         name={ownerName}
         color={color}
         fresh={member?.fresh ?? false}
-        iconUrl={member?.iconUrl ?? null}
         badge={you ? "you" : undefined}
       />
       {recent.map((b) => (
@@ -256,21 +255,20 @@ function MemberGroup({
 }
 
 // ── an avatar + activity dot ──────────────────────────────────────────────────
-// Renders the member's uploaded icon (listMembers resolves iconStorageId to a
-// servable iconUrl server-side) when present; otherwise the color+initial
-// fallback. The party group carries no icon, so it always shows the fallback.
+// A member's avatar is the first letter of their name, in their colour on a
+// tint of it. There is no image case: an icon-upload path existed server-side
+// but no client ever called it, so every avatar this component has ever
+// rendered was the initial. The party group has no member either way.
 
 function Avatar({
   name,
   color,
   fresh,
-  iconUrl,
   badge,
 }: {
   name: string;
   color: string;
   fresh: boolean;
-  iconUrl?: string | null;
   badge?: string;
 }) {
   const initial = name.trim().charAt(0).toUpperCase() || "?";
@@ -284,17 +282,7 @@ function Avatar({
         className="grid h-6 w-6 place-items-center overflow-hidden rounded-full border border-border font-mono text-[11px] font-semibold"
         style={{ background: `${color}22`, color }}
       >
-        {iconUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={iconUrl}
-            alt=""
-            className="h-full w-full object-cover"
-            draggable={false}
-          />
-        ) : (
-          initial
-        )}
+        {initial}
       </span>
       <span
         aria-hidden="true"

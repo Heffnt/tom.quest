@@ -30,6 +30,11 @@ export const DEFAULT_TOM_PARAMS: TomSymbolParams = {
   dotSize: 60,
 };
 
+// Module-private: the only reader is TomSymbol's own `options` default below.
+// (DEFAULT_TOM_PARAMS is exported because symbol-game.tsx derives its geometry
+// from it; nothing outside this file has ever needed the options.)
+// Exported again: #18 (logo bars variant) made app/logo/logo-client.tsx a
+// live importer, so the un-export in the dead-code sweep no longer holds.
 export const DEFAULT_TOM_OPTIONS: TomSymbolOptions = {
   dotShape:     "circle",
   tailCut:      "horizontal",

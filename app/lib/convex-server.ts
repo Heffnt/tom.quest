@@ -40,12 +40,10 @@ function authError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
 }
 
-export async function requireUser(request: Request): Promise<ServerUser | Response> {
-  const user = await currentUser(request);
-  if (!user) return authError("Authentication required", 401);
-  return user;
-}
-
+// This module gates on ROLE, not on mere sign-in: the two guards below are
+// admin-or-above and Tom-only. There is deliberately no signed-in-any-role
+// guard, because no route wanted one. A route that needs "any signed-in user"
+// calls currentUser() and returns its own 401.
 export async function requireAdmin(request: Request): Promise<ServerUser | Response> {
   const user = await currentUser(request);
   if (!user) return authError("Authentication required", 401);

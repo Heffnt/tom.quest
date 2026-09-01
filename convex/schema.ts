@@ -22,6 +22,12 @@ export default defineSchema({
     phone: v.optional(v.string()),
     phoneVerificationTime: v.optional(v.number()),
     isAnonymous: v.optional(v.boolean()),
+    // The role vocabulary has a twin: the UserRole TYPE in convex/authRoles.ts,
+    // which every gate (roleAccess, requireTom) branches on. A validator and a
+    // type cannot be one declaration, so adding a role means editing both — the
+    // USER_ROLES union above and UserRole there — or roleAccess silently
+    // treats the new role as "user". Absent role means "user"; see
+    // authRoles.roleAccess.
     role: v.optional(USER_ROLES),
   })
     .index("email", ["email"])
@@ -158,9 +164,11 @@ export default defineSchema({
     userId: v.id("users"),
     createdAt: v.number(),
     lastActivityAt: v.number(),
-  })
-    .index("by_canvas_activity", ["canvasId", "lastActivityAt"])
-    .index("by_user", ["userId"]),
+    // Chats are always reached through their canvas, never listed per user:
+    // convex/canvas.ts queries by_canvas_activity, and ownership is checked by
+    // ownChatOrThrow, which db.get()s the row and compares userId. A by_user
+    // index had no query and was removed. Re-add it only with a caller.
+  }).index("by_canvas_activity", ["canvasId", "lastActivityAt"]),
 
   canvasMessages: defineTable({
     chatId: v.id("canvasChats"),
@@ -227,6 +235,15 @@ export default defineSchema({
     memberKey: v.string(),
     name: v.string(),
     color: v.string(),
+    // DANGER — do not drop this column casually. Nothing reads or writes it any
+    // more: the member-icon upload path was removed because no client ever
+    // called it, and avatars are the initial-on-colour fallback. It stays
+    // because deleting a column is validated against every existing row on
+    // push, and this repo has ONE Convex deployment: if any perfumeMembers row
+    // in prod still carries an iconStorageId (set by an earlier version or by
+    // hand in the dashboard), the push is rejected and that failure blocks the
+    // whole site's deploy, not just /perfume. Read the prod table first, then
+    // drop it. An optional column no code touches costs nothing until then.
     iconStorageId: v.optional(v.id("_storage")),
     registeredAt: v.number(),
     lastSeenAt: v.number(),
