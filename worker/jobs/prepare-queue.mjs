@@ -9,11 +9,13 @@
 //
 // RELIABILITY SPLIT (why failure here is acceptable): this worker job is the
 // smart-but-optional half. The Convex side runs a dumb fallback queue prep at
-// 4:45 a.m. NY, and the 5 a.m. digest cron in Convex ALWAYS sends — with
-// whatever was prepared, saying in-band when worker prep never arrived. So:
-// missing digest = Convex/Slack breakage; digest reporting missing prep =
-// worker breakage. Zero monitoring infrastructure needed. Consequently, on
-// ANY failure this script just logs and exits 1 — no retries, no heroics.
+// 4:45 a.m. NY. The digest half of that split has been OFF since Tom's
+// 2026-08-29 outbound-Slack ruling — the digest crons are unregistered
+// (convex/crons.ts:32-35) and sendDigest returns on
+// OUTBOUND_SLACK_ENABLED=false — so nothing is sent and no send-or-silence
+// signal exists today; the 4:45 fallback prep still covers the queue.
+// Consequently, on ANY failure this script just logs and exits 1 — no retries,
+// no heroics.
 //
 // NO-STATE RULE: this script keeps nothing on disk. Everything it needs comes
 // from Convex (/tts/state) and everything it produces goes to Convex
@@ -221,9 +223,10 @@ async function main() {
 }
 
 main().catch((err) => {
-  // Any failure: log it and exit 1. The Convex fallback prep (4:45) and the
-  // always-sends digest (5:00) cover the day; the digest will say in-band
-  // that worker prep never arrived, which is the monitoring signal.
+  // Any failure: log it and exit 1. The Convex fallback prep (4:45) covers the
+  // day's queue. The digest send is OFF (see the RELIABILITY SPLIT note at the
+  // top of this file), so a failure here surfaces in the app's queue, not as a
+  // Slack signal.
   console.error(`[prepare-queue] FAILED: ${err.message}`);
   process.exit(1);
 });

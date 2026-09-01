@@ -773,9 +773,11 @@ export default defineSchema({
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
   // a fallback cron builds a simple-rules queue if none arrived. The digest
-  // cron ALWAYS sends at 5 (sends-even-when-empty rule) with whatever is here
-  // and marks digestSentAt — so a missing digest means Convex/Slack breakage,
-  // a digest reporting missing prep means worker breakage.
+  // SEND is OFF since Tom's 2026-08-29 outbound-Slack ruling: the digest crons
+  // are unregistered (convex/crons.ts:32-35) and sendDigest returns on
+  // OUTBOUND_SLACK_ENABLED=false, so digestSentAt is no longer stamped and
+  // there is no send-or-silence monitoring signal. The queue and digest text
+  // are still written here every morning and read on the TTS pages.
   dtsDailyQueues: defineTable({
     day: v.string(),
     entries: v.array(
