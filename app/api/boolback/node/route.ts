@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { forwardToTuringApi } from "@/app/lib/turing";
+import { forwardToTuringApi, upstreamReason } from "@/app/lib/turing";
 
 // PUBLIC, read-only proxy for the boolback raw-artifact browser: lists one dir
 // level (child dirs + files with sizes) inside the artifact tree. The X-API-Key is
@@ -14,7 +14,9 @@ export async function GET(request: NextRequest) {
     const ct = res.headers.get("content-type") ?? "";
     if (!res.ok || !ct.includes("application/json")) {
       return NextResponse.json(
-        { error: text || `Turing request failed: ${res.status}` },
+        // `error` is the one failure-field name across these proxies;
+        // upstreamReason unwraps FastAPI's `detail` into it (app/lib/turing.ts).
+        { error: upstreamReason(text, res.status) },
         { status: res.ok ? 502 : res.status },
       );
     }

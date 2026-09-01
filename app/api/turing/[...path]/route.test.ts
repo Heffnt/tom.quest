@@ -10,9 +10,12 @@ vi.mock("@/app/lib/convex-server", () => ({
   requireAdminOrAgent,
 }));
 
-vi.mock("@/app/lib/turing", () => ({
-  forwardToTuringApi,
-}));
+// Only the network call is mocked. upstreamReason stays REAL: it is the thing
+// the error-payload test below is checking.
+vi.mock("@/app/lib/turing", async () => {
+  const actual = await vi.importActual<typeof import("@/app/lib/turing")>("@/app/lib/turing");
+  return { forwardToTuringApi, upstreamReason: actual.upstreamReason };
+});
 
 function postRequest(path: string, body: unknown): NextRequest {
   return new NextRequest(`http://localhost/api/turing/${path}`, {
@@ -136,5 +139,61 @@ describe("the Turing proxy gates reads and writes separately", () => {
 
     expect(response.status).toBe(403);
     expect(forwardToTuringApi).not.toHaveBeenCalled();
+  });
+});
+
+// ONE FIELD NAME FOR A FAILED REQUEST. The proxy is the only writer of this
+// payload; its readers (app/boolback/data/source.ts's rebuild note,
+// app/boolback/components/artifact-browser.tsx's getJson) read `error` and
+// nothing else. These fail if a failure ever answers under another name, or if
+// FastAPI's `detail` goes back to being re-wrapped whole — which is what made
+// a failed rebuild show a bare status number instead of the upstream reason.
+describe("a failed upstream request answers under one field name", () => {
+  beforeEach(() => {
+    requireAdmin.mockReset();
+    requireAdminOrAgent.mockReset();
+    forwardToTuringApi.mockReset();
+    requireAdmin.mockResolvedValue({ _id: "admin-id", role: "admin", isAdmin: true });
+    requireAdminOrAgent.mockResolvedValue({ _id: "admin-id", role: "admin", isAdmin: true });
+  });
+
+  it("unwraps FastAPI's detail into error", async () => {
+    forwardToTuringApi.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "dir is outside the artifact root" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { POST } = await import("@/app/api/turing/[...path]/route");
+
+    const response = await POST(
+      postRequest("boolback-snapshot", {}),
+      ctx(["boolback-snapshot"]),
+    );
+
+    // 502, not 400: this route already collapses every upstream status except
+    // 401/403 into 502 (unchanged here). That collapse is exactly why the
+    // reason text has to survive in the payload — the status no longer carries
+    // it.
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      error: "dir is outside the artifact root",
+    });
+  });
+
+  it("falls back to the raw body when upstream is not JSON", async () => {
+    forwardToTuringApi.mockResolvedValue(
+      new Response("upstream exploded", { status: 500, headers: { "Content-Type": "text/plain" } }),
+    );
+    const { GET } = await import("@/app/api/turing/[...path]/route");
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/turing/jobs", {
+        headers: { Authorization: "Bearer access-token" },
+      }),
+      ctx(["jobs"]),
+    );
+
+    await expect(response.json()).resolves.toEqual({ error: "upstream exploded" });
   });
 });

@@ -183,11 +183,15 @@ export function useArtifactSource(): ArtifactSource {
         cache: "no-store",
       })
         .then(async (res) => {
-          const body = (await res.json().catch(() => ({}))) as { job_id?: string; detail?: string };
+          // `error` is the field the proxy writes on failure — it unwraps
+          // FastAPI's `detail` into it (app/api/turing/[...path]/route.ts).
+          // Reading `detail` here found nothing, so every failed rebuild
+          // showed a bare status number instead of the upstream reason.
+          const body = (await res.json().catch(() => ({}))) as { job_id?: string; error?: string };
           setRebuildNote(
             res.ok
               ? `rebuild submitted${body.job_id ? ` (job ${body.job_id})` : ""} — takes ~2 min`
-              : `rebuild failed: ${body.detail ?? res.status}`,
+              : `rebuild failed: ${body.error ?? res.status}`,
           );
         })
         .catch((e: unknown) => {
