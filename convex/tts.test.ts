@@ -4,6 +4,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
+  ttsItemLink,
   countdownText,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
@@ -2159,5 +2160,33 @@ describe("TTS time notes", () => {
     await expect(
       apply(t, nothing, [{ kind: "set-date-kind", dateKind: "external" }]),
     ).rejects.toThrow(/no date to describe/);
+  });
+});
+
+// ── The deep-link vocabulary (AGENTS.md Routing) ─────────────────────────────
+// The routing rule says a quest's own address is its plain path and query
+// params are an INBOUND link vocabulary. ttsItemLink is the single producer of
+// that vocabulary, and its consumers are spread across three files that cannot
+// import each other's expectations: app/tts/tts-client.tsx reads ?item= and
+// ?intent= once on mount, and app/focus/page.tsx and app/inventory/page.tsx
+// forward the same two names from the retired paths. Renaming a param here
+// breaks every Slack link already sent, silently — nothing else would fail.
+describe("ttsItemLink", () => {
+  const ID = "k17abcdefghijklmnopqrstuvwx";
+
+  it("addresses /tts by its plain path, with the item as a param", () => {
+    expect(ttsItemLink(ID)).toBe(`https://tom.quest/tts?item=${ID}`);
+  });
+
+  it("names the intent with the vocabulary the page confirms", () => {
+    // The three the client accepts; anything else it reads as no intent.
+    expect(ttsItemLink(ID, "done")).toBe(`https://tom.quest/tts?item=${ID}&intent=done`);
+    expect(ttsItemLink(ID, "archive")).toBe(`https://tom.quest/tts?item=${ID}&intent=archive`);
+    expect(ttsItemLink(ID, "engage")).toBe(`https://tom.quest/tts?item=${ID}&intent=engage`);
+  });
+
+  it("puts no intent in the URL when none was asked for", () => {
+    // A link with no intent opens the item and proposes nothing.
+    expect(ttsItemLink(ID)).not.toContain("intent");
   });
 });
