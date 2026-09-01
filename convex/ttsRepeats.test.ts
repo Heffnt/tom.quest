@@ -120,6 +120,176 @@ describe("ttsRepeats CRUD", () => {
     expect(listed.map((r) => r._id)).toEqual([id]);
   });
 
+  // The edit path (app/tts/components/repeat-dialog.tsx). Before it existed
+  // the only caller of updateRepeat sent { id, active }, so every one of these
+  // arguments was unreachable from the running app and every repeat-updated
+  // event recorded fields ["active"].
+  describe("updateRepeat", () => {
+    async function seed(t: ReturnType<typeof convexTest>) {
+      const tom = await withTom(t);
+      const id = await tom.mutation(api.ttsRepeats.createRepeat, {
+        statement: "core + antagonist training",
+        daysOfWeek: ["monday", "friday"],
+        timeOfDay: "18:30",
+        category: "training",
+        entryAction: "change and go",
+      });
+      return { tom, id };
+    }
+
+    it("rewrites statement, weekdays and time in place, keeping the rule's id", async () => {
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t);
+
+      const result = await tom.mutation(api.ttsRepeats.updateRepeat, {
+        id,
+        statement: "  core + mobility  ",
+        daysOfWeek: ["tuesday", "thursday"],
+        timeOfDay: "07:15",
+      });
+
+      const rule = await t.run(async (ctx) => ctx.db.get(id));
+      expect(rule?._id).toBe(id); // the whole point: no delete-and-recreate
+      expect(rule?.statement).toBe("core + mobility"); // trimmed, as on create
+      expect(rule?.daysOfWeek).toEqual(["tuesday", "thursday"]);
+      expect(rule?.timeOfDay).toBe("07:15");
+      expect(rule?.category).toBe("training"); // untouched fields stand
+      // Sorted, so the list is a fact about the rule and not about argument
+      // order.
+      expect(result).toEqual({
+        changed: ["daysOfWeek", "statement", "timeOfDay"],
+      });
+    });
+
+    it("names the fields that actually moved, not every field it was sent", async () => {
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t);
+
+      // What the dialog sends on save: all nine fields, most of them equal to
+      // what is already stored.
+      await tom.mutation(api.ttsRepeats.updateRepeat, {
+        id,
+        statement: "core + antagonist training",
+        daysOfWeek: ["friday", "monday"], // same set, tapped in the other order
+        timeOfDay: "19:00",
+        category: "training",
+        entryAction: "change and go",
+        skipWhenCalendarHas: null,
+        workDescription: null,
+        groundUpExplanation: null,
+        body: null,
+      });
+
+      const updated = await events(t, "repeat-updated");
+      expect(updated).toHaveLength(1);
+      expect(updated[0].data).toMatchObject({
+        repeatId: id,
+        fields: ["timeOfDay"],
+      });
+    });
+
+    it("clears an optional field when sent null, and leaves it alone when sent nothing", async () => {
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t);
+
+      // null is the clearing spelling — the branch an { id, active } caller
+      // could never reach. Stored as an absent field, which is what the
+      // generator reads as "no time of day" (the noon convention).
+      const cleared = await tom.mutation(api.ttsRepeats.updateRepeat, {
+        id,
+        timeOfDay: null,
+        category: null,
+      });
+      expect(cleared).toEqual({ changed: ["category", "timeOfDay"] });
+      const afterClear = await t.run(async (ctx) => ctx.db.get(id));
+      expect(afterClear?.timeOfDay).toBeUndefined();
+      expect(afterClear?.category).toBeUndefined();
+      expect(afterClear?.entryAction).toBe("change and go"); // not sent, not touched
+
+      // Clearing an already-absent field is not a change.
+      expect(
+        await tom.mutation(api.ttsRepeats.updateRepeat, { id, timeOfDay: null }),
+      ).toEqual({ changed: [] });
+
+      // And the cleared field can be set again.
+      await tom.mutation(api.ttsRepeats.updateRepeat, { id, timeOfDay: "06:00" });
+      expect(
+        await t.run(async (ctx) => (await ctx.db.get(id))?.timeOfDay),
+      ).toBe("06:00");
+    });
+
+    it("writes nothing and logs nothing when no field moves", async () => {
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t);
+      const before = await t.run(async (ctx) => ctx.db.get(id));
+
+      const result = await tom.mutation(api.ttsRepeats.updateRepeat, {
+        id,
+        statement: "core + antagonist training",
+        daysOfWeek: ["monday", "friday"],
+        active: true,
+      });
+
+      expect(result).toEqual({ changed: [] });
+      expect(await events(t, "repeat-updated")).toHaveLength(0);
+      // updatedAt is untouched too — a no-op save is not a fact about the rule.
+      expect(await t.run(async (ctx) => ctx.db.get(id))).toEqual(before);
+    });
+
+    it("refuses an edit that would leave the rule unrunnable", async () => {
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t);
+
+      await expect(
+        tom.mutation(api.ttsRepeats.updateRepeat, { id, daysOfWeek: [] }),
+      ).rejects.toThrow(/at least one weekday/);
+      await expect(
+        tom.mutation(api.ttsRepeats.updateRepeat, { id, statement: "   " }),
+      ).rejects.toThrow(/Statement is required/);
+      await expect(
+        tom.mutation(api.ttsRepeats.updateRepeat, { id, timeOfDay: "7:60" }),
+      ).rejects.toThrow(/HH:MM/);
+      // The rule is unchanged by every refusal.
+      expect(await t.run(async (ctx) => (await ctx.db.get(id))?.timeOfDay)).toBe(
+        "18:30",
+      );
+    });
+
+    it("gates on the tom role and refuses a rule that is gone", async () => {
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t);
+      await expect(
+        t.mutation(api.ttsRepeats.updateRepeat, { id, statement: "anything" }),
+      ).rejects.toThrow();
+      await tom.mutation(api.ttsRepeats.deleteRepeat, { id });
+      await expect(
+        tom.mutation(api.ttsRepeats.updateRepeat, { id, statement: "anything" }),
+      ).rejects.toThrow(/not found/);
+    });
+
+    it("changes what the next generator run mints", async () => {
+      const t = convexTest({ schema, modules });
+      const { tom, id } = await seed(t);
+      // DAY is a Monday, so the seeded rule fires on it.
+      await tom.mutation(api.ttsRepeats.updateRepeat, {
+        id,
+        statement: "core + mobility",
+        timeOfDay: "12:00",
+      });
+      await t.mutation(internal.ttsRepeats.internalGenerateRepeats, {
+        force: true,
+        day: DAY,
+      });
+
+      const minted = await repeatingTodos(t);
+      expect(minted).toHaveLength(1);
+      expect(minted[0].statement).toBe("core + mobility");
+      expect(minted[0].dueAt).toBe(NOON_NY);
+      // Still the same rule, so the day's idempotence key still holds.
+      expect(minted[0].provenance).toBe(repeatProvenance(id, DAY));
+    });
+  });
+
   it("deletes a rule and logs repeat-deleted carrying the rule", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
