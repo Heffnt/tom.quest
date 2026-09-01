@@ -78,6 +78,14 @@ describe("page registry", () => {
     expect(rankPages("", "tom")[0]?.slug).toBe("turing");
   });
 
+  // /turing (and the cluster terminal it links to) is admin-level, not Tom-only.
+  // If this entry is ever narrowed to "tom", every non-Tom admin loses the terminal.
+  it("keeps /turing visible to a plain admin", () => {
+    const turing = PAGES.find((entry) => entry.slug === "turing");
+    expect(turing?.visibility).toBe("admin");
+    expect(canSeePage("admin", turing!)).toBe(true);
+  });
+
   it("prefers prefix matches before substring matches", () => {
     const pages: Page[] = [
       { slug: "alpha", title: "Alpha", blurb: "", priority: 1, visibility: "public" },

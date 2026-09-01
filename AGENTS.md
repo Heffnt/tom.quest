@@ -38,7 +38,8 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 - `user` is the default sign-up role and sees public quests.
 - `admin` has elevated quest access and may be granted to trusted friends or colleagues.
-- `tom` is Tom's account. It extends admin access with Jarvis config, the diagnostic panel, and terminal access.
+- `tom` is Tom's account. It extends admin access with Jarvis config and the diagnostic panel.
+- `/turing`, including the cluster terminal, is admin-level: the page is registered `visibility: "admin"`, and both the proxy route's write methods and the terminal's WebSocket credential route call `requireAdmin`. Do not narrow these to `isTom`. (The proxy's GET additionally admits `agent` via `requireAdminOrAgent`.)
 - `agent` is the account a TTS session's headless browser signs in as. It is **not a rank** on the `user → admin → tom` ladder but a side branch: it reads a named list of surfaces and writes nothing, anywhere. `roleAccess("agent")` returns `isAdmin: false` and `isTom: false`, so every existing gate denies it by default.
 - Use `isTom` for Tom-only features and `isAdmin` for elevated features. `isAdmin` is true for both `admin` and `tom`.
 - Reads that `agent` may perform go through `requireTomOrAgent(ctx, label)` in Convex, `requireAdminOrAgent(request, surface)` in route handlers, and `canReadSurface(label)` on the client. Writes stay on `requireTom` / `requireAdmin` / `isTom` — including writes that fire on page arrival, which must be gated on `isTom` so a headless screenshot records nothing.
