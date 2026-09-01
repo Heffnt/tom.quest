@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { roleAccess, viewerDoc } from "./authRoles";
+import { requireTom, roleAccess, viewerDoc } from "./authRoles";
 
 export const viewer = query({
   args: {},
@@ -15,6 +15,7 @@ export const viewer = query({
       role: access.role,
       isAdmin: access.isAdmin,
       isTom: access.isTom,
+      isAgent: access.isAgent,
     };
   },
 });
@@ -46,6 +47,44 @@ export const setTomByUsername = mutation({
       .unique();
     if (!user) throw new Error("User not found");
     await ctx.db.patch(user._id, { role: "tom" });
+    return user._id;
+  },
+});
+
+// Tom's pen for a user's role, by the name he typed into the login widget.
+//
+// WHY IT EXISTS: before this, the only two writers of users.role were
+// setTomByUsername (a one-shot bootstrap that refuses once a Tom exists) and
+// promoteToAdmin, which takes a raw Id<"users"> — so it is reachable only from
+// the Convex dashboard, only for promotion, and there was no way to take a
+// role back at all. Granting the new read-only `agent` role needs a pen, and
+// so does the mistake that follows a grant.
+//
+// The username is the one from the widget: sign-up derives the synthetic email
+// `${username}@tom.quest`, and that is what the "email" index holds.
+//
+// TWO REFUSALS, both deliberate:
+//   - `tom` is not in the args union, so this can never MINT a Tom. That stays
+//     setTomByUsername's one-shot job, guarded by TOM_SETUP_SECRET.
+//   - an account already at `tom` is refused outright, so a typo'd username
+//     cannot demote Tom out of his own site and lock every Tom gate.
+export const setRoleByUsername = mutation({
+  args: {
+    username: v.string(),
+    role: v.union(v.literal("user"), v.literal("admin"), v.literal("agent")),
+  },
+  handler: async (ctx, { username, role }) => {
+    await requireTom(ctx, "User roles");
+    const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const user = await ctx.db
+      .query("users")
+      .withIndex("email", (q) => q.eq("email", `${normalized}@tom.quest`))
+      .unique();
+    if (!user) throw new Error("User not found");
+    if (user.role === "tom") {
+      throw new Error("The Tom account's role cannot be changed here");
+    }
+    await ctx.db.patch(user._id, { role });
     return user._id;
   },
 });

@@ -105,7 +105,14 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 //   sudo / systemctl / crontab — box-level privilege and persistence
 //   /etc/ /root/    — the Jarvis Box's own configuration, outside every workdir
 //   .claude-accounts — the Max-account credential store the CLI reads
-//   GH_TOKEN / WORKER_KEY — the two secret names that exist in this env
+//   GH_TOKEN / WORKER_KEY / TOMQUEST_AGENT — the secret names that exist in
+//     this env. This list said "the two" and named the first two until the
+//     browse credentials were added to /etc/tts/worker.env in the same commit
+//     that added tts-browse, at which point `echo $TOMQUEST_AGENT_PASSWORD`
+//     matched no alternative here and took the unclassified fast path. The
+//     names are scrubbed from a session's env now (startQuery below), so a
+//     command naming one gets nothing — but the classifier should still see
+//     the attempt, because trying is what is worth noticing.
 //   gh              — authenticated GitHub CLI: `gh pr create` on the session
 //                     branch is the sanctioned finish, but the same auth
 //                     reaches `gh pr merge` and API writes to any branch, so
@@ -121,7 +128,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // span backslash-newline continuations. Over-matching only costs a classifier
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
-  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|TOMQUEST_AGENT|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -690,7 +697,7 @@ export class Session {
 
   startQuery({ resume } = {}) {
     // The daemon's own secrets, dropped from the env the session's shell
-    // inherits. Under systemd both arrive via EnvironmentFile=/etc/tts/
+    // inherits. Under systemd they all arrive via EnvironmentFile=/etc/tts/
     // worker.env, so without this destructure-drop `env` in any Bash call
     // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
     // confused session could rewrite ANY transcript) and GH_TOKEN is repo
@@ -700,6 +707,20 @@ export class Session {
     // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
     // every work tree), so `git push` and `gh pr create` work in a shell
     // that cannot print the token with `env`.
+    //
+    // TOMQUEST_AGENT_USERNAME/PASSWORD are the tom.quest sign-in the browser
+    // uses, and they are dropped for a DIFFERENT reason than the two above:
+    // not because a session must not act as that account — tts-browse still
+    // signs in as it — but because the password must not be printable. A
+    // session's whole transcript is stored in Convex, so one `env` or `echo`
+    // would write it there in plaintext, where narrowing the account's role
+    // later cannot take it back. tts-browse reads /etc/tts/worker.env itself
+    // (it runs as the same user), so the flag keeps working with the names
+    // absent from this env.
+    //
+    // The scrub and the role are INDEPENDENT defences and neither replaces
+    // the other: the role means a leak costs little, the scrub means there is
+    // nothing to leak.
     //
     // TURING_READ_KEY is deliberately NOT dropped. It is the cluster API's
     // read-only credential (turing-api's verify_read_key: GET /gpu-report,
@@ -714,6 +735,8 @@ export class Session {
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
+      TOMQUEST_AGENT_USERNAME: _browseUser,
+      TOMQUEST_AGENT_PASSWORD: _browsePassword,
       ...inheritedEnv
     } = process.env;
     this.queue = new TurnQueue();
@@ -737,10 +760,11 @@ export class Session {
         // enters a session's shell — its write surface (capture, prep,
         // briefs, batches, ruling-applied, session-outcome) is the same one
         // the cron jobs' agentic runs already expose to a model.
-        // SESSIONS_WORKER_KEY and GH_TOKEN are SCRUBBED above (inheritedEnv):
-        // inheriting them is not hypothetical — systemd puts both in this
-        // process's env — and an ingest key reachable from the session's
-        // shell would let a confused session corrupt any transcript.
+        // SESSIONS_WORKER_KEY, GH_TOKEN and the two TOMQUEST_AGENT_* browse
+        // credentials are SCRUBBED above (inheritedEnv): inheriting them is
+        // not hypothetical — systemd puts all four in this process's env —
+        // and an ingest key reachable from the session's shell would let a
+        // confused session corrupt any transcript.
         env: {
           ...inheritedEnv,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
@@ -1191,6 +1215,8 @@ export class Session {
               SESSIONS_WORKER_KEY: _ingest,
               GH_TOKEN: _gh,
               TTS_WORKER_KEY: _tts,
+              TOMQUEST_AGENT_USERNAME: _browseUser,
+              TOMQUEST_AGENT_PASSWORD: _browsePassword,
               ...rest
             } = process.env;
             return rest;

@@ -26,7 +26,7 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireTom } from "./authRoles";
+import { requireTomOrAgent } from "./authRoles";
 
 const SKILLS_REPO = "Heffnt/WikiTom";
 const SKILLS_DIR = "model-of-tom/skills";
@@ -59,12 +59,13 @@ export const internalGetSkill = internalQuery({
   },
 });
 
-// The browser's read. Tom-gated like every other TTS surface: the skills are
-// his model of himself, not public text.
+// The browser's read. Closed to everyone but Tom and the read-only `agent`
+// role a TTS session browses as — the skills are Tom's model of himself, not
+// public text, and `agent` may look at them without changing them.
 export const getSkill = query({
   args: { name: v.string() },
   handler: async (ctx, { name }) => {
-    await requireTom(ctx, "TTS");
+    await requireTomOrAgent(ctx, "TTS");
     return await ctx.db
       .query("ttsSkills")
       .withIndex("by_name", (q) => q.eq("name", name))

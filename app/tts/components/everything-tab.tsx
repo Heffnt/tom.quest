@@ -99,13 +99,18 @@ export default function EverythingTab({
   link: { item: string; intent: "done" | "archive" | "engage" | null } | null;
   onLinkCleared: () => void;
 }) {
-  const { isTom } = useAuth();
-  const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip");
-  const mirror = useQuery(api.tts.listMirror, isTom ? {} : "skip");
-  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, isTom ? {} : "skip");
-  const rulings = useQuery(api.ttsRulings.listRulings, isTom ? {} : "skip");
+  const { isTom, canReadSurface } = useAuth();
+  // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
+  // session browses as. Every mutation on this surface stays Tom-only and is
+  // refused by Convex regardless of what renders here — isTom below gates the
+  // one write that fires on its own, without a click.
+  const canRead = canReadSurface("TTS");
+  const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
+  const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
+  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
+  const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
   // ONE time-note subscription for the whole tab; each row gets its own slice.
-  const timeNotes = useQuery(api.tts.listTimeNotes, isTom ? {} : "skip");
+  const timeNotes = useQuery(api.tts.listTimeNotes, canRead ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
@@ -274,7 +279,13 @@ export default function EverythingTab({
     scrolledRef.current = true;
     setExpanded((prev) => new Set(prev).add(link.item));
     const linkedId = link.item as Id<"dtsTodos">;
-    if (todos.some((t) => t._id === linkedId)) {
+    // isTom, not canRead: this is the ONE write on this page that fires
+    // without a click, so a headless ?item= screenshot would otherwise record
+    // engagement nobody performed — and, being a refused mutation for the
+    // read-only `agent` role, print a console error that tts-browse reports
+    // as page breakage. The click-driven engage() below needs no such guard:
+    // a click is a person, and Convex refuses it anyway.
+    if (isTom && todos.some((t) => t._id === linkedId)) {
       // The link arrives from a Slack item link (?item=) or a calendar
       // queue-chip click-through — either way, a link landed on this item.
       void recordEvent({
@@ -288,7 +299,7 @@ export default function EverythingTab({
         .getElementById(`todo-${link.item}`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
-  }, [link, todos, recordEvent]);
+  }, [isTom, link, todos, recordEvent]);
 
   if (todos === undefined || mirror === undefined) {
     return <div className="text-sm text-text-faint py-8">Loading…</div>;

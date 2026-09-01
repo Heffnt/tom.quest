@@ -4,20 +4,29 @@ export type Page = {
   blurb: string;
   priority: number;   // higher = preferred in autocomplete tie-breaks
   visibility: PageVisibility;
+  /**
+   * Visible to the read-only `agent` role — the account a TTS session signs in
+   * as to LOOK at a page it just changed. Deliberately its own flag and not a
+   * `visibility` value: `agent` is not a rank on the guest→user→admin→tom
+   * ladder, so it cannot be expressed by widening that ladder. Absent means
+   * closed, so a page added later is closed until someone says otherwise.
+   * The Convex-side twin of this flag is convex/agentSurfaces.ts.
+   */
+  agentReadable?: boolean;
 };
 
 export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
-export type PageRole = "guest" | "user" | "admin" | "tom";
+export type PageRole = "guest" | "user" | "admin" | "tom" | "agent";
 
 export const PAGES: Page[] = [
-  { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin" },
+  { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin", agentReadable: true },
   { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8,  visibility: "authenticated" },
   { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7, visibility: "public" },
   { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6, visibility: "public" },
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "sessions", title: "Sessions", blurb: "TTS — Claude Code session surface", priority: 9, visibility: "tom" },
-  { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom" },
+  { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5, visibility: "tom" },
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
@@ -28,6 +37,12 @@ export const PAGES: Page[] = [
 ];
 
 export function canSeePage(role: PageRole, page: Page): boolean {
+  // `agent` reads ONLY its own flag and never falls through to the rank
+  // ladder below. In particular it does not inherit "authenticated", which is
+  // what keeps /canvas — whose agent route spends LLM credits — shut to it.
+  // The list a TTS session sees is therefore exactly the pages it must look
+  // at, which is the whole reason the role exists.
+  if (role === "agent") return page.agentReadable === true;
   if (page.visibility === "public") return true;
   if (page.visibility === "authenticated") return role !== "guest";
   if (page.visibility === "admin") return role === "admin" || role === "tom";
