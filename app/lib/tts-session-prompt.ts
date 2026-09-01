@@ -3,7 +3,7 @@
 // the Inventory's gate button both route through here, so the ground-up
 // framing cannot drift between entry points.
 
-import type { Doc } from "@/convex/_generated/dataModel";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 
 // The opening has two halves. The FRAMING says what this session is and how
 // wide it is; it is only true here, so it lives only here.
@@ -26,6 +26,18 @@ function fact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
 }
 
+// How a session persists what Tom says (one home for the instruction; every
+// session prompt carries it). The prompts used to promise `npx convex run
+// tts:internalTriage` / `ttsRulings:internalRecordRuling` — mutations NO
+// session can reach: the deploy credential they need is not in a session's
+// environment, on purpose (ledger graduation session-has-no-ruling-pen,
+// 2026-08-31: the prompt stops promising a pen that does not exist). What a
+// session's shell CAN reach is the capture pen (X-TTS-Key), so a spoken
+// ruling is recorded as a captured fact the pipeline briefs and Tom confirms
+// in the UI — rulings themselves persist only through Tom's own UI, which is
+// a deliberate boundary, not a gap.
+const RULING_PEN = `When Tom rules or decides something out loud, record it IMMEDIATELY with the capture pen: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom ruled: <the decision, verbatim, with its subject named>", "source": "session"}' (both variables are already set in this session's environment). The capture reaches the pile as a fact for Tom to confirm in the UI — the session itself has no direct ruling pen, on purpose. A ruling that lives only in chat is lost.`;
+
 // Opening prompt for a BLOCK session: committed time over a category of
 // todos, not a single item. Same contract; the session works the set with
 // Tom one item at a time and records his spoken rulings as they land.
@@ -37,7 +49,7 @@ export function buildBlockSessionPrompt(
   const lines: string[] = [
     opening(writingSkill),
     "",
-    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. When Tom rules out loud, record it immediately via \`npx convex run\`: tts:internalTriage for status/date changes, ttsRulings:internalRecordRuling for approve/revise/session/archive verdicts (both are internal mutations — the Tom-gated public mutations reject deploy credentials). The session is his pen, and a ruling that lives only in chat is lost.`,
+    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. ${RULING_PEN}`,
     "",
   ];
   if (category === "code") {
@@ -92,6 +104,11 @@ export type LiveRulingContext = {
 // (which describes one dtsTodos row). Same contract, same pens; the item it
 // opens on is the graph.
 export type BatchSessionContext = {
+  /** The batch row itself — the session's SUBJECT (claudeSessions.batchId),
+   * so the server can resolve the batch's declared repos directly (ledger
+   * graduation session-repos-need-batch-subject). Never printed in the
+   * prompt. */
+  id: Id<"batches">;
   statement: string;
   groundUp?: string;
   path?: { name: string; index: number };
@@ -153,8 +170,7 @@ export function buildBatchSessionPrompt(
     "Walk-through contract:",
     '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
     '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-    "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any todo in it) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
-    "- These are pens for Tom's spoken word — use them only while Tom is present in the session. A ruling that lives only in chat is lost.",
+    `- ${RULING_PEN}`,
   );
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -230,10 +246,8 @@ export function buildTodoSessionPrompt(
       "Walk-through contract:",
       '- Work the plan IN ORDER. Steps with actor "agent" you do yourself.',
       '- At each OPEN step with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-      `- Record plan progress the moment a step closes: \`npx convex run tts:internalPrepareTodo '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}'\` — the full plan array, never a diff.`,
-      "- Record Tom's spoken verdicts (approve/revise/session/archive, on the batch or any member) via ttsRulings:internalRecordRuling; status/date changes via tts:internalTriage.",
-      "- Apply Tom's spoken en-masse property changes (category, entry action, work description) via tts:internalBulkUpdate.",
-      "- All of these are pens for Tom's spoken word — use them only while Tom is present in the session.",
+      `- Record plan progress the moment a step closes: curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}' — the full plan array, never a diff.`,
+      `- ${RULING_PEN}`,
     );
   }
   return lines.join("\n");

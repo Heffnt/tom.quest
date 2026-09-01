@@ -160,8 +160,10 @@ bash tom.quest/worker/setup.sh
 # 3. Fill the secrets (the file documents each key):
 nano /etc/tts/worker.env
 # 4. Log in both Claude Max accounts (interactive), pick one:
-tts-account login gmail
-tts-account login wpi
+# run twice, switching the BROWSER profile between runs — each login is
+# filed into the slot matching the account that actually signed in
+tts-account login
+tts-account login
 tts-account use gmail
 # Done. Cron is installed; the digest resumes tomorrow at 5.
 ```

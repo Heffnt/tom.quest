@@ -64,6 +64,46 @@ if (sharedBlock && daemonBlock) {
   }
 }
 
+// 3. The usage-limit fingerprint: the daemon's account auto-switch
+// (USAGE_LIMIT_RE in session.mjs) and the scheduler's circuit breaker
+// (AUTO_USAGE_RE in claudeSessions.ts) must mean the same thing by "the
+// account is capped" — on 2026-08-30 the CLI's live text ("You've hit your
+// session limit · resets 8:10am (UTC)") matched neither, the account never
+// switched, and the scheduler burned a dozen launches against a wall. The two
+// sources must byte-match, and both must match the observed cap texts while
+// staying quiet on transient API weather.
+// witness: change one regex's source, or drop the `session limit`
+// alternative from both.
+const convexTs = readFileSync("convex/claudeSessions.ts", "utf8");
+const usageA = sessionMjs.match(/USAGE_LIMIT_RE = \/(.+)\/i;/);
+const usageB = convexTs.match(/AUTO_USAGE_RE = \/(.+)\/i;/);
+if (!usageA) failures.push("session.mjs: USAGE_LIMIT_RE literal not found");
+if (!usageB) failures.push("claudeSessions.ts: AUTO_USAGE_RE literal not found");
+if (usageA && usageB) {
+  if (usageA[1] !== usageB[1]) {
+    failures.push(
+      `usage-limit regexes drifted:\n  session.mjs:       /${usageA[1]}/i\n  claudeSessions.ts: /${usageB[1]}/i`,
+    );
+  }
+  const re = new RegExp(usageA[1], "i");
+  for (const observed of [
+    "You've hit your session limit · resets 8:10am (UTC)",
+    "Claude AI usage limit reached",
+    "5-hour limit reached",
+  ]) {
+    if (!re.test(observed)) {
+      failures.push(`usage-limit regex misses observed cap text: "${observed}"`);
+    }
+  }
+  for (const transient of ["overloaded_error", "API rate limit exceeded (429)"]) {
+    if (re.test(transient)) {
+      failures.push(
+        `usage-limit regex over-matches transient API weather: "${transient}" — a 529/429 must not stand the fleet down for 3h`,
+      );
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error("Session-mirror check FAILED:");
   for (const f of failures) console.error("  - " + f);

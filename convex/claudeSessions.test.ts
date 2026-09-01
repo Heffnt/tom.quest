@@ -498,6 +498,36 @@ describe("claude sessions", () => {
     expect(session?.repo).toBe("tom.quest");
   });
 
+  // The batch-subject half (ledger graduation session-repos-need-batch-subject,
+  // 2026-08-31): a session opened ON a batch has no todo to reach the batch
+  // through — before batchId existed it was created with no subject at all,
+  // so the button Tom was most likely to press on a multi-repo batch was the
+  // one that could not inherit the declaration and started with no checkout.
+  // witness: in createSession, resolve the batch from `todo?.batchId` only
+  // (ignore the batchId arg) and this goes red.
+  it("a session opened ON a batch (batchId, no todo) inherits the batch's declared repos", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "The Turing pages",
+        repos: ["tom.quest", "WikiTom"],
+        status: "active" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "work the batch",
+      kind: "focus-item",
+      batchId,
+      initialPrompt: "go",
+    });
+    const session = await t.run(async (ctx) => ctx.db.get(sessionId));
+    expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
+    expect(session?.batchId).toBe(batchId);
+  });
+
   // witness: drop the isSessionRepo filter from normalizeSessionRepos and the
   // unknown name survives — the daemon then throws on its first turn and the
   // session dies before doing anything.
@@ -563,11 +593,15 @@ describe("claude sessions", () => {
         .filter((q) => q.eq(q.field("sessionId"), sessionId))
         .collect(),
     );
-    // The interactive prompt is Tom's own text plus the outcome pen; the
-    // workspace paragraph belongs to the AUTONOMOUS builders, so what this
-    // pins here is that the row exists and the session holds both repos. The
-    // autonomous wording is pinned by the scheduler test below.
+    // The interactive footer now carries the workspace paragraph too
+    // (2026-08-31): an interactive session that was never told the rules
+    // pushed `tts/verdict-and-names` on 2026-08-30 and burned turns against
+    // the command gate. The prompt must name each clone and the one
+    // sanctioned branch.
     expect(inbound.text).toContain(sessionId);
+    expect(inbound.text).toContain("`./tom.quest`");
+    expect(inbound.text).toContain("`./WikiTom`");
+    expect(inbound.text).toContain(`session/${sessionId}`);
     const session = await t.run(async (ctx) => ctx.db.get(sessionId));
     expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
   });
