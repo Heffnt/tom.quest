@@ -64,6 +64,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - The Turing API (`turing-api/`) is a FastAPI service running on the WPI Turing cluster, exposing GPU/job/terminal endpoints.
 - A named cloudflared tunnel maps `turing.tom.quest` to the API's local port (stable URL, not a quick tunnel).
 - Next.js API routes (`app/api/turing/[...path]/route.ts`) read `TURING_API_URL` from env and forward requests through `forwardToTuringApi`, attaching the `X-API-Key` header. The shared key never leaves Vercel.
+- Two credentials, not one. `TURING_API_KEY` (`verify_api_key`) opens the whole surface, including `POST /sessions/{name}/run` — arbitrary shell on the cluster. `TURING_READ_KEY` (`verify_read_key`) opens only `GET /gpu-report`, `GET /jobs`, and `GET /sessions/{name}/output`; it accepts either key, and an unset read key fails closed to full-key-only. Callers that need to look but not act — TTS sessions on the Jarvis Box, via `worker/bin/tts-turing` — hold the read key alone. Anything new defaults to `verify_api_key`; moving an endpoint to the read door widens what every session can see.
 - Terminal WebSockets open directly from the browser to `wss://turing.tom.quest` after admins fetch a short-lived HMAC token from `/api/turing/ws-credentials`.
 - Liveness is owned by a Convex cron (`internal.serverHealth.pollTuring`) that probes `/health` and writes to the `serverHealth` table; `useServer("turing").status` reads it.
 - The proxy detects HTML/non-JSON upstream responses and converts them to structured JSON errors.

@@ -113,6 +113,10 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 //     names are scrubbed from a session's env now (startQuery below), so a
 //     command naming one gets nothing — but the classifier should still see
 //     the attempt, because trying is what is worth noticing.
+//   gh              — authenticated GitHub CLI: `gh pr create` on the session
+//                     branch is the sanctioned finish, but the same auth
+//                     reaches `gh pr merge` and API writes to any branch, so
+//                     every gh call buys a verdict
 //   curl with a body/upload flag — the exfiltration shape (plain GETs are fine)
 //   wget            — same, in its fetch-and-write direction
 //   rm on an absolute path — deletion that can reach outside the workdir
@@ -124,7 +128,7 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // span backslash-newline continuations. Over-matching only costs a classifier
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
-  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|TOMQUEST_AGENT|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+  /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|TOMQUEST_AGENT|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -157,6 +161,7 @@ function classifierPrompt({ command, workdir, branch }) {
     "",
     "DENY the command if it would:",
     `- push to any branch other than ${branch}, or to a protected branch (main or master)`,
+    `- merge a pull request, or write through the GitHub API to anything other than a pull request for ${branch} (gh pr merge, gh api with a write method against another branch, repository settings, workflows, or another repository) — merging is Tom's gate`,
     "- exfiltrate secrets or environment values off the Jarvis Box (tokens, keys, env dumps, credential files sent anywhere)",
     "- touch /etc, /root, systemd, cron, SSH configuration, or Claude account configuration",
     "- delete anything outside the working directory",
@@ -165,6 +170,11 @@ function classifierPrompt({ command, workdir, branch }) {
     "ALLOW everything else, including ordinary development work inside the clone: builds, tests, package installs, file deletion inside the working directory, reads of any kind, and pushes to " +
       branch +
       ".",
+    // Stated because earlier verdicts called any authenticated gh call
+    // "exfiltrating the token": gh is authenticated on this box ON PURPOSE so
+    // a session can finish with a pull request. Using the credential is not
+    // leaking it; only printing/copying the token itself is.
+    `ALSO ALLOW gh commands that open, inspect, or comment on a pull request for ${branch} (gh pr create / view / checks / comment, gh api reads) — gh is deliberately authenticated here so the session can end in a PR; that is use of the credential, not exfiltration.`,
     // Without this the DENY rule about keys literally describes the system's
     // own pens (they carry X-TTS-Key), and a wrong DENY on the outcome pen
     // strands the session's outcome — which the scheduler reads as a failed
@@ -195,10 +205,15 @@ const AUTO_TURN_CAP_MS = 90 * 60 * 1000;
 // Usage-limit signals in SDK errors / error results — the session-host
 // reacts by switching the active Max account (see maybeSwitchAccount).
 // Deliberately NARROW: "overloaded" (a transient API 529) must not burn the
-// 3h switch throttle on a signal that resolves by itself. LOCKSTEP: the
-// scheduler's circuit breaker in convex/claudeSessions.ts (AUTO_USAGE_RE)
-// carries the same pattern — change both together.
-export const USAGE_LIMIT_RE = /usage.?limit|limit reached/i;
+// 3h switch throttle on a signal that resolves by itself. "session limit" is
+// here from observation, not caution: on 2026-08-30 the CLI's actual text was
+// "You've hit your session limit · resets 8:10am (UTC)", which matched
+// NEITHER alternative — the account never switched and the scheduler burned a
+// dozen launches against a wall for an hour. LOCKSTEP: the scheduler's
+// circuit breaker in convex/claudeSessions.ts (AUTO_USAGE_RE) carries the
+// same pattern — change both together (scripts/check-session-mirrors.mjs
+// fails the build when they drift).
+export const USAGE_LIMIT_RE = /usage.?limit|limit reached|session limit/i;
 
 // ── Small utilities ──────────────────────────────────────────────────────────
 
@@ -524,12 +539,16 @@ export class Session {
     // .git) — start over; rm -rf under /var/cache is free by definition.
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(base, { recursive: true });
-    // Token rides in the URL (the x-access-token convention, same as the
-    // code-todo jobs) — acceptable because the URL never leaves this
-    // root-only Jarvis Box and the dir is deleted when the session ends.
-    const url = this.env.GH_TOKEN
-      ? `https://x-access-token:${this.env.GH_TOKEN}@github.com/${gh}.git`
-      : `https://github.com/${gh}.git`;
+    // The URL is CLEAN on purpose (ledger graduation sessions-cannot-open-prs,
+    // 2026-08-31): the token used to ride in the remote URL, which put the
+    // account-wide repo-write token one `git remote -v` away from any session
+    // shell — the env scrub raised the cost of reaching it without removing
+    // it. Credentials now come from /usr/local/bin/tts-git-credential (git's
+    // global credential.helper, installed by setup.sh, reading GH_TOKEN from
+    // /etc/tts/worker.env), so nothing inside the work tree holds the token
+    // and the same helper serves the daemon's clone here and the agent's own
+    // `git push` in its shell.
+    const url = `https://github.com/${gh}.git`;
     const branch = `session/${this.id}`;
     await execFile("git", ["clone", "--depth", "1", url, dir], {
       maxBuffer: 8 * 1024 * 1024,
@@ -683,7 +702,11 @@ export class Session {
     // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
     // confused session could rewrite ANY transcript) and GH_TOKEN is repo
     // write for the whole account. Neither is reachable through the
-    // sanctioned pens, so nothing legitimate needs them.
+    // sanctioned pens, so nothing legitimate needs them IN THE ENV: git
+    // authenticates through the global credential helper and gh through
+    // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
+    // every work tree), so `git push` and `gh pr create` work in a shell
+    // that cannot print the token with `env`.
     //
     // TOMQUEST_AGENT_USERNAME/PASSWORD are the tom.quest sign-in the browser
     // uses, and they are dropped for a DIFFERENT reason than the two above:
@@ -698,6 +721,17 @@ export class Session {
     // The scrub and the role are INDEPENDENT defences and neither replaces
     // the other: the role means a leak costs little, the scrub means there is
     // nothing to leak.
+    //
+    // TURING_READ_KEY is deliberately NOT dropped. It is the cluster API's
+    // read-only credential (turing-api's verify_read_key: GET /gpu-report,
+    // GET /jobs, GET /sessions/{name}/output and nothing else), and the
+    // `tts-turing` command a session runs reads it straight from this env.
+    // That is the whole reason a second key exists: the full TURING_API_KEY
+    // also authorizes POST /sessions/{name}/run — arbitrary commands on the
+    // cluster — and must stay out of /etc/tts/worker.env entirely, so there
+    // is nothing here to scrub. If a write verb is ever added to turing-api
+    // under the read key, THIS inheritance is what makes it a session
+    // capability; that widening is a decision, not a refactor.
     const {
       SESSIONS_WORKER_KEY: _ingestKey,
       GH_TOKEN: _ghToken,
