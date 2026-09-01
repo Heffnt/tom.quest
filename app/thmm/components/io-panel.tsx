@@ -11,17 +11,19 @@
 "use client";
 
 import type { Bits } from "../cpu";
-import { toUint } from "../cpu";
+import { toSint } from "../cpu";
 import type { VarBinding } from "../thcc";
 import type { Scenario } from "../scenarios";
 import { readVarLiteral, writeVarLiteral } from "../lib/source-edit";
 import { useCompiler } from "../state/compiler-store";
 import {
   buildCaesarSource,
+  caesarCipherFromSource,
   decryptCaesar,
   encryptCaesar,
   normaliseCaesar,
 } from "../lib/caesar";
+import { asciiChar } from "../lib/format";
 import { useEffect, useState } from "react";
 
 const CAESAR_MAX = 14;
@@ -81,14 +83,14 @@ function InputView({ scenario }: { scenario: Scenario }) {
 function CaesarTextInput({ mode }: { mode: "plain" | "cipher" }) {
   const { source, updateScenarioSource } = useCompiler();
   const initial = mode === "plain"
-    ? decryptCaesar(extractCaesarCipher(source))
-    : extractCaesarCipher(source);
+    ? decryptCaesar(caesarCipherFromSource(source))
+    : caesarCipherFromSource(source);
   const [draft, setDraft] = useState(initial);
 
   useEffect(() => {
     const next = mode === "plain"
-      ? decryptCaesar(extractCaesarCipher(source))
-      : extractCaesarCipher(source);
+      ? decryptCaesar(caesarCipherFromSource(source))
+      : caesarCipherFromSource(source);
     setDraft(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
@@ -176,7 +178,7 @@ function ActualView({ scenario, cells }: { scenario: Scenario; cells: Cell[] }) 
 
   if (scenario.io.output.asAscii) {
     const text = cells
-      .map(c => printableOrDot(c.value & 0xff))
+      .map(c => asciiChar(c.value & 0xff))
       .join("");
     return <span className="text-accent tracking-wider">{text}</span>;
   }
@@ -207,29 +209,7 @@ function readOutputCells(scenario: Scenario, varMap: VarBinding[], ram: Bits[]):
   for (const name of names) {
     const v = varMap.find(b => b.name === name);
     if (!v) continue;
-    out.push({ name, addr: v.addr, value: toSint16(ram[v.addr]) });
+    out.push({ name, addr: v.addr, value: toSint(ram[v.addr]) });
   }
   return out;
-}
-
-function toSint16(bits: Bits): number {
-  const u = toUint(bits);
-  return u >= 0x8000 ? u - 0x10000 : u;
-}
-
-function printableOrDot(code: number): string {
-  if (code === 32) return " ";
-  if (code >= 33 && code <= 126) return String.fromCharCode(code);
-  return "·";
-}
-
-function extractCaesarCipher(source: string): string {
-  const re = /^\s*int\s+c(\d+)\s*=\s*(\d+)\s*;/gm;
-  const matches: { idx: number; byte: number }[] = [];
-  for (const m of source.matchAll(re)) {
-    matches.push({ idx: parseInt(m[1], 10), byte: parseInt(m[2], 10) });
-  }
-  if (matches.length === 0) return "";
-  matches.sort((a, b) => a.idx - b.idx);
-  return matches.map(m => String.fromCharCode(m.byte)).join("");
 }
