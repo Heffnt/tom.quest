@@ -80,7 +80,10 @@ import {
   type RunPoint, type Ghost,
 } from "../lib/aggregate";
 import { niceTicks, pearson, spearman } from "../lib/stats";
-import { buildRunSeries, groupSeries, trajectoryMetric, type RunSeries } from "../lib/trajectories";
+import {
+  buildRunSeries, groupSeries, trajectoryMetric, GHOST_LINE_CAP,
+  type RunSeries,
+} from "../lib/trajectories";
 import {
   SINGLE_COLOR, shapeForValue, dashForValue, gradientColor, NULL_GRADIENT,
 } from "../lib/styling";
@@ -401,8 +404,7 @@ export function PlotBody({
 
     // Ghost run-lines, colored by colorBy (continuous) or the run's layer;
     // carry runId + layer key so the hover/click hit-stroke can use them.
-    const ghostCap = 500;
-    const step = Math.max(1, Math.ceil(series.length / ghostCap));
+    const step = Math.max(1, Math.ceil(series.length / GHOST_LINE_CAP));
     const ghostRuns: Array<{ color: string; runId: string; dims: string[]; pts: Array<{ x: number; y: number }> }> = [];
     for (let i = 0; i < series.length; i += step) {
       const s = series[i];
@@ -599,7 +601,9 @@ export function PlotBody({
         averaging: true, binned: false,
         droppedLog: epoch?.dropped ?? 0,
         outsideWindow: 0,
-        ghostsSubsampled: (epoch?.seriesCount ?? 0) > 500,
+        // Same cap the ghost lines were actually stepped by above — the readout
+        // must not claim "subsampled" at a different threshold than the draw.
+        ghostsSubsampled: (epoch?.seriesCount ?? 0) > GHOST_LINE_CAP,
       });
       return;
     }

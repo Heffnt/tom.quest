@@ -9,7 +9,7 @@
 //
 // When averaging, the raw runs behind each group are also returned as GHOSTS
 // (faint underlying points/lines) so the collapse stays visible — subsampled
-// above GHOST_CAP so 10k-run views don't melt. splitWorthiness scores, for each
+// above GHOST_POINT_CAP so 10k-run views don't melt. splitWorthiness scores, for each
 // averaged dimension, how much of the within-group Y spread it would explain if
 // split out (the legend's "should I split this?" readout).
 //
@@ -56,14 +56,23 @@ export interface GroupResult {
   binned: boolean; // true when X was bucketed into equal-width bins
   /** Raw runs behind the groups (only when averaging), for faint ghost rendering. */
   ghosts: Ghost[];
-  /** True when ghosts were subsampled to stay under GHOST_CAP. */
+  /** True when ghosts were subsampled to stay under GHOST_POINT_CAP. */
   ghostsSubsampled: boolean;
 }
 
 const SEP = "\u0000";
 
-/** Cap on ghost points/lines rendered — above this we deterministically thin. */
-export const GHOST_CAP = 2000;
+/**
+ * Cap on SCATTER ghost POINTS rendered — above this we deterministically thin.
+ * One ghost point is one `<circle>`, so the budget is large.
+ *
+ * This is not the cap on epoch ghost LINES: one ghost line is a whole polyline
+ * plus an invisible fat hit-stroke, which costs far more per run, so that limit
+ * is its own constant (`GHOST_LINE_CAP` in ./trajectories, the file that owns
+ * epoch aggregation). The two numbers differ on purpose; changing one does not
+ * change the other.
+ */
+export const GHOST_POINT_CAP = 2000;
 
 /**
  * X-bucketing shared by grouping and split-worthiness so both agree on group
@@ -116,8 +125,8 @@ function sortStable(pts: RunPoint[]): RunPoint[] {
 function ghostSample(pts: RunPoint[]): { list: Ghost[]; subsampled: boolean } {
   const sorted = sortStable(pts);
   const toGhost = (p: RunPoint): Ghost => ({ x: p.x, y: p.y, dims: p.dims, runId: p.runId, c: p.c ?? null });
-  if (sorted.length <= GHOST_CAP) return { list: sorted.map(toGhost), subsampled: false };
-  const k = Math.ceil(sorted.length / GHOST_CAP);
+  if (sorted.length <= GHOST_POINT_CAP) return { list: sorted.map(toGhost), subsampled: false };
+  const k = Math.ceil(sorted.length / GHOST_POINT_CAP);
   const list: Ghost[] = [];
   for (let i = 0; i < sorted.length; i += k) list.push(toGhost(sorted[i]));
   return { list, subsampled: true };
