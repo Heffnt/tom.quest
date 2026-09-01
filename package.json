@@ -31,7 +31,6 @@
   "dependencies": {
     "@convex-dev/auth": "^0.0.92",
     "@earendil-works/pi-coding-agent": "^0.74.0",
-    "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "@sentry/nextjs": "^10",
     "@xterm/addon-fit": "^0.11.0",
@@ -49,7 +48,6 @@
   "devDependencies": {
     "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
-    "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^20",
     "@types/react": "^19",
