@@ -78,9 +78,14 @@ export function clientMemberKey(m: Member): string {
 }
 
 /**
- * Open actor-"tom" steps — the card's "needs you" strip. Each step keeps its
- * index in the todo's plan array, because that index is what
- * tts.setPlanStep({index}) addresses.
+ * Open actor-"tom" steps — what a plan is waiting on Tom for. THE one home for
+ * that rule: ruling-dialog.tsx reads `count` for its "N open on you" line and
+ * must not filter the plan again itself.
+ *
+ * `steps` has no caller yet. It is the shape a "needs you" strip would read,
+ * and each entry keeps its index in the todo's plan array because that index
+ * is what tts.setPlanStep({index}) addresses — a strip that recomputed the
+ * index from a filtered list would check off the wrong step.
  */
 export function planNeedsYou(plan: PlanStep[] | undefined): {
   count: number;
