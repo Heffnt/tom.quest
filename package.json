@@ -26,6 +26,7 @@
     "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
     "check:secrets": "gitleaks detect --source . --no-banner --redact",
     "check:writing": "node scripts/check-writing-standard.mjs",
+    "check:artifacts": "node scripts/check-undescribed-artifacts.mjs",
     "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs"
   },
   "dependencies": {

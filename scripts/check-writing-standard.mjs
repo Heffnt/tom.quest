@@ -25,6 +25,14 @@
 // MECHANICAL rule of the standard — the semantic ones ("defines every term at
 // first use", "describes an artifact before naming it") are not scriptable,
 // and this script never claims a passing document is well written.
+//
+// ONE OF THOSE SEMANTIC RULES NOW HAS ITS OWN RUNG. Since 2026-09-01,
+// scripts/check-undescribed-artifacts.mjs (`pnpm check:artifacts`) reports the
+// units that name an artifact — a file, a branch, a job — and never say what it
+// is, which was the single defect behind roughly 86% of the graded failures. It
+// is a keyword proxy for that one rule, not a second opinion on this one, and it
+// covers three corpora this script does not read: batch ground-up explanations,
+// code briefs, and the `brief` field of every life todo.
 
 const SITE = process.env.CONVEX_SITE_URL;
 const KEY = process.env.TTS_WORKER_KEY;
@@ -82,9 +90,17 @@ const RULES = [
     fails: (s) => /<link[^>]+stylesheet/i.test(s),
   },
   {
+    // Only inside a <style> block: that is the one place the browser acts on
+    // @import. A page ABOUT this rule writes the word in its prose — one did,
+    // on 2026-09-01, inside <code>@import</code> — and counting that as a
+    // failure would make the number report the subject matter instead of the
+    // document.
     id: "css-import",
-    why: "nothing loads from outside — no @import",
-    fails: (s) => /@import/i.test(s),
+    why: "nothing loads from outside — no @import inside a <style> block",
+    fails: (s) =>
+      [...s.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].some((m) =>
+        /@import/i.test(m[1]),
+      ),
   },
   {
     id: "external-url",
