@@ -88,8 +88,6 @@ export type BrewSummary = {
   owner: string | null; // memberKey, or null for the party brew
   nickname: string | null;
   seq: number;
-  itemCount: number;
-  hasHypotheticals: boolean;
   cauldronCount: number;
   pinned: PinnedPerfume;
   updatedAt: number;

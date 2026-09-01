@@ -4,9 +4,13 @@ import type { DataSource, GenerationHandle, LayerStep, NeuronAct, StepTrace, Tra
 
 // Deterministic dummy backend: statistically plausible shapes (attention sinks,
 // locality, depth-growing residual norms, heavy-tailed MLP activations,
-// low-rank streaks in weight matrices) so the UI reads like a real model while
-// the GPU endpoint doesn't exist yet. Everything is a pure function of hashes:
-// same prompt, same picture.
+// low-rank streaks in weight matrices) so the UI reads like a real model with
+// no GPU in the loop. The live path exists — turing-api/transformer_server.py
+// behind the /transformer-trace proxy, which state.ts points DEFAULT_REMOTE_URL
+// at — but it only answers while a trace server is running on a Turing node, so
+// this is the source the page starts on and the one `useDummy()` returns to:
+// the page stays usable offline and while nothing is allocated. Everything is a
+// pure function of hashes: same prompt, same picture.
 
 const CONTINUATION_POOL = [
   " the", " model", " reads", " from", " its", " residual", " stream", " and",
