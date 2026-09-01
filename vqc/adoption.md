@@ -33,11 +33,11 @@ It is not yet D13-shaped (size budget, generated factual blocks): ledger
 | Ledger (knowledge: discovered gaps) | `vqc/ledger.yaml` — open entries only; graduation deletes the entry in the work's commit |
 | Steering (corrections) | `vqc/steering.yaml` |
 | File classification (C9) | `vqc/classification.yaml` (enforcement: ledger `classification-unenforced`) |
-| Cite resolution set | constitution article ids (`A*`, `C1`–`C9`, `D1`–`D28`), `tts-spec:<section>` (sections of WikiTom `tts/spec.md`), and open ledger entry ids — enforced by `vqc/todos.test.ts` |
+| Cite resolution set | constitution article ids (`A*`, `C1`–`C9`, `D1`–`D28`), `tts-spec:<section>` (sections of WikiTom `tts/spec.md`), and open ledger entry ids — enforced by `vqc/todos.test.ts`. A RULING cites only the permanent half (articles, spec sections): the log is append-only, and a ledger id is deleted when it graduates — enforced by `vqc/registries.test.ts` |
 | Registries (C7) | `app/components/page-routes.ts` (pages); Convex schema (`convex/schema.ts`) |
 | Contract fences | `scripts/check-auth-boundary.mjs`, `scripts/check-heavy-libs.mjs` |
 | Layer DAG (D5) | none yet — ledger `no-layer-dag` |
-| Rulings log | below, this file, append-only |
+| Rulings log | below, this file, append-only — shape (the five fields, kebab ids never reused, dates running forward) enforced by `vqc/registries.test.ts` |
 | Scratch roots (D26) | `tts/` (declared in classification.yaml) |
 | Witness faults (D8) | none yet — ledger `no-witness-fault-harness`; interim: `witness:` comments in guard tests |
 | Jarvis Box definition | `worker/setup.sh` — the Jarvis Box owns no durable state; a rebuild from this script IS the Jarvis Box |
