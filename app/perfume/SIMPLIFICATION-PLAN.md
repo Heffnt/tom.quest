@@ -73,6 +73,11 @@ allowed for.
    of that file — the whole single-user suite — have not run since P1. The
    second describe, "perfume brew — live sync", is separately gated behind
    `E2E_CONVEX=1`. No `testSeed` mutation was ever written.
+   *[HALF SHIPPED — `convex/perfumeTestSeed.ts` now exports the `testSeed`
+   mutation with its own suite in `convex/perfumeTestSeed.test.ts`, and
+   `@playwright/test` moved from 1.59.1 (whose browser download refuses Ubuntu
+   26.04) to ^1.62.1, which installs and launches Chromium. The specs
+   themselves are still skipped — that is the remaining half.]*
 2. **The `book` presence-surface literal (§P0, §P5.5).** `book` was declared a
    dead word, but it is still the wire value: `convex/brews.ts:780` accepts
    `v.literal("book")`, `app/perfume/lib/brew-types.ts:248` declares
