@@ -138,7 +138,7 @@ export function RunInspector({ run, bundle, index, dir, onBack }: RunInspectorPr
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3 text-xs">
         <ParametersSection run={run} />
         <FunctionSection run={run} index={index} />
-        <OutcomesSection run={run} bundle={bundle} index={index} />
+        <OutcomesSection run={run} bundle={bundle} />
         <MethodsSection run={run} />
         <FilesSection run={run} dir={dir} />
       </div>
@@ -247,11 +247,10 @@ function FunctionSection({ run, index }: { run: RunRow; index: MetricIndex }) {
 // ===========================================================================
 
 function OutcomesSection({
-  run, bundle, index,
+  run, bundle,
 }: {
   run: RunRow;
   bundle: Bundle;
-  index: MetricIndex;
 }) {
   // -1 => combined/headline trajectories; >=0 => run.per_judge[idx].
   const [judgeIdx, setJudgeIdx] = useState<number>(-1);
