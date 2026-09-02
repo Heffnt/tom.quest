@@ -68,7 +68,7 @@ interface Geom {
 
 interface SymbolGameProps {
   size?: number;
-  onResult?: (result: { hits: number; perfects: number }) => void;
+  onResult?: (result: { hits: number }) => void;
   onReset?: () => void;
 }
 
@@ -330,7 +330,7 @@ export default function SymbolGame({
             st.placed.push({ angle: pr.alpha, hit: false, target: null });
             st.phase = "fail";
             setPhase("fail");
-            onResultRef.current?.({ hits: st.hits, perfects: st.perfects });
+            onResultRef.current?.({ hits: st.hits });
           } else {
             st.placed.push({ angle: pr.alpha, hit: true, target: pr.target });
             st.hits += 1;
