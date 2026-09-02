@@ -192,8 +192,8 @@ describe("users.setRoleByUsername", () => {
     expect(after?.role).toBe("agent");
   });
 
-  // The missing half before this mutation existed: promoteToAdmin could only
-  // ever raise a role, and nothing could lower one.
+  // The missing half before this mutation existed: the since-deleted
+  // promoteToAdmin could only ever raise a role, and nothing could lower one.
   it("takes a role back as well as granting one", async () => {
     const t = convexTest(schema, modules);
     const { as: tom } = await withRole(t, "tom");

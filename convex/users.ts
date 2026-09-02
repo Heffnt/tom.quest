@@ -55,10 +55,16 @@ export const setTomByUsername = mutation({
 //
 // WHY IT EXISTS: before this, the only two writers of users.role were
 // setTomByUsername (a one-shot bootstrap that refuses once a Tom exists) and
-// promoteToAdmin, which takes a raw Id<"users"> — so it is reachable only from
+// promoteToAdmin, which took a raw Id<"users"> — so it was reachable only from
 // the Convex dashboard, only for promotion, and there was no way to take a
 // role back at all. Granting the new read-only `agent` role needs a pen, and
 // so does the mistake that follows a grant.
+//
+// promoteToAdmin has since been DELETED: this mutation covers everything it
+// did and reverses it too, and it was the last Tom-only mutation in the
+// codebase hand-writing its own gate instead of calling requireTom — the
+// counter-example to the claim at authRoles.ts:57-59. What went with it is
+// promoting by raw Id from the Convex dashboard when the username is unknown.
 //
 // The username is the one from the widget: sign-up derives the synthetic email
 // `${username}@tom.quest`, and that is what the "email" index holds.
@@ -89,13 +95,3 @@ export const setRoleByUsername = mutation({
   },
 });
 
-export const promoteToAdmin = mutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, { userId }) => {
-    const viewer = await viewerDoc(ctx);
-    if (!roleAccess(viewer?.role).isTom) {
-      throw new Error("Only Tom can promote admins");
-    }
-    await ctx.db.patch(userId, { role: "admin" });
-  },
-});
