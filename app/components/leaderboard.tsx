@@ -8,13 +8,12 @@ import { useAuth, getUsername } from "../lib/auth";
 interface LeaderboardEntry {
   id: string;
   username: string;
-  time_ms: number;
-  created_at: string;
+  hits: number;
 }
 
 export interface PendingResult {
   winId: number;
-  ms: number;
+  hits: number;
 }
 
 interface LeaderboardProps {
@@ -22,7 +21,6 @@ interface LeaderboardProps {
   onRequestLogin: () => void;
 }
 
-// The endless symbol game stores hit count in timeMs for historical UI naming.
 function fmtScore(hits: number): string {
   return `${hits} hit${hits === 1 ? "" : "s"}`;
 }
@@ -42,7 +40,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
     try {
       await submitScore({
         username: getUsername(user),
-        timeMs: result.ms,
+        hits: result.hits,
       });
       setSavedWinId(result.winId);
     } finally {
@@ -65,7 +63,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
               disabled={saving}
               className="text-xs px-4 py-1.5 rounded-lg border border-accent/30 text-accent hover:bg-accent/10 hover:border-accent/50 transition-colors duration-150 disabled:opacity-50"
             >
-              {saving ? "Saving..." : `Save ${fmtScore(result.ms)}`}
+              {saving ? "Saving..." : `Save ${fmtScore(result.hits)}`}
             </button>
           ) : (
             <button
@@ -73,7 +71,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
               onClick={onRequestLogin}
               className="text-xs px-4 py-1.5 rounded-lg border border-accent/30 text-accent hover:bg-accent/10 hover:border-accent/50 transition-colors duration-150"
             >
-              Sign in to save {fmtScore(result.ms)}
+              Sign in to save {fmtScore(result.hits)}
             </button>
           )}
         </div>
@@ -98,7 +96,7 @@ export default function Leaderboard({ result, onRequestLogin }: LeaderboardProps
                   <span className="text-sm text-text-muted">{entry.username}</span>
                 </div>
                 <span className="text-sm font-mono text-text-muted tabular-nums">
-                  {fmtScore(entry.time_ms)}
+                  {fmtScore(entry.hits)}
                 </span>
               </div>
             ))}

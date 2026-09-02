@@ -31,24 +31,67 @@ describe("Convex functions", () => {
     expect(row?.lastSuccessAt).toBe(1000);
   });
 
-  it("returns top symbol scores", async () => {
+  it("returns top symbol scores by hit count", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
-      await ctx.db.insert("symbolScores", {
-        username: "tom",
-        timeMs: 3,
-        createdAt: 1,
-      });
-      await ctx.db.insert("symbolScores", {
-        username: "friend",
-        timeMs: 7,
-        createdAt: 2,
-      });
+      await ctx.db.insert("symbolScores", { username: "tom", hits: 3 });
+      await ctx.db.insert("symbolScores", { username: "friend", hits: 7 });
     });
 
     const scores = await t.query(api.symbolScores.topScores, { limit: 2 });
 
     expect(scores.map((score) => score.username)).toEqual(["friend", "tom"]);
+    expect(scores.map((score) => score.hits)).toEqual([7, 3]);
+  });
+
+  // Regression guard for the rename: the stored rows carried the hit count in a
+  // field named `timeMs` beside a `createdAt` nothing rendered. If either dead
+  // field ever survives the backfill, the narrow step that deletes them from the
+  // schema fails at deploy time against the surviving rows.
+  it("backfills legacy symbol scores into the hits field and clears the dead ones", async () => {
+    const t = convexTest({ schema, modules });
+    const legacyId = await t.run(async (ctx) =>
+      ctx.db.insert("symbolScores", { username: "tom", timeMs: 7, createdAt: 1 }),
+    );
+    const currentId = await t.run(async (ctx) =>
+      ctx.db.insert("symbolScores", { username: "friend", hits: 3 }),
+    );
+
+    const first = await t.mutation(internal.symbolScores.backfillHits, {});
+    expect(first).toEqual({ scanned: 2, rewritten: 1 });
+
+    const rows = await t.run(async (ctx) => ({
+      legacy: await ctx.db.get(legacyId),
+      current: await ctx.db.get(currentId),
+    }));
+    expect(rows.legacy?.hits).toBe(7);
+    expect(rows.legacy?.timeMs).toBeUndefined();
+    expect(rows.legacy?.createdAt).toBeUndefined();
+    expect(rows.current?.hits).toBe(3);
+
+    // Idempotent: the hourly cron re-running rewrites nothing.
+    expect(await t.mutation(internal.symbolScores.backfillHits, {})).toEqual({
+      scanned: 2,
+      rewritten: 0,
+    });
+
+    const scores = await t.query(api.symbolScores.topScores, { limit: 10 });
+    expect(scores.map((score) => score.hits)).toEqual([7, 3]);
+  });
+
+  // The leaderboard must stay readable in the window between the deploy that
+  // widens the schema and the first backfill run: un-backfilled rows have no
+  // `hits` and sort last under by_hits, so the query falls back to `timeMs`.
+  it("reads the hit count of a row the backfill has not reached yet", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("symbolScores", { username: "tom", timeMs: 7, createdAt: 1 });
+    });
+
+    const scores = await t.query(api.symbolScores.topScores, { limit: 10 });
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0].hits).toBe(7);
   });
 
   it("scopes canvas queries and mutations to the viewer", async () => {
