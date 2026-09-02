@@ -170,7 +170,11 @@ class ForgeRouteTest(unittest.TestCase):
         with patch(
             "forge.subprocess.run",
             return_value=CompletedProcess(args=[], returncode=0, stdout="33\n", stderr=""),
-        ) as run, patch("forge._job_node", return_value="gpu-node-7"):
+        ) as run, patch("forge._job_node", return_value="gpu-node-7"), \
+                patch("forge.NODE_DOMAIN", ""):
+            # NODE_DOMAIN is pinned empty so this test asserts the submit path only and does not
+            # depend on FORGE_NODE_DOMAIN in the environment. The qualification rule itself is
+            # covered by NodeBaseUrlTest below.
             res = _request("POST", "/forge/serve", json={"run_id": "s1"})
         self.assertEqual(res.status_code, 200)
         body = res.json()
@@ -254,6 +258,36 @@ class ForgeRouteTest(unittest.TestCase):
         cancel.assert_called_once_with("88")
         serve = json.loads((run_dir / "serve.json").read_text())
         self.assertEqual(serve["status"], "stopped")
+
+
+class NodeBaseUrlTest(unittest.TestCase):
+    """squeue %N returns a short Slurm nodename that does not resolve from the login node, so
+    forge._node_base_url appends NODE_DOMAIN to a dotless name and leaves anything else alone."""
+
+    def test_dotless_nodename_is_qualified_with_the_domain(self) -> None:
+        with patch("forge._job_node", return_value="gpu-5-43"), \
+                patch("forge.NODE_DOMAIN", ".int.turing.wpi.edu"):
+            self.assertEqual(
+                forge._node_base_url("33", 8765),
+                "http://gpu-5-43.int.turing.wpi.edu:8765/v1",
+            )
+
+    def test_already_qualified_nodename_is_left_alone(self) -> None:
+        with patch("forge._job_node", return_value="gpu-5-43.int.turing.wpi.edu"), \
+                patch("forge.NODE_DOMAIN", ".int.turing.wpi.edu"):
+            self.assertEqual(
+                forge._node_base_url("33", 8765),
+                "http://gpu-5-43.int.turing.wpi.edu:8765/v1",
+            )
+
+    def test_empty_domain_disables_qualification(self) -> None:
+        with patch("forge._job_node", return_value="gpu-5-43"), \
+                patch("forge.NODE_DOMAIN", ""):
+            self.assertEqual(forge._node_base_url("33", 8765), "http://gpu-5-43:8765/v1")
+
+    def test_no_node_yet_returns_none(self) -> None:
+        with patch("forge._job_node", return_value=None):
+            self.assertIsNone(forge._node_base_url("33", 8765))
 
 
 if __name__ == "__main__":
