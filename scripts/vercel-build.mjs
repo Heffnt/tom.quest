@@ -30,6 +30,8 @@
 
 import { spawnSync } from "node:child_process";
 
+import { findLfsPointers, pointerReport } from "./check-lfs-materialized.mjs";
+
 // Vercel sets VERCEL=1 on every build and VERCEL_ENV to one of
 // production | preview | development.
 const onVercel = process.env.VERCEL === "1" || process.env.VERCEL === "true";
@@ -46,6 +48,20 @@ if (onVercel && env === undefined) {
       "cannot tell production from preview. Refusing to guess.",
   );
   process.exit(1);
+}
+
+// public/data/clouds/*.bin is Git LFS tracked, so a Vercel project without
+// Git LFS enabled checks out 133 bytes of pointer text and deploys it as the
+// asset. The build still succeeds — nothing here reads those bytes — and
+// /clouds serves the pointer to the browser. Only a deployment can be wrong
+// this way, which is why the check is here and not in check:guardrails: CI and
+// session clones hold pointer text on purpose.
+if (onVercel) {
+  const pointers = findLfsPointers("public");
+  if (pointers.length > 0) {
+    console.error(pointerReport(pointers));
+    process.exit(1);
+  }
 }
 
 // Kept byte-identical to the command this replaces (AGENTS.md, Deployment):
