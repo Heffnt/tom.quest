@@ -3,7 +3,12 @@ import { promises as fs } from "node:fs";
 
 import { ttsDayKey } from "@/convex/ttsShared";
 
-export const WORKSPACE_ROOT = "/root/.openclaw/workspace";
+// The jarvis surfaces read and write real files under the openclaw workspace,
+// which only exists on the openclaw host. JARVIS_WORKSPACE_ROOT overrides the
+// location so tests can point the routes at a temporary directory; it is read
+// once at module load, so a test that changes it must vi.resetModules() before
+// re-importing the route. Nothing in production sets it.
+export const WORKSPACE_ROOT = process.env.JARVIS_WORKSPACE_ROOT?.trim() || "/root/.openclaw/workspace";
 export const OPENCLAW_ROOT = "/root/.openclaw";
 
 export function resolveWorkspacePath(relativePath: string) {
@@ -26,6 +31,14 @@ export async function pathExists(targetPath: string) {
 
 export type ParsedDay = {
   title: string;
+  /**
+   * The lines between the `# title` line and the first `## ` heading. These
+   * used to be folded into the "Notes" section, which meant a save relocated
+   * them under `## Notes` and, when the file also had a real `## Notes`, merged
+   * two unrelated blocks. They get their own slot so a round trip can put them
+   * back where they were.
+   */
+  preamble: string[];
   sections: Record<string, string[]>;
   orderedSections: string[];
   raw: string;
@@ -37,9 +50,8 @@ export function parseMarkdownSections(raw: string): ParsedDay {
   const title = lines[0]?.startsWith("# ") ? lines[0].slice(2).trim() : "";
   const sections: Record<string, string[]> = {};
   const orderedSections: string[] = [];
-  let current = "Notes";
-  sections[current] = [];
-  orderedSections.push(current);
+  const preamble: string[] = [];
+  let current: string | null = null;
 
   for (const line of lines.slice(title ? 1 : 0)) {
     if (line.startsWith("## ")) {
@@ -50,15 +62,31 @@ export function parseMarkdownSections(raw: string): ParsedDay {
       }
       continue;
     }
+    if (current === null) {
+      preamble.push(line);
+      continue;
+    }
     sections[current].push(line);
   }
 
-  return { title, sections, orderedSections, raw: normalized };
+  return { title, preamble, sections, orderedSections, raw: normalized };
 }
 
-export function buildMarkdownSections(title: string, orderedSections: string[], sections: Record<string, string[]>) {
+export function buildMarkdownSections(
+  title: string,
+  orderedSections: string[],
+  sections: Record<string, string[]>,
+  preamble: string[] = [],
+) {
   const parts: string[] = [];
   if (title) parts.push(`# ${title}`);
+  const preambleBody = [...preamble];
+  while (preambleBody.length > 0 && preambleBody[preambleBody.length - 1].trim() === "") {
+    preambleBody.pop();
+  }
+  if (preambleBody.length > 0) {
+    parts.push(...preambleBody, "");
+  }
   for (const name of orderedSections) {
     const body = sections[name] ?? [];
     parts.push(`## ${name}`);
