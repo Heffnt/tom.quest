@@ -16,7 +16,12 @@ OUT="$2"
 TMP="${OUT}.tmp.${SLURM_JOB_ID:-$$}"
 
 source ~/miniconda3/etc/profile.d/conda.sh
-conda activate boolback
+# Same env name the Forge wrappers activate (forge_train.sbatch:43, forge_serve.sbatch:43),
+# read from the environment sbatch propagates (--export=ALL). Hardcoding the literal here
+# made BOOLBACK_BUILDER_CONDA_ENV a no-op on the snapshot side. Not `|| true` like the
+# Forge wrappers: under `set -e` a bad env name stops the job rather than building a
+# snapshot with the wrong interpreter.
+conda activate "${BOOLBACK_BUILDER_CONDA_ENV:-boolback}"
 
 export BOOLEAN_BACKDOOR_OUTPUT="$HOME/booleanbackdoors/cmt-output"
 REPO="$HOME/booleanbackdoors/ComplexMultiTrigger"

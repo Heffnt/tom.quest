@@ -126,6 +126,30 @@ class BoolbackSnapshotTest(unittest.TestCase):
         self.assertIn(str(self.out_dir.resolve()), argv)
         self.assertFalse(run.call_args.kwargs.get("shell", False))
 
+    def test_build_sbatch_activates_the_configured_env(self) -> None:
+        # The shipped wrapper must take its conda env from BOOLBACK_BUILDER_CONDA_ENV,
+        # like forge_train.sbatch and forge_serve.sbatch. A hardcoded `conda activate
+        # boolback` makes that setting a no-op on the snapshot side, and the failure is
+        # silent: the job builds a snapshot with whatever interpreter it lands in.
+        text = (Path(__file__).resolve().parent / "boolback_build.sbatch").read_text()
+        self.assertIn('conda activate "${BOOLBACK_BUILDER_CONDA_ENV:-boolback}"', text)
+        self.assertNotIn("conda activate boolback", text)
+
+    def test_submit_lets_the_job_inherit_the_api_environment(self) -> None:
+        # sbatch defaults to --export=ALL, so the wrapper reads the API process's
+        # BOOLBACK_BUILDER_CONDA_ENV as long as submit_build does not hand the child a
+        # narrowed environment. No Python name mirrors the setting any more.
+        self.assertFalse(hasattr(boolback_snapshot, "BUILDER_CONDA_ENV"))
+        with patch.dict("os.environ", {"BOOLBACK_BUILDER_CONDA_ENV": "cmt-2026"}), patch(
+            "boolback_snapshot._job_active", return_value=False
+        ), patch(
+            "boolback_snapshot.subprocess.run",
+            return_value=CompletedProcess(args=[], returncode=0, stdout="4242\n", stderr=""),
+        ) as run:
+            boolback_snapshot.submit_build(self.out_dir.resolve())
+        env = run.call_args.kwargs.get("env")
+        self.assertTrue(env is None or env.get("BOOLBACK_BUILDER_CONDA_ENV") == "cmt-2026")
+
     def test_post_coalesces_when_job_active(self) -> None:
         (self.cache / f"submit-{boolback_snapshot._dir_hash(self.out_dir.resolve())}.jobid").write_text("555")
         with patch("boolback_snapshot._job_active", return_value=True), patch(

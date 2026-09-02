@@ -27,8 +27,10 @@ from pathlib import Path
 
 from dirs import resolve_within_root
 
-# The conda env the CMT builder lives in + where it is checked out (overridable).
-BUILDER_CONDA_ENV = os.environ.get("BOOLBACK_BUILDER_CONDA_ENV", "boolback")
+# Where the CMT builder is checked out (overridable). The conda env it runs in is
+# BOOLBACK_BUILDER_CONDA_ENV, read by boolback_build.sbatch itself out of the
+# environment sbatch propagates (--export=ALL) — no Python name mirrors it, because a
+# second copy here read by nothing is what made the setting look wired when it wasn't.
 BUILDER_REPO_DIR = os.environ.get(
     "BOOLBACK_BUILDER_REPO_DIR",
     str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
