@@ -259,7 +259,8 @@ Three new **plain `def`** endpoints in `turing-api/main.py` behind `Depends(veri
 | `components/column-group-menu.tsx` | **new** | hover-to-open per-group column dropdowns |
 | `components/dir-picker.tsx` | **new** | CMT output dir picker + Refresh |
 | `lib/use-resizable.ts` | **new** | drag-resize + persisted-width hook (tree + detail + columns) |
-| `lib/use-viewport.ts`, `usePersistedSettings` | **keep** | reused for widths/view persistence |
+| `lib/use-viewport.ts` | **moved out** | never imported here; now `app/lib/hooks/use-viewport.ts`, shared by nav-term, home-client, debug-panel, game-client |
+| `usePersistedSettings` | **keep** | reused for widths/view persistence |
 | `turing-api/dirs.py` | **keep** | `resolve_within_root` + `list_directory` reused verbatim |
 | `app/api/turing-blob/[...path]/route.ts` | **new** | binary gz proxy (admin-gated) |
 

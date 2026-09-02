@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import SymbolGame from "../components/symbol-game";
 import Leaderboard, { type PendingResult } from "../components/leaderboard";
 import LoginModal from "../components/login-modal";
+import { useViewport } from "../lib/hooks/use-viewport";
 
 function computeGameSize(vw: number, vh: number): number {
   const topReserve = 96;      // docked nav + gutter
@@ -13,23 +14,14 @@ function computeGameSize(vw: number, vh: number): number {
   return Math.max(260, Math.min(maxByWidth, maxByHeight, 440));
 }
 
-function useViewportSize() {
-  const [size, setSize] = useState({ w: 1024, h: 768 });
-  useEffect(() => {
-    const measure = () => setSize({ w: window.innerWidth, h: window.innerHeight });
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, []);
-  return size;
-}
-
 export default function GamePage() {
   const [result, setResult] = useState<PendingResult | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const nextWinId = useRef(1);
-  const { w, h } = useViewportSize();
-  const gameSize = computeGameSize(w, h);
+  // 1024x768 before measurement: the dimensions this page's server HTML has
+  // always used, so the first-paint board size is unchanged.
+  const vp = useViewport();
+  const gameSize = computeGameSize(vp?.width ?? 1024, vp?.height ?? 768);
 
   return (
     <div className="flex flex-col items-center px-6 pt-6 pb-16">
