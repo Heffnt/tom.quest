@@ -495,35 +495,37 @@ Deferred from the worker-pool design (the shipped code clamps to `[0, 16]` and r
 ## 14. Configuration: every environment name turing-api reads
 
 The service reads its settings from `turing-api/.env` beside the code, loaded at startup by
-`python-dotenv` (`main.py:29`). This section is the census of every name any module under
-`turing-api/` reads, the file and line reading it, the value used when the name is unset, and
-which of the two committed templates declares it today — `secrets/turing-api.env.example` or
-`turing-api/forge.env.example`. It is the authoritative list of what a template must cover.
+`python-dotenv` (`main.py:29`). That one file has one committed template,
+`secrets/turing-api.env.example`. This section is the census behind it: every name any module
+under `turing-api/` reads, the file and line reading it, the value used when the name is unset,
+and how the template declares it. `turing-api/env_census_test.py` fails when the census, the
+code and the template stop agreeing on the set of names.
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
-marked *call time*. "Declared in" is the state as of this census; `—` means neither template
-lists the name.
+**Seventeen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
+marked *call time*. "In the template" is `set` for a name the template supplies a value for and
+`commented` for an optional override the template shows with its default.
 
-| Name | Read at | Default when unset | What it controls | Declared in |
+| Name | Read at | Default when unset | What it controls | In the template |
 | --- | --- | --- | --- | --- |
-| `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
-| `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
-| `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
-| `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
-| `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |
-| `BOOLBACK_BUILDER_REPO_DIR` | `boolback_snapshot.py:32` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the boolback build job is submitted from (`cwd=` at `boolback_snapshot.py:238`) | — |
-| `BOOLBACK_BUILDER_CONDA_ENV` | `boolback_snapshot.py:31` | `boolback` | Conda env the Forge sbatch wrappers activate. **Read into a Python name that nothing in Python uses** — the real consumers are `forge_scripts/forge_train.sbatch:43` and `forge_serve.sbatch:43`, which read the inherited variable directly | `turing-api/forge.env.example` (commented) |
-| `BOOLBACK_CACHE_DIR` | `boolback_snapshot.py:38` | `~/.cache/boolback-snapshots` | Where built `.gz` snapshots and per-dir submit markers live | — |
-| `BOOLBACK_BUILD_SBATCH` | `boolback_snapshot.py:42` | `turing-api/boolback_build.sbatch` | The sbatch wrapper the snapshot build submits | — |
-| `FORGE_TRAIN_SBATCH` | `forge.py:57` | `turing-api/forge_scripts/forge_train.sbatch` | The sbatch wrapper `POST /forge/train` submits | `turing-api/forge.env.example` (commented) |
-| `FORGE_SERVE_SBATCH` | `forge.py:58` | `turing-api/forge_scripts/forge_serve.sbatch` | The sbatch wrapper `POST /forge/serve` submits | `turing-api/forge.env.example` (commented) |
-| `FORGE_SERVE_IDLE_SECS` | `forge.py:61` | `600` | Idle window with no `/forge/chat` heartbeat before a serve job scancels itself; passed to the job as `IDLE_SECS` | `turing-api/forge.env.example` (commented) |
-| `FORGE_SERVE_PORT` | `forge.py:63` | `8765` | Port vLLM binds on the compute node | `turing-api/forge.env.example` (commented) |
-| `FORGE_PROBE_TIMEOUT` | `forge.py:65` | `4` | Seconds the login node waits probing a serve job | `turing-api/forge.env.example` (commented) |
-| `FORGE_CHAT_TIMEOUT` | `forge.py:66` | `120` | Seconds the login node waits on a `/forge/chat` forward | `turing-api/forge.env.example` (commented) |
-| `FORGE_NODE_DOMAIN` | `forge.py:70` | `.int.turing.wpi.edu` | Suffix appended to a bare `squeue` nodename to make it routable; `""` disables | — |
+| `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `set` (blank) |
+| `TURING_READ_KEY` | `main.py:40` | `""` — the read door does not exist, and the three endpoints below go back to full-key-only | Narrower `X-API-Key` accepted by `verify_read_key` on `GET /gpu-report`, `GET /jobs` and `GET /sessions/{name}/output` only; the credential TTS sessions hold (`worker/bin/tts-turing`) | `set` (blank) |
+| `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `commented` |
+| `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | `commented` |
+| `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `set` |
+| `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `commented` |
+| `BOOLBACK_BUILDER_REPO_DIR` | `boolback_snapshot.py:32` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the boolback build job is submitted from (`cwd=` at `boolback_snapshot.py:238`) | `commented` |
+| `BOOLBACK_BUILDER_CONDA_ENV` | `boolback_snapshot.py:31` | `boolback` | Conda env the Forge sbatch wrappers activate. **Read into a Python name that nothing in Python uses** — the real consumers are `forge_scripts/forge_train.sbatch:43` and `forge_serve.sbatch:43`, which read the inherited variable directly | `commented` |
+| `BOOLBACK_CACHE_DIR` | `boolback_snapshot.py:38` | `~/.cache/boolback-snapshots` | Where built `.gz` snapshots and per-dir submit markers live | `commented` |
+| `BOOLBACK_BUILD_SBATCH` | `boolback_snapshot.py:42` | `turing-api/boolback_build.sbatch` | The sbatch wrapper the snapshot build submits | `commented` |
+| `FORGE_TRAIN_SBATCH` | `forge.py:57` | `turing-api/forge_scripts/forge_train.sbatch` | The sbatch wrapper `POST /forge/train` submits | `commented` |
+| `FORGE_SERVE_SBATCH` | `forge.py:58` | `turing-api/forge_scripts/forge_serve.sbatch` | The sbatch wrapper `POST /forge/serve` submits | `commented` |
+| `FORGE_SERVE_IDLE_SECS` | `forge.py:61` | `600` | Idle window with no `/forge/chat` heartbeat before a serve job scancels itself; passed to the job as `IDLE_SECS` | `commented` |
+| `FORGE_SERVE_PORT` | `forge.py:63` | `8765` | Port vLLM binds on the compute node | `commented` |
+| `FORGE_PROBE_TIMEOUT` | `forge.py:65` | `4` | Seconds the login node waits probing a serve job | `commented` |
+| `FORGE_CHAT_TIMEOUT` | `forge.py:66` | `120` | Seconds the login node waits on a `/forge/chat` forward | `commented` |
+| `FORGE_NODE_DOMAIN` | `forge.py:70` | `.int.turing.wpi.edu` | Suffix appended to a bare `squeue` nodename to make it routable; `""` disables | `commented` |
 
 ### 14.2 Names read only by the shell layer
 
@@ -532,7 +534,7 @@ submits. These names are never read by Python.
 
 | Name | Read at | Default when unset | Note |
 | --- | --- | --- | --- |
-| `FORGE_SERVE_CONDA_ENV` | `forge_scripts/forge_serve.sbatch:43` | falls back to `BOOLBACK_BUILDER_CONDA_ENV`, then `boolback` | Declared in `turing-api/forge.env.example` (commented) despite having no Python reader |
+| `FORGE_SERVE_CONDA_ENV` | `forge_scripts/forge_serve.sbatch:43` | falls back to `BOOLBACK_BUILDER_CONDA_ENV`, then `boolback` | Declared in the template (commented) despite having no Python reader |
 | `CUDA_HOME` | `forge_train.sbatch:49`, `forge_serve.sbatch:49` | `/cm/shared/apps/cuda12.6/toolkit/12.6.3` | Host-level; overriding it in `.env` works but is not a tom.Quest setting |
 | `PYTHONPATH` | `boolback_build.sbatch:25` | empty | Appended to, not configured |
 | `TURING_API_KEY` | `boolback_cron.sh:13` | none | Read out of the `.env` **file** with `grep`, not from the environment |
@@ -545,21 +547,31 @@ They are computed per run and must never appear in a template.
 
 ### 14.4 What the census found
 
-1. **Two names for one directory.** `BOOLEAN_BACKDOOR_REPO` (`forge.py:51`) and
+Findings 2, 3 and 5 are closed: `secrets/turing-api.env.example` is now the one template, it
+declares all seventeen names, and `README.md` points at it instead of showing a one-line `.env`.
+Findings 1 and 4 remain open and are separate changes.
+
+1. **Two names for one directory** (open). `BOOLEAN_BACKDOOR_REPO` (`forge.py:51`) and
    `BOOLBACK_BUILDER_REPO_DIR` (`boolback_snapshot.py:32`) have the same default and the same
    meaning — the CMT checkout an `sbatch` call is issued from. Set one and not the other and
    Forge and the snapshot build submit from different checkouts, which looks like an ordinary
-   build in both cases.
-2. **Four names are declared nowhere:** `TURING_FILE_ROOT`, `FORGE_NODE_DOMAIN`,
-   `BOOLBACK_CACHE_DIR`, `BOOLBACK_BUILD_SBATCH`. Two more — `BOOLBACK_BUILDER_REPO_DIR` and
-   the `boolback` half of the duplicate pair — are declared only under the Forge name.
-3. **`$HOME` in `forge.env.example:7` does not expand.** `python-dotenv` interpolates only the
-   braced form `${HOME}`; a bare `$HOME` is kept as four literal characters (verified against
-   python-dotenv 1.2.3), so `BOOLEAN_BACKDOOR_REPO=$HOME/...` hands `subprocess.run` a `cwd=`
-   naming no directory.
-4. **`boolback_build.sbatch` ignores three of the settings above.** It hardcodes its SLURM
+   build in both cases. The template declares both, commented, so the shared default keeps them
+   in step until the names are collapsed.
+2. ~~**Four names are declared nowhere:** `TURING_FILE_ROOT`, `FORGE_NODE_DOMAIN`,
+   `BOOLBACK_CACHE_DIR`, `BOOLBACK_BUILD_SBATCH`.~~ Closed — all four are in the template, and
+   `env_census_test.py` now fails if any censused name is missing from it.
+3. ~~**`$HOME` in `forge.env.example:7` does not expand.**~~ Closed — that template is gone and
+   every default in the surviving one is spelled `${HOME}`, the only form `python-dotenv`
+   interpolates (a bare `$HOME` is kept as four literal characters, verified against
+   python-dotenv 1.2.3, and would hand `subprocess.run` a `cwd=` naming no directory).
+   `env_census_test.py` fails on a bare `$` in any template value.
+4. **`boolback_build.sbatch` ignores three of the settings above** (open). It hardcodes its SLURM
    `--output` path (`:11`), `BOOLEAN_BACKDOOR_OUTPUT` (`:21`), the CMT checkout it puts on
    `PYTHONPATH` (`:22`), and `conda activate boolback` (`:19`). So on the snapshot side
    `BOOLBACK_BUILDER_REPO_DIR` only sets the submitting `cwd`, and `BOOLBACK_BUILDER_CONDA_ENV`
    has no effect at all.
-5. **`README.md:124-128` presents `TURING_API_KEY` as the whole contents of `.env`.**
+5. ~~**`README.md:124-128` presents `TURING_API_KEY` as the whole contents of `.env`.**~~ Closed.
+6. **The census went stale within one merge** (found while folding). `TURING_READ_KEY`
+   (`main.py:40`) landed after the census was written and appeared in no row, so the census was
+   sixteen names against a service reading seventeen. The drift guard caught it, which is the
+   reason it exists.

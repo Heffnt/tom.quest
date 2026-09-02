@@ -121,11 +121,20 @@ cd ~/tom.quest/turing-api
 pip install -r requirements.txt
 ```
 
-Create a `.env` file (or scp `secrets/turing-api.env` from your dev machine):
+Create `turing-api/.env`. `secrets/turing-api.env.example` is its one template and
+declares every name the service reads, each with its default and the file and line
+that reads it; `turing-api/spec.md` section 14 is the census behind it. Fill the
+template in as `secrets/turing-api.env` on your dev machine and copy it over:
 
+```bash
+scp secrets/turing-api.env <user>@<turing-host>:~/tom.quest/turing-api/.env
 ```
-TURING_API_KEY=<same value as in next.env and convex.env>
-```
+
+`TURING_API_KEY` (same value as in `next.env` and `convex.env`) is the only name
+the template cannot fill in for you, and the service refuses to start without it.
+`BOOLEAN_BACKDOOR_OUTPUT` also has no default in code — the template supplies the
+standard path under `~/booleanbackdoors`, so change it only if your artifact tree
+lives elsewhere. Every remaining name is a commented optional override.
 
 Set up a named cloudflared tunnel pointed at the API's local port (one-time):
 
