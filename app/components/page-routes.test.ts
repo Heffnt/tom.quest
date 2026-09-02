@@ -3,7 +3,6 @@ import { canSeePage, PAGES, rankPages, type Page, type PageRole } from "./page-r
 
 const page = (visibility: Page["visibility"]): Page => ({
   slug: visibility,
-  title: visibility,
   blurb: visibility,
   priority: 1,
   visibility,
@@ -88,9 +87,9 @@ describe("page registry", () => {
 
   it("prefers prefix matches before substring matches", () => {
     const pages: Page[] = [
-      { slug: "alpha", title: "Alpha", blurb: "", priority: 1, visibility: "public" },
-      { slug: "catalog", title: "Catalog", blurb: "", priority: 99, visibility: "public" },
-      { slug: "atom", title: "Atom", blurb: "", priority: 2, visibility: "public" },
+      { slug: "alpha", blurb: "", priority: 1, visibility: "public" },
+      { slug: "catalog", blurb: "", priority: 99, visibility: "public" },
+      { slug: "atom", blurb: "", priority: 2, visibility: "public" },
     ];
 
     expect(rankPages("a", "guest", pages).map((entry) => entry.slug)).toEqual(["atom", "alpha", "catalog"]);
