@@ -2,14 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../lib/auth";
+// The SAME function the server applies in convex/auth.ts, imported rather than
+// copied: this widget only decides whether the typed name is usable at all,
+// but the two must agree about what "usable" means, or the widget accepts a
+// name that sign-up then rejects. convex/authUsername.ts imports nothing, so
+// this pulls no server code into the browser bundle.
+import { normalizeUsername } from "@/convex/authUsername";
 
 interface LoginModalProps {
   isOpen: boolean;
   onClose: () => void;
-}
-
-function normalizeUsername(username: string): string {
-  return username.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
