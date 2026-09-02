@@ -32,6 +32,9 @@ import type {
   TreeLevel,
   TreeNode,
 } from "../lib/types";
+// Value import (the type-only import above cannot carry a function): the ONE
+// accepted-versions list lives in lib/types, never re-listed here.
+import { isSupportedSchemaVersion } from "../lib/types";
 import {
   ANATOMY_BASES,
   METHOD_SEP,
@@ -118,7 +121,7 @@ export function asBundle(json: unknown): Bundle {
     throw new Error("snapshot is not a JSON object");
   }
   const version = raw.schema_version;
-  if (version !== 1 && version !== 2 && version !== 3) {
+  if (!isSupportedSchemaVersion(version)) {
     throw new Error(`unsupported snapshot schema_version: ${String(version)}`);
   }
   if (!Array.isArray(raw.rows)) {

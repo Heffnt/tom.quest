@@ -8,6 +8,7 @@ import sample from "./sample-snapshot.json";
 import { asBundle } from "./normalize";
 import { fnHex, fnText } from "../lib/format";
 import { ANATOMY_BASES } from "../lib/method-metrics";
+import { SUPPORTED_SCHEMA_VERSIONS } from "../lib/types";
 import type { TreeNode } from "../lib/types";
 
 describe("asBundle (v2 builder fixture)", () => {
@@ -60,6 +61,20 @@ describe("asBundle (v2 builder fixture)", () => {
     expect(() => asBundle({ schema_version: 4, rows: [] })).toThrow(/schema_version/);
     // v3 (reading-vocab snapshot) is accepted.
     expect(() => asBundle({ schema_version: 3, functions: {}, rows: [] })).not.toThrow();
+  });
+
+  // Regression guard on the ONE accepted-versions list: asBundle must gate on
+  // lib/types.SUPPORTED_SCHEMA_VERSIONS, not on its own inline copy. If a v4
+  // bump is added to the constant alone, the loop below fails; if it is added
+  // to normalize alone, the rejection case below fails.
+  it("accepts exactly the versions listed in SUPPORTED_SCHEMA_VERSIONS", () => {
+    for (const version of SUPPORTED_SCHEMA_VERSIONS) {
+      expect(() => asBundle({ schema_version: version, functions: {}, rows: [] })).not.toThrow();
+    }
+    const unlisted = Math.max(...SUPPORTED_SCHEMA_VERSIONS) + 1;
+    expect(() => asBundle({ schema_version: unlisted, functions: {}, rows: [] })).toThrow(
+      /schema_version/,
+    );
   });
 });
 
