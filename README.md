@@ -4,16 +4,31 @@ Personal website for Tom Heffernan — PhD Student in Artificial Intelligence at
 
 ## Quests
 
+This table mirrors the `PAGES` registry in `app/components/page-routes.ts`, in registry
+order — that file is the one home for a page's slug, blurb, and visibility. Add a page
+there and update this table; `app/components/page-routes.test.ts` fails if the two disagree.
+
 | Route | What | Visibility |
 |-------|------|------------|
+| `/turing` | SLURM cluster + GPU monitor | Admin |
+| `/canvas` | Chat-driven HTML canvas | Authenticated |
+| `/transformer` | Drill into a live transformer, layer by layer | Public |
 | `/thmm` | Tiny CPU simulator + datapath | Public |
-| `/clouds` | Interactive LiDAR point-cloud viewer | Public |
-| `/game` | Symbol-shooting mini-game | Public |
-| `/bio` | About Tom | Public |
-| `/help` | How tom.quest works | Public |
-| `/turing` | SLURM cluster + GPU dashboard | Admin |
+| `/clouds` | Interactive LiDAR viewer | Public |
+| `/perfume` | Three Feifs perfumer's bench | Public |
+| `/sessions` | TTS — Claude Code session surface | Tom |
+| `/tts` | Tom's Todo System | Tom |
+| `/forge` | Build & train backdoors | Tom |
 | `/jarvis` | Personal AI assistant | Tom |
 | `/logo` | tom.Quest brand lab | Tom |
+| `/game` | Symbol-shooting mini-game | Public |
+| `/bio` | About Tom | Public |
+| `/boolback` | Boolean-backdoor artifact-tree explorer | Public |
+| `/help` | How tom.quest works | Public |
+
+`/turing` and `/tts` additionally carry `agentReadable`, which opens them to the read-only
+`agent` role a TTS session's headless browser signs in as. That is a side branch, not a
+rank, so it is not a value the Visibility column above can hold.
 
 ## Tech Stack
 

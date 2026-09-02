@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { canSeePage, PAGES, rankPages, type Page, type PageRole } from "./page-routes";
 
@@ -84,6 +86,56 @@ describe("page registry", () => {
     const turing = PAGES.find((entry) => entry.slug === "turing");
     expect(turing?.visibility).toBe("admin");
     expect(canSeePage("admin", turing!)).toBe(true);
+  });
+
+  // The README's Quests table is a MIRROR of this registry, not a second home.
+  // It drifted to 8 rows against 15 entries — /canvas, /transformer, /perfume,
+  // /sessions, /tts, /forge and /boolback were live and listed nowhere — and two
+  // of the 8 rows it did carry described the page differently from the registry
+  // (/clouds "point-cloud viewer", /turing "GPU dashboard"). Nothing went red,
+  // because nothing read the two together. This is that reader.
+  //
+  // Slug, order, blurb and visibility are all frozen: the "What" column and
+  // `blurb` are the same fact, and the drift above is what a free-text column
+  // costs. If the README ever wants richer prose than the registry's one line,
+  // that is a deliberate change here, not something a page edit does by accident.
+  describe("the README Quests table", () => {
+    const README = join(__dirname, "..", "..", "README.md");
+    const VISIBILITY_LABEL: Record<Page["visibility"], string> = {
+      public: "Public",
+      authenticated: "Authenticated",
+      admin: "Admin",
+      tom: "Tom",
+    };
+
+    // Rows of the one table under "## Quests", up to the next h2.
+    const rows = (() => {
+      const doc = readFileSync(README, "utf8");
+      const start = doc.indexOf("\n## Quests\n");
+      expect(start, "README.md has no '## Quests' section").toBeGreaterThan(-1);
+      const rest = doc.slice(start + 1);
+      const end = rest.indexOf("\n## ", 1);
+      const section = end === -1 ? rest : rest.slice(0, end);
+      return [...section.matchAll(/^\| `\/([a-z0-9-]+)` \| (.+?) \| (.+?) \|$/gm)].map(
+        (m) => ({ slug: m[1], what: m[2].trim(), visibility: m[3].trim() }),
+      );
+    })();
+
+    // Asserted before the comparison so a regex that stopped matching the table
+    // fails loudly here instead of passing over an empty list.
+    it("parses one row per registry entry", () => {
+      expect(rows.length).toBe(PAGES.length);
+    });
+
+    it("lists every page, in registry order, with the registry's own words", () => {
+      expect(rows).toEqual(
+        PAGES.map((page) => ({
+          slug: page.slug,
+          what: page.blurb,
+          visibility: VISIBILITY_LABEL[page.visibility],
+        })),
+      );
+    });
   });
 
   it("prefers prefix matches before substring matches", () => {
