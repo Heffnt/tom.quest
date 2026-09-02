@@ -1774,8 +1774,12 @@ describe("autonomous session scheduler", () => {
     expect(sessions).toHaveLength(1);
     const session = sessions[0];
     expect(session.mode).toBe("autonomous");
-    // "draft the reading list" names no repo and holds no code members, so
-    // pickMissionRepo lands on the empty-scratch posture.
+    // "draft the reading list" has no batch, so resolveSessionRepos
+    // (convex/claudeSessions.ts) falls past the explicit and batch sources to
+    // the todo: its member tally is empty, and the substring scan over its own
+    // words finds no repo name. Empty list = the empty-scratch posture. This is
+    // an explanation of the path taken, not a witness: no single deletion in
+    // the resolver can make an empty result non-empty.
     expect(session.repo).toBe("none");
     expect(session.kind).toBe("focus-item");
     expect(session.status).toBe("requested");
@@ -2232,15 +2236,20 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].text).toContain("batch member");
   });
 
-  // ── Which repo the mission's workspace holds (pickMissionRepo) ─────────────
+  // ── Which repos the mission's workspace holds (resolveSessionRepos) ────────
   // Ratified doctrine (Tom, 2026-08-29): autonomous missions IMPLEMENT rather
   // than stop at a Tom decision, so a mission whose work lives in a repo gets
-  // a real checkout. These three pin the whole rule: code members vote, an
-  // unfamiliar winner is refused, and words decide when nothing votes.
+  // a real checkout. These three pin the resolver's last two sources — the
+  // batch-member vote and the substring scan — plus the normalization the vote
+  // passes through: code members vote, an unfamiliar winner is dropped, and
+  // words decide when nothing votes. (The two sources above them, an explicit
+  // list and the batch's own declaration, are pinned in "createSession".)
 
-  // witness: drop the tally in pickMissionRepo (convex/claudeSessions.ts) and
-  // this test goes red — a code batch would open in an empty scratch dir with
-  // nothing to edit.
+  // witness: delete `if (winner !== undefined) return normalizeSessionRepos(winner);`
+  // from resolveSessionRepos (convex/claudeSessions.ts) and this test goes red
+  // — the vote is skipped, the substring scan finds no repo name in this
+  // batch's words, and a code batch opens in an empty scratch dir with nothing
+  // to edit. Performed 2026-09-02: red, then restored.
   it("a batch's code members vote for the mission's repo", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -2283,9 +2292,16 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].text).not.toContain("planApplied");
   });
 
-  // witness: drop the AUTO_REPOS membership check from pickMissionRepo — the
-  // daemon's REPO_GITHUB map throws on a repo it cannot clone, so the session
-  // would die on its first turn instead of doing groundwork.
+  // witness: in resolveSessionRepos (convex/claudeSessions.ts) return the vote
+  // winner raw — `return [winner];` in place of
+  // `return normalizeSessionRepos(winner);` — and this test goes red. That is
+  // the change specific to THIS path: normalizeSessionRepos
+  // (convex/ttsShared.ts) is what drops a name absent from SESSION_REPOS, and
+  // the vote is one of two doors into it (the explicit-list door is witnessed
+  // separately in "normalizes an explicit repo list"). Without the drop the
+  // daemon's clone map throws on a repo it cannot clone and the session dies on
+  // its first turn instead of doing groundwork. Performed 2026-09-02: red here,
+  // green in the explicit-list test, then restored.
   it("an unclonable repo among the code members falls back to empty scratch", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -2316,9 +2332,12 @@ describe("autonomous session scheduler", () => {
     expect(inbound[0].text).not.toContain("NEVER merge");
   });
 
-  // witness: drop the statement/brief substring fallback from pickMissionRepo
-  // and the named item below goes to "none" — a life-shaped todo that is
-  // plainly about a repo would have nothing to edit.
+  // witness: replace resolveSessionRepos' last return —
+  // `return normalizeSessionRepos(SESSION_REPO_NAMES.filter((repo) =>
+  // text.includes(repo)));` in convex/claudeSessions.ts — with `return [];` and
+  // the named item below goes to "none": a batch-less todo that is plainly
+  // about a repo would have nothing to edit. Performed 2026-09-02: red, then
+  // restored.
   it("with nothing voting, the item's own words pick the repo or nothing does", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -3452,10 +3471,12 @@ describe("frontier scheduler", () => {
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
   });
 
-  // witness: drop the extraText argument from the pickMissionRepo call in the
-  // admission loop and this test goes red — a graph task whose batch is
-  // plainly about a repo would open in an empty scratch directory with
-  // nothing to edit.
+  // witness: delete the `extraText:` property from the resolveSessionRepos call
+  // inside `admit` in convex/claudeSessions.ts (the admission loop) and this
+  // test goes red — the substring scan then sees only the task's own one line,
+  // so a graph task whose BATCH is plainly about a repo opens in an empty
+  // scratch directory with nothing to edit. Performed 2026-09-02: red, then
+  // restored.
   it("equips the workspace from the batch's words when the task's are silent", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
