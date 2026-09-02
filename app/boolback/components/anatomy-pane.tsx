@@ -29,10 +29,10 @@
 //     + store hover(node_path) debounced 150ms so table/chart ring; the
 //     header run/twin ids ring back on hoveredDir/selectedDir like chart
 //     points do.
-//   * click a marker/arc = setAnatomy({sel: measurementKey}) + openDetail +
+//   * click a marker/arc = setAnatomy({sel: readingKey}) + openDetail +
 //     expandChain; a selected circuit adds a "fit circuit" header button
 //     (fitCircuit weights). The sel id round-trips share links (codec in
-//     lib/anatomy.ts: measurementKey/parseMeasurementKey).
+//     lib/anatomy.ts: readingKey/parseReadingKey).
 //
 // Encodings (spec table, locked): position = locus; carrier → color (hex
 // palette from the engine — data colors never come from CSS vars); mode →
@@ -93,12 +93,12 @@ import {
   lerpFocus,
   locusLabel,
   lodForLayer,
-  matchMeasurements,
-  measurementKey,
-  measurementsOf,
+  matchReadings,
   modeGlyph,
   neuronBins,
   profilePeak,
+  readingKey,
+  readingsOf,
   reset,
   residLayerHeat,
   rowHasAnatomy,
@@ -380,13 +380,13 @@ export function placeBandMarkers(
   const barEdge = side === "run" ? bar.y1 : bar.y0;
   const zoneH = zone.y1 - zone.y0;
   const nL = scale.shape.nLayers;
-  const ms = measurementsOf(row);
+  const ms = readingsOf(row);
   const lods: Lod[] = Array.from({ length: nL }, (_, i) => lodForLayer(scale, i));
 
   const groups = new Map<GroupKey, InterpReading[]>();
   for (const m of ms) {
     if (m.locus_shape === "subgraph" || m.locus_shape === "path") continue; // arcs render circuits
-    const x = scale.xForMeasurement(m);
+    const x = scale.xForReading(m);
     if (x === null) continue;
     const key = groupKeyFor(m, nL);
     if (typeof key === "number" && lods[key] === "model") continue; // aggregated into heat
@@ -424,7 +424,7 @@ export function placeBandMarkers(
       arr.length > 1 ? Math.min(STACK_PITCH, Math.max(18, avail / (arr.length - 1))) : 0;
     if (isLayer) containerRows.set(gkey, { n: arr.length, pitch });
     arr.forEach((m, idx) => {
-      const x = scale.xForMeasurement(m)!;
+      const x = scale.xForReading(m)!;
       const d = deltaOf(m);
       const raw =
         gkey === "global"
@@ -435,7 +435,7 @@ export function placeBandMarkers(
       const cy = Math.min(zone.y1 - 6, Math.max(zone.y0 + 6, raw));
       placed.push({
         m,
-        key: measurementKey(m),
+        key: readingKey(m),
         x,
         cy,
         r: deltaRadius(d, deltaMax),
@@ -458,11 +458,11 @@ export function placeBandMarkers(
  */
 function bandContentNeed(row: RunRow, scale: Scale): number {
   const nL = scale.shape.nLayers;
-  const ms = measurementsOf(row);
+  const ms = readingsOf(row);
   const counts = new Map<GroupKey, number>();
   for (const m of ms) {
     if (m.locus_shape === "subgraph" || m.locus_shape === "path") continue;
-    if (scale.xForMeasurement(m) === null) continue;
+    if (scale.xForReading(m) === null) continue;
     const key = groupKeyFor(m, nL);
     if (typeof key === "number" && lodForLayer(scale, key) === "model") continue;
     counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -526,7 +526,7 @@ function BandView({
   const zoneH = zone.y1 - zone.y0;
   const nL = scale.shape.nLayers;
   const nHeads = scale.shape.nHeads;
-  const ms = measurementsOf(row);
+  const ms = readingsOf(row);
 
   const embed = scale.xForPath("embed")!;
   const unembed = scale.xForPath("unembed")!;
@@ -1061,7 +1061,7 @@ function BandView({
           (the zoom that un-collapses it). A selected measurement hiding in a
           badge keeps its white ring on the badge. */}
       {badges.map((b) => {
-        const holdsSel = sel !== null && b.ms.some((m) => measurementKey(m) === sel);
+        const holdsSel = sel !== null && b.ms.some((m) => readingKey(m) === sel);
         return (
           <g
             key={`bdg${b.layer}`}
@@ -1477,15 +1477,15 @@ export function AnatomyBody({
   // run's scale, so junk/mismatched out-of-range layers must not steer the
   // normalizers or the gutter captions.
   const match = useMemo(
-    () => (run ? matchMeasurements(run, twinRow, shape?.nLayers) : null),
+    () => (run ? matchReadings(run, twinRow, shape?.nLayers) : null),
     [run, twinRow, shape],
   );
   const runHeat = useMemo(
-    () => residLayerHeat(run ? measurementsOf(run) : [], shape?.nLayers),
+    () => residLayerHeat(run ? readingsOf(run) : [], shape?.nLayers),
     [run, shape],
   );
   const twinHeat = useMemo(
-    () => residLayerHeat(twinRow ? measurementsOf(twinRow) : [], shape?.nLayers),
+    () => residLayerHeat(twinRow ? readingsOf(twinRow) : [], shape?.nLayers),
     [twinRow, shape],
   );
   const heatMax = useMemo(() => {
@@ -1496,8 +1496,8 @@ export function AnatomyBody({
   }, [runHeat, twinHeat]);
   // One shared ridgeline normalizer (run + twin) — heights stay comparable.
   const profileMax = useMemo(() => {
-    let p = run ? profilePeak(measurementsOf(run)) : 0;
-    if (twinRow) p = Math.max(p, profilePeak(measurementsOf(twinRow)));
+    let p = run ? profilePeak(readingsOf(run)) : 0;
+    if (twinRow) p = Math.max(p, profilePeak(readingsOf(twinRow)));
     return p;
   }, [run, twinRow]);
 
@@ -1528,7 +1528,7 @@ export function AnatomyBody({
     const present = new Set<string>();
     const collect = (r: RunRow | null) => {
       if (!r) return;
-      for (const m of measurementsOf(r)) if (m.carrier) present.add(m.carrier);
+      for (const m of readingsOf(r)) if (m.carrier) present.add(m.carrier);
     };
     collect(run);
     if (twinOn) collect(twinRow);
@@ -1549,9 +1549,9 @@ export function AnatomyBody({
   // a share-link recipient sees WHAT the white ring on the canvas means.
   const selMeasurement = useMemo(() => {
     if (!sel || !run) return null;
-    for (const m of measurementsOf(run)) if (measurementKey(m) === sel) return m;
+    for (const m of readingsOf(run)) if (readingKey(m) === sel) return m;
     if (twinRow) {
-      for (const m of measurementsOf(twinRow)) if (measurementKey(m) === sel) return m;
+      for (const m of readingsOf(twinRow)) if (readingKey(m) === sel) return m;
     }
     return null;
   }, [sel, run, twinRow]);
@@ -1573,7 +1573,7 @@ export function AnatomyBody({
   // navigation; flip explicitly via the table/tree instead).
   const selectMeasurement = useCallback(
     (m: InterpReading, row: RunRow | null, side: "run" | "twin") => {
-      setAnatomy({ sel: measurementKey(m) });
+      setAnatomy({ sel: readingKey(m) });
       if (side === "run" && row) {
         openDetail(row.identity.node_path);
         expandChain(row.identity.chain_dirs);
@@ -1699,8 +1699,8 @@ export function AnatomyBody({
     if (!run) return [];
     const isCircuit = (m: InterpReading) =>
       m.locus_shape === "subgraph" || m.locus_shape === "path";
-    const runCs = measurementsOf(run).filter(isCircuit);
-    const twinCs = twinOn && twinRow ? measurementsOf(twinRow).filter(isCircuit) : [];
+    const runCs = readingsOf(run).filter(isCircuit);
+    const twinCs = twinOn && twinRow ? readingsOf(twinRow).filter(isCircuit) : [];
     const out: Array<{
       m: InterpReading;
       counterpart: InterpReading | null;
@@ -1709,23 +1709,23 @@ export function AnatomyBody({
     for (const m of runCs) {
       out.push({
         m,
-        counterpart: twinCs.find((t) => measurementKey(t) === measurementKey(m)) ?? null,
+        counterpart: twinCs.find((t) => readingKey(t) === readingKey(m)) ?? null,
         side: "run",
       });
     }
     for (const t of twinCs) {
       out.push({
         m: t,
-        counterpart: runCs.find((m) => measurementKey(m) === measurementKey(t)) ?? null,
+        counterpart: runCs.find((m) => readingKey(m) === readingKey(t)) ?? null,
         side: "twin",
       });
     }
     return out;
   }, [run, twinRow, twinOn]);
   const anyCircuitSelected =
-    sel !== null && circuits.some((c) => measurementKey(c.m) === sel);
+    sel !== null && circuits.some((c) => readingKey(c.m) === sel);
   const selCircuit = useMemo(
-    () => (sel === null ? null : circuits.find((c) => measurementKey(c.m) === sel) ?? null),
+    () => (sel === null ? null : circuits.find((c) => readingKey(c.m) === sel) ?? null),
     [sel, circuits],
   );
 
@@ -1858,7 +1858,7 @@ export function AnatomyBody({
         .map((p) => ({
           p,
           src: p.run ?? p.twin!,
-          x: scale.xForMeasurement(p.run ?? p.twin!),
+          x: scale.xForReading(p.run ?? p.twin!),
         }))
         .filter((e) => e.x !== null) as Array<{
         p: MatchedPair;
@@ -2236,7 +2236,7 @@ export function AnatomyBody({
 
                 {/* circuit arcs + node rings (selection emphasizes; others dim) */}
                 {circuits.map((c, ci) => {
-                  const key = measurementKey(c.m);
+                  const key = readingKey(c.m);
                   const isSel = sel !== null && sel === key;
                   const dim = anyCircuitSelected && !isSel ? 0.25 : 1;
                   const { arcs, anchorY } = circuitArcs(

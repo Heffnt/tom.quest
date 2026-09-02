@@ -21,20 +21,20 @@
 //    factor geometrically across that chain so nested zoom keeps moving;
 //    lerpFocus interpolates two focus maps in LOG space (multiplicative
 //    weights animate at a constant visual rate) for the ~180ms rAF tween;
-//    measurementKey/parseMeasurementKey are the selection id codec
+//    readingKey/parseReadingKey are the selection id codec
 //    (AnatomyConfig.sel and share links carry the encoded string).
 //  * the LOD ladder (model | layer | component | leaf) classified by
 //    px-per-unit thresholds.
-//  * measurement plumbing: measurementsOf normalizes the LEGACY single-record
-//    interp shape into a list; xForMeasurement/xForNode place every locus
+//  * reading plumbing: readingsOf normalizes the LEGACY single-record
+//    interp shape into a list; xForReading/xForNode place every locus
 //    type on the scale (degrading — unknown heads center on attn, layer-less
 //    global/parameter loci anchor at the left global-lane gutter, circuits
 //    return null and
-//    render via their nodes); matchMeasurements pairs run/twin measurements
+//    render via their nodes); matchReadings pairs run/twin readings
 //    and aggregates per-layer max |delta| for the diff strip; circuitDiff
 //    compares circuit edges by node SIGNATURE (layer:component:head), not
 //    node index, so reordered node lists still diff correctly; findTwinRow
-//    resolves the function-false twin via measurement twin_hash;
+//    resolves the function-false twin via reading twin_hash;
 //    residLayerHeat aggregates the bar's per-layer heat (resid loci +
 //    sweeps); neuronBins folds top-k components into px bins for the strip.
 //  * display constants: the carrier palette (hard-coded hex — data-series
@@ -82,9 +82,9 @@ export interface Scale {
   shape: ModelShape;
   /** Span of a unit path; null for unparseable/out-of-range paths. */
   xForPath(path: string): Span | null;
-  /** Center x for a measurement's locus; null when it has no single locus
+  /** Center x for a reading's locus; null when it has no single locus
    * (circuits render per-node via xForNode; layer-less points are unplaceable). */
-  xForMeasurement(m: InterpReading): number | null;
+  xForReading(m: InterpReading): number | null;
   /** Center x for one circuit node; null when its layer is out of range. */
   xForNode(node: CircuitNode): number | null;
   /** Current px width of layer i's span (0 when out of range). */
@@ -122,7 +122,7 @@ export const GHOST_RADIUS = 2;
 /** Fixed x-anchor for layer-less (global/parameter) markers — just right of
  * the global lane's left "global" gutter caption, their honest no-locus home.
  * Pane-centering piled them exactly where mid-stack marker piles peak (r4
- * critique); xForMeasurement clamps this into degenerate panes. */
+ * critique); xForReading clamps this into degenerate panes. */
 export const GLOBAL_LANE_X_PX = 48;
 
 // Vertical band geometry.
@@ -273,7 +273,7 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
   // head count → no head-level subdivision exists. Cumulative head weights
   // are memoized per layer per SCALE: the naive version re-walked all nHeads
   // template-string keys per CALL, and at per-head-battery scale (80L × 64H,
-  // ~1k head-locus measurements × ~10 layout passes) that alone cost tens of
+  // ~1k head-locus readings × ~10 layout passes) that alone cost tens of
   // ms per tween frame. The memo makes repeat calls O(1) per head.
   const headCums = new Map<number, number[]>();
   const headSpan = (i: number, h: number): Span | null => {
@@ -325,7 +325,7 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
     return mid(ls); // resid (or anything unrecognized) centers on the layer
   };
 
-  const xForMeasurement = (m: InterpReading): number | null => {
+  const xForReading = (m: InterpReading): number | null => {
     const shapeKind = m.locus_shape;
     // Circuits have no single locus — nodes carry their own x via xForNode.
     if (shapeKind === "subgraph" || shapeKind === "path") return null;
@@ -359,7 +359,7 @@ export function buildScale(focus: Focus, shape: ModelShape, widthPx: number): Sc
     width,
     shape: { nLayers: nL, nHeads, dMlp: shape.dMlp ?? null },
     xForPath,
-    xForMeasurement,
+    xForReading,
     xForNode,
     layerLod: (i: number) => {
       const ls = layerSpan(i);
@@ -609,16 +609,17 @@ export function fitCircuit(focus: Focus, nodes: CircuitNode[], shape: ModelShape
 }
 
 // ---------------------------------------------------------------------------
-// Measurements — normalization, deltas, keys
+// Readings — normalization, deltas, keys
 // ---------------------------------------------------------------------------
 
 /**
- * A row's interp measurements as a list. Newer builders ship
- * interp.measurements; legacy blobs carry ONE headline record in the flat
- * fields — normalize it into the same shape (an empty list is treated like
- * an absent one). No interp → [].
+ * A row's interp readings as a list. Newer builders ship interp.readings
+ * (data/normalize translates an old blob's interp.measurements into that
+ * field at load); legacy blobs carry ONE headline record in the flat fields
+ * — normalize it into the same shape (an empty list is treated like an
+ * absent one). No interp → [].
  */
-export function measurementsOf(row: RunRow): InterpReading[] {
+export function readingsOf(row: RunRow): InterpReading[] {
   const interp = row.interp;
   if (!interp) return [];
   if (interp.readings && interp.readings.length > 0) return interp.readings;
@@ -650,11 +651,11 @@ export function deltaOf(m: InterpReading): number | null {
 /** Matching/selection key: (method||kind, metric_name, layer, locus_component,
  * head) — the twin-pairing identity from ANATOMY-SPEC.md. Doubles as the
  * AnatomyConfig.sel selection id (share links carry it), so it must stay a
- * stable pure function of the measurement's identity fields. The "|"
+ * stable pure function of the reading's identity fields. The "|"
  * separator relies on CMT slugs never containing pipes (true of the whole
- * taxonomy); parseMeasurementKey rejects any string that doesn't split back
+ * taxonomy); parseReadingKey rejects any string that doesn't split back
  * into exactly five fields. */
-export function measurementKey(m: InterpReading): string {
+export function readingKey(m: InterpReading): string {
   return [
     m.method || m.kind,
     m.metric_name ?? "",
@@ -664,17 +665,17 @@ export function measurementKey(m: InterpReading): string {
   ].join("|");
 }
 
-export interface MeasurementKeyParts {
+export interface ReadingKeyParts {
   method: string; // method || kind at encode time
-  metricName: string; // "" when the measurement had none
+  metricName: string; // "" when the reading had none
   layer: number | null;
-  locusComponent: string; // "" when the measurement had none
+  locusComponent: string; // "" when the reading had none
   head: number | null;
 }
 
-/** Decode a measurementKey back into its fields; null on anything that is
+/** Decode a readingKey back into its fields; null on anything that is
  * not a well-formed five-field key (junk sel values arrive from URLs). */
-export function parseMeasurementKey(key: string): MeasurementKeyParts | null {
+export function parseReadingKey(key: string): ReadingKeyParts | null {
   if (typeof key !== "string") return null;
   const parts = key.split("|");
   if (parts.length !== 5) return null;
@@ -714,11 +715,11 @@ export function locusLabel(m: InterpReading): string {
   return "unlocated";
 }
 
-/** True when any measurement carries anatomy locus/taxonomy fields — the
+/** True when any reading carries anatomy locus/taxonomy fields — the
  * pane prefers such a row when nothing is selected (a legacy row's empty
  * structural spine is a poor first impression), and keys its header note. */
 export function rowHasAnatomy(row: RunRow): boolean {
-  return measurementsOf(row).some(
+  return readingsOf(row).some(
     (m) =>
       m.layer != null ||
       m.locus_component != null ||
@@ -756,7 +757,7 @@ export function rowShape(row: RunRow): ModelShape | null {
   let nHeads = sanitizeCount(row.n_heads, MAX_MODEL_HEADS);
   if (nHeads === null) {
     let top = -1;
-    for (const m of measurementsOf(row)) {
+    for (const m of readingsOf(row)) {
       if (typeof m.head === "number" && Number.isFinite(m.head)) top = Math.max(top, m.head);
       for (const n of m.nodes ?? []) {
         if (typeof n?.head === "number" && Number.isFinite(n.head)) top = Math.max(top, n.head);
@@ -769,7 +770,7 @@ export function rowShape(row: RunRow): ModelShape | null {
 }
 
 /**
- * The run's function-false twin among loaded rows: the measurement-level
+ * The run's function-false twin among loaded rows: the reading-level
  * twin_hash names the OTHER function's hash; resolve it against
  * identity.function_hash, preferring the candidate that shares the run's
  * dataset/training hashes (twins share every non-function facet, so the
@@ -782,7 +783,7 @@ export function rowShape(row: RunRow): ModelShape | null {
  */
 export function findTwinRow(run: RunRow, rows: RunRow[]): RunRow | null {
   let hash: string | null = null;
-  for (const m of measurementsOf(run)) {
+  for (const m of readingsOf(run)) {
     if (typeof m.twin_hash === "string" && m.twin_hash) {
       hash = m.twin_hash;
       break;
@@ -809,7 +810,7 @@ export function findTwinRow(run: RunRow, rows: RunRow[]): RunRow | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-layer max |delta| of RESIDUAL-stream evidence: discrete measurements
+ * Per-layer max |delta| of RESIDUAL-stream evidence: discrete readings
  * whose locus is the resid stream (locus_component "resid", or absent on a
  * point/absent-shape record — the legacy default), plus every layer_profile
  * sweep point (sweeps are per-layer resid sweeps by definition). Component
@@ -901,12 +902,12 @@ export interface LayerDelta {
   twin: number; // … and on the twin side
 }
 
-export interface MeasurementMatch {
+export interface ReadingMatch {
   pairs: MatchedPair[];
-  /** Sorted by layer; aggregates BOTH discrete measurement deltas and
+  /** Sorted by layer; aggregates BOTH discrete reading deltas and
    * layer_profile sweep points (the strip wants the fullest per-layer story). */
   layerDeltas: LayerDelta[];
-  /** Max |delta| over both sides' discrete measurements — the marker-radius
+  /** Max |delta| over both sides' discrete readings — the marker-radius
    * normalizer, shared so run and twin marker sizes are comparable. */
   deltaMax: number;
 }
@@ -914,28 +915,28 @@ export interface MeasurementMatch {
 /** `nLayers` (when known) clamps layerDeltas to the scale's range, exactly
  * like residLayerHeat: the diff strip's excess normalizer and gutter captions
  * must never be dominated by a layer the cell renderer skips. */
-export function matchMeasurements(
+export function matchReadings(
   run: RunRow,
   twin: RunRow | null,
   nLayers?: number | null,
-): MeasurementMatch {
-  const runMs = measurementsOf(run);
-  const twinMs = twin ? measurementsOf(twin) : [];
+): ReadingMatch {
+  const runMs = readingsOf(run);
+  const twinMs = twin ? readingsOf(twin) : [];
 
   const unmatched = new Map<string, InterpReading[]>();
   for (const m of twinMs) {
-    const k = measurementKey(m);
+    const k = readingKey(m);
     const bucket = unmatched.get(k);
     if (bucket) bucket.push(m);
     else unmatched.set(k, [m]);
   }
   const pairs: MatchedPair[] = runMs.map((m) => {
-    const k = measurementKey(m);
+    const k = readingKey(m);
     const t = unmatched.get(k)?.shift() ?? null;
     return { key: k, run: m, twin: t };
   });
   for (const bucket of unmatched.values()) {
-    for (const t of bucket) pairs.push({ key: measurementKey(t), run: null, twin: t });
+    for (const t of bucket) pairs.push({ key: readingKey(t), run: null, twin: t });
   }
 
   const agg = new Map<number, { run: number; twin: number }>();
