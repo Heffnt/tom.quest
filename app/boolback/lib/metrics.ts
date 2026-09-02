@@ -71,7 +71,8 @@ export type MetricGroupName = MetricSchemaEntry["group"];
 
 // v3 splits the OUTCOME group into two picker headings by suite: "ATTACK"
 // (backdoor efficacy — plantedness, asr, ftr, planted_fraction, …) and
-// "CAPABILITY" (utility/perplexity). DEFENSE/INTERP/SCAN/FUNCTION keep their
+// "CAPABILITY" (utility — triggerless correctness; the ppl family retired with
+// perplexity). DEFENSE/INTERP/SCAN/FUNCTION keep their
 // MetricGroup name. The config-panel outcome sections read these headings.
 export type MetricPickerGroup = MetricGroupName | "ATTACK" | "CAPABILITY";
 

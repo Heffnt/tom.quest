@@ -1,12 +1,14 @@
 // app/boolback/data/normalize.ts — raw snapshot JSON -> the ONE normalized Bundle.
 //
-// The CMT builder emits schema v2: a top-level `functions` map (one FunctionBlock
-// per distinct function_hash), rows that reference it via identity.function_hash
-// plus their on-disk identity.dir_path, and NO tree array. Older v1 blobs embed
-// the full function block in every row and carry the tree array. Both normalize
-// to the same in-memory Bundle:
+// The CMT builder emits schema v3. v3 keeps v2's STRUCTURE — a top-level
+// `functions` map (one FunctionBlock per distinct function_hash), rows that
+// reference it via identity.function_hash plus their on-disk identity.dir_path,
+// and NO tree array — and differs only in vocabulary (reading, not measurement)
+// plus additive fields; see the COORDINATION note on translateLegacyVocab below.
+// Older v1 blobs embed the full function block in every row and carry the tree
+// array. All three normalize to the same in-memory Bundle:
 //
-//   v2 -> attach functions[function_hash] onto each row as row.function (a
+//   v2/v3 -> attach functions[function_hash] onto each row as row.function (a
 //         SHARED REFERENCE, so 3k rows over 600 functions cost 600 blocks);
 //         re-derive identity.node_path/chain_dirs from run_id; DERIVE the
 //         dir-viewer tree from the rows' dir_path segments.
