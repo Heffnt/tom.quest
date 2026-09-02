@@ -5,9 +5,14 @@
 // The art is synced by scripts/sync-perfume-data.mjs into
 // public/perfume/ingredients/, which serves at /perfume/ingredients/<slug>.png
 // (the /perfume app route only handles the exact /perfume path, so static
-// files under it are not shadowed). A legacy copy still lives under
-// public/art/ingredients/ and is kept as a fallback for any checkout that
-// hasn't re-synced yet.
+// files under it are not shadowed). Those 96 PNGs are committed, so every base
+// ingredient always has a file to load and there is no second art path.
+//
+// DANGER: app/perfume/lib/images.test.ts asserts one committed PNG per base
+// ingredient. A missing file now falls straight through to the color chip —
+// there is no longer a second directory to catch it — so do not delete a PNG
+// from public/perfume/ingredients/ or rename an ingredient in base.json
+// without re-running scripts/sync-perfume-data.mjs.
 
 export function ingredientSlug(name: string): string {
   return name
@@ -16,13 +21,7 @@ export function ingredientSlug(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** Preferred local art path: the freshly synced crests under /perfume. */
+/** Local art path for a base ingredient's crest. */
 export function ingredientImageSrc(name: string): string {
   return `/perfume/ingredients/${ingredientSlug(name)}.png`;
-}
-
-/** Fallback art path: the legacy copy under /art, tried if the preferred one
- * 404s (e.g. before scripts/sync-perfume-data.mjs has populated /perfume). */
-export function ingredientImageFallbackSrc(name: string): string {
-  return `/art/ingredients/${ingredientSlug(name)}.png`;
 }
