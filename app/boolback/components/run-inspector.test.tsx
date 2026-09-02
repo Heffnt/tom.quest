@@ -69,4 +69,73 @@ describe("RunInspector", () => {
     back.click();
     expect(backs).toBe(1);
   });
+
+  // REGRESSION: the anatomy section is mounted here by an import line alone,
+  // and it went missing for months when detail-panel.tsx was renamed to
+  // run-inspector.tsx and the import was not carried across. Nothing failed —
+  // an unimported component is silently absent, not an error — so only a test
+  // that asserts it RENDERS catches the next rename that drops it. The pane's
+  // marker click (anatomy-pane.tsx: setAnatomy({sel}) + openDetail) is the
+  // other half of that contract and is dead without this mount.
+  it("mounts the anatomy section for a run that has interp readings", () => {
+    const withReadings: RunRow = {
+      ...run,
+      n_layers: 8,
+      interp: {
+        readings: [
+          { kind: "probe", value: 0.5, null_control: 0.1, layer: 3, locus_shape: "point" },
+          { kind: "logit_lens", value: 0.3, null_control: 0.1, locus_component: "unembed" },
+        ],
+      },
+    } as unknown as RunRow;
+
+    const { container } = render(
+      <RunInspector
+        run={withReadings}
+        bundle={bundle}
+        index={index}
+        dir="artifacts"
+        onBack={() => {}}
+      />,
+    );
+
+    expect(container.querySelector("[data-anatomy-section]")).toBeTruthy();
+    expect(screen.getByText(/anatomy · 2 measurements/)).toBeTruthy();
+  });
+
+  // The section must stay absent (null, not an empty shell) when a run has no
+  // interp block at all. Note this is NOT the sample rows: those carry a
+  // legacy flat measurement that the normalize airlock turns into one reading,
+  // so they DO get a one-measurement section.
+  it("renders no anatomy section for a run with no interp block", () => {
+    const noInterp = { ...run, interp: undefined } as unknown as RunRow;
+    const { container } = render(
+      <RunInspector
+        run={noInterp}
+        bundle={bundle}
+        index={index}
+        dir="artifacts"
+        onBack={() => {}}
+      />,
+    );
+
+    expect(container.querySelector("[data-anatomy-section]")).toBeNull();
+  });
+
+  // The legacy path is the one that actually fires on today's snapshot, so it
+  // gets its own assertion rather than riding on the two-reading fixture.
+  it("mounts a one-measurement anatomy section for a legacy flat interp row", () => {
+    const { container } = render(
+      <RunInspector
+        run={run}
+        bundle={bundle}
+        index={index}
+        dir="artifacts"
+        onBack={() => {}}
+      />,
+    );
+
+    expect(container.querySelector("[data-anatomy-section]")).toBeTruthy();
+    expect(screen.getByText(/anatomy · 1 measurement/)).toBeTruthy();
+  });
 });

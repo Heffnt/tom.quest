@@ -16,6 +16,14 @@
 //   1. Parameters — the run's full parameter vector (identity hashes + every
 //      dataset field + every training field), flat labeled grid.
 //   2. Function  — truth strip + DNF + the ~61-key complexity metric table.
+//   2a. Anatomy  — the interp-reading list + the selected reading's full record
+//      (anatomy-detail.tsx). Renders null only when the run has no interp
+//      block at all; legacy flat-interp rows normalize to ONE reading and do
+//      get the section. It is the half of the anatomy pane's documented click
+//      contract (anatomy-pane.tsx:32) that lives on this side: a marker click
+//      sets anatomy.sel and calls openDetail, and this section is what reads
+//      that selection back out. It was silently unmounted for months when
+//      detail-panel.tsx became run-inspector.tsx — see the regression test.
 //   3. Outcomes  — epoch trajectory plot (epoch-0 baseline folded in as the
 //      leftmost point; a judge selector picks which per-judge series is shown),
 //      the per-tt-row table with the audited-plantedness derivation, then PPL.
@@ -34,6 +42,7 @@ import { TruthStrip, TruthBox } from "./truth-strip";
 import { dnfLabel } from "./fn-hex";
 import { EpochPlot } from "./epoch-sparkline";
 import { ArtifactBrowser } from "./artifact-browser";
+import { AnatomySection } from "./anatomy-detail";
 
 /** Indexed metric_schema (name -> entry), as produced by indexMetricSchema. */
 export type MetricIndex = Record<string, MetricSchemaEntry>;
@@ -138,6 +147,7 @@ export function RunInspector({ run, bundle, index, dir, onBack }: RunInspectorPr
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3 text-xs">
         <ParametersSection run={run} />
         <FunctionSection run={run} index={index} />
+        <AnatomySection row={run} />
         <OutcomesSection run={run} bundle={bundle} index={index} />
         <MethodsSection run={run} />
         <FilesSection run={run} dir={dir} />
