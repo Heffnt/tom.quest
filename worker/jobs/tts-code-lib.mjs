@@ -28,6 +28,9 @@ import { execFileSync } from "node:child_process";
 export const CMT_REPO = "ComplexMultiTrigger";
 export const CMT_DEFAULT_BRANCH = "master";
 export const CMT_CACHE_DIR = "/var/cache/tts/ComplexMultiTrigger";
+// The git credential helper worker/setup.sh installs. cmtRemoteUrl below
+// returns a clean URL and leans on this to authenticate.
+export const CREDENTIAL_HELPER = "/usr/local/bin/tts-git-credential";
 export const TODOS_PATH = "vqc/todos.yaml"; // relative to the repo root
 // The guard test for todos.yaml — run from the CMT repo root. This ONE test
 // module (not the whole guard suite) is the contract for "todos.yaml is still
@@ -64,16 +67,28 @@ export function git(dir, ...args) {
   });
 }
 
-// The authenticated CMT remote URL. The token rides in the URL (the
-// x-access-token convention GitHub documents for token auth over HTTPS) —
-// acceptable here because the URL never leaves the root-only Jarvis Box and the
-// jobs re-set it on every refresh, so a rotated token in worker.env takes
-// effect on the next cron tick.
-export function cmtRemoteUrl(env) {
-  if (!env.GH_TOKEN) {
-    throw new Error("missing GH_TOKEN in /etc/tts/worker.env — the code-todo jobs need it");
+// The CMT remote URL, CLEAN — no credential in it. git authenticates through
+// the credential helper setup.sh installs (/usr/local/bin/tts-git-credential,
+// wired at /etc/gitconfig via `git config --system`, NOT --global: the daemon
+// runs under systemd, which sets no HOME, and git only finds ~/.gitconfig
+// through $HOME). The helper reads GH_TOKEN out of /etc/tts/worker.env at the
+// moment git asks, so no work tree, no .git/config and no `git remote -v`
+// ever holds the token — which is what keeps it in a file a session shell's
+// command classifier refuses to read.
+export function cmtRemoteUrl() {
+  // Catches a box where setup.sh never ran, with a sentence naming setup.sh
+  // rather than git's bare "could not read Username for https://github.com".
+  // BOUND ON THIS CHECK: the helper also exits 0 with NO output when
+  // /etc/tts/worker.env is unreadable or holds no GH_TOKEN, and git then
+  // falls through to prompting — under cron with no tty, that is the same
+  // "could not read Username". So this catches an UNINSTALLED helper, not an
+  // installed helper over an empty env file.
+  if (!fs.existsSync(CREDENTIAL_HELPER)) {
+    throw new Error(
+      `missing ${CREDENTIAL_HELPER} — the code-todo jobs clone with clean URLs and authenticate through it; run worker/setup.sh`,
+    );
   }
-  return `https://x-access-token:${env.GH_TOKEN}@github.com/Heffnt/${CMT_REPO}.git`;
+  return `https://github.com/Heffnt/${CMT_REPO}.git`;
 }
 
 // Clone-or-refresh the CMT cache clone and return its path. ALWAYS ends with
@@ -82,8 +97,8 @@ export function cmtRemoteUrl(env) {
 // (--depth 1) on purpose: the cache exists to read files and make single
 // commits on top of master; only the EXECUTOR needs history, and it takes
 // fresh full clones instead.
-export function cmtRepoDir(env) {
-  const url = cmtRemoteUrl(env);
+export function cmtRepoDir() {
+  const url = cmtRemoteUrl();
   if (!fs.existsSync(path.join(CMT_CACHE_DIR, ".git"))) {
     // Missing or half-created (an interrupted clone leaves a dir with no
     // .git) — start over. rm -rf of a cache is free by definition.
@@ -96,7 +111,11 @@ export function cmtRepoDir(env) {
     );
     return CMT_CACHE_DIR;
   }
-  // Re-set the remote URL every time so a rotated GH_TOKEN takes effect.
+  // Re-set the remote URL every time so a cache clone made by an OLDER
+  // version of this job — one that baked x-access-token:<token> into
+  // .git/config — stops carrying the token on the next tick, with no hand
+  // step. Nothing rotating rides in a clean URL any more; the helper reads
+  // the token live, so a rotation needs no clone touched.
   git(CMT_CACHE_DIR, "remote", "set-url", "origin", url);
   // --depth 1 on the fetch keeps the cache shallow forever (a plain fetch in
   // a shallow repo would slowly deepen it). FETCH_HEAD is the just-fetched

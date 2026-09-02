@@ -127,7 +127,7 @@ async function main() {
 
   // Refresh the cache clone — the brief must describe the CURRENT tree, and
   // Claude's read tools get this directory as cwd.
-  const repoDir = cmtRepoDir(env);
+  const repoDir = cmtRepoDir();
   const todosFile = path.join(repoDir, TODOS_PATH);
   const todosText = fs.readFileSync(todosFile, "utf8");
   const entries = yamlToJson(todosFile);

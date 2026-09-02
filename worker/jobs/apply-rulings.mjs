@@ -266,7 +266,7 @@ async function main() {
     const needsRepo = actionable.some(
       (r) => r.repo === CMT_REPO && (r.verdict === "session" || r.verdict === "archive"),
     );
-    const repoDir = needsRepo ? cmtRepoDir(env) : null;
+    const repoDir = needsRepo ? cmtRepoDir() : null;
 
     let failures = 0;
     for (const ruling of actionable) {
