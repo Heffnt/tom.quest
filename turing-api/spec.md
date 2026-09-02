@@ -68,10 +68,29 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   (`slurm.py:183`) and returns **all** of the user's jobs — there is no server-side tag
   separating pool/reconciler jobs from manual ones. A 500 here freezes the reconciler, so
   the parser is defensive (maxsplit=7).
-- **File access:** `GET /file` / `GET /dirs` confined to `TURING_FILE_ROOT` (default
-  `$HOME`) via `resolve_within_root` (`dirs.py:22`), which collapses `..`, follows
-  symlinks, and additionally **refuses secret paths** (`.ssh`/`.aws`/`.gnupg`,
-  `.env`/`.pem`/`.key`). This is the **only** confined file primitive in the app.
+- **File access:** `resolve_within_root` (`dirs.py:22`) is the **only** confinement
+  primitive — it collapses `..`, follows symlinks, and additionally **refuses secret
+  paths** (`.ssh`/`.aws`/`.gnupg`, `.env`/`.pem`/`.key`) — and it guards **two roots
+  across eight endpoints**, not `/file` and `/dirs` alone.
+  - **Root 1, `TURING_FILE_ROOT`** (default `$HOME`): `GET /file` (`main.py:249`),
+    `GET /dirs` (`main.py:243`).
+  - **Root 2, `$BOOLEAN_BACKDOOR_OUTPUT`** via the `root=` override
+    (`boolback_snapshot.cmt_root()`): the three that read the artifact tree —
+    `GET /cmt-dirs` (`main.py:269`), `GET /cmt-node` (`main.py:294`), `GET /cmt-file`
+    (`main.py:311`) — plus the three snapshot endpoints that confine only a `dir`
+    argument (`GET`/`POST /boolback-snapshot`, `GET /boolback-snapshot-blob`, all via
+    `boolback_snapshot.resolve_dir`, `boolback_snapshot.py:55`).
+
+  The three artifact-tree endpoints are the wider half of that surface, and the reason
+  to name them is their reach: their Next proxies (`app/api/boolback/node`,
+  `/file`, `/blob`) run **no** auth check — `/boolback` is registered
+  `visibility: "public"` — and `forwardToTuringApi` injects the full `TURING_API_KEY`
+  server-side. So an **anonymous** caller can list any directory and preview any
+  non-secret file under `$BOOLEAN_BACKDOOR_OUTPUT`, and download a built snapshot.
+  What holds that line is exactly `resolve_within_root`'s `..`/symlink collapse and
+  its secret-name refusal, applied against the tighter root. Any future endpoint that
+  takes a caller path must go through the same primitive (§2 rule 6, §8.4), and any new
+  **public** proxy over one widens what the open internet can read.
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
   gated, session-scoped.
 - **The async invariant (load-bearing):** every endpoint that shells out is plain `def`,
@@ -82,9 +101,22 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
 - **`boolback.py` (removed):** a legacy ~1840-line router under `/boolback` formerly served
   ComplexMultiTrigger progress data against the **legacy tree schema** (`claim.json` =
   `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`), which no longer
-  matched the live tree (§1.2). It has been **deleted** (§9); the live `/boolback` page is now a
-  static-snapshot explorer in tom.Quest (`app/boolback`, fed by `scripts/boolback_export.py`),
-  carrying no live API traffic.
+  matched the live tree (§1.2). It has been **deleted** (§9). What replaced it is a
+  **snapshot** explorer, not a static one: the page holds no committed data file and
+  every view it draws comes from a live call to this API (§9 lists the four).
+- **The snapshot builder is `turing-api/boolback_snapshot.py`.** Earlier revisions of
+  this section and of §9 named a `boolback_export.py` under `scripts/`; that file has
+  never existed anywhere in the repo, and `turing-api/spec.test.ts` now fails on any
+  cited path that is absent. The real chain is:
+  `boolback_snapshot.submit_build` (`boolback_snapshot.py:221`) `sbatch`-submits
+  `boolback_build.sbatch`, which runs `python -m tom_quest.build` from the
+  booleanbackdoors CMT checkout on a CPU compute node and writes a gzipped snapshot
+  into `BOOLBACK_CACHE_DIR` (default `~/.cache/boolback-snapshots`). The graph pass
+  itself therefore lives in booleanbackdoors, not here; `boolback_snapshot.py` is the
+  driver and the cache, and it never imports the CMT package. Builds are kicked by a
+  2-hourly user crontab entry (`boolback_cron.sh`) and by an admin Refresh in the page.
+  Serving is staleness-tolerant: a `GET` returns the most recent cached `.gz`
+  (`latest_cache`, `boolback_snapshot.py:93`) and never blocks on a build.
 
 ### 1.2 The booleanbackdoors execution model (the intended end state)
 
@@ -422,14 +454,36 @@ is needed.
 
 ---
 
-## 9. boolback.py (removed)
+## 9. boolback.py (removed), and the live traffic that replaced it
 
 The legacy `/boolback` FastAPI router (`boolback.py`, `boolback_test.py`) has been **deleted**,
 and its mount removed from `main.py`. It was built on the legacy booleanbackdoors tree schema
-and no longer matched the live tree; nothing consumed it. The live `/boolback` page is now a
-static-snapshot explorer in tom.Quest (`app/boolback`, fed offline by `scripts/boolback_export.py`),
-and the worker pool — not this router — owns campaign progress. Campaign results live in
-booleanbackdoors's analysis CLI (§8).
+and no longer matched the live tree; nothing consumed it. The worker pool — not this router —
+owns campaign progress, and campaign results live in booleanbackdoors's analysis CLI (§8).
+
+Deleting the router did **not** make `/boolback` a page without API traffic. Four endpoints of
+this service serve it at runtime. The three the page calls on its own go through explicit,
+single-endpoint Next routes rather than the `/api/turing/[...path]` catch-all; only the
+admin-only rebuild uses the catch-all, and so takes its `requireAdmin` gate:
+
+| tom.Quest fetch | turing-api endpoint | Next route | Auth on the Next route | When |
+| --- | --- | --- | --- | --- |
+| `GET /api/boolback/blob?dir=` | `GET /boolback-snapshot-blob` | `app/api/boolback/blob/route.ts` | none (public) | every page load (`app/boolback/data/source.ts:112`) |
+| `GET /api/boolback/node?path=` | `GET /cmt-node` | `app/api/boolback/node/route.ts` | none (public) | opening a directory in the raw-artifact browser (`app/boolback/components/artifact-browser.tsx:66`) |
+| `GET /api/boolback/file?path=` | `GET /cmt-file` | `app/api/boolback/file/route.ts` | none (public) | previewing one artifact file (`artifact-browser.tsx:84`) |
+| `POST /api/turing/boolback-snapshot?dir=` | `POST /boolback-snapshot` | the `/api/turing` catch-all | `requireAdmin` | an admin presses Refresh (`source.ts:180`) |
+
+The three public routes carry no auth of their own because `/boolback` is registered
+`visibility: "public"` (`app/components/page-routes.ts:35`); each is a single named endpoint
+rather than a catch-all precisely so it cannot reach `/allocate` or the terminal. The shared
+`X-API-Key` is injected server-side by `forwardToTuringApi` and never reaches the browser.
+What confines the two path-taking routes is `resolve_within_root` pinned to
+`$BOOLEAN_BACKDOOR_OUTPUT` (§1.1, §8.4).
+
+The snapshots those endpoints serve are built by `turing-api/boolback_snapshot.py` (§1.1), not
+by any file under `scripts/`. The page falls back to a browser-cached blob and then to a
+committed `sample-snapshot.json` when the cluster is unreachable (`source.ts:141-157`), which
+is a degraded mode and not the normal path.
 
 ---
 
