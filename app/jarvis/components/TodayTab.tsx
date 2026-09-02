@@ -21,6 +21,7 @@ type TodayPayload = {
   title: string;
   path: string;
   orderedSections: string[];
+  missingSections?: string[];
   sections: Record<string, string>;
 };
 
@@ -52,7 +53,13 @@ export default function TodayTab() {
     return () => { cancelled = true; };
   }, [accessToken]);
 
+  // Two lists, not one: orderedSections is the FILE's own heading order and is
+  // sent back unchanged, so opening this tab cannot rearrange the day.
+  // missingSections are the default headings the file does not have; they get
+  // a box each, and only reach the file if something is typed into them.
   const orderedSections = useMemo(() => data?.orderedSections ?? [...SECTION_ORDER], [data]);
+  const missingSections = useMemo(() => data?.missingSections ?? [], [data]);
+  const boxes = useMemo(() => [...orderedSections, ...missingSections], [orderedSections, missingSections]);
 
   const save = async () => {
     if (!data) return;
@@ -68,6 +75,7 @@ export default function TodayTab() {
           date: data.date,
           title: data.title,
           orderedSections,
+          missingSections,
           sections: draft,
         }),
       });
@@ -109,7 +117,7 @@ export default function TodayTab() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {orderedSections.map((section) => (
+        {boxes.map((section) => (
           <div key={section} className="border border-white/10 rounded-lg bg-white/[0.02] p-4 space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium text-white/80">{section}</h3>

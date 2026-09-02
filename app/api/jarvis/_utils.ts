@@ -28,6 +28,7 @@ export type ParsedDay = {
   title: string;
   sections: Record<string, string[]>;
   orderedSections: string[];
+  preamble: string[];
   raw: string;
 };
 
@@ -37,9 +38,11 @@ export function parseMarkdownSections(raw: string): ParsedDay {
   const title = lines[0]?.startsWith("# ") ? lines[0].slice(2).trim() : "";
   const sections: Record<string, string[]> = {};
   const orderedSections: string[] = [];
-  let current = "Notes";
-  sections[current] = [];
-  orderedSections.push(current);
+  // Lines above the first heading belong to no section. Seeding a "Notes"
+  // bucket for them is what put a Notes heading into a file that had none and
+  // moved Notes from the file's last slot to its first.
+  const preamble: string[] = [];
+  let current: string | null = null;
 
   for (const line of lines.slice(title ? 1 : 0)) {
     if (line.startsWith("## ")) {
@@ -50,15 +53,17 @@ export function parseMarkdownSections(raw: string): ParsedDay {
       }
       continue;
     }
-    sections[current].push(line);
+    if (current === null) preamble.push(line);
+    else sections[current].push(line);
   }
 
-  return { title, sections, orderedSections, raw: normalized };
+  return { title, sections, orderedSections, preamble, raw: normalized };
 }
 
-export function buildMarkdownSections(title: string, orderedSections: string[], sections: Record<string, string[]>) {
+export function buildMarkdownSections(title: string, orderedSections: string[], sections: Record<string, string[]>, preamble: string[] = []) {
   const parts: string[] = [];
   if (title) parts.push(`# ${title}`);
+  parts.push(...preamble);
   for (const name of orderedSections) {
     const body = sections[name] ?? [];
     parts.push(`## ${name}`);
