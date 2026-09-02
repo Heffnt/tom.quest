@@ -120,7 +120,7 @@ export function parseInventoryText(
 // ── clipboard export ─────────────────────────────────────────────────────────
 
 // "Name x3" per line: ingredients, then pures, then perfumes, each section
-// alphabetical by display name. Output round-trips through
+// alphabetical by display name. The text round-trips through
 // parseInventoryText (exact name matches). Keys missing from the catalog
 // fall back to the raw key rather than vanishing silently.
 export function formatInventory(

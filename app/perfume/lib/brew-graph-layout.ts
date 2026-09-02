@@ -1,7 +1,7 @@
 // Pure layout module for the brew graph (DESIGN.md §1 "brew graph", §5 "Pin").
 //
 // Input: a BrewSnapshot slice (items with the real flag, strike/wild plays, the
-// pinned recipe) + the catalog (base.ts) + the engine. Output: a deterministic
+// pinned recipe) + the catalog (base.ts) + the engine. It returns a deterministic
 // node/edge model the renderer draws WITHOUT re-deriving any rule. Every rule —
 // what a frequency emits, what auto-combines into what, whether a strike lands,
 // how many copies (k) a pinned recipe wants, what the tally still misses — is
@@ -313,7 +313,7 @@ export type BrewGraphInput = {
 
 /**
  * Build the full brew-graph model from a brew slice. Deterministic: identical
- * input → byte-identical output (node ids and positions are keyed by stable
+ * input → byte-identical result (node ids and positions are keyed by stable
  * identity and input order, never by iteration of unordered maps). Every rule is
  * resolved through engine primitives; the renderer only draws.
  */

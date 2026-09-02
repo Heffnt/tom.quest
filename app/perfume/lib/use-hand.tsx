@@ -19,7 +19,7 @@
 //     (moveToBrew), leaving un-commits it (moveToInventory).
 //   - "brew": picking up FROM the graph starts committed; carrying out
 //     un-commits.
-//   - "output": settling over the input panel takes the perfumes.
+//   - "cauldron": settling over the input panel takes the perfumes.
 // Shift-clicks bypass the hand — callers do direct moves (moveHome/onTake).
 // The brew graph carries the strike-circle drop exception itself (its own
 // pointer drag in brew-graph.tsx); it does not route through this hand.
@@ -35,7 +35,7 @@ export const BREW_GRAPH_SELECTOR = "[data-brew-graph]";
 export const INPUT_DROP_SELECTOR = "[data-input-drop]";
 
 // Where a carried stack came from, and the shape the hand carries.
-export type HandOrigin = "inventory" | "catalog" | "brew" | "output";
+export type HandOrigin = "inventory" | "catalog" | "brew" | "cauldron";
 
 export type Hand = {
   itemKey: string;
@@ -54,13 +54,14 @@ export interface HandApi {
   cancel(): void;
 }
 
-// The slice of the store's BrewActions the hand drives directly. `takeOutput`
-// takes an instance id on the real store; the graph adapts a perfume pick to it,
-// so the hand only needs the two WHERE moves plus a taker keyed by item.
+// The slice of the store's BrewActions the hand drives directly.
+// `takeFromCauldron` takes an instance id on the real store; the graph adapts a
+// perfume pick to it, so the hand only needs the two WHERE moves plus a taker
+// keyed by item.
 export type HandActions = Pick<BrewActions, "moveToBrew" | "moveToInventory"> & {
   /** Take one perfume off the cauldron, keyed by its perfume item key. The
-   * brew graph resolves the key to a concrete output instance. */
-  takeOutput(perfumeKey: string, n: number): void;
+   * brew graph resolves the key to a concrete cauldron perfume. */
+  takeFromCauldron(perfumeKey: string, n: number): void;
 };
 
 export type UseHandOptions = {
@@ -127,7 +128,7 @@ export function useHand(opts: UseHandOptions): BrewHand {
   const cancel = useCallback(() => {
     const cur = handRef.current;
     if (!cur) return;
-    // un-committed stacks (and output picks) never mutated anything; a
+    // un-committed stacks (and cauldron picks) never mutated anything; a
     // brew-origin stack that left the boundary was already returned there
     if (cur.committed) optsRef.current.brewActions.moveToInventory(cur.itemKey, cur.count);
     set(null);
@@ -136,9 +137,9 @@ export function useHand(opts: UseHandOptions): BrewHand {
   const settle = useCallback(() => {
     const cur = handRef.current;
     if (!cur) return;
-    if (cur.from === "output") {
+    if (cur.from === "cauldron") {
       if (hits(pos.current.x, pos.current.y, INPUT_DROP_SELECTOR)) {
-        optsRef.current.brewActions.takeOutput(cur.itemKey, cur.count);
+        optsRef.current.brewActions.takeFromCauldron(cur.itemKey, cur.count);
       }
     } else if (cur.committed) {
       // the items are already in the brew (boundary commit); announce the
@@ -162,7 +163,7 @@ export function useHand(opts: UseHandOptions): BrewHand {
   const grab = useCallback(
     (itemKey: string, from: HandOrigin, available: number) => {
       const o = optsRef.current;
-      if (from !== "output" && !o.canMoveItems) return;
+      if (from !== "cauldron" && !o.canMoveItems) return;
       const cur = handRef.current;
       if (cur && cur.itemKey === itemKey) {
         // while committed the extra unit is claimed from the brew regardless
@@ -236,7 +237,7 @@ export function useHand(opts: UseHandOptions): BrewHand {
       }
       const h = handRef.current;
       if (!h) return;
-      if (h.from !== "output") {
+      if (h.from !== "cauldron") {
         const inside = hits(e.clientX, e.clientY, BREW_GRAPH_SELECTOR);
         if (inside && !h.committed) {
           optsRef.current.brewActions.moveToBrew(h.itemKey, h.count);
@@ -255,9 +256,9 @@ export function useHand(opts: UseHandOptions): BrewHand {
       const p = press.current;
       press.current = null;
       if (p?.dragging) {
-        // settle keeps a committed stack, takes output over the input panel,
-        // and is a plain hand-clear everywhere else — exactly "release
-        // inside settles, outside returns home"
+        // settle keeps a committed stack, takes from the cauldron over the
+        // input panel, and is a plain hand-clear everywhere else — exactly
+        // "release inside settles, outside returns home"
         settle();
         guard.current = "drag";
       }
@@ -273,7 +274,7 @@ export function useHand(opts: UseHandOptions): BrewHand {
       }
       const h = handRef.current;
       if (!h) return;
-      if (h.from === "output" || hits(e.clientX, e.clientY, BREW_GRAPH_SELECTOR)) settle();
+      if (h.from === "cauldron" || hits(e.clientX, e.clientY, BREW_GRAPH_SELECTOR)) settle();
       else cancel();
     };
     const onContextMenu = (e: MouseEvent) => {
@@ -344,7 +345,7 @@ export function HandGhost({ hand, itemInfo }: HandGhostProps) {
           name={info.name}
           color={info.color}
           size={44}
-          perfume={hand.from === "output"}
+          perfume={hand.from === "cauldron"}
         />
         <CountBadge count={hand.count} className="absolute -right-2 -top-2" />
       </div>

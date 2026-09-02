@@ -27,7 +27,7 @@
 // brew, right-click while holding returns one; the icon ghosts while copies sit
 // in the brew ("you took the icon").
 //
-// PURE REFERENCE — brewed output lives on the cauldron, never here.
+// PURE REFERENCE — brewed perfumes live on the cauldron, never here.
 
 import { useMemo, useState } from "react";
 import type { Multiset, Perfume, BrewState } from "../lib/types";

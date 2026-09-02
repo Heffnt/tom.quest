@@ -17,9 +17,10 @@
 // strike charge is a draggable circle dropped onto a frequency circle to strike
 // it (store.playStrike); a struck circle wears a violet cover with an un-strike
 // affordance. WILD — a played wild's frequency is chosen from a dropdown
-// (store.playWild). Pin ghosts live-update. Outputs stack on the cauldron rim as
-// tinted perfumes with a take affordance. On completion the BREW action runs the
-// ceremony (frequencies drawing down, a liquid flash, a perfume pop) with sound.
+// (store.playWild). Pin ghosts live-update. Brewed perfumes stack on the
+// cauldron rim, tinted by their blend, with a take affordance. On completion
+// the BREW action runs the ceremony (frequencies drawing down, a liquid flash,
+// a perfume pop) with sound.
 
 import {
   useCallback,
@@ -30,7 +31,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import type { BrewSnapshot, BrewPermissions, BrewActions, UndoState, OutputInstance } from "../lib/brew-types";
+import type { BrewSnapshot, BrewPermissions, BrewActions, UndoState, CauldronPerfume } from "../lib/brew-types";
 import type { BrewableOption } from "../lib/brewable";
 import {
   buildBrewGraph,
@@ -140,7 +141,7 @@ export interface BrewGraphProps {
   deepLink: string | null;
   /** Rename the open brew (any member). */
   onNickname?: (nickname: string) => void;
-  /** Members, for resolving output-provenance memberKeys → display names in the
+  /** Members, for resolving provenance memberKeys → display names in the
    * cauldron perfume hover tooltip (DESIGN.md §1,§9). */
   members: { memberKey: string; name: string }[];
 }
@@ -282,11 +283,11 @@ export default function BrewGraph({
     }, dur);
   }, [brewable, ceremony, actions, sound]);
 
-  // ── outputs resting on the cauldron rim ──
-  const takeOutput = useCallback(
+  // ── perfumes resting on the cauldron rim ──
+  const takeFromCauldron = useCallback(
     (instanceId: string) => {
       if (!permissions.brewAndTake) return;
-      actions.takeOutput(instanceId);
+      actions.takeFromCauldron(instanceId);
       sound.play("take");
     },
     [actions, permissions.brewAndTake, sound],
@@ -408,13 +409,13 @@ export default function BrewGraph({
           ))}
         </div>
 
-        {/* outputs stacked on the rim as tinted perfumes */}
-        {snapshot.outputs.length > 0 && (
+        {/* perfumes stacked on the rim, tinted by their blend */}
+        {snapshot.cauldron.length > 0 && (
           <div className="absolute inset-x-0 top-2 z-[70] flex justify-center px-3">
-            <OutputRim
-              outputs={snapshot.outputs}
+            <CauldronRim
+              perfumes={snapshot.cauldron}
               canTake={permissions.brewAndTake}
-              onTake={takeOutput}
+              onTake={takeFromCauldron}
               resolveName={resolveName}
             />
           </div>
@@ -1137,15 +1138,15 @@ function ItemChip({
   );
 }
 
-// ── outputs on the rim ──────────────────────────────────────────────────────────
+// ── perfumes on the cauldron rim ──────────────────────────────────────────────
 
-function OutputRim({
-  outputs,
+function CauldronRim({
+  perfumes,
   canTake,
   onTake,
   resolveName,
 }: {
-  outputs: OutputInstance[];
+  perfumes: CauldronPerfume[];
   canTake: boolean;
   onTake: (instanceId: string) => void;
   resolveName: NameResolver;
@@ -1153,7 +1154,7 @@ function OutputRim({
   return (
     <div className="flex flex-col items-center gap-1">
       <div className="flex flex-wrap items-start justify-center gap-3 rounded-xl border border-border bg-surface/80 px-3 py-2 shadow-lg backdrop-blur-sm">
-        {outputs.map((o) => {
+        {perfumes.map((o) => {
           const name = perfumeName(o.perfumeId);
           const tint = perfumeTint(o.perfumeId);
           // provenance travels with the instance (DESIGN.md §1,§9); the effect

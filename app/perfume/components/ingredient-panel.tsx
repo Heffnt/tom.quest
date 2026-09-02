@@ -484,7 +484,7 @@ function MemberInventoryTab({
 }) {
   const held = hand.hand;
   // only your OWN items gift — a held cauldron perfume is not a gift source
-  const giftable = canGift && !!held && held.from !== "output";
+  const giftable = canGift && !!held && held.from !== "cauldron";
   const preview: FrameItem | null =
     giftable && held
       ? {
