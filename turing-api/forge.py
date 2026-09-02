@@ -47,7 +47,7 @@ from dirs import resolve_within_root, PathNotAllowed
 # --- configuration -------------------------------------------------------------
 
 # The CMT repo (boolean_backdoor package root) the launcher / vLLM env live in.
-# NEW env var for the Forge feature; documented in turing-api/forge.env.example.
+# Declared in secrets/turing-api.env.example, censused in spec.md section 14.1.
 FORGE_REPO_DIR = os.environ.get(
     "BOOLEAN_BACKDOOR_REPO",
     str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
