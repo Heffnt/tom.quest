@@ -9,7 +9,14 @@ interface JobTableProps {
   data: Job[] | null;
   loading: boolean;
   error: string | null;
-  isTom: boolean;
+  /**
+   * True for role `admin` and role `tom` alike — /turing is an admin surface
+   * (see AGENTS.md § Roles). It gates cancel and interactive-terminal controls
+   * whose server side is `requireAdmin`. This prop was named `isTom` while
+   * carrying `useAuth().isAdmin`, which made the file claim a narrower gate
+   * than the one that actually runs. `isTom` means role === "tom" everywhere.
+   */
+  isAdmin: boolean;
   onRefresh: () => void;
 }
 
@@ -110,7 +117,7 @@ function ConfirmModal({
   );
 }
 
-export default function JobTable({ data, loading, error, isTom, onRefresh }: JobTableProps) {
+export default function JobTable({ data, loading, error, isAdmin, onRefresh }: JobTableProps) {
   const [cancelJobId, setCancelJobId] = useState<string | null>(null);
   const [cancelAllOpen, setCancelAllOpen] = useState(false);
   const [terminalSession, setTerminalSession] = useState<string | null>(null);
@@ -174,7 +181,7 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
             className="text-xs px-2 py-1 rounded border border-border text-text-faint hover:text-text-muted hover:border-text-muted transition-colors duration-150">
             ↻
           </button>
-          {isTom && data && data.length > 0 && (
+          {isAdmin && data && data.length > 0 && (
             <button type="button" onClick={() => setCancelAllOpen(true)}
               className="text-xs px-3 py-1 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
               Cancel all
@@ -234,7 +241,7 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
                         {!job.screen_name && !isTerminal && (
                           <span className="text-[9px] text-text-faint font-mono">Queued</span>
                         )}
-                        {isTom && !isTerminal && (
+                        {isAdmin && !isTerminal && (
                           <button type="button" aria-label={`Cancel job ${job.job_id}`}
                             onClick={() => setCancelJobId(job.job_id)}
                             className="px-1.5 py-0.5 rounded border border-error/40 text-error hover:bg-error/10 transition-colors duration-150">
@@ -282,7 +289,7 @@ export default function JobTable({ data, loading, error, isTom, onRefresh }: Job
           allSessions={viewableSessions}
           onClose={() => setTerminalSession(null)}
           onNavigate={setTerminalSession}
-          allowInteractive={isTom}
+          allowInteractive={isAdmin}
         />
       )}
     </section>

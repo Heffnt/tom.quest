@@ -6,7 +6,14 @@ import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { AllocateRequest, AllocateResponse, GPUTypeInfo, gpuTypeLabel } from "../types";
 
 interface AllocateFormProps {
-  isTom: boolean;
+  /**
+   * True for role `admin` and role `tom` alike — /turing is an admin surface
+   * (see AGENTS.md § Roles), and the allocate call it guards is refused or
+   * allowed server-side by `requireAdmin`. This prop was named `isTom` while
+   * carrying `useAuth().isAdmin`, which made the file claim a narrower gate
+   * than the one that actually runs. `isTom` means role === "tom" everywhere.
+   */
+  isAdmin: boolean;
   onSuccess: () => void;
 }
 
@@ -69,7 +76,7 @@ const DEFAULTS: AllocSettings = {
   commandPresets: {},
 };
 
-export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
+export default function AllocateForm({ isAdmin, onSuccess }: AllocateFormProps) {
   const [settings, update, settingsHydrated] = usePersistedSettings<AllocSettings>("turing_allocate", DEFAULTS);
   const gpuTypes = useTuring<{ types: GPUTypeInfo[] }>("/gpu-types");
   const allocate = useTuringMutation<AllocateRequest, AllocateResponse>("/allocate");
@@ -133,11 +140,11 @@ export default function AllocateForm({ isTom, onSuccess }: AllocateFormProps) {
     if (Object.keys(patch).length > 0) update(patch);
   }, [settings.memoryMb, settings.timeMins, settings.profiles, settings.commandPresets, settings.recentDirs, settingsHydrated, update]);
 
-  if (!isTom) {
+  if (!isAdmin) {
     return (
       <section aria-label="Allocate" className="border border-border rounded-lg p-5 bg-surface/40">
         <h2 className="text-lg font-semibold mb-2">Allocate</h2>
-        <p className="text-text-muted text-sm">Sign in as Tom to allocate GPUs.</p>
+        <p className="text-text-muted text-sm">Sign in with an admin account to allocate GPUs.</p>
       </section>
     );
   }

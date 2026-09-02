@@ -31,9 +31,9 @@ export default function TuringPage() {
       </header>
 
       <GPUGrid data={gpus.data} loading={gpus.loading} error={gpus.error} onRefresh={gpus.refresh} />
-      <AllocateForm isTom={isAdmin} onSuccess={refreshAll} />
+      <AllocateForm isAdmin={isAdmin} onSuccess={refreshAll} />
       {!authLoading && isAdmin && <PoolPanel />}
-      <JobTable data={jobs.data} loading={jobs.loading} error={jobs.error} isTom={isAdmin} onRefresh={jobs.refresh} />
+      <JobTable data={jobs.data} loading={jobs.loading} error={jobs.error} isAdmin={isAdmin} onRefresh={jobs.refresh} />
     </div>
   );
 }
