@@ -25,14 +25,15 @@ import os
 import subprocess
 from pathlib import Path
 
+from cmt_repo import cmt_repo_dir
 from dirs import resolve_within_root
 
-# The conda env the CMT builder lives in + where it is checked out (overridable).
+# The conda env the CMT builder lives in.
 BUILDER_CONDA_ENV = os.environ.get("BOOLBACK_BUILDER_CONDA_ENV", "boolback")
-BUILDER_REPO_DIR = os.environ.get(
-    "BOOLBACK_BUILDER_REPO_DIR",
-    str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
-)
+# Where the CMT repo is checked out comes from cmt_repo.cmt_repo_dir(): one
+# resolver shared with forge.py, reading BOOLEAN_BACKDOOR_REPO (and the
+# deprecated BOOLBACK_BUILDER_REPO_DIR as an alias), so the snapshot build and
+# the Forge jobs can never be submitted from two different checkouts.
 # Built .gz snapshots + per-dir submit markers live here.
 CACHE_DIR = Path(
     os.environ.get("BOOLBACK_CACHE_DIR", str(Path.home() / ".cache" / "boolback-snapshots"))
@@ -235,7 +236,7 @@ def submit_build(resolved: Path) -> dict:
     try:
         proc = subprocess.run(
             ["sbatch", "--parsable", str(BUILD_SBATCH), str(resolved), str(out_path)],
-            cwd=BUILDER_REPO_DIR, shell=False, capture_output=True, text=True,
+            cwd=cmt_repo_dir(), shell=False, capture_output=True, text=True,
             timeout=60, check=True,
         )
     except FileNotFoundError:

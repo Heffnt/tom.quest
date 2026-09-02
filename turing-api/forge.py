@@ -42,16 +42,15 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from cmt_repo import cmt_repo_dir
 from dirs import resolve_within_root, PathNotAllowed
 
 # --- configuration -------------------------------------------------------------
 
 # The CMT repo (boolean_backdoor package root) the launcher / vLLM env live in.
-# NEW env var for the Forge feature; documented in turing-api/forge.env.example.
-FORGE_REPO_DIR = os.environ.get(
-    "BOOLEAN_BACKDOOR_REPO",
-    str(Path.home() / "booleanbackdoors" / "ComplexMultiTrigger"),
-)
+# Read from BOOLEAN_BACKDOOR_REPO via cmt_repo.cmt_repo_dir(), which is the one
+# resolver the boolback snapshot build shares, so both surfaces always submit
+# from the same checkout. Resolved per call, not at import.
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent / "forge_scripts"
 TRAIN_SBATCH = Path(os.environ.get("FORGE_TRAIN_SBATCH", str(_SCRIPTS_DIR / "forge_train.sbatch")))
@@ -199,6 +198,7 @@ def submit_train(config: dict[str, Any], job_name: str | None) -> dict[str, Any]
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     clean_name = (job_name or "").strip() or f"forge-train-{run_id}"
+    repo_dir = cmt_repo_dir()
     try:
         proc = subprocess.run(
             [
@@ -206,9 +206,9 @@ def submit_train(config: dict[str, Any], job_name: str | None) -> dict[str, Any]
                 f"--job-name={clean_name}",
                 str(TRAIN_SBATCH),
                 str(run_dir),
-                FORGE_REPO_DIR,
+                repo_dir,
             ],
-            cwd=FORGE_REPO_DIR, shell=False, capture_output=True, text=True,
+            cwd=repo_dir, shell=False, capture_output=True, text=True,
             timeout=60, check=True,
         )
     except FileNotFoundError:
@@ -353,6 +353,7 @@ def submit_serve(run_id: str) -> dict[str, Any]:
         "IS_ADAPTER": "true" if is_adapter else "false",
         "IDLE_SECS": str(SERVE_IDLE_SECS),
     })
+    repo_dir = cmt_repo_dir()
     try:
         proc = subprocess.run(
             [
@@ -360,11 +361,11 @@ def submit_serve(run_id: str) -> dict[str, Any]:
                 f"--job-name={session}",
                 str(SERVE_SBATCH),
                 str(run_dir),
-                FORGE_REPO_DIR,
+                repo_dir,
                 host,
                 str(port),
             ],
-            cwd=FORGE_REPO_DIR, shell=False, capture_output=True, text=True,
+            cwd=repo_dir, shell=False, capture_output=True, text=True,
             timeout=60, check=True, env=env,
         )
     except FileNotFoundError:
