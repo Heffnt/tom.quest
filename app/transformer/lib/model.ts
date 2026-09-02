@@ -12,7 +12,6 @@ export type ModelConfig = {
   headDim: number;
   dMlp: number;
   vocabSize: number;
-  tiedEmbeddings: boolean;
 };
 
 export const LLAMA_1B: ModelConfig = {
@@ -25,7 +24,6 @@ export const LLAMA_1B: ModelConfig = {
   headDim: 64,
   dMlp: 8192,
   vocabSize: 128256,
-  tiedEmbeddings: true,
 };
 
 export type TensorInfo = {
@@ -61,6 +59,11 @@ export function embedTensor(cfg: ModelConfig): TensorInfo {
   return { name: "embed", label: "W_E", rows: cfg.vocabSize, cols: cfg.dModel };
 }
 
+// Llama-3.2-1B ties W_U to W_E (one weight matrix serving both), and the
+// config deliberately carries no flag for that: this catalog names embed and
+// unembed as two tensors either way, because the visualization reads them at
+// two different points in the forward pass. Do not add a tying flag unless a
+// view actually branches on it.
 export function unembedTensor(cfg: ModelConfig): TensorInfo {
   return { name: "unembed", label: "W_U", rows: cfg.vocabSize, cols: cfg.dModel };
 }
