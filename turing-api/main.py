@@ -188,8 +188,13 @@ def _trace_target() -> str | None:
         return None
 
 
-@app.api_route("/transformer-trace/{path:path}", methods=["GET", "POST"])
-async def transformer_trace(path: str, request: Request) -> Response:
+# GET and POST are registered separately, not as one api_route(methods=[...]).
+# FastAPI derives the OpenAPI operationId from the endpoint function name plus
+# the path plus ONE method per registration, so a single registration carrying
+# two methods publishes the same operationId twice, and both the test run and
+# any generated client see a duplicate. Two registrations delegating to one
+# implementation keep the behaviour identical and the ids distinct.
+async def _proxy_transformer_trace(path: str, request: Request) -> Response:
     target = _trace_target()
     if not target:
         raise HTTPException(status_code=503, detail="no trace server registered (launch transformer_server.py on a GPU job)")
@@ -217,6 +222,16 @@ async def transformer_trace(path: str, request: Request) -> Response:
 
     status, data, ctype = await run_in_threadpool(_forward)
     return Response(content=data, status_code=status, media_type=ctype)
+
+
+@app.get("/transformer-trace/{path:path}")
+async def transformer_trace_get(path: str, request: Request) -> Response:
+    return await _proxy_transformer_trace(path, request)
+
+
+@app.post("/transformer-trace/{path:path}")
+async def transformer_trace_post(path: str, request: Request) -> Response:
+    return await _proxy_transformer_trace(path, request)
 
 # Endpoints below run blocking subprocess calls (squeue, scontrol, tmux, ssh to
 # compute nodes). They must be plain `def`, not `async def`: FastAPI runs sync

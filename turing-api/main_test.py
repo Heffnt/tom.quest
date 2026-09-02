@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -396,6 +397,61 @@ class EventLoopIsolationTest(unittest.TestCase):
             "/health was starved by a slow subprocess in /gpu-report: "
             "blocking work must not run on the event loop",
         )
+
+
+class OpenApiOperationIdTest(unittest.TestCase):
+    """FastAPI builds each operationId from the endpoint function name, the path
+    and one HTTP method. A single registration carrying two methods
+    (`@app.api_route(..., methods=["GET", "POST"])`) therefore publishes the same
+    operationId twice: generated clients collapse the two into one method and
+    FastAPI warns on every schema build. /transformer-trace was registered that
+    way; it is now two registrations delegating to one implementation."""
+
+    def _schema(self) -> tuple[dict, list[warnings.WarningMessage]]:
+        cached = main.app.openapi_schema
+        main.app.openapi_schema = None
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                schema = main.app.openapi()
+        finally:
+            main.app.openapi_schema = cached
+        return schema, caught
+
+    def _operation_ids(self, schema: dict) -> list[str]:
+        return [
+            operation["operationId"]
+            for methods in schema["paths"].values()
+            for operation in methods.values()
+            if isinstance(operation, dict) and "operationId" in operation
+        ]
+
+    def test_every_operation_id_is_unique(self) -> None:
+        schema, _ = self._schema()
+        ids = self._operation_ids(schema)
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        self.assertEqual(duplicates, [], f"duplicate operationId(s) in the published schema: {duplicates}")
+
+    def test_schema_build_emits_no_duplicate_operation_id_warning(self) -> None:
+        _, caught = self._schema()
+        offenders = [str(w.message) for w in caught if "Duplicate Operation ID" in str(w.message)]
+        self.assertEqual(offenders, [], f"FastAPI warned while building the schema: {offenders}")
+
+    def test_transformer_trace_publishes_both_methods(self) -> None:
+        schema, _ = self._schema()
+        operations = schema["paths"]["/transformer-trace/{path}"]
+        self.assertIn("get", operations)
+        self.assertIn("post", operations)
+        self.assertNotEqual(operations["get"]["operationId"], operations["post"]["operationId"])
+
+    def test_both_methods_still_reach_the_proxy(self) -> None:
+        """With no trace server registered the proxy answers 503 on both
+        methods, which is only reachable if both registrations are live."""
+        with patch("main._trace_target", return_value=None):
+            get = _request("GET", "/transformer-trace/anything")
+            post = _request("POST", "/transformer-trace/anything", json={})
+        self.assertEqual(get.status_code, 503)
+        self.assertEqual(post.status_code, 503)
 
 
 if __name__ == "__main__":
