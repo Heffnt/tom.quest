@@ -1,6 +1,9 @@
+// Every field here has a reader. A `title` field lived here on all fifteen rows
+// and was never rendered: both renderers of rankPages (app/components/nav-term.tsx,
+// app/home-client.tsx) print slug + blurb, so it was deleted. Do not add a field
+// before the code that reads it.
 export type Page = {
   slug: string;       // "turing" -> tom.quest/turing
-  title: string;
   blurb: string;
   priority: number;   // higher = preferred in autocomplete tie-breaks
   visibility: PageVisibility;
@@ -19,21 +22,21 @@ export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
 export type PageRole = "guest" | "user" | "admin" | "tom" | "agent";
 
 export const PAGES: Page[] = [
-  { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin", agentReadable: true },
-  { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8,  visibility: "authenticated" },
-  { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7, visibility: "public" },
-  { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6, visibility: "public" },
-  { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
-  { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
-  { slug: "sessions", title: "Sessions", blurb: "TTS — Claude Code session surface", priority: 9, visibility: "tom" },
-  { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
-  { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
-  { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5, visibility: "tom" },
-  { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
-  { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4, visibility: "public" },
-  { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3, visibility: "public" },
-  { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2, visibility: "public" },
-  { slug: "help",   title: "Help",   blurb: "How tom.quest works",          priority: 1, visibility: "public" },
+  { slug: "turing",      blurb: "SLURM cluster + GPU monitor",                    priority: 10, visibility: "admin", agentReadable: true },
+  { slug: "canvas",      blurb: "Chat-driven HTML canvas",                        priority: 8,  visibility: "authenticated" },
+  { slug: "transformer", blurb: "Drill into a live transformer, layer by layer",  priority: 7,  visibility: "public" },
+  { slug: "thmm",        blurb: "Tiny CPU simulator + datapath",                  priority: 6,  visibility: "public" },
+  { slug: "clouds",      blurb: "Interactive LiDAR viewer",                       priority: 6,  visibility: "public" },
+  { slug: "perfume",     blurb: "Three Feifs perfumer's bench",                   priority: 6,  visibility: "public" },
+  { slug: "sessions",    blurb: "TTS — Claude Code session surface",              priority: 9,  visibility: "tom" },
+  { slug: "tts",         blurb: "Tom's Todo System",                              priority: 9,  visibility: "tom", agentReadable: true },
+  { slug: "forge",       blurb: "Build & train backdoors",                        priority: 5,  visibility: "tom" },
+  { slug: "jarvis",      blurb: "Personal AI assistant",                          priority: 5,  visibility: "tom" },
+  { slug: "logo",        blurb: "tom.Quest brand lab",                            priority: 5,  visibility: "tom" },
+  { slug: "game",        blurb: "Symbol-shooting mini-game",                      priority: 4,  visibility: "public" },
+  { slug: "bio",         blurb: "About Tom",                                      priority: 3,  visibility: "public" },
+  { slug: "boolback",    blurb: "Boolean-backdoor artifact-tree explorer",        priority: 2,  visibility: "public" },
+  { slug: "help",        blurb: "How tom.quest works",                            priority: 1,  visibility: "public" },
 ];
 
 export function canSeePage(role: PageRole, page: Page): boolean {
