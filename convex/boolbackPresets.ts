@@ -1,12 +1,14 @@
-// Saved /boolback filter sets & views. GLOBAL (no auth gating — the page is
-// effectively single-user; Tom confirmed global is fine). Upsert by (kind,
-// name); `state` is opaque structured JSON validated on the client loader.
+// Saved /boolback views. GLOBAL (no auth gating — the page is effectively
+// single-user; Tom confirmed global is fine). A preset has one kind, "view":
+// `state` holds a whole ViewSpec, opaque here and validated by the client
+// loader (app/boolback/lib/presets.ts). Upsert is by (kind, name), so the
+// single-literal `kind` is still what the by_kind_name index looks up first.
 // Follows the convex module conventions in userSettings.ts / brews.ts.
 
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
-const KIND = v.union(v.literal("filters"), v.literal("view"));
+const KIND = v.literal("view");
 
 export const list = query({
   args: {},

@@ -129,14 +129,15 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_user_setting", ["userId", "settingKey"]),
 
-  // Saved /boolback filter sets & views. GLOBAL (no per-user namespacing — the
-  // page is effectively single-user). kind=filters stores { filters }; kind=view
-  // stores the whole view ({ filters, chart, sorts, visibleCols, centerView }).
+  // Saved /boolback views. GLOBAL (no per-user namespacing — the page is
+  // effectively single-user). One kind only: kind=view stores a whole ViewSpec
+  // (app/boolback/lib/spec.ts) in `state`. `kind` survives as a single literal
+  // because it is the first key of the by_kind_name index the upsert reads.
   // `state` is structured JSON (v.any()); the client loader is tolerant of
   // missing/unknown fields and bumps schemaVersion only for breaking shapes.
   boolbackPresets: defineTable({
     name: v.string(),
-    kind: v.union(v.literal("filters"), v.literal("view")),
+    kind: v.literal("view"),
     schemaVersion: v.number(),
     state: v.any(),
     createdAt: v.number(),

@@ -1,11 +1,11 @@
 // app/boolback/lib/presets.ts — saved views (Phase 5).
 //
-// A preset is ONE kind now: a named snapshot of the active view's VIEW-SPEC
+// A preset is ONE kind: a named snapshot of the active view's VIEW-SPEC
 // (lib/spec.ts). `save` stores `{ name, spec }` in the Convex boolbackPresets
 // `state` field (the ViewSpec object verbatim); `apply` parses it back to a
-// ViewSpec and assigns it into the matching view. Old two-kind presets
-// (kind=filters / the legacy view blob) do NOT migrate — hydratePresetSpec
-// returns null for anything that isn't a v3 spec, so a stale row simply no-ops.
+// ViewSpec and assigns it into the matching view. Presets written before the
+// spec rewrite do NOT migrate — hydratePresetSpec returns null for anything
+// that isn't a v3 spec, so a stale row simply no-ops.
 //
 // A preset must NEVER crash the page: hydration is tolerant (parseSpec) and
 // never throws.
@@ -13,7 +13,7 @@
 import type { FilterState } from "./types";
 import { parseSpec, type ViewSpec } from "./spec";
 
-/** Bumped for the spec-based single-kind rewrite (was 2 for the two-kind era). */
+/** Bumped for the spec-based rewrite (was 2 before presets stored a ViewSpec). */
 export const PRESET_SCHEMA_VERSION = 3;
 
 /**
