@@ -248,6 +248,15 @@ const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
 const SKIP_DIR = new Set([
   "node_modules",
   ".git",
+  // Agent worktrees under .claude/worktrees/ are gitignored full copies of this
+  // repo, so the walk below would read the one home's own files a second time at
+  // a path REPO_LIST_ALLOWED (exact relative paths) cannot match, and every
+  // allowed file would report itself as a copy of itself. eslint.config.mjs and
+  // vitest.config.mts fence the same path for the same reason. Costs nothing: no
+  // tracked file under .claude has a scanned extension.
+  // witness: mkdir -p .claude/worktrees/x && cp -a convex .claude/worktrees/x/
+  //          && node scripts/check-session-mirrors.mjs
+  ".claude",
   ".next",
   ".vercel",
   "_generated",
