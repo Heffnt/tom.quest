@@ -502,9 +502,9 @@ which of the two committed templates declares it today — `secrets/turing-api.e
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
-marked *call time*. "Declared in" is the state as of this census; `—` means neither template
-lists the name.
+**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the ones
+marked *call time*, which are re-read on every use so a patched environment is honored.
+"Declared in" is the state as of this census; `—` means neither template lists the name.
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
@@ -512,8 +512,8 @@ lists the name.
 | `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
-| `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |
-| `BOOLBACK_BUILDER_REPO_DIR` | `boolback_snapshot.py:32` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the boolback build job is submitted from (`cwd=` at `boolback_snapshot.py:238`) | — |
+| `BOOLEAN_BACKDOOR_REPO` | `cmt_repo.py:63` (*call time*) | `~/booleanbackdoors/ComplexMultiTrigger` | The one CMT checkout every `sbatch` submission is issued from: the Forge train/serve jobs (`cwd=` at `forge.py:211`, `:368`, also passed as argv) and the boolback snapshot build (`cwd=` at `boolback_snapshot.py:239`) | `turing-api/forge.env.example` |
+| `BOOLBACK_BUILDER_REPO_DIR` | `cmt_repo.py:64` (*call time*) | — (falls back to `BOOLEAN_BACKDOOR_REPO`) | **Deprecated alias** for `BOOLEAN_BACKDOOR_REPO`, read only when that name is unset and logged as deprecated when used. Kept because the login-node `.env` is not in this repo and may still set it; delete it once that file is known to use the surviving name | — |
 | `BOOLBACK_BUILDER_CONDA_ENV` | `boolback_snapshot.py:31` | `boolback` | Conda env the Forge sbatch wrappers activate. **Read into a Python name that nothing in Python uses** — the real consumers are `forge_scripts/forge_train.sbatch:43` and `forge_serve.sbatch:43`, which read the inherited variable directly | `turing-api/forge.env.example` (commented) |
 | `BOOLBACK_CACHE_DIR` | `boolback_snapshot.py:38` | `~/.cache/boolback-snapshots` | Where built `.gz` snapshots and per-dir submit markers live | — |
 | `BOOLBACK_BUILD_SBATCH` | `boolback_snapshot.py:42` | `turing-api/boolback_build.sbatch` | The sbatch wrapper the snapshot build submits | — |
@@ -545,21 +545,26 @@ They are computed per run and must never appear in a template.
 
 ### 14.4 What the census found
 
-1. **Two names for one directory.** `BOOLEAN_BACKDOOR_REPO` (`forge.py:51`) and
-   `BOOLBACK_BUILDER_REPO_DIR` (`boolback_snapshot.py:32`) have the same default and the same
-   meaning — the CMT checkout an `sbatch` call is issued from. Set one and not the other and
-   Forge and the snapshot build submit from different checkouts, which looks like an ordinary
-   build in both cases.
+1. **Two names for one directory — fixed.** `BOOLEAN_BACKDOOR_REPO` and
+   `BOOLBACK_BUILDER_REPO_DIR` had the same default and the same meaning — the CMT checkout an
+   `sbatch` call is issued from — and were read independently by `forge.py` and
+   `boolback_snapshot.py`, so setting one and not the other made Forge and the snapshot build
+   submit from different checkouts, which looked like an ordinary build in both cases. Both
+   modules now call the single resolver `cmt_repo.cmt_repo_dir()` (`cmt_repo.py:53`);
+   `BOOLEAN_BACKDOOR_REPO` is the surviving name and `BOOLBACK_BUILDER_REPO_DIR` is read only
+   as a deprecated alias, because the login-node `.env` is outside this repo and may set it.
+   `cmt_repo_test.py` holds both halves shut: one directory for both surfaces, and neither
+   module reading either name on its own again.
 2. **Four names are declared nowhere:** `TURING_FILE_ROOT`, `FORGE_NODE_DOMAIN`,
-   `BOOLBACK_CACHE_DIR`, `BOOLBACK_BUILD_SBATCH`. Two more — `BOOLBACK_BUILDER_REPO_DIR` and
-   the `boolback` half of the duplicate pair — are declared only under the Forge name.
+   `BOOLBACK_CACHE_DIR`, `BOOLBACK_BUILD_SBATCH`. A fifth, the `BOOLBACK_BUILDER_CONDA_ENV`
+   half of the boolback pair, is declared only in the Forge template.
 3. **`$HOME` in `forge.env.example:7` does not expand.** `python-dotenv` interpolates only the
    braced form `${HOME}`; a bare `$HOME` is kept as four literal characters (verified against
    python-dotenv 1.2.3), so `BOOLEAN_BACKDOOR_REPO=$HOME/...` hands `subprocess.run` a `cwd=`
    naming no directory.
 4. **`boolback_build.sbatch` ignores three of the settings above.** It hardcodes its SLURM
    `--output` path (`:11`), `BOOLEAN_BACKDOOR_OUTPUT` (`:21`), the CMT checkout it puts on
-   `PYTHONPATH` (`:22`), and `conda activate boolback` (`:19`). So on the snapshot side
-   `BOOLBACK_BUILDER_REPO_DIR` only sets the submitting `cwd`, and `BOOLBACK_BUILDER_CONDA_ENV`
-   has no effect at all.
+   `PYTHONPATH` (`:22`), and `conda activate boolback` (`:19`). So on the snapshot side the CMT
+   checkout name only sets the submitting `cwd`, and `BOOLBACK_BUILDER_CONDA_ENV` has no effect
+   at all.
 5. **`README.md:124-128` presents `TURING_API_KEY` as the whole contents of `.env`.**
