@@ -83,7 +83,6 @@ All env vars live in `secrets/next.env` (Vercel-side) and `secrets/convex.env` (
 | Variable | Purpose |
 |----------|---------|
 | `NEXT_PUBLIC_CONVEX_URL` | Convex prod deployment URL |
-| `NEXT_PUBLIC_CONVEX_SITE_URL` | Convex prod HTTP actions URL |
 | `CONVEX_DEPLOY_KEY` | Convex deploy key |
 | `SENTRY_AUTH_TOKEN` | Sentry source-maps auth |
 | `OPENCLAW_GATEWAY_URL`, `JARVIS_GATEWAY_PASSWORD` | Jarvis socket config |
