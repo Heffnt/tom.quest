@@ -2,12 +2,20 @@
 // poll-dump.mjs — poll the Slack #dump channel and submit every new human
 // message to Convex as an unprepared TTS capture.
 //
-// Run by cron every 2 minutes (see /etc/cron.d/tts). Also runnable by hand:
+// Run by cron hourly at :07 as the backstop behind the Slack push route
+// (see /etc/cron.d/tts). Also runnable by hand:
 //   node /opt/tts/poll-dump.mjs
 //
-// STATE: the ONLY local state on the Jarvis Box is the cursor file
-// /var/lib/tts/dump-cursor, holding the Slack ts of the last captured
-// message. Everything durable lives in Convex (the no-state rule). Losing
+// STATE: THIS JOB's only local file is the cursor /var/lib/tts/dump-cursor,
+// holding the Slack ts of the last captured message. It is not the box's only
+// local state — five more files sit beside it under /var/lib/tts
+// (gmail-cursor, canvas-announcements-cursor, brief-hashes.json,
+// batch-input-hash, plan-input-hash), as do the apply.lock and execute.lock
+// mkdir lock directories; worker/README.md's "The no-state rule" section is
+// the one full inventory. Do not read this header as licence to wipe
+// /var/lib/tts wholesale: that re-briefs every code todo and re-forms every
+// batch as well as re-capturing here.
+// Everything durable lives in Convex (the no-state rule). Losing
 // the cursor is harmless-by-design: on the next run with no cursor we only
 // look back 24 hours, so at worst the last day of #dump messages is captured
 // AGAIN as duplicate todos, which Tom can simply archive. That trade

@@ -9,7 +9,10 @@
 // executor implements ONE approved plan per hour on a branch and opens a PR —
 // merging that PR is the human gate.
 //
-// STATE ON THE JARVIS BOX (all harmless to lose, per the no-state rule):
+// STATE THE CODE-TODO JOBS KEEP ON THE JARVIS BOX (all safe to lose, per the
+// no-state rule; the poll cursors and the planner input-hash cursors belong to
+// other jobs and are listed in worker/README.md's "The no-state rule", which is
+// the full inventory):
 //   /var/cache/tts/ComplexMultiTrigger — shallow cache clone; rebuilt from
 //       origin on every use, so deleting it costs one clone.
 //   /var/cache/tts/briefs/<repo>/<id>.md — local copy of each posted brief so
