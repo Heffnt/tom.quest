@@ -46,7 +46,7 @@ function confirmCancelAll() {
 
 function renderTable() {
   return render(
-    <JobTable data={jobs} loading={false} error={null} isTom onRefresh={() => {}} />,
+    <JobTable data={jobs} loading={false} error={null} isAdmin onRefresh={() => {}} />,
   );
 }
 
