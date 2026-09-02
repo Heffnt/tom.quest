@@ -558,13 +558,16 @@ export class Session {
     const url = `https://github.com/${gh}.git`;
     const branch = `session/${this.id}`;
     // GIT_LFS_SKIP_SMUDGE=1 makes git write the ~130-byte Git LFS pointer text
-    // instead of downloading the object it names. Inert today (tom.quest has no
-    // LFS objects, and git-lfs is not installed on the Jarvis Box), and it is
-    // here for the day public/data/clouds/*.bin — 67.5 MB of point cloud that no
-    // session reads — moves to LFS: GitHub meters LFS bandwidth against a
-    // 10 GiB/month allowance, so a session-per-todo cadence would spend the whole
-    // month's allowance in ~150 clones on bytes nothing in the session touches.
-    // Anything that DOES need the real bytes runs `git lfs pull` itself.
+    // instead of downloading the object it names. This is now load-bearing
+    // rather than a precaution: public/data/clouds/*.bin — 64.4 MiB of point
+    // cloud that no session reads — is LFS-tracked, and git-lfs (3.7.1, at
+    // /usr/bin/git-lfs) is installed here, so without this the smudge filter
+    // would fetch those bytes on every clone. GitHub meters LFS bandwidth
+    // against a 10 GiB/month allowance, so a session-per-todo cadence would
+    // spend the whole month's allowance in ~150 clones on bytes nothing in the
+    // session touches. Anything that DOES need the real bytes runs
+    // `git lfs pull` itself. Harmless where git-lfs is absent: with no filter
+    // configured git checks out the same pointer text anyway.
     await execFile("git", ["clone", "--depth", "1", url, dir], {
       maxBuffer: 8 * 1024 * 1024,
       env: { ...process.env, GIT_LFS_SKIP_SMUDGE: "1" },
