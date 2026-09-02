@@ -830,12 +830,25 @@ export default defineSchema({
 
   // Ground-up briefs the Jarvis Box prepares for open code todos, one live row
   // per (repo, externalId) — upserted by internalStoreBriefs, so a re-brief
-  // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
-  // when the entry changes upstream, the hash mismatch marks the brief stale
-  // and the worker rewrites it. `recommendation` is the worker's read, never a
-  // verdict — Tom rules (dtsRulings); `execClass` says where an approved
-  // item can run; `evidence` carries the commits/files that justify a
-  // propose-archive.
+  // replaces the old one. `sourceHash` fingerprints the upstream yaml entry
+  // the brief was written from, and is a RECORD, not a control: nothing in
+  // Convex reads it back. It is written here (convex/http.ts POST
+  // /tts/code-briefs → ttsCode.internalStoreBriefs) and read by no query,
+  // mutation, action or page.
+  //
+  // Staleness is decided entirely on the worker box, against a file this
+  // table never sees: /var/lib/tts/brief-hashes.json, which maps
+  // "repo:externalId" -> the hash last POSTed (readBriefHashes /
+  // writeBriefHashes in worker/jobs/tts-code-lib.mjs). brief-code-todos.mjs
+  // recomputes each open entry's hash from the yaml and skips the entry when
+  // it equals that file's value; anything else — a changed entry, a missing
+  // key, or the "replan-requested" sentinel apply-rulings.mjs writes there on
+  // a "revise" verdict — re-briefs. Consequence: deleting that one file
+  // re-briefs every open code todo, and this column cannot rebuild it.
+  //
+  // `recommendation` is the worker's read, never a verdict — Tom rules
+  // (dtsRulings); `execClass` says where an approved item can run; `evidence`
+  // carries the commits/files that justify a propose-archive.
   dtsCodeBriefs: defineTable({
     repo: v.string(),
     externalId: v.string(),
