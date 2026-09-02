@@ -31,6 +31,32 @@ describe("Convex functions", () => {
     expect(row?.lastSuccessAt).toBe(1000);
   });
 
+  // serverHealth records Turing liveness and nothing else: pollTuring is the
+  // only writer and always writes "turing", and Jarvis liveness is the gateway
+  // socket's connected flag, not a row. Both spellings of that vocabulary — the
+  // table validator in schema.ts and SERVER_NAME in serverHealth.ts — must
+  // refuse a second name, or one of them can be widened alone and rows get
+  // written that the other side cannot read.
+  it("refuses a serverHealth name other than turing, in schema and in args", async () => {
+    const t = convexTest({ schema, modules });
+    await expect(
+      t.run(async (ctx) => {
+        await ctx.db.insert("serverHealth", {
+          serverName: "jarvis" as unknown as "turing",
+          reachable: true,
+          lastChecked: 1000,
+        });
+      }),
+    ).rejects.toThrow();
+    await expect(
+      t.mutation(internal.serverHealth.set, {
+        serverName: "jarvis" as unknown as "turing",
+        reachable: true,
+        lastChecked: 1000,
+      }),
+    ).rejects.toThrow();
+  });
+
   it("returns top symbol scores", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
