@@ -83,4 +83,18 @@ crons.interval(
   {},
 );
 
+// ── One-shot data rewrite, DELETE WITH THE NARROW STEP ──────────────────────
+// Rewrites symbolScores rows out of the old `timeMs`/`createdAt` shape into
+// `hits`. A cron rather than a hand-run command because the rename needs the
+// stored rows emptied of those two fields between the deploy that widened the
+// schema and the deploy that narrows it, and nothing else fires on a deploy.
+// Idempotent and a no-op once it has run. Remove this block in the same change
+// that deletes `timeMs`/`createdAt` from schema.ts.
+crons.interval(
+  "symbol scores hits backfill",
+  { hours: 1 },
+  internal.symbolScores.backfillHits,
+  {},
+);
+
 export default crons;

@@ -143,12 +143,24 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_kind_name", ["kind", "name"]),
 
+  // The endless symbol game scores a HIT COUNT, not a duration: symbol-game.tsx
+  // emits `hits`, and the leaderboard prints "N hits". The field was called
+  // `timeMs` and indexed `by_time` anyway, so every stored value (7, 3, 2) read
+  // as an impossible duration.
+  //
+  // WIDEN STEP. `hits` is the live field — the only one written and the only one
+  // read. `timeMs` and `createdAt` are the pre-rename shape and are optional
+  // ONLY so this schema still validates rows written before the rename; both are
+  // dead the moment `symbolScores.backfillHits` has run. DO NOT WRITE EITHER.
+  // Deleting these two lines is the narrow step, and it succeeds only after the
+  // backfill has emptied them from every stored row.
   symbolScores: defineTable({
     userId: v.optional(v.id("users")),
     username: v.string(),
-    timeMs: v.number(),
-    createdAt: v.number(),
-  }).index("by_time", ["timeMs"]),
+    hits: v.optional(v.number()),
+    timeMs: v.optional(v.number()),
+    createdAt: v.optional(v.number()),
+  }).index("by_hits", ["hits"]),
 
   canvases: defineTable({
     userId: v.id("users"),

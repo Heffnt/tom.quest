@@ -35,7 +35,7 @@ export default function GamePage() {
     <div className="flex flex-col items-center px-6 pt-6 pb-16">
       <SymbolGame
         size={gameSize}
-        onResult={({ hits }) => setResult({ winId: nextWinId.current++, ms: hits })}
+        onResult={({ hits }) => setResult({ winId: nextWinId.current++, hits })}
         onReset={() => setResult(null)}
       />
 
