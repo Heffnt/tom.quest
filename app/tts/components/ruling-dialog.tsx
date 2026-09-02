@@ -51,8 +51,8 @@ export default function RulingDialog({
   statement: string;
   brief?: string;
   plan?: PlanStep[];
-  /** Records the ruling. Absent = the dialog only closes (the mockup route). */
-  onConfirm?: (sentence: string) => Promise<unknown> | unknown;
+  /** Records the ruling. Required: this dialog never closes without writing. */
+  onConfirm: (sentence: string) => Promise<unknown> | unknown;
   onClose: () => void;
 }) {
   const [text, setText] = useState("");
@@ -121,10 +121,6 @@ export default function RulingDialog({
             // the server refuses an empty one, so the button is not offered.
             disabled={busy || (verdict === "edit" && text.trim() === "")}
             onClick={() => {
-              if (!onConfirm) {
-                onClose();
-                return;
-              }
               setBusy(true);
               setError(null);
               void (async () => {
