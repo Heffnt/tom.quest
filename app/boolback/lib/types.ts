@@ -1,16 +1,17 @@
 // app/boolback/lib/types.ts — PINNED CONTRACT. All components import from here.
 //
 // These types mirror the NORMALIZED in-memory bundle produced by
-// data/normalize.asBundle(). The CMT tom_quest builder emits schema v2
-// ({functions} map + slim identity); v1 blobs (embedded per-row function,
-// tree array) are normalized into the same shape at load, so everything
-// downstream sees ONE contract:
+// data/normalize.asBundle(). The CMT tom_quest builder emits schema v3
+// ({functions} map + slim identity + the reading vocab); v2 blobs share that
+// structure with the older measurement vocab, and v1 blobs (embedded per-row
+// function, tree array) differ structurally too. All three are normalized into
+// the same shape at load, so everything downstream sees ONE contract:
 //
 //   * bundle.functions: one FunctionBlock per distinct function_hash;
 //   * row.function: a SHARED REFERENCE into bundle.functions (attached at
 //     normalize — never a copy), so select.ts/columns.ts read it directly;
 //   * identity.dir_path: the run's on-disk node path relative to the artifacts
-//     root (v2 only; null on v1 blobs — the raw-artifact browser hides itself);
+//     root (v2/v3; null on v1 blobs — the raw-artifact browser hides itself);
 //   * anatomy fields (2026-07, Anatomy view): the per-run model shape
 //     (n_layers/n_heads/d_mlp) and the InterpReading locus/taxonomy/
 //     circuit fields are ADDITIVE and OPTIONAL — v1 blobs, older v2 blobs,
@@ -27,8 +28,10 @@ import { CATEGORY_PALETTE, paletteColor } from "./styling";
 // Snapshot envelope (tom_quest/build.py, normalized)
 // ---------------------------------------------------------------------------
 
-// v3 is the reading-vocab snapshot (CMT builder in flight); v1/v2 are the
-// legacy measurement-vocab blobs data/normalize still translates.
+// v3 is the reading-vocab snapshot the LIVE CMT builder emits; v1/v2 are the
+// legacy measurement-vocab blobs data/normalize still translates (they reach us
+// from the browser's last-good cache and the bundled sample). asBundle throws on
+// anything outside this set, so a future v4 fails loud instead of half-rendering.
 export const SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3] as const;
 
 export interface Bundle {
@@ -38,14 +41,14 @@ export interface Bundle {
   column_groups: ColumnGroup[];
   friendly: Friendly;
   functions: Record<string, FunctionBlock>;
-  /** Dir-viewer tree (v1: from the blob; v2: derived from rows' dir_path). */
+  /** Dir-viewer tree (v1: from the blob; v2/v3: derived from rows' dir_path). */
   tree: TreeNode[];
   rows: RunRow[];
 }
 
 // ---------------------------------------------------------------------------
 // Tree (dir viewer) — function -> dataset -> training leaves only. v1 blobs
-// carry this array; for v2 normalize derives it from the rows.
+// carry this array; for v2/v3 normalize derives it from the rows.
 // ---------------------------------------------------------------------------
 
 export type TreeLevel = "function" | "dataset" | "training";
@@ -57,7 +60,7 @@ export interface TreeNode {
   slug: string;
   hash: string;
   kind: TreeLevel; // === level
-  done: boolean; // v2: derived (training done iff run not in_progress; parents = all children)
+  done: boolean; // v2/v3: derived (training done iff run not in_progress; parents = all children)
   run_ids: string[]; // NODE_KEY run_ids (tr-paths) under this subtree
   children: TreeNode[];
 }
@@ -68,7 +71,7 @@ export interface Meta {
   tree_mtime_key: number; // newest done.json mtime (0 if none)
   arity_max: number;
   row_count: number;
-  function_count?: number; // v2 only
+  function_count?: number; // v2/v3 only
   tree_node_count: number;
   /** CMT's PLANTED_THRESHOLD (newer snapshots; consumers default to 0.95). */
   planted_threshold?: number;
@@ -84,7 +87,8 @@ export function plantedThreshold(meta: Meta | null | undefined): number {
 // ---------------------------------------------------------------------------
 
 // v3 splits OUTCOME metrics by suite: "attack" (backdoor efficacy) vs.
-// "capability" (utility/perplexity). DEFENSE/INTERP/SCAN entries keep "outcome".
+// "capability" (utility — triggerless correctness; the ppl family retired with
+// perplexity). DEFENSE/INTERP/SCAN entries keep "outcome".
 // Older/cached v1/v2 blobs only ever carry structural|spectral|outcome.
 export type MetricSuite = "structural" | "spectral" | "outcome" | "attack" | "capability";
 export type MetricGroup = "FUNCTION" | "OUTCOME" | "DEFENSE" | "INTERP" | "SCAN";
@@ -151,11 +155,11 @@ export interface Identity {
   function_hash: string;
   dataset_hash: string;
   training_hash: string;
-  /** On-disk "function+…/dataset+…/training+…" relative to the artifacts root (v2; null on v1). */
+  /** On-disk "function+…/dataset+…/training+…" relative to the artifacts root (v2/v3; null on v1). */
   dir_path: string | null;
-  /** === run_id (v2 blobs omit it; normalize re-derives). Tree/table selection key. */
+  /** === run_id (v2/v3 blobs omit it; normalize re-derives). Tree/table selection key. */
   node_path: string;
-  /** [fn=H, fn=H/ds=H, run_id] (v2 blobs omit it; normalize re-derives). */
+  /** [fn=H, fn=H/ds=H, run_id] (v2/v3 blobs omit it; normalize re-derives). */
   chain_dirs: string[];
 }
 

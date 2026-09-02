@@ -66,9 +66,17 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   bundle is kept and only the status dot goes error. The full-screen error
   remains only for first-load-failed + no cache + sample import failed.
 
-## Snapshot schema v2 (built by `ComplexMultiTrigger/tom.quest/tom_quest/`)
+## Snapshot schema v3 (built by `ComplexMultiTrigger/tom.quest/tom_quest/`)
 
-`{schema_version: 2, meta, metric_schema, column_groups, friendly, functions, rows}`
+`{schema_version: 3, meta, metric_schema, column_groups, friendly, functions, rows}`
+
+**v3 is what the live builder emits.** Its ENVELOPE is v2's — the same seven
+top-level keys, the same `functions` map, the same slim row identity, still no
+`tree` array. What v3 changes is the VOCABULARY inside the rows and the metric
+schema, plus a set of purely additive fields. The accepted set is pinned in one
+place: `SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3]` in `lib/types.ts`, and
+`asBundle` throws `unsupported snapshot schema_version: …` on anything else, so
+a future v4 blob fails loud instead of half-rendering.
 
 - `functions` — ONE FunctionBlock per distinct function_hash (truth table,
   activation strip, DNF, ~61 complexity metrics). v1 embedded this in every
@@ -83,9 +91,36 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   derives the dir viewer from `dir_path` now).
 - `meta.planted_threshold` — CMT's `PLANTED_THRESHOLD` (newer builders emit
   it; the browser defaults to 0.95 when absent, `lib/types.plantedThreshold`).
-- `data/normalize.asBundle()` accepts BOTH v1 and v2 and outputs one in-memory
+
+**The v3 reading vocabulary.** The app is single-vocab: it says *reading*, never
+*measurement*. v3 emits that vocabulary natively. `data/normalize.ts` is the ONE
+airlock that translates the older blobs into it at load (guarded, so a v3 row —
+which already carries `readings` — is never re-translated):
+
+| v1 / v2 blob | v3, and the in-memory Bundle |
+|---|---|
+| `interp.measurements[]` | `interp.readings[]` |
+| `interp.measurement_kind` | `interp.reading_kind` |
+| metric `interp_measurement[@method]` | metric `interp_reading[@method]` |
+
+**What v3 adds.** All additive, all pass-through — normalize touches none of it:
+
+| v3 field | What it is |
+|---|---|
+| `metric_schema[].suite` gains `"attack"` / `"capability"` | OUTCOME metrics split into backdoor efficacy vs. utility; `lib/metrics.metricPickerGroup` turns them into the ATTACK / CAPABILITY picker headings. Older blobs keep the flat `"outcome"` suite and fall back to one OUTCOME heading. |
+| `headline.planted_fraction` | A {0,1} planted indicator (null when plantedness is null), OUTCOME group / suite "attack". Resolves as a metric under the dotted id AND the bare name. |
+| `defense.methods[].residual_asr` / `.residual_ftr` | What SURVIVES a defense, alongside the existing `*_drop` family, as `residual_asr@<method>`. |
+| `scan.methods[]` `{scheme, negative_facet, cut}` | Detector cuts: one scan slot per (method, scheme, negative facet), named `scan_auroc@<method>\|<scheme>\|<negative_facet>` with `-` filling an absent scheme or facet. |
+| method `type` tags (`"defense"` / `"interp"` / `"scan"`) | The slot's own family, so a method never has to be inferred from where it sits. |
+
+Retired in v3: the perplexity family (`ppl`, `ppl_drift`) — CMT stopped emitting
+it, and `data/real-snapshot.test.ts` guards that it stays gone.
+
+- `data/normalize.asBundle()` accepts v1, v2 AND v3, and outputs one in-memory
   shape (shared function refs re-attached onto rows), so the site and the
-  builder deploy independently, in either order.
+  builder deploy independently, in either order. Fixtures: `sample-snapshot.json`
+  (bundled fallback), `sample-snapshot-v3.json` (hand-built v3 surface),
+  `sample-snapshot-real.json` (a real builder artifact, the CMT↔site contract).
 
 ## What the UI shows
 
@@ -119,8 +154,9 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   searchable pickers that live ON the axes (the x picker under the x axis,
   the y picker rotated along the y axis; both log toggles by the origin,
   the y one rotated — the exported SVG/PNG keeps plain axis labels via a
-  `[data-export-only]` group). Y lists OUTCOME/DEFENSE first, X FUNCTION
-  first; per-method entries collapse under their base metric like facet
+  `[data-export-only]` group). Y leads with ATTACK then CAPABILITY (v3's
+  OUTCOME suite split; older blobs show one OUTCOME heading) then DEFENSE, X
+  leads with FUNCTION; per-method entries collapse under their base metric like facet
   values in `+ Filter`. THE DIMENSIONS PANEL (`lib/dimensions.ts`) replaces
   the old runs|functions|means toggle and the color dropdown: every run
   dimension (function identity, model, arity, seed, lr, …) is either SHARED
@@ -168,7 +204,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 - **Per-method DEFENSE/INTERP/SCAN metrics** — the generic scalars are
   HEADLINE rollups (`asr_drop` = best over the run's methods, interp = one
   headline kind), so per-method values are first-class metrics named
-  `<base>@<method>` (`asr_drop@beear`, `interp_measurement@caa_ablation`;
+  `<base>@<method>` (`asr_drop@beear`, `interp_reading@caa_ablation`;
   `lib/method-metrics.ts` owns the convention). Defense methods carry the
   FULL `*_drop` self-join family (`ftr_drop`, `triggerless_correctness_drop`
   — the utility cost — target/correctness rate drops) per method only (no
@@ -177,8 +213,10 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   columns, exports — with the generic entries relabeled "(best method)" /
   "(headline)". Newer builders emit them; for older blobs
   `data/normalize.ts` synthesizes them from `rows[].defense.methods` /
-  `interp.measurement_kind` / `scan.method_family` (a no-op once the
-  builder ships any `@` name — builder extents are then authoritative).
+  `interp.readings` (or `interp.reading_kind`, both read AFTER the vocab
+  airlock) / `scan.method_family` — a no-op once the builder ships any `@`
+  name, which v3 always does, so builder extents are authoritative on live
+  blobs.
   Registry-less relic methods (caa/repe/geometry_cone/rome_edit → interp,
   onion deleted) carry their historical contract + a `legacy` note.
 - **Export menu** (filter bar) — chart: copy plotted CSV / download SVG /
@@ -196,7 +234,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   `$BOOLEAN_BACKDOOR_OUTPUT`, size-capped, weight files metadata-only).
   Anything a stage writes is reachable there without projecting it into the
   snapshot.
-- **Empty-but-future data** (ppl, scan, twins today) is findable, never
+- **Empty-but-future data** (scan, twins today) is findable, never
   default: column menus tag it "no data yet", zero-count status pills collapse
   behind "+N unused", chart selects park it in a trailing optgroup. Everything
   surfaces automatically once the builder observes real values — no code
@@ -207,7 +245,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 | Where | What |
 |---|---|
 | `app/boolback/data/source.ts` | the one blob fetch + admin rebuild |
-| `app/boolback/data/normalize.ts` | v1/v2 → one Bundle; derives the tree; injects `fn_hex` |
+| `app/boolback/data/normalize.ts` | v1/v2/v3 → one Bundle; the ONE old→reading vocab airlock; derives the tree; injects `fn_hex` |
 | `app/boolback/lib/` | `types` (pinned contract), `select` (filter/sort/facet), `columns` (bare→dotted bridge), `metrics` (schema index), `format` (hex, sizes, model names), `anatomy` (accordion scale, LOD, palettes, twin matching — pure) |
 | `app/boolback/components/` | `table-pane` (top bar + table + chart/anatomy mount), `chart-panel` (plot + legend panel), `anatomy-pane` (+ `anatomy-legend`, `anatomy-detail`), `tree-pane` (dir viewer), `detail-panel` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline` |
 | `app/api/boolback/{blob,node,file}` | public read-only proxies (explicit endpoints, never a catch-all) |
