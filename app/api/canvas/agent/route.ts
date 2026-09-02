@@ -3,7 +3,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { runCanvasAgent, type AgentEvent } from "@/app/canvas/lib/canvas-agent";
-import { providersForRole, type Provider } from "@/app/canvas/lib/models";
+import { authorizeLlm } from "@/app/canvas/lib/models";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -18,7 +18,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
 
-  let body: { chatId?: string; provider?: Provider; model?: string };
+  // Typed as plain strings, not Provider: this is unvalidated client input
+  // until authorizeLlm below says otherwise.
+  let body: { chatId?: string; provider?: string; model?: string };
   try {
     body = await req.json();
   } catch {
@@ -46,12 +48,21 @@ export async function POST(req: NextRequest) {
   if (!viewer) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const allowed = providersForRole(viewer.isTom);
-  if (!allowed.some((p) => p.id === provider)) {
-    return NextResponse.json(
-      { error: "Provider not available for your role" },
-      { status: 403 },
-    );
+  // Both halves of the client-supplied pair are checked here. The browser's
+  // resolveLlm also checks the model, but it runs in the caller's own process
+  // and is therefore not a gate: without this, any signed-in account could post
+  // an arbitrary model string for a provider billed to Tom.
+  const authorized = authorizeLlm({ provider, model }, viewer.isTom);
+  if (!authorized.ok) {
+    return authorized.reason === "provider"
+      ? NextResponse.json(
+          { error: "Provider not available for your role" },
+          { status: 403 },
+        )
+      : NextResponse.json(
+          { error: "Model not available for this provider" },
+          { status: 400 },
+        );
   }
 
   const messages = await convex.query(api.canvas.getMessages, {
@@ -111,8 +122,8 @@ export async function POST(req: NextRequest) {
       initialHtml: canvas.html,
       systemPrompt,
       userMessage: userText,
-      provider,
-      model,
+      provider: authorized.provider,
+      model: authorized.model,
       onEvent: handleEvent,
     });
     return NextResponse.json({ ok: true });
