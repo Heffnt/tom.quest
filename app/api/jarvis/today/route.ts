@@ -2,19 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import { buildMarkdownSections, currentDayKey, parseMarkdownSections, pathExists, resolveWorkspacePath } from "@/app/api/jarvis/_utils";
 import { requireTom } from "@/app/lib/convex-server";
-
-const DEFAULT_SECTION_ORDER = [
-  "Sleep",
-  "Activities",
-  "Meals",
-  "Mood / Feeling",
-  "Exercise / Body",
-  "Social",
-  "Substances",
-  "Pending / Follow-ups",
-  "Notes",
-  "Evening Reconstruction",
-];
+import { DEFAULT_SECTION_ORDER } from "@/app/jarvis/sectionOrder";
 
 function buildDefaultTitle(dayKey: string) {
   return `${dayKey}`;
@@ -66,7 +54,7 @@ export async function PUT(request: NextRequest) {
   const absolutePath = resolveWorkspacePath(relativePath);
   const ordered = (body.orderedSections && body.orderedSections.length > 0)
     ? body.orderedSections
-    : DEFAULT_SECTION_ORDER;
+    : [...DEFAULT_SECTION_ORDER];
   const normalizedSections: Record<string, string[]> = {};
   for (const name of ordered) {
     const rawSection = body.sections[name] ?? "";
