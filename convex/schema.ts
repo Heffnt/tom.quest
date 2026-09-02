@@ -33,8 +33,22 @@ export default defineSchema({
     .index("email", ["email"])
     .index("phone", ["phone"]),
 
+  // Turing liveness only. This table has exactly one writer,
+  // internal.serverHealth.pollTuring, and it always writes "turing"; Jarvis
+  // liveness is the gateway socket's connected flag (useJarvisServer in
+  // app/lib/hooks/use-server.ts) and never lands in a row here. The union used
+  // to also admit "jarvis", which made the schema claim a second arm no code
+  // could reach.
+  //
+  // DANGER, before widening this union again: the same string is spelled twice,
+  // here and as SERVER_NAME in convex/serverHealth.ts. Widening one alone lets a
+  // row be inserted that the other rejects. And narrowing it is validated
+  // against STORED data at push time — if a row with the removed name exists,
+  // `npx convex deploy` fails (naming the document) rather than the site
+  // breaking, and the fix is to delete that row in the Convex dashboard and
+  // re-deploy.
   serverHealth: defineTable({
-    serverName: v.union(v.literal("turing"), v.literal("jarvis")),
+    serverName: v.literal("turing"),
     reachable: v.boolean(),
     lastChecked: v.number(),
     lastSuccessAt: v.optional(v.number()),

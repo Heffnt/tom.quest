@@ -2,7 +2,13 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 
-const SERVER_NAME = v.union(v.literal("turing"), v.literal("jarvis"));
+// The one name this table records. pollTuring below is the table's only writer
+// and always passes "turing"; Jarvis liveness comes from the gateway socket
+// (useJarvisServer in app/lib/hooks/use-server.ts), not from a row here. Keep
+// this in step with the serverHealth.serverName validator in convex/schema.ts —
+// they are two spellings of one vocabulary, and only widening both together
+// lets a row actually be written and read.
+const SERVER_NAME = v.literal("turing");
 const HEALTH_TIMEOUT_MS = 10_000;
 
 export const get = query({
