@@ -485,6 +485,15 @@ describe("TTS unified rulings", () => {
 
   // witness: count ALL briefs (drop the `!ruled.has` filter) in
   // internalAwaitingRulingCount in convex/ttsRulings.ts
+  //
+  // Every timestamp below is WRITTEN through setTimes, never sampled from the
+  // clock, for the reason the two tests above already carry: briefAwaitsRuling
+  // keeps an item on the pile when `ruling.ruledAt <= brief.preparedAt`, and
+  // internalStoreBriefs and recordRuling each stamp their own whole-millisecond
+  // Date.now(). When both landed in one millisecond this test read the ruled
+  // item as still awaiting and asserted 3 where it expects 2 — which is exactly
+  // how it failed on the CI run for pull request #68 while passing on every
+  // local run of the same tree.
   it("awaiting-ruling count covers briefed code items with no ruling at all", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -495,6 +504,7 @@ describe("TTS unified rulings", () => {
         brief({ externalId: "unruled-2" }),
       ],
     });
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(3);
@@ -504,6 +514,9 @@ describe("TTS unified rulings", () => {
       externalId: "ruled",
       verdict: "session",
     });
+    // Briefs prepared at 1000, every ruling recorded at 2000: each ruling is
+    // strictly newer than the brief it answers, so only the key decides.
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(2);
@@ -520,6 +533,7 @@ describe("TTS unified rulings", () => {
       todoId,
       verdict: "session",
     });
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(2);
