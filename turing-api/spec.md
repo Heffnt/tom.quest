@@ -502,13 +502,14 @@ which of the two committed templates declares it today — `secrets/turing-api.e
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
+**Seventeen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
 marked *call time*. "Declared in" is the state as of this census; `—` means neither template
 lists the name.
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
 | `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
+| `TURING_READ_KEY` | `main.py:40` | `""` (read door does not exist — only the full key opens anything) | The second `X-API-Key` accepted by `verify_read_key`, which guards `GET /gpu-report`, `GET /jobs` and `GET /sessions/{name}/output` and nothing else | `secrets/turing-api.env.example` |
 | `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
@@ -563,3 +564,54 @@ They are computed per run and must never appear in a template.
    `BOOLBACK_BUILDER_REPO_DIR` only sets the submitting `cwd`, and `BOOLBACK_BUILDER_CONDA_ENV`
    has no effect at all.
 5. **`README.md:124-128` presents `TURING_API_KEY` as the whole contents of `.env`.**
+
+## 15. The test suite: what it is, how it is run, what it needs
+
+Eight files under `turing-api/` end in `_test.py`. They are plain `unittest.TestCase` classes,
+so either `python3 -m pytest turing-api` or `python3 -m unittest discover -s turing-api -p
+'*_test.py'` runs them; the results below were taken with pytest 9.0.2 on Python 3.14.4, both
+from the repository root and from inside `turing-api/`.
+
+No test opens a socket, submits to SLURM, or reads anything outside a `tempfile` directory:
+`subprocess.run`, `squeue`/`sbatch` and every outward HTTP call are patched, and the HTTP
+endpoints are driven in-process through the ASGI app rather than over a port. The suite
+therefore passes with an empty environment (`env -i`) and with no cluster reachable, and it
+finished in about two seconds on every run.
+
+### 15.1 Result of a full local run
+
+| File | Tests | Result |
+| --- | --- | --- |
+| `main_test.py` | 28 | pass |
+| `boolback_snapshot_test.py` | 18 | pass |
+| `forge_test.py` | 17 | pass |
+| `gpu_report_test.py` | 7 | pass |
+| `slurm_test.py` | 6 | pass |
+| `shell_test.py` | 2 | pass |
+| `tmux_test.py` | 2 | pass |
+| `env_census_test.py` | 2 | pass |
+| **total** | **82** | **pass** |
+
+Two of these failed on the first run and were fixed rather than left red, because a runner
+added to a suite with unexplained failures cannot tell a regression from the state it
+inherited. `env_census_test.py` failed because `TURING_READ_KEY` (`main.py:40`) was read by the
+code and listed in no row of section 14.1; the row is now there. `forge_test.py` failed because
+it hardcoded `http://gpu-node-7:8765/v1` as the expected serve URL, which stopped being the
+answer when `_node_base_url` began qualifying a bare `squeue` nodename with
+`FORGE_NODE_DOMAIN`; the expectation is now built from `forge.NODE_DOMAIN`, so the same drift
+cannot break it again.
+
+### 15.2 What an automated runner has to install
+
+`turing-api/requirements.txt` lists what the *service* needs, not what the tests need. Running
+the suite additionally requires `pytest` and `httpx` — `httpx` is what `fastapi.testclient`
+drives the app through and what four of the test files import directly. Nothing else is
+needed: `transformer_server.py` is the only module importing `torch`, `transformers` or
+`numpy`, no test imports it, and `env_census_test.py` reads it as text rather than importing
+it, so a runner never has to install a machine-learning stack.
+
+| Package | Why |
+| --- | --- |
+| `fastapi`, `python-dotenv`, `requests` | Already in `requirements.txt`; imported by the modules under test |
+| `pytest` | The runner itself (or use `unittest discover` and skip it) |
+| `httpx` | Imported by `main_test.py`, `forge_test.py`, `boolback_snapshot_test.py` and the `fastapi` test client |

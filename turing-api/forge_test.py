@@ -177,7 +177,14 @@ class ForgeRouteTest(unittest.TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(body["job_id"], "33")
         self.assertFalse(body["ready"])
-        self.assertEqual(body["base_url"], f"http://gpu-node-7:{forge.SERVE_PORT}/v1")
+        # _node_base_url qualifies a bare squeue nodename with FORGE_NODE_DOMAIN
+        # (forge.py:425-436) because "gpu-5-43" does not resolve from the login node.
+        # Build the expectation from NODE_DOMAIN rather than hardcoding the bare host:
+        # hardcoding it is what made this assertion fail once the suffix was added.
+        self.assertEqual(
+            body["base_url"],
+            f"http://gpu-node-7{forge.NODE_DOMAIN}:{forge.SERVE_PORT}/v1",
+        )
         argv = run.call_args.args[0]
         self.assertEqual(argv[0], "sbatch")
         self.assertFalse(run.call_args.kwargs.get("shell", False))
