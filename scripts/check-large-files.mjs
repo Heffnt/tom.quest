@@ -16,20 +16,39 @@
 // -text`) to tell LFS-tracked paths apart; it does not need the git-lfs binary
 // installed.
 //
-// KNOWN_LARGE below names the files that were already over 50 MiB when this
-// check was written. They are tolerated, and reported on every run, so that
-// adding this guard does not turn CI red before the history rewrite happens.
-// Retiring an entry is one command run on a full (non-shallow) clone:
+// KNOWN_LARGE below names files that are over 50 MiB and tolerated anyway. It
+// is empty: `public/data/clouds/*.bin` used to be its one entry and is now
+// LFS-tracked by the `.gitattributes` line at the repo root, so the LFS branch
+// above exempts it and no entry is needed.
+//
+// That was done as an ordinary forward commit — `git lfs track` plus `git add
+// --renormalize` — which converts what the tree stores from here on and leaves
+// history alone. What it does NOT do is remove the old blobs: main's history
+// still holds nine versions of train.bin and nine of test.bin (~445 MB raw,
+// ~42 MiB of a 62 MiB whole-history clone). They cost clone size, not CI: an
+// ordinary push never carries them, because the remote already has them, so
+// GH001 stays quiet.
+//
+// Retiring the old blobs too is a history rewrite, and the obvious command is
+// not sufficient. Measured on a full clone of this repo:
 //
 //   git lfs install
 //   git lfs migrate import --everything --include="public/data/clouds/*.bin"
+//   git lfs checkout        # migrate leaves POINTER TEXT in the work tree
 //   git push --force-with-lease origin --all
 //
-// which rewrites every commit, writes the `.gitattributes` line itself, and
-// makes this check exempt the path through the LFS branch above. Vercel then
-// needs Settings -> Git -> Git Large File Storage enabled and a redeploy,
-// otherwise the build checks out the pointer text and /clouds serves 130 bytes
-// where it expects a point cloud.
+// `--everything` rewrote only the local branches — here, just `main`. All 124
+// remote-tracking branches kept all nine blobs, and `push --all` sends only
+// local branches, so GitHub would keep serving the blobs from every stale
+// branch. A rewrite only pays off if every other remote branch is rewritten or
+// deleted in the same pass, and any PR merged afterwards from an unrewritten
+// branch puts the blobs straight back. Rewriting all of main brings
+// .git/objects from 62 MiB to 18 MiB; that is the whole prize.
+//
+// Either way Vercel needs Settings -> Git -> Git Large File Storage enabled,
+// otherwise the build checks out the 133-byte pointer text and /clouds serves
+// that where it expects a point cloud. Nothing in the build or the tests reads
+// these bytes — only the browser does, at runtime, via manifest.json.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -41,12 +60,7 @@ const WARN_BYTES = 50 * MIB;
 const REJECT_BYTES = 100 * MIB;
 
 // path (as git records it, forward slashes) -> why it is tolerated.
-const KNOWN_LARGE = new Map([
-  [
-    "public/data/clouds/train.bin",
-    "point cloud shipped to /clouds; over 50 MiB since it grew to 2,000,000 points. Nine versions of it sit in main's history, so every push prints GH001 until the LFS migration in this file's header runs.",
-  ],
-]);
+const KNOWN_LARGE = new Map();
 
 function git(args) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
