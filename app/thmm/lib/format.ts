@@ -43,7 +43,3 @@ export function parseInput(input: string, width: number, mode: ViewMode): Bits |
   }
   return parseValue(input, width);
 }
-
-export function pad2Hex(n: number): string {
-  return n.toString(16).padStart(2, "0").toUpperCase();
-}

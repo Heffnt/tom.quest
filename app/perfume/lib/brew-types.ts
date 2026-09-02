@@ -107,7 +107,8 @@ export type BrewIndex = {
 };
 
 // ── the open brew ────────────────────────────────────────────────────────────
-export type BrewKey = string; // a brew id, or the "party" sentinel client-side
+// Brew ids (and the client-side "party" sentinel) travel as plain strings; the
+// alias that used to name them had no readers.
 
 // One item in the brew graph. contributor is who tossed it in (the owner on an
 // owned brew, whoever added it on the party brew). real=false marks a
