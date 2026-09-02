@@ -696,7 +696,7 @@ export function parseMeasurementKey(key: string): MeasurementKeyParts | null {
 }
 
 /** Human locus string ("L14/attn/h9", "embed", "global", "circuit (subgraph)")
- * — shared by the pane tooltip/titles and the detail-panel anatomy section. */
+ * — shared by the pane tooltip/titles and the run-inspector anatomy section. */
 export function locusLabel(m: InterpReading): string {
   if (typeof m.layer === "number" && Number.isFinite(m.layer)) {
     const comp =

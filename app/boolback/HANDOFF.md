@@ -5,13 +5,13 @@ experiments at <https://www.tom.quest/boolback>. One page, three panes:
 
 ```
 ┌───────────┬──────────────────────────────────────┬──────────────┐
-│ dir       │ top bar ( Table|Chart · [+ Filter] · │ detail panel │
-│ viewer    │   chips · trend(chart) · ⌕ · N of    │ (opens on    │
+│ dir       │ top bar ( Table|Plot · [+ Filter] ·  │ run inspector│
+│ viewer    │   chips · trend(plot) · ⌕ · N of     │ (opens on    │
 │ (mirrors  │   M runs · Export · Reset · ⧉ ● ↻ )  │  any row /   │
 │ the disk  ├──────────────────────────────────────┤  point click)│
 │ tree;     │ TABLE (one row per training run)     │ + raw        │
 │ collapses │   — or —                             │   artifacts  │
-│ to a bar  │ CHART (y vs x │ legend panel right;  │              │
+│ to a bar  │ PLOT (y vs x │ legend panel right;   │              │
 │ button)   │   axis pickers + log ON the axes)    │              │
 └───────────┴──────────────────────────────────────┴──────────────┘
 ```
@@ -109,13 +109,13 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   footer shows the mean of each numeric column over the filtered set. ↑/↓
   move selection, Enter opens the drawer, Esc closes. Categorical cells
   reveal a ⊕ filter button on hover; headers carry a ⌄ menu (sort asc/desc,
-  hide, add range filter, plot on chart X/Y). The compact `Fn` column is
+  hide, add range filter, plot on X/Y). The compact `Fn` column is
   `arity:hex` of the truth table (`3:E8`); hover it for the colored strip +
   DNF. Truth squares: the fill is split evenly among the PRESENT variables
   (1 = full, 2 = 50/50, 3 = thirds; the all-zeros row is empty), near-black
   outlines separate the colors, and an amber ring means that row ACTIVATES
   the backdoor.
-- **Chart** — the same filtered rows: any metric vs any metric via
+- **Plot** — the same filtered rows: any metric vs any metric via
   searchable pickers that live ON the axes (the x picker under the x axis,
   the y picker rotated along the y axis; both log toggles by the origin,
   the y one rotated — the exported SVG/PNG keeps plain axis labels via a
@@ -156,14 +156,14 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   circuit-diff arcs (shared edges neutral). Circuits render as
   span-proportional arcs bar-to-bar; selecting one enables "fit circuit"
   (accordion expands all its layers); side-exclusive edges expose trigger
-  rewiring. Measurement click → detail-panel anatomy section
+  rewiring. Measurement click → run-inspector anatomy section
   (`anatomy-detail.tsx`: full record, CDE curve sparkline, top-k component
   bars); `AnatomyConfig` {focus, twin, sel} rides `?v=` share links and the
-  persisted view like ChartConfig. Everything degrades structurally on
+  persisted view like PlotConfig. Everything degrades structurally on
   pre-anatomy blobs (spine renders, honest "no locus data" copy). Derived
   per-run scalars `interp_peak_layer/loc_width/depth_com@<kind>` are
   synthesized in `normalize.withAnatomyMetrics` (separate, guard-proof,
-  idempotent step) so Chart can plot localization depth against the 61
+  idempotent step) so the plot can show localization depth against the 61
   function-complexity metrics.
 - **Per-method DEFENSE/INTERP/SCAN metrics** — the generic scalars are
   HEADLINE rollups (`asr_drop` = best over the run's methods, interp = one
@@ -173,7 +173,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   FULL `*_drop` self-join family (`ftr_drop`, `triggerless_correctness_drop`
   — the utility cost — target/correctness rate drops) per method only (no
   generic headline exists for those). They ride the ordinary
-  metric_schema/column_groups surface — chart axes, range filters, table
+  metric_schema/column_groups surface — plot axes, range filters, table
   columns, exports — with the generic entries relabeled "(best method)" /
   "(headline)". Newer builders emit them; for older blobs
   `data/normalize.ts` synthesizes them from `rows[].defense.methods` /
@@ -181,15 +181,15 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   builder ships any `@` name — builder extents are then authoritative).
   Registry-less relic methods (caa/repe/geometry_cone/rome_edit → interp,
   onion deleted) carry their historical contract + a `legacy` note.
-- **Export menu** (filter bar) — chart: copy plotted CSV / download SVG /
+- **Export menu** (filter bar) — plot: copy plotted CSV / download SVG /
   download PNG (2×, CSS vars resolved). Table: CSV of visible rows ×
   columns. Summary table: group-by facet × chosen metrics, mean ± sd + n
   over the filtered runs, as booktabs LaTeX (paste into the paper; carries a
   provenance comment with built_at + active filters) or CSV.
 - **⧉ Copy link** (top bar) — the whole view (filters, sorts, columns,
-  chart config, center view) round-trips through `?v=`; a shared URL
+  plot config, center view) round-trips through `?v=`; a shared URL
   overrides the per-browser persisted view for that load.
-- **Detail panel** — everything about a run: per-judge × epoch scores, audited
+- **Run inspector** — everything about a run: per-judge × epoch scores, audited
   plantedness, epoch-0 baseline, defense methods, twins — plus **raw
   artifacts**: a live browser over the run's actual dir on Turing
   (`/api/boolback/node` + `/api/boolback/file`, jailed server-side to
@@ -198,7 +198,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   snapshot.
 - **Empty-but-future data** (ppl, scan, twins today) is findable, never
   default: column menus tag it "no data yet", zero-count status pills collapse
-  behind "+N unused", chart selects park it in a trailing optgroup. Everything
+  behind "+N unused", plot selects park it in a trailing optgroup. Everything
   surfaces automatically once the builder observes real values — no code
   change needed.
 
@@ -209,7 +209,7 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 | `app/boolback/data/source.ts` | the one blob fetch + admin rebuild |
 | `app/boolback/data/normalize.ts` | v1/v2 → one Bundle; derives the tree; injects `fn_hex` |
 | `app/boolback/lib/` | `types` (pinned contract), `select` (filter/sort/facet), `columns` (bare→dotted bridge), `metrics` (schema index), `format` (hex, sizes, model names), `anatomy` (accordion scale, LOD, palettes, twin matching — pure) |
-| `app/boolback/components/` | `table-pane` (top bar + table + chart/anatomy mount), `chart-panel` (plot + legend panel), `anatomy-pane` (+ `anatomy-legend`, `anatomy-detail`), `tree-pane` (dir viewer), `detail-panel` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline` |
+| `app/boolback/components/` | `table-pane` (top bar + table + plot/anatomy mount), `plot-panel` (+ `plot-surface`, `group-plot`), `anatomy-pane` (+ `anatomy-legend`, `anatomy-detail`), `tree-pane` (dir viewer), `config-panel` (view config dock), `run-inspector` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline` |
 | `app/api/boolback/{blob,node,file}` | public read-only proxies (explicit endpoints, never a catch-all) |
 | `turing-api/main.py` + `boolback_snapshot.py` | blob/status/node/file endpoints + sbatch submit + cache |
 | CMT `tom.quest/tom_quest/{build,reshape,schema,trajectory}.py` | the snapshot builder |

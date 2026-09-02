@@ -15,10 +15,10 @@
 //   * ↑/↓ move the selection, Enter opens the drawer, Esc closes it.
 //   * Categorical cells reveal a filter button on hover (click a value to
 //     toggle it into its facet). Headers carry a ⌄ menu: sort asc/desc, hide,
-//     add range filter, plot on chart X/Y (the table↔chart bridge).
+//     add range filter, plot on X/Y (the table↔plot bridge).
 //
 // The filter bar above all views is components/filter-bar.tsx (chip model);
-// the chart (components/chart-panel.tsx) and the anatomy view
+// the plot (components/plot-panel.tsx) and the anatomy view
 // (components/anatomy-pane.tsx) mount here under the same bar.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -71,14 +71,6 @@ const FROZEN_IDS = new Set(["function.arity", "function.fn_hex"]);
 // ===========================================================================
 
 export type CenterView = "table" | "plot" | "groupplot" | "anatomy";
-
-/** Map a legacy/foreign center-view string to the current union
- *  ("chart" → "plot"); null when it isn't a recognizable view. Applied at the
- *  share-URL / persisted-state boundaries so old links and blobs still load. */
-export function normalizeCenterView(v: unknown): CenterView | null {
-  if (v === "chart") return "plot";
-  return v === "table" || v === "plot" || v === "groupplot" || v === "anatomy" ? v : null;
-}
 
 export interface TablePaneProps {
   bundle: Bundle;

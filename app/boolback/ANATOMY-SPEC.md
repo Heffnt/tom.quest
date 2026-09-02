@@ -1,6 +1,6 @@
 # boolback — Anatomy view: implementation spec
 
-Third center view alongside Table|Chart. One unified visualization of *where in
+Third center view alongside Table|Plot. One unified visualization of *where in
 the model* each interp measurement sits and *how it performs*, designed to scale
 from whole-model overview to a single neuron. Supersedes the deferred sketch in
 `ANATOMY-TODO.md` (boolback-redesign branch) per design conversation with Tom
@@ -107,8 +107,8 @@ changing the trigger rewire the circuit."
 ## Interaction & integration
 
 - Hover: tooltip (method, metric, value/null/delta, locus); cross-highlight
-  with Table/Chart selection ring the way Chart already does.
-- Click marker → detail panel (existing `detail-panel.tsx`) with a new
+  with Table/Plot selection ring the way the plot already does.
+- Click marker → run inspector (existing `run-inspector.tsx`) with a new
   anatomy section: full record, kind-specific extras, CDE dose-response
   `curve` sparkline (epoch-sparkline pattern), top-k components mini-bars.
 - Filter bar + tree scope which runs' measurements show (shared mechanism).
@@ -166,10 +166,10 @@ banner-free pixel checks.
   (pure; this is where the math correctness lives).
 - `components/anatomy-pane.tsx` — the view (pure SVG + CSS variables,
   dark-mode-correct, no charting library).
-- `components/anatomy-detail.tsx` — detail-panel section.
+- `components/anatomy-detail.tsx` — run-inspector section.
 - Edits: `lib/types.ts`, `data/normalize.ts`, `lib/method-metrics.ts`,
   `lib/share.ts`, `state/store.ts`, `components/filter-bar.tsx`,
-  `components/detail-panel.tsx`, `data/sample-snapshot.json`.
+  `components/run-inspector.tsx`, `data/sample-snapshot.json`.
 - Root pane gets `data-anatomy-ready` once the fixture has rendered (the
   screenshot harness waits on it).
 

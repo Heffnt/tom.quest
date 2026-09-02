@@ -10,7 +10,7 @@
 // (per-layer diverging diff cells, paired-marker whiskers, circuit arcs).
 // The x-axis is lib/anatomy.ts's accordion scale: pinned ends, width always
 // conserved, focus weights from the store-owned AnatomyConfig (share-link /
-// persisted-view reachable, exactly like ChartConfig).
+// persisted-view reachable, exactly like PlotConfig).
 //
 // LIVE interactions (this pass):
 //   * wheel = accordion zoom on the unit chain under the cursor
@@ -110,7 +110,7 @@ import {
 import { AnatomyLegend } from "./anatomy-legend";
 
 // Geometry: the SVG viewBox tracks the plot container 1:1 (ResizeObserver;
-// 1 viewBox unit = 1 CSS px) — same idiom as chart-panel.tsx. FALLBACK
+// 1 viewBox unit = 1 CSS px) — same idiom as plot-panel.tsx. FALLBACK
 // covers the first pre-measure render only.
 const FALLBACK = { w: 820, h: 430 };
 

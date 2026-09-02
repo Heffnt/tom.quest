@@ -3,13 +3,15 @@
 // app/boolback/components/run-inspector.tsx
 //
 // The run inspector — the content the config-panel dock swaps in when the user
-// drills into ONE training run (Phase 4). It is a slimmed refactor of the old
-// detail-panel.tsx: ~13 sections collapsed to FIVE, reusing detail-panel's
-// sub-components verbatim where possible.
+// drills into ONE training run (Phase 4). It is a slimmed refactor of this
+// file's own predecessor — detail-panel.tsx, which became run-inspector.tsx
+// and is the ONLY reason that name appears anywhere: ~13 sections collapsed to
+// FIVE, reusing the predecessor's sub-components verbatim where possible.
+// Comments below say "the old panel" for that same predecessor.
 //
 // This component renders CONTENT ONLY — no fixed positioning, no width, no
 // resize handle. The parent dock owns layout/chrome (width, docking, the
-// resize behaviour that detail-panel used to carry). The inspector just needs
+// resize behaviour the old panel used to carry). The inspector just needs
 // its `onBack` handler wired to return the dock to config mode.
 //
 // Sections:
@@ -39,7 +41,7 @@ import { ArtifactBrowser } from "./artifact-browser";
 export type MetricIndex = Record<string, MetricSchemaEntry>;
 
 // ---------------------------------------------------------------------------
-// selection -> RunRow resolution (lifted verbatim from detail-panel)
+// selection -> RunRow resolution (lifted verbatim from the old panel)
 // ---------------------------------------------------------------------------
 
 /**
@@ -55,7 +57,7 @@ export function resolveRun(bundle: Bundle, selectedDir: string | null): RunRow |
 }
 
 // ---------------------------------------------------------------------------
-// formatting helpers (from detail-panel)
+// formatting helpers (from the old panel)
 // ---------------------------------------------------------------------------
 
 function fmtRate(v: number | null | undefined): string {
@@ -151,7 +153,7 @@ export function RunInspector({ run, bundle, index, dir, onBack }: RunInspectorPr
 // ===========================================================================
 //
 // Field labels/order mirror the parameters model (the config-chain of the old
-// detail-panel): identity hashes, then every dataset field, then every training
+// panel): identity hashes, then every dataset field, then every training
 // field. Rendered as one flat labeled key/value grid.
 
 function ParametersSection({ run }: { run: RunRow }) {
@@ -473,7 +475,7 @@ function FilesSection({ run, dir }: { run: RunRow; dir: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// shared sub-components (from detail-panel)
+// shared sub-components (from the old panel)
 // ---------------------------------------------------------------------------
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
