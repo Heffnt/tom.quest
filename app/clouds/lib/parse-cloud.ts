@@ -1,3 +1,4 @@
+import { SUPPORTED_MANIFEST_VERSION } from "./types";
 import type { CloudHeader, DType, ParsedCloud, Manifest } from "./types";
 
 const DTYPE_CTOR: Record<DType, new (buf: ArrayBuffer, offset: number, length: number) => ArrayBufferView> = {
@@ -11,7 +12,24 @@ const DTYPE_CTOR: Record<DType, new (buf: ArrayBuffer, offset: number, length: n
 export async function fetchManifest(url: string): Promise<Manifest> {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`fetch ${url} failed: ${res.status}`);
-  return (await res.json()) as Manifest;
+  const body: unknown = await res.json();
+  return checkManifestVersion(body, url);
+}
+
+// The manifest is a static file written by another repository, so a format
+// change reaches this page as a swapped file and never as a type error. Refuse
+// anything but the one version these types describe: a named failure on load
+// beats a viewer drawn from misread fields.
+export function checkManifestVersion(body: unknown, url: string): Manifest {
+  const version = (body as { version?: unknown } | null)?.version;
+  if (version !== SUPPORTED_MANIFEST_VERSION) {
+    throw new Error(
+      `${url}: manifest version ${JSON.stringify(version)} is not supported ` +
+        `(this page reads version ${SUPPORTED_MANIFEST_VERSION}); ` +
+        `re-export the clouds or update app/clouds/lib/types.ts`,
+    );
+  }
+  return body as Manifest;
 }
 
 export async function fetchCloud(url: string): Promise<ParsedCloud> {
