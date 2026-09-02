@@ -398,5 +398,132 @@ class EventLoopIsolationTest(unittest.TestCase):
         )
 
 
+class TransformerTraceBoundsTest(unittest.TestCase):
+    """/transformer-trace is the one non-WS route with no X-API-Key dependency,
+    and that is deliberate: /transformer is a public page, so its callers hold
+    no key, and the per-job trace server enforces its own x-trace-token. What
+    the open door must not do is let an anonymous caller take the threadpool
+    that every sync endpoint in main.py runs in. These tests hold that bound."""
+
+    def setUp(self) -> None:
+        self.addCleanup(self._assert_slots_returned)
+
+    def _assert_slots_returned(self) -> None:
+        self.assertEqual(main._trace_inflight, 0, "a trace slot leaked: the route can be wedged shut")
+
+    def test_no_registered_server_is_503(self) -> None:
+        with patch("main._trace_target", return_value=None):
+            res = _request("GET", "/transformer-trace/config")
+        self.assertEqual(res.status_code, 503)
+
+    def test_inflight_requests_are_capped_and_sync_endpoints_stay_live(self) -> None:
+        """The failure this prevents: N concurrent anonymous requests hold N
+        threadpool workers for up to TRACE_TIMEOUT_S, and past the pool size
+        (anyio default 40) /jobs and /gpu-report stop being served at all."""
+        cap = main.TRACE_MAX_INFLIGHT
+        entered = threading.Semaphore(0)
+        release = threading.Event()
+
+        def blocking_urlopen(req, timeout=None):
+            entered.release()
+            release.wait(10)
+            return _FakeTraceResponse()
+
+        async def scenario():
+            transport = httpx.ASGITransport(app=main.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test", timeout=15) as client:
+                held = [
+                    asyncio.create_task(client.get("/transformer-trace/config"))
+                    for _ in range(cap)
+                ]
+                deadline = time.monotonic() + 5
+                for _ in range(cap):
+                    while not entered.acquire(blocking=False):
+                        self.assertLess(time.monotonic(), deadline, "requests never reached the forward")
+                        await asyncio.sleep(0.01)
+                overflow = await client.get("/transformer-trace/config")
+                gpu = await client.get("/gpu-report")
+                release.set()
+                done = await asyncio.gather(*held)
+            return overflow, gpu, done
+
+        with (
+            patch("main._trace_target", return_value="http://trace.test"),
+            patch("urllib.request.urlopen", side_effect=blocking_urlopen),
+            patch("main.API_KEY", ""),
+            patch("main.format_gpu_report_v2", return_value={"nodes": [], "summary": {}, "gpu_jobs_by_node": {}}),
+        ):
+            overflow, gpu, done = asyncio.run(scenario())
+
+        self.assertEqual(overflow.status_code, 429, "the cap did not refuse the request past TRACE_MAX_INFLIGHT")
+        self.assertEqual(
+            gpu.status_code, 200,
+            "an authenticated sync endpoint was starved while the anonymous route was saturated",
+        )
+        self.assertEqual([r.status_code for r in done], [200] * cap)
+
+    def test_slot_is_released_when_the_upstream_fails(self) -> None:
+        """A leaked slot would wedge the route shut for everyone after
+        TRACE_MAX_INFLIGHT unreachable-server calls."""
+        with (
+            patch("main._trace_target", return_value="http://trace.test"),
+            patch("urllib.request.urlopen", side_effect=OSError("connection refused")),
+        ):
+            for _ in range(main.TRACE_MAX_INFLIGHT + 2):
+                res = _request("GET", "/transformer-trace/config")
+                self.assertEqual(res.status_code, 503)
+
+    def test_oversized_body_is_refused_before_it_is_forwarded(self) -> None:
+        """The body of an anonymous POST is buffered in this process; without a
+        cap that is an unbounded allocation by an uncredentialed caller."""
+        with (
+            patch("main._trace_target", return_value="http://trace.test"),
+            patch("urllib.request.urlopen") as urlopen,
+        ):
+            res = _request(
+                "POST", "/transformer-trace/generate",
+                content=b"x" * (main.TRACE_MAX_BODY_BYTES + 1),
+                headers={"content-type": "application/json"},
+            )
+        self.assertEqual(res.status_code, 413)
+        urlopen.assert_not_called()
+
+    def test_body_within_the_cap_is_forwarded(self) -> None:
+        seen: dict[str, bytes] = {}
+
+        def capture_urlopen(req, timeout=None):
+            seen["data"] = req.data
+            return _FakeTraceResponse()
+
+        payload = b'{"prompt": "hi", "max_new_tokens": 4}'
+        with (
+            patch("main._trace_target", return_value="http://trace.test"),
+            patch("urllib.request.urlopen", side_effect=capture_urlopen),
+        ):
+            res = _request(
+                "POST", "/transformer-trace/generate",
+                content=payload,
+                headers={"content-type": "application/json"},
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(seen["data"], payload)
+
+
+class _FakeTraceResponse:
+    """Stands in for the per-job trace server's HTTP response."""
+
+    status = 200
+    headers = {"content-type": "application/json"}
+
+    def __enter__(self) -> "_FakeTraceResponse":
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return b"{}"
+
+
 if __name__ == "__main__":
     unittest.main()

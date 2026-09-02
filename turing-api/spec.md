@@ -41,10 +41,11 @@ tom.Quest never needs to signal, drain, or inspect it — only to choose how man
 FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared tunnel
 `turing.tom.quest`. Refuses to start without `TURING_API_KEY`; CORS `*`; SIGHUP ignored.
 
-- **Auth:** one `X-API-Key` header, checked by **two** dependencies over **two** keys.
-  `verify_api_key` (`TURING_API_KEY`) is the default and guards every non-WS endpoint —
-  the whole surface, write verbs included. `verify_read_key` (`TURING_READ_KEY`) guards
-  exactly three: `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output`. It accepts
+- **Auth:** one `X-API-Key` header, checked by **two** dependencies over **two** keys, plus
+  **two** routes under neither.
+  `verify_api_key` (`TURING_API_KEY`) is the default and guards every non-WS endpoint
+  except the two named below — write verbs included. `verify_read_key` (`TURING_READ_KEY`)
+  guards exactly three: `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output`. It accepts
   **either** key, so full-key callers (the Next proxy, the Convex reconciler) are unaffected,
   while a read-key holder can look at the cluster and cannot act on it. Both compares are
   constant-time over bytes. **Fail closed:** an unset `TURING_READ_KEY` means the read door
@@ -54,7 +55,28 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   same credential; the read key is what TTS sessions on the Jarvis Box hold
   (`worker/bin/tts-turing`). The terminal WebSocket is under neither dependency; it
   authenticates with a short-lived HMAC token signed with the **same** full `API_KEY`
-  (`ws.py:27`, `ws.py:124`) — the read key signs nothing.
+  (`ws.py:27`, `ws.py:124`) — the read key signs nothing. The `/forge/*` router takes
+  `verify_api_key` on every route (`forge.py:570`).
+- **The two routes with no key at all** (`GET /health`, `main.py:165`; `GET|POST
+  /transformer-trace/{path}`, `main.py:260`) — the complete list, and both are deliberate.
+  `/health` returns a fixed dict and reads nothing. `/transformer-trace` is open because
+  `/transformer` is a **public** page (`app/components/page-routes.ts:24`), so its callers
+  are anonymous browsers that hold no tom.Quest credential and cannot be handed one — a key
+  shipped to a public page is not a key. The route forwards to exactly one place, the URL
+  in `~/.tviz-server.json`, and the per-job trace server behind it enforces its own
+  `--token` in the `x-trace-token` header (`transformer_server.py:165`), which this route
+  passes through without reading. So anonymous *reachability* is not anonymous access to
+  the cluster: with no token the forwarded request comes back 401 from the trace server,
+  and with no server registered the route is a 503 that never leaves the process.
+  What it does cost is **threadpool occupancy**, and that is bounded rather than left open:
+  the blocking forward runs in the same finite anyio pool (40 workers) as every sync
+  endpoint here, so `TRACE_MAX_INFLIGHT = 4` (`main.py:210`) caps the anonymous share and
+  answers 429 past it — without that cap, 40 concurrent anonymous requests while a trace
+  server is registered stop `/jobs` and `/gpu-report` being served at all, which is the
+  June 2026 starvation reached through the threadpool instead of the event loop.
+  `TRACE_MAX_BODY_BYTES = 64 KiB` (`main.py:211`) is the second bound: the body of an
+  anonymous POST is buffered in this process, so it is capped as it streams in.
+  Held by `TransformerTraceBoundsTest` in `main_test.py`.
 - **Allocation model:** `POST /allocate` loops `count` times, one **single-GPU**
   `salloc --no-shell --gres=gpu:<type>:1 --time=<mins> --mem=<mb> --job-name=<name>` per
   GPU (`slurm.py:123`). **No `--partition` is ever passed** → everything lands on the
@@ -75,10 +97,13 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
   gated, session-scoped.
 - **The async invariant (load-bearing):** every endpoint that shells out is plain `def`,
-  never `async def`; only `/health` is async. A blocking subprocess call inside `async def`
-  freezes the event loop and starved `/health` during the **June 2026 outage**
-  (`main.py:117`). Any new endpoint that touches the filesystem or shells out is plain
-  `def`.
+  never `async def`. Two endpoints are `async def`, and neither blocks: `/health` returns a
+  dict, and `/transformer-trace` runs its one blocking call through `run_in_threadpool`. A
+  blocking subprocess call inside `async def` freezes the event loop and starved `/health`
+  during the **June 2026 outage** (`main.py:305`). Any new endpoint that touches the
+  filesystem or shells out is plain `def`. The pool those `def` endpoints run in is finite
+  (anyio default, 40 workers), so saturating it starves them exactly as blocking the loop
+  does — which is why the one uncredentialed route that reaches it is capped (§1.1 auth).
 - **`boolback.py` (removed):** a legacy ~1840-line router under `/boolback` formerly served
   ComplexMultiTrigger progress data against the **legacy tree schema** (`claim.json` =
   `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`), which no longer
@@ -495,21 +520,22 @@ Deferred from the worker-pool design (the shipped code clamps to `[0, 16]` and r
 ## 14. Configuration: every environment name turing-api reads
 
 The service reads its settings from `turing-api/.env` beside the code, loaded at startup by
-`python-dotenv` (`main.py:29`). This section is the census of every name any module under
+`python-dotenv` (`main.py:31`). This section is the census of every name any module under
 `turing-api/` reads, the file and line reading it, the value used when the name is unset, and
 which of the two committed templates declares it today — `secrets/turing-api.env.example` or
 `turing-api/forge.env.example`. It is the authoritative list of what a template must cover.
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
+**Seventeen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
 marked *call time*. "Declared in" is the state as of this census; `—` means neither template
 lists the name.
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
-| `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
-| `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
+| `TURING_API_KEY` | `main.py:33` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint except `/health` and `/transformer-trace` (§1.1), and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
+| `TURING_READ_KEY` | `main.py:41` | `""` (the read door does not exist — those three endpoints go back to full-key-only) | Second `X-API-Key` value, accepted by `verify_read_key` on `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output` and nowhere else; it signs no terminal token (§1.1) | `secrets/turing-api.env.example` |
+| `API_PORT` | `main.py:32` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
 | `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |

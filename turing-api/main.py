@@ -3,6 +3,7 @@ import logging
 import os
 import shlex
 import signal
+import threading
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -169,13 +170,64 @@ async def health() -> dict[str, str]:
 # The tom.quest/transformer page talks to a per-job trace server
 # (transformer_server.py) running on a compute node. Compute nodes are not
 # publicly reachable, so the server registers itself in ~/.tviz-server.json
-# (shared NFS home) and this route forwards to it. It is deliberately NOT
-# behind X-API-Key — the page is public; the trace server enforces its own
-# x-trace-token, which is forwarded through. The upstream call is blocking, so
-# it runs in the threadpool (liveness rule: never block the event loop).
+# (shared NFS home) and this route forwards to it.
+#
+# NO X-API-Key, DELIBERATELY, AND THIS IS THE ONE NON-WS ROUTE LIKE THAT.
+# /transformer is a public page (visibility "public" in
+# app/components/page-routes.ts), so its callers are anonymous browsers that
+# hold no tom.Quest credential and cannot be handed one — a key shipped to a
+# public page is not a key. The door that leaves open is narrow by
+# construction: this route reaches exactly one place, the URL written in
+# ~/.tviz-server.json, and the trace server behind it enforces its own per-job
+# --token in the x-trace-token header, which this route forwards without
+# reading. So anonymous REACHABILITY here is not anonymous access to the
+# cluster: without that token every forwarded request comes back 401 from the
+# trace server, and with no server registered the route is a 503 that never
+# leaves this process.
+#
+# What anonymous reachability does cost is threadpool occupancy, and that is
+# what the two bounds below exist for. The upstream call is blocking, so it
+# runs in the threadpool (liveness rule: never block the event loop) — and that
+# is the SAME finite pool (anyio default, 40 workers) in which every sync
+# endpoint in this file runs. While a trace server is registered, an anonymous
+# caller opening N concurrent requests here holds N of those workers for up to
+# TRACE_TIMEOUT_S each; at N ≥ 40, /jobs, /gpu-report and the tmux endpoints
+# stop being served at all. That is the June 2026 starvation reached through
+# the threadpool instead of through the event loop, and reached without a
+# credential. TRACE_MAX_INFLIGHT caps the anonymous share of the pool: past it
+# the route answers 429 at once, so this surface can never hold more than
+# TRACE_MAX_INFLIGHT of the 40 workers and the authenticated endpoints stay
+# live no matter what arrives here. Real use fits inside it — the page fetches
+# /config once and then one /generate or one weight window at a time, and the
+# trace server serializes traces on its own model lock regardless.
+# TRACE_MAX_BODY_BYTES is the second bound: the body of an anonymous POST is
+# buffered in this process, so it is capped as it streams in rather than after,
+# and the cap is taken only while holding a slot. Real bodies here are a JSON
+# prompt — kilobytes.
 
 TRACE_REGISTRATION = os.path.expanduser("~/.tviz-server.json")
 TRACE_TIMEOUT_S = 180
+TRACE_MAX_INFLIGHT = 4
+TRACE_MAX_BODY_BYTES = 64 * 1024
+
+_trace_inflight = 0
+_trace_inflight_lock = threading.Lock()
+
+
+def _take_trace_slot() -> bool:
+    """Reserve one of the TRACE_MAX_INFLIGHT anonymous threadpool slots."""
+    global _trace_inflight
+    with _trace_inflight_lock:
+        if _trace_inflight >= TRACE_MAX_INFLIGHT:
+            return False
+        _trace_inflight += 1
+        return True
+
+
+def _release_trace_slot() -> None:
+    global _trace_inflight
+    with _trace_inflight_lock:
+        _trace_inflight = max(0, _trace_inflight - 1)
 
 
 def _trace_target() -> str | None:
@@ -188,15 +240,44 @@ def _trace_target() -> str | None:
         return None
 
 
+async def _read_bounded_body(request: Request) -> bytes:
+    """Buffer the body, refusing past TRACE_MAX_BODY_BYTES. Streamed rather
+    than request.body() so the cap is enforced before the bytes are held, and
+    whether or not the caller sent a truthful Content-Length."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > TRACE_MAX_BODY_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"trace proxy body limit is {TRACE_MAX_BODY_BYTES} bytes",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @app.api_route("/transformer-trace/{path:path}", methods=["GET", "POST"])
 async def transformer_trace(path: str, request: Request) -> Response:
     target = _trace_target()
     if not target:
         raise HTTPException(status_code=503, detail="no trace server registered (launch transformer_server.py on a GPU job)")
+    if not _take_trace_slot():
+        raise HTTPException(
+            status_code=429,
+            detail=f"trace proxy busy ({TRACE_MAX_INFLIGHT} requests already in flight)",
+        )
+    try:
+        return await _transformer_trace_forward(path, request, target)
+    finally:
+        _release_trace_slot()
+
+
+async def _transformer_trace_forward(path: str, request: Request, target: str) -> Response:
     url = f"{target.rstrip('/')}/{path}"
     if request.url.query:
         url += f"?{request.url.query}"
-    body = await request.body()
+    body = await _read_bounded_body(request)
 
     def _forward() -> tuple[int, bytes, str]:
         import json as _json
