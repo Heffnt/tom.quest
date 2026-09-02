@@ -35,14 +35,14 @@ import {
   lerpFocus,
   locusLabel,
   lodForLayer,
-  matchMeasurements,
-  measurementKey,
-  measurementsOf,
+  matchReadings,
   modeGlyph,
   neuronBins,
-  parseMeasurementKey,
+  parseReadingKey,
   parseUnitPath,
   profilePeak,
+  readingKey,
+  readingsOf,
   reset,
   residLayerHeat,
   rowHasAnatomy,
@@ -174,7 +174,7 @@ describe("buildScale", () => {
     const scale = buildScale({}, headless, W);
     expect(scale.xForPath("L14/attn/h9")).toBeNull();
     const headM = run.interp!.readings!.find((m) => m.locus_shape === "head")!;
-    expect(scale.xForMeasurement(headM)).toBeCloseTo(mid(scale.xForPath("L14/attn")!), 6);
+    expect(scale.xForReading(headM)).toBeCloseTo(mid(scale.xForPath("L14/attn")!), 6);
   });
 });
 
@@ -357,9 +357,9 @@ describe("lerpFocus — the rAF tween's interpolator", () => {
 });
 
 describe("measurement id codec (sel round-trip)", () => {
-  it("round-trips every fixture measurement through parse(measurementKey)", () => {
-    for (const m of [...measurementsOf(run), ...measurementsOf(twin), ...measurementsOf(legacyRow)]) {
-      const parsed = parseMeasurementKey(measurementKey(m));
+  it("round-trips every fixture measurement through parse(readingKey)", () => {
+    for (const m of [...readingsOf(run), ...readingsOf(twin), ...readingsOf(legacyRow)]) {
+      const parsed = parseReadingKey(readingKey(m));
       expect(parsed).toEqual({
         method: m.method || m.kind,
         metricName: m.metric_name ?? "",
@@ -371,15 +371,15 @@ describe("measurement id codec (sel round-trip)", () => {
   });
 
   it("rejects malformed keys (junk sel from URLs)", () => {
-    expect(parseMeasurementKey("")).toBeNull();
-    expect(parseMeasurementKey("a|b")).toBeNull();
-    expect(parseMeasurementKey("a|b|c|d|e|f")).toBeNull();
-    expect(parseMeasurementKey("a|b|notanumber|resid|")).toBeNull();
-    expect(parseMeasurementKey("a|b|16|resid|x")).toBeNull();
-    expect(parseMeasurementKey("a|b|16|resid|9")).toEqual({
+    expect(parseReadingKey("")).toBeNull();
+    expect(parseReadingKey("a|b")).toBeNull();
+    expect(parseReadingKey("a|b|c|d|e|f")).toBeNull();
+    expect(parseReadingKey("a|b|notanumber|resid|")).toBeNull();
+    expect(parseReadingKey("a|b|16|resid|x")).toBeNull();
+    expect(parseReadingKey("a|b|16|resid|9")).toEqual({
       method: "a", metricName: "b", layer: 16, locusComponent: "resid", head: 9,
     });
-    expect(parseMeasurementKey("eap|circuit_faithfulness|||")).toEqual({
+    expect(parseReadingKey("eap|circuit_faithfulness|||")).toEqual({
       method: "eap", metricName: "circuit_faithfulness", layer: null, locusComponent: "", head: null,
     });
   });
@@ -393,7 +393,7 @@ describe("locusLabel", () => {
     expect(locusLabel(ms.find((m) => m.kind === "sae_feature")!)).toBe("L16/mlp");
     expect(locusLabel(ms.find((m) => m.locus_shape === "global")!)).toBe("global");
     expect(locusLabel(ms.find((m) => m.kind === "circuit")!)).toBe("circuit (subgraph)");
-    expect(locusLabel(measurementsOf(legacyRow)[0])).toBe("unlocated");
+    expect(locusLabel(readingsOf(legacyRow)[0])).toBe("unlocated");
   });
 });
 
@@ -422,20 +422,20 @@ describe("LOD ladder", () => {
   });
 });
 
-describe("xForMeasurement — every fixture locus type", () => {
+describe("xForReading — every fixture locus type", () => {
   const scale = buildScale({}, shape, W);
   const ms = run.interp!.readings!;
 
   it("resid point loci center on the layer span", () => {
     const probe16 = ms.find((m) => m.kind === "linear_probe" && m.layer === 16)!;
-    expect(scale.xForMeasurement(probe16)).toBeCloseTo(mid(scale.xForPath("L16")!), 6);
+    expect(scale.xForReading(probe16)).toBeCloseTo(mid(scale.xForPath("L16")!), 6);
   });
 
   it("head loci center on the head slot", () => {
     const headM = ms.find((m) => m.locus_shape === "head")!;
     expect(headM.layer).toBe(14);
     expect(headM.head).toBe(9);
-    expect(scale.xForMeasurement(headM)).toBeCloseTo(
+    expect(scale.xForReading(headM)).toBeCloseTo(
       mid(scale.xForPath("L14/attn/h9")!),
       6,
     );
@@ -443,7 +443,7 @@ describe("xForMeasurement — every fixture locus type", () => {
 
   it("mlp loci center on the mlp component span (right of attn)", () => {
     const sae = ms.find((m) => m.kind === "sae_feature")!;
-    const x = scale.xForMeasurement(sae)!;
+    const x = scale.xForReading(sae)!;
     expect(x).toBeCloseTo(mid(scale.xForPath("L16/mlp")!), 6);
     expect(x).toBeGreaterThan(mid(scale.xForPath("L16/attn")!));
   });
@@ -452,12 +452,12 @@ describe("xForMeasurement — every fixture locus type", () => {
     const globalM = ms.find((m) => m.locus_shape === "global")!;
     // Fixed x by the "global" gutter caption — their honest no-locus home
     // (pane-centering collided with the mid-stack marker piles).
-    expect(scale.xForMeasurement(globalM)).toBe(GLOBAL_LANE_X_PX);
+    expect(scale.xForReading(globalM)).toBe(GLOBAL_LANE_X_PX);
     // The anchor never leaves a degenerate pane.
     const tiny = buildScale({}, shape, 60);
-    expect(tiny.xForMeasurement(globalM)).toBe(30);
+    expect(tiny.xForReading(globalM)).toBe(30);
     const circuit = ms.find((m) => m.kind === "circuit")!;
-    expect(scale.xForMeasurement(circuit)).toBeNull();
+    expect(scale.xForReading(circuit)).toBeNull();
   });
 
   it("embed/unembed loci center on the pinned end spans", () => {
@@ -468,8 +468,8 @@ describe("xForMeasurement — every fixture locus type", () => {
       locus_component: locus,
       locus_shape: "point",
     });
-    expect(scale.xForMeasurement(at("embed"))).toBeCloseTo(mid(scale.xForPath("embed")!), 6);
-    expect(scale.xForMeasurement(at("unembed"))).toBeCloseTo(
+    expect(scale.xForReading(at("embed"))).toBeCloseTo(mid(scale.xForPath("embed")!), 6);
+    expect(scale.xForReading(at("unembed"))).toBeCloseTo(
       mid(scale.xForPath("unembed")!),
       6,
     );
@@ -477,13 +477,13 @@ describe("xForMeasurement — every fixture locus type", () => {
 
   it("layer-less non-global loci are unplaceable (null, never fabricated)", () => {
     expect(
-      scale.xForMeasurement({ kind: "x", value: 1, null_control: 0, locus_shape: "point" }),
+      scale.xForReading({ kind: "x", value: 1, null_control: 0, locus_shape: "point" }),
     ).toBeNull();
     // Legacy record: no locus fields at all.
-    expect(scale.xForMeasurement(measurementsOf(legacyRow)[0])).toBeNull();
+    expect(scale.xForReading(readingsOf(legacyRow)[0])).toBeNull();
     // Out-of-range layer.
     expect(
-      scale.xForMeasurement({ kind: "x", value: 1, null_control: 0, layer: 99 }),
+      scale.xForReading({ kind: "x", value: 1, null_control: 0, layer: 99 }),
     ).toBeNull();
   });
 
@@ -496,14 +496,14 @@ describe("xForMeasurement — every fixture locus type", () => {
   });
 });
 
-describe("measurementsOf + deltaOf (legacy normalization)", () => {
+describe("readingsOf + deltaOf (legacy normalization)", () => {
   it("prefers the measurements list, verbatim", () => {
-    expect(measurementsOf(run)).toBe(run.interp!.readings);
-    expect(measurementsOf(run)).toHaveLength(14);
+    expect(readingsOf(run)).toBe(run.interp!.readings);
+    expect(readingsOf(run)).toHaveLength(14);
   });
 
   it("normalizes the legacy single-record shape into a list", () => {
-    const ms = measurementsOf(legacyRow);
+    const ms = readingsOf(legacyRow);
     expect(ms).toEqual([
       {
         kind: legacyRow.interp!.reading_kind,
@@ -514,12 +514,12 @@ describe("measurementsOf + deltaOf (legacy normalization)", () => {
   });
 
   it("null interp (and empty lists) yield []", () => {
-    expect(measurementsOf(noInterpRow)).toEqual([]);
+    expect(readingsOf(noInterpRow)).toEqual([]);
     const emptied: RunRow = {
       ...legacyRow,
       interp: { ...legacyRow.interp!, reading_kind: null, readings: [] },
     };
-    expect(measurementsOf(emptied)).toEqual([]);
+    expect(readingsOf(emptied)).toEqual([]);
   });
 
   it("deltaOf prefers the shipped delta, falls back to value − null_control", () => {
@@ -527,13 +527,13 @@ describe("measurementsOf + deltaOf (legacy normalization)", () => {
       (m) => m.kind === "linear_probe" && m.layer === 16,
     )!;
     expect(deltaOf(probe16)).toBe(0.42);
-    expect(deltaOf(measurementsOf(legacyRow)[0])).toBeCloseTo(0.01, 10);
+    expect(deltaOf(readingsOf(legacyRow)[0])).toBeCloseTo(0.01, 10);
     expect(deltaOf({ kind: "x", value: null, null_control: null })).toBeNull();
   });
 });
 
-describe("matchMeasurements — the fixture's run/twin pairing", () => {
-  const res = matchMeasurements(run, twin);
+describe("matchReadings — the fixture's run/twin pairing", () => {
+  const res = matchReadings(run, twin);
 
   it("pairs on (method||kind, metric_name, layer, locus_component, head)", () => {
     const both = res.pairs.filter((p) => p.run && p.twin);
@@ -576,25 +576,25 @@ describe("matchMeasurements — the fixture's run/twin pairing", () => {
   });
 
   it("no twin → every pair is run-only and the twin side is silent", () => {
-    const solo = matchMeasurements(run, null);
+    const solo = matchReadings(run, null);
     expect(solo.pairs).toHaveLength(14);
     expect(solo.pairs.every((p) => p.run && !p.twin)).toBe(true);
     expect(solo.layerDeltas.every((d) => d.twin === 0)).toBe(true);
   });
 
   it("legacy rows match through the normalized single record", () => {
-    const legacy = matchMeasurements(legacyRow, null);
+    const legacy = matchReadings(legacyRow, null);
     expect(legacy.pairs).toHaveLength(1);
-    expect(legacy.pairs[0].key).toBe(measurementKey(measurementsOf(legacyRow)[0]));
+    expect(legacy.pairs[0].key).toBe(readingKey(readingsOf(legacyRow)[0]));
   });
 
-  it("measurementKey separates same-kind measurements at different loci", () => {
+  it("readingKey separates same-kind measurements at different loci", () => {
     const runCaa = run.interp!.readings!.find((m) => m.kind === "caa")!;
     const twinCaa = twin.interp!.readings!.find((m) => m.kind === "caa")!;
-    expect(measurementKey(runCaa)).not.toBe(measurementKey(twinCaa));
+    expect(readingKey(runCaa)).not.toBe(readingKey(twinCaa));
     const p8 = (r: RunRow) =>
       r.interp!.readings!.find((m) => m.kind === "linear_probe" && m.layer === 8)!;
-    expect(measurementKey(p8(run))).toBe(measurementKey(p8(twin)));
+    expect(readingKey(p8(run))).toBe(readingKey(p8(twin)));
   });
 });
 
@@ -765,7 +765,7 @@ describe("rulerLabelLayers", () => {
   });
 
   it("fit-circuit: every expanded layer labeled AND every gap gets an anchor", () => {
-    const circuit = measurementsOf(run).find((m) => m.locus_shape === "subgraph")!;
+    const circuit = readingsOf(run).find((m) => m.locus_shape === "subgraph")!;
     const focus = fitCircuit({}, circuit.nodes!, shape);
     const circuitLayers = [...new Set(circuit.nodes!.map((n) => n.layer))];
     // The regression width: compressed layers sat at ~15.8px (< the old 16px
@@ -819,7 +819,7 @@ describe("rulerLabelLayers", () => {
 
 describe("profilePeak / rowHasAnatomy", () => {
   it("profilePeak: max |sweep value| across measurements; junk skipped", () => {
-    const peak = profilePeak(measurementsOf(run));
+    const peak = profilePeak(readingsOf(run));
     expect(peak).toBeCloseTo(0.42, 6); // the probe sweep's L16 apex
     expect(
       profilePeak([
@@ -905,7 +905,7 @@ describe("findTwinRow", () => {
 
 describe("residLayerHeat — the bar's model-LOD heat cells", () => {
   it("aggregates resid points + sweeps; component/global loci stay off the bar", () => {
-    const heat = residLayerHeat(measurementsOf(run));
+    const heat = residLayerHeat(readingsOf(run));
     expect(heat.size).toBe(32); // the sweep covers every layer
     expect(heat.get(16)).toBeCloseTo(0.78, 10); // cde beats probe/caa/lens
     expect(heat.get(24)).toBeCloseTo(0.61, 10); // lens beats the probe
@@ -916,7 +916,7 @@ describe("residLayerHeat — the bar's model-LOD heat cells", () => {
 
   it("legacy/degenerate inputs are safe", () => {
     // Legacy record: no layer → nothing to place on the bar.
-    expect(residLayerHeat(measurementsOf(legacyRow)).size).toBe(0);
+    expect(residLayerHeat(readingsOf(legacyRow)).size).toBe(0);
     expect(residLayerHeat([]).size).toBe(0);
     const junk: InterpReading[] = [
       { kind: "g", value: 1, null_control: 0, locus_shape: "global" }, // layer-less
@@ -1045,10 +1045,10 @@ describe("hostile shape counts (n_layers / n_heads)", () => {
     };
     // Places at a finite x (attn center degrade) — the unclamped loop never
     // returned at all.
-    expect(Number.isFinite(inf.xForMeasurement(headM)!)).toBe(true);
+    expect(Number.isFinite(inf.xForReading(headM)!)).toBe(true);
     const huge = buildScale({}, { nLayers: 8, nHeads: 1e8, dMlp: null }, 800);
     expect(huge.shape.nHeads).toBe(MAX_MODEL_HEADS);
-    expect(Number.isFinite(huge.xForMeasurement(headM)!)).toBe(true);
+    expect(Number.isFinite(huge.xForReading(headM)!)).toBe(true);
     const frac = buildScale({}, { nLayers: 8, nHeads: 4.7, dMlp: null }, 800);
     expect(frac.shape.nHeads).toBe(4);
   });
@@ -1079,7 +1079,7 @@ describe("hostile measurement values", () => {
   it("fractional layers are unplaceable — null, never NaN", () => {
     const scale = buildScale({}, shape, W);
     expect(
-      scale.xForMeasurement({ kind: "x", value: 1, null_control: 0, layer: 2.5 }),
+      scale.xForReading({ kind: "x", value: 1, null_control: 0, layer: 2.5 }),
     ).toBeNull();
     expect(scale.xForNode({ layer: 2.5, component: "mlp" })).toBeNull();
     // Fractional heads degrade to the attn center instead of a NaN slot.
@@ -1087,7 +1087,7 @@ describe("hostile measurement values", () => {
       kind: "x", value: 1, null_control: 0,
       layer: 14, head: 9.5, locus_component: "attn", locus_shape: "head",
     };
-    expect(scale.xForMeasurement(fracHead)).toBeCloseTo(
+    expect(scale.xForReading(fracHead)).toBeCloseTo(
       mid(scale.xForPath("L14/attn")!), 6,
     );
   });
@@ -1106,7 +1106,7 @@ describe("hostile measurement values", () => {
         { kind: "y", metric_name: "m", delta: 0.5, value: 0.5, null_control: 0, layer: 4 },
       ] },
     } as Partial<RunRow>);
-    const res = matchMeasurements(junkRun, null);
+    const res = matchReadings(junkRun, null);
     expect(res.deltaMax).toBe(0.5); // finite marker keeps its full radius
     expect(res.layerDeltas.find((d) => d.layer === 3)).toBeUndefined();
   });
@@ -1132,19 +1132,19 @@ describe("out-of-range layer clamping (nLayers param)", () => {
     ] },
   } as Partial<RunRow>);
 
-  it("matchMeasurements drops layers the renderer can never draw", () => {
-    const m = matchMeasurements(runRow, twinRow, 8);
+  it("matchReadings drops layers the renderer can never draw", () => {
+    const m = matchReadings(runRow, twinRow, 8);
     expect(m.layerDeltas.some((d) => d.layer === 20)).toBe(false);
     expect(m.layerDeltas.find((d) => d.layer === 3)!.run).toBe(0.5);
     expect(m.layerDeltas.find((d) => d.layer === 2)!.twin).toBe(0.3);
     // The pairs themselves still exist (matching is locus-keyed, not clamped).
     expect(m.pairs).toHaveLength(3);
     // Without the range hint the legacy aggregate keeps everything.
-    expect(matchMeasurements(runRow, twinRow).layerDeltas.some((d) => d.layer === 20)).toBe(true);
+    expect(matchReadings(runRow, twinRow).layerDeltas.some((d) => d.layer === 20)).toBe(true);
   });
 
   it("residLayerHeat drops out-of-range and non-integer layers", () => {
-    const heat = residLayerHeat(measurementsOf(twinRow), 8);
+    const heat = residLayerHeat(readingsOf(twinRow), 8);
     expect(heat.has(20)).toBe(false);
     expect(heat.get(2)).toBe(0.3);
     const junk = residLayerHeat([

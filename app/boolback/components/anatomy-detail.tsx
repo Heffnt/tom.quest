@@ -9,7 +9,7 @@
 // measurement. Two parts:
 //
 //   1. A compact measurement list (carrier dot, kind, locus, value/null/Δ).
-//      The store's anatomy.sel (measurementKey codec, shared with the pane
+//      The store's anatomy.sel (readingKey codec, shared with the pane
 //      and share links) highlights its row and scrolls it into view; rows
 //      are clickable so selection flows detail→pane as well as pane→detail.
 //   2. The selected measurement's FULL record: taxonomy/locus fields, every
@@ -30,9 +30,9 @@ import {
   carrierColor,
   deltaOf,
   locusLabel,
-  measurementKey,
-  measurementsOf,
   modeGlyph,
+  readingKey,
+  readingsOf,
 } from "../lib/anatomy";
 
 const fmtNum = (v: number | null | undefined): string =>
@@ -57,13 +57,13 @@ const nodeLabel = (n: { layer: number; component: string; head?: number }): stri
 const LIST_WINDOW = 100;
 
 export function AnatomySection({ row }: { row: RunRow }) {
-  const ms = useMemo(() => measurementsOf(row), [row]);
+  const ms = useMemo(() => readingsOf(row), [row]);
   const sel = useBoolbackStore((s) => s.anatomy.sel);
   const setAnatomy = useBoolbackStore((s) => s.setAnatomy);
   const selRef = useRef<HTMLButtonElement | null>(null);
 
   const selM = useMemo(
-    () => (sel === null ? null : ms.find((m) => measurementKey(m) === sel) ?? null),
+    () => (sel === null ? null : ms.find((m) => readingKey(m) === sel) ?? null),
     [ms, sel],
   );
 
@@ -72,7 +72,7 @@ export function AnatomySection({ row }: { row: RunRow }) {
   const start = Math.max(0, Math.min(winStart, Math.max(0, ms.length - LIST_WINDOW)));
   const end = Math.min(ms.length, start + LIST_WINDOW);
   const selIdx = useMemo(
-    () => (sel === null ? -1 : ms.findIndex((m) => measurementKey(m) === sel)),
+    () => (sel === null ? -1 : ms.findIndex((m) => readingKey(m) === sel)),
     [ms, sel],
   );
   useEffect(() => {
@@ -110,7 +110,7 @@ export function AnatomySection({ row }: { row: RunRow }) {
           )}
           {ms.slice(start, end).map((m, i) => {
             const idx = start + i;
-            const key = measurementKey(m);
+            const key = readingKey(m);
             const isSel = key === sel;
             const d = deltaOf(m);
             return (
