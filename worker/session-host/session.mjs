@@ -790,11 +790,17 @@ export class Session {
         // enters a session's shell — its write surface (capture, prep,
         // briefs, batches, ruling-applied, session-outcome) is the same one
         // the cron jobs' agentic runs already expose to a model.
-        // SESSIONS_WORKER_KEY, GH_TOKEN and the two TOMQUEST_AGENT_* browse
-        // credentials are SCRUBBED above (inheritedEnv): inheriting them is
-        // not hypothetical — systemd puts all four in this process's env —
-        // and an ingest key reachable from the session's shell would let a
-        // confused session corrupt any transcript.
+        // FIVE names are SCRUBBED above (the destructure that builds
+        // inheritedEnv, and the only place the list should be counted):
+        // SESSIONS_WORKER_KEY, GH_TOKEN, the two TOMQUEST_AGENT_* browse
+        // credentials, and TURING_API_KEY. Inheriting them is not
+        // hypothetical — systemd puts the first four in this process's env,
+        // and TURING_API_KEY reached a session's shell that way on
+        // 2026-08-30 — and an ingest key reachable from the session's shell
+        // would let a confused session corrupt any transcript.
+        // Do not restate this list in prose elsewhere; point at the
+        // destructure instead. This comment said "the two TOMQUEST_AGENT_*
+        // credentials … all four" for as long as the list was four names.
         env: {
           ...inheritedEnv,
           CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
