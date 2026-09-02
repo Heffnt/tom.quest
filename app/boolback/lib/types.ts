@@ -29,7 +29,24 @@ import { CATEGORY_PALETTE, paletteColor } from "./styling";
 
 // v3 is the reading-vocab snapshot (CMT builder in flight); v1/v2 are the
 // legacy measurement-vocab blobs data/normalize still translates.
+//
+// THE ONE accepted-versions list. data/normalize.asBundle gates every load on
+// isSupportedSchemaVersion below, so a v4 bump is edited HERE and nowhere else.
+// (normalize's `version === 2 || version === 3` structural branch is a
+// different question — which conversion a version takes — and stays explicit
+// so a new version cannot inherit the modern path by default.)
 export const SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3] as const;
+
+export type SchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
+
+/**
+ * True when a raw snapshot's schema_version is one this app can load.
+ * Written as a type predicate (not a bare boolean) so callers keep the
+ * narrowing the old inline `!== 1 && !== 2 && !== 3` check gave them.
+ */
+export function isSupportedSchemaVersion(v: unknown): v is SchemaVersion {
+  return (SUPPORTED_SCHEMA_VERSIONS as readonly unknown[]).includes(v);
+}
 
 export interface Bundle {
   schema_version: number;
