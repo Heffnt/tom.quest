@@ -7,6 +7,10 @@ from pathlib import Path
 # like ../../etc/passwd or a symlink can't escape it. Reading secrets must go
 # through an audited terminal session, never a plain GET — so even inside the
 # root we refuse names/dirs that commonly hold credentials.
+# WARNING (spec.md §14.4 item 6): unset TURING_FILE_ROOT does not stop the service —
+# the root becomes Path.home(), i.e. whatever $HOME is for this process. And this line
+# runs during `from dirs import ...` (main.py:24), BEFORE load_dotenv(), so setting the
+# name in turing-api/.env has no effect here; export it in the environment instead.
 ALLOWED_FILE_ROOT = Path(os.environ.get("TURING_FILE_ROOT", str(Path.home()))).resolve()
 _DENIED_NAME_PATTERNS = [
     re.compile(r"^\.env(\..*)?$", re.IGNORECASE),   # .env, .env.local, ...
