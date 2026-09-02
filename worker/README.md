@@ -150,21 +150,33 @@ full-key-only.
 ## The no-state rule
 
 **The Jarvis Box owns no durable state.** Everything that matters lives in Convex
-(and, for code todos, in the CMT repo itself). The local files with memory
-are all harmless to lose:
+(and, for code todos, in the CMT repo itself). **This list is the full
+inventory** of what the jobs keep on the box — six files and two lock
+directories under `/var/lib/tts`, plus rebuildable caches under
+`/var/cache/tts`. `worker/setup.sh` and `worker/jobs/poll-dump.mjs` point here
+instead of repeating it; when a job starts or stops keeping a file, this list
+is the place that has to change.
 
-- `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-captures up to
-  24 hours of `#dump` messages as duplicates Tom can archive.
-- `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
-  processed (captured or skipped); losing it re-examines the last 24 hours,
-  at worst re-capturing a few emails as duplicates Tom can archive.
-- `/var/lib/tts/canvas-announcements-cursor` — timestamp of the newest
-  announcement poll-canvas has processed; losing it re-examines the last
-  7 days, at worst re-capturing a few announcements as duplicates.
-- `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
-  losing it re-briefs everything once (the Convex POST upserts).
-- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
-  brief copies, the executor's throwaway clones.
+Every entry is safe to lose. None is free to lose: the cost is always work
+redone, and for the cursors that work is Claude calls and duplicate rows Tom
+sees.
+
+| Path | Written by | Holds | Cost of losing it |
+| --- | --- | --- | --- |
+| `/var/lib/tts/dump-cursor` | `poll-dump.mjs` | Slack `ts` of the last captured `#dump` message | Re-captures up to 24 hours of `#dump` messages as duplicate todos Tom can archive. |
+| `/var/lib/tts/gmail-cursor` | `poll-gmail.mjs` | `internalDate` of the newest email processed (captured or skipped) | Re-examines the last 24 hours, at worst re-capturing a few emails as duplicates. |
+| `/var/lib/tts/canvas-announcements-cursor` | `poll-canvas.mjs` | `posted_at` of the newest announcement processed | Re-examines the last 7 days, at worst re-capturing a few announcements as duplicates. |
+| `/var/lib/tts/brief-hashes.json` | `tts-code-lib.mjs` | source hash each code todo was last briefed at | Re-briefs every open code todo once; the Convex POST upserts, so the cost is Claude time, not duplicate briefs. |
+| `/var/lib/tts/batch-input-hash` | `form-batches.mjs` | hash of the last batch-forming input | One extra Claude run on unchanged inputs, which re-forms the batches. |
+| `/var/lib/tts/plan-input-hash` | `plan-graphs.mjs` | hash of the last planner input | One extra Claude planner run on unchanged inputs, which re-plans the graphs. |
+| `/var/lib/tts/apply.lock` | `apply-rulings.mjs` | mkdir lock, stale after 30 min | Nothing when idle. Deleting one a run is holding lets two runs apply the same rulings twice. |
+| `/var/lib/tts/execute.lock` | `execute-approved.mjs` | mkdir lock, stale after 3 h | Nothing when idle. Deleting one a run is holding lets two executors work the same approved plan. |
+| `/var/cache/tts/` | code-todo + session jobs | shallow CMT clone, local brief copies, executor and session clones | Rebuilt on next use; costs one clone. |
+
+Four more locks live outside `/var/lib/tts`: `flock` files under `/var/lock`
+(`tts-poll-gmail.lock`, `tts-poll-canvas.lock`, `tts-apply-time-notes.lock`,
+`tts-prepare-life-todos.lock`), created by the cron lines themselves. They hold
+no memory between runs.
 
 Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 

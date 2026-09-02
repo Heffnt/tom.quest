@@ -31,9 +31,11 @@
 // ARCHIVE notes are left out: an archive sentence is the unarchive CONDITION
 // for one retired item, not steering about what to group.
 //
-// NO-STATE RULE: Convex is read and written each run. The only local file is
-// the input-hash cursor in /var/lib/tts/ — losing it merely costs one extra
-// Claude invocation on inputs that had not changed (brief-hashes pattern).
+// NO-STATE RULE: Convex is read and written each run. THIS JOB's only local
+// file is the input-hash cursor /var/lib/tts/batch-input-hash — losing it
+// merely costs one extra Claude invocation on inputs that had not changed
+// (brief-hashes pattern). Other jobs keep other files in that directory;
+// worker/README.md's "The no-state rule" is the full inventory.
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";

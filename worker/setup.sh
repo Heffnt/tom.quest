@@ -6,12 +6,20 @@
 #   bash worker/setup.sh
 #
 # THE NO-STATE RULE: the Jarvis Box owns no durable state. Everything that matters
-# lives in Convex; the only local file with any memory at all is the Slack
-# poll cursor under /var/lib/tts/ (losing it merely re-captures up to 24h of
-# #dump messages as duplicates Tom can archive). Therefore this ONE script,
-# plus filling the env file and logging in the two Claude accounts, is the
-# complete rebuild procedure. It is idempotent — safe to re-run any time,
-# including to roll out updated job scripts after a git pull.
+# lives in Convex (and, for code todos, in the repo the todo lives in). What the
+# jobs keep locally is SIX files and TWO lock directories under /var/lib/tts —
+# the three poll cursors dump-cursor / gmail-cursor /
+# canvas-announcements-cursor, the brief cursor brief-hashes.json, the two
+# planner input-hash cursors batch-input-hash / plan-input-hash, and the
+# apply.lock / execute.lock mkdir locks — plus rebuildable caches under
+# /var/cache/tts. Losing any of them is SAFE but not FREE: a wiped cursor
+# re-captures messages already captured, re-briefs todos already briefed, and
+# re-forms batches already formed. worker/README.md's "The no-state rule"
+# section is the one full inventory, with each file's cost of loss; keep it in
+# step with this list. Therefore this ONE script, plus filling the env file and
+# logging in the two Claude accounts, is the complete rebuild procedure. It is
+# idempotent — safe to re-run any time, including to roll out updated job
+# scripts after a git pull.
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -71,9 +79,13 @@ npx playwright install chromium
 
 echo "== [5/9] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
-# /var/lib/tts        — small local state: the Slack poll cursor, the
-#     brief-hash cursor, and the apply/execute lock dirs (all harmless to
-#     lose; see each job's header)
+# /var/lib/tts        — small local state, in full: the three poll cursors
+#     dump-cursor (Slack), gmail-cursor, canvas-announcements-cursor; the
+#     brief cursor brief-hashes.json; the two planner input-hash cursors
+#     batch-input-hash and plan-input-hash; and the apply.lock / execute.lock
+#     mkdir lock dirs (all safe to lose, at the cost of re-capturing,
+#     re-briefing and re-planning once — see each job's header, and
+#     worker/README.md's "The no-state rule" for the per-file cost)
 # /var/cache/tts      — rebuildable caches: the shallow CMT clone, the brief
 #     markdown copies, and the executor's throwaway full clones
 # /etc/tts            — worker.env (secrets; mode 600)
