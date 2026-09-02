@@ -95,9 +95,12 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
 #
-#   git — the global credential.helper below. Clones and pushes use CLEAN
-#     https URLs; the helper hands git the token at ask time, so no work tree
-#     or `git remote -v` ever contains it.
+#   git — the system credential.helper below (--system, not --global; see the
+#     note further down). Clones and pushes use CLEAN https URLs; the helper
+#     hands git the token at ask time, so no work tree or `git remote -v` ever
+#     contains it. True of session clones AND of the code-todo jobs — the
+#     cache clone, the executor clones and their pushes all go through it
+#     (worker/jobs/tts-code-lib.mjs, cmtRemoteUrl).
 #   gh  — /root/.config/gh/hosts.yml, REGENERATED from worker.env on every
 #     run (a derived file, never hand-edited), so `gh pr create` works in a
 #     session shell whose env is scrubbed of GH_TOKEN. The file sits outside

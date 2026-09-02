@@ -11,7 +11,18 @@ import httpx
 import main
 
 
-def _request(method: str, path: str, **kwargs) -> httpx.Response:
+TEST_API_KEY = "test-api-key"
+
+
+def _request(method: str, path: str, api_key: str | None = TEST_API_KEY, **kwargs) -> httpx.Response:
+    # Default the key header so every existing call site authenticates: an
+    # unset TURING_API_KEY now REFUSES rather than authorizing, so tests must
+    # present a key like any other caller. api_key=None sends no header, which
+    # is what the auth tests need. (httpx.request has no `api_key` parameter,
+    # so this name cannot collide with a forwarded kwarg.)
+    if api_key is not None:
+        kwargs["headers"] = {"X-API-Key": api_key, **(kwargs.get("headers") or {})}
+
     async def go() -> httpx.Response:
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -27,7 +38,7 @@ class AllocateCountTest(unittest.TestCase):
 
     def test_count_zero_is_rejected(self) -> None:
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.allocate_gpu") as allocate_gpu,
         ):
             res = _request(
@@ -39,7 +50,7 @@ class AllocateCountTest(unittest.TestCase):
 
     def test_count_above_cap_is_rejected(self) -> None:
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.allocate_gpu") as allocate_gpu,
         ):
             res = _request(
@@ -52,7 +63,7 @@ class AllocateCountTest(unittest.TestCase):
 
     def test_count_defaults_to_one(self) -> None:
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.allocate_gpu", return_value=("100", None)) as allocate_gpu,
             patch("main.setup_allocation_session", return_value="1_allocation"),
         ):
@@ -71,7 +82,7 @@ class AllocateCountTest(unittest.TestCase):
             return (next(job_ids), None)
 
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.allocate_gpu", side_effect=fake_allocate) as allocate_gpu,
             patch("main.setup_allocation_session", side_effect=lambda jid, *_: f"{jid}_s"),
         ):
@@ -93,7 +104,7 @@ class FileAccessTest(unittest.TestCase):
         self.root = Path(self._tmp.name).resolve()
         (self.root / "ok.txt").write_text("hello")
         (self.root / ".env").write_text("SECRET=1")
-        self._patches = [patch("dirs.ALLOWED_FILE_ROOT", self.root), patch("main.API_KEY", "")]
+        self._patches = [patch("dirs.ALLOWED_FILE_ROOT", self.root), patch("main.API_KEY", TEST_API_KEY)]
         for p in self._patches:
             p.start()
 
@@ -133,7 +144,7 @@ class RunCommandTest(unittest.TestCase):
 
     def test_run_sends_command_to_existing_session(self) -> None:
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.session_exists", return_value=True),
             patch("main.send_to_session", return_value=True) as send,
         ):
@@ -144,7 +155,7 @@ class RunCommandTest(unittest.TestCase):
 
     def test_run_404_when_session_missing(self) -> None:
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.session_exists", return_value=False),
             patch("main.send_to_session") as send,
         ):
@@ -154,7 +165,7 @@ class RunCommandTest(unittest.TestCase):
 
     def test_run_400_when_command_blank(self) -> None:
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.session_exists", return_value=True),
             patch("main.send_to_session") as send,
         ):
@@ -164,7 +175,7 @@ class RunCommandTest(unittest.TestCase):
 
     def test_run_502_when_send_fails(self) -> None:
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.session_exists", return_value=True),
             patch("main.send_to_session", return_value=False),
         ):
@@ -193,7 +204,7 @@ class ListJobsTest(unittest.TestCase):
         )
 
         with (
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
             patch("main.get_user_jobs", return_value=[pool_job]),
         ):
             res = _request("GET", "/jobs")
@@ -357,6 +368,42 @@ class ReadKeyTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
 
 
+class UnconfiguredServerTest(unittest.TestCase):
+    """An unset TURING_API_KEY refuses every request rather than authorizing
+    it — the ws.py:124-126 posture, on the HTTP surface, and on BOTH key
+    dependencies.
+
+    The defect this names: `if not API_KEY: return True` was the FIRST
+    statement of verify_api_key and of verify_read_key, so a server started
+    without a key served all 24 key-bearing endpoints — /jobs, /allocate,
+    /file, POST /sessions/{name}/run and the whole /forge surface — to any
+    caller at all. 503 rather than 401: a missing server key is a
+    misconfiguration, not a wrong credential.
+    """
+
+    def test_full_key_dependency_refuses_when_unconfigured(self) -> None:
+        with patch("main.API_KEY", ""), patch("main.READ_KEY", ""):
+            for key in (None, "", "any-key"):
+                with self.subTest(key=key):
+                    self.assertEqual(_request("GET", "/gpu-types", api_key=key).status_code, 503)
+
+    def test_read_key_dependency_refuses_when_unconfigured(self) -> None:
+        """The half the original defect report predates: verify_read_key grew
+        the same fail-open branch later, so /gpu-report, /jobs and session
+        output were served unauthenticated on a keyless server even to a
+        caller holding a perfectly good read key."""
+        with patch("main.API_KEY", ""), patch("main.READ_KEY", "read-key"):
+            for path in ("/gpu-report", "/jobs"):
+                with self.subTest(path=path):
+                    self.assertEqual(_request("GET", path, api_key="read-key").status_code, 503)
+
+    def test_open_routes_stay_open(self) -> None:
+        """/health is open by design and stays open — the refusal above is
+        about the key-bearing surface, not a blanket shutdown."""
+        with patch("main.API_KEY", ""), patch("main.READ_KEY", ""):
+            self.assertEqual(_request("GET", "/health", api_key=None).status_code, 200)
+
+
 class EventLoopIsolationTest(unittest.TestCase):
     def test_slow_gpu_report_does_not_delay_health(self) -> None:
         report_started = threading.Event()
@@ -372,7 +419,14 @@ class EventLoopIsolationTest(unittest.TestCase):
             transport = httpx.ASGITransport(app=main.app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 start = time.monotonic()
-                report_task = asyncio.create_task(client.get("/gpu-report"))
+                # This test builds its own client rather than using _request,
+                # so it does not inherit the default key header: /gpu-report
+                # is behind verify_read_key and must present one by hand. The
+                # /health call below stays deliberately keyless — that it
+                # answers while /gpu-report blocks IS the assertion.
+                report_task = asyncio.create_task(
+                    client.get("/gpu-report", headers={"X-API-Key": TEST_API_KEY})
+                )
                 deadline = start + 5
                 while not report_started.is_set():
                     self.assertLess(time.monotonic(), deadline, "/gpu-report never reached its handler")
@@ -384,7 +438,7 @@ class EventLoopIsolationTest(unittest.TestCase):
 
         with (
             patch("main.format_gpu_report_v2", side_effect=slow_gpu_report),
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
         ):
             health, report, health_elapsed = asyncio.run(scenario())
 

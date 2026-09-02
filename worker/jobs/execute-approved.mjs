@@ -119,7 +119,7 @@ async function main() {
 
     // Fresh FULL clone; delete any corpse from a crashed prior attempt.
     fs.rmSync(execDir, { recursive: true, force: true });
-    execFileSync("git", ["clone", cmtRemoteUrl(env), execDir], {
+    execFileSync("git", ["clone", cmtRemoteUrl(), execDir], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "inherit"],
     });

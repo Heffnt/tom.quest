@@ -212,7 +212,7 @@ describe("GatewayConnection", () => {
   // browser, so a refusal that does not name the credential leaves it alone.
   async function refuseHandshake(
     error: { code: string; message: string; details?: unknown },
-    options: { token?: string; password?: string } = {},
+    options: { password?: string } = {},
   ) {
     const { GatewayConnection } = await import("@/app/jarvis/components/GatewayConnection");
     const connection = new GatewayConnection({
@@ -323,20 +323,6 @@ describe("GatewayConnection", () => {
       deviceId: "device-1",
       role: "operator",
     });
-  });
-
-  it("keeps a token passed in by the caller — only the store's own token is dropped", async () => {
-    const { connection } = await refuseHandshake(
-      {
-        code: "UNAUTHORIZED",
-        message: "device token rejected",
-        details: { code: "AUTH_REQUIRED" },
-      },
-      { token: "caller-supplied-token" },
-    );
-
-    expect(connection.connected).toBe(false);
-    expect(clearDeviceAuthToken).not.toHaveBeenCalled();
   });
 
   it("keeps the stored token when the handshake fails for a non-auth reason", async () => {
