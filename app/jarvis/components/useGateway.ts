@@ -64,13 +64,11 @@ function throwMissingConnection(): never {
 export function GatewayProvider({
   children,
   url,
-  token,
   password,
   deviceIdentity,
 }: {
   children: ReactNode;
   url: string;
-  token?: string;
   password?: string;
   deviceIdentity?: DeviceIdentity;
 }) {
@@ -82,12 +80,11 @@ export function GatewayProvider({
     if (!url) return null;
     return new GatewayConnection({
       url,
-      token,
       password,
       deviceIdentity,
       onStateChange: handleStateChange,
     });
-  }, [deviceIdentity, handleStateChange, password, token, url]);
+  }, [deviceIdentity, handleStateChange, password, url]);
 
   useEffect(() => {
     if (!connection) return;

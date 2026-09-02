@@ -57,7 +57,6 @@ type PendingRequest = {
 
 export type GatewayConnectionOptions = {
   url: string;
-  token?: string;
   password?: string;
   deviceIdentity?: DeviceIdentity;
   requestTimeoutMs?: number;
@@ -164,7 +163,6 @@ export class GatewayConnection {
   error: string | null = null;
   onStateChange: (() => void) | null = null;
   private readonly url: string;
-  private readonly token?: string;
   private readonly password?: string;
   private readonly deviceIdentity?: DeviceIdentity;
   private readonly requestTimeoutMs: number;
@@ -181,7 +179,6 @@ export class GatewayConnection {
 
   constructor(options: GatewayConnectionOptions) {
     this.url = normalizeGatewayUrl(options.url);
-    this.token = normalizeString(options.token);
     this.password = normalizeString(options.password);
     this.deviceIdentity = options.deviceIdentity;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -330,15 +327,16 @@ export class GatewayConnection {
     const storedToken = identity
       ? loadDeviceAuthToken({ deviceId: identity.deviceId, role: CONNECT_ROLE })?.token
       : undefined;
-    const authToken = this.token ?? storedToken;
+    const authToken = storedToken;
     // Is the stored token the ONLY credential this handshake stakes? Only then
-    // does a refusal name it. A token passed into the constructor is the
-    // caller's and is not ours to delete; and when a password rides along, an
-    // auth refusal may be about the password, so the token is left alone.
-    const usedStoredToken =
-      this.token === undefined &&
-      this.password === undefined &&
-      storedToken !== undefined;
+    // does a refusal name it — when a password rides along, an auth refusal
+    // may be about the password, so the token is left alone.
+    //
+    // This used to carry a third clause, `this.token === undefined`, guarding
+    // a token passed into the constructor as "the caller's and not ours to
+    // delete". That option is gone: no caller ever supplied one, so the
+    // stored token is now the only token this handshake can stake.
+    const usedStoredToken = this.password === undefined && storedToken !== undefined;
     const authPassword = this.password;
     const device = identity
       ? await buildConnectDevice({
