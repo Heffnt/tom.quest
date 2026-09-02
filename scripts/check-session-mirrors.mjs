@@ -246,6 +246,12 @@ const REPO_LIST_ALLOWED = new Set([
 const REPO_NAME_WINDOW = 300;
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
 const SKIP_DIR = new Set([
+  // Agent worktrees live in .claude/worktrees/*/ and are FULL copies of this
+  // repository, so without this the fence grades convex/ttsShared.ts a second
+  // time under a path the allowlist cannot match, and reports the one home as a
+  // second home. eslint.config.mjs and vitest.config.mts fence ".claude/**" for
+  // the same reason.
+  ".claude",
   "node_modules",
   ".git",
   ".next",
