@@ -31,7 +31,12 @@ export type ColorMode = {
   label: string;
   channel: string;
   palette: PaletteEntry[];
-  metrics?: MetricEntry[]; // absent for GT modes
+  // Absent whenever the exporter had no scored run for the mode: every ground
+  // truth mode, and also the prediction modes it exports without a metrics
+  // block (in the committed manifest: pred_pointnet, pred_pointnet2,
+  // pred_floor_pole, pred_ransac_floor). Read it as optional for every mode,
+  // never as "present iff prediction".
+  metrics?: MetricEntry[];
 };
 
 export type CloudMetaEntry = {
@@ -45,6 +50,12 @@ export type SplitPlane = {
   axis_index: 0 | 1 | 2;
   value: number; // already in centered (post-centroid) world coordinates
 };
+
+// The only manifest layout the types below describe. manifest.json is written
+// by another repository (ML_Final_Project), so a format change can land here
+// as a file swap with no code change; fetchManifest refuses any other value
+// rather than rendering a page from fields it has guessed at.
+export const SUPPORTED_MANIFEST_VERSION = 1;
 
 export type Manifest = {
   version: number;
