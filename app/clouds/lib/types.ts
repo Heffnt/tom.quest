@@ -31,7 +31,15 @@ export type ColorMode = {
   label: string;
   channel: string;
   palette: PaletteEntry[];
-  metrics?: MetricEntry[]; // absent for GT modes
+  // Present only where the producing run recorded metrics -- which is not the
+  // same rule as "every prediction mode has them". In the current manifest 7 of
+  // the 15 modes carry no metrics array: the three gt_* modes, plus the
+  // prediction modes pred_pointnet, pred_pointnet2, pred_floor_pole and
+  // pred_ransac_floor. Whether those four omit metrics by design or because the
+  // export run did not record them is not determinable from this repo; the
+  // pipeline that writes manifest.json lives in ML_Final_Project. metrics-panel
+  // renders "No run metrics for this mode." for all seven.
+  metrics?: MetricEntry[];
 };
 
 export type CloudMetaEntry = {
