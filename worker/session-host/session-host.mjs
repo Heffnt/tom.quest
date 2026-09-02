@@ -192,14 +192,24 @@ function adoptSession(env, sessions, row) {
     s.finalizeRow("system", {
       text: "session-host restarted mid-mission; autonomous session ended",
     });
-    s.outcomeToSend = {
-      outcome: "errored",
-      outcomeSummary: "daemon restarted mid-mission",
-    };
-    s.setStatus("ended");
-    s.endedReasonToSend = "daemon restarted mid-mission";
+    // The row is flushed NOW rather than riding the ending flush below: the
+    // push can take up to a minute, and a daemon killed again inside that
+    // window must still leave the honest sentence behind.
     s.requestFlush(true);
-    s.cleanupWorkdir();
+    // Not awaited: the poll loop walks every listed row synchronously, and
+    // holding it for a push would stall every other session's reconcile —
+    // claimSession's async IIFE is the same shape. The .catch is the daemon's
+    // floor: there is no process-level unhandledRejection handler anywhere in
+    // worker/, so an escaping rejection would take the host down over one
+    // session's failed push.
+    void s
+      .endAdoptedAutonomous("daemon restarted mid-mission", {
+        outcome: "errored",
+        outcomeSummary: "daemon restarted mid-mission",
+      })
+      .catch((err) => {
+        log(`session ${row.id}: adopted-autonomous ending failed:`, err?.message ?? err);
+      });
     return;
   }
   s.status = "idle";
