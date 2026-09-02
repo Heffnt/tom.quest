@@ -2,19 +2,7 @@
 
 import { useAuth } from "@/app/lib/auth";
 import { useEffect, useMemo, useState } from "react";
-
-const SECTION_ORDER = [
-  "Sleep",
-  "Activities",
-  "Meals",
-  "Mood / Feeling",
-  "Exercise / Body",
-  "Social",
-  "Substances",
-  "Pending / Follow-ups",
-  "Notes",
-  "Evening Reconstruction",
-] as const;
+import { DEFAULT_SECTION_ORDER, sectionRows } from "@/app/jarvis/sectionOrder";
 
 type TodayPayload = {
   date: string;
@@ -52,7 +40,7 @@ export default function TodayTab() {
     return () => { cancelled = true; };
   }, [accessToken]);
 
-  const orderedSections = useMemo(() => data?.orderedSections ?? [...SECTION_ORDER], [data]);
+  const orderedSections = useMemo(() => data?.orderedSections ?? [...DEFAULT_SECTION_ORDER], [data]);
 
   const save = async () => {
     if (!data) return;
@@ -118,7 +106,7 @@ export default function TodayTab() {
             <textarea
               value={draft[section] ?? ""}
               onChange={(event) => setDraft((current) => ({ ...current, [section]: event.target.value }))}
-              rows={section === "Activities" || section === "Evening Reconstruction" || section === "Notes" ? 10 : 6}
+              rows={sectionRows(section)}
               className="w-full rounded border border-white/10 bg-black/35 px-3 py-2 text-xs text-white/80 placeholder:text-white/20"
               placeholder={`Edit ${section.toLowerCase()}...`}
             />
