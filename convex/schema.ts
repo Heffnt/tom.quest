@@ -727,7 +727,8 @@ export default defineSchema({
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
   // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
-  // supersedes dtsCodeRulings below). APPEND-ONLY: a new ruling on the same
+  // supersedes the code-only rulings table, deleted 2026-09-02 once its rows
+  // were migrated here). APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
   // verdict set — every ruling button anywhere is one of these four:
   //   approve — execute as briefed (applied by worker/agent, appliedAt then set)
@@ -866,32 +867,6 @@ export default defineSchema({
     ),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
-
-  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
-  // Read-only history, no new writes: non-defer rows are copied into dtsRulings
-  // by ttsRulings.internalMigrateCodeRulings (run once at deploy). "defer" rows
-  // are NOT copied — defer is no longer a verdict (not ruling IS deferring) —
-  // so for those rows this table is the only copy.
-  // Removing the declaration is tracked separately rather than deferred to a
-  // named round: it requires emptying the table first (which discards the defer
-  // history), and the schema pushes straight to the one prod deployment.
-  dtsCodeRulings: defineTable({
-    repo: v.string(),
-    externalId: v.string(),
-    ruling: v.union(
-      v.literal("approve"),
-      v.literal("needs-session"),
-      v.literal("propose-archive"),
-      v.literal("stale-replan"),
-      v.literal("defer"),
-    ),
-    note: v.optional(v.string()),
-    ruledAt: v.number(),
-    appliedAt: v.optional(v.number()),
-    applyResult: v.optional(v.string()),
-  })
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_ruled", ["ruledAt"]),
 
   // Mirror of WikiTom model-of-tom/skills/*/SKILL.md, refreshed by cron;
   // WikiTom is the system of record. A row exists so prompt-building code can
