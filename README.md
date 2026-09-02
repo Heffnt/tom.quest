@@ -93,12 +93,33 @@ All env vars live in `secrets/next.env` (Vercel-side) and `secrets/convex.env` (
 
 ### Convex-side (`secrets/convex.env`)
 
+Every row below is also a line in `secrets/convex.env.example`, and the two are
+tied by `convex/envTemplates.test.ts` — a variable added to one and not the
+other fails that test.
+
 | Variable | Purpose |
 |----------|---------|
 | `SITE_URL` | Public site URL (e.g. `https://www.tom.quest`) |
 | `JWT_PRIVATE_KEY` | Convex Auth JWT signing key |
 | `JWKS` | Convex Auth public key set |
-| `TOM_SETUP_SECRET` | Secret for the Tom-promotion mutation |
+| `TOM_SETUP_SECRET` | Secret for the Tom-promotion mutation (`api.users.setTomByUsername`) |
+| `TURING_API_URL`, `TURING_API_KEY` | Turing API discovery + auth for the `internal.serverHealth.pollTuring` and `internal.gpuPool.reconcile` crons. Same values as in `next.env` |
+| `POOL_AGENT_KEY` | Key-auth for `POST`/`GET /pool` (header `X-Pool-Key`) |
+| `TTS_WORKER_KEY` | Key-auth for the Jarvis Box's `/tts/*` routes (header `X-TTS-Key`) |
+| `SESSIONS_WORKER_KEY` | Key-auth for the session-host daemon's `/sessions/poll` and `/sessions/ingest` (header `X-Sessions-Key`). Its own key, shared with nothing |
+| `SLACK_BOT_TOKEN` | Slack bot token — posts the TTS digest and session events |
+| `SLACK_TTS_CHANNEL_ID` | Channel the digest is posted to (`#tts`) |
+| `SLACK_DUMP_CHANNEL_ID` | Capture channel `POST /slack/events` accepts messages from (`#dump`) |
+| `SLACK_SIGNING_SECRET` | HMAC verification of `POST /slack/events` — the only auth on that route |
+| `GITHUB_MIRROR_TOKEN` | Fine-grained GitHub token (Contents: read) for `internal.ttsSync.refreshMirror` |
+| `TTS_ICS_FEEDS` | JSON array of `{name, url}` ICS feeds for `internal.ttsCalendarFetch.refreshFeeds` |
+| `CANVAS_TOKEN` | Canvas access token for `internal.ttsCanvas.internalRefreshCanvas` |
+| `CANVAS_BASE_URL` | Canvas host; defaults to `https://canvas.wpi.edu` when unset |
+| `GOOGLE_CALENDAR_{CLIENT_ID,CLIENT_SECRET,REFRESH_TOKEN}` | Google Calendar write door (`internal.ttsCalendarWrite.internalCreateEvent`), scope `calendar.events` only |
+
+Each key is unconfigured-safe in one direction only: the key-auth routes answer
+`503` when their variable is unset (never an unauthenticated write), while the
+cron actions log and return.
 
 ## Turing GPU Dashboard
 
