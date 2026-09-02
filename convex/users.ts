@@ -28,6 +28,12 @@ export const setTomByUsername = mutation({
       throw new Error("Tom setup is not authorized");
     }
     const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
+    // DANGER: `??` falls back only when TOM_USERNAME is UNSET, not when it is
+    // the empty string — and the Convex half of `pnpm secrets:sync` pushes
+    // empty values verbatim (the Vercel half skips them). A blank
+    // `TOM_USERNAME=` line in secrets/convex.env therefore makes
+    // allowedUsername "" and this mutation refuse every username. Documented
+    // in secrets/convex.env.example, which carries the literal default `tom`.
     const allowedUsername = (process.env.TOM_USERNAME ?? "tom")
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");

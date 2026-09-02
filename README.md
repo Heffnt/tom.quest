@@ -99,6 +99,7 @@ All env vars live in `secrets/next.env` (Vercel-side) and `secrets/convex.env` (
 | `JWT_PRIVATE_KEY` | Convex Auth JWT signing key |
 | `JWKS` | Convex Auth public key set |
 | `TOM_SETUP_SECRET` | Secret for the Tom-promotion mutation |
+| `TOM_USERNAME` | Which username the Tom-promotion mutation may promote. **Defaults to `tom` when unset; never set it to an empty value** — empty is not the same as unset and makes the mutation refuse every username. |
 
 ## Turing GPU Dashboard
 
