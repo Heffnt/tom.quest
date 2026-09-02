@@ -25,6 +25,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from dirs import resolve_within_root
 
 # The conda env the CMT builder lives in + where it is checked out (overridable).
@@ -224,7 +226,16 @@ def submit_build(resolved: Path) -> dict:
     Idempotent: if a build job for this dir is already queued/running (tracked via a
     per-dir job-id marker), returns that without resubmitting. The job writes the
     snapshot atomically (temp + rename) to ``cache_path(resolved, current_key)`` so a
-    concurrent GET never sees a partial file."""
+    concurrent GET never sees a partial file.
+
+    A FAILED SUBMIT RAISES; IT NEVER RETURNS AN ERROR ENVELOPE. The three branches
+    below used to return
+    ``{"status": "error", "detail": ...}`` with HTTP 200, and the browser branched on
+    the HTTP status alone — so an unreachable SLURM rendered as "rebuild submitted"
+    and the operator waited for a snapshot no job was building. Returning a dict here
+    again would silently restore that. ``forge_train`` (forge.py) raises from the same
+    three branches; this is the same shape, with 502 because the failure is in a
+    downstream dependency (SLURM), not in this API."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     marker = _marker_path(resolved)
     prev = marker.read_text().strip() if marker.exists() else ""
@@ -239,11 +250,11 @@ def submit_build(resolved: Path) -> dict:
             timeout=60, check=True,
         )
     except FileNotFoundError:
-        return {"status": "error", "detail": "sbatch not found (SLURM not on PATH)"}
+        raise HTTPException(status_code=502, detail="sbatch not found (SLURM not on PATH)")
     except subprocess.CalledProcessError as exc:
-        return {"status": "error", "detail": (exc.stderr or str(exc)).strip()[:500]}
+        raise HTTPException(status_code=502, detail=(exc.stderr or str(exc)).strip()[:500])
     except subprocess.SubprocessError as exc:
-        return {"status": "error", "detail": str(exc)[:500]}
+        raise HTTPException(status_code=502, detail=str(exc)[:500])
 
     job_id = proc.stdout.strip().split(";")[0]
     try:

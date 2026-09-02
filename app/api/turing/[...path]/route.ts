@@ -4,6 +4,21 @@ import { forwardToTuringApi } from "@/app/lib/turing";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
+// FastAPI reports every failure as a JSON body {"detail": "<message>"}. Lift that
+// string out instead of forwarding the raw envelope as the message: callers render
+// the message straight into the UI, where a stringified `{"detail":"…"}` is noise
+// and the sentence inside it is the whole point. Returns null for any other body
+// (non-JSON, or JSON without a non-empty string detail), which then passes through
+// unchanged as before.
+function upstreamDetail(text: string): string | null {
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    return typeof parsed.detail === "string" && parsed.detail.trim() ? parsed.detail : null;
+  } catch {
+    return null;
+  }
+}
+
 // THE GATE IS PER-METHOD, AND THAT IS THE POINT. This one function used to put
 // a single requireAdmin in front of GET, POST and DELETE alike, so any account
 // that could LOOK at /turing could also allocate GPUs and cancel running jobs
@@ -57,12 +72,13 @@ async function proxy(request: NextRequest, ctx: Ctx, method: "GET" | "POST" | "D
     const text = await res.text();
     const looksLikeHtml = /^\s*(?:<!doctype html|<html)/i.test(text);
     if (!res.ok || looksLikeHtml || !contentType.includes("application/json")) {
-      const error =
-        looksLikeHtml || contentType.includes("text/html")
-          ? `Turing API returned ${res.status} (non-JSON body); the API may be down or misconfigured.`
-          : text || `Turing request failed: ${res.status}`;
+      const htmlBody = looksLikeHtml || contentType.includes("text/html");
+      const detail = htmlBody ? null : upstreamDetail(text);
+      const error = htmlBody
+        ? `Turing API returned ${res.status} (non-JSON body); the API may be down or misconfigured.`
+        : detail || text || `Turing request failed: ${res.status}`;
       return NextResponse.json(
-        { error },
+        detail === null ? { error } : { error, detail },
         { status: res.ok ? 502 : res.status === 401 || res.status === 403 ? res.status : 502 },
       );
     }
