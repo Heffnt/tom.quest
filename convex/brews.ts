@@ -144,8 +144,8 @@ async function identifyMember(ctx: MutationCtx): Promise<Actor> {
   return actor;
 }
 
-// Deterministic default color from the fundamentals' palette (same scheme as
-// convex/perfume.ts colorFor).
+// Deterministic default color from the fundamentals' palette — the same key
+// always yields the same color.
 function colorFor(key: string): string {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
@@ -471,8 +471,8 @@ function requireRecipe(perfumeId: string, reqIndex: number): Perfume {
 }
 
 // Requires every item real and the effective tally perfect at exactly the
-// claimed recipe and copy-count. Mirrors convex/perfume.ts verifyBrew, reading
-// the new structured plays.
+// claimed recipe and copy-count. The tally comes from the shared engine
+// (evalReq) reading the brew's structured plays; no matching is redone here.
 function verifyBrew(
   brew: Doc<"perfumeBrews">,
   perfumeId: string,

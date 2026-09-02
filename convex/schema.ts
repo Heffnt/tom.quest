@@ -229,7 +229,7 @@ export default defineSchema({
   // One row per registered member. A logged-in user gets a row by clicking to
   // join; self-removal (leaveParty) or admin removal deletes it. Admin (Tom) is
   // NOT stored here — it is derived from users.role via authRoles, exactly as
-  // convex/perfume.ts does. memberKey follows the ownerKey convention:
+  // convex/brews.ts does. memberKey follows the ownerKey convention:
   // "user:<id>" | "anon:<uuid>".
   perfumeMembers: defineTable({
     memberKey: v.string(),
