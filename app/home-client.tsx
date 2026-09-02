@@ -2,29 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import TomLogo from "./components/tom-logo";
 import LoginModal from "./components/login-modal";
 import ProfileModal from "./components/profile-modal";
 import DebugToggle from "./components/debug-toggle";
 import { useAuth, getUsername } from "./lib/auth";
+import { useViewport } from "./lib/hooks/use-viewport";
 import { rankPages, type PageRole } from "./components/page-routes";
 
 /* Home = the expanded nav bar. Big logo centered, nav terminal below with the
    pages list always visible, and the auth button fixed top-right. Everything
    that lives in the docked <QuestNav> has a counterpart here — this page is
    the nav bar, rearranged and enlarged. */
-function useViewportWidth(): number | null {
-  const [w, setW] = useState<number | null>(null);
-  useEffect(() => {
-    const h = () => setW(window.innerWidth);
-    h();
-    window.addEventListener("resize", h);
-    return () => window.removeEventListener("resize", h);
-  }, []);
-  return w;
-}
-
 function logoFontSize(vw: number | null): number {
   // Hard refreshes on narrow screens render before client dimensions exist;
   // start small so the logo does not remeasure from a desktop-sized layout.
@@ -40,7 +30,8 @@ export default function HomeClient() {
   const router = useRouter();
   const { user, isTom, role } = useAuth();
   const displayName = getUsername(user);
-  const vw = useViewportWidth();
+  // null before measurement, which logoFontSize turns into the small 44px logo.
+  const vw = useViewport()?.width ?? null;
   const fontSize = logoFontSize(vw);
 
   const [loginOpen, setLoginOpen] = useState(false);

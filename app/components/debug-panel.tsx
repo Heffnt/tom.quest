@@ -6,6 +6,7 @@ import { useConvexConnectionState } from "convex/react";
 import { getUsername, useAuth } from "../lib/auth";
 import { debug } from "../lib/debug";
 import { useServer } from "../lib/hooks/use-server";
+import { useViewport } from "../lib/hooks/use-viewport";
 import { uiSnapshot, useUIStore } from "../lib/stores/ui-store";
 
 function formatConnectionState(value: unknown): string {
@@ -15,17 +16,6 @@ function formatConnectionState(value: unknown): string {
     return state.isWebSocketConnected === false ? "disconnected" : "connected";
   }
   return "unknown";
-}
-
-function useViewport() {
-  const [viewport, setViewport] = useState("unknown");
-  useEffect(() => {
-    const update = () => setViewport(`${window.innerWidth}x${window.innerHeight}`);
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
-  return viewport;
 }
 
 function useDebugVersion(): number {
@@ -38,7 +28,9 @@ export default function DebugPanel() {
   const pathname = usePathname();
   const { user, role, isTom } = useAuth();
   const connectionState = useConvexConnectionState();
-  const viewport = useViewport();
+  const vp = useViewport();
+  // "unknown" before measurement, the same string this line has always shown.
+  const viewport = vp === null ? "unknown" : `${vp.width}x${vp.height}`;
   const turing = useServer("turing");
   useDebugVersion();
   const events = debug.getConsoleEvents();

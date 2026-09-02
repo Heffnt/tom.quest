@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { useAuth, getUsername } from "../lib/auth";
+import { useViewport } from "../lib/hooks/use-viewport";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
 import DebugToggle from "./debug-toggle";
@@ -24,18 +25,6 @@ const TINY_PX    = 360;  // below: "show pages" label drops to just ▼
 
 type NavOffsets = { left?: number; right?: number };
 
-function useViewportWidth(): number {
-  const [w, setW] = useState<number>(() =>
-    typeof window === "undefined" ? 1024 : window.innerWidth,
-  );
-  useEffect(() => {
-    const h = () => setW(window.innerWidth);
-    window.addEventListener("resize", h);
-    return () => window.removeEventListener("resize", h);
-  }, []);
-  return w;
-}
-
 export default function NavTerm({
   offsets = { left: 0, right: 0 },
   animateOffsets = true,
@@ -46,7 +35,9 @@ export default function NavTerm({
   const router = useRouter();
   const { user, isTom, role } = useAuth();
   const displayName = getUsername(user);
-  const vw = useViewportWidth();
+  // 1024 before measurement: the width this bar's server HTML has always used,
+  // so the logo it renders first is unchanged.
+  const vw = useViewport()?.width ?? 1024;
   const compact = vw < COMPACT_PX;
   const tiny    = vw < TINY_PX;
 
