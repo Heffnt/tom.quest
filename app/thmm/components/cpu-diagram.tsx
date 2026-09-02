@@ -499,41 +499,6 @@ function Box({
   );
 }
 
-function Title({ x, y, children }: { x: number; y: number; children: React.ReactNode }) {
-  return (
-    <text x={x} y={y} textAnchor="middle" fontSize={13} fontWeight="bold" fill={C.title}>
-      {children}
-    </text>
-  );
-}
-
-function Sub({
-  x, y, fill, anchor = "middle", children,
-}: {
-  x: number; y: number;
-  fill?: string;
-  anchor?: "start" | "middle" | "end";
-  children: React.ReactNode;
-}) {
-  return (
-    <text x={x} y={y} textAnchor={anchor} fontSize={11} fill={fill ?? C.sub}>
-      {children}
-    </text>
-  );
-}
-
-function Value({
-  x, y, fill, children,
-}: {
-  x: number; y: number; fill?: string; children: React.ReactNode;
-}) {
-  return (
-    <text x={x} y={y} textAnchor="middle" fontSize={12} fontWeight="bold" fill={fill ?? C.title}>
-      {children}
-    </text>
-  );
-}
-
 function Ctl({
   x, y, active, children,
 }: {
