@@ -763,9 +763,9 @@ const ttsRulingsFeed = httpAction(async (ctx, request) => {
 // prepare-life-todos, plan-graphs) had moved to /tts/rulings.
 http.route({ path: "/tts/rulings", method: "GET", handler: ttsRulingsFeed });
 
-// POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
+// POST /tts/ruling-applied — the worker's apply report. Body: { id,
 // result } where result is a commit sha / PR url / error text.
-const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
+const ttsRulingApplied = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
@@ -794,17 +794,15 @@ const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
   }
 });
 
-// Canonical path: /tts/ruling-applied (any subject type); old name aliased
-// for not-yet-redeployed workers.
+// /tts/ruling-applied is the only path, and it takes any subject type. A
+// /tts/code-ruling-applied alias pointed at this same handler for workers
+// predating the unified feed, and was removed once all five callers
+// (apply-rulings, execute-approved, form-batches, prepare-life-todos,
+// plan-graphs) had moved to /tts/ruling-applied.
 http.route({
   path: "/tts/ruling-applied",
   method: "POST",
-  handler: ttsCodeRulingApplied,
-});
-http.route({
-  path: "/tts/code-ruling-applied",
-  method: "POST",
-  handler: ttsCodeRulingApplied,
+  handler: ttsRulingApplied,
 });
 
 // ── TTS batches (ratified 2026-08-28) ────────────────────────────────────────
