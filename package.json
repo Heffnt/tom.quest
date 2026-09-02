@@ -25,6 +25,7 @@
     "check:auth-boundary": "node scripts/check-auth-boundary.mjs",
     "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
     "check:large-files": "node scripts/check-large-files.mjs",
+    "check:session-mirrors": "node scripts/check-session-mirrors.mjs",
     "check:secrets": "gitleaks detect --source . --no-banner --redact",
     "check:writing": "node scripts/check-writing-standard.mjs",
     "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs && node scripts/check-large-files.mjs"
