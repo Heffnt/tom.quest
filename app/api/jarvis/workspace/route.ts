@@ -48,20 +48,3 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to read file" }, { status: 500 });
   }
 }
-
-export async function PUT(request: NextRequest) {
-  const auth = await requireTom(request);
-  if (auth instanceof Response) return auth;
-  const body = (await request.json().catch(() => null)) as { path?: string; content?: string } | null;
-  if (!body?.path || typeof body.content !== "string") {
-    return NextResponse.json({ error: "Missing path or content" }, { status: 400 });
-  }
-  try {
-    const absolutePath = resolveWorkspacePath(body.path);
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, body.content, "utf8");
-    return NextResponse.json({ ok: true, path: body.path });
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to write file" }, { status: 500 });
-  }
-}
