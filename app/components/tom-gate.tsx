@@ -9,8 +9,8 @@
 // `label` is load-bearing, not decoration: it is the surface name, and it
 // decides whether the read-only `agent` role gets in. Only the labels listed
 // in convex/agentSurfaces.ts ("TTS", "Turing") admit it — "Sessions",
-// "Forge", "Jarvis" and "TTS mockup" stay Tom-only, as does every write
-// behind this gate, which Convex refuses independently.
+// "Forge" and "Jarvis" stay Tom-only, as does every write behind this gate,
+// which Convex refuses independently.
 
 import { useAuth } from "@/app/lib/auth";
 

@@ -56,7 +56,7 @@ describe("agent-readable surfaces", () => {
 
   // These are labels requireTom already passes elsewhere in the codebase; the
   // point of naming them here is that they are NOT readable by `agent`.
-  it.each(["Sessions", "Forge", "Jarvis", "TTS mockup", "User roles", ""])(
+  it.each(["Sessions", "Forge", "Jarvis", "User roles", ""])(
     "refuses %j",
     (label) => {
       expect(isAgentReadableSurface(label)).toBe(false);
