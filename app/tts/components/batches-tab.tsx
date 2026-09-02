@@ -11,9 +11,10 @@
 // NEEDS is done; the card shows ready, blocked and done, and one click on any
 // item opens everything known about it.
 //
-// selectBatches (app/tts/lib.ts) still owns the OTHER two sections: the
-// unbatched strip and the applying strip, so the shell's tab badge counts the
-// same selection those render.
+// Two selections, both in app/tts/lib.ts, both shared with the shell's tab
+// badge (lib.batchesTabCount): activeBatches over the v2 `batches` rows for
+// the cards, and selectBatches for the OTHER two sections — the unbatched
+// strips and the applying strip.
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
@@ -43,6 +44,7 @@ import TimeNoteField, {
   type TimeNote,
 } from "./time-note-field";
 import {
+  activeBatches,
   ageText,
   batchSubjectKey,
   codeSubjectKey,
@@ -272,9 +274,9 @@ export default function BatchesTab() {
     if (opening) engage();
   };
 
-  // ONE definition of the selection (app/tts/lib.ts selectBatches) — the
-  // shell's tab badge counts the same selection, so count and rows cannot
-  // drift.
+  // ONE definition of the unbatched/applying selection (app/tts/lib.ts
+  // selectBatches) — the shell's tab badge adds up this same call and the same
+  // activeBatches() call below, so count and rows cannot drift.
   const selection = useMemo(
     () => selectBatches(todos ?? [], mirror ?? [], briefs ?? [], rulings ?? []),
     [todos, mirror, briefs, rulings],
@@ -292,8 +294,7 @@ export default function BatchesTab() {
       contents.set(t.batchId, list);
     }
     const byPath = new Map<string, { batch: Batch; graph: BatchGraph }[]>();
-    for (const batch of batches ?? []) {
-      if (batch.status !== "active") continue;
+    for (const batch of activeBatches(batches ?? [])) {
       const name = batch.path?.name ?? UNPATHED;
       const list = byPath.get(name) ?? [];
       list.push({ batch, graph: toGraph(batch, contents.get(batch._id) ?? []) });

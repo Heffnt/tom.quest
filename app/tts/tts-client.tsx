@@ -17,7 +17,7 @@ import BatchesTab from "./components/batches-tab";
 import EverythingTab from "./components/everything-tab";
 import Info from "./components/info";
 import { CREATE_TODO_EXPLANATION } from "./explanations";
-import { selectBatches, type LinkIntent } from "./lib";
+import { batchesTabCount, selectBatches, type LinkIntent } from "./lib";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
@@ -161,26 +161,23 @@ export default function TtsClient() {
     void recordEvent({ kind: "tts-opened" }).catch(() => {});
   }, [isTom, todos, recordEvent]);
 
-  // Batches badge: the SAME selector the tab renders (app/tts/lib.ts
-  // selectBatches) so the count and the rows cannot drift. Same subscriptions
-  // the tabs hold — Convex dedupes.
+  // Batches badge: the same two functions the tab renders from — the v2
+  // `batches` table for the cards (app/tts/lib.ts activeBatches) and
+  // selectBatches for the unbatched strips — added up by lib.batchesTabCount.
+  // Same subscriptions the tabs hold, including listBatches — Convex dedupes.
+  const batches = useQuery(api.tts.listBatches, canRead ? {} : "skip");
   const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
   const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
   const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
 
-  const batchesCount = useMemo(() => {
-    const { batches, unbatchedLife, unbatchedCode } = selectBatches(
-      todos ?? [],
-      mirror ?? [],
-      codeBriefs ?? [],
-      rulings ?? [],
-    );
-    return (
-      batches.filter((b) => b.awaitingRuling).length +
-      unbatchedLife.length +
-      unbatchedCode.length
-    );
-  }, [todos, mirror, codeBriefs, rulings]);
+  const batchesCount = useMemo(
+    () =>
+      batchesTabCount(
+        batches ?? [],
+        selectBatches(todos ?? [], mirror ?? [], codeBriefs ?? [], rulings ?? []),
+      ),
+    [batches, todos, mirror, codeBriefs, rulings],
+  );
 
   return (
     <TomGate label="TTS">

@@ -199,17 +199,24 @@ export function selectNeedsMe(
   return { lifeRows, codeRows, pending };
 }
 
-// ── The batches selector (ONE definition; the batches tab renders it, the
-// badge counts it) ───────────────────────────────────────────────────────────
-// batches: non-terminal (active|waiting) batch rows; awaitingRuling is
-//   selectNeedsMe lifeRows membership — a batch IS a life todo, so the same
-//   live-ruling predicate decides when it needs a ruling.
+// ── The batches selector ─────────────────────────────────────────────────────
+// What it owns: the two UNBATCHED strips and the applying strip of the batches
+// tab. It does NOT produce the batch CARDS — those are rows of the schema-v2
+// `batches` table (api.tts.listBatches), selected by activeBatches() below.
+//
 // unbatchedLife/unbatchedCode: the selectNeedsMe rows minus subjects claimed
-//   by any non-terminal batch (and minus the batch rows themselves).
+//   by any non-terminal v1 batch (a dtsTodos row carrying `members`) and minus
+//   the v1 batch rows themselves, and minus rows bound to a v2 batch.
 // pending: passed through from selectNeedsMe.
+//
+// The v1 batch rows are still read HERE, and only here: they decide which
+// subjects are already claimed. They are not returned, because nothing renders
+// them — the tab's cards come from the v2 table. Until 2026-09-02 this
+// selector also returned them, and the shell's tab badge counted that list
+// while the tab rendered the v2 one, so the badge went to zero on a page full
+// of cards.
 
 export type BatchesSelection = {
-  batches: { todo: Todo; awaitingRuling: boolean }[];
   unbatchedLife: Todo[];
   unbatchedCode: { row: MirrorRow; brief: CodeBrief }[];
   pending: Ruling[];
@@ -237,12 +244,6 @@ export function selectBatches(
     for (const m of b.members ?? []) claimed.add(clientMemberKey(m));
   }
   const batchIds = new Set<string>(batchTodos.map((t) => t._id as string));
-  const lifeIds = new Set<string>(lifeRows.map((t) => t._id as string));
-
-  // Oldest first — order comes from dates, never a rating.
-  const batches = batchTodos
-    .map((todo) => ({ todo, awaitingRuling: lifeIds.has(todo._id as string) }))
-    .sort((a, b) => a.todo.createdAt - b.todo.createdAt);
 
   const unbatchedLife = lifeRows.filter(
     (t) =>
@@ -256,7 +257,40 @@ export function selectBatches(
     ({ row }) => !claimed.has(codeSubjectKey(row.repo, row.externalId)),
   );
 
-  return { batches, unbatchedLife, unbatchedCode, pending };
+  return { unbatchedLife, unbatchedCode, pending };
+}
+
+// ── The batch cards, and the badge over them ─────────────────────────────────
+
+/**
+ * The batch cards the tab draws: the ACTIVE rows of the schema-v2 `batches`
+ * table (api.tts.listBatches). `done` and `archived` batches are history and
+ * are not drawn. ONE definition, called by the tab that groups these into path
+ * columns and by the badge that counts them.
+ */
+export function activeBatches(batches: Batch[]): Batch[] {
+  return batches.filter((b) => b.status === "active");
+}
+
+/**
+ * The number on the shell's Batches tab, over exactly the rows the tab draws:
+ * the batch cards plus the two unbatched strips.
+ *
+ * The applying strip (`selection.pending` — rulings recorded but not yet
+ * applied) is drawn on the tab and deliberately NOT counted here: it is work
+ * already ruled and in flight, so counting it would keep the badge lit for
+ * items with nothing left for Tom to decide. That is the one place this number
+ * is narrower than the page; every other section is counted.
+ */
+export function batchesTabCount(
+  batches: Batch[],
+  selection: BatchesSelection,
+): number {
+  return (
+    activeBatches(batches).length +
+    selection.unbatchedLife.length +
+    selection.unbatchedCode.length
+  );
 }
 
 /** e.message for Errors, String(e) otherwise — the error line under a control. */

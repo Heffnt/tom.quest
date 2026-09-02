@@ -11,10 +11,14 @@
 import { describe, expect, it } from "vitest";
 import { subjectKey } from "@/convex/ttsRulings";
 import {
+  activeBatches,
   batchSubjectKey,
+  batchesTabCount,
   codeSubjectKey,
   rulingSubjectKey,
+  selectBatches,
   selectNeedsMe,
+  type Batch,
   type CodeBrief,
   type MirrorRow,
   type Ruling,
@@ -157,6 +161,72 @@ describe("selectNeedsMe: ruling-vs-subject timestamps", () => {
 });
 
 // One spelling for a ruling subject key. Two things can drift here and used to:
+// The badge over the batches tab counts the rows the tab draws.
+//
+// The tab draws its cards from the schema-v2 `batches` table and its unbatched
+// strips from selectBatches. The badge used to count a THIRD thing — the v1
+// batch rows (dtsTodos rows carrying `members`) that selectBatches returned —
+// so a page of v2 cards could sit under a badge that counted none of them.
+// These cases pin the two apart: a v1 batch row moves the badge only through
+// what it claims, never as a card of its own.
+const batch = (over: Partial<Batch> = {}): Batch =>
+  ({
+    _id: "batch-1",
+    _creationTime: 1,
+    statement: "a live batch",
+    status: "active",
+    createdAt: 1000,
+    updatedAt: 1000,
+    ...over,
+  }) as unknown as Batch;
+
+describe("batchesTabCount: the badge counts what the tab draws", () => {
+  it("counts active v2 batches, not the v1 batch rows", () => {
+    const v1Batch = todo({
+      _id: "v1-batch" as unknown as Todo["_id"],
+      members: [],
+    });
+    const v2 = [
+      batch({ _id: "b1" as unknown as Batch["_id"] }),
+      batch({ _id: "b2" as unknown as Batch["_id"] }),
+      batch({ _id: "b3" as unknown as Batch["_id"], status: "done" }),
+      batch({ _id: "b4" as unknown as Batch["_id"], status: "archived" }),
+    ];
+
+    expect(activeBatches(v2).map((b) => b._id)).toEqual(["b1", "b2"]);
+    // Two active cards; the v1 row is not a card and adds nothing.
+    expect(batchesTabCount(v2, selectBatches([v1Batch], [], [], []))).toBe(2);
+  });
+
+  it("adds the two unbatched strips the tab draws below the cards", () => {
+    const life = todo({ _id: "life-1" as unknown as Todo["_id"] });
+    const row = mirrorRow();
+    const brief = codeBrief({ preparedAt: 1000 });
+    const selection = selectBatches([life], [row], [brief], []);
+
+    expect(selection.unbatchedLife).toHaveLength(1);
+    expect(selection.unbatchedCode).toHaveLength(1);
+    // 1 card + 1 unbatched life + 1 unbatched code.
+    expect(batchesTabCount([batch()], selection)).toBe(3);
+  });
+
+  it("leaves the applying strip out, by the documented choice", () => {
+    const life = todo({ _id: "life-1" as unknown as Todo["_id"] });
+    const applied = ruling({
+      subjectType: "life",
+      todoId: "life-1",
+      ruledAt: 2000,
+      appliedAt: undefined,
+    });
+    const selection = selectBatches([life], [], [], [applied]);
+
+    expect(selection.pending).toHaveLength(1);
+    // The ruled-but-unapplied row is drawn and not counted: the life todo it
+    // rules is past its updatedAt, so it is off the unbatched strip too.
+    expect(batchesTabCount([], selection)).toBe(0);
+  });
+});
+
 // (1) inside app/tts/lib.ts, rulingSubjectKey once inlined the same strings the
 // codeSubjectKey/batchSubjectKey builders produce; (2) the client file as a
 // whole is a hand-kept mirror of convex/ttsRulings.ts subjectKey. Both are
