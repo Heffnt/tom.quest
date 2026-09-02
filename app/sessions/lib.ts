@@ -7,12 +7,14 @@ import type { Doc } from "@/convex/_generated/dataModel";
 // Age text is shared with the Inventory surface — one definition.
 export { ageText } from "../tts/lib";
 
+// Only the row types a component here actually names get an alias. The
+// claudeStreamBuf, claudeInbound and claudeDaemonHealth rows reach the client
+// through useQuery(api.claudeSessions.getStreamBuf / getDaemonHealth) and are
+// read at their inferred types, so aliases for them sat unused; add one back
+// only when a component needs to write the type out.
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
-export type StreamBuf = Doc<"claudeStreamBuf">;
-export type InboundRow = Doc<"claudeInbound">;
 export type PermissionRow = Doc<"claudePermissions">;
-export type DaemonHealth = Doc<"claudeDaemonHealth">;
 
 export type SessionStatus = Session["status"];
 

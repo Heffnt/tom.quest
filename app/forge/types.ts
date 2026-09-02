@@ -31,7 +31,6 @@ export type ForgeResult = {
   schema_version: number;
   status: "completed" | "failed";
   config: ForgeConfig;
-  sweep_yaml_path?: string;
   base_model: string;
   tuning: string;
   is_adapter: boolean;
