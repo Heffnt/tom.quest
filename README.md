@@ -66,6 +66,49 @@ pnpm test:e2e         # Playwright E2E tests
 pnpm lint             # ESLint
 ```
 
+### End-to-end tests
+
+`pnpm test:e2e` runs the Playwright specs in `e2e/`. Eight environment
+variables decide how much of that suite actually executes. A spec whose
+variable is unset calls `test.skip`, and Playwright reports a skip rather than
+a failure — so the suite is green today with the role coverage never having
+run once.
+
+Put the values in `secrets/e2e.env` (gitignored; copy `secrets/e2e.env.example`
+and fill it in). `playwright.config.ts` loads that file into the test process;
+a variable already exported in the shell overrides it. `secrets/e2e.env` is
+pushed nowhere — `pnpm secrets:sync` only ever reads `secrets/next.env` and
+`secrets/convex.env` — which is why these eight are not in `secrets/next.env`:
+six of them are passwords to real accounts, and nothing on Vercel needs them.
+
+| Variable | Turns on | Unset means |
+|----------|----------|-------------|
+| `E2E_USER_USERNAME` + `E2E_USER_PASSWORD` | The `user` case of `e2e/page-visibility.spec.ts` — signs in as an ordinary account and asserts its page list | The case skips; only the guest case runs |
+| `E2E_ADMIN_USERNAME` + `E2E_ADMIN_PASSWORD` | The `admin` case of the same spec | Same |
+| `E2E_TOM_USERNAME` + `E2E_TOM_PASSWORD` | The `tom` case of the same spec | Same |
+| `E2E_AUTH_FLOW` | The whole of `e2e/auth-flow.spec.ts` — sign up, sign out, sign back in | The spec skips |
+| `E2E_CONVEX` | The `perfume brew — live sync` block of `e2e/perfume.spec.ts` — two browser contexts against the live deployment | The block skips |
+
+Four details that are easy to get wrong:
+
+- Both halves of a credential pair are required. `e2e/helpers/auth.ts` returns
+  credentials only when username **and** password are non-empty, so half a pair
+  skips exactly as none of it does.
+- `E2E_AUTH_FLOW` is compared strictly against the string `"1"`. `E2E_CONVEX`
+  is compared for truthiness, so any non-empty value turns it on — including
+  `E2E_CONVEX=0`.
+- The live-sync test carries a second skip on viewports narrower than 1024px,
+  so it runs under the `chromium` project and never under `mobile-chromium`,
+  whatever the environment holds.
+- `next dev` runs against **production** Convex, so the three role accounts are
+  production accounts, and `E2E_AUTH_FLOW=1` creates a production user named
+  `e2e<timestamp>` on every run that the spec never deletes.
+
+`e2e/page-visibility.spec.ts` is the only end-to-end check of who may see which
+page. Until the six credential variables are set, a change to the visibility
+rules in `app/components/page-routes.ts` that affected only signed-in roles
+would leave this suite green.
+
 ## Deployment
 
 Vercel is connected to the `main` branch. The build command is overridden to:
