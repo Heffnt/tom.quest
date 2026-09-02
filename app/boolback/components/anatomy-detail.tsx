@@ -3,7 +3,7 @@
 // app/boolback/components/anatomy-detail.tsx — the detail panel's "anatomy"
 // section (ANATOMY-SPEC.md "Interaction & integration").
 //
-// Mounted by detail-panel.tsx RunDetail right after the function section.
+// Mounted by run-inspector.tsx RunInspector right after the function section.
 // Renders NOTHING (null, not an empty shell) when the row has no interp
 // measurements at all; legacy single-record rows show their one normalized
 // measurement. Two parts:
