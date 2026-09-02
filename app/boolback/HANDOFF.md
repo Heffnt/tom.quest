@@ -5,20 +5,23 @@ experiments at <https://www.tom.quest/boolback>. One page, three panes:
 
 ```
 ┌───────────┬──────────────────────────────────────┬──────────────┐
-│ dir       │ top bar ( Table|Chart · [+ Filter] · │ detail panel │
-│ viewer    │   chips · trend(chart) · ⌕ · N of    │ (opens on    │
-│ (mirrors  │   M runs · Export · Reset · ⧉ ● ↻ )  │  any row /   │
-│ the disk  ├──────────────────────────────────────┤  point click)│
-│ tree;     │ TABLE (one row per training run)     │ + raw        │
-│ collapses │   — or —                             │   artifacts  │
-│ to a bar  │ CHART (y vs x │ legend panel right;  │              │
-│ button)   │   axis pickers + log ON the axes)    │              │
+│ dir       │ top bar ( » artifacts · Table|Plot|  │ config panel │
+│ viewer    │   Group Plot|Anatomy · r/ρ (plot) ·  │ (the active  │
+│ (mirrors  │   N of M runs · ● ↻ · rebuild note ) │  view's own  │
+│ the disk  ├──────────────────────────────────────┤  controls)   │
+│ tree;     │ ONE of the four center views:        │   — or —     │
+│ collapses │ TABLE · PLOT · GROUP PLOT · ANATOMY  │ run inspector│
+│ to a bar  │   (one table row = one training run) │ (opens on a  │
+│ button)   │                                      │  row / point │
+│           │                                      │  click)      │
 └───────────┴──────────────────────────────────────┴──────────────┘
 ```
-(There is no separate command bar — the single top bar in
-`components/filter-bar.tsx` carries everything; snapshot freshness lives in
-the status dot's tooltip. A collapsed dir viewer leaves NO rail: the bar
-grows a header-height `» artifacts` re-open button instead.)
+(The top bar — `components/filter-bar.tsx` — is pure chrome: no filters, no
+controls. Everything that acts on the data lives in the right-docked config
+panel, `components/config-panel.tsx`, which is one dock in two modes: the
+active view's controls, or the run inspector when a run is open. Snapshot
+freshness lives in the status dot's tooltip. A collapsed dir viewer leaves NO
+rail: the bar grows a header-height `» artifacts` re-open button instead.)
 
 **What is a run (the fundamental unit).** One row = one run = one
 fine-tuning execution = one `training+…` dir, keyed by
@@ -49,8 +52,11 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 
 - **One fetch.** The page loads the blob and nothing else. Freshness is
   `meta.built_at` inside the blob (the status dot's tooltip). There is
-  no status round-trip, and nothing walks the 700 GB tree on a page load (the
-  old status endpoint globbed `**/done.json` per call — removed).
+  no status round-trip, and nothing walks the 700 GB tree on a page load. The
+  status endpoint (`GET /boolback-snapshot`, `turing-api/main.py:331`) still
+  exists and the browser never calls it; what was removed is its `**/done.json`
+  glob over the ~700 GB tree, which cost 3–20 s a call — it answers from the
+  cache dir alone now (`turing-api/boolback_snapshot.py:112`).
 - **Serve-latest.** GET always returns the newest cached snapshot instantly.
   Builds happen off-request: the 2-hourly cron plus the admin ↻ Refresh (which
   POSTs `/api/turing/boolback-snapshot` → sbatch on a CPU compute node).
@@ -89,59 +95,81 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 
 ## What the UI shows
 
-- **Filter bar** — "every active filter is a chip." One `+ Filter` menu
-  (click-open, searchable across status flags, facet names, facet VALUES,
-  metric names; facets with <2 observed values hidden) replaces the old pill
-  row + ten facet buttons + add-metric. Active filters are uniform chips
-  (status / `model: Llama +2` / `avg sensitivity 0.5–1.2` / `scope: …`);
-  click a chip body for its popover editor (checkbox list or histogram
-  slider), × clears it. Status flags (incl. Planted) live in the menu and
-  chip up only while active — nothing shows when off. A quick-search box
-  matches run id / fn hex / DNF / dir path / facet values (AND across
-  tokens). Sort chips appear only with ≥2 keys. Right side: count,
-  Export menu, Columns (table view), Reset. Z-scale: table internals ≤ z-20,
-  the top bar (a stacking context capping its popovers) z-30 — a bar popover
-  must never tie the frozen headers' z-20 or DOM order paints the table
-  over it.
+- **Top bar** (`components/filter-bar.tsx`) — pure chrome, one row, no
+  controls that touch the data: the `» artifacts` re-open button (only while
+  the dir viewer is collapsed), the four-view switcher, the plot's r/ρ readout
+  (passive, published by the mounted plot through `store.plotReadout`), the run
+  count, the snapshot status dot and the ONE canonical ↻ Refresh with its
+  rebuild note. The count is the filtered row count on Table and the LAYERS
+  UNION — distinct runs, a run matching several layers counted once — on Plot
+  and Group Plot. Z-scale: table internals ≤ z-20, the top bar z-30.
+- **Config panel** (`components/config-panel.tsx`) — the SINGLE right-docked
+  control surface, shared by every center view, in two modes: the **run
+  inspector** when a run is open, and the active view's **config** otherwise.
+  Its header carries `Views ▾ · Copy · Paste`, `PNG`/`CSV` on plot-like views,
+  and `Reset` (which serves Table and Anatomy — plot-like views reset PER LAYER
+  from the ⟲ on each layers-strip entry).
+  - **A filter is a facet selection or a metric range, and nothing else.**
+    Status-flag pills and `scope:`/`fn=` subtree chips are gone from the filter
+    model (`lib/select.ts` `applyFilters` reads `facets` and `ranges` only).
+    `meta.planted_threshold` survives as a display constant.
+  - Filtering is one row per PARAMETER (`lib/parameters.ts` `PARAMETERS` — the
+    function identity, every dataset/training facet, judge/split), grouped into
+    collapsible SHARED/DIFFERING sections with per-value counts.
+  - Table mode adds the search box (run id / `dir_path` / `node_path`, AND
+    across whitespace tokens — `lib/select.ts`), the sort-keys section (drag to
+    reorder; it renders with zero keys and says so) and Columns
+    (`components/column-group-menu.tsx`).
 - **Table** — WINDOWED rendering (every filtered row reachable; no 500-row
-  cap), sortable (multi-key, drag chips), resizable columns, per-group
-  column menus. Leading arity/`Fn` columns freeze sticky-left. A summary
-  footer shows the mean of each numeric column over the filtered set. ↑/↓
-  move selection, Enter opens the drawer, Esc closes. Categorical cells
-  reveal a ⊕ filter button on hover; headers carry a ⌄ menu (sort asc/desc,
-  hide, add range filter, plot on chart X/Y). The compact `Fn` column is
+  cap), sortable (multi-key; the key chips are dragged in the config panel),
+  resizable columns, per-group column menus. Leading arity/`Fn` columns freeze
+  sticky-left. A summary footer shows the mean of each numeric column over the
+  filtered set. ↑/↓ move selection, Enter opens the inspector, Esc closes.
+  Categorical cells reveal a ⊕ filter button on hover; headers carry a ⌄ menu
+  (sort ascending, sort descending, hide column, add range filter — the last
+  only when the metric has observed data). The compact `Fn` column is
   `arity:hex` of the truth table (`3:E8`); hover it for the colored strip +
   DNF. Truth squares: the fill is split evenly among the PRESENT variables
   (1 = full, 2 = 50/50, 3 = thirds; the all-zeros row is empty), near-black
   outlines separate the colors, and an amber ring means that row ACTIVATES
   the backdoor.
-- **Chart** — the same filtered rows: any metric vs any metric via
+- **Plot** — the same filtered rows: any metric vs any metric via
   searchable pickers that live ON the axes (the x picker under the x axis,
   the y picker rotated along the y axis; both log toggles by the origin,
-  the y one rotated — the exported SVG/PNG keeps plain axis labels via a
-  `[data-export-only]` group). Y lists OUTCOME/DEFENSE first, X FUNCTION
-  first; per-method entries collapse under their base metric like facet
-  values in `+ Filter`. THE DIMENSIONS PANEL (`lib/dimensions.ts`) replaces
-  the old runs|functions|means toggle and the color dropdown: every run
-  dimension (function identity, model, arity, seed, lr, …) is either SHARED
-  across the filtered view (shown as the points' common context, right side)
-  or DIFFERING (one chip each, biggest split first). A differing dimension is
-  split onto a visual channel (color / shape / size — auto-assigned biggest
-  first under legibility caps, override per chip), filtered via the chip's
-  CHECKBOX list — the same multi-select editor as the bar's facet chips,
-  over subtree-scoped candidate values, emitting ORDINARY filter state (one
-  filter mechanism, shared with the table; `fn=` scope chips for the
-  function dimension) — or averaged. Points
-  group by (split values × X bucket): mean ± 1 SD whiskers, n-sized points,
-  per-combo connecting lines; a continuous X falls back to 12 equal-width
-  bins; single-run points click through to the drawer. The r/ρ readout and
-  the OLS trend fits are ALWAYS computed over the underlying runs
-  (descriptive only; inferential stats stay CMT-side). Legend rows per
-  channel (keys toggle that value's filter), box-select drag → X+Y range
-  chips (which also zooms), edge-flipping tooltip, and a highlight ring on
-  the row hovered/selected elsewhere. This is the RQ1/RQ4 instrument:
+  the y one rotated — the exported PNG keeps plain axis labels via a
+  `[data-export-only]` group). An `AxisRange` control by each axis end edits
+  the view window; **there is NO box-select** (`components/plot-panel.tsx`
+  says so at the danger point). Y lists ATTACK/CAPABILITY first, then
+  OUTCOME/DEFENSE/INTERP/SCAN/FUNCTION; X leads with FUNCTION
+  (`lib/metrics.ts` `X_GROUP_ORDER`/`Y_GROUP_ORDER`); per-method entries
+  collapse under their base metric in the picker
+  (`components/metric-picker.tsx`).
+  A LAYER IS ONE TRACE, and the layers strip in the config panel IS the legend
+  — there is no docked legend panel (the exported figure carries its own).
+  Every parameter is SHARED across the plotted rows (drawn as the points'
+  common context) or DIFFERING, and a differing one is either EXPANDED into one
+  layer per value by a generator (`lib/generators.expandLayers`, and `binLayers`
+  for a continuous metric), PINNED by a layer's own facet filters, or POOLED —
+  left varying inside the layer, which is the "averaged: …" note under the
+  strip (`lib/split-dims.averagedParams`). A layer's three style channels are
+  color, shape and dash (`lib/styling.ts`); size and opacity are plot-level,
+  not channels. Points group by (layer × X bucket): mean ± 1 SD whiskers,
+  n-sized points, per-combo connecting lines; X is exact up to 24 distinct
+  values and falls back to 12 equal-width bins above that
+  (`lib/aggregate.groupRuns`), with the collapsed raw runs redrawn as faint
+  ghosts when `ghosts` is on. Single-run points, ghost polylines and mean
+  polylines all click through to the run inspector. The r/ρ readout and the
+  OLS trend fits are ALWAYS computed over the underlying runs, deduped by run
+  so a row in several layers is not double-weighted (descriptive only;
+  inferential stats stay CMT-side); the readout also reports `x binned`,
+  points outside the window and points dropped by a log axis. A highlight ring
+  marks the row hovered or selected elsewhere. This is the RQ1/RQ4 instrument:
   outcome vs complexity, moderated by context.
-- **Anatomy** — the third center view (see `ANATOMY-SPEC.md` for the frozen
+- **Group Plot** — the fourth view (`components/group-plot.tsx`): the same
+  plot config drawn as a grid of small panels, faceted by layer, by a
+  parameter, by a parameter grid, or by a binned metric (the config panel's
+  kind-aware "Facet by" select, plus a panel-size slider).
+- **Anatomy** — a center view of its own (see `ANATOMY-SPEC.md` for the frozen
   design contract): the selected run's transformer drawn as a horizontal
   residual-stream bar (embed left → unembed right), its function-false twin
   (`twin_hash`) mirrored along the bottom, a per-layer run-vs-twin diff strip
@@ -156,14 +184,17 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   circuit-diff arcs (shared edges neutral). Circuits render as
   span-proportional arcs bar-to-bar; selecting one enables "fit circuit"
   (accordion expands all its layers); side-exclusive edges expose trigger
-  rewiring. Measurement click → detail-panel anatomy section
-  (`anatomy-detail.tsx`: full record, CDE curve sparkline, top-k component
-  bars); `AnatomyConfig` {focus, twin, sel} rides `?v=` share links and the
-  persisted view like ChartConfig. Everything degrades structurally on
-  pre-anatomy blobs (spine renders, honest "no locus data" copy). Derived
+  rewiring. Clicking a marker or an arc sets `AnatomyConfig.sel` to that
+  measurement's key (`anatomy-pane.tsx`); `components/anatomy-detail.tsx`, the
+  old detail panel's anatomy section, is still in the tree and has no importer.
+  `AnatomyConfig` {focus, twin, sel} persists per browser under
+  `boolback:anatomy`; it is NOT part of the view spec, so it does not travel
+  through Copy/Paste or a saved view. The view has no config-panel controls of
+  its own and the store calls it deprecated. Everything degrades structurally
+  on pre-anatomy blobs (spine renders, honest "no locus data" copy). Derived
   per-run scalars `interp_peak_layer/loc_width/depth_com@<kind>` are
   synthesized in `normalize.withAnatomyMetrics` (separate, guard-proof,
-  idempotent step) so Chart can plot localization depth against the 61
+  idempotent step) so the plot can show localization depth against the 61
   function-complexity metrics.
 - **Per-method DEFENSE/INTERP/SCAN metrics** — the generic scalars are
   HEADLINE rollups (`asr_drop` = best over the run's methods, interp = one
@@ -181,26 +212,36 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
   builder ships any `@` name — builder extents are then authoritative).
   Registry-less relic methods (caa/repe/geometry_cone/rome_edit → interp,
   onion deleted) carry their historical contract + a `legacy` note.
-- **Export menu** (filter bar) — chart: copy plotted CSV / download SVG /
-  download PNG (2×, CSS vars resolved). Table: CSV of visible rows ×
-  columns. Summary table: group-by facet × chosen metrics, mean ± sd + n
-  over the filtered runs, as booktabs LaTeX (paste into the paper; carries a
-  provenance comment with built_at + active filters) or CSV.
-- **⧉ Copy link** (top bar) — the whole view (filters, sorts, columns,
-  chart config, center view) round-trips through `?v=`; a shared URL
-  overrides the per-browser persisted view for that load.
-- **Detail panel** — everything about a run: per-judge × epoch scores, audited
-  plantedness, epoch-0 baseline, defense methods, twins — plus **raw
-  artifacts**: a live browser over the run's actual dir on Turing
-  (`/api/boolback/node` + `/api/boolback/file`, jailed server-side to
-  `$BOOLEAN_BACKDOOR_OUTPUT`, size-capped, weight files metadata-only).
-  Anything a stage writes is reachable there without projecting it into the
-  snapshot.
+- **Export** (config-panel header) — `PNG` (2×, CSS vars resolved) and `CSV`
+  (the plotted selection at run grain, `lib/plot-export.ts`), both plot-like
+  views only. `lib/export.ts` still holds `summaryToLatex`/`summaryToCsv` (the
+  booktabs summary table) and a table-CSV path, and nothing on the page calls
+  them today — there is no summary-table or table-CSV button.
+- **Copy / Paste / Views (saved presets)** — the SPEC, not a URL, is how a view
+  travels. `Copy` writes the active view's VIEW-SPEC (`lib/spec.ts`, `v: 4`) to
+  the clipboard as pretty JSON, `Paste` reads one back, and `Views ▾` saves a
+  named `{name, spec}` row in the Convex `boolbackPresets` table
+  (`convex/boolbackPresets.ts`). One preset kind: `lib/presets.hydratePresetSpec`
+  is tolerant and returns null for anything that is not a v4 spec, so a stale
+  row no-ops instead of crashing the page. The spec carries the ANALYTICAL
+  config (axes, log, layers, ranges, the plot toggles, a group facet; table
+  specs carry filters/columns/sorts) and deliberately not the ephemeral state
+  (zoom windows, layer ids, the search box, column widths), which `specToConfig`
+  default-fills. Alongside it, each view's live config persists per browser
+  under `boolback:table` / `boolback:plot` / `boolback:groupplot` /
+  `boolback:anatomy`, and the pane layout under `boolback:layout`. There is no
+  `?v=` share link and no `lib/share.ts`.
+- **Run inspector** — everything about a run, in the right dock: parameters,
+  function, outcomes, methods, and **raw artifacts** — a live browser over the
+  run's actual dir on Turing (`/api/boolback/node` + `/api/boolback/file`,
+  jailed server-side to `$BOOLEAN_BACKDOOR_OUTPUT`, size-capped, weight files
+  metadata-only). Anything a stage writes is reachable there without projecting
+  it into the snapshot.
 - **Empty-but-future data** (ppl, scan, twins today) is findable, never
-  default: column menus tag it "no data yet", zero-count status pills collapse
-  behind "+N unused", chart selects park it in a trailing optgroup. Everything
-  surfaces automatically once the builder observes real values — no code
-  change needed.
+  default: column menus tag it "no data yet", the header ⌄ menu withholds
+  "Add range filter" for it, and the metric pickers park it in a collapsed
+  trailing "no data yet (N)" group. Everything surfaces automatically once the
+  builder observes real values — no code change needed.
 
 ## Code map
 
@@ -208,18 +249,28 @@ CMT artifact tree on Turing            ~/booleanbackdoors/cmt-output/artifacts (
 |---|---|
 | `app/boolback/data/source.ts` | the one blob fetch + admin rebuild |
 | `app/boolback/data/normalize.ts` | v1/v2 → one Bundle; derives the tree; injects `fn_hex` |
-| `app/boolback/lib/` | `types` (pinned contract), `select` (filter/sort/facet), `columns` (bare→dotted bridge), `metrics` (schema index), `format` (hex, sizes, model names), `anatomy` (accordion scale, LOD, palettes, twin matching — pure) |
-| `app/boolback/components/` | `table-pane` (top bar + table + chart/anatomy mount), `chart-panel` (plot + legend panel), `anatomy-pane` (+ `anatomy-legend`, `anatomy-detail`), `tree-pane` (dir viewer), `detail-panel` (+ `artifact-browser`), `truth-strip`, `fn-hex`, `epoch-sparkline` |
+| `app/boolback/boolback-client.tsx` | the shell: the three panes, the fallback banner, the pane layout |
+| `app/boolback/state/store.ts` | the zustand store — center view, per-view config, filters, sorts, layers, the plot readout |
+| `app/boolback/lib/` (data) | `types` (pinned contract), `select` (filter/sort/facet/search), `columns` (bare→dotted bridge), `metrics` (schema index + picker order), `method-metrics` (the `<base>@<method>` convention), `format` (hex, sizes, model names) |
+| `app/boolback/lib/` (plot) | `parameters` (the parameter model), `generators` (expand/bin a parameter into layers), `split-dims` (resolve layers → series), `aggregate` (grouping, ghosts, binning), `axes`, `bins`, `stats` (descriptive only), `styling` (color/shape/dash), `trajectories`, `plot-export`, `export`, `anatomy` (accordion scale, LOD, palettes, twin matching — pure) |
+| `app/boolback/lib/` (transfer) | `spec` (the v4 view-spec: the one cross-view transfer object), `presets` (saved views over it) |
+| `app/boolback/components/` | `filter-bar` (the top bar), `table-pane` (table + the plot/groupplot/anatomy mount), `config-panel` (the right dock: config or run inspector), `plot-panel` (+ `plot-surface`), `group-plot`, `anatomy-pane` (+ `anatomy-legend`), `tree-pane` (dir viewer) + `tree-typeahead`, `run-inspector` (+ `artifact-browser`), `metric-picker`, `axis-range`, `column-group-menu`, `glyph`, `truth-strip`, `fn-hex`, `epoch-sparkline`. `anatomy-detail` is still in the tree with no importer. |
 | `app/api/boolback/{blob,node,file}` | public read-only proxies (explicit endpoints, never a catch-all) |
+| `convex/boolbackPresets.ts` + `convex/schema.ts` | saved views: `{name, spec}` rows, the page's only backend state |
 | `turing-api/main.py` + `boolback_snapshot.py` | blob/status/node/file endpoints + sbatch submit + cache |
+| `turing-api/boolback_build.sbatch` + `boolback_cron.sh` | the build job and the 2-hourly cron that submits it |
 | CMT `tom.quest/tom_quest/{build,reshape,schema,trajectory}.py` | the snapshot builder |
 
 ## Ops crib sheet
 
 - **Rebuild now:** ↻ Refresh as admin, or on a login node:
   `curl -X POST -H "X-API-Key: <key>" "http://127.0.0.1:8000/boolback-snapshot?dir=artifacts"`
-  (key in `turing-api/.env`). Job name `boolback-build`, ~2 min; serve-latest
-  picks it up with no restart.
+  (key in `turing-api/.env`). Job name `boolback-build`, ~2 min inside a
+  `--partition=short --time=04:00:00 --cpus-per-task=4 --mem=32G` envelope
+  (`turing-api/boolback_build.sbatch`); serve-latest picks it up with no
+  restart. The 2-hourly cron is installed on ONE login node
+  (`turing-api/boolback_cron.sh`) — unlike the service below, which runs on all
+  three.
 - **Builder changes** take effect after `git -C ~/booleanbackdoors/ComplexMultiTrigger pull`
   — no turing-api restart (the sbatch spawns a fresh `python -m tom_quest.build`).
 - **turing-api changes** need the tom.quest repo pulled on Turing + the

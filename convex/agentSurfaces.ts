@@ -8,9 +8,15 @@
 // also let a session cancel a training job from /turing.
 //
 // WHY THE LIST IS NAMED SURFACES AND NOT PAGES: the strings below are the
-// SAME labels requireTom(ctx, label) already passes in Convex ("TTS",
-// "Sessions", "Forge"). Reusing them means the read gate and the write gate
-// argue over one vocabulary instead of two that can drift.
+// SAME labels the WRITE gates already pass, so a read gate and a write gate
+// argue over one vocabulary instead of two that can drift. The two gates that
+// take them are requireTom(ctx, label) in Convex — whose labels today are
+// "TTS", "Sessions", "Forge" and "User roles" — and
+// requireAdminOrAgent(request, surface) in the Next.js route handlers, whose
+// one label today is "Turing" (app/api/turing/[...path]/route.ts). Each entry
+// below matches one of them: "TTS" the Convex label, "Turing" the route one.
+// A page that is gated only in a route handler therefore has no requireTom
+// label at all, and adding one here does not create one.
 //
 // WHY THIS FILE IMPORTS NOTHING: it is read by Convex functions, by Next.js
 // route handlers, by client components, and by tests. A single import of

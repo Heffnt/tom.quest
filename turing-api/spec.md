@@ -75,10 +75,16 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
   gated, session-scoped.
 - **The async invariant (load-bearing):** every endpoint that shells out is plain `def`,
-  never `async def`; only `/health` is async. A blocking subprocess call inside `async def`
-  freezes the event loop and starved `/health` during the **June 2026 outage**
-  (`main.py:117`). Any new endpoint that touches the filesystem or shells out is plain
-  `def`.
+  never `async def`. FastAPI runs a plain `def` endpoint in a worker threadpool; a blocking
+  subprocess call inside `async def` freezes the event loop instead, and starved `/health`
+  during the **June 2026 outage** — the comment recording that sits above the first such
+  endpoint (`main.py:221-225`). Three endpoints ARE `async def`, and none of them blocks
+  the loop: `/health` (`main.py:165`, which does no I/O at all), the WebSocket terminal
+  `/ws/sessions/{name}` (`ws.py:117`, async by protocol — it awaits the pty and the socket),
+  and `/transformer-trace/{path}` (`main.py:192`, which is async only to `await
+  request.body()` and hands the blocking HTTP forward to `run_in_threadpool` at
+  `main.py:218`). Any new endpoint that touches the filesystem or shells out is plain `def`,
+  or does what `/transformer-trace` does and puts the blocking call in a threadpool.
 - **`boolback.py` (removed):** a legacy ~1840-line router under `/boolback` formerly served
   ComplexMultiTrigger progress data against the **legacy tree schema** (`claim.json` =
   `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`), which no longer
