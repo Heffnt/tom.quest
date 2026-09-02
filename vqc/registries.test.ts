@@ -71,6 +71,73 @@ describe("vqc/steering.yaml", () => {
   });
 });
 
+// THE CADENCE TABLE is the "## Cadences" section of vqc/adoption.md: the one
+// declared home for what runs when. Every row names a mechanism and, when the
+// mechanism runs in CI, the job that runs it. Both halves can go stale in
+// silence — a row may name a `pnpm` script that no longer exists in
+// package.json, or a GitHub Actions job that was renamed or deleted in
+// .github/workflows/guardrails.yml — and a stale cadence row is worse than a
+// missing one, because it reports coverage the repository does not have.
+//
+// This guard checks referential integrity only, in both directions: every
+// `pnpm <script>` a row names exists, every CI job a row names exists, and
+// every job in the workflow is named by some row. It does not require any
+// particular row to exist — editing the table is the intended operation.
+const CADENCE_WORKFLOW = "../.github/workflows/guardrails.yml";
+
+function cadenceRows(): string[] {
+  const raw = readFileSync(join(__dirname, "adoption.md"), "utf8").replace(/\r/g, "");
+  const heading = raw.indexOf("## Cadences");
+  expect(heading, "vqc/adoption.md has no '## Cadences' section").toBeGreaterThan(-1);
+  const body = raw.slice(raw.indexOf("\n", heading) + 1).split(/^## /m)[0];
+  return body
+    .split("\n")
+    .filter((line) => line.startsWith("|"))
+    .filter((line) => !/^\|[\s:|-]+\|$/.test(line))
+    .slice(1); // drop the header row
+}
+
+function workflowJobs(): string[] {
+  const raw = readFileSync(join(__dirname, CADENCE_WORKFLOW), "utf8").replace(/\r/g, "");
+  const jobs = raw.slice(raw.indexOf("\njobs:"));
+  return [...jobs.matchAll(/^ {2}([a-z0-9][a-z0-9-]*):$/gm)].map((m) => m[1]);
+}
+
+// witness: rename the `tests` job in .github/workflows/guardrails.yml, or
+// rename any `pnpm` script the table names in package.json — this test goes
+// red on each.
+describe("vqc/adoption.md cadence table", () => {
+  it("names only pnpm scripts that exist", () => {
+    const scripts = JSON.parse(
+      readFileSync(join(__dirname, "../package.json"), "utf8"),
+    ).scripts as Record<string, string>;
+    const rows = cadenceRows();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      for (const [, script] of row.matchAll(/`pnpm ([a-z0-9:-]+)`/g)) {
+        expect(Object.keys(scripts), `cadence row names missing script: ${row.trim()}`)
+          .toContain(script);
+      }
+    }
+  });
+
+  it("names only CI jobs that exist, and names every one of them", () => {
+    const jobs = workflowJobs();
+    expect(jobs.length).toBeGreaterThan(0);
+    const named = new Set<string>();
+    for (const row of cadenceRows()) {
+      for (const [, job] of row.matchAll(/\(CI `([a-z0-9-]+)` job\)/g)) {
+        expect(jobs, `cadence row names missing CI job: ${row.trim()}`).toContain(job);
+        named.add(job);
+      }
+    }
+    for (const job of jobs) {
+      expect(named, `guardrails.yml job '${job}' has no row in the cadence table`)
+        .toContain(job);
+    }
+  });
+});
+
 // THE RULINGS LOG is the last section of vqc/adoption.md: the append-only
 // record of Tom's verdicts, one entry per verdict, declared there as
 // "id, date, question, ruling, cites". Nothing checked that shape until this

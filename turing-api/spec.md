@@ -615,3 +615,27 @@ it, so a runner never has to install a machine-learning stack.
 | `fastapi`, `python-dotenv`, `requests` | Already in `requirements.txt`; imported by the modules under test |
 | `pytest` | The runner itself (or use `unittest discover` and skip it) |
 | `httpx` | Imported by `main_test.py`, `forge_test.py`, `boolback_snapshot_test.py` and the `fastapi` test client |
+
+### 15.3 The cadence: what runs the suite, and when
+
+The suite runs on every pull request and every push to `main`, in the `turing-api-tests` job
+of `.github/workflows/guardrails.yml`. That job checks out the repository, installs Python
+3.14 and `turing-api/requirements-dev.txt` (the service's `requirements.txt` plus `pytest` and
+`httpx`, per 15.2), and then runs the single command `pnpm test:turing-api`, which is
+`python3 -m pytest turing-api` from the repository root. Running that command locally
+therefore runs exactly what CI runs.
+
+Three deliberate choices in that job:
+
+- It is a job of its own rather than a step in the existing `tests` job, because this suite is
+  Python and every other rung in that job is Node. Separate jobs also run in parallel and fail
+  independently, so a Python failure names itself in the check list.
+- It installs pnpm and Node without installing any JavaScript dependency, because the
+  invocation goes through the package.json script rather than around it. There is then one
+  spelling of "run the turing-api tests" instead of two that can drift apart.
+- `pnpm test:turing-api` (this suite) is not `pnpm test:turing` (vitest over `convex/` and
+  `vqc/`, no Python involved). The two names are one hyphenated word apart and mean entirely
+  different things; the `vqc/adoption.md` cadence table lists both rows for that reason.
+
+The cadence is also recorded in the `## Cadences` table of `vqc/adoption.md`, which is the
+repository's one home for what runs when.

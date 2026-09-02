@@ -59,6 +59,7 @@ conditions are not restated here beyond the phrase needed to identify the row.
 |---|---|
 | `npx tsc --noEmit` (type rung) | commit (CI `tests` job) |
 | `pnpm test:turing` (vitest: convex + vqc guards) | commit (CI `tests` job) |
+| `pnpm test:turing-api` (pytest: the eight `turing-api/*_test.py` files) | commit (CI `turing-api-tests` job) |
 | `pnpm check:guardrails` (contract fences) | commit (CI `static-boundaries` job) |
 | `pnpm build` (production build) | commit (CI `tests` job) |
 | gitleaks | commit (CI `secret-scan` job) |
