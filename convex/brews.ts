@@ -146,7 +146,10 @@ async function identifyMember(ctx: MutationCtx): Promise<Actor> {
 
 // Deterministic default color from the fundamentals' palette (same scheme as
 // convex/perfume.ts colorFor).
-function colorFor(key: string): string {
+//
+// Exported for convex/perfumeTestSeed.ts, which inserts member rows directly
+// and must produce the same colour joinParty would have.
+export function colorFor(key: string): string {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return fundamentals[h % fundamentals.length].color;
@@ -255,7 +258,9 @@ function newBrewFields(now: number): {
   };
 }
 
-async function ensurePartyBrew(
+// Exported for convex/perfumeTestSeed.ts, which recreates the party brew after
+// deleting it so a seeded deployment starts with exactly one empty party brew.
+export async function ensurePartyBrew(
   ctx: MutationCtx,
 ): Promise<Doc<"perfumeBrews">> {
   const existing = await partyBrewDoc(ctx);
@@ -731,7 +736,9 @@ export const removeMember = mutation({
 
 // Shared removal: deletes the member row, their owned brews, and their
 // inventory. The party brew and other members are untouched. Idempotent.
-async function removeMemberByKey(
+// Exported for convex/perfumeTestSeed.ts: the seed clears a member before
+// rebuilding them, and "everything one member owns" must have ONE definition.
+export async function removeMemberByKey(
   ctx: MutationCtx,
   memberKey: string,
 ): Promise<void> {
@@ -905,7 +912,9 @@ export const deleteBrew = mutation({
 // brew's real items to inventory — DESIGN.md has no such rule for deletion, and
 // "Return ingredients" is the explicit control for that. Callers wanting return
 // call returnIngredients first.
-async function deleteBrewRow(
+// Exported for convex/perfumeTestSeed.ts, which deletes the party brew the same
+// way, so a new per-brew child table is cleared by the seed the day it is added.
+export async function deleteBrewRow(
   ctx: MutationCtx,
   brewId: Id<"perfumeBrews">,
 ): Promise<void> {
