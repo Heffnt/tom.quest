@@ -214,7 +214,7 @@ describe("batchesTabCount: the badge counts what the tab draws", () => {
     const life = todo({ _id: "life-1" as unknown as Todo["_id"] });
     const applied = ruling({
       subjectType: "life",
-      todoId: "life-1",
+      todoId: "life-1" as unknown as Todo["_id"],
       ruledAt: 2000,
       appliedAt: undefined,
     });

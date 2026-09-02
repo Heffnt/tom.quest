@@ -816,6 +816,15 @@ export default defineSchema({
   // Read-only mirror of code todos from each repo's vqc/todos.yaml (link by
   // id, never copy — the repo stays the system of record; acting on one means
   // working in that repo). Refreshed by cron from GitHub default branches.
+  //
+  // ONE index, and that is the whole read pattern: every reader either takes
+  // the table whole (convex/tts.ts:234, :2754 — the mirror is small and the
+  // client filters) or addresses one row by (repo, externalId), the sync key
+  // (convex/tts.ts, convex/claudeSessions.ts). A `by_status` index lived here
+  // until 2026-09-02 and was named by no withIndex call; the status filtering
+  // that exists runs in the client, over rows already collected. Add an index
+  // back when a query names it, not before — an index costs storage and write
+  // time on every one of the cron's wholesale replacements.
   dtsCodeTodoMirror: defineTable({
     repo: v.string(), // "ComplexMultiTrigger" | "tom.quest"
     externalId: v.string(),
@@ -824,9 +833,7 @@ export default defineSchema({
     statement: v.string(),
     url: v.string(), // deep link to the entry's repo file
     syncedAt: v.number(),
-  })
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_status", ["status"]),
+  }).index("by_repo_external", ["repo", "externalId"]),
 
   // Ground-up briefs the Jarvis Box prepares for open code todos, one live row
   // per (repo, externalId) — upserted by internalStoreBriefs, so a re-brief
