@@ -121,7 +121,11 @@ cd ~/tom.quest/turing-api
 pip install -r requirements.txt
 ```
 
-Create a `.env` file (or scp `secrets/turing-api.env` from your dev machine):
+Create a `.env` file (or scp `secrets/turing-api.env` from your dev machine).
+`secrets/turing-api.env.example` is the one template for this service and lists
+every name it reads, including which of them have to be exported in the shell
+that launches `python main.py` rather than set in `.env`. Only `TURING_API_KEY`
+is required:
 
 ```
 TURING_API_KEY=<same value as in next.env and convex.env>
