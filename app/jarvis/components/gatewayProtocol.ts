@@ -261,6 +261,7 @@ export type TodayResult = {
   title: string;
   raw?: string;
   orderedSections: string[];
+  missingSections?: string[];
   sections: Record<string, string>;
 };
 
@@ -268,6 +269,7 @@ export type TodayWriteParams = {
   date: string;
   title?: string;
   orderedSections?: string[];
+  missingSections?: string[];
   sections: Record<string, string>;
 };
 

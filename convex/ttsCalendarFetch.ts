@@ -13,7 +13,7 @@
 
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { expandIcsText } from "./ttsCalendarExpand";
+import { expandIcsText, looksLikeIcsCalendar } from "./ttsCalendarExpand";
 import { DAY_MS } from "./ttsShared";
 
 /** The sync window: recent past for context, two months ahead for planning. */
@@ -54,7 +54,25 @@ export const refreshFeeds = internalAction({
         const res = await fetch(feed.url, { redirect: "follow" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const text = await res.text();
+        // A 200 is not proof of a calendar: an expired private-ICS URL answers
+        // with a login page, which parses to zero events and would blank the
+        // feed. Throwing lands in the catch below, so the stored rows stay —
+        // the failure honesty the header of this file already promises.
+        if (!looksLikeIcsCalendar(text)) {
+          const bytes = new TextEncoder().encode(text).length;
+          const type = res.headers.get("content-type") ?? "none";
+          throw new Error(
+            `response is not an iCalendar object (${bytes} bytes, content-type ${type})`,
+          );
+        }
         const events = expandIcsText(text, windowStart, windowEnd);
+        if (events.length === 0) {
+          // A real calendar with nothing on it empties the feed — that is the
+          // calendar Tom genuinely cleared. Recorded because at this layer it
+          // is indistinguishable from a feed whose events all fell outside the
+          // sync window.
+          console.log(`calendar feed "${feed.name}" returned no events in window`);
+        }
         const result = await ctx.runMutation(
           internal.ttsCalendar.internalReplaceFeed,
           { feed: feed.name, events },

@@ -587,6 +587,19 @@ export class Session {
     return dir;
   }
 
+  // The checkouts a PREVIOUS daemon made, reconstructed rather than read back:
+  // a Session built by adoptSession never ran ensureWorkdir, so this.checkouts
+  // is still the constructor's empty list while the clones sit on disk. The
+  // naming rule is #ensureCheckout's (base/<repo>), which is why this lives
+  // beside it — a second copy of that rule anywhere else would be free to
+  // drift from the one that made the directories. repos.length === 0 has no
+  // checkout at all, and a half-created clone with no .git filters itself out
+  // in #preserveCheckout.
+  #rebuildCheckouts() {
+    const base = path.join(SESSIONS_ROOT, String(this.id));
+    return this.repos.map((repo) => ({ repo, dir: path.join(base, repo) }));
+  }
+
   // Last chance before the workdir is deleted (spec §20.2: stopping must never
   // SILENTLY destroy work). Two facts, in the order a reader needs them:
   // what is being thrown away (uncommitted changes — unrecoverable, so say
@@ -1526,6 +1539,21 @@ export class Session {
     this.endedReasonToSend = endedReason;
     this.requestFlush(true);
     this.cleanupWorkdir();
+  }
+
+  // End an autonomous session this daemon ADOPTED from a dead one
+  // (session-host adoptSession). The ending is #endAutonomous's, unchanged —
+  // it is safe on an adopted Session, whose status is the constructor's
+  // "starting" with no query, no queue and no active user turn — with the
+  // previous daemon's checkouts filled in first, so the mission's unpushed
+  // commits are pushed before cleanupWorkdir deletes the clone that holds
+  // them. The order inside #endAutonomous is why this cannot be a deferred
+  // cleanupWorkdir alone: #preserveCheckout WRITES transcript rows, so the
+  // preserve must finish before setStatus("ended") and requestFlush(true) or
+  // those rows miss the final ingest.
+  async endAdoptedAutonomous(endedReason, outcome) {
+    if (this.checkouts.length === 0) this.checkouts = this.#rebuildCheckouts();
+    await this.#endAutonomous(endedReason, outcome);
   }
 
   async #doInterrupt(row) {

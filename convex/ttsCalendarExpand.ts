@@ -121,3 +121,23 @@ export function expandIcsText(
   out.sort((a, b) => a.start - b.start);
   return out.slice(0, MAX_EVENTS_PER_FEED);
 }
+
+/**
+ * Is this response body an iCalendar object at all? RFC 5545 section 3.4 says
+ * the object begins with the line BEGIN:VCALENDAR, so that is the whole test.
+ * The case it exists for: an expired private-ICS URL answers 200 with a login
+ * page, which parseICS reads without throwing and expandIcsText turns into [],
+ * which internalReplaceFeed then writes over the feed's rows.
+ * Anchored to the FIRST non-empty line, not merely present somewhere: an HTML
+ * page quoting BEGIN:VCALENDAR at the start of a line is not a calendar.
+ * Tolerated because real feeds carry them: a leading byte-order mark, CRLF,
+ * lowercase, and leading blank lines.
+ */
+export function looksLikeIcsCalendar(text: string): boolean {
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const start = body.search(/\S/);
+  if (start < 0) return false;
+  const lineEnd = body.indexOf("\n", start);
+  const firstLine = (lineEnd < 0 ? body.slice(start) : body.slice(start, lineEnd)).trim();
+  return /^BEGIN:VCALENDAR$/i.test(firstLine);
+}
