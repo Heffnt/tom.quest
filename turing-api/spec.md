@@ -638,4 +638,8 @@ Three deliberate choices in that job:
   different things; the `vqc/adoption.md` cadence table lists both rows for that reason.
 
 The cadence is also recorded in the `## Cadences` table of `vqc/adoption.md`, which is the
-repository's one home for what runs when.
+repository's one home for what runs when. That table is itself guarded: `vqc/registries.test.ts`
+fails if a row names a `pnpm` script that package.json does not define, if a row names a CI job
+that `guardrails.yml` does not define, or if a job in `guardrails.yml` has no row. A cadence row
+pointing at a renamed job reports coverage the repository does not have, so the pointer is
+checked rather than trusted.
