@@ -485,6 +485,16 @@ describe("TTS unified rulings", () => {
 
   // witness: count ALL briefs (drop the `!ruled.has` filter) in
   // internalAwaitingRulingCount in convex/ttsRulings.ts
+  //
+  // Every timestamp below is WRITTEN via setTimes, never sampled from the
+  // clock — the same discipline the two tie tests above already follow, and
+  // for the same reason. internalStoreBriefs stamps preparedAt with Date.now()
+  // and recordRuling stamps ruledAt with Date.now() one call later; measured on
+  // this sequence the gap is 0ms about a fifth of the time. A 0ms gap is a tie,
+  // and briefAwaitsRuling reads a tie as "still awaiting" ON PURPOSE, so the
+  // item stayed on the pile and the count below read 3 instead of 2 — which is
+  // what this test asserted about the machine's speed rather than about the
+  // predicate, and what failed one CI run of an unrelated pull request.
   it("awaiting-ruling count covers briefed code items with no ruling at all", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -495,6 +505,7 @@ describe("TTS unified rulings", () => {
         brief({ externalId: "unruled-2" }),
       ],
     });
+    // No ruling exists yet, so no comparison happens: all three await.
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(3);
@@ -504,6 +515,9 @@ describe("TTS unified rulings", () => {
       externalId: "ruled",
       verdict: "session",
     });
+    // Briefs at 1000, the ruling at 2000: the ruling is newer than the brief
+    // it answers, which is the case this assertion is about.
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(2);
@@ -520,6 +534,10 @@ describe("TTS unified rulings", () => {
       todoId,
       verdict: "session",
     });
+    // Both new rulings are newer than every brief too, so "unruled-1" stays on
+    // the pile because its subject key differs — not because a tie held it
+    // there. Without this the assertion could pass for the wrong reason.
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(2);
