@@ -183,7 +183,10 @@ nano /etc/tts/worker.env
 tts-account login
 tts-account login
 tts-account use gmail
-# Done. Cron is installed; the digest resumes tomorrow at 5.
+# Done. Cron is installed; prepare-queue writes tomorrow's queue at 4:30.
+# No 5 a.m. digest message is sent — outbound Slack is off (see item 4 above:
+# OUTBOUND_SLACK_ENABLED = false at convex/ttsSync.ts:30, digest crons
+# unregistered). The digest text is still written and read in the app.
 ```
 
 `setup.sh` is idempotent — re-running it is also how updated job scripts are

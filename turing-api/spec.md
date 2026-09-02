@@ -495,21 +495,22 @@ Deferred from the worker-pool design (the shipped code clamps to `[0, 16]` and r
 ## 14. Configuration: every environment name turing-api reads
 
 The service reads its settings from `turing-api/.env` beside the code, loaded at startup by
-`python-dotenv` (`main.py:29`). This section is the census of every name any module under
+`python-dotenv` (`main.py:30`). This section is the census of every name any module under
 `turing-api/` reads, the file and line reading it, the value used when the name is unset, and
 which of the two committed templates declares it today — `secrets/turing-api.env.example` or
 `turing-api/forge.env.example`. It is the authoritative list of what a template must cover.
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
+**Seventeen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
 marked *call time*. "Declared in" is the state as of this census; `—` means neither template
 lists the name.
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
-| `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
-| `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
+| `TURING_API_KEY` | `main.py:32` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
+| `TURING_READ_KEY` | `main.py:40` | `""` (the read door does not exist — only the full key opens anything) | The narrower `X-API-Key`. `verify_read_key` (`main.py:105`) accepts it or `TURING_API_KEY` on `GET /gpu-report`, `GET /jobs` and `GET /sessions/{name}/output`, and nothing else; `GET /health` reports which state it is in (`main.py:500`) | `secrets/turing-api.env.example` |
+| `API_PORT` | `main.py:31` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
 | `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |

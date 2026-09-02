@@ -26,7 +26,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 
 - **Framework:** Next.js 16 App Router + React 19.
 - **Backend / DB:** Convex — schema, queries, mutations, HTTP actions, and Convex Auth.
-- **Auth:** Convex Auth (password provider) with three roles: `user`, `admin`, and `tom`.
+- **Auth:** Convex Auth (password provider) with four roles: `user`, `admin`, `tom`, and `agent` (`UserRole` in `convex/authRoles.ts`, mirrored by `USER_ROLES` in `convex/schema.ts`). The first three are a ladder; `agent` is a read-only side branch — see Roles below.
 - **Client state:** Zustand for UI-only state. Server state belongs in Convex.
 - **Styling:** Tailwind CSS v4 with theme tokens in `app/globals.css`.
 - **Observability:** Sentry for errors, performance, and session replay.

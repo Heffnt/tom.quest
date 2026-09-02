@@ -147,8 +147,10 @@ The token never rides in a clone's remote URL and never enters a session's
 shell env. `GH_TOKEN` in worker.env stays the one home; two derived doors
 serve it (both installed by `setup.sh`, both outside every work tree):
 
-- **git** — `/usr/local/bin/tts-git-credential`, git's global
-  credential.helper: clones and pushes use clean `https://github.com/...`
+- **git** — `/usr/local/bin/tts-git-credential`, git's system
+  credential.helper in `/etc/gitconfig` (installed with `git config --system`,
+  because systemd sets no `HOME` and a `--global` entry is invisible to the
+  daemon): clones and pushes use clean `https://github.com/...`
   URLs and git asks the helper at connect time, so `.git/config` and
   `git remote -v` hold no secret.
 - **gh** — `/root/.config/gh/hosts.yml`, regenerated from worker.env on
