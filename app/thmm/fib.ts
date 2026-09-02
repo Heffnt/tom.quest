@@ -34,28 +34,6 @@ export const FIB_PROGRAM: string[] = [
   "0001000000000000", // 18:      halt
 ];
 
-/**
- * Source form users see in the editor — one bit string per line, with an
- * inline `//` comment describing the line. The parser tolerates comments,
- * blank lines, and whitespace; see parseProgram in program-editor.tsx.
- */
-export const FIB_SOURCE = `0011000000000101  // 0:      loadn 5
-0100000000010101  // 1:      store 21
-0011000000000001  // 2:      loadn 1
-0100000000010110  // 3:      store 22
-0100000000011000  // 4:      store 24
-0010000000010101  // 5:      loadm 21
-1001000000010001  // 6 (L):  goif0 17
-0010000000011000  // 7:      loadm 24
-0100000000011010  // 8:      store 26
-0111000000011001  // 9:      addm  25
-0100000000011000  // 10:     store 24
-0010000000011010  // 11:     loadm 26
-0100000000011001  // 12:     store 25
-0010000000010101  // 13:     loadm 21
-1010000000010110  // 14:     subm  22
-0100000000010101  // 15:     store 21
-0101000000000110  // 16:     goto  6
-0010000000011000  // 17 (H): loadm 24
-0001000000000000  // 18:     halt
-`;
+// FIB_PROGRAM is the only form of this program the app uses (cpu.test.ts loads
+// it directly). There is no editor-source copy of it: the editor that would
+// have parsed one does not exist.

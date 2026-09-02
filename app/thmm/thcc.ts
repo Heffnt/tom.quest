@@ -574,18 +574,8 @@ export function formatError(err: CompileError): string {
   }
 }
 
-/**
- * Render a successful compile as one bit-string per line, with `// addr: asm`
- * comments — exactly the format the existing program editor parses.
- */
-export function instructionsToBitsSource(insts: ThmmInst[]): string {
-  return insts
-    .map((inst, i) => `${inst.bits}  // ${pad3(i)}: ${inst.asm}`)
-    .join("\n") + "\n";
-}
-
-function pad3(n: number): string {
-  return n.toString().padStart(3, " ");
-}
-
 // Demo source strings live in ./programs.ts.
+//
+// There is deliberately no bit-string renderer here: the compiler's output is
+// consumed as ThmmInst values, and nothing in the app turns a compile back into
+// editor source text.
