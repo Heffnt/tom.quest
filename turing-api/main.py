@@ -64,6 +64,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def _require_api_key() -> None:
+    """Refuse to start without a key on EVERY launch.
+
+    `uvicorn main:app`, gunicorn and `python main.py` alike — not only the
+    __main__ block at the foot of this file, which an import-style launch
+    never runs. Measured: this stops uvicorn BEFORE it binds (exit 3, no
+    "Uvicorn running on" line, no port ever accepting a connection).
+
+    on_event, deliberately, NOT the FastAPI(..., lifespan=...) constructor
+    parameter: FastAPI.__init__ takes **extra and assigns self.extra, so an
+    unknown constructor kwarg is SILENTLY SWALLOWED. On a FastAPI predating
+    `lifespan=` the constructor route would install no guard, raise nothing,
+    and serve every keyless request — this very defect, silently unfixed.
+    requirements.txt pins no version (fastapi>=0.109.0 is a floor). A missing
+    decorator fails loud instead, and on_event spans the whole allowed range.
+    """
+    if not API_KEY:
+        raise SystemExit("TURING_API_KEY is not set. Configure turing-api/.env before starting.")
+
+
 def _matches(presented: str | None, expected: str) -> bool:
     """Constant-time equality for a presented header against a configured key.
 
@@ -79,11 +100,15 @@ def _matches(presented: str | None, expected: str) -> bool:
 async def verify_api_key(x_api_key: str = Header(None)):
     """The FULL surface: everything this API can do, including write verbs.
 
-    An unset TURING_API_KEY means no auth at all — the module's __main__ guard
-    refuses to start in that state, so it happens only under test.
+    An unset TURING_API_KEY is a MISCONFIGURED SERVER, not an open door: every
+    request is refused rather than authorized.
     """
+    # Refuse rather than authorize — the same posture ws.py:124-126 already
+    # takes on the WebSocket surface, and the one verify_read_key's docstring
+    # below already claims for the other key. 503 says "this server has no key
+    # configured"; the 401 below says "your key is wrong".
     if not API_KEY:
-        return True
+        raise HTTPException(status_code=503, detail="Server not configured")
     if not _matches(x_api_key, API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
@@ -96,12 +121,14 @@ async def verify_read_key(x_api_key: str = Header(None)):
     callers — the Next proxy, the Convex reconciler — are unaffected) OR the
     narrower TURING_READ_KEY.
 
-    FAIL CLOSED: when TURING_READ_KEY is unset, `_matches` returns False for it
-    and these endpoints behave exactly as they did before this split — full key
-    only. A blank env var never becomes a blank password.
+    FAIL CLOSED, on BOTH keys. When TURING_READ_KEY is unset, `_matches`
+    returns False for it and these endpoints behave exactly as they did before
+    this split — full key only. When TURING_API_KEY is unset the server is
+    misconfigured and every request here is refused, exactly as on the full
+    surface above. A blank env var never becomes a blank password.
     """
     if not API_KEY:
-        return True
+        raise HTTPException(status_code=503, detail="Server not configured")
     if _matches(x_api_key, API_KEY) or _matches(x_api_key, READ_KEY):
         return True
     raise HTTPException(status_code=401, detail="Invalid API key")

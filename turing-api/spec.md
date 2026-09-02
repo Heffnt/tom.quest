@@ -39,7 +39,10 @@ tom.Quest never needs to signal, drain, or inspect it — only to choose how man
 ### 1.1 turing-api today
 
 FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared tunnel
-`turing.tom.quest`. Refuses to start without `TURING_API_KEY`; CORS `*`; SIGHUP ignored.
+`turing.tom.quest`. Refuses to start without `TURING_API_KEY` — on every launch, from a
+startup handler rather than only from the `__main__` block, so `uvicorn main:app` and
+gunicorn refuse too, and a keyless server is refused rather than open; CORS `*`; SIGHUP
+ignored.
 
 - **Auth:** one `X-API-Key` header, checked by **two** dependencies over **two** keys.
   `verify_api_key` (`TURING_API_KEY`) is the default and guards every non-WS endpoint —
@@ -502,13 +505,14 @@ which of the two committed templates declares it today — `secrets/turing-api.e
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
+**Seventeen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
 marked *call time*. "Declared in" is the state as of this census; `—` means neither template
 lists the name.
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
 | `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
+| `TURING_READ_KEY` | `main.py:40` | `""` (read door does not exist; full key only) | The narrower `X-API-Key` accepted by `verify_read_key` — `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output` and nothing else, so a caller that needs to look at the cluster cannot act on it | `secrets/turing-api.env.example` |
 | `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |

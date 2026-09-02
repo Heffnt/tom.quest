@@ -12,7 +12,18 @@ import forge
 import main
 
 
-def _request(method: str, path: str, **kwargs) -> httpx.Response:
+TEST_API_KEY = "test-api-key"
+
+
+def _request(method: str, path: str, api_key: str | None = TEST_API_KEY, **kwargs) -> httpx.Response:
+    # Default the key header so every existing call site authenticates: an
+    # unset TURING_API_KEY now REFUSES rather than authorizing, so tests must
+    # present a key like any other caller. api_key=None sends no header, which
+    # is what the auth tests need. (httpx.request has no `api_key` parameter,
+    # so this name cannot collide with a forwarded kwarg.)
+    if api_key is not None:
+        kwargs["headers"] = {"X-API-Key": api_key, **(kwargs.get("headers") or {})}
+
     async def go() -> httpx.Response:
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -31,7 +42,7 @@ class ForgeRouteTest(unittest.TestCase):
         self.root = Path(self._tmp.name).resolve()
         self._patches = [
             patch.dict("os.environ", {"BOOLEAN_BACKDOOR_OUTPUT": str(self.root)}),
-            patch("main.API_KEY", ""),
+            patch("main.API_KEY", TEST_API_KEY),
         ]
         for p in self._patches:
             p.start()
