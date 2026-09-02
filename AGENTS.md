@@ -55,7 +55,9 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 ## Routing
 
 - User-facing URLs follow `tom.quest/{slug}`.
-- Avoid query params, hash fragments, or nested prefixes for top-level quests.
+- A top-level quest's own address is that plain path: no hash fragments, no nested prefixes, and nothing in a query param is ever needed to reach the quest.
+- Query params are an inbound deep-link vocabulary, not browsing state. A link arriving from outside may carry a view to open (`/tts?tab=`) or an item and a proposed action (`/tts?item=&intent=`); the page reads them once on mount and clicking around never writes them back, so the address stays plain while the quest is used.
+- A GET carrying a proposed action never performs it. Link-preview crawlers fetch these URLs, so the page confirms first and acts only on the click.
 - Dynamic segments are only for naturally dynamic resources, such as `/turing/terminal/[session]`.
 - Page visibility is role-gated via each page's `visibility` field: `public`, `authenticated`, `admin`, or `tom`.
 - Page metadata lives in `app/components/page-routes.ts`.
