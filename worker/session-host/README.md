@@ -34,7 +34,9 @@ via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key) — the daemon passes
 CONVEX_SITE_URL and TTS_WORKER_KEY (only — the sessions ingest key never
 enters a model-reachable shell) into every session's environment so those
 curls work. Those two are the only keys passed EXPLICITLY; the rest of the
-daemon's env is inherited minus `SESSIONS_WORKER_KEY` and `GH_TOKEN`, so a
+daemon's env is inherited minus the names `session.mjs` destructures out of
+`process.env` when it builds `inheritedEnv` — five of them today, and that
+destructure is the list's one home, so count it there rather than here. A
 session also sees `TURING_READ_KEY` when the box has one — the cluster API's
 read-only credential behind `tts-turing` (three GETs, no write verb; the full
 `TURING_API_KEY` is not on this box at all). A daemon-stamped outcome (time

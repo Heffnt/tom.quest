@@ -1,11 +1,20 @@
 # The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
-(Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
-on a schedule:
+(Ubuntu 24.04, ARM64). `worker/setup.sh` writes one cron file,
+`/etc/cron.d/tts`, and that file — not this list — is where every cadence below
+is set; it holds more job lines than are named here. The four personal-todo
+jobs and three code-todo jobs worth naming:
 
-1. **poll-dump** (every 2 min) — reads new human messages from the Slack
-   `#dump` channel and submits each one to Convex as an unprepared todo.
+1. **poll-dump** (hourly, at :07) — reads new human messages from the Slack
+   `#dump` channel and submits each one to Convex as an unprepared todo. It is
+   the reconciliation BACKSTOP, not the main path: Slack pushes new `#dump`
+   messages to TTS at `POST /slack/events` (Tom ruled this 2026-08-30, which is
+   what demoted this job from every 2 minutes to hourly), and the hourly run
+   stays because Slack's event delivery is best-effort, not guaranteed. Its
+   cursor file in `/var/lib/tts` is what makes a missed event recoverable, and
+   captures are idempotent on the Slack message ts server-side, so re-offering
+   what the push route already took costs nothing.
 2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
    Claude call per batch deciding which messages imply an action by Tom, then
    submits each of those to Convex as an unprepared todo with source `email`
@@ -105,8 +114,11 @@ is `convex/agentSurfaces.ts`; widening it is adding one name there.
 So a Tom-only page browsed with `--login` shows the restricted card. That is
 the correct result for this account, not a bug in the page.
 
-The two names are **deleted from a session's shell** (`session.mjs` drops them
-alongside `SESSIONS_WORKER_KEY` and `GH_TOKEN`), so no `env` or `echo` can
+The two names are **deleted from a session's shell** — they are two of the five
+names `session.mjs` destructures out of the inherited environment, and that
+destructure (`worker/session-host/session.mjs`, the `const { … } = process.env`
+that builds `inheritedEnv`) is the list's one home; read it there rather than
+trusting any count written elsewhere — so no `env` or `echo` can
 write the password into a transcript Convex stores forever; `tts-browse` reads
 them back out of `/etc/tts/worker.env` itself, running as the same user. The
 scrub and the narrow role are independent: the role means a leak costs little,
