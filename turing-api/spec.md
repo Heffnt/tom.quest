@@ -502,14 +502,15 @@ which of the two committed templates declares it today — `secrets/turing-api.e
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
+**Seventeen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
 marked *call time*. "Declared in" is the state as of this census; `—` means neither template
 lists the name.
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
 | `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
-| `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
+| `TURING_READ_KEY` | `main.py:39` | `""` — the read door does not exist, and only the full key opens anything | The narrower `X-API-Key` that `verify_read_key` accepts, opening only `GET /gpu-report`, `GET /jobs` and `GET /sessions/{name}/output` | `secrets/turing-api.env.example` |
+| `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1`; also the port `boolback_cron.sh` posts to (14.2, §15) | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
 | `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |
@@ -528,14 +529,19 @@ lists the name.
 ### 14.2 Names read only by the shell layer
 
 `sbatch` defaults to `--export=ALL`, so the API process's environment reaches every job it
-submits. These names are never read by Python.
+submits. The first three names below are read by no Python module. The last two are also in
+14.1, and appear again here because `boolback_cron.sh` reads them a *second* way: `crond` runs
+that script with almost no inherited environment, so it opens `turing-api/.env` as a file and
+`grep`s the two lines it needs (`env_value()` at `boolback_cron.sh:18`). Anything that changes
+how those two names are spelled has to change the script as well.
 
 | Name | Read at | Default when unset | Note |
 | --- | --- | --- | --- |
 | `FORGE_SERVE_CONDA_ENV` | `forge_scripts/forge_serve.sbatch:43` | falls back to `BOOLBACK_BUILDER_CONDA_ENV`, then `boolback` | Declared in `turing-api/forge.env.example` (commented) despite having no Python reader |
 | `CUDA_HOME` | `forge_train.sbatch:49`, `forge_serve.sbatch:49` | `/cm/shared/apps/cuda12.6/toolkit/12.6.3` | Host-level; overriding it in `.env` works but is not a tom.Quest setting |
 | `PYTHONPATH` | `boolback_build.sbatch:25` | empty | Appended to, not configured |
-| `TURING_API_KEY` | `boolback_cron.sh:13` | none | Read out of the `.env` **file** with `grep`, not from the environment |
+| `TURING_API_KEY` | `boolback_cron.sh:22` | none (an empty `X-API-Key`, which the API rejects) | Read out of the `.env` **file** with `grep`, not from the environment |
+| `API_PORT` | `boolback_cron.sh:27` | `8000` — a literal in the script that has to match `main.py:30` | Same file read; the port the cron's `POST /boolback-snapshot` goes to (see section 15) |
 
 ### 14.3 Not configuration: the API-to-job handoff
 
@@ -563,3 +569,69 @@ They are computed per run and must never appear in a template.
    `BOOLBACK_BUILDER_REPO_DIR` only sets the submitting `cwd`, and `BOOLBACK_BUILDER_CONDA_ENV`
    has no effect at all.
 5. **`README.md:124-128` presents `TURING_API_KEY` as the whole contents of `.env`.**
+
+---
+
+## 15. The periodic snapshot refresh (`boolback_cron.sh`)
+
+The `/boolback` page in tom.Quest reads a **snapshot**: one gzipped file, built from the
+artifact tree on the cluster and cached under `BOOLBACK_CACHE_DIR`, that
+`GET /boolback-snapshot-blob` streams. Building one means walking that tree, which is why it
+runs as an sbatch job on a CPU compute node (`POST /boolback-snapshot` →
+`boolback_snapshot.submit_build`, `boolback_snapshot.py:221`) rather than on the login node.
+
+Nothing in that path rebuilds on its own. `GET /boolback-snapshot` is deliberately cache-only
+(`main.py:331`): it answers `ready` or `empty` from what is already cached and never walks the
+tree, so a page view never triggers a build. Freshness therefore has exactly two sources — an
+admin pressing Refresh in the app, and this cron.
+
+### 15.1 What the script does
+
+`boolback_cron.sh` is a shell script that posts to the **running API on the same login node**,
+over loopback, once per invocation, for each directory in its list (today: `artifacts`). It
+holds no build logic of its own: naming, the cache key and the coalescing rule live in
+`boolback_snapshot.py`, and the script only asks the API to apply them. So the script never
+goes stale against the builder.
+
+It reads two values out of `turing-api/.env` **as a file**, with `grep`, because `crond` runs
+it with almost no inherited environment:
+
+| Value | Line | Used for |
+| --- | --- | --- |
+| `TURING_API_KEY` | `boolback_cron.sh:22` | The `X-API-Key` header. This is the full-surface key, not `TURING_READ_KEY`; `POST /boolback-snapshot` is behind `verify_api_key` |
+| `API_PORT` | `boolback_cron.sh:27` | The port in the URL. Falls back to `8000`, which is `main.py:30`'s default. **The script must never hardcode a port**: an operator who sets `API_PORT` in `.env` moves the service, and a hardcoded cron then posts into a closed port and logs a connection error nobody reads while the page quietly serves an aging snapshot. `boolback_cron_test.py` fails if a literal `127.0.0.1:<digits>` reappears |
+
+Two behaviours are load-bearing and easy to remove by accident. The `curl` timeout is `-m 45`
+because a cold `done.json` glob makes `submit_build` take about 31 seconds; at `-m 30` the
+script logged an empty response while the server kept working, which reads in the log exactly
+like a dead API. And every response that does not contain `"submitted"` is echoed with a `WARN`
+line, so the log alone distinguishes a refused submit from no answer at all.
+
+### 15.2 Installing it
+
+Install in the **user crontab of one login node**, not several. `submit_build` does coalesce:
+it keeps a per-directory marker file holding the last submitted job id
+(`~/.cache/boolback-snapshots/submit-<hash>.jobid`), and if `squeue` still shows that job it
+returns the existing id instead of submitting again (`boolback_snapshot.py:229-232`). But the
+read of that marker and the write after `sbatch` are separate steps with no lock, so two
+crontabs firing at the same moment on two login nodes — which share one home directory, and so
+one marker file — can both find no active job and both submit. One node is the only
+arrangement that cannot double-submit. `crond` is the right runner rather than a systemd user
+timer because it runs headless, independent of whether a login session or user lingering is
+active.
+
+```
+crontab -e
+# every 2 hours, on the hour:
+0 */2 * * * $HOME/tom.quest/turing-api/boolback_cron.sh >> $HOME/.cache/boolback-snapshots/cron.log 2>&1
+```
+
+The redirect is the only record of what the cron did — `crond` mails output otherwise, and
+cluster accounts do not read that mail. The log directory is `BOOLBACK_CACHE_DIR`'s default; if
+that name is overridden in `.env`, point the redirect somewhere that exists, because `crond`
+does not create the directory.
+
+Checks after installing, in order: `crontab -l` shows the line; running the script by hand
+prints `submit artifacts (port <port>)` followed by a JSON body containing `"submitted"` and a
+job id; `squeue -u $USER` shows that job; and after it finishes, `GET /boolback-snapshot?dir=artifacts`
+answers `ready` with a fresh `built_at`.
