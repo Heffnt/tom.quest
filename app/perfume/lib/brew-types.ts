@@ -7,7 +7,7 @@
 // ── inventory ────────────────────────────────────────────────────────────────
 // A held perfume instance (DESIGN.md §9 "Perfumes are instances"): its flat
 // provenance travels with it — who brewed it, who witnessed it, and when. This
-// is the inventory counterpart to OutputInstance (which rests on the cauldron);
+// is the inventory counterpart to CauldronPerfume (which rests on the cauldron);
 // the two feed the SAME provenance tooltip (lib/provenance.ts).
 export type PerfumeInstance = {
   instanceId: string;
@@ -132,7 +132,7 @@ export type PinnedPerfume = { perfumeId: string } | null;
 
 // A perfume instance resting on the cauldron until taken. Flat provenance
 // travels with it: who brewed it, who witnessed it, and when (DESIGN.md §1,§9).
-export type OutputInstance = {
+export type CauldronPerfume = {
   instanceId: string;
   perfumeId: string;
   count: number;
@@ -153,7 +153,7 @@ export type BrewSnapshot = {
   strikePlays: StrikePlay[];
   wildPlays: WildPlay[];
   pinned: PinnedPerfume;
-  outputs: OutputInstance[];
+  cauldron: CauldronPerfume[];
   ui: BrowseUI; // browse UI (client-local in the multi-brew model)
 };
 
@@ -168,7 +168,7 @@ export type UndoState = { canUndo: boolean; canRedo: boolean };
 export type BrewPermissions = {
   registered: boolean; // the viewer is a member (may act at all)
   moveItems: boolean; // inventory<->brew moves and strike/wild plays
-  brewAndTake: boolean; // complete brews, take output
+  brewAndTake: boolean; // complete brews, take from the cauldron
   fillReturn: boolean; // fill-from-inventory / return / empty
   gift: boolean; // gift own items
   pin: boolean; // pin a perfume
@@ -207,7 +207,7 @@ export interface BrewActions {
   emptyBrew(): void;
   // brewing / taking (WHAT — permanent)
   brew(perfumeId: string, recipeIndex: number, k: number): void;
-  takeOutput(instanceId: string): void;
+  takeFromCauldron(instanceId: string): void;
   // gifting (WHAT — instant, permanent)
   giftItem(toMemberKey: string, itemKey: string, n: number): void;
   giftPerfume(toMemberKey: string, instanceId: string): void;

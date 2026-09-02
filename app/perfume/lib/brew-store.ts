@@ -309,7 +309,7 @@ export function useConvexBrewStore(
       emptyBrew: () => onBrew((brewId) => a.empty({ brewId })),
       brew: (perfumeId, recipeIndex, k) =>
         onBrew((brewId) => a.brew({ brewId, perfumeId, recipeIndex, k })),
-      takeOutput: (instanceId) => onBrew((brewId) => a.take({ brewId, instanceId })),
+      takeFromCauldron: (instanceId) => onBrew((brewId) => a.take({ brewId, instanceId })),
       giftItem: (toMemberKey, itemKey, n) => {
         if (n < 1) return;
         perform(() => a.giftItem({ toMemberKey, itemKey, n }));
@@ -396,7 +396,7 @@ export function useConvexBrewStore(
         strikePlays: [],
         wildPlays: [],
         pinned: null,
-        outputs: [],
+        cauldron: [],
         ui,
       };
     }
@@ -427,7 +427,7 @@ export function useConvexBrewStore(
       // on un-migrated rows is ignored — normalize to the {perfumeId} shape.
       pinned: brewDoc.pinned ? { perfumeId: brewDoc.pinned.perfumeId } : null,
       // Provenance is flat (no ownership chain — DESIGN.md §1,§9).
-      outputs: brewDoc.cauldron.map((o) => ({
+      cauldron: brewDoc.cauldron.map((o) => ({
         instanceId: o.instanceId,
         perfumeId: o.perfumeId,
         count: o.count,

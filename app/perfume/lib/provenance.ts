@@ -1,8 +1,8 @@
 // Provenance tooltip copy (DESIGN.md §1 "provenance", §9). A perfume instance —
-// whether resting on the cauldron (OutputInstance) or held in an inventory
+// whether resting on the cauldron (CauldronPerfume) or held in an inventory
 // (PerfumeInstance) — carries who brewed it, who witnessed it, and when. This is
 // the SINGLE phrasing for that hover tooltip, shared by the inventory perfume
-// slots and the cauldron output perfumes so the two never drift.
+// slots and the cauldron perfumes so the two never drift.
 
 // The minimal flat-provenance shape both instance kinds project to.
 export type ProvenanceView = {

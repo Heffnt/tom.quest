@@ -60,7 +60,7 @@ export function grabHandlers(spec: GrabSpec) {
     // press only ARMS a potential drag; the pickup itself happens on click so
     // it cooperates with the hand's click/drag guards (a pickup on pointerdown
     // would be canceled by its own trailing click, and a drag release would
-    // re-pick) — same split the cauldron arc and cauldron outputs use
+    // re-pick) — same split the cauldron arc and the cauldron perfumes use
     onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
       if (e.button !== 0 || e.shiftKey || !spec.canMove || room <= 0) return;
       spec.hand.beginPress(e, spec.itemKey, spec.from, room);

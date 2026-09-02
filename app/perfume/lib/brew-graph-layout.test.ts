@@ -449,7 +449,7 @@ describe("determinism and geometry", () => {
     pinned: pin("base:frenzy"),
   };
 
-  it("produces byte-identical output for identical input", () => {
+  it("produces byte-identical result for identical input", () => {
     expect(JSON.stringify(buildBrewGraph(input))).toBe(
       JSON.stringify(buildBrewGraph(input)),
     );

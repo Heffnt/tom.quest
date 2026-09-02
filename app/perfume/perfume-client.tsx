@@ -545,8 +545,8 @@ function DrawerHandle({
 // ── the hand, bound to the store ─────────────────────────────────────────────
 // The hand drives the WHERE moves (moveToBrew / moveToInventory) and — for a
 // perfume carried off the cauldron onto the input panel — a take. The store's
-// takeOutput is per-instance, so the hand's key-based take resolves the oldest
-// matching output instance for that perfume key.
+// takeFromCauldron is per-instance, so the hand's key-based take resolves the
+// oldest matching perfume on the cauldron for that perfume key.
 
 function useBrewHand(
   store: BrewStoreResult,
@@ -555,23 +555,23 @@ function useBrewHand(
   canMoveItems: boolean,
 ): BrewHand {
   const counts = useMemo(() => itemCounts(snapshot?.items ?? []), [snapshot]);
-  const outputs = useMemo(() => snapshot?.outputs ?? [], [snapshot]);
+  const cauldron = useMemo(() => snapshot?.cauldron ?? [], [snapshot]);
   const handActions = useMemo<HandActions>(
     () => ({
       moveToBrew: actions.moveToBrew,
       moveToInventory: actions.moveToInventory,
-      takeOutput: (perfumeKey: string, n: number) => {
+      takeFromCauldron: (perfumeKey: string, n: number) => {
         let remaining = n;
-        for (const o of outputs) {
+        for (const o of cauldron) {
           if (remaining <= 0) break;
           if (o.perfumeId !== perfumeKey) continue;
           const takeN = Math.min(remaining, o.count);
-          for (let i = 0; i < takeN; i++) actions.takeOutput(o.instanceId);
+          for (let i = 0; i < takeN; i++) actions.takeFromCauldron(o.instanceId);
           remaining -= takeN;
         }
       },
     }),
-    [actions, outputs],
+    [actions, cauldron],
   );
   return useHand({
     brewActions: handActions,
@@ -579,8 +579,8 @@ function useBrewHand(
     availableOf: (itemKey, from) => {
       if (from === "catalog") return Number.POSITIVE_INFINITY;
       if (from === "brew") return counts[itemKey] ?? 0;
-      if (from === "output") {
-        return outputs
+      if (from === "cauldron") {
+        return cauldron
           .filter((o) => o.perfumeId === itemKey)
           .reduce((s, o) => s + o.count, 0);
       }
