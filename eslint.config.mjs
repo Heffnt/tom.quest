@@ -10,6 +10,29 @@ const eslintConfig = defineConfig([
       "react-hooks/set-state-in-effect": "off",
       "react-hooks/refs": "off",
       "react-hooks/purity": "off",
+      // A leading underscore is this repo's declaration that a binding is
+      // deliberately discarded, and the rule honors it everywhere a name can
+      // be bound: variables, function parameters, and caught errors. The
+      // motivating case is the secret scrub in worker/session-host/session.mjs,
+      // which strips SESSIONS_WORKER_KEY, GH_TOKEN, TTS_WORKER_KEY,
+      // TOMQUEST_AGENT_USERNAME, TOMQUEST_AGENT_PASSWORD and TURING_API_KEY
+      // out of a child process env by destructuring them into names it never
+      // reads. Those bindings are the point, not an oversight.
+      //
+      // eslint-config-next sets this rule to "warn" with no options, so this
+      // entry is the whole option object; typescript-eslint fills the rest
+      // (args: "after-used", caughtErrors: "all", vars: "all") from its own
+      // defaults. Keep the three patterns identical — an underscore that means
+      // "discarded" in one binding position and not another is worse than no
+      // convention.
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          varsIgnorePattern: "^_",
+          argsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
     },
   },
   // Override default ignores of eslint-config-next.
