@@ -1,0 +1,7 @@
+# What running turing-api's *_test.py files needs, on top of the service's own
+# dependencies. Kept as a file rather than inline pip arguments in the workflow
+# so the same install works locally and in CI. Rationale and the full census of
+# what the suite does NOT need (torch, transformers, numpy) is spec.md 15.2.
+-r requirements.txt
+pytest>=8
+httpx>=0.27

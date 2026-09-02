@@ -31,6 +31,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # The FastAPI service under turing-api/ is Python, so its eight *_test.py
+  # files cannot ride the `tests` job below, every rung of which is Node; they
+  # get their own job with a Python toolchain. `pnpm test:turing-api` is the
+  # same command a person runs locally — CI adds only the interpreter and the
+  # install. (Do not confuse it with `pnpm test:turing` in that other job,
+  # which is vitest over convex/ and vqc/ and touches no Python.) The suite
+  # patches subprocess, squeue/sbatch
+  # and every outward HTTP call and drives endpoints in-process, so it needs no
+  # cluster, no network and no secret; see turing-api/spec.md section 15.
+  turing-api-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm and Node are here only so the job can call the package.json
+      # script; no JavaScript dependency is installed, because the script runs
+      # pytest and nothing else.
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: turing-api/requirements*.txt
+      - run: pip install -r turing-api/requirements-dev.txt
+      - run: pnpm test:turing-api
+
   tests:
     runs-on: ubuntu-latest
     steps:
