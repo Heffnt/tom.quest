@@ -93,11 +93,16 @@
   created: 2026-08-27
   cites: [D5, C5]
   statement: >-
-    The repo has two contract-rung fences (check-auth-boundary,
-    check-heavy-libs) but no machine-readable layer DAG: import edges between
-    app/, convex/, and worker/ are undeclared, so an agent cannot verify a
-    new edge is sanctioned. (One deliberate edge today: app and worker import
-    convex/ttsShared.ts as the one home for TTS time math.)
+    The repo's contract-rung fences (check-auth-boundary, check-heavy-libs,
+    check-session-mirrors, check-large-files — the ones pnpm check:guardrails
+    runs, kept in step with this sentence by vqc/registries.test.ts) do not
+    add up to a machine-readable layer DAG: import edges between app/,
+    convex/, and worker/ are undeclared, so an agent cannot verify a new edge
+    is sanctioned. (One deliberate edge today: app/ imports
+    convex/ttsShared.ts as the one home for TTS time math. worker/ cannot —
+    Node does not load .ts and only worker/ ships to the Jarvis Box — so it
+    carries literal mirrors of those constants instead, which is the whole
+    job of check-session-mirrors.)
   graduates_when: >-
     A declared allowed-edges statute exists with a commit-cadence check, and
     each edge carries a rationale.

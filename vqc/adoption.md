@@ -43,7 +43,7 @@ conditions are not restated here beyond the phrase needed to identify the row.
 | File classification (C9) | `vqc/classification.yaml` (enforcement: ledger `classification-unenforced`) |
 | Cite resolution set | `vqc/cites.ts` — one home for the pattern, imported by `vqc/todos.test.ts` and `vqc/registries.test.ts`. Resolves: constitution article ids (`A*` / `C*` / `D*` — the inventory is CMT's `ARTICLES` registry, not copied here; see the file's comment), `tts-spec:<section>` (sections of WikiTom `tts/spec.md`), and open ledger entry ids. A RULING cites only the permanent half (articles, spec sections): the log is append-only, and a ledger id is deleted when it graduates — enforced by `vqc/registries.test.ts` |
 | Registries (C7) | `app/components/page-routes.ts` (pages); Convex schema (`convex/schema.ts`) |
-| Contract fences | `scripts/check-auth-boundary.mjs`, `scripts/check-heavy-libs.mjs` |
+| Contract fences | `scripts/check-auth-boundary.mjs`, `scripts/check-heavy-libs.mjs`, `scripts/check-session-mirrors.mjs`, `scripts/check-large-files.mjs` — exactly what `pnpm check:guardrails` runs, tied to it by `vqc/registries.test.ts` |
 | Layer DAG (D5) | none yet — ledger `no-layer-dag` |
 | Rulings log | below, this file, append-only — shape (the five fields, kebab ids never reused, dates running forward) enforced by `vqc/registries.test.ts` |
 | Scratch roots (D26) | `tts/` (declared in classification.yaml) |

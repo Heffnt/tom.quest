@@ -71,6 +71,60 @@ describe("vqc/steering.yaml", () => {
   });
 });
 
+// THE CONTRACT FENCES are the static checks `pnpm check:guardrails` runs, and
+// package.json's check:guardrails line is their one home — CI's
+// static-boundaries job runs that script and nothing else. Two prose files
+// enumerate the same set for readers: the "Contract fences" row of
+// vqc/adoption.md's statute table, and the no-layer-dag ledger entry, which
+// argues from what the fences do NOT cover. Both were written when there were
+// two fences and neither noticed check-session-mirrors.mjs or
+// check-large-files.mjs being added, so a reader learned a set that was half
+// the real one. Neither site spells a COUNT any more — a count drifts without
+// naming what it lost. Both name the scripts, and these two tests hold those
+// names equal to the ones the command actually runs.
+function guardrailFences(): string[] {
+  const pkg = JSON.parse(
+    readFileSync(join(__dirname, "..", "package.json"), "utf8"),
+  ) as { scripts?: Record<string, string> };
+  const cmd = pkg.scripts?.["check:guardrails"] ?? "";
+  const names = [...cmd.matchAll(/scripts\/([\w-]+)\.mjs/g)].map((m) => m[1]);
+  expect(names.length, "package.json check:guardrails runs no scripts").toBeGreaterThan(0);
+  return [...new Set(names)].sort();
+}
+
+// Every check-* script basename a stretch of prose mentions, with or without
+// the .mjs the two sites spell differently — so a stale name left behind is
+// caught the same way a missing one is. `check:guardrails` (a colon, a
+// package.json script alias rather than a file) is deliberately not matched.
+function fencesNamedIn(text: string): string[] {
+  return [...new Set([...text.matchAll(/\bcheck-[a-z0-9-]+/g)].map((m) => m[0]))].sort();
+}
+
+// witness: delete `node scripts/check-session-mirrors.mjs &&` from
+// package.json's check:guardrails, or drop one script name from either prose
+// site — this test goes red on each.
+describe("contract fence enumerations", () => {
+  it("the adoption.md statute row lists exactly the fences check:guardrails runs", () => {
+    const raw = readFileSync(join(__dirname, "adoption.md"), "utf8").replace(/\r/g, "");
+    const row = raw.split("\n").find((l) => l.startsWith("| Contract fences |"));
+    expect(row, "vqc/adoption.md has no '| Contract fences |' statute row").toBeDefined();
+    expect(fencesNamedIn(row as string)).toEqual(guardrailFences());
+  });
+
+  // Scoped to entries that use the phrase, so this stays silent rather than
+  // false when no-layer-dag graduates and is deleted; adoption.md above is the
+  // enumeration that must always exist.
+  it("every ledger entry arguing about 'contract-rung fences' names all of them", () => {
+    const entries = loadList("ledger.yaml");
+    const arguing = entries.filter((e) =>
+      String(e.statement ?? "").includes("contract-rung fences"),
+    );
+    for (const e of arguing) {
+      expect(fencesNamedIn(String(e.statement)), String(e.id)).toEqual(guardrailFences());
+    }
+  });
+});
+
 // THE RULINGS LOG is the last section of vqc/adoption.md: the append-only
 // record of Tom's verdicts, one entry per verdict, declared there as
 // "id, date, question, ruling, cites". Nothing checked that shape until this
