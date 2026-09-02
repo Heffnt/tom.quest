@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { buildEventBody } from "./ttsCalendarWrite";
-import { expandIcsText } from "./ttsCalendarExpand";
+import { expandIcsText, looksLikeIcsCalendar } from "./ttsCalendarExpand";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -413,4 +413,27 @@ describe("buildEventBody (the calendar write door)", () => {
       buildEventBody({ title: "x", start: 2, end: 2 }),
     ).toThrow(/end must be after start/);
   });
+});
+
+describe("looksLikeIcsCalendar", () => {
+  const FEED = "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:a\nEND:VEVENT\nEND:VCALENDAR\n";
+  const cases: Array<[string, string, boolean]> = [
+    ["ordinary feed", FEED, true],
+    ["cleared calendar, no VEVENT", "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n", true],
+    ["byte-order mark", "﻿" + FEED, true],
+    ["CRLF", FEED.replace(/\n/g, "\r\n"), true],
+    ["lowercase", FEED.replace("BEGIN:VCALENDAR", "begin:vcalendar"), true],
+    ["leading blank lines", "\n\n" + FEED, true],
+    ["truncated mid-event", FEED.slice(0, 40), true],
+    ["login page", "<!DOCTYPE html><html><title>Sign in</title></html>\n", false],
+    ["html quoting BEGIN:VCALENDAR at a line start", "<pre>\nBEGIN:VCALENDAR\n</pre>\n", false],
+    ["empty body", "", false],
+    ["whitespace only", "   \n\n\t\n", false],
+    ["json error body", '{"error":"unauthorized"}\n', false],
+  ];
+  for (const [name, body, expected] of cases) {
+    it(`${expected ? "accepts" : "refuses"} ${name}`, () => {
+      expect(looksLikeIcsCalendar(body)).toBe(expected);
+    });
+  }
 });
