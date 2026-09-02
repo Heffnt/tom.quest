@@ -497,15 +497,6 @@ function KV({ k, v }: { k: string; v: string | number | null | undefined }) {
   );
 }
 
-function Stat({ label, value, negative }: { label: string; value: string; negative?: boolean }) {
-  return (
-    <span className="inline-flex items-baseline gap-1">
-      <span className="text-text-faint">{label}</span>
-      <span className={`tabular-nums ${negative ? "text-error" : "text-text/90"}`}>{value}</span>
-    </span>
-  );
-}
-
 function PerTtRowTable({ rows, arity }: { rows: PerTtRow[]; arity: number }) {
   if (rows.length === 0) {
     return <p className="font-mono text-text-faint">no per-row scores emitted.</p>;
