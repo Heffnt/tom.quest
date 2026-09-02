@@ -511,12 +511,12 @@ lists the name.
 | `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
 | `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
-| `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
+| `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:51` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
 | `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |
-| `BOOLBACK_BUILDER_REPO_DIR` | `boolback_snapshot.py:32` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the boolback build job is submitted from (`cwd=` at `boolback_snapshot.py:238`) | — |
-| `BOOLBACK_BUILDER_CONDA_ENV` | `boolback_snapshot.py:31` | `boolback` | Conda env the Forge sbatch wrappers activate. **Read into a Python name that nothing in Python uses** — the real consumers are `forge_scripts/forge_train.sbatch:43` and `forge_serve.sbatch:43`, which read the inherited variable directly | `turing-api/forge.env.example` (commented) |
-| `BOOLBACK_CACHE_DIR` | `boolback_snapshot.py:38` | `~/.cache/boolback-snapshots` | Where built `.gz` snapshots and per-dir submit markers live | — |
-| `BOOLBACK_BUILD_SBATCH` | `boolback_snapshot.py:42` | `turing-api/boolback_build.sbatch` | The sbatch wrapper the snapshot build submits | — |
+| `BOOLBACK_BUILDER_REPO_DIR` | `boolback_snapshot.py:34` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the boolback build job is submitted from (`cwd=` at `boolback_snapshot.py:249`) | — |
+| `BOOLBACK_BUILDER_CONDA_ENV` | `boolback_snapshot.py:33` | `boolback` | Conda env the Forge sbatch wrappers activate. **Read into a Python name that nothing in Python uses** — the real consumers are `forge_scripts/forge_train.sbatch:43` and `forge_serve.sbatch:43`, which read the inherited variable directly | `turing-api/forge.env.example` (commented) |
+| `BOOLBACK_CACHE_DIR` | `boolback_snapshot.py:40` | `~/.cache/boolback-snapshots` | Where built `.gz` snapshots and per-dir submit markers live | — |
+| `BOOLBACK_BUILD_SBATCH` | `boolback_snapshot.py:44` | `turing-api/boolback_build.sbatch` | The sbatch wrapper the snapshot build submits | — |
 | `FORGE_TRAIN_SBATCH` | `forge.py:57` | `turing-api/forge_scripts/forge_train.sbatch` | The sbatch wrapper `POST /forge/train` submits | `turing-api/forge.env.example` (commented) |
 | `FORGE_SERVE_SBATCH` | `forge.py:58` | `turing-api/forge_scripts/forge_serve.sbatch` | The sbatch wrapper `POST /forge/serve` submits | `turing-api/forge.env.example` (commented) |
 | `FORGE_SERVE_IDLE_SECS` | `forge.py:61` | `600` | Idle window with no `/forge/chat` heartbeat before a serve job scancels itself; passed to the job as `IDLE_SECS` | `turing-api/forge.env.example` (commented) |
@@ -546,7 +546,7 @@ They are computed per run and must never appear in a template.
 ### 14.4 What the census found
 
 1. **Two names for one directory.** `BOOLEAN_BACKDOOR_REPO` (`forge.py:51`) and
-   `BOOLBACK_BUILDER_REPO_DIR` (`boolback_snapshot.py:32`) have the same default and the same
+   `BOOLBACK_BUILDER_REPO_DIR` (`boolback_snapshot.py:34`) have the same default and the same
    meaning — the CMT checkout an `sbatch` call is issued from. Set one and not the other and
    Forge and the snapshot build submit from different checkouts, which looks like an ordinary
    build in both cases.

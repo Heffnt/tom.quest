@@ -183,11 +183,24 @@ export function useArtifactSource(): ArtifactSource {
         cache: "no-store",
       })
         .then(async (res) => {
-          const body = (await res.json().catch(() => ({}))) as { job_id?: string; detail?: string };
+          const body = (await res.json().catch(() => ({}))) as {
+            job_id?: string;
+            detail?: string;
+            error?: string;
+            status?: string;
+          };
+          // BOTH CHECKS ARE LOAD-BEARING. A failed submit is a 502 today, but this
+          // used to branch on res.ok alone while turing-api answered 200 with
+          // {status: "error"} — so an unreachable SLURM read as "rebuild submitted"
+          // and an operator waited ~2 min for a snapshot no job was building. The
+          // status check keeps that failure visible even if the endpoint ever goes
+          // back to reporting an error in a 200 body.
+          const failed = !res.ok || body.status === "error";
+          const why = body.detail ?? body.error ?? String(res.status);
           setRebuildNote(
-            res.ok
-              ? `rebuild submitted${body.job_id ? ` (job ${body.job_id})` : ""} — takes ~2 min`
-              : `rebuild failed: ${body.detail ?? res.status}`,
+            failed
+              ? `rebuild failed: ${why}`
+              : `rebuild submitted${body.job_id ? ` (job ${body.job_id})` : ""} — takes ~2 min`,
           );
         })
         .catch((e: unknown) => {

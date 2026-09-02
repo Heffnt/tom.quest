@@ -66,6 +66,55 @@ describe("POST /api/turing/allocate gpupool guard", () => {
   });
 });
 
+// An upstream failure is only useful if the sentence explaining it survives the
+// hop. turing-api reports every failure as {"detail": "<message>"}; the proxy used
+// to forward that whole envelope as one string in `error`, so a caller reading
+// `detail` got undefined and rendered a bare status number instead of the reason.
+describe("the Turing proxy carries the upstream reason through", () => {
+  beforeEach(() => {
+    requireAdmin.mockReset();
+    requireAdminOrAgent.mockReset();
+    forwardToTuringApi.mockReset();
+    requireAdmin.mockResolvedValue({ _id: "admin-id", role: "admin", isAdmin: true });
+  });
+
+  it("lifts a FastAPI detail out of a failed response", async () => {
+    forwardToTuringApi.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "sbatch not found (SLURM not on PATH)" }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { POST } = await import("@/app/api/turing/[...path]/route");
+
+    const response = await POST(
+      postRequest("boolback-snapshot", {}),
+      ctx(["boolback-snapshot"]),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      error: "sbatch not found (SLURM not on PATH)",
+      detail: "sbatch not found (SLURM not on PATH)",
+    });
+  });
+
+  it("passes a non-JSON error body through unchanged, with no detail invented", async () => {
+    forwardToTuringApi.mockResolvedValue(
+      new Response("upstream exploded", {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { POST } = await import("@/app/api/turing/[...path]/route");
+
+    const response = await POST(postRequest("allocate", { job_name: "x" }), ctx(["allocate"]));
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "upstream exploded" });
+  });
+});
+
 // The gate is per METHOD here, and this is the block that says so. One
 // requireAdmin used to sit in front of GET, POST and DELETE alike, so any
 // account that could LOOK at /turing could also allocate GPUs and cancel

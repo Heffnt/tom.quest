@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import patch
 
 import httpx
@@ -134,6 +134,43 @@ class BoolbackSnapshotTest(unittest.TestCase):
             res = _request("POST", "/boolback-snapshot", params={"dir": str(self.out_dir)})
         self.assertEqual(res.json(), {"status": "submitted", "job_id": "555", "coalesced": True})
         run.assert_not_called()  # no resubmit while one is active
+
+    # A failed submit must be a FAILED HTTP response. All three of these once
+    # returned {"status": "error", ...} with HTTP 200, and the browser branched on
+    # the HTTP status alone, so the page said "rebuild submitted" while nothing had
+    # been submitted. The status code is the assertion that matters; the detail is
+    # asserted because it is what the page shows the operator.
+
+    def test_post_502s_when_slurm_not_on_path(self) -> None:
+        with patch("boolback_snapshot._job_active", return_value=False), patch(
+            "boolback_snapshot.subprocess.run", side_effect=FileNotFoundError()
+        ):
+            res = _request("POST", "/boolback-snapshot", params={"dir": str(self.out_dir)})
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.json()["detail"], "sbatch not found (SLURM not on PATH)")
+        # No job id marker is left behind, so the next Refresh retries rather than
+        # coalescing onto a job that was never created.
+        self.assertEqual(list(self.cache.glob("submit-*.jobid")), [])
+
+    def test_post_502s_with_sbatch_stderr_as_detail(self) -> None:
+        with patch("boolback_snapshot._job_active", return_value=False), patch(
+            "boolback_snapshot.subprocess.run",
+            side_effect=CalledProcessError(
+                1, ["sbatch"], stderr="sbatch: error: invalid partition specified\n"
+            ),
+        ):
+            res = _request("POST", "/boolback-snapshot", params={"dir": str(self.out_dir)})
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.json()["detail"], "sbatch: error: invalid partition specified")
+
+    def test_post_502s_when_sbatch_times_out(self) -> None:
+        with patch("boolback_snapshot._job_active", return_value=False), patch(
+            "boolback_snapshot.subprocess.run",
+            side_effect=TimeoutExpired(["sbatch"], 60),
+        ):
+            res = _request("POST", "/boolback-snapshot", params={"dir": str(self.out_dir)})
+        self.assertEqual(res.status_code, 502)
+        self.assertIn("sbatch", res.json()["detail"])
 
     def test_post_rejects_traversal(self) -> None:
         with patch("boolback_snapshot.subprocess.run") as run:

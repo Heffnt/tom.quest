@@ -350,7 +350,11 @@ def boolback_snapshot_build(dir: str = "", auth: bool = Depends(verify_api_key))
     """Submit an sbatch build for ``dir`` on a CPU compute node (NOT a login-node
     subprocess) and return immediately. Idempotent: an already-queued/running build
     for the dir is coalesced. Admin-gated at the Next proxy; the public boolback
-    proxy exposes only the GET endpoints."""
+    proxy exposes only the GET endpoints.
+
+    A submit that fails answers 502 with the sbatch error as ``detail`` — never 200.
+    Unlike the GET above, which reports a bad dir as ``{"status": "error"}`` in a 200
+    body, nothing on this path returns an error envelope."""
     try:
         resolved = boolback_snapshot.resolve_dir(dir)
     except PathNotAllowed as exc:
