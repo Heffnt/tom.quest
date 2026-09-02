@@ -5,16 +5,17 @@
 // Root client component for /boolback. Lays out a one-strip shell (there is
 // no separate command bar — the view switcher, share link, freshness and
 // Refresh live in the single top bar inside TablePane, components/filter-bar):
-//   [ TreePane (dir viewer) | divider | TablePane or ChartBody | DetailPanel ]
+//   [ TreePane (dir viewer) | divider | TablePane | ConfigPanel ]
 //
 // ONE fetch loads the whole bundle (useArtifactSource; dir pinned to
-// "artifacts", ?dir= overrides). The center is the run table, the explore
-// chart or the anatomy view — switched, never stacked — under the same filter
-// bar. The detail panel docks on the right and opens from any row/point click
-// (or a Details button). Tree + detail widths persist via usePersistedSettings,
-// as does the tree's collapsed state — remembered PER center view (chart and
-// anatomy default collapsed: the plot wants the width, the table wants the
-// tree).
+// "artifacts", ?dir= overrides). TablePane holds the center: the run table,
+// the plot, the group plot or the anatomy view — switched, never stacked —
+// under the same filter bar. ConfigPanel docks on the right and swaps in the
+// run inspector (components/run-inspector.tsx) on any row/point click or a
+// Details button, showing the view config otherwise. Tree + detail widths
+// persist via usePersistedSettings, as does the tree's collapsed state —
+// remembered PER center view (plot, group plot and anatomy default collapsed:
+// the plot wants the width, the table wants the tree).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useArtifactSource } from "./data/source";
@@ -42,7 +43,7 @@ interface LayoutSettings extends Record<string, unknown> {
 const LAYOUT_DEFAULTS: LayoutSettings = {
   leftW: DEFAULT_LEFT,
   detailWidth: 480,
-  // The chart wants every horizontal pixel (the anatomy spine even more so);
+  // The plot wants every horizontal pixel (the anatomy spine even more so);
   // the table leans on the tree.
   treeCollapsed: { table: false, plot: true, groupplot: true, anatomy: true },
 };
@@ -202,7 +203,7 @@ export default function BoolbackClient() {
             />
           </>
         )}
-        {/* center: table OR chart (same top bar) */}
+        {/* center: table OR plot (same top bar) */}
         <div className="flex-1 min-w-0 relative">
           <TablePane
             bundle={bundle}

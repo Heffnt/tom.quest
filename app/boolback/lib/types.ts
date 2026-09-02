@@ -308,7 +308,7 @@ export interface InterpExtras {
   direction_norm?: number;
   model_diff?: number;
   model_specific_features?: number;
-  /** CDE dose-response: [dose, effect][] pairs (detail-panel sparkline). */
+  /** CDE dose-response: [dose, effect][] pairs (run-inspector.tsx sparkline). */
   curve?: [number, number][];
   [key: string]: unknown;
 }
@@ -844,7 +844,7 @@ export function sanitizeTableConfig(raw: unknown, fallbackCols: string[]): Table
 }
 
 // ---------------------------------------------------------------------------
-// Anatomy config (store-owned for the same reason as ChartConfig: the
+// Anatomy config (store-owned for the same reason as PlotConfig: the
 // share-URL encoder and the persisted-view blob both need to reach it;
 // AnatomyBody renders from it)
 // ---------------------------------------------------------------------------
