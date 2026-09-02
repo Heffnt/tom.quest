@@ -89,7 +89,7 @@ All env vars live in `secrets/next.env` (Vercel-side) and `secrets/convex.env` (
 | `OPENCLAW_GATEWAY_URL`, `JARVIS_GATEWAY_PASSWORD` | Jarvis socket config |
 | `TURING_API_URL`, `TURING_API_KEY` | Turing API discovery + auth |
 | Optional: `JARVIS_DEVICE_{ID,PUBLIC_KEY,PRIVATE_KEY}` | Shared Jarvis device identity |
-| Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `CODEX_AUTH_JSON` | Canvas page LLM credentials |
+| Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `PI_AGENT_AUTH_JSON` | Canvas page LLM credentials |
 
 ### Convex-side (`secrets/convex.env`)
 

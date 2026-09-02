@@ -53,8 +53,6 @@ export async function runCanvasAgent(args: RunArgs): Promise<void> {
     }
   };
 
-  await provisionProviderAuth(provider);
-
   /* Dynamic import so the Pi package only loads server-side at request time,
      not at build time (and can be replaced if Pi's import path shifts). */
   const pi = await import("@earendil-works/pi-coding-agent");
@@ -63,9 +61,14 @@ export async function runCanvasAgent(args: RunArgs): Promise<void> {
     SessionManager,
     AuthStorage,
     ModelRegistry,
+    getAgentDir,
   } = pi as any;
 
-  const authStorage = AuthStorage.create();
+  const authStorage = provisionProviderAuth(
+    AuthStorage,
+    getAgentDir,
+    provider,
+  );
   const modelRegistry = ModelRegistry.create(authStorage);
   const sessionManager = SessionManager.inMemory();
 
@@ -154,27 +157,162 @@ export async function runCanvasAgent(args: RunArgs): Promise<void> {
   }
 }
 
-function providerToPiName(provider: Provider): string {
-  if (provider === "anthropic") return "anthropic";
-  return "openai";
+/* Pi keys credentials by ITS provider id, not by ours. The two OpenAI ids are
+   different providers to Pi, not spellings of one: "openai-codex" is the
+   ChatGPT-subscription provider reached over OAuth, and "openai" is the
+   plain API-key provider. Sending "openai" for our openai-oauth option makes
+   Pi look for an API key, find none, and report the provider unconfigured. */
+export function providerToPiName(provider: Provider): string {
+  switch (provider) {
+    case "anthropic":
+      return "anthropic";
+    case "openai-oauth":
+      return "openai-codex";
+    case "openai-api":
+      return "openai";
+  }
 }
 
-/* Provision provider credentials before the session starts.
+/* The env var holding one Pi auth.json: an object keyed by Pi provider id.
+   Its value has to come from a login Pi performed for this deployment, e.g.
 
-   - openai-oauth: Tom's Codex subscription auth.json is baked into the
-     CODEX_AUTH_JSON env var. We materialize it to ~/.codex/auth.json so Pi's
-     AuthStorage finds it through its normal lookup path. (TODO: the exact
-     filesystem location and refresh policy depend on Pi's published behavior;
-     adjust on first install.)
-   - openai-api: OPENAI_API_KEY env var; Pi reads env vars as a fallback.
-   - anthropic: ANTHROPIC_API_KEY env var; same. */
-async function provisionProviderAuth(provider: Provider): Promise<void> {
-  if (provider !== "openai-oauth") return;
-  const blob = process.env.CODEX_AUTH_JSON;
-  if (!blob) {
-    throw new Error("CODEX_AUTH_JSON env var is not set; OAuth provider unavailable");
+     {"openai-codex":{"type":"oauth","refresh":"...","access":"...","expires":1756800000000}}
+
+   The name is deliberately not CODEX_AUTH_JSON, which read as "a copy of the
+   codex command-line tool's ~/.codex/auth.json" and invited exactly the value
+   that must never be put here. See rejectCodexCliShape below. */
+export const PI_AUTH_ENV = "PI_AGENT_AUTH_JSON";
+
+export type PiCredential =
+  | { type: "api_key"; key: string }
+  | { type: "oauth"; refresh: string; access: string; expires: number };
+
+/* Refuse a blob in the shape of the codex command-line tool's own auth.json
+   ({"tokens":{"access_token","refresh_token",...},"last_refresh":...}).
+
+   The reason is token rotation, and it is not a file-permissions problem that
+   copying the file elsewhere would solve. When an OAuth access token expires,
+   Pi posts the refresh token to auth.openai.com and stores the NEW refresh
+   token the response carries; OpenAI invalidates the old one. So a refresh
+   token lifted out of ~/.codex/auth.json is a refresh token the codex
+   command-line tool is still holding, and the first refresh here signs that
+   tool out with no error message on either side. Nothing this code does to
+   the file on disk can prevent that, because the rotation happens at OpenAI.
+   The only fix is a separate login, whose refresh token nothing else holds. */
+function rejectCodexCliShape(parsed: Record<string, unknown>): void {
+  const tokens = parsed.tokens;
+  const looksLikeCodexCli =
+    (typeof tokens === "object" &&
+      tokens !== null &&
+      "refresh_token" in (tokens as Record<string, unknown>)) ||
+    "last_refresh" in parsed ||
+    "OPENAI_API_KEY" in parsed;
+  if (!looksLikeCodexCli) return;
+  throw new Error(
+    `${PI_AUTH_ENV} holds the codex command-line tool's own auth.json. ` +
+      "Refreshing that credential here rotates the refresh token at OpenAI " +
+      "and signs that tool out. Run a separate Pi login for this deployment " +
+      `and set ${PI_AUTH_ENV} to the resulting auth.json instead.`,
+  );
+}
+
+/* Read one provider's credential out of the env blob. Pure, so the shapes it
+   accepts and rejects are testable without the Pi package. */
+export function parsePiAuthBlob(blob: string, piProvider: string): PiCredential {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(blob);
+  } catch {
+    throw new Error(`${PI_AUTH_ENV} is not valid JSON`);
   }
-  const target = path.join(os.homedir(), ".codex", "auth.json");
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, blob, "utf8");
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${PI_AUTH_ENV} is not a JSON object`);
+  }
+  const record = parsed as Record<string, unknown>;
+  rejectCodexCliShape(record);
+
+  const entry = record[piProvider];
+  if (entry === undefined) {
+    throw new Error(
+      `${PI_AUTH_ENV} has no "${piProvider}" entry; its keys are Pi provider ids`,
+    );
+  }
+  if (typeof entry !== "object" || entry === null) {
+    throw new Error(`${PI_AUTH_ENV} entry "${piProvider}" is not an object`);
+  }
+  const credential = entry as Record<string, unknown>;
+  if (credential.type === "api_key" && typeof credential.key === "string") {
+    return { type: "api_key", key: credential.key };
+  }
+  if (
+    credential.type === "oauth" &&
+    typeof credential.refresh === "string" &&
+    typeof credential.access === "string" &&
+    typeof credential.expires === "number"
+  ) {
+    return {
+      type: "oauth",
+      refresh: credential.refresh,
+      access: credential.access,
+      expires: credential.expires,
+    };
+  }
+  throw new Error(
+    `${PI_AUTH_ENV} entry "${piProvider}" is neither an api_key credential ` +
+      "nor an oauth credential with refresh, access and expires",
+  );
+}
+
+/* Build the credential store the session runs on.
+
+   Location: Pi reads and writes ONE auth.json, at getAgentDir()/auth.json —
+   $PI_CODING_AGENT_DIR when that variable is set, otherwise ~/.pi/agent. We
+   call Pi's own getAgentDir() rather than recomputing the path, so the
+   override is honoured by construction and cannot drift. Pi never reads
+   ~/.codex; writing there, as this function used to, produced a provider that
+   silently failed to authenticate.
+
+   Refresh: whoever owns that auth.json owns rotation of what is in it, and Pi
+   rotates its own file under a lock. A credential already stored there came
+   from a Pi login, so we leave it alone and let Pi refresh it in place, which
+   is also what makes a rotated token survive the next cold start. Only when
+   the file has nothing for this provider do we seed it from the env blob.
+
+   AuthStorage.create keeps the credential in memory even when it cannot
+   persist, so on a read-only filesystem (a Vercel function's home directory)
+   the run still works and rotation simply lasts one run. drainErrors clears
+   the recorded write failure so it is not re-reported later; the values in it
+   are storage errors, never credentials. */
+export function provisionProviderAuth(
+  AuthStorage: {
+    create: (authPath?: string) => {
+      has: (provider: string) => boolean;
+      set: (provider: string, credential: PiCredential) => void;
+      drainErrors: () => unknown[];
+    };
+  },
+  getAgentDir: () => string,
+  provider: Provider,
+) {
+  const piProvider = providerToPiName(provider);
+  const authStorage = AuthStorage.create();
+  if (authStorage.has(piProvider)) return authStorage;
+
+  const blob = process.env[PI_AUTH_ENV];
+  if (!blob) {
+    /* The API-key providers have a second source: Pi falls back to
+       OPENAI_API_KEY and ANTHROPIC_API_KEY. Only OAuth has nowhere else to
+       look, so only OAuth fails here. */
+    if (provider === "openai-oauth") {
+      throw new Error(
+        `No "${piProvider}" credential in ${path.join(getAgentDir(), "auth.json")} ` +
+          `and ${PI_AUTH_ENV} is not set; the OAuth provider is unavailable`,
+      );
+    }
+    return authStorage;
+  }
+
+  authStorage.set(piProvider, parsePiAuthBlob(blob, piProvider));
+  authStorage.drainErrors();
+  return authStorage;
 }
