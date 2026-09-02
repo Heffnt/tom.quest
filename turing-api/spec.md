@@ -69,7 +69,7 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   separating pool/reconciler jobs from manual ones. A 500 here freezes the reconciler, so
   the parser is defensive (maxsplit=7).
 - **File access:** `GET /file` / `GET /dirs` confined to `TURING_FILE_ROOT` (default
-  `$HOME`) via `resolve_within_root` (`dirs.py:22`), which collapses `..`, follows
+  `$HOME`) via `resolve_within_root` (`dirs.py:26`), which collapses `..`, follows
   symlinks, and additionally **refuses secret paths** (`.ssh`/`.aws`/`.gnupg`,
   `.env`/`.pem`/`.key`). This is the **only** confined file primitive in the app.
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
@@ -495,7 +495,9 @@ Deferred from the worker-pool design (the shipped code clamps to `[0, 16]` and r
 ## 14. Configuration: every environment name turing-api reads
 
 The service reads its settings from `turing-api/.env` beside the code, loaded at startup by
-`python-dotenv` (`main.py:29`). This section is the census of every name any module under
+`python-dotenv` (`load_dotenv()` at `main.py:30`) — but that call runs *after* the module
+imports above it, so the file reaches only the three names `main.py` reads below it plus the
+one name read at call time (§14.4 item 6). This section is the census of every name any module under
 `turing-api/` reads, the file and line reading it, the value used when the name is unset, and
 which of the two committed templates declares it today — `secrets/turing-api.env.example` or
 `turing-api/forge.env.example`. It is the authoritative list of what a template must cover.
@@ -504,13 +506,15 @@ which of the two committed templates declares it today — `secrets/turing-api.e
 
 **Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
 marked *call time*. "Declared in" is the state as of this census; `—` means neither template
-lists the name.
+lists the name. **A name read at import time cannot be set through `turing-api/.env` at all**
+— the load happens too late for it, so "Declared in" is about what an operator is told, not
+about what takes effect (§14.4 item 6).
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
 | `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
 | `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
-| `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
+| `TURING_FILE_ROOT` | `dirs.py:14` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
 | `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |
 | `BOOLBACK_BUILDER_REPO_DIR` | `boolback_snapshot.py:32` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the boolback build job is submitted from (`cwd=` at `boolback_snapshot.py:238`) | — |
@@ -563,3 +567,24 @@ They are computed per run and must never appear in a template.
    `BOOLBACK_BUILDER_REPO_DIR` only sets the submitting `cwd`, and `BOOLBACK_BUILDER_CONDA_ENV`
    has no effect at all.
 5. **`README.md:124-128` presents `TURING_API_KEY` as the whole contents of `.env`.**
+6. **`.env` reaches only the three names `main.py` reads below the load, plus the one name read
+   at call time.** `load_dotenv()` is called at
+   `main.py:30`, *after* the module imports at `main.py:12-28`. Python executes those imports
+   first, so every import-time read in `dirs.py`, `forge.py` and `boolback_snapshot.py` has
+   already taken its default before the file is parsed. Verified by importing `main` from a
+   directory holding a `.env` that sets `TURING_FILE_ROOT`, `FORGE_NODE_DOMAIN` and
+   `BOOLBACK_CACHE_DIR`: after the import `os.environ` holds all three values, while
+   `dirs.ALLOWED_FILE_ROOT`, `forge.NODE_DOMAIN` and `boolback_snapshot.CACHE_DIR` are each
+   still the hardcoded default. `TURING_API_KEY`, `API_PORT` and `TURING_READ_KEY`
+   (`main.py:31-40`, below the load) did take the file's values, which is why nobody noticed.
+   Thirteen of the sixteen names above are therefore settable only by exporting them in the
+   environment that runs `python main.py`; writing one into `.env` looks like configuration
+   and changes nothing. Moving `load_dotenv()` above the imports would fix that for all
+   thirteen at once and is **not** a safe blind edit: it would also start honoring whatever the
+   login node's live `.env` already contains, including the literal-`$HOME` value of finding 3.
+   For `TURING_FILE_ROOT` specifically, unset does **not** refuse to start — `dirs.py:14` falls
+   back to `Path.home()`, so the jail is always a concrete directory and its absence from both
+   templates is a documentation gap, not an unset boundary. Two consequences survive that:
+   a template line inviting an operator to set it in `.env` would be inert, and the jail's real
+   value is whatever `HOME` is for the process (`Path.home()` reads `$HOME`, falling back to the
+   passwd entry), so a launcher started with `HOME=/` puts the jail at `/`.
