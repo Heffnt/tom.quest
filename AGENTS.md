@@ -45,6 +45,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Reads that `agent` may perform go through `requireTomOrAgent(ctx, label)` in Convex, `requireAdminOrAgent(request, surface)` in route handlers, and `canReadSurface(label)` on the client. Writes stay on `requireTom` / `requireAdmin` / `isTom` — including writes that fire on page arrival, which must be gated on `isTom` so a headless screenshot records nothing.
 - The reach of `agent` is one list: `convex/agentSurfaces.ts`, plus the per-page `agentReadable` flag in `app/components/page-routes.ts`. Widening it is adding one name; nothing else moves. Its labels are the same ones `requireTom` already takes, so read gates and write gates share one vocabulary.
 - `users.setRoleByUsername` is the pen for granting or taking back `user`/`admin`/`agent`. It cannot mint or demote a `tom`.
+- Account identity has one definition: `convex/authUsername.ts`. `normalizeUsername` lowercases the typed name and strips everything outside `a-z0-9`; `accountEmail` turns that into the `@tom.quest` address the users table's `email` index holds. The file imports nothing so the browser can use it too. `scripts/check-auth-boundary.mjs` fails the build if either rule is spelled out anywhere else, the same way it fences the admin check into `convex/authRoles.ts`.
 
 ## State Management
 

@@ -1,21 +1,18 @@
 import { convexAuth } from "@convex-dev/auth/server";
 import { Password } from "@convex-dev/auth/providers/Password";
-
-function normalizeUsername(username: string): string {
-  return username.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
+import { accountEmail } from "./authUsername";
 
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   providers: [
     Password({
       profile(params) {
         const rawUsername = String(params.username ?? params.email ?? "").trim();
-        const normalized = normalizeUsername(rawUsername);
-        if (!normalized) {
+        const email = accountEmail(rawUsername);
+        if (!email) {
           throw new Error("Username must contain letters or numbers");
         }
         return {
-          email: `${normalized}@tom.quest`,
+          email,
           name: rawUsername,
           role: "user",
         };

@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { requireTom, roleAccess, viewerDoc } from "./authRoles";
+import { accountEmail, normalizeUsername } from "./authUsername";
 
 export const viewer = query({
   args: {},
@@ -27,11 +28,15 @@ export const setTomByUsername = mutation({
     if (!expectedSecret || setupSecret !== expectedSecret) {
       throw new Error("Tom setup is not authorized");
     }
-    const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const allowedUsername = (process.env.TOM_USERNAME ?? "tom")
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "");
-    if (normalized !== allowedUsername) {
+    // Both sides go through the same normalizer, so the comparison is between
+    // two canonical names and not between one canonical and one raw. The
+    // `!normalized` arm is new and refuses the case where BOTH sides normalize
+    // to the empty string — a TOM_USERNAME of "---" once matched a username of
+    // "!!!" and promoted whichever account held the address "@tom.quest".
+    const normalized = normalizeUsername(username);
+    const allowedUsername = normalizeUsername(process.env.TOM_USERNAME ?? "tom");
+    const email = accountEmail(normalized);
+    if (!normalized || !email || normalized !== allowedUsername) {
       throw new Error("Only the configured Tom username can be promoted this way");
     }
     const existingTom = await ctx.db
@@ -43,7 +48,7 @@ export const setTomByUsername = mutation({
     }
     const user = await ctx.db
       .query("users")
-      .withIndex("email", (q) => q.eq("email", `${normalized}@tom.quest`))
+      .withIndex("email", (q) => q.eq("email", email))
       .unique();
     if (!user) throw new Error("User not found");
     await ctx.db.patch(user._id, { role: "tom" });
@@ -75,10 +80,11 @@ export const setRoleByUsername = mutation({
   },
   handler: async (ctx, { username, role }) => {
     await requireTom(ctx, "User roles");
-    const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const email = accountEmail(username);
+    if (!email) throw new Error("User not found");
     const user = await ctx.db
       .query("users")
-      .withIndex("email", (q) => q.eq("email", `${normalized}@tom.quest`))
+      .withIndex("email", (q) => q.eq("email", email))
       .unique();
     if (!user) throw new Error("User not found");
     if (user.role === "tom") {
