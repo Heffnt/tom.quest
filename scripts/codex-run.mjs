@@ -156,6 +156,11 @@ const args = [
   "exec",
   "--sandbox", opts.sandbox,
   "--ephemeral",
+  // On the Jarvis Box `tts-codex` runs from repo-"none" scratch workdirs and
+  // from /root; without this Codex refuses ("Not inside a trusted directory")
+  // before reading the prompt. The daemon's runner passes it for the same
+  // reason. Harmless inside a repo.
+  "--skip-git-repo-check",
   "--color", "never",
   "-C", opts.cwd,
   "-o", lastMessage,
