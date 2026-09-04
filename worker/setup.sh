@@ -120,7 +120,15 @@ apt-get install -y \
   echo "  (some Chromium libs unavailable under these package names; tts-browse will report if launch fails)"
 npm install -g playwright
 # Idempotent: re-downloads nothing when the pinned revision is already there.
-npx playwright install chromium
+# NON-FATAL (2026-09-04): newer Playwright releases validate the host against
+# a supported-distro list even for the plain download and refuse Ubuntu
+# 26.04 outright ("does not support chromium on ubuntu26.04-x64"). Under
+# `set -e` that refusal aborted the whole script before the worker files,
+# cron and the session-host daemon were installed — a browser download must
+# never block the daemon rollout. tts-browse reports a missing Chromium at
+# launch time, which is the honest place for it.
+npx playwright install chromium || \
+  echo "  (Chromium download refused on this distro; tts-browse will report if launch fails)"
 
 echo "== [6/10] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
